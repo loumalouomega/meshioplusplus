@@ -10807,7 +10807,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 10
+#define MESHIOPLUSPLUS_VERSION_MINOR 11
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10817,7 +10817,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.10.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.11.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -14441,6 +14441,18 @@ MESHIOPLUSPLUS_API Mesh read_elmer(const std::string& rPath, const ReadOptions& 
  */
 MESHIOPLUSPLUS_API void write_elmer(const std::string& rPath, const Mesh& rMesh);
 
+/**
+ * @brief `write_elmer(rPath, rMesh)`, adding ElmerGrid's `-halo` layer to a
+ * partitioned write when @p Halo is true: every bulk element with a whole side
+ * in another part is copied into that part as `id/owner`, as discontinuous
+ * Galerkin solvers need (since v16.11.0). Without `partition:part` it is
+ * ignored.
+ * @param rPath Directory to write (created if absent).
+ * @param rMesh The mesh.
+ * @param Halo Write the halo layer.
+ */
+MESHIOPLUSPLUS_API void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo);
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/elmer.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/ensight.hpp =====
@@ -16179,7 +16191,7 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
 // ===== begin src/cpp/include/meshioplusplus/formats/libmesh.hpp =====
 /**
  * @file libmesh.hpp
- * @brief libMesh `.xda` (ASCII) / `.xdr` (XDR binary) mesh reader.
+ * @brief libMesh `.xda` (ASCII) / `.xdr` (XDR binary) mesh reader and writer.
  *
  * libMesh's native mesh file (`XdrIO`), also what MOOSE's `--mesh-only` and
  * checkpoint meshes use. Both encodings carry one value stream: a version
@@ -16200,8 +16212,9 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  *  - Side sets become `Side` regions (named by the sideset map, else
  *    `boundary_<id>`). A side of a refined element is carried down to the
  *    active descendants whose sides lie on it. Node sets become `Point`
- *    regions (`nodeset_<id>` when unnamed). Edge and shell-face sets are
- *    skipped with a warning.
+ *    regions (`nodeset_<id>` when unnamed). An edge set becomes `line`/`line3`
+ *    cells (subdomain -1) in a `Cell` region `<name>:edge`, a shell-face set
+ *    a `Cell` region `<name>:shellface0`/`1` on its 2-D cells.
  *  - HEX20/HEX27/PRISM15/PRISM18 are reordered through the `"libmesh"` tables
  *    of `detail/node_order.hpp`; the other shapes are already in meshio++'s
  *    order. TET14, PRISM20/21 and PYRAMID18 keep the nodes meshio++ has a type
@@ -16212,8 +16225,10 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  *    are dropped; the original ids are then kept as `libmesh:id` point data.
  *
  * Legacy pre-`libMesh` files (`DEAL 003`, `LIBM 0`) are refused, as libMesh
- * itself does. Compressed `.xda.gz`/`.xdr.bz2` files must be decompressed
- * first. See doc/formats/libmesh.md.
+ * itself does. gzip-compressed files are inflated (with zlib); bzip2 ones are
+ * left to the Python reader. C0POLYGON/C0POLYHEDRON are refused: `XdrIO`
+ * stores no per-element node count, so libMesh cannot write them either. See
+ * doc/formats/libmesh.md.
  */
 
 // System includes
@@ -16235,6 +16250,25 @@ namespace meshioplusplus {
  *         polygon/polyhedron elements
  */
 MESHIOPLUSPLUS_API Mesh read_libmesh(const std::string& rPath);
+
+/**
+ * @brief Write a libMesh `.xda` (ASCII) or `.xdr` (XDR) mesh, libMesh-1.8.0.
+ *
+ * The encoding comes from the extension (`.xdr` is XDR, anything else
+ * ASCII); compressed names are refused (the Python writer compresses).
+ * Every cell with a libMesh type becomes a level-0 element; polygons,
+ * polyhedra and Lagrange cells are dropped with a warning. Subdomain ids come
+ * from `libmesh:subdomain`, else the cell regions (tag, or a fresh id); `Side`
+ * regions become side sets, `Point` regions node sets, and the `:edge` and
+ * `:shellface<k>` cell regions the reader makes become edge and shell-face
+ * sets again. `libmesh:id` restores the original node ids (gaps written as
+ * NaN, as libMesh does); `libmesh:p_level` is written inline.
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh
+ * @throws WriteError if the file can't be written, the name is compressed or
+ *         a subdomain id is outside 0..65534
+ */
+MESHIOPLUSPLUS_API void write_libmesh(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/libmesh.hpp =====
@@ -17206,10 +17240,11 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath);
 /**
  * @brief Read an MFEM `.mesh` file and grid functions defined on it.
  *
- * An `H1` order-1 or order-2 grid function becomes point data (an order-2 field
- * on a linear mesh makes the cells quadratic, with the new nodes at edge, face
- * and cell centres); an `L2` order-0 one becomes cell data (NaN on boundary
- * cells). Any other space is skipped with a warning.
+ * An `H1` grid function becomes point data (an order-2 field on a linear mesh
+ * makes the cells quadratic, with the new nodes at edge, face and cell centres;
+ * order 3 and up makes them VTK Lagrange cells, since v16.11.0); an `L2`
+ * order-0 one becomes cell data (NaN on boundary cells). Any other space is
+ * skipped with a warning.
  *
  * @param rPath filesystem path of the mesh
  * @param rGridFunctions the `.gf` files, each with the data name it gets
@@ -17219,6 +17254,27 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath);
  */
 MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
                                   const std::vector<MfemGridFunction>& rGridFunctions);
+
+/**
+ * @brief `read_mfem(rPath, rGridFunctions)`, honouring `ReadOptions::mPiece`
+ * for a parallel mesh (since v16.11.0).
+ *
+ * A rank file of a parallel mesh (`<prefix>.000000`, ... as `ParMesh::Save`
+ * writes them) is read with its sibling ranks as one mesh: the vertices the
+ * communication groups share are merged, and `cell_data["partition:part"]`
+ * holds each cell's rank. With `mPieceSet`, rank `mPiece` alone is read (still
+ * labelled). A grid function of a parallel mesh is named by one of its rank
+ * files, `<name>.000000`, ...; each rank reads its own.
+ *
+ * @param rPath filesystem path of the mesh (or of one rank file)
+ * @param rGridFunctions the `.gf` files, each with the data name it gets
+ * @param rOptions `mPiece`/`mPieceSet` select one rank of a parallel mesh
+ * @return the mesh with the grid functions as data
+ * @throws ReadError as the other overloads, or for a piece out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
+                                  const std::vector<MfemGridFunction>& rGridFunctions,
+                                  const ReadOptions& rOptions);
 
 /**
  * @brief Write `rMesh` as an MFEM `.mesh` file.
@@ -18758,6 +18814,72 @@ MESHIOPLUSPLUS_API Mesh read_radioss(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/radioss.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/radioss_anim.hpp =====
+/**
+ * @file radioss_anim.hpp
+ * @brief OpenRadioss / Radioss animation file (`<run>A001`, `A002`...) reader.
+ *
+ * Each animation file is one state of an explicit run, big-endian with the
+ * magic `0x542C`: its time, three titles and ten flags, then the 2-D section
+ * (the nodes and the 4-node facets, with nodal scalars, nodal vectors and 2-D
+ * element tensors) and, as the flags say, the 3-D (8-node bricks), 1-D (2-node
+ * elements) and SPH sections, masses, node and element ids, the part, subset,
+ * material and property hierarchy and the time-history lists. The layout
+ * follows OpenRadioss's `anim_to_vtk` converter (MIT); no code is copied.
+ *
+ * The mesh:
+ *  - the points are the state's coordinates; `field_data["meshio:time"]` is its
+ *    time, so a glob over a run's files is a transient sequence;
+ *  - cells in the file's family order (1-D `line`, 2-D `quad`/`triangle`, 3-D
+ *    bricks collapsed to the tetra, pyramid or wedge they stand for, SPH
+ *    `vertex`), one block per type in order of first appearance;
+ *  - nodal scalars and vectors as point data under their names, and
+ *    `radioss:node_id`, `radioss:mass` when the file has them;
+ *  - element scalars, tensors (xx yy zz xy yz zx; a 2-D tensor's out-of-plane
+ *    components NaN) and 1-D force/moment sets (nine components) as cell data,
+ *    NaN on the families that do not have them; `radioss:part`,
+ *    `radioss:alive` (0 once an element is deleted), and when the file has
+ *    them `radioss:element_id`, `radioss:mass`, `radioss:material`,
+ *    `radioss:property`;
+ *  - parts as `Cell` regions (tag = part id).
+ * See doc/formats/radioss_anim.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Whether @p rPath's basename is an animation file's: a stem, then `A`
+ *        and three or more digits (`crashA001`).
+ */
+MESHIOPLUSPLUS_API bool is_radioss_anim_filename(const std::string& rPath);
+
+/**
+ * @brief Read one OpenRadioss animation file.
+ * @param rPath filesystem path to read
+ * @return the state's mesh and data
+ * @throws ReadError if the file can't be read, is truncated, has another magic
+ *         number or names a node out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_radioss_anim(const std::string& rPath);
+
+/**
+ * @brief Summarize one animation file: its one time step (`mTimeValues`), so a
+ *        sequence takes each file's own time rather than its name's number.
+ *
+ * The file is read whole (`mFellBackToFullRead`).
+ * @param rPath filesystem path to read
+ * @param rOpts read options (unused)
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_radioss_anim_metadata(const std::string& rPath,
+                                                           const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/radioss_anim.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/stl.hpp =====
 /**
  * @file stl.hpp
@@ -21096,7 +21218,7 @@ MESHIOPLUSPLUS_API void write_xyz(const std::string& rPath, const Mesh& rMesh,
 /**
  * @file z88.hpp
  * @brief Z88 / Z88Aurora structure file (`z88i1.txt`) reader/writer, with the
- *        `z88o2.txt` displacements and `z88o3.txt` stresses.
+ *        rest of the deck and the `z88o2`/`z88o3`/`z88o4` results.
  *
  * Z88's files have fixed names, so dispatch is by basename (`is_z88_filename`),
  * ahead of the `.txt` extension that belongs to the xyz reader.
@@ -21117,12 +21239,19 @@ MESHIOPLUSPLUS_API void write_xyz(const std::string& rPath, const Mesh& rMesh,
  * list their faces top first (`"z88"` tables of `detail/node_order.hpp`), and
  * tet10's last three mid-edge nodes run 2-4, 3-4, 1-4.
  *
- * Results next to the structure file are attached on read: `z88o2.txt` as
- * `point_data["U"]` (2, 3 or 6 columns, the widest node's; NaN where a node has
- * fewer), and the solid and plane-stress blocks of `z88o3.txt` as the
- * element's mean stress: `cell_data["SIG"]` (XX YY ZZ XY YZ ZX in 3-D, XX YY XY
- * in 2-D) and `cell_data["SIGV"]` when the file has the equivalent stress. Other
- * element families' stress blocks (beams, plates, shells, tori) are skipped.
+ * The rest of the deck next to it is attached on read: `z88i2.txt` constraints
+ * as `point_data["z88:bc:u"]` (prescribed displacements) and `["z88:bc:f"]`
+ * (nodal forces), NaN where a degree of freedom has none; `z88mat.txt` and its
+ * material files as `z88:material`, `z88:E`, `z88:nu`; `z88elp.txt` as
+ * `z88:elp` (12 columns, NaN for fields a row leaves out); `z88int.txt` as
+ * `z88:int`; Z88Aurora's `z88sets.txt` element and node sets as regions.
+ *
+ * With `Results`: `z88o2.txt` as `point_data["U"]` (2, 3 or 6 columns, the
+ * widest node's; NaN where a node has fewer), the nodal sums of `z88o4.txt` as
+ * `point_data["F"]`, and `z88o3.txt` as the element means of its labelled
+ * columns: `cell_data["SIG"]` (XX YY ZZ XY YZ ZX in 3-D, XX YY XY in 2-D) for
+ * solids and plane-stress elements, one scalar array per label for the other
+ * families (beams, shafts, trusses, tori, plates, shells) and `SIGV` for all.
  * See doc/formats/z88.md.
  */
 
@@ -21144,8 +21273,8 @@ MESHIOPLUSPLUS_API bool is_z88_filename(const std::string& rPath);
  *
  * @param rPath the `z88i1.txt` (or `z88structure.txt`) to read; a `z88o2.txt`
  *        or `z88o3.txt` path reads the structure file next to it
- * @param Results whether to attach `z88o2.txt`/`z88o3.txt` from the same
- *        directory
+ * @param Results whether to attach `z88o2.txt`/`z88o3.txt`/`z88o4.txt` from
+ *        the same directory (the input files are attached either way)
  * @return the mesh
  * @throws ReadError if the file can't be read, is truncated, a field is
  *         malformed, an element names an undefined node or has an unknown type
@@ -21158,14 +21287,17 @@ MESHIOPLUSPLUS_API Mesh read_z88(const std::string& rPath, bool Results = true);
  * The element type comes from the `z88:type` cell data when it is compatible
  * with the cell, else from the cell type (hexahedron 1, hexahedron20 10,
  * tetra 17, tetra10 16, triangle6 14, quad8 7, triangle 6 (2-D only), line 4 in
- * 3-D and 9 in 2-D). Other cells, regions and data arrays are dropped with a
- * warning and a provenance note. The dimension is 2 when every z coordinate is
- * zero and no cell is 3-D.
+ * 3-D and 9 in 2-D). The `z88:` constraint, material, element parameter and
+ * integration arrays are written back as `z88i2.txt`, `z88mat.txt` with one
+ * `<n>.txt` per material, `z88elp.txt` and `z88int.txt` next to it. Other
+ * cells, regions and data arrays are dropped with a warning and a provenance
+ * note. The dimension is 2 when every z coordinate is zero, no cell is 3-D and
+ * no kept `z88:type` exists only in 3-D files.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param Stubs also write empty `z88i2.txt` (no constraints) and `z88i5.txt`
- *        (no surface loads) next to it, so the deck is complete
+ * @param Stubs also write an empty `z88i5.txt` (no surface loads), and an
+ *        empty `z88i2.txt` when the mesh has no constraints
  * @throws WriteError if nothing is left to write
  */
 MESHIOPLUSPLUS_API void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs = false);
@@ -29479,6 +29611,531 @@ inline std::string gid_gauss_coords_key(const std::string& rMeshioName, std::siz
 }  // namespace gid_detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/gid_common.hpp =====
+// ===== begin src/cpp/src/formats/lagrange_common.hpp =====
+/**
+ * @file formats/lagrange_common.hpp
+ * @brief Arbitrary-order Lagrange cells: the `VTK_LAGRANGE_*` node layout and
+ *        nodal interpolation between point sets of one polynomial space.
+ *
+ * - `vtk_lattice` lists the nodes of a VTK Lagrange cell of order `p` as
+ *   integer lattice coordinates (`x = i/p` ...) on the reference cell whose
+ *   corners are meshio++'s (and MFEM's): the unit segment, the triangle
+ *   (0,0) (1,0) (0,1), the unit square, the tetrahedron at the origin and the
+ *   unit axes, the unit cube, and the prism of that triangle over [0, 1]. The
+ *   order follows VTK: corners, edges, faces, interior (the hexahedron's
+ *   vertical edges in VTK 9.1's order). Ported from MFEM's `mesh/vtk.cpp`
+ *   (BSD-3-Clause, Lawrence Livermore National Security), which writes the
+ *   files ParaView reads.
+ * - `interpolation_matrix` maps values at one set of nodes of the cell's
+ *   polynomial space (P_p on simplices, Q_p on the square and cube, P_p x P_p
+ *   on the prism) to values at other points, through an orthogonal basis
+ *   (Legendre products, Dubiner's collapsed bases) so the Vandermonde solve is
+ *   well conditioned.
+ * - `lattice_weights` names a lattice node by the corners it is a combination
+ *   of, with integer weights on a common denominator `p^3`, so the same node
+ *   of two cells sharing an edge or face gets the same key.
+ *
+ * A **format-private** header, beside the `.cpp` files that use it (MFEM
+ * today), in a named namespace for the amalgamation. Twin of
+ * `src/python/meshioplusplus/_lagrange.py`.
+ */
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus {
+namespace lagrange {
+
+enum class Shape { Line, Triangle, Quad, Tetra, Hexahedron, Wedge };
+
+inline int shape_dim(Shape S) {
+    switch (S) {
+        case Shape::Line:
+            return 1;
+        case Shape::Triangle:
+        case Shape::Quad:
+            return 2;
+        default:
+            return 3;
+    }
+}
+
+/// Number of nodes of an order-`P` cell.
+inline std::size_t num_nodes(Shape S, int P) {
+    const std::size_t p = static_cast<std::size_t>(P);
+    switch (S) {
+        case Shape::Line:
+            return p + 1;
+        case Shape::Triangle:
+            return (p + 1) * (p + 2) / 2;
+        case Shape::Quad:
+            return (p + 1) * (p + 1);
+        case Shape::Tetra:
+            return (p + 1) * (p + 2) * (p + 3) / 6;
+        case Shape::Hexahedron:
+            return (p + 1) * (p + 1) * (p + 1);
+        case Shape::Wedge:
+            return (p + 1) * (p + 1) * (p + 2) / 2;
+    }
+    return 0;
+}
+
+/// The Gauss-Lobatto points of order `P` on [0, 1], ascending.
+inline std::vector<double> gll_points(int P) {
+    std::vector<double> x(static_cast<std::size_t>(P) + 1);
+    x.front() = 0.0;
+    x.back() = 1.0;
+    // Interior points: the roots of P'_P on [-1, 1], by Newton from the
+    // Chebyshev-Gauss-Lobatto guesses; computed for the lower half and
+    // mirrored, so the set is exactly symmetric.
+    for (int k = 1; 2 * k <= P; ++k) {
+        long double t = -std::cos(3.14159265358979323846264338327950288L * k / P);
+        for (int it = 0; it < 100; ++it) {
+            // Legendre P_P(t), P'_P(t) by recurrence.
+            long double p0 = 1.0L, p1 = t;
+            for (int n = 1; n < P; ++n) {
+                const long double p2 = ((2 * n + 1) * t * p1 - n * p0) / (n + 1);
+                p0 = p1;
+                p1 = p2;
+            }
+            const long double d1 = P * (t * p1 - p0) / (t * t - 1.0L);
+            const long double d2 = (2.0L * t * d1 - P * (P + 1) * p1) / (1.0L - t * t);
+            const long double step = d1 / d2;
+            t -= step;
+            if (std::fabs(static_cast<double>(step)) < 1e-19)
+                break;
+        }
+        const double v = static_cast<double>((1.0L + t) / 2.0L);
+        x[static_cast<std::size_t>(k)] = v;
+        x[static_cast<std::size_t>(P - k)] = 1.0 - v;
+    }
+    if (P % 2 == 0 && P > 0)
+        x[static_cast<std::size_t>(P / 2)] = 0.5;
+    return x;
+}
+
+/// Equispaced points `i/P` on [0, 1].
+inline std::vector<double> uniform_points(int P) {
+    std::vector<double> x(static_cast<std::size_t>(P) + 1);
+    for (int i = 0; i <= P; ++i)
+        x[static_cast<std::size_t>(i)] = static_cast<double>(i) / P;
+    return x;
+}
+
+// --- VTK node order (after MFEM's mesh/vtk.cpp) ---------------------------------------
+
+inline int vtk_triangle_index(int* pB, int Ref) {
+    int max = Ref, min = 0;
+    const int bmin = std::min(std::min(pB[0], pB[1]), pB[2]);
+    int idx = 0;
+    while (bmin > min) {
+        idx += 3 * Ref;
+        max -= 2;
+        ++min;
+        Ref -= 3;
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (pB[(d + 2) % 3] == max)
+            return idx;
+        ++idx;
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (pB[(d + 1) % 3] == min)
+            return idx + pB[d] - (min + 1);
+        idx += max - (min + 1);
+    }
+    return idx;
+}
+
+inline int vtk_tetra_index(int* pB, int Ref) {
+    int idx = 0, max = Ref, min = 0;
+    const int bmin = std::min(std::min(std::min(pB[0], pB[1]), pB[2]), pB[3]);
+    while (bmin > min) {
+        idx += 2 * (Ref * Ref + 1);
+        max -= 3;
+        ++min;
+        Ref -= 4;
+    }
+    static const int kVertexMax[4] = {3, 0, 1, 2};
+    static const int kEdgeMin[6][2] = {{1, 2}, {2, 3}, {0, 2}, {0, 1}, {1, 3}, {0, 3}};
+    static const int kEdgeCount[6] = {0, 1, 3, 2, 2, 2};
+    static const int kFaceMin[4] = {1, 3, 0, 2};
+    static const int kFaceB[4][3] = {{0, 2, 3}, {2, 0, 1}, {2, 1, 3}, {1, 0, 3}};
+    for (int v = 0; v < 4; ++v) {
+        if (pB[kVertexMax[v]] == max)
+            return idx;
+        ++idx;
+    }
+    for (int e = 0; e < 6; ++e) {
+        if (pB[kEdgeMin[e][0]] == min && pB[kEdgeMin[e][1]] == min)
+            return idx + pB[kEdgeCount[e]] - (min + 1);
+        idx += max - (min + 1);
+    }
+    for (int f = 0; f < 4; ++f) {
+        if (pB[kFaceMin[f]] == min) {
+            int projected[3];
+            for (int i = 0; i < 3; ++i)
+                projected[i] = pB[kFaceB[f][i]] - min;
+            return idx + vtk_triangle_index(projected, Ref) - 3 * Ref;
+        }
+        idx += (Ref + 1) * (Ref + 2) / 2 - 3 * Ref;
+    }
+    return idx;
+}
+
+inline int vtk_triangle_offset(int Ref, int I, int J) {
+    return I + Ref * (J - 1) - (J * (J + 1)) / 2;
+}
+
+inline int vtk_wedge_index(int I, int J, int K, int Ref) {
+    const int om1 = Ref - 1;
+    const int ibdr = I == 0, jbdr = J == 0, ijbdr = I + J == Ref, kbdr = K == 0 || K == Ref;
+    const int nbdr = ibdr + jbdr + ijbdr + kbdr;
+    if (nbdr == 3)
+        return (ibdr && jbdr ? 0 : (jbdr && ijbdr ? 1 : 2)) + (K ? 3 : 0);
+    int offset = 6;
+    if (nbdr == 2) {
+        if (!kbdr) {
+            offset += om1 * 6;
+            return offset + (K - 1) + ((ibdr && jbdr) ? 0 : (jbdr && ijbdr ? 1 : 2)) * om1;
+        }
+        offset += K == Ref ? 3 * om1 : 0;
+        if (jbdr)
+            return offset + I - 1;
+        offset += om1;
+        if (ijbdr)
+            return offset + J - 1;
+        offset += om1;
+        return offset + (Ref - J - 1);
+    }
+    offset += 9 * om1;
+    const int ntf = (om1 - 1) * om1 / 2;
+    const int nqf = om1 * om1;
+    if (nbdr == 1) {
+        if (kbdr) {
+            if (K > 0)
+                offset += ntf;
+            return offset + vtk_triangle_offset(Ref, I, J);
+        }
+        offset += 2 * ntf;
+        if (jbdr)
+            return offset + (I - 1) + om1 * (K - 1);
+        offset += nqf;
+        if (ijbdr)
+            return offset + (J - 1) + om1 * (K - 1);
+        offset += nqf;
+        return offset + (Ref - J - 1) + om1 * (K - 1);
+    }
+    offset += 2 * ntf + 3 * nqf;
+    return offset + vtk_triangle_offset(Ref, I, J) + ntf * (K - 1);
+}
+
+inline int vtk_tensor_index(int Idx, int Ref, int Dim) {
+    const int n = Ref + 1;
+    if (Dim == 1) {
+        if (Idx == 0 || Idx == Ref)
+            return Idx ? 1 : 0;
+        return Idx + 1;
+    }
+    if (Dim == 2) {
+        const int i = Idx % n, j = Idx / n;
+        const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref;
+        if (ibdr && jbdr)
+            return i ? (j ? 2 : 1) : (j ? 3 : 0);
+        int offset = 4;
+        if (jbdr)
+            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + offset;
+        if (ibdr)
+            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) + offset;
+        offset += 2 * (Ref - 1 + Ref - 1);
+        return offset + (i - 1) + (Ref - 1) * (j - 1);
+    }
+    const int i = Idx % n, j = (Idx / n) % n, k = Idx / (n * n);
+    const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref, kbdr = k == 0 || k == Ref;
+    const int nbdr = (ibdr ? 1 : 0) + (jbdr ? 1 : 0) + (kbdr ? 1 : 0);
+    if (nbdr == 3)
+        return (i ? (j ? 2 : 1) : (j ? 3 : 0)) + (k ? 4 : 0);
+    int offset = 8;
+    if (nbdr == 2) {
+        if (!ibdr)
+            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + (k ? 2 * (Ref - 1 + Ref - 1) : 0) +
+                   offset;
+        if (!jbdr)
+            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) +
+                   (k ? 2 * (Ref - 1 + Ref - 1) : 0) + offset;
+        offset += 4 * (Ref - 1) + 4 * (Ref - 1);
+        return (k - 1) + (Ref - 1) * (i ? (j ? 2 : 1) : (j ? 3 : 0)) + offset;
+    }
+    offset += 4 * (Ref - 1 + Ref - 1 + Ref - 1);
+    if (nbdr == 1) {
+        if (ibdr)
+            return (j - 1) + (Ref - 1) * (k - 1) + (i ? (Ref - 1) * (Ref - 1) : 0) + offset;
+        offset += 2 * (Ref - 1) * (Ref - 1);
+        if (jbdr)
+            return (i - 1) + (Ref - 1) * (k - 1) + (j ? (Ref - 1) * (Ref - 1) : 0) + offset;
+        offset += 2 * (Ref - 1) * (Ref - 1);
+        return (i - 1) + (Ref - 1) * (j - 1) + (k ? (Ref - 1) * (Ref - 1) : 0) + offset;
+    }
+    offset += 2 * 3 * (Ref - 1) * (Ref - 1);
+    return offset + (i - 1) + (Ref - 1) * ((j - 1) + (Ref - 1) * (k - 1));
+}
+
+/// The nodes of an order-`P` VTK Lagrange cell, in VTK order, as integer
+/// lattice coordinates (`x = i / P`).
+inline std::vector<std::array<int, 3>> vtk_lattice(Shape S, int P) {
+    std::vector<std::array<int, 3>> out(num_nodes(S, P));
+    switch (S) {
+        case Shape::Triangle: {
+            int b[3];
+            for (b[1] = 0; b[1] <= P; ++b[1])
+                for (b[0] = 0; b[0] <= P - b[1]; ++b[0]) {
+                    b[2] = P - b[0] - b[1];
+                    out[static_cast<std::size_t>(vtk_triangle_index(b, P))] = {b[0], b[1], 0};
+                }
+            break;
+        }
+        case Shape::Tetra: {
+            int b[4];
+            for (b[2] = 0; b[2] <= P; ++b[2])
+                for (b[1] = 0; b[1] <= P - b[2]; ++b[1])
+                    for (b[0] = 0; b[0] <= P - b[1] - b[2]; ++b[0]) {
+                        b[3] = P - b[0] - b[1] - b[2];
+                        out[static_cast<std::size_t>(vtk_tetra_index(b, P))] = {b[0], b[1], b[2]};
+                    }
+            break;
+        }
+        case Shape::Wedge:
+            for (int k = 0; k <= P; ++k)
+                for (int j = 0; j <= P; ++j)
+                    for (int i = 0; i <= P - j; ++i)
+                        out[static_cast<std::size_t>(vtk_wedge_index(i, j, k, P))] = {i, j, k};
+            break;
+        default: {
+            const int dim = shape_dim(S);
+            const int n = P + 1;
+            const int total = dim == 1 ? n : (dim == 2 ? n * n : n * n * n);
+            for (int idx = 0; idx < total; ++idx) {
+                const std::array<int, 3> ijk = {idx % n, dim > 1 ? (idx / n) % n : 0,
+                                                dim > 2 ? idx / (n * n) : 0};
+                out[static_cast<std::size_t>(vtk_tensor_index(idx, P, dim))] = ijk;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+/// Corner weights of lattice node `rIjk` of an order-`P` cell, over the common
+/// denominator `P^3`: `(corner, weight)` for every corner with a nonzero one,
+/// by corner. Barycentric on simplices, multilinear on the square and cube,
+/// their product on the prism -- so a node shared by two cells has the same
+/// weights over the corners they share.
+inline std::vector<std::pair<int, std::int64_t>> lattice_weights(Shape S, int P,
+                                                                 const std::array<int, 3>& rIjk) {
+    const std::int64_t p = P, i = rIjk[0], j = rIjk[1], k = rIjk[2];
+    std::vector<std::int64_t> w;
+    switch (S) {
+        case Shape::Line:
+            w = {(p - i) * p * p, i * p * p};
+            break;
+        case Shape::Triangle:
+            w = {(p - i - j) * p * p, i * p * p, j * p * p};
+            break;
+        case Shape::Quad:
+            w = {(p - i) * (p - j) * p, i * (p - j) * p, i * j * p, (p - i) * j * p};
+            break;
+        case Shape::Tetra:
+            w = {(p - i - j - k) * p * p, i * p * p, j * p * p, k * p * p};
+            break;
+        case Shape::Hexahedron:
+            w = {(p - i) * (p - j) * (p - k),
+                 i * (p - j) * (p - k),
+                 i * j * (p - k),
+                 (p - i) * j * (p - k),
+                 (p - i) * (p - j) * k,
+                 i * (p - j) * k,
+                 i * j * k,
+                 (p - i) * j * k};
+            break;
+        case Shape::Wedge:
+            w = {(p - i - j) * (p - k) * p, i * (p - k) * p, j * (p - k) * p,
+                 (p - i - j) * k * p,       i * k * p,       j * k * p};
+            break;
+    }
+    std::vector<std::pair<int, std::int64_t>> out;
+    for (std::size_t c = 0; c < w.size(); ++c)
+        if (w[c] != 0)
+            out.emplace_back(static_cast<int>(c), w[c]);
+    return out;
+}
+
+// --- orthogonal bases ---------------------------------------------------------------
+
+/// Jacobi P_n^{(A,0)}(x) for n = 0..N.
+inline std::vector<double> jacobi(int N, double A, double X) {
+    std::vector<double> v(static_cast<std::size_t>(N) + 1);
+    v[0] = 1.0;
+    if (N >= 1)
+        v[1] = ((A + 2.0) * X + A) / 2.0;
+    for (int n = 1; n < N; ++n) {
+        const double a1 = 2.0 * (n + 1) * (n + A + 1) * (2 * n + A);
+        const double a2 = (2 * n + A + 1) * A * A;
+        const double a3 = (2 * n + A) * (2 * n + A + 1) * (2 * n + A + 2);
+        const double a4 = 2.0 * (n + A) * n * (2 * n + A + 2);
+        v[static_cast<std::size_t>(n) + 1] = ((a2 + a3 * X) * v[static_cast<std::size_t>(n)] -
+                                              a4 * v[static_cast<std::size_t>(n) - 1]) /
+                                             a1;
+    }
+    return v;
+}
+
+/// The orthogonal basis of the cell's order-`P` space at reference point `rX`.
+inline std::vector<double> basis(Shape S, int P, const std::array<double, 3>& rX) {
+    std::vector<double> out;
+    const double r = 2.0 * rX[0] - 1.0, s = 2.0 * rX[1] - 1.0, t = 2.0 * rX[2] - 1.0;
+    switch (S) {
+        case Shape::Line: {
+            out = jacobi(P, 0.0, r);
+            break;
+        }
+        case Shape::Quad: {
+            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s);
+            for (int j = 0; j <= P; ++j)
+                for (int i = 0; i <= P; ++i)
+                    out.push_back(a[static_cast<std::size_t>(i)] * b[static_cast<std::size_t>(j)]);
+            break;
+        }
+        case Shape::Hexahedron: {
+            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s), c = jacobi(P, 0.0, t);
+            for (int k = 0; k <= P; ++k)
+                for (int j = 0; j <= P; ++j)
+                    for (int i = 0; i <= P; ++i)
+                        out.push_back(a[static_cast<std::size_t>(i)] *
+                                      b[static_cast<std::size_t>(j)] *
+                                      c[static_cast<std::size_t>(k)]);
+            break;
+        }
+        case Shape::Triangle:
+        case Shape::Wedge: {
+            const double a = std::fabs(1.0 - s) > 1e-14 ? 2.0 * (1.0 + r) / (1.0 - s) - 1.0 : -1.0;
+            const auto pa = jacobi(P, 0.0, a);
+            std::vector<double> tri;
+            for (int i = 0; i <= P; ++i) {
+                const auto pb = jacobi(P - i, 2.0 * i + 1.0, s);
+                const double f = std::pow((1.0 - s) / 2.0, i);
+                for (int j = 0; i + j <= P; ++j)
+                    tri.push_back(pa[static_cast<std::size_t>(i)] * f *
+                                  pb[static_cast<std::size_t>(j)]);
+            }
+            if (S == Shape::Triangle) {
+                out = std::move(tri);
+            } else {
+                const auto c = jacobi(P, 0.0, t);
+                for (int k = 0; k <= P; ++k)
+                    for (double v : tri)
+                        out.push_back(v * c[static_cast<std::size_t>(k)]);
+            }
+            break;
+        }
+        case Shape::Tetra: {
+            const double a = std::fabs(s + t) > 1e-14 ? 2.0 * (1.0 + r) / (-s - t) - 1.0 : -1.0;
+            const double b = std::fabs(1.0 - t) > 1e-14 ? 2.0 * (1.0 + s) / (1.0 - t) - 1.0 : -1.0;
+            const auto pa = jacobi(P, 0.0, a);
+            for (int i = 0; i <= P; ++i) {
+                const auto pb = jacobi(P - i, 2.0 * i + 1.0, b);
+                const double fb = std::pow((1.0 - b) / 2.0, i);
+                for (int j = 0; i + j <= P; ++j) {
+                    const auto pc = jacobi(P - i - j, 2.0 * (i + j) + 2.0, t);
+                    const double fc = std::pow((1.0 - t) / 2.0, i + j);
+                    for (int k = 0; i + j + k <= P; ++k)
+                        out.push_back(pa[static_cast<std::size_t>(i)] * fb *
+                                      pb[static_cast<std::size_t>(j)] * fc *
+                                      pc[static_cast<std::size_t>(k)]);
+                }
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+/// The matrix (row-major, targets x nodes) mapping values at `rNodes` -- a
+/// unisolvent node set of the order-`P` space -- to values at `rTargets`.
+inline std::vector<double> interpolation_matrix(
+    Shape S, int P, const std::vector<std::array<double, 3>>& rNodes,
+    const std::vector<std::array<double, 3>>& rTargets) {
+    const std::size_t n = rNodes.size();
+    if (n != num_nodes(S, P))
+        throw std::runtime_error("lagrange: node count does not match the space");
+    // A = V^T (n x n): A[b][m] = basis_b(node_m); solve A X = Phi^T for X
+    // (n x targets); the matrix is X^T.
+    std::vector<double> a(n * n);
+    for (std::size_t m = 0; m < n; ++m) {
+        const auto v = basis(S, P, rNodes[m]);
+        for (std::size_t b = 0; b < n; ++b)
+            a[b * n + m] = v[b];
+    }
+    const std::size_t nt = rTargets.size();
+    std::vector<double> x(n * nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const auto v = basis(S, P, rTargets[t]);
+        for (std::size_t b = 0; b < n; ++b)
+            x[b * nt + t] = v[b];
+    }
+    // LU with partial pivoting, applied to every right-hand side at once.
+    for (std::size_t c = 0; c < n; ++c) {
+        std::size_t piv = c;
+        for (std::size_t r = c + 1; r < n; ++r)
+            if (std::fabs(a[r * n + c]) > std::fabs(a[piv * n + c]))
+                piv = r;
+        if (std::fabs(a[piv * n + c]) < 1e-300)
+            throw std::runtime_error("lagrange: the node set is not unisolvent");
+        if (piv != c) {
+            for (std::size_t k = 0; k < n; ++k)
+                std::swap(a[c * n + k], a[piv * n + k]);
+            for (std::size_t k = 0; k < nt; ++k)
+                std::swap(x[c * nt + k], x[piv * nt + k]);
+        }
+        for (std::size_t r = c + 1; r < n; ++r) {
+            const double f = a[r * n + c] / a[c * n + c];
+            if (f == 0.0)
+                continue;
+            for (std::size_t k = c; k < n; ++k)
+                a[r * n + k] -= f * a[c * n + k];
+            for (std::size_t k = 0; k < nt; ++k)
+                x[r * nt + k] -= f * x[c * nt + k];
+        }
+    }
+    for (std::size_t c = n; c-- > 0;) {
+        for (std::size_t k = 0; k < nt; ++k) {
+            double v = x[c * nt + k];
+            for (std::size_t q = c + 1; q < n; ++q)
+                v -= a[c * n + q] * x[q * nt + k];
+            x[c * nt + k] = v / a[c * n + c];
+        }
+    }
+    std::vector<double> out(nt * n);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t m = 0; m < n; ++m)
+            out[t * n + m] = x[m * nt + t];
+    // Snap exact reproductions (a target that is a node) to 0/1.
+    for (double& v : out)
+        if (std::fabs(v) < 1e-14)
+            v = 0.0;
+        else if (std::fabs(v - 1.0) < 1e-14)
+            v = 1.0;
+    return out;
+}
+
+}  // namespace lagrange
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/lagrange_common.hpp =====
 // ===== begin src/cpp/src/formats/pindex_common.hpp =====
 /**
  * @file formats/pindex_common.hpp
@@ -63337,6 +63994,10 @@ struct ElmIds {
 }  // namespace
 
 void write_elmer(const std::string& rPath, const Mesh& rMesh) {
+    write_elmer(rPath, rMesh, false);
+}
+
+void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
     const fs::path dir(rPath);
     const std::size_t n_blocks = rMesh.NumCellBlocks();
     int bulk_dim = -1;
@@ -63703,10 +64364,11 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
 
     if (!partitioned)
         return;
-    // --- partitioning.N: ElmerGrid's layout without halos ------------------------
+    // --- partitioning.N: ElmerGrid's layout ----------------------------------------
     // `partition:part` (0-based) places each bulk element; a node belongs to
     // every part using it and is owned by the lowest; a boundary element goes to
-    // each part holding one of its parents, the other parent set to 0.
+    // each part holding one of its parents, the other parent set to 0. With
+    // `Halo`, ElmerGrid's `-halo` layer too.
     std::vector<int> part_of(static_cast<std::size_t>(n_bulk) + 1, -1);
     int n_parts = 0;
     for (const ElmRow& r : bulk_rows) {
@@ -63732,6 +64394,58 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
                 list.insert(std::upper_bound(list.begin(), list.end(), part), part);
         }
     }
+    // Halo (ElmerGrid `-halo`, the layer discontinuous Galerkin needs): a bulk
+    // element is copied, as `id/owner`, into every other part in which one of
+    // its sides lies whole -- every node of that side (mid-side ones included)
+    // used by that part's own elements. ElmerGrid first asks for enough shared
+    // nodes on the element (four for a hexahedron, three for another solid, two
+    // otherwise); a part's halo nodes join its node list, and a node a halo
+    // copy uses there is shared with that part too -- listed after the parts
+    // whose own elements use it, so a halo part never becomes its owner (the
+    // first part listed; ElmerSolver leaves an owner's dofs to it).
+    std::vector<std::vector<int>> halo_parts(Halo ? bulk_rows.size() : 0);
+    std::vector<std::vector<int>> all_users = users;
+    if (Halo) {
+        std::vector<std::int64_t> side;
+        CellType side_type = CellType::Custom;
+        for (std::size_t i = 0; i < bulk_rows.size(); ++i) {
+            const ElmRow& r = bulk_rows[i];
+            const int own =
+                part_of[static_cast<std::size_t>(element_no[static_cast<std::size_t>(r.mCell)])];
+            std::size_t shared_nodes = 0;
+            for (std::int64_t n : r.mNodes)
+                shared_nodes += users[static_cast<std::size_t>(n)].size() > 1 ? 1 : 0;
+            const int family = r.mCode / 100;
+            const std::size_t need = family == 8 ? 4 : (family >= 5 && family <= 7 ? 3 : 2);
+            if (shared_nodes < need)
+                continue;
+            std::vector<int>& halo = halo_parts[i];
+            for (std::int64_t f = 0; detail::facet_nodes(rMesh, r.mCell, f, side_type, side); ++f) {
+                for (int q : users[static_cast<std::size_t>(side[0] + 1)]) {
+                    if (q == own || std::find(halo.begin(), halo.end(), q) != halo.end())
+                        continue;
+                    bool whole = true;
+                    for (std::int64_t n : side) {
+                        const auto& u = users[static_cast<std::size_t>(n + 1)];
+                        whole = whole && std::binary_search(u.begin(), u.end(), q);
+                    }
+                    if (whole)
+                        halo.push_back(q);
+                }
+            }
+            std::sort(halo.begin(), halo.end());
+            for (int q : halo)
+                for (std::int64_t n : r.mNodes) {
+                    auto& list = all_users[static_cast<std::size_t>(n)];
+                    if (std::find(list.begin(), list.end(), q) == list.end())
+                        list.push_back(q);
+                }
+        }
+        // Owners first (ascending), then the halo parts (ascending).
+        for (std::size_t n = 1; n < all_users.size(); ++n)
+            std::sort(all_users[n].begin() + static_cast<std::ptrdiff_t>(users[n].size()),
+                      all_users[n].end());
+    }
     const fs::path pdir = dir / ("partitioning." + std::to_string(n_parts));
     fs::create_directories(pdir, ec);
     if (!fs::is_directory(pdir, ec))
@@ -63743,11 +64457,18 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         std::map<int, std::int64_t> bulk_types, side_types;
         std::set<std::int64_t> nodes;
         std::int64_t n_elem = 0, n_side = 0, n_shared = 0;
-        for (const ElmRow& r : bulk_rows) {
+        for (std::size_t i = 0; i < bulk_rows.size(); ++i) {
+            const ElmRow& r = bulk_rows[i];
             const std::int64_t no = element_no[static_cast<std::size_t>(r.mCell)];
-            if (part_of[static_cast<std::size_t>(no)] != part)
+            const int owner = part_of[static_cast<std::size_t>(no)];
+            if (owner != part &&
+                (!Halo || !std::binary_search(halo_parts[i].begin(), halo_parts[i].end(), part)))
                 continue;
             elm_append_int(elem_text, no);
+            if (owner != part) {
+                elem_text += '/';
+                elm_append_int(elem_text, owner + 1);
+            }
             elem_text += ' ';
             elm_append_int(elem_text, r.mTag);
             elem_text += ' ';
@@ -63797,7 +64518,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
                 node_text += buf;
             }
             node_text += '\n';
-            const auto& list = users[static_cast<std::size_t>(n)];
+            const auto& list = all_users[static_cast<std::size_t>(n)];
             if (list.size() < 2)
                 continue;
             // `id count owner others`: every part using it but the owner.
@@ -67924,6 +68645,7 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/femap.cpp =====
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
@@ -68268,9 +68990,26 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
                                              static_cast<std::int64_t>(PerLine);
                  ++k)
                 c.Next(pWhat);
+            return count;
         };
         skip_counted(8, "laminate count");
-        skip_counted(5, "property value count");
+        const std::int64_t values = skip_counted(5, "property value count");
+        // Femap 2401 follows the values with as many integers, five to a line
+        // (function references): a repeat of the value count before a line of
+        // several integers.
+        if (c.Remaining() >= 2 && values > 0) {
+            const std::vector<std::string> f = fn_fields(c.Peek());
+            const std::vector<std::string> next = fn_fields(c.Peek(1));
+            std::int64_t count = 0, v = 0;
+            bool ints = next.size() > 1;
+            for (const std::string& t : next)
+                ints = ints && fn_parse_int(t, v);
+            if (f.size() == 1 && fn_parse_int(f[0], count) && count == values && ints) {
+                c.Next("a function count");
+                for (std::int64_t k = 0; k < (values + 4) / 5; ++k)
+                    c.Next("a function reference");
+            }
+        }
         // Outline counts (6.0 and 8.1 on): a line with one integer, then that many lines.
         while (!c.AtEnd()) {
             const std::vector<std::string> f = fn_fields(c.Peek());
@@ -68494,7 +69233,8 @@ Mesh read_femap(const std::string& rPath, const ReadOptions& rOpts) {
     const FnFile f = fn_parse(rPath);
     if (f.mNodeIds.empty())
         throw ReadError("Femap neutral: '" + rPath +
-                        "' holds no nodes (block 403); a results-only file needs its model");
+                        "' holds no nodes (block 403): a geometry-only or results-only file has no "
+                        "mesh to read");
 
     // --- points -----------------------------------------------------------------
     std::unordered_map<std::int64_t, std::int64_t> node_index;
@@ -68783,11 +69523,79 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("regions-dropped", std::to_string(side_regions) +
                                                        " side region(s) have no Femap group");
     }
-    const std::size_t other_data = rMesh.NumPointData() + rMesh.NumFieldData() +
-                                   rMesh.NumCellData() - (has_prop ? 1 : 0) - (has_type ? 1 : 0);
-    if (other_data) {
-        log::warn("Femap neutral writer: results are not written; data arrays dropped");
-        detail::provenance_note("data-dropped", "the Femap neutral writer writes the mesh only");
+    // Results: one output set (450) of vectors (451), a point array per
+    // component as nodal vectors, a cell array per component as elemental ones.
+    struct FnOutVector {
+        std::string mTitle;
+        int mEntity;  // 7 nodes, 8 elements
+        std::vector<std::pair<std::int64_t, double>> mValues;
+    };
+    std::vector<FnOutVector> vectors;
+    std::vector<std::string> unwritable;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (a.Shape().size() > 2 || a.Shape().empty() || a.Shape()[0] != npts) {
+            unwritable.push_back(name);
+            continue;
+        }
+        const std::size_t nc = a.Shape().size() == 2 ? a.Shape()[1] : 1;
+        for (std::size_t c = 0; c < nc; ++c) {
+            FnOutVector v{nc == 1 ? name : name + "_" + std::to_string(c), 7, {}};
+            for (std::size_t p = 0; p < npts; ++p) {
+                const double x = detail::read_double(a, p * nc + c);
+                if (!std::isnan(x))
+                    v.mValues.emplace_back(static_cast<std::int64_t>(p + 1), x);
+            }
+            vectors.push_back(std::move(v));
+        }
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (name.rfind("femap:", 0) == 0)
+            continue;
+        std::size_t nc = 0;
+        bool ok = true;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks() && ok; ++b) {
+            const NDArray& a = rMesh.CellData(name, b);
+            const std::size_t c = a.Shape().size() == 2 ? a.Shape()[1] : 1;
+            ok = a.Shape().size() >= 1 && a.Shape().size() <= 2 &&
+                 a.Shape()[0] == rMesh.Cells(b).NumCells() && (nc == 0 || c == nc);
+            nc = c;
+        }
+        if (!ok || nc == 0) {
+            unwritable.push_back(name);
+            continue;
+        }
+        for (std::size_t c = 0; c < nc; ++c) {
+            FnOutVector v{nc == 1 ? name : name + "_" + std::to_string(c), 8, {}};
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& a = rMesh.CellData(name, b);
+                for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
+                    const std::size_t g = block_start[b] + r;
+                    const double x = detail::read_double(a, r * nc + c);
+                    if (label[g] && !std::isnan(x))
+                        v.mValues.emplace_back(label[g], x);
+                }
+            }
+            vectors.push_back(std::move(v));
+        }
+    }
+    std::int64_t set_id = 1;
+    double set_value = 0.0;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& a = rMesh.FieldData(name);
+        if (name == "femap:set" && a.Size() == 1)
+            set_id = std::max<std::int64_t>(1, detail::read_int(a, 0));
+        else if (name == kSequenceTimeKey && a.Size() == 1)
+            set_value = detail::read_double(a, 0);
+        else
+            unwritable.push_back(name);
+    }
+    if (!unwritable.empty()) {
+        std::string list;
+        for (const std::string& n : unwritable)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Femap neutral writer: arrays with no Femap output vector dropped: {}", list);
+        detail::provenance_note("data-dropped", "arrays with no Femap output vector: " + list);
     }
 
     // Properties: the cells of each, and a title from the cell region the reader
@@ -68945,6 +69753,53 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
                 out += "-1,\n";
             }
             out += "-1,\n";
+        }
+        fn_block_close(out);
+    }
+
+    if (!vectors.empty()) {
+        fn_block_open(out, 450);
+        out += std::to_string(set_id) + ",\nmeshio++\n0,1,\n";
+        fn_append_real(out, set_value);
+        out += ",\n0,\n";
+        fn_block_close(out);
+        fn_block_open(out, 451);
+        for (std::size_t k = 0; k < vectors.size(); ++k) {
+            const FnOutVector& v = vectors[k];
+            double lo = 0.0, hi = 0.0, absmax = 0.0;
+            std::int64_t id_lo = 0, id_hi = 0;
+            for (std::size_t j = 0; j < v.mValues.size(); ++j) {
+                const auto& [id, x] = v.mValues[j];
+                if (j == 0 || x < lo) {
+                    lo = x;
+                    id_lo = id;
+                }
+                if (j == 0 || x > hi) {
+                    hi = x;
+                    id_hi = id;
+                }
+                absmax = std::max(absmax, std::fabs(x));
+            }
+            out += std::to_string(set_id) + "," + std::to_string(k + 1) + ",1,\n" +
+                   fn_clean_title(v.mTitle) + "\n";
+            fn_append_real(out, lo);
+            out += ',';
+            fn_append_real(out, hi);
+            out += ',';
+            fn_append_real(out, absmax);
+            out += ",\n0,0,0,0,0,0,0,0,0,0,\n0,0,0,0,0,0,0,0,0,0,\n";
+            out += std::to_string(id_lo) + "," + std::to_string(id_hi) + ",0," +
+                   std::to_string(v.mEntity) + ",\n0,0,1,\n";
+            for (const auto& [id, x] : v.mValues) {
+                out += std::to_string(id) + ',';
+                fn_append_real(out, x);
+                out += ",\n";
+            }
+            out += "-1,0.,\n";
+            if (out.size() > (1u << 20)) {
+                f << out;
+                out.clear();
+            }
         }
         fn_block_close(out);
     }
@@ -78016,6 +78871,7 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <ios>
 #include <iterator>
@@ -78128,6 +78984,66 @@ const std::vector<std::vector<int>>& lm_sides(LmShape Shape) {
             return none;
     }
 }
+
+// Corner nodes of each edge, libMesh's edge numbering (Hex8::edge_nodes_map ...).
+// A quadratic element's mid-edge node for edge k is node `vertices + k`.
+const std::vector<std::array<int, 2>>& lm_edges(LmShape Shape) {
+    static const std::vector<std::array<int, 2>> none;
+    static const std::vector<std::array<int, 2>> tri = {{0, 1}, {1, 2}, {2, 0}};
+    static const std::vector<std::array<int, 2>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    static const std::vector<std::array<int, 2>> tet = {{0, 1}, {1, 2}, {0, 2},
+                                                        {0, 3}, {1, 3}, {2, 3}};
+    static const std::vector<std::array<int, 2>> hex = {{0, 1}, {1, 2}, {2, 3}, {0, 3},
+                                                        {0, 4}, {1, 5}, {2, 6}, {3, 7},
+                                                        {4, 5}, {5, 6}, {6, 7}, {4, 7}};
+    static const std::vector<std::array<int, 2>> prism = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 4},
+                                                          {2, 5}, {3, 4}, {4, 5}, {3, 5}};
+    static const std::vector<std::array<int, 2>> pyramid = {{0, 1}, {1, 2}, {2, 3}, {0, 3},
+                                                            {0, 4}, {1, 4}, {2, 4}, {3, 4}};
+    switch (Shape) {
+        case LmShape::Tri:
+            return tri;
+        case LmShape::Quad:
+            return quad;
+        case LmShape::Tet:
+            return tet;
+        case LmShape::Hex:
+            return hex;
+        case LmShape::Prism:
+            return prism;
+        case LmShape::Pyramid:
+            return pyramid;
+        default:
+            return none;
+    }
+}
+
+int lm_vertices(LmShape Shape) {
+    switch (Shape) {
+        case LmShape::Point:
+            return 1;
+        case LmShape::Edge:
+            return 2;
+        case LmShape::Tri:
+            return 3;
+        case LmShape::Quad:
+        case LmShape::Tet:
+            return 4;
+        case LmShape::Pyramid:
+            return 5;
+        case LmShape::Prism:
+            return 6;
+        case LmShape::Hex:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+// Region-name suffixes for the sets that are not sides: an edge set's line
+// cells, and a shell face (0 or 1) of 2-D elements.
+constexpr const char* kLmEdgeSuffix = ":edge";
+constexpr const char* kLmShellfaceSuffix = ":shellface";
 
 // --- the value stream ---------------------------------------------------------------
 
@@ -78301,9 +79217,8 @@ struct LmFile {
     std::vector<LmElement> mElements;
     std::vector<double> mCoords;  // 3 per node id
     std::map<std::int64_t, std::string> mSubdomainNames, mSidesetNames, mNodesetNames;
-    std::vector<LmBoundary> mSides;
+    std::vector<LmBoundary> mSides, mEdges, mShellfaces;
     std::vector<std::pair<std::int64_t, std::int64_t>> mNodesets;  // (node, id)
-    std::size_t mSkippedEdgeBcs = 0;
     bool mInlinePLevel = false;
 };
 
@@ -78424,22 +79339,21 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
 
     if (bc_file == "n/a")
         return f;
-    auto read_triples = [&](std::vector<LmBoundary>* pOut) {
-        std::map<std::int64_t, std::string> names;
+    // Side, edge and shell-face sets share one id space, and each repeats the
+    // sideset name map.
+    auto read_triples = [&](std::vector<LmBoundary>& rOut) {
         if (v092)
-            names = lm_name_map(io, hw);
+            f.mSidesetNames.merge(lm_name_map(io, hw));
         const std::int64_t n = io.Scalar(hw);
         for (std::int64_t k = 0; k < n; ++k) {
             LmBoundary b{};
             b.mElem = io.StreamInt(tw);
             b.mSide = io.StreamInt(tw);
             b.mId = io.StreamInt(tw);
-            if (pOut)
-                pOut->push_back(b);
+            rOut.push_back(b);
         }
-        return std::make_pair(names, static_cast<std::size_t>(n));
     };
-    f.mSidesetNames = read_triples(&f.mSides).first;
+    read_triples(f.mSides);
     if (v092) {
         f.mNodesetNames = lm_name_map(io, hw);
         const std::int64_t n = io.Scalar(hw);
@@ -78450,8 +79364,8 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
         }
     }
     if (v110) {
-        f.mSkippedEdgeBcs += read_triples(nullptr).second;  // edge
-        f.mSkippedEdgeBcs += read_triples(nullptr).second;  // shell face
+        read_triples(f.mEdges);
+        read_triples(f.mShellfaces);
     }
     return f;
 }
@@ -78513,13 +79427,167 @@ NDArray lm_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
     return a;
 }
 
+// --- writing --------------------------------------------------------------------------
+
+// libMesh's `Xdr` in WRITE (ASCII) or ENCODE (XDR) mode, the reverse of
+// `LmStream`: a scalar is `value\t # comment`, a vector its length line then
+// `item\t ` per item, bulk data bare values; XDR is big-endian with 4-byte
+// lengths and strings padded to 4 bytes.
+class LmOut {
+public:
+    explicit LmOut(bool Xdr) : mXdr(Xdr) {}
+
+    void String(const std::string& rValue, const char* pComment = "") {
+        if (mXdr) {
+            BinString(rValue);
+            return;
+        }
+        mOut += rValue;
+        Comment(pComment);
+    }
+
+    void Scalar(std::int64_t Value, const char* pComment, int Width = 8) {
+        if (mXdr) {
+            BinInt(Value, Width);
+            return;
+        }
+        mOut += std::to_string(Value);
+        Comment(pComment);
+    }
+
+    void IntVector(const std::vector<std::int64_t>& rValues, const char* pComment = "") {
+        if (mXdr) {
+            BinInt(static_cast<std::int64_t>(rValues.size()), 4);
+            for (std::int64_t v : rValues)
+                BinInt(v, 8);
+            return;
+        }
+        Scalar(static_cast<std::int64_t>(rValues.size()), "# vector length");
+        for (std::int64_t v : rValues)
+            mOut += std::to_string(v) + "\t ";
+        Comment(pComment);
+    }
+
+    void StringVector(const std::vector<std::string>& rValues, const char* pComment = "") {
+        if (mXdr) {
+            BinInt(static_cast<std::int64_t>(rValues.size()), 4);
+            for (const std::string& v : rValues)
+                BinString(v);
+            return;
+        }
+        Scalar(static_cast<std::int64_t>(rValues.size()), "# vector length");
+        for (const std::string& v : rValues)
+            mOut += v + "\t ";
+        Comment(pComment);
+    }
+
+    // `data_stream` of 8-byte integers, one line in ASCII.
+    void Ints(const std::vector<std::int64_t>& rValues) {
+        if (mXdr) {
+            for (std::int64_t v : rValues)
+                BinInt(v, 8);
+            return;
+        }
+        for (std::size_t k = 0; k < rValues.size(); ++k) {
+            if (k)
+                mOut += ' ';
+            mOut += std::to_string(rValues[k]);
+        }
+        mOut += '\n';
+    }
+
+    // `data_stream` of reals, three to a line in ASCII (`%.17e`, as libMesh's
+    // `std::scientific` with `max_digits10`).
+    void Reals(const double* pValues, std::size_t N) {
+        char buf[40];
+        for (std::size_t k = 0; k < N; ++k) {
+            if (mXdr) {
+                std::uint64_t bits = 0;
+                std::memcpy(&bits, &pValues[k], 8);
+                BinInt(static_cast<std::int64_t>(bits), 8);
+                continue;
+            }
+            detail::snprintf_c(buf, sizeof(buf), "%.17e", pValues[k]);
+            mOut += buf;
+            mOut += (k % 3 == 2 || k + 1 == N) ? '\n' : ' ';
+        }
+    }
+
+    const std::string& Data() const { return mOut; }
+
+private:
+    void Comment(const char* pComment) {
+        if (*pComment) {
+            mOut += "\t ";
+            mOut += pComment;
+        }
+        mOut += '\n';
+    }
+
+    void BinInt(std::int64_t Value, int Width) {
+        const std::uint64_t v = static_cast<std::uint64_t>(Value);
+        for (int b = Width - 1; b >= 0; --b)
+            mOut += static_cast<char>((v >> (8 * b)) & 0xff);
+    }
+
+    void BinString(const std::string& rValue) {
+        BinInt(static_cast<std::int64_t>(rValue.size()), 4);
+        mOut += rValue;
+        mOut.append((4 - rValue.size() % 4) % 4, '\0');
+    }
+
+    bool mXdr;
+    std::string mOut;
+};
+
+// meshio++ type -> libMesh ElemType, for the types libMesh stores as they are.
+int lm_code(std::string_view Type) {
+    static const std::pair<const char*, int> codes[] = {
+        {"line", 0},          {"line3", 1},      {"line4", 2},       {"triangle", 3},
+        {"triangle6", 4},     {"quad", 5},       {"quad8", 6},       {"quad9", 7},
+        {"tetra", 8},         {"tetra10", 9},    {"hexahedron", 10}, {"hexahedron20", 11},
+        {"hexahedron27", 12}, {"wedge", 13},     {"wedge15", 14},    {"wedge18", 15},
+        {"pyramid", 16},      {"pyramid13", 17}, {"pyramid14", 18},  {"vertex", 27},
+        {"triangle7", 33},
+    };
+    for (const auto& [name, code] : codes)
+        if (Type == name)
+            return code;
+    return -1;
+}
+
+bool lm_ends_with(const std::string& rName, std::string_view Suffix) {
+    return rName.size() > Suffix.size() &&
+           rName.compare(rName.size() - Suffix.size(), Suffix.size(), Suffix) == 0;
+}
+
+// A shell-face region's face (0 or 1) and base name, else -1.
+int lm_shellface(const std::string& rName, std::string* pBase) {
+    for (int k = 0; k < 2; ++k)
+        if (lm_ends_with(rName, std::string(kLmShellfaceSuffix) + std::to_string(k))) {
+            if (pBase)
+                *pBase =
+                    rName.substr(0, rName.size() - std::string_view(kLmShellfaceSuffix).size() - 1);
+            return k;
+        }
+    return -1;
+}
+
 }  // namespace
 
 Mesh read_libmesh(const std::string& rPath) {
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("libMesh: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // libMesh writes `.xda.gz`/`.xdr.gz` through gzip and `.bz2` through bzip2.
+    if (text.size() >= 2 && static_cast<unsigned char>(text[0]) == 0x1f &&
+        static_cast<unsigned char>(text[1]) == 0x8b)
+        text = detail::zlib_inflate(text, 15 + 16, nullptr, kLmWhat);
+    else if (text.compare(0, 3, "BZh") == 0)
+        throw ReadError("libMesh: " + rPath +
+                        " is bzip2-compressed; the native reader inflates only gzip (the "
+                        "Python reader inflates both)");
 
     // XDR starts with the version string's 4-byte big-endian length; ASCII with
     // the version text itself.
@@ -78630,6 +79698,68 @@ Mesh read_libmesh(const std::string& rPath) {
     }
     if (block_types.empty())
         return mesh;
+
+    // Edge sets -> line cells (the element's edge corners, plus its mid-edge
+    // node when it is quadratic), shared by every set naming that edge. They
+    // are not libMesh elements: their subdomain (and level, p-level) is -1.
+    std::map<std::int64_t, std::set<std::int64_t>> by_edge_set;
+    if (!f.mEdges.empty()) {
+        std::map<std::vector<std::int64_t>, std::pair<int, std::size_t>> seen;
+        std::vector<std::int64_t> rows[2];  // line, line3
+        std::size_t unmatched = 0;
+        std::vector<std::pair<std::int64_t, std::pair<int, std::size_t>>> members;
+        for (const LmBoundary& b : f.mEdges) {
+            if (b.mElem < 0 || static_cast<std::size_t>(b.mElem) >= ne) {
+                ++unmatched;
+                continue;
+            }
+            const LmElement& el = f.mElements[static_cast<std::size_t>(b.mElem)];
+            const auto& edges = lm_edges(el.mType->mShape);
+            if (b.mSide < 0 || static_cast<std::size_t>(b.mSide) >= edges.size()) {
+                ++unmatched;
+                continue;
+            }
+            const std::size_t k = static_cast<std::size_t>(b.mSide);
+            const std::size_t nv = static_cast<std::size_t>(lm_vertices(el.mType->mShape));
+            std::vector<std::int64_t> row;
+            for (int c : edges[k])
+                row.push_back(
+                    node_index[static_cast<std::size_t>(el.mNodes[static_cast<std::size_t>(c)])]);
+            if (el.mNodes.size() >= nv + edges.size())
+                row.push_back(node_index[static_cast<std::size_t>(el.mNodes[nv + k])]);
+            std::vector<std::int64_t> key = row;
+            std::sort(key.begin(), key.end());
+            const int kind = row.size() == 3 ? 1 : 0;
+            auto [it, fresh] =
+                seen.emplace(key, std::make_pair(kind, rows[kind].size() / (2 + kind)));
+            if (fresh)
+                rows[kind].insert(rows[kind].end(), row.begin(), row.end());
+            members.emplace_back(b.mId, it->second);
+        }
+        std::size_t first[2] = {0, 0};
+        for (int kind = 0; kind < 2; ++kind) {
+            const std::size_t width = static_cast<std::size_t>(2 + kind);
+            const std::size_t n = rows[kind].size() / width;
+            if (n == 0)
+                continue;
+            first[kind] = static_cast<std::size_t>(next_cell);
+            NDArray conn(DType::Int64, {n, width});
+            std::copy(rows[kind].begin(), rows[kind].end(), conn.As<std::int64_t>());
+            mesh.AddCellBlock(kind ? "line3" : "line", std::move(conn));
+            NDArray none(DType::Int64, {n});
+            std::fill(none.As<std::int64_t>(), none.As<std::int64_t>() + n, -1);
+            sid_blocks.push_back(none);
+            level_blocks.push_back(none);
+            p_blocks.push_back(std::move(none));
+            next_cell += static_cast<std::int64_t>(n);
+            cell_dim.insert(cell_dim.end(), n, 1);
+        }
+        for (const auto& [id, at] : members)
+            by_edge_set[id].insert(static_cast<std::int64_t>(first[at.first] + at.second));
+        if (unmatched)
+            log::warn("libMesh: {} edge boundary condition(s) name no element edge and are skipped",
+                      unmatched);
+    }
     mesh.AddCellData("libmesh:subdomain", std::move(sid_blocks));
     if (max_level > 0)
         mesh.AddCellData("libmesh:level", std::move(level_blocks));
@@ -78767,6 +79897,54 @@ Mesh read_libmesh(const std::string& rPath) {
         }
     }
 
+    // Edge sets -> cell regions on their line cells.
+    auto set_name = [&](std::int64_t id) {
+        const auto name = f.mSidesetNames.find(id);
+        return name != f.mSidesetNames.end() ? name->second : "boundary_" + std::to_string(id);
+    };
+    for (const auto& [id, cells] : by_edge_set)
+        mesh.AddRegion(Region(set_name(id) + kLmEdgeSuffix, RegionKind::Cell, 1, id,
+                              lm_ids(std::vector<std::int64_t>(cells.begin(), cells.end()))));
+
+    // Shell-face sets -> cell regions `<name>:shellface<k>` on the 2-D cells
+    // (a refined element's face is carried to all its active descendants).
+    if (!f.mShellfaces.empty()) {
+        std::map<std::pair<std::int64_t, std::int64_t>, std::set<std::int64_t>> by_face;
+        std::size_t unmatched = 0;
+        for (const LmBoundary& b : f.mShellfaces) {
+            if (b.mElem < 0 || static_cast<std::size_t>(b.mElem) >= ne || b.mSide < 0 ||
+                b.mSide > 1) {
+                ++unmatched;
+                continue;
+            }
+            std::set<std::int64_t>& cells = by_face[{b.mId, b.mSide}];
+            std::vector<std::size_t> stack{static_cast<std::size_t>(b.mElem)};
+            while (!stack.empty()) {
+                const std::size_t e = stack.back();
+                stack.pop_back();
+                if (!active[e]) {
+                    stack.insert(stack.end(), children[e].begin(), children[e].end());
+                    continue;
+                }
+                if (cell_of[e] >= 0 && cell_dim[static_cast<std::size_t>(cell_of[e])] == 2)
+                    cells.insert(cell_of[e]);
+                else
+                    ++unmatched;
+            }
+        }
+        if (unmatched)
+            log::warn(
+                "libMesh: {} shell-face boundary condition(s) name no 2-D element and are "
+                "skipped",
+                unmatched);
+        for (const auto& [key, cells] : by_face)
+            if (!cells.empty())
+                mesh.AddRegion(
+                    Region(set_name(key.first) + kLmShellfaceSuffix + std::to_string(key.second),
+                           RegionKind::Cell, 2, key.first,
+                           lm_ids(std::vector<std::int64_t>(cells.begin(), cells.end()))));
+    }
+
     // Node sets -> point regions.
     std::map<std::int64_t, std::vector<std::int64_t>> by_nodeset;
     for (const auto& [node, id] : f.mNodesets)
@@ -78779,9 +79957,396 @@ Mesh read_libmesh(const std::string& rPath) {
             Region(name != f.mNodesetNames.end() ? name->second : "nodeset_" + std::to_string(id),
                    RegionKind::Point, -1, id, lm_ids(pts_in)));
     }
-    if (f.mSkippedEdgeBcs)
-        log::warn("libMesh: {} edge/shell-face boundary condition(s) skipped", f.mSkippedEdgeBcs);
     return mesh;
+}
+
+void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
+    std::string lower;
+    for (char c : rPath)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lm_ends_with(lower, ".gz") || lm_ends_with(lower, ".bz2"))
+        throw WriteError("libMesh: the native writer does not compress; write " +
+                         rPath.substr(0, rPath.rfind('.')) +
+                         " and compress it (the Python writer does both)");
+    const bool xdr = lm_ends_with(lower, ".xdr");
+
+    // Cells: global (block-major) offsets and each cell's dimension.
+    const std::size_t nb = rMesh.NumCellBlocks();
+    std::vector<std::size_t> start{0};
+    std::vector<int> block_dim(nb, -1);
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        start.push_back(start.back() + cb.NumCells());
+        block_dim[b] = cell_type_dimension(cell_type_from_name(std::string(cb.Type())));
+    }
+    const std::size_t ncells = start.back();
+    auto block_of = [&](std::int64_t Cell) {
+        return static_cast<std::size_t>(
+            std::upper_bound(start.begin(), start.end(), static_cast<std::size_t>(Cell)) -
+            start.begin() - 1);
+    };
+    auto dim_of = [&](std::int64_t Cell) { return block_dim[block_of(Cell)]; };
+
+    // Region roles: edge sets and shell faces (by name suffix), side sets,
+    // node sets, and the remaining cell regions as subdomains.
+    std::vector<const Region*> edge_sets, shell_sets, side_sets, node_sets, subdomains;
+    std::vector<bool> placeholder(ncells, false);  // an edge set's line cells
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        const std::int64_t* e = reg.mEntries.As<std::int64_t>();
+        const std::size_t n = reg.mEntries.Size();
+        if (reg.mKind == RegionKind::Side) {
+            side_sets.push_back(&reg);
+            continue;
+        }
+        if (reg.mKind == RegionKind::Point) {
+            node_sets.push_back(&reg);
+            continue;
+        }
+        bool valid = true;
+        for (std::size_t k = 0; k < n; ++k)
+            valid = valid && e[k] >= 0 && static_cast<std::size_t>(e[k]) < ncells;
+        auto all_dim = [&](int Dim) {
+            for (std::size_t k = 0; k < n; ++k)
+                if (dim_of(e[k]) != Dim)
+                    return false;
+            return true;
+        };
+        if (valid && n && lm_ends_with(reg.mName, kLmEdgeSuffix) && all_dim(1)) {
+            edge_sets.push_back(&reg);
+            for (std::size_t k = 0; k < n; ++k)
+                placeholder[static_cast<std::size_t>(e[k])] = true;
+        } else if (valid && n && lm_shellface(reg.mName, nullptr) >= 0 && all_dim(2)) {
+            shell_sets.push_back(&reg);
+        } else if (valid) {
+            subdomains.push_back(&reg);
+        }
+    }
+
+    // Elements: every cell libMesh has a type for, in cell order.
+    struct LmOutElem {
+        int mCode;
+        std::int64_t mCell;
+        std::vector<std::int64_t> mNodes;  // point indices, libMesh order
+    };
+    std::vector<LmOutElem> elems;
+    std::vector<std::int64_t> elem_of(ncells, -1);
+    std::map<std::string, std::size_t> dropped;
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const int code = cb.IsRagged() ? -1 : lm_code(type);
+        if (code < 0) {
+            if (cb.NumCells())
+                dropped[type] += cb.NumCells();
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        const detail::NodeOrder* order = detail::node_order("libmesh", type);
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            const std::size_t g = start[b] + r;
+            if (placeholder[g])
+                continue;
+            LmOutElem el{code, static_cast<std::int64_t>(g), {}};
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
+                el.mNodes.push_back(detail::read_int(conn, r * k + src));
+            }
+            elem_of[g] = static_cast<std::int64_t>(elems.size());
+            elems.push_back(std::move(el));
+        }
+    }
+    for (const auto& [type, count] : dropped) {
+        log::warn("libMesh: {} '{}' cell(s) have no libMesh element type and are dropped", count,
+                  type);
+        detail::provenance_note("cells-dropped", std::to_string(count) + " '" + type +
+                                                     "' cell(s) have no libMesh element type");
+    }
+
+    // Node ids: `libmesh:id` when it is a valid numbering, else the point index.
+    const std::size_t np = rMesh.NumPoints();
+    std::vector<std::int64_t> node_id(np);
+    for (std::size_t p = 0; p < np; ++p)
+        node_id[p] = static_cast<std::int64_t>(p);
+    std::int64_t max_node_id = static_cast<std::int64_t>(np);
+    if (rMesh.HasPointData("libmesh:id")) {
+        const NDArray& ids = rMesh.PointData("libmesh:id");
+        std::set<std::int64_t> unique;
+        std::vector<std::int64_t> v(np);
+        bool ok = ids.Size() == np;
+        for (std::size_t p = 0; ok && p < np; ++p) {
+            v[p] = detail::read_int(ids, p);
+            ok = v[p] >= 0 && unique.insert(v[p]).second;
+        }
+        if (ok) {
+            node_id = std::move(v);
+            max_node_id = np ? *unique.rbegin() + 1 : 0;
+        }
+    }
+
+    // Subdomain ids: `libmesh:subdomain`, else the first cell region holding
+    // the cell (its tag, or a fresh id), else 0.
+    std::vector<std::int64_t> sid(ncells, 0);
+    std::map<std::int64_t, std::string> subdomain_names;
+    if (rMesh.HasCellData("libmesh:subdomain")) {
+        for (std::size_t b = 0; b < nb; ++b)
+            for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r)
+                sid[start[b] + r] = detail::read_int(rMesh.CellData("libmesh:subdomain", b), r);
+        for (const Region* pReg : subdomains)
+            if (pReg->mTag >= 0 && pReg->mName != "subdomain_" + std::to_string(pReg->mTag))
+                subdomain_names.emplace(pReg->mTag, pReg->mName);
+    } else {
+        std::int64_t next = 0;
+        for (const Region* pReg : subdomains)
+            next = std::max(next, pReg->mTag + 1);
+        std::vector<bool> assigned(ncells, false);
+        for (const Region* pReg : subdomains) {
+            const std::int64_t id = pReg->mTag >= 0 ? pReg->mTag : next++;
+            const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+            for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k) {
+                const std::size_t c = static_cast<std::size_t>(e[k]);
+                if (!assigned[c]) {
+                    assigned[c] = true;
+                    sid[c] = id;
+                }
+            }
+            if (pReg->mName != "subdomain_" + std::to_string(id))
+                subdomain_names.emplace(id, pReg->mName);
+        }
+    }
+    for (const LmOutElem& el : elems)
+        if (sid[static_cast<std::size_t>(el.mCell)] < 0 ||
+            sid[static_cast<std::size_t>(el.mCell)] > 65534)
+            throw WriteError("libMesh: subdomain id " +
+                             std::to_string(sid[static_cast<std::size_t>(el.mCell)]) +
+                             " is outside libMesh's 0..65534");
+    const bool write_p = rMesh.HasCellData("libmesh:p_level");
+
+    // Boundary ids: one id space for side, edge and shell-face sets.
+    std::int64_t next_bid = 0;
+    for (const auto* pList : {&side_sets, &edge_sets, &shell_sets})
+        for (const Region* pReg : *pList)
+            next_bid = std::max(next_bid, pReg->mTag + 1);
+    std::map<const Region*, std::int64_t> bid;
+    std::map<std::int64_t, std::string> sideset_names;
+    auto boundary_id = [&](const Region* pReg, const std::string& rBase) {
+        auto it = bid.find(pReg);
+        if (it != bid.end())
+            return it->second;
+        const std::int64_t id = pReg->mTag >= 0 ? pReg->mTag : next_bid++;
+        bid.emplace(pReg, id);
+        if (rBase != "boundary_" + std::to_string(id))
+            sideset_names.emplace(id, rBase);
+        return id;
+    };
+
+    // Side sets: (element, libMesh side, id), matched by the facet's corners.
+    std::set<std::array<std::int64_t, 3>> sides;
+    std::size_t sides_lost = 0;
+    for (const Region* pReg : side_sets) {
+        const std::int64_t id = boundary_id(pReg, pReg->mName);
+        const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+        for (std::size_t k = 0; k + 1 < pReg->mEntries.Size(); k += 2) {
+            CellType ftype{};
+            std::vector<std::int64_t> fnodes;
+            if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= ncells ||
+                elem_of[static_cast<std::size_t>(e[k])] < 0 ||
+                !detail::facet_nodes(rMesh, e[k], e[k + 1], ftype, fnodes)) {
+                ++sides_lost;
+                continue;
+            }
+            const LmOutElem& el =
+                elems[static_cast<std::size_t>(elem_of[static_cast<std::size_t>(e[k])])];
+            const std::string& fname = cell_type_name(ftype);
+            const std::size_t corners = cell_type_dimension(ftype) == 1   ? 2
+                                        : fname.rfind("triangle", 0) == 0 ? 3
+                                                                          : 4;
+            fnodes.resize(std::min(corners, fnodes.size()));
+            std::sort(fnodes.begin(), fnodes.end());
+            const auto& table = lm_sides(lm_type(static_cast<std::uint64_t>(el.mCode))->mShape);
+            bool found = false;
+            for (std::size_t s = 0; s < table.size() && !found; ++s) {
+                std::vector<std::int64_t> key;
+                for (int c : table[s])
+                    key.push_back(el.mNodes[static_cast<std::size_t>(c)]);
+                std::sort(key.begin(), key.end());
+                if (key == fnodes) {
+                    sides.insert({elem_of[static_cast<std::size_t>(e[k])],
+                                  static_cast<std::int64_t>(s), id});
+                    found = true;
+                }
+            }
+            if (!found)
+                ++sides_lost;
+        }
+    }
+
+    // Edge sets: each line cell on the first element holding that edge.
+    std::set<std::array<std::int64_t, 3>> edges;
+    std::size_t edges_lost = 0;
+    if (!edge_sets.empty()) {
+        std::map<std::pair<std::int64_t, std::int64_t>, std::pair<std::int64_t, std::int64_t>>
+            edge_owner;
+        for (std::size_t i = 0; i < elems.size(); ++i) {
+            const auto& table =
+                lm_edges(lm_type(static_cast<std::uint64_t>(elems[i].mCode))->mShape);
+            for (std::size_t k = 0; k < table.size(); ++k) {
+                std::int64_t a = elems[i].mNodes[static_cast<std::size_t>(table[k][0])];
+                std::int64_t b = elems[i].mNodes[static_cast<std::size_t>(table[k][1])];
+                edge_owner.emplace(
+                    std::make_pair(std::min(a, b), std::max(a, b)),
+                    std::make_pair(static_cast<std::int64_t>(i), static_cast<std::int64_t>(k)));
+            }
+        }
+        for (const Region* pReg : edge_sets) {
+            const std::string base =
+                pReg->mName.substr(0, pReg->mName.size() - std::string_view(kLmEdgeSuffix).size());
+            const std::int64_t id = boundary_id(pReg, base);
+            const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+            for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k) {
+                const std::size_t b = block_of(e[k]);
+                const NDArray& conn = rMesh.Cells(b).Conn();
+                const std::size_t w = rMesh.Cells(b).NodesPerCell();
+                const std::size_t r = static_cast<std::size_t>(e[k]) - start[b];
+                const std::int64_t n0 = detail::read_int(conn, r * w);
+                const std::int64_t n1 = detail::read_int(conn, r * w + 1);
+                const auto it = edge_owner.find({std::min(n0, n1), std::max(n0, n1)});
+                if (it == edge_owner.end()) {
+                    ++edges_lost;
+                    continue;
+                }
+                edges.insert({it->second.first, it->second.second, id});
+            }
+        }
+    }
+
+    // Shell faces.
+    std::set<std::array<std::int64_t, 3>> shellfaces;
+    for (const Region* pReg : shell_sets) {
+        std::string base;
+        const int face = lm_shellface(pReg->mName, &base);
+        const std::int64_t id = boundary_id(pReg, base);
+        const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+        for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k)
+            if (elem_of[static_cast<std::size_t>(e[k])] >= 0)
+                shellfaces.insert({elem_of[static_cast<std::size_t>(e[k])], face, id});
+    }
+    if (sides_lost || edges_lost) {
+        log::warn(
+            "libMesh: {} side and {} edge set entries match no written element and are "
+            "dropped",
+            sides_lost, edges_lost);
+        detail::provenance_note("regions-dropped",
+                                std::to_string(sides_lost + edges_lost) +
+                                    " side/edge set entries match no libMesh element");
+    }
+
+    // Node sets.
+    std::int64_t next_nid = 0;
+    for (const Region* pReg : node_sets)
+        next_nid = std::max(next_nid, pReg->mTag + 1);
+    std::set<std::array<std::int64_t, 2>> nodesets;
+    std::map<std::int64_t, std::string> nodeset_names;
+    for (const Region* pReg : node_sets) {
+        const std::int64_t id = pReg->mTag >= 0 ? pReg->mTag : next_nid++;
+        if (pReg->mName != "nodeset_" + std::to_string(id))
+            nodeset_names.emplace(id, pReg->mName);
+        const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+        for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k)
+            if (e[k] >= 0 && static_cast<std::size_t>(e[k]) < np)
+                nodesets.insert({node_id[static_cast<std::size_t>(e[k])], id});
+    }
+    const bool bcs = !sides.empty() || !edges.empty() || !shellfaces.empty() || !nodesets.empty();
+
+    // The stream, as XdrIO::write lays it out (libMesh-1.8.0, 8-byte ids).
+    LmOut io(xdr);
+    io.String("libMesh-1.8.0");
+    io.Scalar(static_cast<std::int64_t>(elems.size()), "# number of elements");
+    io.Scalar(max_node_id, "# number of nodes");
+    io.String(bcs ? "." : "n/a", "# boundary condition specification file");
+    io.String(".", "# subdomain id specification file");
+    io.String("n/a", "# processor id specification file");
+    io.String(write_p ? "." : "n/a", "# p-level specification file");
+    io.Scalar(8, "# type size");
+    io.Scalar(0, "# uid size");
+    io.Scalar(0, "# pid size");
+    io.Scalar(8, "# sid size");
+    io.Scalar(write_p ? 8 : 0, "# p-level size");
+    io.Scalar(bcs ? 8 : 0, "# eid size");
+    io.Scalar(bcs ? 8 : 0, "# side size");
+    io.Scalar(bcs ? 8 : 0, "# bid size");
+    io.Scalar(0, "# extra integer size");
+    io.StringVector({}, "# node integer names");
+    io.StringVector({}, "# elem integer names");
+    io.IntVector({}, "# elemset codes");
+
+    auto name_map = [&](const std::map<std::int64_t, std::string>& rNames, const char* pComment) {
+        io.Scalar(static_cast<std::int64_t>(rNames.size()), pComment);
+        if (rNames.empty())
+            return;
+        std::vector<std::int64_t> ids;
+        std::vector<std::string> names;
+        for (const auto& [id, name] : rNames) {
+            ids.push_back(id);
+            names.push_back(name);
+        }
+        io.IntVector(ids);
+        io.StringVector(names);
+    };
+    name_map(subdomain_names, "# subdomain id to name map");
+
+    if (!elems.empty()) {
+        const std::string legend = std::string("# n_elem at level 0, [ type sid ") +
+                                   (write_p ? "p_level " : "") + "(n0 ... nN-1) ]";
+        io.Scalar(static_cast<std::int64_t>(elems.size()), legend.c_str());
+    }
+    for (const LmOutElem& el : elems) {
+        const std::size_t c = static_cast<std::size_t>(el.mCell);
+        std::vector<std::int64_t> rec{el.mCode, sid[c]};
+        if (write_p) {
+            const std::size_t b = block_of(el.mCell);
+            rec.push_back(detail::read_int(rMesh.CellData("libmesh:p_level", b), c - start[b]));
+        }
+        for (std::int64_t n : el.mNodes)
+            rec.push_back(node_id[static_cast<std::size_t>(n)]);
+        io.Ints(rec);
+    }
+
+    // Unused node ids: NaN in XDR, as libMesh writes them; 0 in ASCII, where
+    // libMesh's `>>` cannot read back the `nan` it writes (it only loads nodes
+    // elements use, so the value is never looked at).
+    std::vector<double> coords(3 * static_cast<std::size_t>(max_node_id),
+                               xdr ? std::numeric_limits<double>::quiet_NaN() : 0.0);
+    const NDArray& pts = rMesh.Points();
+    const std::size_t pd = rMesh.PointDim();
+    for (std::size_t p = 0; p < np; ++p)
+        for (std::size_t d = 0; d < 3; ++d)
+            coords[3 * static_cast<std::size_t>(node_id[p]) + d] =
+                d < pd ? detail::read_double(pts, p * pd + d) : 0.0;
+    io.Reals(coords.data(), coords.size());
+    io.Scalar(0, "# presence of unique ids", 4);
+
+    auto triples = [&](const std::set<std::array<std::int64_t, 3>>& rSet, const char* pComment) {
+        name_map(sideset_names, "# sideset id to name map");
+        io.Scalar(static_cast<std::int64_t>(rSet.size()), pComment);
+        for (const auto& t : rSet)
+            io.Ints({t[0], t[1], t[2]});
+    };
+    triples(sides, "# number of side boundary conditions");
+    name_map(nodeset_names, "# nodeset id to name map");
+    io.Scalar(static_cast<std::int64_t>(nodesets.size()), "# number of nodesets");
+    for (const auto& t : nodesets)
+        io.Ints({t[0], t[1]});
+    triples(edges, "# number of edge boundary conditions");
+    triples(shellfaces, "# number of shellface boundary conditions");
+
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("libMesh: cannot open " + rPath + " for writing");
+    out.write(io.Data().data(), static_cast<std::streamsize>(io.Data().size()));
+    if (!out)
+        throw WriteError("libMesh: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus
@@ -86237,9 +87802,11 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/mfem.cpp =====
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <ios>
 #include <iterator>
 #include <limits>
@@ -86381,6 +87948,14 @@ const std::vector<std::vector<int>>& mf_slots(std::string_view Type) {
 }
 
 int mf_geom_of_type(std::string_view Type) {
+    // VTK Lagrange cells of any order: written as order-p H1 nodes.
+    static const std::pair<std::string_view, int> kLagrange[] = {
+        {"VTK_LAGRANGE_CURVE", 1},         {"VTK_LAGRANGE_TRIANGLE", 2},
+        {"VTK_LAGRANGE_QUADRILATERAL", 3}, {"VTK_LAGRANGE_TETRAHEDRON", 4},
+        {"VTK_LAGRANGE_HEXAHEDRON", 5},    {"VTK_LAGRANGE_WEDGE", 6}};
+    for (const auto& [name, geom] : kLagrange)
+        if (Type == name)
+            return geom;
     // Serendipity and quadratic pyramids: written by completing them (or as
     // their corners); never read.
     if (Type == "quad8")
@@ -86670,6 +88245,9 @@ std::string mf_read_text(const std::string& rPath, const char* pWhat) {
 // A finite element space, as a `FiniteElementSpace` header names it.
 struct MfSpace {
     enum Kind { H1, H1Other, L2T1, L2, Other } mKind = Other;
+    // An H1 space's nodes: Gauss-Lobatto (the default), equispaced (`H1@U`), or
+    // the legacy `Cubic` collection (equispaced, its own hexahedron interior).
+    enum Points { Gll, Uniform, Cubic } mPoints = Gll;
     int mOrder = -1;
     std::string mCollection;
     int mVDim = 1;
@@ -86693,13 +88271,21 @@ MfSpace mf_classify(const std::string& rName) {
     } else if (rName == "Quadratic") {
         s.mKind = MfSpace::H1;
         s.mOrder = 2;
-    } else if (rName == "QuadraticPos" || rName == "Cubic") {
+    } else if (rName == "Cubic") {
+        s.mKind = MfSpace::H1;
+        s.mOrder = 3;
+        s.mPoints = MfSpace::Cubic;
+    } else if (rName == "QuadraticPos") {
         s.mKind = MfSpace::H1Other;
-        s.mOrder = rName == "Cubic" ? 3 : 2;
+        s.mOrder = 2;
     } else if (rName.rfind("H1_", 0) == 0 || rName.rfind("H1@", 0) == 0) {
         s.mOrder = order_after_P();
-        // Gauss-Lobatto (the default) and equispaced points coincide up to order 2.
-        s.mKind = s.mOrder >= 1 && s.mOrder <= 2 ? MfSpace::H1 : MfSpace::H1Other;
+        // Gauss-Lobatto (the default) and equispaced (`H1@U`) points are read at
+        // any order; they coincide up to order 2, where any closed basis is.
+        const char basis = rName[2] == '@' && rName.size() > 3 ? rName[3] : 'G';
+        s.mPoints = basis == 'U' ? MfSpace::Uniform : MfSpace::Gll;
+        const bool nodal = basis == 'G' || basis == 'U' || s.mOrder <= 2;
+        s.mKind = s.mOrder >= 1 && nodal ? MfSpace::H1 : MfSpace::H1Other;
     } else if (rName.rfind("H1Pos_", 0) == 0 || rName.rfind("H1Ser_", 0) == 0) {
         s.mOrder = order_after_P();
         s.mKind = s.mOrder == 1 ? MfSpace::H1 : MfSpace::H1Other;
@@ -86768,6 +88354,14 @@ struct MfAttributeSet {
 };
 
 struct MfFile {
+    bool mNonConforming = false;  // read from an `MFEM NC mesh`: its leaves
+    // One rank of a parallel mesh (ParMesh::Print): its rank (group 0's only
+    // member), and per communication group its ranks and shared vertices
+    // (local ids, in the order every rank of the group lists them).
+    bool mParallel = false;
+    std::int64_t mRank = 0;
+    std::vector<std::vector<std::int64_t>> mGroups;
+    std::vector<std::vector<std::int64_t>> mGroupVertices;
     int mDim = -1;
     std::vector<MfElement> mElements;
     std::vector<MfElement> mBoundary;
@@ -86824,12 +88418,275 @@ std::vector<MfAttributeSet> mf_read_sets(MfLexer& rLex) {
     return out;
 }
 
+// An `MFEM NC mesh` (ncmesh.cpp's NCMesh::Print): the refinement tree, read as
+// its leaf elements. Rows are `rank attribute geometry ref_type` then the
+// vertices (a leaf) or the children (refined); `-1` after the attribute marks an
+// unused slot. Top-level vertices are the `coordinates`; every other vertex is
+// placed between its two `vertex_parents` (at the v1.1 scale, else halfway).
+// Only the leaves of the file's own rank are kept.
+MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
+    const auto& geoms = mf_geoms();
+    MfFile f;
+    f.mNonConforming = true;
+    struct NcElement {
+        std::int64_t mRank = 0, mAttribute = 0;
+        int mGeom = -1, mRefType = 0;
+        std::vector<std::int64_t> mIds;
+        std::size_t mLine = 0;
+    };
+    std::vector<NcElement> elements;
+    std::map<std::int64_t, std::pair<std::pair<std::int64_t, std::int64_t>, double>> parents;
+    std::vector<double> top;  // top-level coordinates, 3 per node
+    std::size_t top_count = 0;
+    std::int64_t my_rank = 0;
+    int sdim = 0;
+    bool have_coordinates = false;
+    while (!rLex.AtEnd()) {
+        const MfToken& t = rLex.Next("a section");
+        if (t.mText == "dimension") {
+            const std::int64_t d = rLex.Int("a dimension");
+            if (d < 1 || d > 3)
+                rLex.Fail("dimension " + std::to_string(d) + " (1, 2 or 3)", t.mLine);
+            f.mDim = static_cast<int>(d);
+        } else if (t.mText == "rank") {
+            my_rank = rLex.Int("a rank");
+        } else if (t.mText == "sfc_version") {
+            rLex.Int("an SFC version");
+        } else if (t.mText == "elements") {
+            const std::int64_t n = rLex.Int("an element count");
+            if (n < 0)
+                rLex.Fail("negative element count", t.mLine);
+            elements.resize(static_cast<std::size_t>(n));
+            for (NcElement& el : elements) {
+                el.mLine = rLex.Line();
+                el.mRank = rLex.Int("a rank");
+                el.mAttribute = rLex.Int("an attribute");
+                const std::int64_t geom = rLex.Int("a geometry type");
+                if (geom == -1)
+                    continue;  // an unused slot
+                if (geom < 1 || geom > 7)
+                    rLex.Fail("unknown geometry type " + std::to_string(geom), el.mLine);
+                el.mGeom = static_cast<int>(geom);
+                el.mRefType = static_cast<int>(rLex.Int("a refinement type"));
+                // The rest of the row: the vertices, or as many children as it lists.
+                while (!rLex.AtEnd() && rLex.Peek().mLine == el.mLine)
+                    el.mIds.push_back(rLex.Int("a node or child"));
+                if (el.mRefType == 0 &&
+                    el.mIds.size() != geoms[static_cast<std::size_t>(geom)].mNumVertices)
+                    rLex.Fail(
+                        "a leaf element lists " + std::to_string(el.mIds.size()) + " vertices",
+                        el.mLine);
+            }
+        } else if (t.mText == "boundary") {
+            f.mBoundary = mf_read_elements(rLex, "boundary element");
+        } else if (t.mText == "vertex_parents") {
+            const std::int64_t n = rLex.Int("a vertex count");
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t id = rLex.Int("a vertex");
+                const std::int64_t p1 = rLex.Int("a parent");
+                const std::int64_t p2 = rLex.Int("a parent");
+                const double scale = Scaled ? rLex.Real("a scale") : 0.5;
+                parents[id] = {{p1, p2}, scale};
+            }
+        } else if (t.mText == "root_state") {
+            const std::int64_t n = rLex.Int("a root count");
+            for (std::int64_t k = 0; k < n; ++k)
+                rLex.Int("a root state");
+        } else if (t.mText == "coordinates") {
+            const std::int64_t n = rLex.Int("a vertex count");
+            if (n < 0)
+                rLex.Fail("negative vertex count", t.mLine);
+            top_count = static_cast<std::size_t>(n);
+            if (n > 0) {
+                const std::int64_t sd = rLex.Int("a space dimension");
+                if (sd < 1 || sd > 3)
+                    rLex.Fail("space dimension " + std::to_string(sd) + " (1, 2 or 3)", t.mLine);
+                sdim = static_cast<int>(sd);
+                top.assign(top_count * 3, 0.0);
+                for (std::size_t k = 0; k < top_count; ++k)
+                    for (int c = 0; c < sdim; ++c)
+                        top[3 * k + static_cast<std::size_t>(c)] = rLex.Real("a coordinate");
+            }
+            have_coordinates = true;
+        } else if (t.mText == "nodes") {
+            rLex.Fail("curved non-conforming meshes (a 'nodes' section) are not supported",
+                      t.mLine);
+        } else if (t.mText == "mfem_mesh_end" || t.mText == "mfem_serial_mesh_end") {
+            break;
+        } else {
+            rLex.Fail("unexpected '" + t.mText + "'", t.mLine);
+        }
+    }
+    if (f.mDim < 0)
+        throw ReadError("MFEM mesh: no dimension section in " + rPath);
+    if (!have_coordinates)
+        throw ReadError("MFEM mesh: the non-conforming mesh " + rPath +
+                        " has no top-level coordinates");
+
+    // Leaves, depth first from the roots (elements no other one lists as a child).
+    std::vector<bool> is_child(elements.size(), false);
+    for (const NcElement& el : elements)
+        if (el.mGeom > 0 && el.mRefType != 0)
+            for (std::int64_t c : el.mIds) {
+                if (c < 0 || static_cast<std::size_t>(c) >= elements.size())
+                    throw ReadError("MFEM mesh: child element " + std::to_string(c) +
+                                    " out of range (line " + std::to_string(el.mLine) + ")");
+                is_child[static_cast<std::size_t>(c)] = true;
+            }
+    std::vector<std::size_t> leaves;
+    std::size_t ghosts = 0;
+    std::vector<std::size_t> stack;
+    for (std::size_t r = elements.size(); r-- > 0;)
+        if (elements[r].mGeom > 0 && !is_child[r])
+            stack.push_back(r);
+    std::vector<bool> seen(elements.size(), false);
+    while (!stack.empty()) {
+        const std::size_t e = stack.back();
+        stack.pop_back();
+        if (seen[e])
+            throw ReadError("MFEM mesh: element " + std::to_string(e) +
+                            " is reached twice in the refinement tree");
+        seen[e] = true;
+        const NcElement& el = elements[e];
+        if (el.mRefType == 0) {
+            if (el.mRank == my_rank)
+                leaves.push_back(e);
+            else
+                ++ghosts;
+            continue;
+        }
+        for (std::size_t k = el.mIds.size(); k-- > 0;)
+            stack.push_back(static_cast<std::size_t>(el.mIds[k]));
+    }
+    if (ghosts)
+        log::warn("MFEM mesh: {} ghost element(s) of other ranks in {} dropped", ghosts, rPath);
+
+    // Vertices: every node a leaf or boundary element uses, by node id.
+    std::set<std::int64_t> used;
+    for (std::size_t e : leaves)
+        used.insert(elements[e].mIds.begin(), elements[e].mIds.end());
+    for (const MfElement& b : f.mBoundary)
+        used.insert(b.mVertices.begin(), b.mVertices.end());
+    std::map<std::int64_t, std::int64_t> index;
+    for (std::int64_t id : used)
+        index.emplace(id, static_cast<std::int64_t>(index.size()));
+    std::map<std::int64_t, std::array<double, 3>> pos;
+    std::set<std::int64_t> visiting;
+    std::function<std::array<double, 3>(std::int64_t)> position = [&](std::int64_t Id) {
+        const auto found = pos.find(Id);
+        if (found != pos.end())
+            return found->second;
+        std::array<double, 3> x = {0, 0, 0};
+        const auto par = parents.find(Id);
+        if (par == parents.end()) {
+            if (Id < 0 || static_cast<std::size_t>(Id) >= top_count)
+                throw ReadError("MFEM mesh: vertex " + std::to_string(Id) +
+                                " has neither coordinates nor parents");
+            for (std::size_t c = 0; c < 3; ++c)
+                x[c] = top[3 * static_cast<std::size_t>(Id) + c];
+        } else {
+            if (!visiting.insert(Id).second)
+                throw ReadError("MFEM mesh: cyclic vertex parents at vertex " + std::to_string(Id));
+            const auto a = position(par->second.first.first);
+            const auto b = position(par->second.first.second);
+            const double s = par->second.second;
+            for (std::size_t c = 0; c < 3; ++c)
+                x[c] = (1.0 - s) * a[c] + s * b[c];
+        }
+        pos.emplace(Id, x);
+        return x;
+    };
+    f.mSpaceDim = sdim > 0 ? sdim : f.mDim;
+    f.mNumVertices = index.size();
+    for (const auto& [id, k] : index) {
+        const auto x = position(id);
+        for (int c = 0; c < f.mSpaceDim; ++c)
+            f.mCoords.push_back(x[static_cast<std::size_t>(c)]);
+    }
+    for (std::size_t e : leaves) {
+        const NcElement& el = elements[e];
+        MfElement out{el.mAttribute, el.mGeom, {}, el.mLine};
+        for (std::int64_t id : el.mIds)
+            out.mVertices.push_back(index.at(id));
+        f.mElements.push_back(std::move(out));
+    }
+    for (MfElement& b : f.mBoundary)
+        for (std::int64_t& v : b.mVertices)
+            v = index.at(v);
+    log::warn(
+        "MFEM mesh: the non-conforming mesh {} is read as its {} leaf element(s); hanging "
+        "nodes are left unconstrained",
+        rPath, leaves.size());
+    return f;
+}
+
+// A parallel mesh's `communication_groups` (GroupTopology::Save) and shared
+// entities (ParMesh::ParPrint), after `mfem_serial_mesh_end`. Only the shared
+// vertices matter: shared edges and faces follow from them.
+void mf_read_groups(MfLexer& rLex, MfFile& rF) {
+    rF.mParallel = true;
+    const MfToken& head = rLex.Next("communication_groups");
+    if (head.mText != "communication_groups")
+        rLex.Fail("expected communication_groups, found '" + head.mText + "'", head.mLine);
+    if (rLex.Next("number_of_groups").mText != "number_of_groups")
+        rLex.Fail("expected number_of_groups", head.mLine);
+    const std::int64_t ngroups = rLex.Int("a group count");
+    if (ngroups < 1)
+        rLex.Fail("a parallel mesh needs at least one communication group", head.mLine);
+    for (std::int64_t g = 0; g < ngroups; ++g) {
+        const std::int64_t size = rLex.Int("a group size");
+        if (size < 1)
+            rLex.Fail("an empty communication group", rLex.Line());
+        std::vector<std::int64_t> ranks;
+        for (std::int64_t k = 0; k < size; ++k)
+            ranks.push_back(rLex.Int("a rank"));
+        std::sort(ranks.begin(), ranks.end());
+        rF.mGroups.push_back(std::move(ranks));
+    }
+    if (rF.mGroups[0].size() != 1)
+        rLex.Fail("communication group 0 must hold this rank alone", head.mLine);
+    rF.mRank = rF.mGroups[0][0];
+    rF.mGroupVertices.assign(static_cast<std::size_t>(ngroups), {});
+    std::int64_t group = 0;
+    while (!rLex.AtEnd()) {
+        const MfToken& t = rLex.Next("a shared-entity section");
+        if (t.mText == "mfem_mesh_end")
+            break;
+        if (t.mText == "total_shared_vertices" || t.mText == "total_shared_edges" ||
+            t.mText == "total_shared_faces") {
+            rLex.Int("a count");
+        } else if (t.mText == "shared_vertices") {
+            if (++group >= ngroups)
+                rLex.Fail("more shared-vertex groups than communication groups", t.mLine);
+            const std::int64_t n = rLex.Int("a vertex count");
+            for (std::int64_t k = 0; k < n; ++k)
+                rF.mGroupVertices[static_cast<std::size_t>(group)].push_back(
+                    rLex.Int("a shared vertex"));
+        } else if (t.mText == "shared_edges") {
+            const std::int64_t n = rLex.Int("an edge count");
+            for (std::int64_t k = 0; k < 2 * n; ++k)
+                rLex.Int("an edge vertex");
+        } else if (t.mText == "shared_faces") {
+            const std::int64_t n = rLex.Int("a face count");
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t geom = rLex.Int("a face geometry");
+                for (int v = 0; v < (geom == 3 ? 4 : 3); ++v)
+                    rLex.Int("a face vertex");
+            }
+        } else {
+            rLex.Fail("unexpected '" + t.mText + "' in the communication groups", t.mLine);
+        }
+    }
+}
+
 MfFile mf_parse(const std::string& rPath) {
     const std::string what = "MFEM mesh";
     MfLexer lex(what, mf_read_text(rPath, "MFEM mesh"));
     const std::string& header = lex.Header();
+    if (header == "MFEM NC mesh v1.0" || header == "MFEM NC mesh v1.1")
+        return mf_parse_nc(lex, rPath, header == "MFEM NC mesh v1.1");
     if (header.rfind("MFEM NC mesh", 0) == 0)
-        lex.Fail("non-conforming meshes ('" + header + "') are not supported", lex.HeaderLine());
+        lex.Fail("non-conforming mesh version '" + header + "' is not supported", lex.HeaderLine());
     if (header.rfind("MFEM NURBS", 0) == 0 || header.rfind("MFEM INLINE", 0) == 0)
         lex.Fail("'" + header + "' meshes are not supported", lex.HeaderLine());
     if (header != "MFEM mesh v1.0" && header != "MFEM mesh v1.1" && header != "MFEM mesh v1.2" &&
@@ -86874,13 +88731,17 @@ MfFile mf_parse(const std::string& rPath) {
                     f.mCoords.push_back(lex.Real("a coordinate"));
             }
         } else if (t.mText == "vertex_parents" || t.mText == "coarse_elements") {
-            lex.Fail("non-conforming meshes (a '" + t.mText + "' section) are not supported",
-                     t.mLine);
+            // The legacy non-conforming layout: the leaf mesh, then how it
+            // refines; read as its leaves.
+            f.mNonConforming = true;
+            const std::int64_t n = lex.Int("a count");
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::size_t line = lex.Line();
+                while (!lex.AtEnd() && lex.Line() == line)
+                    lex.Next("a value");
+            }
         } else if (t.mText == "mfem_serial_mesh_end") {
-            log::warn(
-                "MFEM mesh: '{}' is one rank of a parallel mesh; reading its local part and "
-                "ignoring the communication groups",
-                rPath);
+            mf_read_groups(lex, f);
             break;
         } else if (t.mText == "mfem_mesh_end") {
             break;
@@ -86964,6 +88825,1104 @@ NDArray mf_entries(const std::vector<std::int64_t>& rIds) {
     return a;
 }
 
+// Cell regions from the element and boundary attributes and the attribute
+// sets: `rCellAttr`/`rCellIsBoundary` per global cell.
+void mf_add_regions(Mesh& rMesh, const MfFile& rF, const std::vector<std::int64_t>& rCellAttr,
+                    const std::vector<bool>& rCellIsBoundary) {
+    const int dim = rF.mDim;
+    std::map<std::pair<bool, std::int64_t>, std::vector<std::int64_t>> by_attr;
+    for (std::size_t g = 0; g < rCellAttr.size(); ++g)
+        by_attr[{rCellIsBoundary[g], rCellAttr[g]}].push_back(static_cast<std::int64_t>(g));
+    for (const auto& [key, ids] : by_attr) {
+        const bool bdr = key.first;
+        rMesh.AddRegion(Region((bdr ? "boundary_" : "attribute_") + std::to_string(key.second),
+                               RegionKind::Cell, bdr ? dim - 1 : dim, key.second, mf_entries(ids)));
+    }
+    auto add_sets = [&](const std::vector<MfAttributeSet>& rSets, bool Bdr) {
+        for (const MfAttributeSet& s : rSets) {
+            std::vector<std::int64_t> ids;
+            for (std::int64_t a : s.mAttributes) {
+                const auto it = by_attr.find({Bdr, a});
+                if (it != by_attr.end())
+                    ids.insert(ids.end(), it->second.begin(), it->second.end());
+            }
+            rMesh.AddRegion(
+                Region(s.mName, RegionKind::Cell, Bdr ? dim - 1 : dim, -1, mf_entries(ids)));
+        }
+    };
+    add_sets(rF.mSets, false);
+    add_sets(rF.mBdrSets, true);
+}
+
+// ---------------------------------------------------------------------------
+// Order 3 and up: VTK Lagrange cells.
+//
+// A nodal H1 space's degrees of freedom are MFEM's: every vertex, then every
+// edge's (q-1), every face's, and every element's interior ones, entities in
+// order of first appearance (FiniteElementSpace::Construct). Rather than
+// replaying MFEM's orientation tables, each element's dofs are placed at their
+// reference positions -- an edge's from its lower global vertex (the edge's
+// own direction), a face's in the frame of the vertex order its first element
+// gave it, the interior in the element's own order (fem/fe/fe_h1.cpp) -- and
+// matched by position to one canonical node set per (geometry, order, point
+// family). One matrix per such set then interpolates to the equispaced nodes
+// of the VTK Lagrange cell, which share their edge and face nodes.
+// ---------------------------------------------------------------------------
+
+using MfPos = std::array<double, 3>;
+
+lagrange::Shape mf_shape(int Geom) {
+    switch (Geom) {
+        case 1:
+            return lagrange::Shape::Line;
+        case 2:
+            return lagrange::Shape::Triangle;
+        case 3:
+            return lagrange::Shape::Quad;
+        case 4:
+            return lagrange::Shape::Tetra;
+        case 5:
+            return lagrange::Shape::Hexahedron;
+        case 6:
+            return lagrange::Shape::Wedge;
+        default:
+            throw ReadError("MFEM mesh: geometry " + std::to_string(Geom) +
+                            " has no Lagrange cell");
+    }
+}
+
+const char* mf_lagrange_type(int Geom) {
+    static const char* const kTypes[] = {"vertex",
+                                         "VTK_LAGRANGE_CURVE",
+                                         "VTK_LAGRANGE_TRIANGLE",
+                                         "VTK_LAGRANGE_QUADRILATERAL",
+                                         "VTK_LAGRANGE_TETRAHEDRON",
+                                         "VTK_LAGRANGE_HEXAHEDRON",
+                                         "VTK_LAGRANGE_WEDGE"};
+    return kTypes[Geom];
+}
+
+MfPos mf_ref_vertex(int Geom, std::size_t K) {
+    static const MfPos kLine[2] = {{0, 0, 0}, {1, 0, 0}};
+    static const MfPos kTri[3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    static const MfPos kQuad[4] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+    static const MfPos kTet[4] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    static const MfPos kHex[8] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                                  {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+    static const MfPos kWedge[6] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
+                                    {0, 0, 1}, {1, 0, 1}, {0, 1, 1}};
+    switch (Geom) {
+        case 1:
+            return kLine[K];
+        case 2:
+            return kTri[K];
+        case 3:
+            return kQuad[K];
+        case 4:
+            return kTet[K];
+        case 5:
+            return kHex[K];
+        default:
+            return kWedge[K];
+    }
+}
+
+MfPos mf_mix(const std::vector<std::pair<double, MfPos>>& rTerms) {
+    MfPos out = {0, 0, 0};
+    for (const auto& [w, p] : rTerms)
+        for (int d = 0; d < 3; ++d)
+            out[static_cast<std::size_t>(d)] += w * p[static_cast<std::size_t>(d)];
+    return out;
+}
+
+// The mesh's edges and (3-D) faces, numbered by first appearance, and each
+// face's vertices in the order its first element lists them.
+struct MfEntities {
+    std::unordered_map<MfKey, std::size_t, MfKeyHash> mEdges;
+    std::unordered_map<MfKey, std::size_t, MfKeyHash> mFaces;
+    std::vector<std::vector<std::int64_t>> mFaceVertices;
+};
+
+MfEntities mf_entities(const std::vector<MfElement>& rElements, int Dim) {
+    const auto& geoms = mf_geoms();
+    MfEntities ent;
+    for (const MfElement& el : rElements) {
+        const MfGeom& g = geoms[static_cast<std::size_t>(el.mGeom)];
+        if (Dim >= 2)
+            for (const auto& e : g.mEdges)
+                ent.mEdges.emplace(mf_key({el.mVertices[static_cast<std::size_t>(e[0])],
+                                           el.mVertices[static_cast<std::size_t>(e[1])]}),
+                                   ent.mEdges.size());
+        if (Dim == 3)
+            for (const auto& f : g.mFaces) {
+                std::vector<std::int64_t> v;
+                for (int k : f)
+                    v.push_back(el.mVertices[static_cast<std::size_t>(k)]);
+                if (ent.mFaces.emplace(mf_key(v), ent.mFaces.size()).second)
+                    ent.mFaceVertices.push_back(std::move(v));
+            }
+    }
+    return ent;
+}
+
+// The dof layout of one nodal space over a mesh.
+struct MfDofs {
+    int mOrder = 1;
+    MfSpace::Points mPoints = MfSpace::Gll;
+    std::vector<double> mCp;  // the 1-D points
+    std::size_t mEdgeBase = 0;
+    std::vector<std::size_t> mFaceOffset;      // per face
+    std::vector<std::size_t> mInteriorOffset;  // per element
+    std::size_t mSize = 0;
+};
+
+std::size_t mf_interior_count(int Geom, int Q) {
+    const std::size_t q = static_cast<std::size_t>(Q);
+    switch (Geom) {
+        case 1:
+            return q - 1;
+        case 2:
+            return (q - 1) * (q - 2) / 2;
+        case 3:
+            return (q - 1) * (q - 1);
+        case 4:
+            return q < 3 ? 0 : (q - 1) * (q - 2) * (q - 3) / 6;
+        case 5:
+            return (q - 1) * (q - 1) * (q - 1);
+        case 6:
+            return (q - 1) * (q - 2) / 2 * (q - 1);
+        default:
+            return 0;
+    }
+}
+
+MfDofs mf_dofs(const MfFile& rF, const MfEntities& rEnt, int Q, MfSpace::Points Points) {
+    const auto& geoms = mf_geoms();
+    MfDofs d;
+    d.mOrder = Q;
+    d.mPoints = Points;
+    d.mCp = Points == MfSpace::Gll ? lagrange::gll_points(Q) : lagrange::uniform_points(Q);
+    const std::size_t q = static_cast<std::size_t>(Q);
+    std::size_t next = rF.mNumVertices;
+    d.mEdgeBase = next;
+    next += rEnt.mEdges.size() * (q - 1);
+    for (const auto& fv : rEnt.mFaceVertices) {
+        d.mFaceOffset.push_back(next);
+        next += fv.size() == 3 ? (q - 1) * (q - 2) / 2 : (q - 1) * (q - 1);
+    }
+    for (const MfElement& el : rF.mElements) {
+        d.mInteriorOffset.push_back(next);
+        if (geoms[static_cast<std::size_t>(el.mGeom)].mDim == rF.mDim)
+            next += mf_interior_count(el.mGeom, Q);
+    }
+    d.mSize = next;
+    return d;
+}
+
+// An element's dofs of a space and their reference positions. `pEnt` null:
+// the reference element itself (vertices 0..n-1), for the canonical set.
+void mf_element_dofs(const MfElement& rEl, int Dim, const MfEntities* pEnt, const MfDofs& rD,
+                     std::size_t Element, std::vector<std::pair<std::size_t, MfPos>>& rOut) {
+    rOut.clear();
+    const auto& geoms = mf_geoms();
+    const MfGeom& g = geoms[static_cast<std::size_t>(rEl.mGeom)];
+    const int q = rD.mOrder;
+    const auto& cp = rD.mCp;
+    const auto cpq = [&](int i) { return cp[static_cast<std::size_t>(i)]; };
+    const auto rv = [&](std::size_t k) { return mf_ref_vertex(rEl.mGeom, k); };
+    for (std::size_t j = 0; j < g.mNumVertices; ++j)
+        rOut.emplace_back(pEnt ? static_cast<std::size_t>(rEl.mVertices[j]) : j, rv(j));
+    if (q < 2)
+        return;
+    std::size_t local = g.mNumVertices;  // canonical numbering when pEnt is null
+    const auto local_of = [&](std::int64_t V) {
+        return static_cast<std::size_t>(std::find(rEl.mVertices.begin(), rEl.mVertices.end(), V) -
+                                        rEl.mVertices.begin());
+    };
+    if (Dim >= 2 && g.mDim >= 2) {
+        for (const auto& e : g.mEdges) {
+            const std::size_t a = static_cast<std::size_t>(e[0]),
+                              b = static_cast<std::size_t>(e[1]);
+            const bool a_low = rEl.mVertices[a] < rEl.mVertices[b];
+            const std::size_t lo = a_low ? a : b, hi = a_low ? b : a;
+            std::size_t base = 0;
+            if (pEnt)
+                base =
+                    rD.mEdgeBase + pEnt->mEdges.at(mf_key({rEl.mVertices[a], rEl.mVertices[b]})) *
+                                       static_cast<std::size_t>(q - 1);
+            for (int k = 1; k < q; ++k) {
+                const double t = cpq(k);
+                rOut.emplace_back(pEnt ? base + static_cast<std::size_t>(k - 1) : local++,
+                                  mf_mix({{1 - t, rv(lo)}, {t, rv(hi)}}));
+            }
+        }
+    }
+    if (Dim == 3 && g.mDim == 3) {
+        for (const auto& f : g.mFaces) {
+            std::vector<std::int64_t> v;
+            for (int k : f)
+                v.push_back(rEl.mVertices[static_cast<std::size_t>(k)]);
+            std::size_t base = 0;
+            std::vector<MfPos> r;
+            if (pEnt) {
+                const std::size_t idx = pEnt->mFaces.at(mf_key(v));
+                base = rD.mFaceOffset[idx];
+                for (std::int64_t gv : pEnt->mFaceVertices[idx])
+                    r.push_back(rv(local_of(gv)));
+            } else {
+                for (int k : f)
+                    r.push_back(rv(static_cast<std::size_t>(k)));
+            }
+            std::size_t o = 0;
+            if (r.size() == 3) {
+                for (int j = 1; j < q; ++j)
+                    for (int i = 1; i + j < q; ++i) {
+                        const double w = cpq(i) + cpq(j) + cpq(q - i - j);
+                        const double x = cpq(i) / w, y = cpq(j) / w;
+                        rOut.emplace_back(pEnt ? base + o++ : local++,
+                                          mf_mix({{1 - x - y, r[0]}, {x, r[1]}, {y, r[2]}}));
+                    }
+            } else {
+                for (int j = 1; j < q; ++j)
+                    for (int i = 1; i < q; ++i) {
+                        const double x = cpq(i), y = cpq(j);
+                        rOut.emplace_back(pEnt ? base + o++ : local++,
+                                          mf_mix({{(1 - x) * (1 - y), r[0]},
+                                                  {x * (1 - y), r[1]},
+                                                  {x * y, r[2]},
+                                                  {(1 - x) * y, r[3]}}));
+                    }
+            }
+        }
+    }
+    if (g.mDim != Dim)
+        return;
+    std::size_t o = pEnt ? rD.mInteriorOffset[Element] : 0;
+    const auto add = [&](const MfPos& rP) { rOut.emplace_back(pEnt ? o++ : local++, rP); };
+    switch (rEl.mGeom) {
+        case 1:
+            for (int i = 1; i < q; ++i)
+                add({cpq(i), 0, 0});
+            break;
+        case 2:
+        case 6: {
+            std::vector<std::pair<double, double>> tri;
+            for (int j = 1; j < q; ++j)
+                for (int i = 1; i + j < q; ++i) {
+                    const double w = cpq(i) + cpq(j) + cpq(q - i - j);
+                    tri.emplace_back(cpq(i) / w, cpq(j) / w);
+                }
+            if (rEl.mGeom == 2) {
+                for (const auto& [x, y] : tri)
+                    add({x, y, 0});
+            } else {
+                for (int k = 1; k < q; ++k)
+                    for (const auto& [x, y] : tri)
+                        add({x, y, cpq(k)});
+            }
+            break;
+        }
+        case 3:
+            for (int j = 1; j < q; ++j)
+                for (int i = 1; i < q; ++i)
+                    add({cpq(i), cpq(j), 0});
+            break;
+        case 4:
+            for (int k = 1; k < q; ++k)
+                for (int j = 1; j + k < q; ++j)
+                    for (int i = 1; i + j + k < q; ++i) {
+                        const double w = cpq(i) + cpq(j) + cpq(k) + cpq(q - i - j - k);
+                        add({cpq(i) / w, cpq(j) / w, cpq(k) / w});
+                    }
+            break;
+        case 5:
+            if (rD.mPoints == MfSpace::Cubic) {
+                // LagrangeHexFiniteElement(3): the eight interior nodes go
+                // round each layer like the corners do.
+                static const int kCubic[8][3] = {{1, 1, 1}, {2, 1, 1}, {2, 2, 1}, {1, 2, 1},
+                                                 {1, 1, 2}, {2, 1, 2}, {2, 2, 2}, {1, 2, 2}};
+                for (const auto& c : kCubic)
+                    add({cpq(c[0]), cpq(c[1]), cpq(c[2])});
+            } else {
+                for (int k = 1; k < q; ++k)
+                    for (int j = 1; j < q; ++j)
+                        for (int i = 1; i < q; ++i)
+                            add({cpq(i), cpq(j), cpq(k)});
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+// Quantised reference positions -> canonical node, for the matching.
+struct MfPosIndex {
+    std::map<std::array<std::int64_t, 3>, std::size_t> mMap;
+    static std::array<std::int64_t, 3> Key(const MfPos& rP) {
+        return {std::llround(rP[0] * 1e7), std::llround(rP[1] * 1e7), std::llround(rP[2] * 1e7)};
+    }
+    void Add(const MfPos& rP, std::size_t Index) { mMap.emplace(Key(rP), Index); }
+    std::size_t Find(const MfPos& rP) const {
+        const auto key = Key(rP);
+        for (std::int64_t dx = -1; dx <= 1; ++dx)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dz = -1; dz <= 1; ++dz) {
+                    const auto it = mMap.find({key[0] + dx, key[1] + dy, key[2] + dz});
+                    if (it != mMap.end())
+                        return it->second;
+                }
+        return static_cast<std::size_t>(-1);
+    }
+};
+
+// One (geometry, space) pair's canonical nodes and its matrix to the VTK
+// Lagrange nodes of the output order.
+struct MfInterp {
+    MfPosIndex mIndex;
+    std::size_t mNodes = 0;
+    std::vector<double> mMatrix;  // VTK nodes x canonical nodes
+};
+
+// The canonical nodes of a (geometry, space) pair, in the reference element's
+// own dof order, and their position index.
+std::vector<MfPos> mf_canonical(int Geom, int Dim, const MfDofs& rD, MfPosIndex& rIndex) {
+    MfElement ref;
+    ref.mGeom = Geom;
+    for (std::size_t k = 0; k < mf_geoms()[static_cast<std::size_t>(Geom)].mNumVertices; ++k)
+        ref.mVertices.push_back(static_cast<std::int64_t>(k));
+    std::vector<std::pair<std::size_t, MfPos>> nodes;
+    mf_element_dofs(ref, Dim, nullptr, rD, 0, nodes);
+    std::vector<MfPos> pos(nodes.size());
+    for (const auto& [k, p] : nodes) {
+        pos[k] = p;
+        rIndex.Add(p, k);
+    }
+    return pos;
+}
+
+// The equispaced VTK Lagrange nodes of order `Order` on a geometry, as
+// reference positions, in VTK order.
+std::vector<MfPos> mf_vtk_positions(int Geom, int Order) {
+    std::vector<MfPos> out;
+    for (const auto& ijk : lagrange::vtk_lattice(mf_shape(Geom), Order))
+        out.push_back({static_cast<double>(ijk[0]) / Order, static_cast<double>(ijk[1]) / Order,
+                       static_cast<double>(ijk[2]) / Order});
+    return out;
+}
+
+// The Lagrange order of a written cell by its node count: 1 for its corners,
+// 2 for the complete quadratic types (VTK order-2 Lagrange node order), p for
+// a VTK Lagrange cell; -1 for a serendipity cell.
+int mf_cell_order(int Geom, std::size_t NumNodes) {
+    if (Geom <= 0 || Geom > 6)
+        return 1;
+    for (int q = 1; q <= 64; ++q) {
+        const std::size_t n = lagrange::num_nodes(mf_shape(Geom), q);
+        if (n == NumNodes)
+            return q;
+        if (n > NumNodes)
+            break;
+    }
+    return -1;
+}
+
+const MfInterp& mf_interp(std::map<std::pair<int, int>, MfInterp>& rCache, int Geom, int Dim,
+                          const MfDofs& rD, int Order, int Slot) {
+    const auto key = std::make_pair(Geom, Slot);
+    auto it = rCache.find(key);
+    if (it != rCache.end())
+        return it->second;
+    MfInterp in;
+    const std::vector<MfPos> pos = mf_canonical(Geom, Dim, rD, in.mIndex);
+    in.mNodes = pos.size();
+    const lagrange::Shape shape = mf_shape(Geom);
+    in.mMatrix =
+        lagrange::interpolation_matrix(shape, rD.mOrder, pos, mf_vtk_positions(Geom, Order));
+    return rCache.emplace(key, std::move(in)).first->second;
+}
+
+// A nodal field over one part: its space layout and a value accessor.
+struct MfField {
+    MfDofs mDofs;
+    std::size_t mComponents = 1;
+    std::function<double(std::size_t, std::size_t)> mValue;  // (dof, component)
+};
+
+// One part of the mesh to read: a whole serial file, or one rank of a parallel
+// mesh, with its local vertices' output numbers.
+struct MfPart {
+    const MfFile* mpF = nullptr;
+    std::vector<const MfGridData*> mGfs;  // the grid functions, in the caller's order
+    bool mNodesH1 = false;                // coordinates from H1 nodes, else the vertices
+    std::vector<double> mVertexXyz;       // local vertices, SpaceDim each
+    std::vector<std::int64_t> mGlobal;    // local vertex -> output vertex
+};
+
+// The output type of a cell: VTK Lagrange at order 3 and up, else the linear or
+// complete quadratic type (their node order is VTK's order-1 and order-2
+// Lagrange order).
+std::string mf_cell_type(int Geom, int Order) {
+    if (Geom == 0 || Order <= 1)
+        return mf_geoms()[static_cast<std::size_t>(Geom)].mLinear;
+    if (Order == 2)
+        return mf_geoms()[static_cast<std::size_t>(Geom)].mQuadratic;
+    return mf_lagrange_type(Geom);
+}
+
+// Reads the parts into one mesh of order-`Order` cells: every cell's nodes
+// keyed by the output vertices they combine, so parts share their interface
+// nodes; values from each part's own dof numbering; `partition:part` (the
+// rank) on every cell when `Labels`.
+Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, int Order,
+                   bool Labels, const std::string& rPath) {
+    const auto& geoms = mf_geoms();
+    const MfFile& first = *rParts[0].mpF;
+    const int dim = first.mDim;
+    const std::size_t sdim = static_cast<std::size_t>(first.mSpaceDim);
+    const std::size_t ngfs = rParts[0].mGfs.size();
+
+    // Per part: its entities and fields (the coordinates, then each H1 grid
+    // function); the L2 ones become cell data.
+    std::vector<MfEntities> ents(rParts.size());
+    std::vector<std::vector<MfField>> fields(rParts.size());
+    std::vector<std::size_t> point_gfs;  // indices into mGfs
+    for (std::size_t g = 0; g < ngfs; ++g)
+        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1)
+            point_gfs.push_back(g);
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfPart& part = rParts[q];
+        const MfFile& f = *part.mpF;
+        if (f.mDim != dim || static_cast<std::size_t>(f.mSpaceDim) != sdim)
+            throw ReadError("MFEM mesh: the parts of " + rPath + " disagree on the dimension");
+        for (const MfElement& el : f.mElements)
+            if (el.mGeom == 0 || geoms[static_cast<std::size_t>(el.mGeom)].mDim != dim ||
+                (el.mGeom == 7 && Order > 1))
+                throw ReadError("MFEM mesh: element of geometry " + std::to_string(el.mGeom) +
+                                " in a " + std::to_string(dim) + "-D mesh of order " +
+                                std::to_string(Order) + " (line " + std::to_string(el.mLine) + ")");
+        ents[q] = mf_entities(f.mElements, dim);
+        MfField xyz;
+        xyz.mComponents = sdim;
+        if (part.mNodesH1) {
+            const MfSpace& s = f.mNodesSpace;
+            xyz.mDofs = mf_dofs(f, ents[q], s.mOrder, s.mPoints);
+            const std::size_t ndofs = f.mNodes.size() / static_cast<std::size_t>(s.mVDim);
+            if (ndofs != xyz.mDofs.mSize)
+                throw ReadError("MFEM mesh: the order-" + std::to_string(s.mOrder) + " nodes of " +
+                                rPath + " have " + std::to_string(ndofs) +
+                                " dofs; the mesh numbers " + std::to_string(xyz.mDofs.mSize));
+            xyz.mValue = [&f, ndofs](std::size_t Dof, std::size_t C) {
+                return mf_value(f.mNodes, f.mNodesSpace, ndofs, Dof, C);
+            };
+        } else {
+            xyz.mDofs = mf_dofs(f, ents[q], 1, MfSpace::Gll);
+            xyz.mValue = [&part, sdim](std::size_t Dof, std::size_t C) {
+                return part.mVertexXyz[Dof * sdim + C];
+            };
+        }
+        fields[q].push_back(std::move(xyz));
+        for (std::size_t g : point_gfs) {
+            const MfGridData& gd = *part.mGfs[g];
+            const MfSpace& s = gd.mSpace;
+            const std::size_t vdim = static_cast<std::size_t>(s.mVDim);
+            if (gd.mValues.size() % vdim != 0)
+                throw ReadError("MFEM grid function '" + gd.mName +
+                                "': " + std::to_string(gd.mValues.size()) +
+                                " values, not a multiple of VDim " + std::to_string(vdim));
+            MfField field;
+            field.mDofs = mf_dofs(f, ents[q], s.mOrder, s.mPoints);
+            field.mComponents = vdim;
+            const std::size_t ndofs = gd.mValues.size() / vdim;
+            if (ndofs != field.mDofs.mSize)
+                throw ReadError("MFEM grid function '" + gd.mName + "' has " +
+                                std::to_string(ndofs) + " dofs; the mesh has " +
+                                std::to_string(field.mDofs.mSize) + " at order " +
+                                std::to_string(s.mOrder));
+            field.mValue = [&gd, ndofs](std::size_t Dof, std::size_t C) {
+                return mf_value(gd.mValues, gd.mSpace, ndofs, Dof, C);
+            };
+            fields[q].push_back(std::move(field));
+        }
+    }
+    const std::size_t nfields = 1 + point_gfs.size();
+
+    // Output points: the vertices first, then every other VTK node by the
+    // output vertices and corner weights that place it.
+    using NodeKey = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    std::map<NodeKey, std::size_t> node_of;
+    const std::int64_t p3 = static_cast<std::int64_t>(Order) * Order * Order;
+    for (std::size_t v = 0; v < NumVertices; ++v)
+        node_of.emplace(NodeKey{{static_cast<std::int64_t>(v), p3}}, v);
+    std::size_t npoints = NumVertices;
+    const auto cell_nodes = [&](const MfPart& rPart, const MfElement& rEl,
+                                std::vector<std::size_t>& rIds) {
+        rIds.clear();
+        const auto global = [&](std::int64_t V) {
+            return rPart.mGlobal[static_cast<std::size_t>(V)];
+        };
+        if (rEl.mGeom == 0 || rEl.mGeom == 7) {  // a point; a (linear) pyramid
+            for (std::int64_t v : rEl.mVertices)
+                rIds.push_back(static_cast<std::size_t>(global(v)));
+            return;
+        }
+        const lagrange::Shape shape = mf_shape(rEl.mGeom);
+        for (const auto& ijk : lagrange::vtk_lattice(shape, Order)) {
+            NodeKey key;
+            for (const auto& [corner, w] : lagrange::lattice_weights(shape, Order, ijk))
+                key.emplace_back(global(rEl.mVertices[static_cast<std::size_t>(corner)]), w);
+            std::sort(key.begin(), key.end());
+            const auto [it, fresh] = node_of.emplace(std::move(key), npoints);
+            if (fresh)
+                ++npoints;
+            rIds.push_back(it->second);
+        }
+    };
+    std::vector<std::vector<std::vector<std::size_t>>> element_nodes(rParts.size()),
+        boundary_nodes(rParts.size());
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfFile& f = *rParts[q].mpF;
+        element_nodes[q].resize(f.mElements.size());
+        for (std::size_t e = 0; e < f.mElements.size(); ++e)
+            cell_nodes(rParts[q], f.mElements[e], element_nodes[q][e]);
+        boundary_nodes[q].resize(f.mBoundary.size());
+        for (std::size_t b = 0; b < f.mBoundary.size(); ++b)
+            cell_nodes(rParts[q], f.mBoundary[b], boundary_nodes[q][b]);
+    }
+
+    // Values at the nodes, element by element (a node shared by several takes
+    // the first's; a conforming mesh gives the same value).
+    std::vector<std::vector<double>> values(nfields);
+    values[0].assign(npoints * sdim, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t k = 1; k < nfields; ++k)
+        values[k].assign(npoints * fields[0][k].mComponents,
+                         std::numeric_limits<double>::quiet_NaN());
+    std::vector<bool> known(npoints, false);
+    std::vector<std::pair<std::size_t, MfPos>> dofs;
+    std::vector<std::size_t> perm;
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfFile& f = *rParts[q].mpF;
+        std::vector<std::map<std::pair<int, int>, MfInterp>> caches(nfields);
+        for (std::size_t e = 0; e < f.mElements.size(); ++e) {
+            const MfElement& el = f.mElements[e];
+            const auto& ids = element_nodes[q][e];
+            bool any = false;
+            for (std::size_t id : ids)
+                any = any || !known[id];
+            if (!any)
+                continue;
+            if (el.mGeom == 7) {  // a linear pyramid: its vertices
+                for (std::size_t k = 0; k < nfields; ++k) {
+                    const MfField& fld = fields[q][k];
+                    for (std::size_t j = 0; j < ids.size(); ++j)
+                        for (std::size_t c = 0; c < fld.mComponents; ++c)
+                            values[k][ids[j] * fld.mComponents + c] =
+                                fld.mValue(static_cast<std::size_t>(el.mVertices[j]), c);
+                }
+                for (std::size_t id : ids)
+                    known[id] = true;
+                continue;
+            }
+            for (std::size_t k = 0; k < nfields; ++k) {
+                const MfField& fld = fields[q][k];
+                const MfInterp& in = mf_interp(caches[k], el.mGeom, dim, fld.mDofs, Order, 0);
+                mf_element_dofs(el, dim, &ents[q], fld.mDofs, e, dofs);
+                perm.assign(in.mNodes, static_cast<std::size_t>(-1));
+                for (const auto& [dof, pos] : dofs) {
+                    const std::size_t c = in.mIndex.Find(pos);
+                    if (c >= in.mNodes)
+                        throw ReadError("MFEM mesh: a degree of freedom of element " +
+                                        std::to_string(e) + " matches no node of its element");
+                    perm[c] = dof;
+                }
+                const std::size_t nc = fld.mComponents;
+                std::vector<double> u(in.mNodes * nc);
+                for (std::size_t m = 0; m < in.mNodes; ++m)
+                    for (std::size_t c = 0; c < nc; ++c)
+                        u[m * nc + c] = fld.mValue(perm[m], c);
+                for (std::size_t t = 0; t < ids.size(); ++t) {
+                    if (known[ids[t]])
+                        continue;
+                    const double* row = in.mMatrix.data() + t * in.mNodes;
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        double v = 0.0;
+                        for (std::size_t m = 0; m < in.mNodes; ++m)
+                            v += row[m] * u[m * nc + c];
+                        values[k][ids[t] * nc + c] = v;
+                    }
+                }
+            }
+            for (std::size_t id : ids)
+                known[id] = true;
+        }
+    }
+    // Vertices no element holds keep their own coordinates; a boundary node on
+    // no element face is placed from its corners.
+    for (const MfPart& part : rParts)
+        for (std::size_t v = 0; v < part.mGlobal.size(); ++v) {
+            const auto g = static_cast<std::size_t>(part.mGlobal[v]);
+            if (known[g])
+                continue;
+            for (std::size_t c = 0; c < sdim; ++c)
+                values[0][g * sdim + c] = part.mVertexXyz[v * sdim + c];
+            known[g] = true;
+        }
+    std::size_t orphans = 0;
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfPart& part = rParts[q];
+        for (std::size_t b = 0; b < part.mpF->mBoundary.size(); ++b) {
+            const MfElement& el = part.mpF->mBoundary[b];
+            if (el.mGeom == 0 || el.mGeom == 7)
+                continue;
+            const lagrange::Shape shape = mf_shape(el.mGeom);
+            const auto lattice = lagrange::vtk_lattice(shape, Order);
+            for (std::size_t t = 0; t < lattice.size(); ++t) {
+                const std::size_t id = boundary_nodes[q][b][t];
+                if (known[id])
+                    continue;
+                ++orphans;
+                for (const auto& [corner, w] :
+                     lagrange::lattice_weights(shape, Order, lattice[t])) {
+                    const auto v =
+                        static_cast<std::size_t>(el.mVertices[static_cast<std::size_t>(corner)]);
+                    for (std::size_t c = 0; c < sdim; ++c) {
+                        double& x = values[0][id * sdim + c];
+                        x = (std::isnan(x) ? 0.0 : x) + static_cast<double>(w) /
+                                                            static_cast<double>(p3) *
+                                                            part.mVertexXyz[v * sdim + c];
+                    }
+                }
+                known[id] = true;
+            }
+        }
+    }
+    if (orphans)
+        log::warn(
+            "MFEM mesh: {} boundary node(s) lie on no element face; placed from their "
+            "corners",
+            orphans);
+
+    Mesh mesh;
+    NDArray points(DType::Float64, {npoints, sdim});
+    std::copy(values[0].begin(), values[0].end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+
+    // Cells: elements then boundary elements (every part's), a block per type
+    // in order of first appearance within each group.
+    struct Cell {
+        std::size_t mPart;
+        std::size_t mSource;
+        bool mBoundary;
+    };
+    std::vector<std::pair<std::string, std::vector<Cell>>> blocks;
+    for (const bool boundary : {false, true}) {
+        std::map<std::string, std::size_t> index;
+        for (std::size_t q = 0; q < rParts.size(); ++q) {
+            const auto& list = boundary ? rParts[q].mpF->mBoundary : rParts[q].mpF->mElements;
+            for (std::size_t k = 0; k < list.size(); ++k) {
+                const std::string t = mf_cell_type(list[k].mGeom, Order);
+                auto [it, fresh] = index.emplace(t, blocks.size());
+                if (fresh)
+                    blocks.push_back({t, {}});
+                blocks[it->second].second.push_back({q, k, boundary});
+            }
+        }
+    }
+    std::vector<NDArray> attr_blocks, part_blocks;
+    std::vector<std::int64_t> cell_attr;
+    std::vector<bool> cell_is_boundary;
+    std::vector<std::vector<std::size_t>> element_cell(rParts.size());
+    for (std::size_t q = 0; q < rParts.size(); ++q)
+        element_cell[q].resize(rParts[q].mpF->mElements.size());
+    std::vector<std::size_t> block_sizes;
+    std::size_t global = 0;
+    for (const auto& [type, members] : blocks) {
+        const Cell& c0 = members[0];
+        const std::size_t k =
+            (c0.mBoundary ? boundary_nodes : element_nodes)[c0.mPart][c0.mSource].size();
+        NDArray conn(DType::Int64, {members.size(), k});
+        NDArray attrs(DType::Int64, {members.size()});
+        NDArray parts(DType::Int64, {members.size()});
+        std::int64_t* c = conn.As<std::int64_t>();
+        for (std::size_t r = 0; r < members.size(); ++r) {
+            const Cell& cell = members[r];
+            const MfFile& f = *rParts[cell.mPart].mpF;
+            const MfElement& el =
+                cell.mBoundary ? f.mBoundary[cell.mSource] : f.mElements[cell.mSource];
+            const auto& ids =
+                (cell.mBoundary ? boundary_nodes : element_nodes)[cell.mPart][cell.mSource];
+            for (std::size_t j = 0; j < k; ++j)
+                c[r * k + j] = static_cast<std::int64_t>(ids[j]);
+            attrs.As<std::int64_t>()[r] = el.mAttribute;
+            parts.As<std::int64_t>()[r] = f.mRank;
+            cell_attr.push_back(el.mAttribute);
+            cell_is_boundary.push_back(cell.mBoundary);
+            if (!cell.mBoundary)
+                element_cell[cell.mPart][cell.mSource] = global;
+            ++global;
+        }
+        mesh.AddCellBlock(type, std::move(conn));
+        attr_blocks.push_back(std::move(attrs));
+        part_blocks.push_back(std::move(parts));
+        block_sizes.push_back(members.size());
+    }
+    if (!attr_blocks.empty())
+        mesh.AddCellData("mfem:attribute", std::move(attr_blocks));
+    if (Labels && !part_blocks.empty())
+        mesh.AddCellData("partition:part", std::move(part_blocks));
+
+    for (std::size_t k = 1; k < nfields; ++k) {
+        const std::size_t nc = fields[0][k].mComponents;
+        NDArray data =
+            nc == 1 ? NDArray(DType::Float64, {npoints}) : NDArray(DType::Float64, {npoints, nc});
+        std::copy(values[k].begin(), values[k].end(), data.As<double>());
+        mesh.AddPointData(rParts[0].mGfs[point_gfs[k - 1]]->mName, std::move(data));
+    }
+    // Element-wise grid functions: each part's values on its elements.
+    for (std::size_t g = 0; g < ngfs; ++g) {
+        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1)
+            continue;
+        const std::size_t vdim = static_cast<std::size_t>(rParts[0].mGfs[g]->mSpace.mVDim);
+        std::vector<double> per_cell(global * vdim, std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t q = 0; q < rParts.size(); ++q) {
+            const MfGridData& gd = *rParts[q].mGfs[g];
+            const std::size_t ne = rParts[q].mpF->mElements.size();
+            const std::size_t ndofs = gd.mValues.size() / vdim;
+            if (ndofs != ne)
+                throw ReadError("MFEM grid function '" + gd.mName + "' has " +
+                                std::to_string(ndofs) + " dofs for " + std::to_string(ne) +
+                                " elements");
+            for (std::size_t e = 0; e < ne; ++e)
+                for (std::size_t c = 0; c < vdim; ++c)
+                    per_cell[element_cell[q][e] * vdim + c] =
+                        mf_value(gd.mValues, gd.mSpace, ndofs, e, c);
+        }
+        std::vector<NDArray> out;
+        std::size_t start = 0;
+        for (std::size_t n : block_sizes) {
+            NDArray a =
+                vdim == 1 ? NDArray(DType::Float64, {n}) : NDArray(DType::Float64, {n, vdim});
+            std::copy(per_cell.begin() + static_cast<std::ptrdiff_t>(start * vdim),
+                      per_cell.begin() + static_cast<std::ptrdiff_t>((start + n) * vdim),
+                      a.As<double>());
+            start += n;
+            out.push_back(std::move(a));
+        }
+        mesh.AddCellData(rParts[0].mGfs[g]->mName, std::move(out));
+    }
+    mf_add_regions(mesh, first, cell_attr, cell_is_boundary);
+    return mesh;
+}
+
+// The order-3-and-up read of one serial file.
+Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, bool NodesH1,
+                        const std::vector<double>& rVertexXyz, int Order,
+                        const std::string& rPath) {
+    MfPart part;
+    part.mpF = &rF;
+    for (const MfGridData& g : rGfs)
+        part.mGfs.push_back(&g);
+    part.mNodesH1 = NodesH1;
+    part.mVertexXyz = rVertexXyz;
+    part.mGlobal.resize(rF.mNumVertices);
+    for (std::size_t v = 0; v < rF.mNumVertices; ++v)
+        part.mGlobal[v] = static_cast<std::int64_t>(v);
+    return mf_read_parts({part}, rF.mNumVertices, Order, false, rPath);
+}
+
+// `<prefix>.NNNNNN`: the rank a parallel-mesh file name carries, or -1.
+std::int64_t mf_rank_suffix(const std::string& rPath, std::string& rPrefix) {
+    const std::size_t dot = rPath.rfind('.');
+    if (dot == std::string::npos || rPath.size() - dot != 7)
+        return -1;
+    std::int64_t rank = 0;
+    for (std::size_t k = dot + 1; k < rPath.size(); ++k) {
+        if (rPath[k] < '0' || rPath[k] > '9')
+            return -1;
+        rank = 10 * rank + (rPath[k] - '0');
+    }
+    rPrefix = rPath.substr(0, dot + 1);
+    return rank;
+}
+
+std::string mf_rank_path(const std::string& rPrefix, std::int64_t Rank) {
+    std::string digits = std::to_string(Rank);
+    if (digits.size() < 6)
+        digits.insert(0, 6 - digits.size(), '0');
+    return rPrefix + digits;
+}
+
+// Whether `rPath` is `<prefix>.NNNNNN` beside rank files 000000 and 000001:
+// one rank of a parallel mesh as ParMesh::Save writes it.
+bool mf_rank_siblings(const std::string& rPath) {
+    std::string prefix;
+    if (mf_rank_suffix(rPath, prefix) < 0)
+        return false;
+    std::error_code ec;
+    return std::filesystem::exists(mf_rank_path(prefix, 0), ec) &&
+           std::filesystem::exists(mf_rank_path(prefix, 1), ec);
+}
+
+// A parallel mesh: every rank file beside `rPath` (or the one piece asked for).
+// With communication groups (ParMesh::ParPrint) the ranks' shared vertices are
+// merged by group; without them (ParMesh::Save, the files GLVis reads) every
+// rank is a serial mesh whose boundary also lists its faces on other ranks:
+// boundary vertices at identical coordinates are merged, and a boundary face
+// two ranks list is dropped.
+Mesh mf_read_parallel(const std::string& rPath, MfFile First,
+                      const std::vector<MfemGridFunction>& rGridFunctions,
+                      const ReadOptions& rOptions) {
+    namespace fs = std::filesystem;
+    std::string prefix;
+    std::vector<std::string> paths;
+    if (mf_rank_suffix(rPath, prefix) >= 0) {
+        std::error_code ec;
+        for (std::int64_t r = 0; fs::exists(mf_rank_path(prefix, r), ec); ++r)
+            paths.push_back(mf_rank_path(prefix, r));
+    }
+    if (paths.empty()) {
+        log::warn(
+            "MFEM mesh: '{}' is one rank of a parallel mesh, not named <prefix>.NNNNNN "
+            "beside its siblings; reading that rank alone",
+            rPath);
+        paths = {rPath};
+    }
+    if (paths.size() == 1 && !First.mParallel)
+        paths = {rPath};
+    std::vector<std::size_t> selected;
+    if (rOptions.mPieceSet) {
+        if (rOptions.mPiece < 0 || static_cast<std::size_t>(rOptions.mPiece) >= paths.size())
+            throw ReadError("MFEM mesh: piece " + std::to_string(rOptions.mPiece) +
+                            " is out of range: " + rPath + " has " + std::to_string(paths.size()) +
+                            " ranks");
+        selected = {static_cast<std::size_t>(rOptions.mPiece)};
+    } else {
+        for (std::size_t r = 0; r < paths.size(); ++r)
+            selected.push_back(r);
+    }
+    std::vector<MfFile> files;
+    for (std::size_t r : selected) {
+        files.push_back(paths[r] == rPath ? First : mf_parse(paths[r]));
+        MfFile& f = files.back();
+        if (f.mNonConforming)
+            throw ReadError("MFEM mesh: " + paths[r] +
+                            " is a non-conforming rank; parallel non-conforming meshes are not "
+                            "read");
+        if (f.mParallel && paths.size() > 1 && f.mRank != static_cast<std::int64_t>(r))
+            throw ReadError("MFEM mesh: " + paths[r] + " holds rank " + std::to_string(f.mRank));
+        if (!f.mParallel)
+            f.mRank = static_cast<std::int64_t>(r);
+    }
+
+    bool groups = true;
+    for (const MfFile& f : files)
+        groups = groups && f.mParallel;
+    std::vector<MfPart> parts(files.size());
+    bool pyramid = false, corners = false;
+    int order = 1;
+    for (std::size_t q = 0; q < files.size(); ++q) {
+        const MfFile& f = files[q];
+        MfPart& part = parts[q];
+        part.mpF = &f;
+        const std::size_t sdim = static_cast<std::size_t>(f.mSpaceDim);
+        if (f.mHasNodes) {
+            const MfSpace& s = f.mNodesSpace;
+            if (s.mKind == MfSpace::L2T1 || s.mKind == MfSpace::L2 || s.mKind == MfSpace::Other)
+                throw ReadError("MFEM mesh: nodes in '" + s.mCollection +
+                                "' are not supported in a parallel mesh");
+            const std::size_t ndofs = f.mNodes.size() / static_cast<std::size_t>(s.mVDim);
+            if (ndofs < f.mNumVertices)
+                throw ReadError("MFEM mesh: the nodes of " + paths[selected[q]] + " have " +
+                                std::to_string(ndofs) + " dofs for " +
+                                std::to_string(f.mNumVertices) + " vertices");
+            part.mVertexXyz.resize(f.mNumVertices * sdim);
+            for (std::size_t v = 0; v < f.mNumVertices; ++v)
+                for (std::size_t c = 0; c < sdim; ++c)
+                    part.mVertexXyz[v * sdim + c] = mf_value(f.mNodes, s, ndofs, v, c);
+            part.mNodesH1 = s.mKind == MfSpace::H1;
+            corners = corners || s.mKind == MfSpace::H1Other;
+            if (part.mNodesH1)
+                order = std::max(order, s.mOrder);
+        } else {
+            part.mVertexXyz = f.mCoords;
+        }
+        for (const MfElement& el : f.mElements)
+            pyramid = pyramid || el.mGeom == 7;
+    }
+
+    // Output vertices. With communication groups (ParPrint), a shared vertex by
+    // (its group's ranks, its place in the group's list: every rank of a group
+    // lists its vertices in the same order). Without them (ParMesh::Save), a
+    // boundary vertex (any vertex of a 1-D mesh) is merged with the one at the
+    // same position, to 1e-9 of the mesh's extent: ranks compute curved nodes
+    // from their own elements, so they agree to rounding only. Every other
+    // vertex is its own.
+    std::size_t sdim_all = static_cast<std::size_t>(files[0].mSpaceDim);
+    double extent = 0.0;
+    {
+        std::vector<double> lo(sdim_all, std::numeric_limits<double>::max()),
+            hi(sdim_all, std::numeric_limits<double>::lowest());
+        for (const MfPart& part : parts)
+            for (std::size_t k = 0; k < part.mVertexXyz.size(); ++k) {
+                lo[k % sdim_all] = std::min(lo[k % sdim_all], part.mVertexXyz[k]);
+                hi[k % sdim_all] = std::max(hi[k % sdim_all], part.mVertexXyz[k]);
+            }
+        for (std::size_t c = 0; c < sdim_all; ++c)
+            extent = std::max(extent, hi[c] - lo[c]);
+    }
+    const double tol = std::max(extent, 1.0) * 1e-9;
+    std::map<std::vector<std::int64_t>, std::vector<std::int64_t>> buckets;
+    std::vector<std::vector<double>> global_xyz;
+    std::map<std::pair<std::vector<std::int64_t>, std::size_t>, std::int64_t> by_group;
+    std::int64_t nglobal = 0;
+    for (std::size_t q = 0; q < files.size(); ++q) {
+        const MfFile& f = files[q];
+        MfPart& part = parts[q];
+        part.mGlobal.assign(f.mNumVertices, -1);
+        const std::size_t sdim = static_cast<std::size_t>(f.mSpaceDim);
+        std::vector<bool> candidate(f.mNumVertices, f.mDim == 1 && !groups);
+        if (groups) {
+            for (std::size_t g = 1; g < f.mGroupVertices.size(); ++g)
+                for (std::size_t k = 0; k < f.mGroupVertices[g].size(); ++k) {
+                    const std::int64_t v = f.mGroupVertices[g][k];
+                    if (v < 0 || static_cast<std::size_t>(v) >= f.mNumVertices)
+                        throw ReadError("MFEM mesh: shared vertex " + std::to_string(v) +
+                                        " out of range in " + paths[selected[q]]);
+                    const auto [it, fresh] =
+                        by_group.emplace(std::make_pair(f.mGroups[g], k), nglobal);
+                    if (fresh) {
+                        ++nglobal;
+                        global_xyz.emplace_back();
+                    }
+                    part.mGlobal[static_cast<std::size_t>(v)] = it->second;
+                }
+        } else {
+            for (const MfElement& b : f.mBoundary)
+                for (std::int64_t v : b.mVertices)
+                    candidate[static_cast<std::size_t>(v)] = true;
+        }
+        for (std::size_t v = 0; v < f.mNumVertices; ++v) {
+            if (!candidate[v])
+                continue;
+            const double* x = part.mVertexXyz.data() + v * sdim;
+            std::vector<std::int64_t> cell(sdim);
+            for (std::size_t c = 0; c < sdim; ++c)
+                cell[c] = static_cast<std::int64_t>(std::floor(x[c] / tol));
+            // Search the 3^sdim neighbouring buckets for a vertex within tol.
+            std::int64_t match = -1;
+            std::vector<std::int64_t> probe(sdim);
+            const std::size_t combos = sdim == 1 ? 3 : (sdim == 2 ? 9 : 27);
+            for (std::size_t m = 0; m < combos && match < 0; ++m) {
+                std::size_t code = m;
+                for (std::size_t c = 0; c < sdim; ++c) {
+                    probe[c] = cell[c] + static_cast<std::int64_t>(code % 3) - 1;
+                    code /= 3;
+                }
+                const auto it = buckets.find(probe);
+                if (it == buckets.end())
+                    continue;
+                for (std::int64_t g : it->second) {
+                    bool close = true;
+                    for (std::size_t c = 0; c < sdim; ++c)
+                        close = close &&
+                                std::fabs(global_xyz[static_cast<std::size_t>(g)][c] - x[c]) <= tol;
+                    if (close) {
+                        match = g;
+                        break;
+                    }
+                }
+            }
+            if (match < 0) {
+                match = nglobal++;
+                global_xyz.emplace_back(x, x + sdim);
+                buckets[cell].push_back(match);
+            }
+            part.mGlobal[v] = match;
+        }
+        for (std::int64_t& g : part.mGlobal)
+            if (g < 0) {
+                g = nglobal++;
+                global_xyz.emplace_back();
+            }
+    }
+    // Without groups, a boundary face two ranks list is their interface.
+    if (!groups && files.size() > 1) {
+        std::map<std::vector<std::int64_t>, std::set<std::size_t>> owners;
+        const auto key_of = [&](std::size_t Q, const MfElement& rB) {
+            std::vector<std::int64_t> key;
+            for (std::int64_t v : rB.mVertices)
+                key.push_back(parts[Q].mGlobal[static_cast<std::size_t>(v)]);
+            std::sort(key.begin(), key.end());
+            return key;
+        };
+        for (std::size_t q = 0; q < files.size(); ++q)
+            for (const MfElement& b : files[q].mBoundary)
+                owners[key_of(q, b)].insert(q);
+        std::size_t dropped = 0;
+        for (std::size_t q = 0; q < files.size(); ++q) {
+            std::vector<MfElement> kept;
+            for (MfElement& b : files[q].mBoundary) {
+                if (owners[key_of(q, b)].size() > 1)
+                    ++dropped;
+                else
+                    kept.push_back(std::move(b));
+            }
+            files[q].mBoundary = std::move(kept);
+        }
+        if (dropped)
+            log::debug("MFEM mesh: {} rank-interface boundary element(s) of {} dropped", dropped,
+                       rPath);
+    }
+    if (corners)
+        log::warn("MFEM mesh: nodes of {} that are not nodal H1 are read at the vertices only",
+                  rPath);
+
+    // Grid functions: each rank its own `<name>.NNNNNN`.
+    std::vector<std::vector<MfGridData>> gdata(files.size());
+    std::vector<std::string> gf_names;
+    for (const MfemGridFunction& g : rGridFunctions) {
+        std::string gprefix;
+        if (mf_rank_suffix(g.mPath, gprefix) < 0)
+            throw ReadError("MFEM grid function '" + g.mPath +
+                            "': a parallel mesh's grid function is named by one of its rank "
+                            "files, <name>.NNNNNN");
+        std::vector<MfGridData> per_rank;
+        for (std::size_t q = 0; q < files.size(); ++q)
+            per_rank.push_back(mf_parse_gf({g.mName, mf_rank_path(gprefix, files[q].mRank)}));
+        const MfSpace& s = per_rank[0].mSpace;
+        const bool h1 = s.mKind == MfSpace::H1;
+        const bool l2p0 = (s.mKind == MfSpace::L2 || s.mKind == MfSpace::L2T1) && s.mOrder == 0;
+        if (!h1 && !l2p0) {
+            log::warn("MFEM grid function '{}': the '{}' space is not supported; skipped", g.mPath,
+                      s.mCollection);
+            continue;
+        }
+        if (h1 && s.mOrder >= 2 && pyramid) {
+            log::warn(
+                "MFEM grid function '{}': an order-{} field on this mesh is not supported; "
+                "skipped",
+                g.mPath, s.mOrder);
+            continue;
+        }
+        if (h1)
+            order = std::max(order, s.mOrder);
+        for (std::size_t q = 0; q < files.size(); ++q)
+            gdata[q].push_back(std::move(per_rank[q]));
+    }
+    if (pyramid && order >= 2) {
+        log::warn(
+            "MFEM mesh: '{}' has pyramids, which meshio++ holds at order 1 only; reading "
+            "the vertices",
+            rPath);
+        order = 1;
+        for (MfPart& part : parts)
+            part.mNodesH1 = false;
+    }
+    for (std::size_t q = 0; q < files.size(); ++q)
+        for (const MfGridData& g : gdata[q])
+            parts[q].mGfs.push_back(&g);
+    return mf_read_parts(parts, static_cast<std::size_t>(nglobal), order, true, rPath);
+}
+
 }  // namespace
 
 Mesh read_mfem(const std::string& rPath) {
@@ -86971,7 +89930,16 @@ Mesh read_mfem(const std::string& rPath) {
 }
 
 Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
+    return read_mfem(rPath, rGridFunctions, ReadOptions{});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions) {
     MfFile f = mf_parse(rPath);
+    if (f.mParallel || mf_rank_siblings(rPath))
+        return mf_read_parallel(rPath, std::move(f), rGridFunctions, rOptions);
+    if (rOptions.mPieceSet && rOptions.mPiece != 0)
+        throw ReadError("MFEM mesh: " + rPath + " is not parallel; its only piece is 0");
     const auto& geoms = mf_geoms();
     const int dim = f.mDim;
     const std::size_t nv = f.mNumVertices;
@@ -86994,8 +89962,8 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
         } else if (s.mKind == MfSpace::H1Other) {
             coords = Coords::Corners;
             log::warn(
-                "MFEM mesh: nodes in '{}' (order {}) are read at the vertices only; meshio++ "
-                "keeps curved cells up to order 2",
+                "MFEM mesh: nodes in '{}' (order {}) are read at the vertices only: only "
+                "nodal H1 spaces (Gauss-Lobatto or equispaced) are read as curved cells",
                 s.mCollection, s.mOrder);
         } else if (s.mKind == MfSpace::L2T1 && s.mOrder == 1) {
             coords = Coords::Discontinuous;
@@ -87013,7 +89981,14 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
 
     // --- grid functions -------------------------------------------------------------
     std::vector<MfGridData> gfs;
-    for (const MfemGridFunction& g : rGridFunctions) {
+    if (f.mNonConforming && !rGridFunctions.empty())
+        log::warn(
+            "MFEM mesh: grid functions on the non-conforming mesh {} follow MFEM's "
+            "space-filling-curve numbering of its leaves, which is not read; skipped",
+            rPath);
+    const std::vector<MfemGridFunction> no_gfs;
+    const std::vector<MfemGridFunction>& gf_list = f.mNonConforming ? no_gfs : rGridFunctions;
+    for (const MfemGridFunction& g : gf_list) {
         MfGridData data = mf_parse_gf(g);
         const MfSpace& s = data.mSpace;
         const bool h1 = s.mKind == MfSpace::H1;
@@ -87023,11 +89998,11 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
                       s.mCollection);
             continue;
         }
-        if (h1 && s.mOrder == 2 && (coords == Coords::Discontinuous || has_pyramid)) {
+        if (h1 && s.mOrder >= 2 && (coords == Coords::Discontinuous || has_pyramid)) {
             log::warn(
-                "MFEM grid function '{}': an order-2 field on this mesh is not supported; "
+                "MFEM grid function '{}': an order-{} field on this mesh is not supported; "
                 "skipped",
-                g.mPath);
+                g.mPath, s.mOrder);
             continue;
         }
         gfs.push_back(std::move(data));
@@ -87036,15 +90011,27 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
     for (const MfGridData& g : gfs)
         if (g.mSpace.mKind == MfSpace::H1)
             order = std::max(order, g.mSpace.mOrder);
-    if (order == 2 && has_pyramid) {
+    if (order >= 2 && has_pyramid) {
         log::warn(
             "MFEM mesh: '{}' has pyramids, which meshio++ holds at order 1 only; reading "
             "the vertices",
             rPath);
         order = 1;
-        if (coords == Coords::H1 && mesh_order == 2)
+        if (coords == Coords::H1 && mesh_order >= 2)
             coords = Coords::Corners;
     }
+    const std::size_t pdim = static_cast<std::size_t>(sdim);
+    // Vertex coordinates first.
+    std::vector<double> vxyz(nv * pdim, 0.0);
+    if (coords == Coords::Vertices) {
+        vxyz = f.mCoords;
+    } else if (coords == Coords::H1 || coords == Coords::Corners) {
+        for (std::size_t v = 0; v < nv; ++v)
+            for (std::size_t c = 0; c < pdim; ++c)
+                vxyz[v * pdim + c] = mf_value(f.mNodes, f.mNodesSpace, node_dofs, v, c);
+    }
+    if (order >= 3)
+        return mf_read_high_order(f, gfs, coords == Coords::H1, vxyz, order, rPath);
     if (order == 2)
         for (const MfElement& el : f.mElements)
             if (el.mGeom == 0 || geoms[static_cast<std::size_t>(el.mGeom)].mDim != dim)
@@ -87065,16 +90052,6 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
         throw ReadError("MFEM mesh: the order-2 nodes of " + rPath + " have " +
                         std::to_string(node_dofs) + " dofs; the mesh numbers " +
                         std::to_string(numbering.Size()));
-    const std::size_t pdim = static_cast<std::size_t>(sdim);
-    // Vertex coordinates first.
-    std::vector<double> vxyz(nv * pdim, 0.0);
-    if (coords == Coords::Vertices) {
-        vxyz = f.mCoords;
-    } else if (coords == Coords::H1 || coords == Coords::Corners) {
-        for (std::size_t v = 0; v < nv; ++v)
-            for (std::size_t c = 0; c < pdim; ++c)
-                vxyz[v * pdim + c] = mf_value(f.mNodes, f.mNodesSpace, node_dofs, v, c);
-    }
 
     Mesh mesh;
     // In the discontinuous case every element (and boundary element) gets its
@@ -87322,28 +90299,7 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
     }
 
     // --- regions ----------------------------------------------------------------
-    std::map<std::pair<bool, std::int64_t>, std::vector<std::int64_t>> by_attr;
-    for (std::size_t g = 0; g < cell_attr.size(); ++g)
-        by_attr[{cell_is_boundary[g], cell_attr[g]}].push_back(static_cast<std::int64_t>(g));
-    for (const auto& [key, ids] : by_attr) {
-        const bool bdr = key.first;
-        mesh.AddRegion(Region((bdr ? "boundary_" : "attribute_") + std::to_string(key.second),
-                              RegionKind::Cell, bdr ? dim - 1 : dim, key.second, mf_entries(ids)));
-    }
-    auto add_sets = [&](const std::vector<MfAttributeSet>& rSets, bool Bdr) {
-        for (const MfAttributeSet& s : rSets) {
-            std::vector<std::int64_t> ids;
-            for (std::int64_t a : s.mAttributes) {
-                const auto it = by_attr.find({Bdr, a});
-                if (it != by_attr.end())
-                    ids.insert(ids.end(), it->second.begin(), it->second.end());
-            }
-            mesh.AddRegion(
-                Region(s.mName, RegionKind::Cell, Bdr ? dim - 1 : dim, -1, mf_entries(ids)));
-        }
-    };
-    add_sets(f.mSets, false);
-    add_sets(f.mBdrSets, true);
+    mf_add_regions(mesh, f, cell_attr, cell_is_boundary);
     return mesh;
 }
 
@@ -87464,7 +90420,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             g >= 0 && (type == geoms[static_cast<std::size_t>(g)].mLinear ||
                        type == geoms[static_cast<std::size_t>(g)].mQuadratic || type == "quad8" ||
                        type == "hexahedron20" || type == "wedge15" || type == "pyramid13" ||
-                       type == "pyramid14");
+                       type == "pyramid14" || type.rfind("VTK_LAGRANGE_", 0) == 0);
         block_geom[b] = known ? g : -1;
         if (known && cb.NumCells())
             dim = std::max(dim, geoms[static_cast<std::size_t>(g)].mDim);
@@ -87642,11 +90598,44 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             boundary.push_back({g, side.mAttribute, static_cast<std::size_t>(-1), nodes, type});
         }
     }
-    if (quadratic && has_pyramid) {
-        log::warn("MFEM mesh writer: MFEM order-2 meshes hold no pyramids; writing corners only");
+    // VTK Lagrange cells: the whole mesh is written with order-p H1 nodes, p
+    // the highest order among its cells; linear and complete quadratic cells
+    // are evaluated at those nodes too, serendipity cells from their corners.
+    int high = 0;
+    std::size_t serendipity = 0;
+    for (const auto* list : {&elements, &boundary})
+        for (const MfOutCell& c : *list)
+            if (c.mType.rfind("VTK_LAGRANGE_", 0) == 0)
+                high = std::max(high, mf_cell_order(c.mGeom, c.mNodes.size()));
+    if (high > 0) {
+        for (const auto* list : {&elements, &boundary})
+            for (const MfOutCell& c : *list) {
+                const int q = mf_cell_order(c.mGeom, c.mNodes.size());
+                if (q < 0)
+                    ++serendipity;
+                high = std::max(high, q);
+            }
+        quadratic = false;
+    }
+    if ((quadratic || high > 1) && has_pyramid) {
+        log::warn(
+            "MFEM mesh writer: MFEM order-{} meshes hold no pyramids here; writing "
+            "corners only",
+            high > 1 ? high : 2);
         detail::provenance_note("high-order-dropped",
                                 "a mesh with pyramids is written with linear MFEM cells");
         quadratic = false;
+        high = 0;
+    }
+    if (high == 1)
+        high = 0;  // order-1 Lagrange cells are their corners
+    if (high > 0 && serendipity) {
+        log::warn(
+            "MFEM mesh writer: {} serendipity cell(s) in an order-{} mesh are placed "
+            "from their corners",
+            serendipity, high);
+        detail::provenance_note("high-order-dropped",
+                                "serendipity cells in a Lagrange mesh are written from corners");
     }
     for (const std::string& t : dropped) {
         log::warn("MFEM mesh writer: '{}' cells are neither elements nor boundary; dropped", t);
@@ -87677,7 +90666,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     auto corners_of = [&](const MfOutCell& c) {
         return geoms[static_cast<std::size_t>(c.mGeom)].mNumVertices;
     };
-    if (!quadratic) {
+    if (!quadratic && high == 0) {
         bool all_corners = true;
         for (const auto* list : {&elements, &boundary})
             for (const MfOutCell& c : *list)
@@ -87784,6 +90773,80 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
                         1.0 / static_cast<double>(numbering.mNodeKeys[d].size()));
     }
 
+    // Order-p H1 dofs (VTK Lagrange meshes): each element evaluated at its dofs'
+    // positions, a dof shared by several taking the first's value.
+    MfFile hf;
+    MfEntities hent;
+    MfDofs hdofs;
+    std::vector<std::vector<std::pair<std::size_t, std::size_t>>> high_map;  // per element
+    std::map<std::pair<int, int>, std::vector<double>> matrices;             // (geom, cell order)
+    std::vector<const std::vector<double>*> high_matrix;                     // per element
+    if (high > 0) {
+        hf.mDim = dim;
+        hf.mNumVertices = nv;
+        hf.mElements = numbered;
+        hent = mf_entities(numbered, dim);
+        hdofs = mf_dofs(hf, hent, high, MfSpace::Gll);
+        std::map<int, std::pair<std::vector<MfPos>, MfPosIndex>> canon;
+        std::vector<bool> taken(hdofs.mSize, false);
+        std::vector<std::pair<std::size_t, MfPos>> dofs;
+        high_map.resize(elements.size());
+        for (std::size_t e = 0; e < elements.size(); ++e) {
+            const MfOutCell& c = elements[e];
+            auto cit = canon.find(c.mGeom);
+            if (cit == canon.end()) {
+                MfPosIndex index;
+                std::vector<MfPos> pos = mf_canonical(c.mGeom, dim, hdofs, index);
+                cit =
+                    canon.emplace(c.mGeom, std::make_pair(std::move(pos), std::move(index))).first;
+            }
+            const int q = std::max(1, mf_cell_order(c.mGeom, c.mNodes.size()));
+            const auto mkey = std::make_pair(c.mGeom, q);
+            if (!matrices.count(mkey))
+                matrices[mkey] = lagrange::interpolation_matrix(
+                    mf_shape(c.mGeom), q, mf_vtk_positions(c.mGeom, q), cit->second.first);
+            mf_element_dofs(numbered[e], dim, &hent, hdofs, e, dofs);
+            for (const auto& [dof, pos] : dofs) {
+                if (taken[dof])
+                    continue;
+                const std::size_t k = cit->second.second.Find(pos);
+                if (k >= cit->second.first.size())
+                    throw WriteError("MFEM mesh writer: a node of element " + std::to_string(e) +
+                                     " matches no degree of freedom");
+                taken[dof] = true;
+                high_map[e].emplace_back(dof, k);
+            }
+        }
+        high_matrix.resize(elements.size());
+        for (std::size_t e = 0; e < elements.size(); ++e) {
+            const MfOutCell& c = elements[e];
+            const int q = std::max(1, mf_cell_order(c.mGeom, c.mNodes.size()));
+            high_matrix[e] = &matrices.at(std::make_pair(c.mGeom, q));
+        }
+    }
+    // The order-p dof values of one point array (row-major, dofs x Cols).
+    auto high_values = [&](const NDArray& rData, std::size_t Cols) {
+        std::vector<double> out(hdofs.mSize * Cols, 0.0);
+        for (std::size_t e = 0; e < elements.size(); ++e) {
+            const MfOutCell& c = elements[e];
+            const std::size_t n = c.mNodes.size();
+            const int q = std::max(1, mf_cell_order(c.mGeom, n));
+            const std::size_t used = q == 1 ? corners_of(c) : n;
+            for (const auto& [dof, k] : high_map[e]) {
+                const double* row = high_matrix[e]->data() + k * used;
+                for (std::size_t col = 0; col < Cols; ++col) {
+                    double v = 0.0;
+                    for (std::size_t m = 0; m < used; ++m)
+                        v +=
+                            row[m] * detail::read_double(
+                                         rData, static_cast<std::size_t>(c.mNodes[m]) * Cols + col);
+                    out[dof * Cols + col] = v;
+                }
+            }
+        }
+        return out;
+    };
+
     // --- data --------------------------------------------------------------------
     const std::size_t data_arrays =
         rMesh.NumPointData() + rMesh.NumCellData() - (has_attr ? 1 : 0) + rMesh.NumFieldData();
@@ -87841,7 +90904,20 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             sum += w * detail::read_double(rData, static_cast<std::size_t>(p) * Cols + C);
         return sum;
     };
-    if (!quadratic) {
+    if (high > 0) {
+        out += "\nnodes\nFiniteElementSpace\nFiniteElementCollection: H1_" + std::to_string(dim) +
+               "D_P" + std::to_string(high) + "\nVDim: " + std::to_string(pdim) +
+               "\nOrdering: 1\n\n";
+        const std::vector<double> xyz = high_values(pts, pdim);
+        for (std::size_t d = 0; d < hdofs.mSize; ++d) {
+            for (std::size_t c = 0; c < pdim; ++c) {
+                if (c)
+                    out += ' ';
+                mf_append_real(out, xyz[d * pdim + c]);
+            }
+            out += '\n';
+        }
+    } else if (!quadratic) {
         out += std::to_string(pdim) + "\n";
         for (std::size_t v = 0; v < nv; ++v) {
             for (std::size_t c = 0; c < pdim; ++c) {
@@ -87876,8 +90952,8 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     namespace fs = std::filesystem;
     const fs::path mesh_path(rPath);
     const std::string stem = (mesh_path.parent_path() / mesh_path.stem()).string();
-    const int order = quadratic ? 2 : 1;
-    const std::size_t ndofs = quadratic ? numbering.Size() : nv;
+    const int order = high > 0 ? high : (quadratic ? 2 : 1);
+    const std::size_t ndofs = high > 0 ? hdofs.mSize : (quadratic ? numbering.Size() : nv);
     auto open_gf = [&](const std::string& rName) {
         const std::string path = stem + "." + mf_sanitise(rName) + ".gf";
         auto g = detail::make_classic_ofstream(path, std::ios::binary);
@@ -87891,11 +90967,14 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
         std::string text = "FiniteElementSpace\nFiniteElementCollection: H1_" +
                            std::to_string(dim) + "D_P" + std::to_string(order) +
                            "\nVDim: " + std::to_string(cols) + "\nOrdering: 1\n\n";
+        const std::vector<double> hv = high > 0 ? high_values(a, cols) : std::vector<double>();
         for (std::size_t d = 0; d < ndofs; ++d) {
             for (std::size_t c = 0; c < cols; ++c) {
                 if (c)
                     text += ' ';
-                if (quadratic)
+                if (high > 0)
+                    mf_append_real(text, hv[d * cols + c]);
+                else if (quadratic)
                     mf_append_real(text, evaluate(dof_weights[d], a, cols, c));
                 else
                     mf_append_real(text,
@@ -95671,11 +98750,12 @@ struct PatShape {
 
 const std::vector<PatShape>& pat_shapes() {
     static const std::vector<PatShape> shapes = {
-        {2, 2, "line", 6},        {2, 3, "line3", 6},          {3, 3, "triangle", 7},
-        {3, 6, "triangle6", 7},   {4, 4, "quad", 8},           {4, 8, "quad8", 8},
-        {5, 4, "tetra", 9},       {5, 10, "tetra10", 9},       {6, 5, "pyramid", 10},
-        {6, 13, "pyramid13", 10}, {7, 6, "wedge", 11},         {7, 15, "wedge15", 11},
-        {8, 8, "hexahedron", 12}, {8, 20, "hexahedron20", 12},
+        {2, 2, "line", 6},           {2, 3, "line3", 6},     {3, 3, "triangle", 7},
+        {3, 6, "triangle6", 7},      {3, 7, "triangle7", 7}, {4, 4, "quad", 8},
+        {4, 8, "quad8", 8},          {4, 9, "quad9", 8},     {5, 4, "tetra", 9},
+        {5, 10, "tetra10", 9},       {6, 5, "pyramid", 10},  {6, 13, "pyramid13", 10},
+        {7, 6, "wedge", 11},         {7, 15, "wedge15", 11}, {8, 8, "hexahedron", 12},
+        {8, 20, "hexahedron20", 12},
     };
     return shapes;
 }
@@ -98929,15 +102009,68 @@ struct RadGroup {
 };
 
 struct RadSurface {
-    std::int64_t mId;
+    std::int64_t mId = 0;
     std::string mTitle;
     std::vector<std::array<std::int64_t, 4>> mSegments;
+    // `/SURF/<mKind>[/<mMode>]/id`: SEG (the segments above), PART, SUBSET, MAT,
+    // PROP, GRBRIC, GRSHEL, GRSH3N, GRTRIA or SURF, with EXT, ALL or FREE.
+    std::string mKind = "SEG", mMode;
+    std::vector<std::int64_t> mIds;
+};
+
+// `/BOX/RECTA`, `/CYLIN`, `/SPHER` (corners, axis ends or centre, from nodes or
+// coordinates) and `/BOX/BOX` (other boxes, a negative id subtracted).
+struct RadBox {
+    std::string mKind;
+    std::int64_t mSkew = 0;
+    std::int64_t mNode1 = 0, mNode2 = 0;
+    std::array<double, 3> mP1{}, mP2{};
+    double mDiameter = 0.0;
+    std::vector<std::int64_t> mChildren;
 };
 
 struct RadSubset {
     std::string mTitle;
     std::vector<std::int64_t> mChildren;
 };
+
+// A /BEGIN length unit in metres: an SI prefix and "m" ("mm", "mum", "km"), a
+// few imperial names, or a number; 0 when unknown.
+double rad_length_unit(const std::string& rUnit) {
+    if (rUnit.empty())
+        return 0.0;
+    static const std::pair<const char*, double> named[] = {
+        {"in", 0.0254}, {"ft", 0.3048}, {"yd", 0.9144}, {"mi", 1609.344}};
+    for (const auto& [name, metres] : named)
+        if (rUnit == name)
+            return metres;
+    if (rUnit.back() == 'm') {
+        static const std::pair<const char*, double> prefixes[] = {
+            {"", 1.0},   {"y", 1e-24}, {"z", 1e-21}, {"a", 1e-18}, {"f", 1e-15}, {"p", 1e-12},
+            {"n", 1e-9}, {"mu", 1e-6}, {"m", 1e-3},  {"c", 1e-2},  {"d", 1e-1},  {"da", 1e1},
+            {"h", 1e2},  {"k", 1e3},   {"M", 1e6},   {"G", 1e9},   {"T", 1e12},  {"P", 1e15},
+            {"E", 1e18}, {"Z", 1e21},  {"Y", 1e24}};
+        const std::string prefix = rUnit.substr(0, rUnit.size() - 1);
+        for (const auto& [name, factor] : prefixes)
+            if (prefix == name)
+                return factor;
+    }
+    try {
+        return detail::card_to_real(rUnit, "", "Radioss");
+    } catch (const ReadError&) {
+        return 0.0;
+    }
+}
+
+// A fixed-width slice of a line (the whole comma field when the line has commas).
+std::string rad_slice(const std::string& rLine, std::size_t At, std::size_t Width,
+                      std::size_t CommaField) {
+    if (rLine.find(',') != std::string::npos) {
+        const std::vector<std::string> f = rad_fields(rLine, 1, 0);
+        return CommaField < f.size() ? f[CommaField] : std::string();
+    }
+    return At < rLine.size() ? rad_trim(std::string_view(rLine).substr(At, Width)) : std::string();
+}
 
 NDArray rad_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
     NDArray a(DType::Int64, Stride == 1 ? std::vector<std::size_t>{rIds.size()}
@@ -98974,6 +102107,8 @@ Mesh read_radioss(const std::string& rPath) {
     std::vector<RadGroup> groups;
     std::vector<RadSurface> surfaces;
     std::map<std::int64_t, RadSubset> subsets;
+    std::map<std::int64_t, RadBox> boxes;
+    double length_scale = 1.0;
     std::set<std::string> skipped_keywords;
     std::size_t zero_springs = 0, linear_bric20 = 0;
 
@@ -99007,7 +102142,13 @@ Mesh read_radioss(const std::string& rPath) {
         const std::string& key = path.empty() ? std::string() : path[0];
         const std::size_t body = i + 1;
         const std::size_t end = block_end(body);
+        // The keyword's id: its first integer field (`/BOX/RECTA/3/1` is box 3 in
+        // unit system 1; `/SURF/PART/EXT/12` is surface 12).
         auto last_id = [&](const RadLine& rLine) -> std::int64_t {
+            for (std::size_t k = 1; k < path.size(); ++k)
+                if (!path[k].empty() &&
+                    path[k].find_first_not_of("+-0123456789") == std::string::npos)
+                    return rad_int(path[k], rLine);
             return path.size() >= 2 ? rad_int(path.back(), rLine) : 0;
         };
 
@@ -99020,6 +102161,80 @@ Mesh read_radioss(const std::string& rPath) {
             }
             iw = version >= 51 ? 10 : 8;
             rw = version >= 51 ? 20 : 16;
+            // Input and work units (mass, length, time; 20 columns each): the
+            // solver works in the work units, so lengths are converted.
+            if (body + 2 < end) {
+                const std::vector<std::string> in = rad_fields(lines[body + 2].mText, 20, 3);
+                const std::vector<std::string> work = body + 3 < end
+                                                          ? rad_fields(lines[body + 3].mText, 20, 3)
+                                                          : std::vector<std::string>{};
+                const std::string li = in.size() > 1 ? in[1] : std::string();
+                const std::string lw = work.size() > 1 && !work[1].empty() ? work[1] : li;
+                const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
+                if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
+                    log::warn(
+                        "Radioss: unknown length unit '{}' in /BEGIN; lengths are read "
+                        "as written",
+                        fi <= 0.0 ? li : lw);
+                else if (!li.empty())
+                    length_scale = fi / fw;
+            }
+        } else if (key == "BOX" && path.size() >= 3) {
+            RadBox b;
+            b.mKind = path[1];
+            std::size_t k = body + 1;  // past the title
+            auto real3 = [&](std::size_t Line) {
+                std::array<double, 3> p{};
+                if (Line >= end)
+                    return p;
+                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                for (std::size_t d = 0; d < 3; ++d)
+                    p[d] = d < f.size() && !f[d].empty()
+                               ? rad_real(f[d], lines[Line]) * length_scale
+                               : 0.0;
+                return p;
+            };
+            auto int_at = [&](std::size_t Line, std::size_t Field) -> std::int64_t {
+                if (Line >= end)
+                    return 0;
+                const std::string t =
+                    rad_slice(lines[Line].mText, Field * static_cast<std::size_t>(iw),
+                              static_cast<std::size_t>(iw), Field);
+                return t.empty() ? 0 : rad_int(t, lines[Line]);
+            };
+            auto diameter = [&](std::size_t Line) {
+                if (Line >= end)
+                    return 0.0;
+                const std::string t =
+                    rad_slice(lines[Line].mText, 3 * static_cast<std::size_t>(iw),
+                              static_cast<std::size_t>(rw), b.mKind == "SPHER" ? 2 : 3);
+                return t.empty() ? 0.0 : rad_real(t, lines[Line]) * length_scale;
+            };
+            if (b.mKind == "RECTA") {
+                b.mNode1 = int_at(k, 0);
+                b.mNode2 = int_at(k, 1);
+                b.mSkew = int_at(k, 2);
+                b.mP1 = real3(k + 1);
+                b.mP2 = real3(k + 2);
+            } else if (b.mKind == "CYLIN") {
+                b.mNode1 = int_at(k, 0);
+                b.mNode2 = int_at(k, 1);
+                b.mDiameter = diameter(k);
+                b.mP1 = real3(k + 1);
+                b.mP2 = real3(k + 2);
+            } else if (b.mKind == "SPHER") {
+                b.mNode1 = int_at(k, 0);
+                b.mDiameter = diameter(k);
+                b.mP1 = real3(k + 1);
+            } else if (b.mKind == "BOX") {
+                for (; k < end; ++k)
+                    for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                        if (!f.empty())
+                            b.mChildren.push_back(rad_int(f, lines[k]));
+            } else {
+                skipped_keywords.insert("/BOX/" + b.mKind);
+            }
+            boxes[last_id(head)] = std::move(b);
         } else if (key == "NODE") {
             for (std::size_t k = body; k < end; ++k) {
                 const RadLine& ln = lines[k];
@@ -99137,7 +102352,8 @@ Mesh read_radioss(const std::string& rPath) {
                         g.mIds.push_back(rad_int(f, lines[k]));
             groups.push_back(std::move(g));
         } else if (key == "SURF" && path.size() >= 3 && path[1] == "SEG") {
-            RadSurface s{last_id(head), {}, {}};
+            RadSurface s;
+            s.mId = last_id(head);
             std::size_t k = body;
             if (k < end)
                 s.mTitle = rad_trim(lines[k++].mText);
@@ -99150,6 +102366,23 @@ Mesh read_radioss(const std::string& rPath) {
                 if (seg[0] || seg[1] || seg[2])
                     s.mSegments.push_back(seg);
             }
+            surfaces.push_back(std::move(s));
+        } else if (key == "SURF" && path.size() >= 3 &&
+                   (path[1] == "PART" || path[1] == "SUBSET" || path[1] == "MAT" ||
+                    path[1] == "PROP" || path[1] == "GRBRIC" || path[1] == "GRSHEL" ||
+                    path[1] == "GRSH3N" || path[1] == "GRTRIA" || path[1] == "SURF")) {
+            RadSurface s;
+            s.mId = last_id(head);
+            s.mKind = path[1];
+            if (path.size() >= 4)
+                s.mMode = path[2];
+            std::size_t k = body;
+            if (k < end)
+                s.mTitle = rad_trim(lines[k++].mText);
+            for (; k < end; ++k)
+                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                    if (!f.empty())
+                        s.mIds.push_back(rad_int(f, lines[k]));
             surfaces.push_back(std::move(s));
         } else if (key == "SURF") {
             skipped_keywords.insert("/SURF/" + (path.size() > 1 ? path[1] : std::string()));
@@ -99190,6 +102423,9 @@ Mesh read_radioss(const std::string& rPath) {
     for (std::size_t p = 0; p < node_ids.size(); ++p)
         if (!node_index.emplace(node_ids[p], static_cast<std::int64_t>(p)).second)
             throw ReadError("Radioss: node " + std::to_string(node_ids[p]) + " is defined twice");
+    if (length_scale != 1.0)
+        for (double& c : coords)
+            c *= length_scale;
     NDArray points(DType::Float64, {node_ids.size(), 3});
     std::copy(coords.begin(), coords.end(), points.As<double>());
     mesh.AssignPoints(std::move(points));
@@ -99198,6 +102434,12 @@ Mesh read_radioss(const std::string& rPath) {
         a.As<std::int64_t>()[0] = version;
         return a;
     }());
+    if (length_scale != 1.0)
+        mesh.AddFieldData("radioss:length_scale", [&] {
+            NDArray a(DType::Float64, {});
+            a.As<double>()[0] = length_scale;
+            return a;
+        }());
 
     // --- cells: one block per type, in order of first appearance --------------------
     std::vector<std::string> block_types;
@@ -99371,6 +102613,70 @@ Mesh read_radioss(const std::string& rPath) {
             cell_conn.emplace_back(conn.As<std::int64_t>() + r * k,
                                    conn.As<std::int64_t>() + (r + 1) * k);
     }
+    // Box membership of a point (skewed boxes are not supported: empty).
+    auto point_of = [&](std::int64_t Node, const std::array<double, 3>& rFallback) {
+        const auto it = Node ? node_index.find(Node) : node_index.end();
+        if (it == node_index.end())
+            return rFallback;
+        const std::size_t p = static_cast<std::size_t>(it->second);
+        return std::array<double, 3>{coords[3 * p], coords[3 * p + 1], coords[3 * p + 2]};
+    };
+    std::set<std::int64_t> skewed_boxes, missing_boxes;
+    std::function<bool(std::int64_t, const double*, int)> in_box;
+    in_box = [&](std::int64_t Id, const double* pX, int Depth) -> bool {
+        const auto it = boxes.find(Id);
+        if (it == boxes.end() || Depth > 16) {
+            missing_boxes.insert(Id);
+            return false;
+        }
+        const RadBox& b = it->second;
+        if (b.mKind == "BOX") {
+            bool in = false;
+            for (std::int64_t c : b.mChildren)
+                if (c > 0 && in_box(c, pX, Depth + 1))
+                    in = true;
+            for (std::int64_t c : b.mChildren)
+                if (c < 0 && in_box(-c, pX, Depth + 1))
+                    in = false;
+            return in;
+        }
+        if (b.mSkew) {
+            skewed_boxes.insert(Id);
+            return false;
+        }
+        const std::array<double, 3> p1 = point_of(b.mNode1, b.mP1);
+        if (b.mKind == "SPHER") {
+            double d2 = 0.0;
+            for (std::size_t d = 0; d < 3; ++d)
+                d2 += (pX[d] - p1[d]) * (pX[d] - p1[d]);
+            return d2 <= 0.25 * b.mDiameter * b.mDiameter;
+        }
+        const std::array<double, 3> p2 = point_of(b.mNode2, b.mP2);
+        if (b.mKind == "RECTA") {
+            for (std::size_t d = 0; d < 3; ++d)
+                if (pX[d] < std::min(p1[d], p2[d]) || pX[d] > std::max(p1[d], p2[d]))
+                    return false;
+            return true;
+        }
+        if (b.mKind == "CYLIN") {
+            double a[3], q[3], aa = 0.0, qa = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                a[d] = p2[d] - p1[d];
+                q[d] = pX[d] - p1[d];
+                aa += a[d] * a[d];
+                qa += q[d] * a[d];
+            }
+            if (aa == 0.0 || qa < 0.0 || qa > aa)
+                return false;
+            double r2 = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double off = q[d] - qa / aa * a[d];
+                r2 += off * off;
+            }
+            return r2 <= 0.25 * b.mDiameter * b.mDiameter;
+        }
+        return false;
+    };
     std::function<std::set<std::int64_t>(std::size_t, std::set<std::size_t>&)> resolve;
     resolve = [&](std::size_t g, std::set<std::size_t>& rVisiting) -> std::set<std::int64_t> {
         std::set<std::int64_t> out;
@@ -99379,6 +102685,28 @@ Mesh read_radioss(const std::string& rPath) {
         const RadGroup& grp = groups[g];
         const std::string family = rad_group_family(grp.mKeyword);
         const bool nodes = family == "NODE";
+        // GENE: `first last` id ranges; GEN_INCR: `first last step`.
+        if (grp.mSubtype == "GENE" || grp.mSubtype == "GEN_INCR") {
+            const std::size_t w = grp.mSubtype == "GENE" ? 2 : 3;
+            auto take = [&](std::int64_t Id, std::int64_t Entity) {
+                for (std::size_t k = 0; k + w <= grp.mIds.size(); k += w) {
+                    const std::int64_t first = grp.mIds[k], last = grp.mIds[k + 1];
+                    const std::int64_t step = w == 3 ? grp.mIds[k + 2] : 1;
+                    if (Id >= first && Id <= last && step > 0 && (Id - first) % step == 0) {
+                        out.insert(Entity);
+                        return;
+                    }
+                }
+            };
+            if (nodes)
+                for (const auto& [id, p] : node_index)
+                    take(id, p);
+            else
+                for (const auto& [id, cell] : owner[family])
+                    take(id, cell);
+            rVisiting.erase(g);
+            return out;
+        }
         std::set<std::int64_t> removed;
         for (std::int64_t raw : grp.mIds) {
             const std::int64_t id = raw < 0 ? -raw : raw;
@@ -99417,6 +102745,24 @@ Mesh read_radioss(const std::string& rPath) {
                                         cell_conn[static_cast<std::size_t>(c)].end());
                         else if (cell_family[static_cast<std::size_t>(c)] == family)
                             hits.insert(c);
+                    }
+                }
+            } else if (grp.mSubtype == "BOX" || grp.mSubtype == "BOX2") {
+                // Nodes inside; elements with all (BOX) or any (BOX2) node inside.
+                const bool any = grp.mSubtype == "BOX2";
+                if (nodes) {
+                    for (std::size_t p = 0; p < node_ids.size(); ++p)
+                        if (in_box(id, &coords[3 * p], 0))
+                            hits.insert(static_cast<std::int64_t>(p));
+                } else {
+                    for (const auto& [eid, cell] : owner[family]) {
+                        const auto& conn = cell_conn[static_cast<std::size_t>(cell)];
+                        std::size_t inside = 0;
+                        for (std::int64_t p : conn)
+                            inside +=
+                                in_box(id, &coords[3 * static_cast<std::size_t>(p)], 0) ? 1 : 0;
+                        if (any ? inside > 0 : inside == conn.size())
+                            hits.insert(cell);
                     }
                 }
             } else if (nodes && grp.mSubtype == "SURF") {
@@ -99474,31 +102820,148 @@ Mesh read_radioss(const std::string& rPath) {
         detail::FacetIndexOptions options;
         options.mSurfaceSelf = true;
         const detail::FacetIndex facets(mesh, options);
-        for (const RadSurface& s : surfaces) {
+        // Solid faces: (cell, face) with their sorted corners.
+        auto solid_faces = [&](std::int64_t Cell) {
+            std::vector<std::pair<std::int64_t, std::vector<std::int64_t>>> out;
+            CellType type{};
+            std::vector<std::int64_t> fnodes;
+            for (std::int64_t f = 0; detail::facet_nodes(mesh, Cell, f, type, fnodes); ++f) {
+                const std::size_t corners = cell_type_name(type).rfind("triangle", 0) == 0 ? 3 : 4;
+                fnodes.resize(std::min(corners, fnodes.size()));
+                std::sort(fnodes.begin(), fnodes.end());
+                out.emplace_back(f, fnodes);
+            }
+            return out;
+        };
+        std::map<std::vector<std::int64_t>, std::size_t> model_faces;  // for FREE
+        bool counted = false;
+        const std::map<std::string, std::string> group_keyword = {
+            {"GRBRIC", "GRBRIC"}, {"GRSHEL", "GRSHEL"}, {"GRSH3N", "GRSH3N"}, {"GRTRIA", "GRTRIA"}};
+        std::map<std::int64_t, std::size_t> surface_of;
+        for (std::size_t k = 0; k < surfaces.size(); ++k)
+            surface_of.emplace(surfaces[k].mId, k);
+        std::map<std::size_t, std::set<std::pair<std::int64_t, std::int64_t>>> done;
+        std::function<std::set<std::pair<std::int64_t, std::int64_t>>(std::size_t, int)> side_set;
+        side_set = [&](std::size_t Index, int Depth) {
+            const auto memo = done.find(Index);
+            if (memo != done.end())
+                return memo->second;
+            std::set<std::pair<std::int64_t, std::int64_t>> out;
+            const RadSurface& s = surfaces[Index];
+            if (s.mKind == "SURF") {
+                std::set<std::pair<std::int64_t, std::int64_t>> minus;
+                for (std::int64_t raw : s.mIds) {
+                    const auto it = surface_of.find(raw < 0 ? -raw : raw);
+                    if (it == surface_of.end() || Depth > 16) {
+                        ++dropped;
+                        continue;
+                    }
+                    const auto sub = side_set(it->second, Depth + 1);
+                    (raw < 0 ? minus : out).insert(sub.begin(), sub.end());
+                }
+                for (const auto& e : minus)
+                    out.erase(e);
+            } else if (s.mKind == "SEG") {
+                for (const auto& seg : s.mSegments) {
+                    std::array<std::int64_t, 4> idx{};
+                    bool defined = true;
+                    // 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
+                    const std::size_t count =
+                        seg[2] == 0 ? 2 : ((seg[3] == 0 || seg[3] == seg[2]) ? 3 : 4);
+                    for (std::size_t k = 0; k < count; ++k) {
+                        const auto it = node_index.find(seg[k]);
+                        defined = defined && it != node_index.end();
+                        idx[k] = defined ? it->second : -1;
+                    }
+                    const detail::FacetHit* hit =
+                        defined ? facets.Find(idx.data(), count) : nullptr;
+                    if (!hit) {
+                        ++dropped;
+                        continue;
+                    }
+                    out.emplace(hit->mFirst.mCell, hit->mFirst.mFacet);
+                }
+            } else {
+                // The cells the surface draws from.
+                std::set<std::int64_t> cells;
+                if (group_keyword.count(s.mKind)) {
+                    for (std::int64_t raw : s.mIds) {
+                        const auto it = group_of.find({s.mKind, raw < 0 ? -raw : raw});
+                        if (it == group_of.end()) {
+                            ++dropped;
+                            continue;
+                        }
+                        std::set<std::size_t> visiting;
+                        for (std::int64_t c : resolve(it->second, visiting))
+                            cells.insert(c);
+                    }
+                } else {
+                    for (std::int64_t raw : s.mIds) {
+                        const std::int64_t id = raw < 0 ? -raw : raw;
+                        const std::set<std::int64_t> sub =
+                            s.mKind == "SUBSET" ? subset_closure(id) : std::set<std::int64_t>{};
+                        for (std::size_t c = 0; c < cell_part.size(); ++c) {
+                            const RadPart& part = parts[cell_part[c]];
+                            const bool pick = s.mKind == "PART"     ? cell_part[c] == id
+                                              : s.mKind == "SUBSET" ? sub.count(part.mSubset) > 0
+                                              : s.mKind == "MAT"    ? part.mMaterial == id
+                                                                    : part.mProperty == id;
+                            if (pick)
+                                cells.insert(static_cast<std::int64_t>(c));
+                        }
+                    }
+                }
+                // Shells: their own face. Solids: with EXT the faces no other
+                // chosen solid shares, with FREE those no solid of the model
+                // shares, with ALL every face (GRBRIC without a mode: EXT).
+                const std::string mode = s.mKind == "GRBRIC" && s.mMode.empty() ? "EXT" : s.mMode;
+                std::map<std::vector<std::int64_t>, std::size_t> chosen;
+                std::vector<std::pair<
+                    std::int64_t, std::vector<std::pair<std::int64_t, std::vector<std::int64_t>>>>>
+                    solids;
+                for (std::int64_t c : cells) {
+                    const std::string& fam = cell_family[static_cast<std::size_t>(c)];
+                    if (fam == "SHEL" || fam == "SH3N" || fam == "TRIA")
+                        out.emplace(c, 0);
+                    else if (cell_dim[static_cast<std::size_t>(c)] == 3 && !mode.empty()) {
+                        solids.emplace_back(c, solid_faces(c));
+                        for (const auto& [f, key] : solids.back().second)
+                            ++chosen[key];
+                    }
+                }
+                if (mode == "FREE" && !counted) {
+                    for (std::size_t c = 0; c < cell_dim.size(); ++c)
+                        if (cell_dim[c] == 3)
+                            for (const auto& [f, key] : solid_faces(static_cast<std::int64_t>(c)))
+                                ++model_faces[key];
+                    counted = true;
+                }
+                for (const auto& [c, faces] : solids)
+                    for (const auto& [f, key] : faces) {
+                        const std::size_t shared =
+                            mode == "FREE" ? model_faces[key] : (mode == "EXT" ? chosen[key] : 1);
+                        if (shared == 1)
+                            out.emplace(c, f);
+                    }
+            }
+            done[Index] = out;
+            return out;
+        };
+        for (std::size_t index = 0; index < surfaces.size(); ++index) {
+            const RadSurface& s = surfaces[index];
             std::vector<std::int64_t> entries;
-            for (const auto& seg : s.mSegments) {
-                std::array<std::int64_t, 4> idx{};
-                bool defined = true;
-                // 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
-                const std::size_t count =
-                    seg[2] == 0 ? 2 : ((seg[3] == 0 || seg[3] == seg[2]) ? 3 : 4);
-                for (std::size_t k = 0; k < count; ++k) {
-                    const auto it = node_index.find(seg[k]);
-                    defined = defined && it != node_index.end();
-                    idx[k] = defined ? it->second : -1;
-                }
-                const detail::FacetHit* hit = defined ? facets.Find(idx.data(), count) : nullptr;
-                if (!hit) {
-                    ++dropped;
-                    continue;
-                }
-                entries.push_back(hit->mFirst.mCell);
-                entries.push_back(hit->mFirst.mFacet);
+            for (const auto& [c, f] : side_set(index, 0)) {
+                entries.push_back(c);
+                entries.push_back(f);
             }
             add_region(s.mTitle.empty() ? "SURF_" + std::to_string(s.mId) : s.mTitle,
                        RegionKind::Side, s.mId, "SURF", std::move(entries));
         }
     }
+    for (std::int64_t id : skewed_boxes)
+        log::warn("Radioss: skewed /BOX {} is not supported; it contains nothing", id);
+    for (std::int64_t id : missing_boxes)
+        log::warn("Radioss: /BOX {} is not defined; it contains nothing", id);
     if (dropped)
         log::warn(
             "Radioss: {} group or surface entries name undefined ids or no cell facet and "
@@ -99509,6 +102972,655 @@ Mesh read_radioss(const std::string& rPath) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/radioss.cpp =====
+// ===== begin src/cpp/src/formats/radioss_anim.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <ios>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr std::int32_t kAnimMagic = 0x542C;
+
+// Big-endian reads with a bounds check.
+class AnimCursor {
+public:
+    AnimCursor(const std::string& rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
+
+    const char* Take(std::size_t N) {
+        if (mPos + N > mData.size())
+            throw ReadError("Radioss animation: '" + mPath + "' is truncated (needs " +
+                            std::to_string(N) + " more bytes at offset " + std::to_string(mPos) +
+                            " of " + std::to_string(mData.size()) + ")");
+        const char* p = mData.data() + mPos;
+        mPos += N;
+        return p;
+    }
+
+    std::vector<std::int64_t> Ints(std::int64_t N) {
+        if (N < 0)
+            throw ReadError("Radioss animation: '" + mPath + "' has a negative count");
+        const unsigned char* p =
+            reinterpret_cast<const unsigned char*>(Take(4 * static_cast<std::size_t>(N)));
+        std::vector<std::int64_t> out(static_cast<std::size_t>(N));
+        for (std::size_t k = 0; k < out.size(); ++k) {
+            const std::uint32_t v =
+                (std::uint32_t(p[4 * k]) << 24) | (std::uint32_t(p[4 * k + 1]) << 16) |
+                (std::uint32_t(p[4 * k + 2]) << 8) | std::uint32_t(p[4 * k + 3]);
+            out[k] = static_cast<std::int32_t>(v);
+        }
+        return out;
+    }
+
+    std::int64_t Int() { return Ints(1)[0]; }
+
+    std::vector<double> Floats(std::int64_t N) {
+        if (N < 0)
+            throw ReadError("Radioss animation: '" + mPath + "' has a negative count");
+        const unsigned char* p =
+            reinterpret_cast<const unsigned char*>(Take(4 * static_cast<std::size_t>(N)));
+        std::vector<double> out(static_cast<std::size_t>(N));
+        for (std::size_t k = 0; k < out.size(); ++k) {
+            const std::uint32_t v =
+                (std::uint32_t(p[4 * k]) << 24) | (std::uint32_t(p[4 * k + 1]) << 16) |
+                (std::uint32_t(p[4 * k + 2]) << 8) | std::uint32_t(p[4 * k + 3]);
+            float f;
+            std::memcpy(&f, &v, 4);
+            out[k] = static_cast<double>(f);
+        }
+        return out;
+    }
+
+    std::vector<bool> Flags(std::int64_t N) {
+        const char* p = Take(static_cast<std::size_t>(N < 0 ? 0 : N));
+        std::vector<bool> out(static_cast<std::size_t>(N < 0 ? 0 : N));
+        for (std::size_t k = 0; k < out.size(); ++k)
+            out[k] = p[k] != 0;
+        return out;
+    }
+
+    std::string Text(std::size_t N) {
+        std::string s(Take(N), N);
+        const std::size_t nul = s.find('\0');
+        if (nul != std::string::npos)
+            s.resize(nul);
+        const std::size_t b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos)
+            return {};
+        const std::size_t e = s.find_last_not_of(" \t\r\n");
+        return s.substr(b, e - b + 1);
+    }
+
+    std::vector<std::string> Texts(std::int64_t Count, std::size_t N) {
+        std::vector<std::string> out;
+        for (std::int64_t k = 0; k < Count; ++k)
+            out.push_back(Text(N));
+        return out;
+    }
+
+private:
+    const std::string& mData;
+    const std::string& mPath;
+    std::size_t mPos = 0;
+};
+
+// One element family (1-D, 2-D, 3-D or SPH) of the file.
+struct AnimFamily {
+    std::string mKey;
+    std::size_t mNodesPer = 0;
+    std::vector<std::int64_t> mConn;  // mNodesPer per element
+    std::vector<bool> mAlive;
+    std::vector<std::int64_t> mPartEnds;
+    std::vector<std::string> mPartTexts;
+    std::vector<std::pair<std::string, std::vector<double>>> mScalars;
+    // name, width (3, 6 or 9), values (width per element)
+    std::vector<std::tuple<std::string, std::size_t, std::vector<double>>> mTensors;
+    std::vector<double> mMass;
+    std::vector<std::int64_t> mIds;
+    std::vector<std::vector<std::int64_t>> mHierarchy;  // subset, material, property per part
+    bool mHasMass = false, mHasIds = false, mHasHierarchy = false;
+
+    std::size_t Size() const { return mNodesPer ? mConn.size() / mNodesPer : 0; }
+};
+
+// The shared tail of the 3-D, 1-D and SPH sections, after their counts and
+// connectivity: alive flags, parts, scalars, tensors, then (1-D) the skews,
+// masses, ids and the part hierarchy.
+void anim_section(AnimCursor& rC, const std::vector<std::int64_t>& rFlags, AnimFamily& rF,
+                  std::int64_t NumParts, std::int64_t NumScalars, std::size_t TensorWidth,
+                  std::int64_t NumTensors, bool Skews) {
+    const std::int64_t n = static_cast<std::int64_t>(rF.Size());
+    rF.mAlive = rC.Flags(n);
+    rF.mPartEnds = rC.Ints(NumParts);
+    rF.mPartTexts = rC.Texts(NumParts, 50);
+    if (NumScalars) {
+        const std::vector<std::string> names = rC.Texts(NumScalars, 81);
+        const std::vector<double> values = rC.Floats(NumScalars * n);
+        for (std::size_t k = 0; k < names.size(); ++k)
+            rF.mScalars.emplace_back(
+                names[k],
+                std::vector<double>(values.begin() + static_cast<std::ptrdiff_t>(k) * n,
+                                    values.begin() + static_cast<std::ptrdiff_t>(k + 1) * n));
+    }
+    if (NumTensors) {
+        const std::vector<std::string> names = rC.Texts(NumTensors, 81);
+        const std::int64_t w = static_cast<std::int64_t>(TensorWidth);
+        const std::vector<double> values = rC.Floats(n * w * NumTensors);
+        for (std::size_t k = 0; k < names.size(); ++k)
+            rF.mTensors.emplace_back(
+                names[k], TensorWidth,
+                std::vector<double>(values.begin() + static_cast<std::ptrdiff_t>(k) * n * w,
+                                    values.begin() + static_cast<std::ptrdiff_t>(k + 1) * n * w));
+    }
+    if (Skews)
+        rC.Ints(n);
+    if (rFlags[0] == 1) {
+        rF.mMass = rC.Floats(n);
+        rF.mHasMass = true;
+    }
+    if (rFlags[1] == 1) {
+        rF.mIds = rC.Ints(n);
+        rF.mHasIds = true;
+    }
+    if (rFlags[4]) {
+        for (int k = 0; k < 3; ++k)
+            rF.mHierarchy.push_back(rC.Ints(NumParts));
+        rF.mHasHierarchy = true;
+    }
+}
+
+// Per element, part k runs up to (not including) `rEnds[k]`.
+template <class Fn>
+void anim_for_parts(const AnimFamily& rF, Fn&& rFn) {
+    std::int64_t start = 0;
+    for (std::size_t k = 0; k < rF.mPartEnds.size(); ++k) {
+        const std::int64_t end = std::max(start, rF.mPartEnds[k]);
+        rFn(k, start, std::min<std::int64_t>(end, static_cast<std::int64_t>(rF.Size())));
+        start = end;
+    }
+}
+
+}  // namespace
+
+bool is_radioss_anim_filename(const std::string& rPath) {
+    const std::string name = std::filesystem::path(rPath).filename().string();
+    std::size_t k = name.size();
+    while (k > 0 && name[k - 1] >= '0' && name[k - 1] <= '9')
+        --k;
+    return name.size() - k >= 3 && k >= 2 && name[k - 1] == 'A';
+}
+
+Mesh read_radioss_anim(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Radioss animation: cannot open " + rPath);
+    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    AnimCursor c(data, rPath);
+    const std::int64_t magic = c.Int();
+    if (magic != kAnimMagic) {
+        std::string hex;
+        for (std::uint32_t v = static_cast<std::uint32_t>(magic); v || hex.empty(); v >>= 4)
+            hex.insert(hex.begin(), "0123456789abcdef"[v & 0xf]);
+        throw ReadError("Radioss animation: '" + rPath + "' has magic 0x" + hex +
+                        "; only the current layout (0x542c) is read");
+    }
+    const double time = c.Floats(1)[0];
+    c.Texts(3, 81);  // "Time=", "ModAnim", "Radioss Run="
+    const std::vector<std::int64_t> flags = c.Ints(10);
+    const std::vector<std::int64_t> counts = c.Ints(8);
+    const std::int64_t nn = counts[0], nf = counts[1], np2 = counts[2], nfun = counts[3],
+                       nefun = counts[4], nvec = counts[5], nten = counts[6], nskew = counts[7];
+    c.Take(static_cast<std::size_t>(2 * 6 * std::max<std::int64_t>(nskew, 0)));
+    const std::vector<double> coords = c.Floats(3 * nn);
+
+    std::vector<AnimFamily> families;
+    AnimFamily two;
+    two.mKey = "2d";
+    two.mNodesPer = 4;
+    two.mConn = c.Ints(4 * nf);
+    two.mAlive = c.Flags(nf);
+    if (np2) {
+        two.mPartEnds = c.Ints(np2);
+        two.mPartTexts = c.Texts(np2, 50);
+    }
+    c.Take(static_cast<std::size_t>(2 * 3 * nn));  // nodal normals
+    std::vector<std::pair<std::string, std::vector<double>>> point_scalars;
+    if (nfun + nefun) {
+        const std::vector<std::string> names = c.Texts(nfun + nefun, 81);
+        const std::vector<double> values = c.Floats(nn * nfun);
+        for (std::int64_t k = 0; k < nfun; ++k)
+            point_scalars.emplace_back(
+                names[static_cast<std::size_t>(k)],
+                std::vector<double>(values.begin() + k * nn, values.begin() + (k + 1) * nn));
+        const std::vector<double> evalues = c.Floats(nf * nefun);
+        for (std::int64_t k = 0; k < nefun; ++k)
+            two.mScalars.emplace_back(
+                names[static_cast<std::size_t>(nfun + k)],
+                std::vector<double>(evalues.begin() + k * nf, evalues.begin() + (k + 1) * nf));
+    }
+    const std::vector<std::string> vnames = c.Texts(nvec, 81);
+    const std::vector<double> vvalues = c.Floats(3 * nn * nvec);
+    if (nten) {
+        const std::vector<std::string> names = c.Texts(nten, 81);
+        const std::vector<double> values = c.Floats(nf * 3 * nten);
+        for (std::int64_t k = 0; k < nten; ++k)
+            two.mTensors.emplace_back(names[static_cast<std::size_t>(k)], 3,
+                                      std::vector<double>(values.begin() + k * nf * 3,
+                                                          values.begin() + (k + 1) * nf * 3));
+    }
+    std::vector<double> point_mass;
+    if (flags[0] == 1) {
+        two.mMass = c.Floats(nf);
+        two.mHasMass = true;
+        point_mass = c.Floats(nn);
+    }
+    std::vector<std::int64_t> node_ids;
+    if (flags[1]) {
+        node_ids = c.Ints(nn);
+        two.mIds = c.Ints(nf);
+        two.mHasIds = true;
+    }
+    if (flags[4]) {
+        for (int k = 0; k < 3; ++k)
+            two.mHierarchy.push_back(c.Ints(np2));
+        two.mHasHierarchy = true;
+    }
+
+    AnimFamily three, one, sph;
+    bool has3 = false, has1 = false, has_sph = false;
+    if (flags[2]) {
+        const std::vector<std::int64_t> h = c.Ints(4);  // elements, parts, scalars, tensors
+        three.mKey = "3d";
+        three.mNodesPer = 8;
+        three.mConn = c.Ints(8 * h[0]);
+        anim_section(c, flags, three, h[1], h[2], 6, h[3], false);
+        has3 = true;
+    }
+    if (flags[3]) {
+        const std::vector<std::int64_t> h = c.Ints(5);  // elements, parts, scalars, torsors, skews
+        one.mKey = "1d";
+        one.mNodesPer = 2;
+        one.mConn = c.Ints(2 * h[0]);
+        anim_section(c, flags, one, h[1], h[2], 9, h[3], h[4] != 0);
+        has1 = true;
+    }
+    if (flags[4]) {
+        const std::int64_t nsub = c.Int();
+        for (std::int64_t k = 0; k < nsub; ++k) {
+            c.Text(50);
+            c.Int();          // parent
+            c.Ints(c.Int());  // child subsets
+            for (int d = 0; d < 3; ++d)
+                c.Ints(c.Int());  // 2-D, 3-D and 1-D parts
+        }
+        const std::int64_t nmat = c.Int(), nprop = c.Int();
+        c.Texts(nmat, 50);
+        c.Ints(nmat);
+        c.Texts(nprop, 50);
+        c.Ints(nprop);
+    }
+    if (flags[5]) {
+        const std::vector<std::int64_t> th = c.Ints(4);  // nodes, 2-D, 3-D, 1-D elements
+        for (std::int64_t count : th) {
+            c.Ints(count);
+            c.Texts(count, 50);
+        }
+    }
+    if (flags[7]) {
+        const std::vector<std::int64_t> h = c.Ints(4);  // elements, parts, scalars, tensors
+        sph.mKey = "sph";
+        sph.mNodesPer = 1;
+        if (h[0]) {
+            sph.mConn = c.Ints(h[0]);
+            sph.mAlive = c.Flags(h[0]);
+        }
+        if (h[1]) {
+            sph.mPartEnds = c.Ints(h[1]);
+            sph.mPartTexts = c.Texts(h[1], 50);
+        }
+        if (h[2]) {
+            const std::vector<std::string> names = c.Texts(h[2], 81);
+            const std::vector<double> values = c.Floats(h[2] * h[0]);
+            for (std::int64_t k = 0; k < h[2]; ++k)
+                sph.mScalars.emplace_back(names[static_cast<std::size_t>(k)],
+                                          std::vector<double>(values.begin() + k * h[0],
+                                                              values.begin() + (k + 1) * h[0]));
+        }
+        if (h[3]) {
+            const std::vector<std::string> names = c.Texts(h[3], 81);
+            const std::vector<double> values = c.Floats(h[0] * h[3] * 6);
+            for (std::int64_t k = 0; k < h[3]; ++k)
+                sph.mTensors.emplace_back(names[static_cast<std::size_t>(k)], 6,
+                                          std::vector<double>(values.begin() + k * h[0] * 6,
+                                                              values.begin() + (k + 1) * h[0] * 6));
+        }
+        if (flags[0] == 1) {
+            sph.mMass = c.Floats(h[0]);
+            sph.mHasMass = true;
+        }
+        if (flags[1] == 1) {
+            sph.mIds = c.Ints(h[0]);
+            sph.mHasIds = true;
+        }
+        if (flags[4]) {
+            for (int k = 0; k < 3; ++k)
+                sph.mHierarchy.push_back(c.Ints(h[1]));
+            sph.mHasHierarchy = true;
+        }
+        has_sph = true;
+    }
+    // The families in file order: 1-D, 2-D, 3-D, SPH.
+    if (has1 && one.Size())
+        families.push_back(std::move(one));
+    if (two.Size())
+        families.push_back(std::move(two));
+    if (has3 && three.Size())
+        families.push_back(std::move(three));
+    if (has_sph && sph.Size())
+        families.push_back(std::move(sph));
+
+    // Cells: each element's type and nodes, then one block per type.
+    struct AnimCell {
+        std::size_t mFamily, mElement;
+        std::vector<std::int64_t> mNodes;
+    };
+    std::vector<std::string> block_types;
+    std::map<std::string, std::vector<AnimCell>> members;
+    std::size_t skipped = 0;
+    for (std::size_t fi = 0; fi < families.size(); ++fi) {
+        const AnimFamily& fam = families[fi];
+        for (std::size_t e = 0; e < fam.Size(); ++e) {
+            std::vector<std::int64_t> row(
+                fam.mConn.begin() + static_cast<std::ptrdiff_t>(e * fam.mNodesPer),
+                fam.mConn.begin() + static_cast<std::ptrdiff_t>((e + 1) * fam.mNodesPer));
+            for (std::int64_t v : row)
+                if (v < 0 || v >= nn)
+                    throw ReadError("Radioss animation: '" + rPath + "' names a node out of range");
+            std::string type;
+            if (fam.mKey == "1d") {
+                type = "line";
+            } else if (fam.mKey == "sph") {
+                type = "vertex";
+            } else if (fam.mKey == "2d") {
+                std::vector<std::int64_t> distinct;
+                for (std::int64_t v : row)
+                    if (std::find(distinct.begin(), distinct.end(), v) == distinct.end())
+                        distinct.push_back(v);
+                row = distinct;
+                type = row.size() == 4 ? "quad" : (row.size() == 3 ? "triangle" : "");
+            } else {
+                std::array<std::int64_t, 8> a{};
+                std::copy(row.begin(), row.end(), a.begin());
+                detail::CollapsedBrick b = detail::collapse_brick(a);
+                type = b.mType;
+                row = std::move(b.mNodes);
+            }
+            if (type.empty()) {
+                ++skipped;
+                continue;
+            }
+            auto [it, fresh] = members.emplace(type, std::vector<AnimCell>{});
+            if (fresh)
+                block_types.push_back(type);
+            it->second.push_back({fi, e, std::move(row)});
+        }
+    }
+    if (skipped)
+        log::warn("Radioss animation: {} degenerate facet(s) skipped", skipped);
+
+    Mesh mesh;
+    NDArray points(DType::Float64, {static_cast<std::size_t>(nn), 3});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+    std::map<std::pair<std::size_t, std::size_t>, std::int64_t> cell_of;
+    std::vector<int> cell_dim;
+    for (const std::string& type : block_types) {
+        const std::vector<AnimCell>& list = members[type];
+        const std::size_t k = list.front().mNodes.size();
+        NDArray conn(DType::Int64, {list.size(), k});
+        for (std::size_t r = 0; r < list.size(); ++r) {
+            std::copy(list[r].mNodes.begin(), list[r].mNodes.end(),
+                      conn.As<std::int64_t>() + r * k);
+            cell_of[{list[r].mFamily, list[r].mElement}] =
+                static_cast<std::int64_t>(cell_dim.size());
+            cell_dim.push_back(type == "vertex"                         ? 0
+                               : type == "line"                         ? 1
+                               : (type == "triangle" || type == "quad") ? 2
+                                                                        : 3);
+        }
+        mesh.AddCellBlock(type, std::move(conn));
+    }
+    mesh.AddFieldData("meshio:time", [&] {
+        NDArray a(DType::Float64, {1});
+        a.As<double>()[0] = time;
+        return a;
+    }());
+
+    auto vec = [](const std::vector<double>& rV, std::vector<std::size_t> Shape) {
+        NDArray a(DType::Float64, std::move(Shape));
+        std::copy(rV.begin(), rV.end(), a.As<double>());
+        return a;
+    };
+    const std::size_t n_points = static_cast<std::size_t>(nn);
+    for (const auto& [name, values] : point_scalars)
+        mesh.AddPointData(name, vec(values, {n_points}));
+    for (std::size_t k = 0; k < vnames.size(); ++k)
+        mesh.AddPointData(
+            vnames[k],
+            vec(std::vector<double>(
+                    vvalues.begin() + static_cast<std::ptrdiff_t>(k * 3 * n_points),
+                    vvalues.begin() + static_cast<std::ptrdiff_t>((k + 1) * 3 * n_points)),
+                {n_points, 3}));
+    if (flags[1]) {
+        NDArray a(DType::Int64, {n_points});
+        std::copy(node_ids.begin(), node_ids.end(), a.As<std::int64_t>());
+        mesh.AddPointData("radioss:node_id", std::move(a));
+    }
+    if (flags[0] == 1)
+        mesh.AddPointData("radioss:mass", vec(point_mass, {n_points}));
+    if (block_types.empty())
+        return mesh;
+
+    // One array per block from `rGet(family, element, out)`.
+    auto per_block = [&](std::size_t Width, double Fill, DType Type, auto&& rGet) {
+        std::vector<NDArray> out;
+        for (const std::string& type : block_types) {
+            const std::vector<AnimCell>& list = members[type];
+            const std::size_t w = Width ? Width : 1;
+            NDArray a(Type, Width ? std::vector<std::size_t>{list.size(), Width}
+                                  : std::vector<std::size_t>{list.size()});
+            std::vector<double> row(w);
+            for (std::size_t r = 0; r < list.size(); ++r) {
+                std::fill(row.begin(), row.end(), Fill);
+                rGet(list[r].mFamily, list[r].mElement, row.data());
+                for (std::size_t j = 0; j < w; ++j) {
+                    if (Type == DType::Float64)
+                        a.As<double>()[r * w + j] = row[j];
+                    else if (Type == DType::Int8)
+                        a.As<std::int8_t>()[r * w + j] = static_cast<std::int8_t>(row[j]);
+                    else
+                        a.As<std::int64_t>()[r * w + j] = static_cast<std::int64_t>(row[j]);
+                }
+            }
+            out.push_back(std::move(a));
+        }
+        return out;
+    };
+
+    // Per family and element: the part id, and the part's hierarchy values.
+    std::vector<std::vector<std::int64_t>> part_id(families.size());
+    std::vector<std::vector<std::array<std::int64_t, 2>>> part_matprop(families.size());
+    struct AnimPart {
+        std::string mName;
+        std::int64_t mId;
+        std::size_t mFamily;
+        std::int64_t mStart, mEnd;
+    };
+    std::vector<AnimPart> parts;
+    for (std::size_t fi = 0; fi < families.size(); ++fi) {
+        const AnimFamily& fam = families[fi];
+        part_id[fi].assign(fam.Size(), 0);
+        part_matprop[fi].assign(fam.Size(), {0, 0});
+        anim_for_parts(fam, [&](std::size_t k, std::int64_t b, std::int64_t e) {
+            const std::string& text = fam.mPartTexts[k];
+            const std::size_t colon = text.find(':');
+            std::int64_t pid = 0;
+            try {
+                pid = std::stoll(text.substr(0, colon));
+            } catch (...) {
+                pid = 0;
+            }
+            std::string name = colon == std::string::npos ? text : text.substr(colon + 1);
+            const std::size_t nb = name.find_first_not_of(" \t");
+            name = nb == std::string::npos ? std::string()
+                                           : name.substr(nb, name.find_last_not_of(" \t") - nb + 1);
+            for (std::int64_t i = b; i < e; ++i) {
+                part_id[fi][static_cast<std::size_t>(i)] = pid;
+                if (fam.mHasHierarchy)
+                    part_matprop[fi][static_cast<std::size_t>(i)] = {fam.mHierarchy[1][k],
+                                                                     fam.mHierarchy[2][k]};
+            }
+            parts.push_back({name, pid, fi, b, e});
+        });
+    }
+    mesh.AddCellData("radioss:part",
+                     per_block(0, 0.0, DType::Int64, [&](std::size_t f, std::size_t e, double* p) {
+                         *p = static_cast<double>(part_id[f][e]);
+                     }));
+    // A deleted (eroded) element's flag is 0; any other byte is alive (the
+    // facets write 0xFF, bricks and beams 1).
+    mesh.AddCellData("radioss:alive",
+                     per_block(0, 0.0, DType::Int8, [&](std::size_t f, std::size_t e, double* p) {
+                         *p = families[f].mAlive[e] ? 1.0 : 0.0;
+                     }));
+    auto all = [&](bool AnimFamily::* pMember) {
+        for (const AnimFamily& fam : families)
+            if (!(fam.*pMember))
+                return false;
+        return true;
+    };
+    if (all(&AnimFamily::mHasIds))
+        mesh.AddCellData(
+            "radioss:element_id",
+            per_block(0, 0.0, DType::Int64, [&](std::size_t f, std::size_t e, double* p) {
+                *p = static_cast<double>(families[f].mIds[e]);
+            }));
+    if (all(&AnimFamily::mHasMass))
+        mesh.AddCellData("radioss:mass", per_block(0, 0.0, DType::Float64,
+                                                   [&](std::size_t f, std::size_t e, double* p) {
+                                                       *p = families[f].mMass[e];
+                                                   }));
+    if (all(&AnimFamily::mHasHierarchy)) {
+        mesh.AddCellData(
+            "radioss:material",
+            per_block(0, 0.0, DType::Int64, [&](std::size_t f, std::size_t e, double* p) {
+                *p = static_cast<double>(part_matprop[f][e][0]);
+            }));
+        mesh.AddCellData(
+            "radioss:property",
+            per_block(0, 0.0, DType::Int64, [&](std::size_t f, std::size_t e, double* p) {
+                *p = static_cast<double>(part_matprop[f][e][1]);
+            }));
+    }
+
+    // Element results: the union of the families' names, NaN where a family has
+    // none; tensors as xx yy zz xy yz zx (a 2-D one's out-of-plane parts NaN),
+    // 1-D force/moment sets with their nine components.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::map<std::string, std::map<std::size_t, const std::vector<double>*>> scalars;
+    std::map<std::string, std::map<std::size_t, std::pair<std::size_t, const std::vector<double>*>>>
+        tensors;
+    for (std::size_t fi = 0; fi < families.size(); ++fi) {
+        for (const auto& [name, values] : families[fi].mScalars)
+            scalars[name][fi] = &values;
+        for (const auto& [name, width, values] : families[fi].mTensors)
+            tensors[name][fi] = {width, &values};
+    }
+    for (const auto& [name, by_family] : scalars)
+        mesh.AddCellData(
+            name, per_block(0, nan, DType::Float64, [&](std::size_t f, std::size_t e, double* p) {
+                const auto it = by_family.find(f);
+                if (it != by_family.end())
+                    *p = (*it->second)[e];
+            }));
+    for (const auto& [name, by_family] : tensors) {
+        bool nine = false, other = false;
+        for (const auto& [f, wv] : by_family)
+            (wv.first == 9 ? nine : other) = true;
+        if (nine && other)
+            throw ReadError("Radioss animation: '" + rPath +
+                            "' names both a 1-D force set and a tensor '" + name + "'");
+        const std::size_t width = nine ? 9 : 6;
+        mesh.AddCellData(name, per_block(width, nan, DType::Float64,
+                                         [&](std::size_t f, std::size_t e, double* p) {
+                                             const auto it = by_family.find(f);
+                                             if (it == by_family.end())
+                                                 return;
+                                             const std::size_t w = it->second.first;
+                                             const double* v = it->second.second->data() + e * w;
+                                             if (w == 3) {  // xx yy xy
+                                                 p[0] = v[0];
+                                                 p[1] = v[1];
+                                                 p[3] = v[2];
+                                             } else {
+                                                 std::copy(v, v + w, p);
+                                             }
+                                         }));
+    }
+
+    // Parts -> cell regions (a part id can name a 1-D and a 2-D part).
+    std::map<std::pair<std::string, std::int64_t>, std::vector<std::int64_t>> regions;
+    std::vector<std::pair<std::string, std::int64_t>> order;
+    for (const AnimPart& p : parts) {
+        const std::pair<std::string, std::int64_t> key{
+            p.mName.empty() ? "Part " + std::to_string(p.mId) : p.mName, p.mId};
+        auto [it, fresh] = regions.emplace(key, std::vector<std::int64_t>{});
+        if (fresh)
+            order.push_back(key);
+        for (std::int64_t i = p.mStart; i < p.mEnd; ++i) {
+            const auto c = cell_of.find({p.mFamily, static_cast<std::size_t>(i)});
+            if (c != cell_of.end())
+                it->second.push_back(c->second);
+        }
+    }
+    for (const auto& key : order) {
+        std::vector<std::int64_t>& ids = regions[key];
+        std::sort(ids.begin(), ids.end());
+        int dim = -1;
+        for (std::int64_t c : ids)
+            dim = std::max(dim, cell_dim[static_cast<std::size_t>(c)]);
+        NDArray a(DType::Int64, {ids.size()});
+        std::copy(ids.begin(), ids.end(), a.As<std::int64_t>());
+        mesh.AddRegion(Region(key.first, RegionKind::Cell, dim, key.second, std::move(a)));
+    }
+    return mesh;
+}
+
+MeshMetadata read_radioss_anim_metadata(const std::string& rPath, const ReadOptions& /*rOpts*/) {
+    const Mesh mesh = read_radioss_anim(rPath);
+    MeshMetadata meta = metadata_from_mesh(mesh);
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "radioss_anim";
+    meta.mTimeValues = {mesh.FieldData("meshio:time").As<double>()[0]};
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/radioss_anim.cpp =====
 // ===== begin src/cpp/src/formats/stl.cpp =====
 #include <array>
 #include <cctype>
@@ -100984,6 +105096,10 @@ std::string meshio_to_tecplot(const std::string& rM) {
         return "FETETRAHEDRON";
     if (rM == "pyramid" || rM == "wedge" || rM == "hexahedron")
         return "FEBRICK";
+    if (rM.rfind("polygon", 0) == 0)
+        return "FEPOLYGON";
+    if (rM.rfind("polyhedron", 0) == 0)
+        return "FEPOLYHEDRON";
     return "";
 }
 const std::vector<int>& tecplot_order(const std::string& rM) {
@@ -101042,6 +105158,16 @@ struct TecplotZone {
     int mRawFaceNeighbors = 0;
     int mMiscFaceNeighbors = 0;
     int mFaceNeighborMode = 0;
+    // Face-based (FEPOLYGON/FEPOLYHEDRON) zones: the face map's sizes. The
+    // boundary counts are as the encoding stores them (a .plt counts one
+    // extra boundary face for "no neighbour" when there is any).
+    std::size_t mNumFaces = 0;
+    std::size_t mTotalFaceNodes = 0;
+    std::size_t mNumBoundaryFaces = 0;
+    std::size_t mNumBoundaryConns = 0;
+
+    bool IsPoly() const { return mTypeName == "FEPOLYGON" || mTypeName == "FEPOLYHEDRON"; }
+    bool IsPolyhedron() const { return mTypeName == "FEPOLYHEDRON"; }
 
     bool Owns(std::size_t Var) const {
         return !mVarShareZone.count(Var) && !mPassiveVars.count(Var);
@@ -101074,9 +105200,10 @@ std::string tecplot_zone_meshio_type(const TecplotZone& rZ) {
         static const char* const kTypes[] = {"vertex", "line", "quad", "hexahedron"};
         return kTypes[rZ.OrderedDims()];
     }
-    if (rZ.mTypeName == "FEPOLYGON" || rZ.mTypeName == "FEPOLYHEDRON")
-        throw ReadError("Tecplot: " + rZ.mTypeName +
-                        " zones (polygonal/polyhedral) are not supported");
+    if (rZ.mTypeName == "FEPOLYGON")
+        return "polygon";
+    if (rZ.mTypeName == "FEPOLYHEDRON")
+        return "polyhedron";
     const std::string mtype = tecplot_to_meshio(rZ.mTypeName);
     if (mtype.empty())
         throw ReadError("Tecplot: unsupported zone type " + rZ.mTypeName);
@@ -101145,16 +105272,89 @@ NDArray tecplot_ordered_connectivity(const TecplotZone& rZ) {
     return conn;
 }
 
+/// The face map of an FEPOLYGON/FEPOLYHEDRON zone: every face's nodes and the
+/// two elements it separates, all 0-based. A neighbour in another zone (a
+/// boundary connection) or none at all is -1: only this zone's cells are
+/// assembled from it, and a face with no neighbour on one side still bounds
+/// the cell on the other.
+struct TecplotFaceMap {
+    std::vector<std::int64_t> mStart;  // NumFaces + 1 offsets into mNodes
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mLeft;
+    std::vector<std::int64_t> mRight;
+};
+
+/// Checks and stores a zone's face map from its raw arrays: `rCounts` is empty
+/// for a polygonal zone (every face is an edge), node and element numbers are
+/// 1-based in ASCII (0 = no neighbour) and 0-based in a .plt (-1 = none); a
+/// negative element names a boundary connection, i.e. another zone.
+TecplotFaceMap tecplot_face_map(const TecplotZone& rZ, std::size_t ZoneIdx,
+                                const std::vector<std::int64_t>& rCounts,
+                                std::vector<std::int64_t> Nodes, std::vector<std::int64_t> Left,
+                                std::vector<std::int64_t> Right, bool OneBased) {
+    const std::string where = "Tecplot: zone " + std::to_string(ZoneIdx + 1);
+    const std::int64_t base = OneBased ? 1 : 0;
+    TecplotFaceMap fm;
+    fm.mStart.reserve(rZ.mNumFaces + 1);
+    fm.mStart.push_back(0);
+    for (std::size_t f = 0; f < rZ.mNumFaces; ++f) {
+        const std::int64_t n = rCounts.empty() ? 2 : rCounts[f];
+        if (n < 2)
+            throw ReadError(where + ": face " + std::to_string(f + 1) + " has " +
+                            std::to_string(n) + " nodes");
+        fm.mStart.push_back(fm.mStart.back() + n);
+    }
+    if (static_cast<std::size_t>(fm.mStart.back()) != Nodes.size())
+        throw ReadError(where + ": the face node counts add up to " +
+                        std::to_string(fm.mStart.back()) + ", not TOTALNUMFACENODES " +
+                        std::to_string(Nodes.size()));
+    const auto num_nodes = static_cast<std::int64_t>(rZ.mNumNodes);
+    for (std::int64_t& v : Nodes) {
+        v -= base;
+        if (v < 0 || v >= num_nodes)
+            throw ReadError(where + ": face node " + std::to_string(v + base) + " is out of range");
+    }
+    const auto num_cells = static_cast<std::int64_t>(rZ.mNumCells);
+    for (std::vector<std::int64_t>* pSide : {&Left, &Right}) {
+        for (std::int64_t& e : *pSide) {
+            if (e < 0) {
+                e = -1;  // a boundary connection: the neighbour is in another zone
+                continue;
+            }
+            e -= base;
+            if (e >= num_cells)
+                throw ReadError(where + ": face neighbour " + std::to_string(e + base) +
+                                " is out of range");
+        }
+    }
+    fm.mNodes = std::move(Nodes);
+    fm.mLeft = std::move(Left);
+    fm.mRight = std::move(Right);
+    return fm;
+}
+
+/// How many integers a face-based zone's face map holds after its data: the
+/// node count per face (polyhedra only), the face nodes, the left and the
+/// right elements, then the boundary connections (ASCII: a count per
+/// connected boundary face, then that many elements and as many zones).
+std::size_t tecplot_ascii_face_map_tokens(const TecplotZone& rZ) {
+    std::size_t n = (rZ.IsPolyhedron() ? rZ.mNumFaces : 0) + rZ.mTotalFaceNodes + 2 * rZ.mNumFaces;
+    if (rZ.mNumBoundaryFaces > 0)
+        n += rZ.mNumBoundaryFaces + 2 * rZ.mNumBoundaryConns;
+    return n;
+}
+
 /// A zone's own data -- the variables it neither shares nor leaves passive,
-/// and its own FE connectivity (0-based) -- from wherever the encoding keeps
-/// them.
+/// and its own FE connectivity (0-based) or face map -- from wherever the
+/// encoding keeps them.
 class TecplotSource {
 public:
     virtual ~TecplotSource() = default;
     /// Fills `rCols[v]` for every owned variable `v` and, for an FE zone that
-    /// does not share its connectivity, `rConn`.
+    /// does not share its connectivity, `rConn` (cell-based zones) or `rFaces`
+    /// (face-based zones).
     virtual void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
-                         NDArray& rConn) const = 0;
+                         NDArray& rConn, TecplotFaceMap& rFaces) const = 0;
 };
 
 // --- ASCII --------------------------------------------------------------------
@@ -101287,7 +105487,9 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
             const std::string& val = tk[k + 2];
             if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
                 key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
-                key == "NV" || key == "I" || key == "J" || key == "K") {
+                key == "NV" || key == "I" || key == "J" || key == "K" || key == "FACES" ||
+                key == "TOTALNUMFACENODES" || key == "NUMCONNECTEDBOUNDARYFACES" ||
+                key == "TOTALNUMBOUNDARYCONNECTIONS") {
                 fields[key] = val;
             } else if (key == "T") {
                 z.mTitle = tecplot_unquote(val);
@@ -101345,6 +105547,27 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
             throw ReadError(z.mOrdered ? "Tecplot: bad I/J/K in an ordered zone"
                                        : "Tecplot: an FE zone needs NODES and ELEMENTS");
         }
+        if (z.IsPoly()) {
+            auto count = [&](const char* pKey, bool Required, std::size_t Default) {
+                const auto it = fields.find(pKey);
+                if (it == fields.end()) {
+                    if (Required)
+                        throw ReadError("Tecplot: a " + z.mTypeName + " zone needs " + pKey);
+                    return Default;
+                }
+                try {
+                    return static_cast<std::size_t>(std::stoull(it->second));
+                } catch (const std::logic_error&) {
+                    throw ReadError(std::string("Tecplot: bad ") + pKey);
+                }
+            };
+            z.mNumFaces = count("FACES", true, 0);
+            z.mTotalFaceNodes = count("TOTALNUMFACENODES", z.IsPolyhedron(), 2 * z.mNumFaces);
+            z.mNumBoundaryFaces = count("NUMCONNECTEDBOUNDARYFACES", false, 0);
+            z.mNumBoundaryConns = count("TOTALNUMBOUNDARYCONNECTIONS", false, 0);
+            if (!z.mBlock)
+                throw ReadError("Tecplot: a " + z.mTypeName + " zone must be DATAPACKING=BLOCK");
+        }
 
         const std::size_t want = tecplot_ascii_token_count(z, rVariables.size());
         std::size_t li = z.mDataStart, got = 0;
@@ -101352,8 +105575,17 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
             got += tecplot_tokens(rLines[li]).size();
             ++li;
         }
-        if (!z.mOrdered && z.mConnShareZone < 0)
-            li += z.mNumCells;  // one connectivity line per cell -- none if shared
+        if (!z.mOrdered && z.mConnShareZone < 0) {
+            if (z.IsPoly()) {
+                // The face map is a token stream, not one line per anything.
+                const std::size_t face_tokens = tecplot_ascii_face_map_tokens(z);
+                std::size_t seen = 0;
+                while (seen < face_tokens && li < rLines.size())
+                    seen += tecplot_tokens(rLines[li++]).size();
+            } else {
+                li += z.mNumCells;  // one connectivity line per cell -- none if shared
+            }
+        }
         zones.push_back(std::move(z));
         i = li;
     }
@@ -101370,8 +105602,8 @@ public:
                        const std::vector<TecplotZone>& rZones, std::size_t NumVariables)
         : mrLines(rLines), mrZones(rZones), mNumVariables(NumVariables) {}
 
-    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
-                 NDArray& rConn) const override {
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols, NDArray& rConn,
+                 TecplotFaceMap& rFaces) const override {
         const TecplotZone& z = mrZones[ZoneIdx];
         const std::size_t nv = mNumVariables;
         const std::size_t want = tecplot_ascii_token_count(z, nv);
@@ -101407,6 +105639,31 @@ public:
         }
         if (z.mOrdered || z.mConnShareZone >= 0)
             return;
+        if (z.IsPoly()) {
+            const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
+            std::vector<std::int64_t> ints;
+            ints.reserve(want_ints);
+            while (ints.size() < want_ints && li < mrLines.size())
+                for (const auto& t : tecplot_tokens(mrLines[li++]))
+                    ints.push_back(std::strtoll(t.c_str(), nullptr, 10));
+            if (ints.size() < want_ints)
+                throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                " face map is truncated");
+            auto take = [&, pos = std::size_t{0}](std::size_t N) mutable {
+                std::vector<std::int64_t> out(ints.begin() + static_cast<std::ptrdiff_t>(pos),
+                                              ints.begin() + static_cast<std::ptrdiff_t>(pos + N));
+                pos += N;
+                return out;
+            };
+            const std::vector<std::int64_t> counts =
+                z.IsPolyhedron() ? take(z.mNumFaces) : std::vector<std::int64_t>{};
+            std::vector<std::int64_t> nodes = take(z.mTotalFaceNodes);
+            std::vector<std::int64_t> left = take(z.mNumFaces);
+            std::vector<std::int64_t> right = take(z.mNumFaces);
+            rFaces = tecplot_face_map(z, ZoneIdx, counts, std::move(nodes), std::move(left),
+                                      std::move(right), true);
+            return;
+        }
         const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
@@ -101561,8 +105818,19 @@ std::vector<TecplotZone> tecplot_plt_header(detail::ByteCursor& rCur,
                 z.FinishOrdered();
             } else {
                 const std::int32_t pts = rCur.I32();
-                if (ztype == 6 || ztype == 7)
-                    rCur.Skip(4 * 4);  // faces, face nodes, boundary faces and connections
+                if (ztype == 6 || ztype == 7) {
+                    // faces, face nodes, boundary faces (+1 when any) and connections
+                    std::int32_t counts[4];
+                    for (std::int32_t& c : counts) {
+                        c = rCur.I32();
+                        if (c < 0)
+                            throw ReadError("Tecplot .plt: negative face map size");
+                    }
+                    z.mNumFaces = static_cast<std::size_t>(counts[0]);
+                    z.mTotalFaceNodes = static_cast<std::size_t>(counts[1]);
+                    z.mNumBoundaryFaces = static_cast<std::size_t>(counts[2]);
+                    z.mNumBoundaryConns = static_cast<std::size_t>(counts[3]);
+                }
                 const std::int32_t elems = rCur.I32();
                 if (pts < 0 || elems < 0)
                     throw ReadError("Tecplot .plt: negative node or element count");
@@ -101722,7 +105990,22 @@ void tecplot_plt_scan_data(detail::ByteCursor& rCur, const std::vector<std::stri
                 tecplot_plt_skip_face_neighbors(rCur, z);
             continue;
         }
-        const std::string mtype = tecplot_zone_meshio_type(z);  // refuses polygon/polyhedron
+        const std::string mtype = tecplot_zone_meshio_type(z);
+        if (z.IsPoly()) {
+            if (z.mConnShareZone < 0) {
+                // Face node offsets (polyhedra only), face nodes, left and right
+                // elements, then the boundary connections: offsets over the
+                // (already +1) boundary face count plus one, elements and zones.
+                z.mHasConn = true;
+                z.mConnOffset = rCur.Offset();
+                std::size_t n =
+                    (z.IsPolyhedron() ? z.mNumFaces + 1 : 0) + z.mTotalFaceNodes + 2 * z.mNumFaces;
+                if (z.mNumBoundaryFaces > 0)
+                    n += z.mNumBoundaryFaces + 1 + 2 * z.mNumBoundaryConns;
+                rCur.Skip(n * 4);
+            }
+            continue;
+        }
         if (z.mConnShareZone < 0) {
             static const std::map<std::string, std::size_t> kFaces = {
                 {"line", 0}, {"triangle", 3}, {"quad", 4}, {"tetra", 4}, {"hexahedron", 6}};
@@ -101743,8 +106026,8 @@ public:
                      const std::vector<TecplotZone>& rZones)
         : mpData(pData), mSize(Size), mBigEndian(BigEndian), mrZones(rZones) {}
 
-    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
-                 NDArray& rConn) const override {
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols, NDArray& rConn,
+                 TecplotFaceMap& rFaces) const override {
         const TecplotZone& z = mrZones[ZoneIdx];
         detail::ByteCursor cur(mpData, mSize, mBigEndian, "Tecplot .plt");
         const bool swap = mBigEndian != (std::endian::native == std::endian::big);
@@ -101798,10 +106081,34 @@ public:
         }
         if (!z.mHasConn)
             return;
+        cur.Seek(z.mConnOffset);
+        if (z.IsPoly()) {
+            auto ints = [&](std::size_t N) {
+                std::vector<std::int64_t> out(N);
+                for (std::int64_t& v : out)
+                    v = cur.I32();
+                return out;
+            };
+            std::vector<std::int64_t> counts;
+            if (z.IsPolyhedron()) {
+                const std::vector<std::int64_t> offsets = ints(z.mNumFaces + 1);
+                if (offsets[0] != 0)
+                    throw ReadError("Tecplot .plt: zone " + std::to_string(ZoneIdx + 1) +
+                                    " face node offsets do not start at 0");
+                counts.resize(z.mNumFaces);
+                for (std::size_t f = 0; f < z.mNumFaces; ++f)
+                    counts[f] = offsets[f + 1] - offsets[f];
+            }
+            std::vector<std::int64_t> nodes = ints(z.mTotalFaceNodes);
+            std::vector<std::int64_t> left = ints(z.mNumFaces);
+            std::vector<std::int64_t> right = ints(z.mNumFaces);
+            rFaces = tecplot_face_map(z, ZoneIdx, counts, std::move(nodes), std::move(left),
+                                      std::move(right), false);
+            return;
+        }
         const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
-        cur.Seek(z.mConnOffset);
         for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
             cp[r] = cur.I32();
     }
@@ -101845,6 +106152,125 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<Tecplot
     return steps;
 }
 
+/// One cell block of a zone. A cell-based or ordered zone is one piece over
+/// all its cells; a face-based zone is one ragged `polygon` piece, or one
+/// `polyhedron<N>` piece per distinct node count (the naming every other
+/// polyhedral reader uses), each listing which of the zone's cells it holds.
+struct TecplotPiece {
+    std::string mType;
+    NDArray mConn;                                              // rectangular pieces
+    std::vector<std::vector<std::int64_t>> mRows;               // polygon
+    std::vector<std::vector<std::vector<std::int64_t>>> mPoly;  // polyhedra
+    std::vector<std::size_t> mCells;  // the zone's cells, in order; empty = all of them
+
+    std::size_t NumCells(std::size_t ZoneCells) const {
+        return mCells.empty() ? ZoneCells : mCells.size();
+    }
+    std::size_t Cell(std::size_t Row) const { return mCells.empty() ? Row : mCells[Row]; }
+};
+
+/// The ring of a polygonal element from its edges, directed so the element
+/// lies on their left (Tecplot's convention: walking a face from its first
+/// node to its second, the left element is on the left). The ring starts at
+/// the first edge and follows it; when most edges disagree with that
+/// direction (an inconsistently wound file) it is reversed. Empty when the
+/// edges do not close one loop.
+std::vector<std::int64_t> tecplot_polygon_ring(
+    const std::vector<std::pair<std::int64_t, std::int64_t>>& rEdges) {
+    if (rEdges.size() < 3)
+        return {};
+    std::map<std::int64_t, std::vector<std::int64_t>> adj;
+    std::set<std::pair<std::int64_t, std::int64_t>> directed;
+    for (const auto& [a, b] : rEdges) {
+        adj[a].push_back(b);
+        adj[b].push_back(a);
+        directed.insert({a, b});
+    }
+    for (const auto& [node, nbrs] : adj)
+        if (nbrs.size() != 2)
+            return {};
+    const std::int64_t start = rEdges[0].first;
+    std::vector<std::int64_t> ring = {start, rEdges[0].second};
+    while (ring.size() < rEdges.size()) {
+        const auto& nb = adj[ring.back()];
+        const std::int64_t next = nb[0] != ring[ring.size() - 2] ? nb[0] : nb[1];
+        if (next == start)
+            return {};
+        ring.push_back(next);
+    }
+    const auto& last = adj[ring.back()];
+    if (last[0] != start && last[1] != start)
+        return {};
+    std::size_t agree = 0;
+    for (std::size_t i = 0; i < ring.size(); ++i)
+        agree += directed.count({ring[i], ring[(i + 1) % ring.size()]});
+    if (2 * agree < ring.size())
+        std::reverse(ring.begin() + 1, ring.end());
+    return ring;
+}
+
+/// A face-based zone's cells from its face map. A polyhedral face is wound
+/// with its right-hand normal pointing at the right element, so it is kept
+/// as-is for the left element (outward) and reversed for the right one.
+std::vector<TecplotPiece> tecplot_face_pieces(const TecplotZone& rZ, std::size_t ZoneIdx,
+                                              const TecplotFaceMap& rFm) {
+    const std::string where = "Tecplot: zone " + std::to_string(ZoneIdx + 1);
+    const std::size_t ncells = rZ.mNumCells;
+    std::vector<TecplotPiece> pieces;
+    if (!rZ.IsPolyhedron()) {
+        std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> edges(ncells);
+        for (std::size_t f = 0; f + 1 < rFm.mStart.size(); ++f) {
+            const std::int64_t a = rFm.mNodes[static_cast<std::size_t>(rFm.mStart[f])];
+            const std::int64_t b = rFm.mNodes[static_cast<std::size_t>(rFm.mStart[f]) + 1];
+            if (rFm.mLeft[f] >= 0)
+                edges[static_cast<std::size_t>(rFm.mLeft[f])].push_back({a, b});
+            if (rFm.mRight[f] >= 0)
+                edges[static_cast<std::size_t>(rFm.mRight[f])].push_back({b, a});
+        }
+        TecplotPiece piece;
+        piece.mType = "polygon";
+        piece.mRows.reserve(ncells);
+        for (std::size_t c = 0; c < ncells; ++c) {
+            std::vector<std::int64_t> ring = tecplot_polygon_ring(edges[c]);
+            if (ring.empty())
+                throw ReadError(where + ": element " + std::to_string(c + 1) +
+                                " is not one closed polygon");
+            piece.mRows.push_back(std::move(ring));
+        }
+        pieces.push_back(std::move(piece));
+        return pieces;
+    }
+    std::vector<std::vector<std::vector<std::int64_t>>> faces(ncells);
+    for (std::size_t f = 0; f + 1 < rFm.mStart.size(); ++f) {
+        const auto b = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]);
+        const auto e = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]);
+        if (rFm.mLeft[f] >= 0)
+            faces[static_cast<std::size_t>(rFm.mLeft[f])].emplace_back(b, e);
+        if (rFm.mRight[f] >= 0)
+            faces[static_cast<std::size_t>(rFm.mRight[f])].emplace_back(
+                std::make_reverse_iterator(e), std::make_reverse_iterator(b));
+    }
+    std::map<std::size_t, std::size_t> piece_of;  // node count -> piece
+    for (std::size_t c = 0; c < ncells; ++c) {
+        if (faces[c].size() < 4)
+            throw ReadError(where + ": element " + std::to_string(c + 1) + " has " +
+                            std::to_string(faces[c].size()) + " faces");
+        std::set<std::int64_t> distinct;
+        for (const auto& fc : faces[c])
+            distinct.insert(fc.begin(), fc.end());
+        const auto [it, fresh] = piece_of.emplace(distinct.size(), pieces.size());
+        if (fresh) {
+            pieces.emplace_back();
+            pieces.back().mType = "polyhedron" + std::to_string(distinct.size());
+        }
+        pieces[it->second].mPoly.push_back(std::move(faces[c]));
+        pieces[it->second].mCells.push_back(c);
+    }
+    if (pieces.size() == 1)
+        pieces[0].mCells.clear();  // every cell, in order
+    return pieces;
+}
+
 /// One zone's resolved data columns, connectivity and topology -- shared by
 /// every step that references it (a zone can be VARSHARELIST'd or
 /// CONNECTIVITYSHAREZONE'd from more than one later zone), so it is decoded
@@ -101853,7 +106279,9 @@ struct TecplotDecodedZone {
     std::vector<std::vector<double>> mCols;  // per variable; length NumNodes or NumCells
     std::vector<int> mCellCentered;
     std::string mMeshioType;
-    NDArray mConn;  // (NumCells, NodesPerCell) int64, 0-based
+    NDArray mConn;                      // (NumCells, NodesPerCell) int64, 0-based
+    TecplotFaceMap mFaces;              // face-based zones
+    std::vector<TecplotPiece> mPieces;  // face-based zones; else one block from mConn
     std::size_t mNumNodes = 0;
     std::size_t mNumCells = 0;
 };
@@ -101876,7 +106304,7 @@ public:
         TecplotDecodedZone result;
         result.mMeshioType = tecplot_zone_meshio_type(z);
         result.mCols.resize(mNumVariables);
-        mrSource.OwnData(ZoneIdx, result.mCols, result.mConn);
+        mrSource.OwnData(ZoneIdx, result.mCols, result.mConn, result.mFaces);
         for (std::size_t k = 0; k < mNumVariables; ++k) {
             const auto share = z.mVarShareZone.find(k);
             if (share != z.mVarShareZone.end()) {
@@ -101889,9 +106317,18 @@ public:
         if (z.mOrdered) {
             result.mConn = tecplot_ordered_connectivity(z);
         } else if (z.mConnShareZone >= 0) {
-            CheckSource(static_cast<std::size_t>(z.mConnShareZone), ZoneIdx);
-            result.mConn = Zone(static_cast<std::size_t>(z.mConnShareZone), Depth + 1).mConn;
+            const auto src = static_cast<std::size_t>(z.mConnShareZone);
+            CheckSource(src, ZoneIdx);
+            const TecplotDecodedZone& from = Zone(src, Depth + 1);
+            if (mrZones[src].mTypeName != z.mTypeName || mrZones[src].mNumCells != z.mNumCells ||
+                (z.IsPoly() && mrZones[src].mNumNodes != z.mNumNodes))
+                throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                " shares the connectivity of a different zone type or size");
+            result.mConn = from.mConn;
+            result.mFaces = from.mFaces;
         }
+        if (z.IsPoly())
+            result.mPieces = tecplot_face_pieces(z, ZoneIdx, result.mFaces);
         result.mCellCentered = z.mCellCentered;
         result.mNumNodes = z.mNumNodes;
         result.mNumCells = z.mNumCells;
@@ -102034,13 +106471,50 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     }
     mesh.AssignPoints(std::move(pts));
 
+    // The step's cell blocks: one per zone, or one per piece of a face-based
+    // zone, in zone order.
+    struct BlockRef {
+        std::size_t mZone;            // position in rZoneIdxs
+        const TecplotPiece* mpPiece;  // nullptr: the zone's whole mConn
+        std::size_t mNumCells;
+    };
+    std::vector<BlockRef> refs;
     for (std::size_t k = 0; k < decoded.size(); ++k) {
         const TecplotDecodedZone& d = *decoded[k];
-        NDArray conn = d.mConn;  // deep copy: offset in place below
-        std::int64_t* cp = conn.As<std::int64_t>();
-        for (std::size_t j = 0; j < conn.Size(); ++j)
-            cp[j] += static_cast<std::int64_t>(point_offset[k]);
-        mesh.AddCellBlock(d.mMeshioType, std::move(conn));
+        if (d.mPieces.empty()) {
+            refs.push_back({k, nullptr, d.mNumCells});
+            continue;
+        }
+        for (const TecplotPiece& piece : d.mPieces)
+            refs.push_back({k, &piece, piece.NumCells(d.mNumCells)});
+    }
+    auto zone_cell = [](const BlockRef& rRef, std::size_t Row) {
+        return rRef.mpPiece ? rRef.mpPiece->Cell(Row) : Row;
+    };
+
+    for (const BlockRef& ref : refs) {
+        const TecplotDecodedZone& d = *decoded[ref.mZone];
+        const auto off = static_cast<std::int64_t>(point_offset[ref.mZone]);
+        if (!ref.mpPiece) {
+            NDArray conn = d.mConn;  // deep copy: offset in place below
+            std::int64_t* cp = conn.As<std::int64_t>();
+            for (std::size_t j = 0; j < conn.Size(); ++j)
+                cp[j] += off;
+            mesh.AddCellBlock(d.mMeshioType, std::move(conn));
+        } else if (!ref.mpPiece->mRows.empty()) {
+            std::vector<std::vector<std::int64_t>> rows = ref.mpPiece->mRows;
+            for (auto& row : rows)
+                for (std::int64_t& v : row)
+                    v += off;
+            mesh.AddPolygonBlock(ref.mpPiece->mType, std::move(rows));
+        } else {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells = ref.mpPiece->mPoly;
+            for (auto& cell : cells)
+                for (auto& face : cell)
+                    for (std::int64_t& v : face)
+                        v += off;
+            mesh.AddPolyhedronBlock(ref.mpPiece->mType, std::move(cells));
+        }
     }
 
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -102054,14 +106528,16 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
         }
         if (any_cc) {
             std::vector<NDArray> blk;
-            blk.reserve(decoded.size());
-            for (const TecplotDecodedZone* d : decoded) {
-                NDArray arr(DType::Float64, {d->mNumCells});
+            blk.reserve(refs.size());
+            for (const BlockRef& ref : refs) {
+                const TecplotDecodedZone& d = *decoded[ref.mZone];
+                NDArray arr(DType::Float64, {ref.mNumCells});
                 double* ap = arr.As<double>();
-                if (d->mCellCentered[k])
-                    std::memcpy(ap, d->mCols[k].data(), d->mNumCells * sizeof(double));
+                if (d.mCellCentered[k])
+                    for (std::size_t r = 0; r < ref.mNumCells; ++r)
+                        ap[r] = d.mCols[k][zone_cell(ref, r)];
                 else
-                    std::fill(ap, ap + d->mNumCells, nan);
+                    std::fill(ap, ap + ref.mNumCells, nan);
                 blk.push_back(std::move(arr));
             }
             mesh.AddCellData(rVariables[k], std::move(blk));
@@ -102079,11 +106555,11 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     }
 
     std::vector<NDArray> zone_ids;
-    zone_ids.reserve(decoded.size());
-    for (std::size_t k = 0; k < decoded.size(); ++k) {
-        NDArray zn(DType::Int64, {decoded[k]->mNumCells});
+    zone_ids.reserve(refs.size());
+    for (const BlockRef& ref : refs) {
+        NDArray zn(DType::Int64, {ref.mNumCells});
         std::int64_t* zp = zn.As<std::int64_t>();
-        std::fill(zp, zp + decoded[k]->mNumCells, static_cast<std::int64_t>(rZoneIdxs[k]));
+        std::fill(zp, zp + ref.mNumCells, static_cast<std::int64_t>(rZoneIdxs[ref.mZone]));
         zone_ids.push_back(std::move(zn));
     }
     mesh.AddCellData("tecplot:zone", std::move(zone_ids));
@@ -102102,8 +106578,11 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
 
         NDArray entries(DType::Int64, {decoded[k]->mNumCells});
         std::int64_t* ep = entries.As<std::int64_t>();
-        for (std::size_t r = 0; r < decoded[k]->mNumCells; ++r)
-            ep[r] = detail::block_row_to_global(bases, k, static_cast<std::int64_t>(r));
+        std::size_t n = 0;
+        for (std::size_t b = 0; b < refs.size(); ++b)
+            if (refs[b].mZone == k)
+                for (std::size_t r = 0; r < refs[b].mNumCells; ++r)
+                    ep[n++] = detail::block_row_to_global(bases, b, static_cast<std::int64_t>(r));
         mesh.AddRegion(Region(unique, RegionKind::Cell, -1, static_cast<std::int64_t>(rZoneIdxs[k]),
                               std::move(entries)));
     }
@@ -102188,10 +106667,22 @@ MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& 
     std::vector<std::size_t> offset;
     std::vector<bool> owns;
     meta.mNumPoints = tecplot_point_layout(first_step, file.mZones, xi, offset, owns);
+    TecplotDecoder decoder(file.mZones, file.mVariables.size(), *file.mSource);
     for (std::size_t idx : first_step) {
+        const TecplotZone& z = file.mZones[idx];
+        if (z.IsPolyhedron()) {  // its blocks depend on its cells' node counts
+            const TecplotDecodedZone& d = decoder.Zone(idx);
+            for (const TecplotPiece& piece : d.mPieces) {
+                CellBlockInfo block;
+                block.mType = piece.mType;
+                block.mNumCells = piece.NumCells(d.mNumCells);
+                meta.mCellBlocks.push_back(std::move(block));
+            }
+            continue;
+        }
         CellBlockInfo block;
-        block.mType = tecplot_zone_meshio_type(file.mZones[idx]);
-        block.mNumCells = file.mZones[idx].mNumCells;
+        block.mType = tecplot_zone_meshio_type(z);
+        block.mNumCells = z.mNumCells;
         meta.mCellBlocks.push_back(std::move(block));
     }
     meta.mPointDim = 0;  // not knowable without decoding X/Y/Z columns
@@ -102212,6 +106703,64 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
 Mesh read_tecplot(const std::string& rPath) {
     return read_tecplot(rPath, ReadOptions{});
 }
+
+namespace {
+
+/// The face map of a polygon or polyhedron block for a face-based zone:
+/// faces in first-seen order (cells in order, each cell's faces in order),
+/// a face shared by two cells written once. A cell's face is outward, so
+/// that cell is its left element (right-hand normal towards the right one);
+/// the second cell to use it becomes the right element. Elements 1-based,
+/// 0 = none. Twin of `_tecplot._face_map`.
+struct TecplotWriteFaces {
+    std::vector<std::vector<std::int64_t>> mFaces;
+    std::vector<std::int64_t> mLeft;
+    std::vector<std::int64_t> mRight;
+};
+
+template <class TCellView>
+TecplotWriteFaces tecplot_write_faces(const TCellView& rCb) {
+    TecplotWriteFaces out;
+    std::map<std::vector<std::int64_t>, std::size_t> seen;
+    auto add = [&](std::vector<std::int64_t> Face, std::int64_t Cell) {
+        std::vector<std::int64_t> key = Face;
+        std::sort(key.begin(), key.end());
+        const auto it = seen.find(key);
+        if (it != seen.end() && out.mRight[it->second] == 0) {
+            out.mRight[it->second] = Cell;
+            return;
+        }
+        seen[key] = out.mFaces.size();
+        out.mFaces.push_back(std::move(Face));
+        out.mLeft.push_back(Cell);
+        out.mRight.push_back(0);
+    };
+    const std::size_t n = rCb.NumCells();
+    if (rCb.IsPolyhedron()) {
+        for (std::size_t c = 0; c < n; ++c)
+            for (std::size_t f = 0; f < rCb.NumFaces(c); ++f) {
+                const auto [ptr, size] = rCb.Face(c, f);
+                add(std::vector<std::int64_t>(ptr, ptr + size), static_cast<std::int64_t>(c + 1));
+            }
+        return out;
+    }
+    const NDArray* pConn = rCb.IsRagged() ? nullptr : &rCb.Conn();
+    const std::size_t k = rCb.IsRagged() ? 0 : rCb.NodesPerCell();
+    for (std::size_t c = 0; c < n; ++c) {
+        std::vector<std::int64_t> row;
+        if (pConn) {
+            for (std::size_t j = 0; j < k; ++j)
+                row.push_back(detail::read_int(*pConn, c * k + j));
+        } else {
+            row.assign(rCb.Row(c), rCb.Row(c) + rCb.RowSize(c));
+        }
+        for (std::size_t j = 0; j < row.size(); ++j)
+            add({row[j], row[(j + 1) % row.size()]}, static_cast<std::int64_t>(c + 1));
+    }
+    return out;
+}
+
+}  // namespace
 
 // Writes one Tecplot ZONE per cell block (no single-type restriction). Zone
 // 1 carries the coordinates and every nodal field; later zones reuse them
@@ -102346,8 +106895,19 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
                 passive.push_back(j);
         }
 
+        const bool face_based = ztype == "FEPOLYGON" || ztype == "FEPOLYHEDRON";
+        TecplotWriteFaces faces;
+        std::size_t total_face_nodes = 0;
+        if (face_based) {
+            faces = tecplot_write_faces(cb);
+            for (const auto& f : faces.mFaces)
+                total_face_nodes += f.size();
+        }
         os << "ZONE T = \"" << title << "\", NODES = " << num_nodes
            << ", ELEMENTS = " << num_cells << ",\n";
+        if (face_based)
+            os << "FACES = " << faces.mFaces.size() << ", TOTALNUMFACENODES = " << total_face_nodes
+               << ",\nNUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n";
         os << "DATAPACKING = BLOCK, ZONETYPE = " << ztype;
         if (bi > 0)
             os << ",\nVARSHARELIST = ([1-" << num_shared << "] = 1)";
@@ -102377,6 +106937,26 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             write_column(col);
         }
 
+        if (face_based) {
+            auto write_ints = [&](const std::vector<std::int64_t>& rInts) {
+                for (std::size_t i = 0; i < rInts.size(); ++i)
+                    os << rInts[i] << ((i + 1) % 20 == 0 || i + 1 == rInts.size() ? '\n' : ' ');
+                if (rInts.empty())
+                    os << "\n";
+            };
+            if (ztype == "FEPOLYHEDRON") {
+                std::vector<std::int64_t> counts;
+                for (const auto& f : faces.mFaces)
+                    counts.push_back(static_cast<std::int64_t>(f.size()));
+                write_ints(counts);
+            }
+            for (const auto& f : faces.mFaces)
+                for (std::size_t j = 0; j < f.size(); ++j)
+                    os << (f[j] + 1) << (j + 1 == f.size() ? '\n' : ' ');
+            write_ints(faces.mLeft);
+            write_ints(faces.mRight);
+            continue;
+        }
         const NDArray& conn = cb.Conn();
         const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         for (std::size_t r = 0; r < num_cells; ++r) {
@@ -112971,7 +117551,9 @@ constexpr std::uint32_t kMesh = 0x01040000, kNodeSection = 0x01041000, kNodeHead
                         kElementsetHdr = 0x01046101, kElementsetName = 0x01046103,
                         kElementsetList = 0x01046200, kFacetsetSection = 0x01047000,
                         kFacetset = 0x01047100, kFacetsetHdr = 0x01047101,
-                        kFacetsetName = 0x01047103, kFacetsetList = 0x01047200, kFacet = 0x01047201;
+                        kFacetsetName = 0x01047103, kFacetsetList = 0x01047200, kFacet = 0x01047201,
+                        kEdgeSection = 0x01048000, kEdge = 0x01048100, kEdgeHdr = 0x01048101,
+                        kEdgeName = 0x01048104, kEdgeList = 0x01048200, kLine = 0x01048201;
 constexpr std::uint32_t kState = 0x02000000, kStateHeader = 0x02010000, kStateTime = 0x02010002,
                         kStateStatus = 0x02010003, kStateData = 0x02020000,
                         kStateVariable = 0x02020001, kStateVarId = 0x02020002,
@@ -113402,6 +117984,7 @@ struct XpltRaw {
     std::vector<double> mCoords;
     std::vector<XpltDomain> mDomains;
     std::vector<XpltSurface> mSurfaces;
+    std::vector<XpltSurface> mEdges;  // their "facets" are line segments
     std::vector<std::pair<std::string, std::vector<std::int64_t>>> mNodeSets, mElemSets;
     std::map<std::int32_t, std::string> mParts;
 };
@@ -113472,6 +118055,19 @@ XpltRaw xplt_read_mesh(const XpltView& rView, std::size_t Begin, std::size_t End
                      xplt_facets(rView, C, D, facetset ? kFacetsetList : kFaceList,
                                  facetset ? kFacet : kFace),
                      facetset});
+                return true;
+            });
+        } else if (Sid == kEdgeSection) {
+            // An edge (FEBio 3.5+): named line segments, each [edge id, nodes,
+            // n1 .. n3], the carrier of edge variables.
+            rView.Chunks(A, B, [&](std::uint32_t Id, std::size_t C, std::size_t D) {
+                if (Id != kEdge)
+                    return true;
+                std::string name;
+                if (const auto hdr = rView.Child(C, D, kEdgeHdr))
+                    if (const auto named = rView.Child(hdr->first, hdr->second, kEdgeName))
+                        name = rView.String(named->first, named->second);
+                raw.mEdges.push_back({name, xplt_facets(rView, C, D, kEdgeList, kLine), false});
                 return true;
             });
         } else if (Sid == kNodesetSection || Sid == kElementsetSection) {
@@ -113683,6 +118279,41 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         if (!surf.mFacetSet)
             surface_cells.push_back(std::move(cells));
     }
+    // Edges: a block of line cells per segment type, a cell region each, and
+    // each segment's global cell for the edge's data.
+    std::vector<std::vector<std::int64_t>> edge_cells;  // per edge, per segment
+    std::vector<std::int64_t> block_edge(blocks_to_add.size(), 0);
+    for (std::size_t e = 0; e < raw.mEdges.size(); ++e) {
+        const XpltSurface& edge = raw.mEdges[e];
+        std::vector<std::string> order;
+        std::map<std::string, std::vector<std::size_t>> by_type;
+        for (std::size_t f = 0; f < edge.mFacets.size(); ++f) {
+            const auto& [nn, nodes] = edge.mFacets[f];
+            const char* type = nn == 2 ? "line" : nn == 3 ? "line3" : nullptr;
+            if (!type || nodes.size() != nn)
+                continue;
+            if (!by_type.count(type))
+                order.push_back(type);
+            by_type[type].push_back(f);
+        }
+        std::vector<std::int64_t> cells(edge.mFacets.size(), -1);
+        XpltGroupEntry& g = group(RegionKind::Cell, edge.mName, -1, 1);
+        g.mDim = std::max(g.mDim, 1);
+        for (const std::string& type : order) {
+            std::vector<std::int64_t> rows;
+            for (std::size_t f : by_type[type]) {
+                const auto& nodes = edge.mFacets[f].second;
+                rows.insert(rows.end(), nodes.begin(), nodes.end());
+                cells[f] = base;
+                g.mEntries.push_back(base);
+                ++base;
+            }
+            blocks_to_add.emplace_back(type, std::move(rows));
+            block_surface.push_back(0);
+            block_edge.push_back(static_cast<std::int64_t>(e + 1));
+        }
+        edge_cells.push_back(std::move(cells));
+    }
     const std::size_t n_domain_blocks = mesh.NumCellBlocks();
     for (const auto& [type, flat] : blocks_to_add) {
         const std::size_t k =
@@ -113703,6 +118334,18 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             ids.push_back(std::move(a));
         }
         mesh.AddCellData("xplt:surface", std::move(ids));
+    }
+    if (rOptions.WantsAnyData() && rOptions.WantsArray("xplt:edge") &&
+        std::any_of(block_edge.begin(), block_edge.end(), [](std::int64_t v) { return v > 0; })) {
+        std::vector<NDArray> ids;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+            const std::size_t n = mesh.Cells(b).NumCells();
+            NDArray a(DType::Int64, {n});
+            const std::int64_t v = b < n_domain_blocks ? 0 : block_edge[b - n_domain_blocks];
+            std::fill(a.As<std::int64_t>(), a.As<std::int64_t>() + n, v);
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData("xplt:edge", std::move(ids));
     }
     for (auto& [key, g] : groups) {
         const RegionKind kind = static_cast<RegionKind>(key.first);
@@ -113779,10 +118422,6 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             const XpltItem& item = items_it->second[static_cast<std::size_t>(var - 1)];
             if (!rOptions.WantsArray(item.mName))
                 return true;
-            if (grp == XpltGroup::Edge) {
-                skip(item.mName);
-                return true;
-            }
             const auto vd = view.Child(E, F, kStateVarData);
             if (!vd)
                 return true;
@@ -113799,11 +118438,14 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                 std::copy(pValues, pValues + Rows * width, a.As<double>());
                 return a;
             };
-            if (grp == XpltGroup::Surface) {
-                // Region k is data surface k: per facet (item), one value
-                // (region) -> its facet cells; per surface node (node, in
-                // first-seen order over its facets) or per facet node (mult)
-                // -> averaged at the points, as element-node values are.
+            if (grp == XpltGroup::Surface || grp == XpltGroup::Edge) {
+                // Region k is data surface (or edge) k: per facet or segment
+                // (item), one value (region) -> its cells; per node (node, in
+                // first-seen order over its facets or segments) or per facet
+                // node (mult) -> averaged at the points, as element-node
+                // values are.
+                const bool on_edge = grp == XpltGroup::Edge;
+                const auto& carrier_cells = on_edge ? edge_cells : surface_cells;
                 if (item.mFmt == 1 || item.mFmt == 3) {
                     std::vector<std::vector<double>> blocks;
                     for (std::size_t n : sizes)
@@ -113812,9 +118454,9 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     bool landed = false;
                     for (const auto& [rid, values] : regions) {
                         const std::size_t k = static_cast<std::size_t>(rid) - 1;
-                        if (rid < 1 || k >= surface_cells.size())
+                        if (rid < 1 || k >= carrier_cells.size())
                             continue;
-                        const auto& cells = surface_cells[k];
+                        const auto& cells = carrier_cells[k];
                         if (values.size() < (item.mFmt == 3 ? width : cells.size() * width))
                             continue;
                         for (std::size_t f = 0; f < cells.size(); ++f) {
@@ -113830,7 +118472,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                                     item.mFmt == 3 ? values[w] : values[f * width + w];
                         }
                     }
-                    // A variable on no surface of this mesh gives no array.
+                    // A variable on no surface (edge) of this mesh gives no array.
                     if (!landed)
                         return true;
                     std::vector<NDArray> arrays;
@@ -113854,7 +118496,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     return it->second;
                 };
                 std::size_t data_surface = 0;
-                for (const XpltSurface& surf : raw.mSurfaces) {
+                for (const XpltSurface& surf : on_edge ? raw.mEdges : raw.mSurfaces) {
                     if (surf.mFacetSet)
                         continue;
                     ++data_surface;
@@ -113972,7 +118614,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         std::string list;
         for (const std::string& s : skipped)
             list += (list.empty() ? "" : ", ") + s;
-        log::warn("FEBio .xplt: edge and material-point variables are not read: {}", list);
+        log::warn("FEBio .xplt: material-point variables are not read: {}", list);
     }
     return mesh;
 }
@@ -114753,21 +119395,53 @@ void z88_attach_displacements(Mesh& rMesh, const std::string& rPath,
     rMesh.AddPointData("U", std::move(u));
 }
 
-// `z88o3.txt`: blocks opened by `element # = N` (or `#=`), then rows of reals.
-// Solid rows are `x y z` + 6 stresses [+ equivalent], plane-stress rows `x y` +
-// 3 stresses [+ equivalent]; the mean over an element's rows is kept.
+NDArray z88_ids(const std::vector<std::int64_t>& rIds) {
+    NDArray a(DType::Int64, {rIds.size()});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+// Accumulates one element's labelled values (sum, count) from z88o3.txt.
+using Z88Sums = std::map<std::string, std::pair<double, std::size_t>>;
+
+// Per-block cell data from a per-cell value.
+template <class Fill>
+std::vector<NDArray> z88_per_block(const std::vector<std::size_t>& rBlockStart, std::size_t Width,
+                                   Fill&& rFill) {
+    std::vector<NDArray> out;
+    for (std::size_t b = 0; b + 1 < rBlockStart.size(); ++b) {
+        const std::size_t n = rBlockStart[b + 1] - rBlockStart[b];
+        NDArray a(DType::Float64,
+                  Width ? std::vector<std::size_t>{n, Width} : std::vector<std::size_t>{n});
+        for (std::size_t r = 0; r < n; ++r)
+            rFill(rBlockStart[b] + r, a.As<double>() + r * (Width ? Width : 1));
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+// `z88o3.txt`: per element a header (`element # = N ...`), a line of column
+// labels and rows of reals (a truss prints `SIG = v` on its header line). Each
+// element keeps the mean of every label over its rows: solids and plane-stress
+// elements as the `SIG` tensor, every other label (beams, shafts, trusses,
+// tori, plates, shells) as a scalar array of that name; `SIGV` for all.
 void z88_attach_stresses(Mesh& rMesh, const std::string& rPath,
                          const std::unordered_map<std::int64_t, std::size_t>& rElementIndex,
                          const std::vector<int>& rCellCode,
                          const std::vector<std::size_t>& rBlockStart) {
+    static const std::vector<std::string> solid_labels = {"SIGXX", "SIGYY", "SIGZZ",
+                                                          "TAUXY", "TAUYZ", "TAUZX"};
+    static const std::vector<std::string> plane_labels = {"SIGXX", "SIGYY", "TAUXY"};
+    auto coordinate = [](const std::string& rLabel) {
+        return rLabel == "XX" || rLabel == "YY" || rLabel == "ZZ" || rLabel == "RR" ||
+               rLabel == "PHI";
+    };
     const std::string text = z88_read_text(rPath);
     const std::size_t ncells = rCellCode.size();
-    std::vector<std::vector<double>> sum(ncells);
-    std::vector<std::vector<double>> sumv(ncells);
-    std::vector<std::size_t> count(ncells, 0), countv(ncells, 0);
+    std::vector<Z88Sums> sums(ncells);
     std::int64_t current = -1;
-    std::size_t skipped = 0;
-    int components = 0;
+    std::vector<std::string> labels;
+    bool have_labels = false;
     for (std::string_view line : z88_lines(text)) {
         const std::size_t hash = line.find('#');
         const std::string lower = z88_lower(std::string(line.substr(0, hash)));
@@ -114775,6 +119449,7 @@ void z88_attach_stresses(Mesh& rMesh, const std::string& rPath,
             std::string_view rest = line.substr(hash + 1);
             const std::size_t eq = rest.find('=');
             current = -1;
+            have_labels = false;
             if (eq != std::string_view::npos) {
                 const std::vector<std::int64_t> id = z88_leading_ints(rest.substr(eq + 1));
                 if (!id.empty()) {
@@ -114782,6 +119457,13 @@ void z88_attach_stresses(Mesh& rMesh, const std::string& rPath,
                     if (it != rElementIndex.end())
                         current = static_cast<std::int64_t>(it->second);
                 }
+            }
+            const std::size_t at = rest.find("SIG =");
+            if (current >= 0 && at != std::string_view::npos) {
+                const std::vector<std::string_view> t = z88_tokens(rest.substr(at + 5));
+                double v = 0.0;
+                if (!t.empty() && z88_real(t[0], v))
+                    sums[static_cast<std::size_t>(current)]["SIGXX"] = {v, 1};
             }
             continue;
         }
@@ -114791,71 +119473,400 @@ void z88_attach_stresses(Mesh& rMesh, const std::string& rPath,
         if (t.empty())
             continue;
         std::vector<double> v(t.size());
-        bool ok = true;
-        for (std::size_t k = 0; k < t.size() && ok; ++k)
-            ok = z88_real(t[k], v[k]);
-        if (!ok)
+        std::size_t numeric = 0;
+        for (std::size_t k = 0; k < t.size(); ++k)
+            numeric += z88_real(t[k], v[k]) ? 1 : 0;
+        if (numeric == 0) {
+            labels.clear();
+            for (std::string_view tok : t)
+                labels.emplace_back(tok.substr(0, tok.find('(')));
+            have_labels = true;
             continue;
-        const std::size_t c = static_cast<std::size_t>(current);
+        }
+        if (numeric != t.size() || !have_labels || t.size() != labels.size())
+            continue;
+        Z88Sums& s = sums[static_cast<std::size_t>(current)];
+        for (std::size_t k = 0; k < labels.size(); ++k) {
+            if (coordinate(labels[k]))
+                continue;
+            auto& acc = s.emplace(labels[k], std::make_pair(0.0, std::size_t(0))).first->second;
+            acc.first += v[k];
+            ++acc.second;
+        }
+    }
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto mean = [&](std::size_t c, const std::string& rName) {
+        const auto it = sums[c].find(rName);
+        return it != sums[c].end() ? it->second.first / static_cast<double>(it->second.second)
+                                   : nan;
+    };
+    std::vector<const std::vector<std::string>*> tensor(ncells, nullptr);
+    std::set<std::string> scalars;
+    std::set<std::size_t> widths;
+    bool any_v = false;
+    for (std::size_t c = 0; c < ncells; ++c) {
         const int code = rCellCode[c];
         const bool solid = code == 1 || code == 10 || code == 16 || code == 17;
         const bool plane = code == 3 || code == 7 || code == 11 || code == 14;
-        std::size_t first = 0, n = 0;
-        if (solid && (v.size() == 9 || v.size() == 10)) {
-            first = 3;
-            n = 6;
-        } else if (plane && (v.size() == 5 || v.size() == 6)) {
-            first = 2;
-            n = 3;
+        auto all_in = [&](const std::vector<std::string>& rNames) {
+            for (const std::string& n : rNames)
+                if (!sums[c].count(n))
+                    return false;
+            return true;
+        };
+        if (solid && all_in(solid_labels))
+            tensor[c] = &solid_labels;
+        else if (plane && all_in(plane_labels))
+            tensor[c] = &plane_labels;
+        if (tensor[c])
+            widths.insert(tensor[c]->size());
+        for (const auto& [name, acc] : sums[c]) {
+            if (name == "SIGV") {
+                any_v = true;
+                continue;
+            }
+            if (!tensor[c] ||
+                std::find(tensor[c]->begin(), tensor[c]->end(), name) == tensor[c]->end())
+                scalars.insert(name);
+        }
+    }
+    if (widths.size() > 1) {
+        // Plane and solid elements do not share a file; keep the solids.
+        for (auto& t : tensor)
+            if (t != &solid_labels)
+                t = nullptr;
+        widths = {6};
+    }
+    if (!widths.empty()) {
+        const std::size_t w = *widths.begin();
+        rMesh.AddCellData("SIG", z88_per_block(rBlockStart, w, [&](std::size_t c, double* pOut) {
+                              for (std::size_t k = 0; k < w; ++k)
+                                  pOut[k] = tensor[c] ? mean(c, (*tensor[c])[k]) : nan;
+                          }));
+    }
+    if (any_v)
+        rMesh.AddCellData("SIGV", z88_per_block(rBlockStart, 0, [&](std::size_t c, double* pOut) {
+                              *pOut = mean(c, "SIGV");
+                          }));
+    for (const std::string& name : scalars) {
+        rMesh.AddCellData(name, z88_per_block(rBlockStart, 0, [&](std::size_t c, double* pOut) {
+                              const bool in_tensor =
+                                  tensor[c] && std::find(tensor[c]->begin(), tensor[c]->end(),
+                                                         name) != tensor[c]->end();
+                              *pOut = in_tensor ? nan : mean(c, name);
+                          }));
+    }
+}
+
+// `z88o4.txt`: after the per-element blocks, the sums per node (`node F(1) ...
+// F(6)`, introduced by "nodal sums" / "aufsummierten").
+void z88_attach_forces(Mesh& rMesh, const std::string& rPath,
+                       const std::unordered_map<std::int64_t, std::size_t>& rNodeIndex,
+                       std::size_t Width) {
+    const std::string text = z88_read_text(rPath);
+    std::vector<std::pair<std::size_t, std::vector<double>>> rows;
+    bool started = false;
+    for (std::string_view line : z88_lines(text)) {
+        const std::string low = z88_lower(std::string(line));
+        if (low.find("nodal sums") != std::string::npos ||
+            low.find("aufsummierten") != std::string::npos) {
+            started = true;
+            continue;
+        }
+        if (!started)
+            continue;
+        const std::vector<std::string_view> t = z88_tokens(line);
+        if (t.size() != 7)
+            continue;
+        std::int64_t id = 0;
+        std::vector<double> v(6);
+        bool ok = z88_int(t[0], id);
+        for (std::size_t k = 0; k < 6 && ok; ++k)
+            ok = z88_real(t[k + 1], v[k]);
+        const auto it = rNodeIndex.find(id);
+        if (!ok || it == rNodeIndex.end())
+            continue;
+        v.resize(Width);
+        rows.emplace_back(it->second, std::move(v));
+    }
+    if (rows.empty())
+        return;
+    const std::size_t n = rMesh.NumPoints();
+    NDArray f(DType::Float64, {n, Width});
+    std::fill(f.As<double>(), f.As<double>() + n * Width, std::numeric_limits<double>::quiet_NaN());
+    for (const auto& [p, v] : rows)
+        std::copy(v.begin(), v.end(), f.As<double>() + p * Width);
+    rMesh.AddPointData("F", std::move(f));
+}
+
+// A Z88 input file: a count on its first line, then that many rows.
+std::vector<std::vector<std::string_view>> z88_count_rows(
+    const std::vector<std::string_view>& rLines, const std::string& rPath) {
+    std::vector<std::vector<std::string_view>> rows;
+    const std::vector<std::int64_t> head =
+        rLines.empty() ? std::vector<std::int64_t>{} : z88_leading_ints(rLines[0]);
+    if (head.empty() || head[0] < 0) {
+        log::warn("Z88: '{}' does not start with a count; ignored", rPath);
+        return rows;
+    }
+    const std::size_t want = static_cast<std::size_t>(head[0]);
+    for (std::size_t i = 1; i < rLines.size() && rows.size() < want; ++i) {
+        std::vector<std::string_view> t = z88_tokens(rLines[i]);
+        if (!t.empty())
+            rows.push_back(std::move(t));
+    }
+    if (rows.size() < want)
+        log::warn("Z88: '{}' ends after {} of {} rows", rPath, rows.size(), want);
+    return rows;
+}
+
+// `z88i2.txt`: `node dof flag value` rows; flag 1 adds a force, flag 2
+// prescribes a displacement.
+void z88_attach_constraints(Mesh& rMesh, const std::string& rPath,
+                            const std::unordered_map<std::int64_t, std::size_t>& rNodeIndex,
+                            std::size_t Width) {
+    const std::string text = z88_read_text(rPath);
+    const auto rows = z88_count_rows(z88_lines(text), rPath);
+    if (rows.empty())
+        return;
+    const std::size_t n = rMesh.NumPoints();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    NDArray u(DType::Float64, {n, Width}), f(DType::Float64, {n, Width});
+    std::fill(u.As<double>(), u.As<double>() + n * Width, nan);
+    std::fill(f.As<double>(), f.As<double>() + n * Width, nan);
+    std::size_t skipped = 0;
+    for (const auto& t : rows) {
+        std::int64_t node = 0, dof = 0, flag = 0;
+        double value = 0.0;
+        if (t.size() < 4 || !z88_int(t[0], node) || !z88_int(t[1], dof) || !z88_int(t[2], flag) ||
+            !z88_real(t[3], value) || !rNodeIndex.count(node) || dof < 1 ||
+            static_cast<std::size_t>(dof) > Width || (flag != 1 && flag != 2)) {
+            ++skipped;
+            continue;
+        }
+        const std::size_t at = rNodeIndex.at(node) * Width + static_cast<std::size_t>(dof - 1);
+        if (flag == 2) {
+            u.As<double>()[at] = value;
         } else {
-            ++skipped;
-            continue;
-        }
-        if (components && components != static_cast<int>(n)) {
-            ++skipped;
-            continue;
-        }
-        components = static_cast<int>(n);
-        std::vector<double>& s = sum[c];
-        s.resize(n, 0.0);
-        for (std::size_t k = 0; k < n; ++k)
-            s[k] += v[first + k];
-        ++count[c];
-        if (v.size() == first + n + 1) {
-            sumv[c].resize(1, 0.0);
-            sumv[c][0] += v.back();
-            ++countv[c];
+            double& slot = f.As<double>()[at];
+            slot = (std::isnan(slot) ? 0.0 : slot) + value;
         }
     }
     if (skipped)
-        log::warn(
-            "Z88: {} stress row(s) of elements other than solids and plane-stress "
-            "elements skipped",
-            skipped);
-    if (!components)
-        return;
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    const std::size_t w = static_cast<std::size_t>(components);
-    std::vector<NDArray> sig, sigv;
-    bool any_v = false;
-    for (std::size_t b = 0; b + 1 < rBlockStart.size(); ++b) {
-        const std::size_t n = rBlockStart[b + 1] - rBlockStart[b];
-        NDArray a(DType::Float64, {n, w});
-        NDArray av(DType::Float64, {n});
-        for (std::size_t r = 0; r < n; ++r) {
-            const std::size_t c = rBlockStart[b] + r;
-            for (std::size_t k = 0; k < w; ++k)
-                a.As<double>()[r * w + k] =
-                    count[c] ? sum[c][k] / static_cast<double>(count[c]) : nan;
-            av.As<double>()[r] = countv[c] ? sumv[c][0] / static_cast<double>(countv[c]) : nan;
-            any_v = any_v || countv[c] > 0;
+        log::warn("Z88: {} constraint row(s) of '{}' skipped", skipped, rPath);
+    rMesh.AddPointData("z88:bc:u", std::move(u));
+    rMesh.AddPointData("z88:bc:f", std::move(f));
+}
+
+// Rows `from to ...` over element ids: `rParse(tokens, value)` fills a row's
+// values, assigned to every cell in the range; cells no row names stay empty.
+template <class Parse>
+std::vector<std::vector<double>> z88_ranges(
+    const std::vector<std::string_view>& rLines, const std::string& rPath,
+    const std::unordered_map<std::int64_t, std::size_t>& rElementIndex, std::size_t NumCells,
+    Parse&& rParse) {
+    std::vector<std::vector<double>> out(NumCells);
+    for (const auto& t : z88_count_rows(rLines, rPath)) {
+        std::int64_t from = 0, to = 0;
+        std::vector<double> value;
+        if (t.size() < 2 || !z88_int(t[0], from) || !z88_int(t[1], to) ||
+            !rParse(std::vector<std::string_view>(t.begin() + 2, t.end()), value)) {
+            log::warn("Z88: a row of '{}' is malformed; skipped", rPath);
+            continue;
         }
-        sig.push_back(std::move(a));
-        sigv.push_back(std::move(av));
+        for (std::int64_t id = from; id <= to; ++id) {
+            const auto it = rElementIndex.find(id);
+            if (it != rElementIndex.end())
+                out[it->second] = value;
+        }
     }
-    rMesh.AddCellData("SIG", std::move(sig));
-    if (any_v)
-        rMesh.AddCellData("SIGV", std::move(sigv));
+    return out;
+}
+
+// Z88Aurora's `z88sets.txt`: after a count, each set is a header `#KIND
+// PURPOSE id count "name"` and then its ids. Element sets become cell regions
+// and node sets point regions (tag = set id); surface sets, whose rows do not
+// name the structure file's elements, are skipped.
+void z88_attach_sets(Mesh& rMesh, const std::string& rPath,
+                     const std::unordered_map<std::int64_t, std::size_t>& rNodeIndex,
+                     const std::unordered_map<std::int64_t, std::size_t>& rElementIndex,
+                     const std::vector<int>& rCellDim) {
+    const std::string text = z88_read_text(rPath);
+    std::size_t skipped = 0;
+    bool open = false;
+    std::string kind, name;
+    std::int64_t sid = -1;
+    std::vector<std::int64_t> ids;
+    auto flush = [&]() {
+        if (!open)
+            return;
+        std::set<std::int64_t> members;
+        if (kind == "ELEMENTS") {
+            int dim = -1;
+            for (std::int64_t id : ids) {
+                const auto it = rElementIndex.find(id);
+                if (it == rElementIndex.end())
+                    continue;
+                members.insert(static_cast<std::int64_t>(it->second));
+                dim = std::max(dim, rCellDim[it->second]);
+            }
+            rMesh.AddRegion(
+                Region(name, RegionKind::Cell, dim, sid,
+                       z88_ids(std::vector<std::int64_t>(members.begin(), members.end()))));
+        } else if (kind == "NODES") {
+            for (std::int64_t id : ids) {
+                const auto it = rNodeIndex.find(id);
+                if (it != rNodeIndex.end())
+                    members.insert(static_cast<std::int64_t>(it->second));
+            }
+            rMesh.AddRegion(
+                Region(name, RegionKind::Point, -1, sid,
+                       z88_ids(std::vector<std::int64_t>(members.begin(), members.end()))));
+        } else {
+            ++skipped;
+        }
+    };
+    for (std::string_view line : z88_lines(text)) {
+        const std::vector<std::string_view> t = z88_tokens(line);
+        if (t.empty())
+            continue;
+        if (t[0].front() == '#') {
+            flush();
+            open = true;
+            kind = z88_lower(std::string(t[0].substr(1)));
+            for (char& c : kind)
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            sid = -1;
+            if (t.size() > 2 && !z88_int(t[2], sid))
+                sid = -1;
+            const std::size_t q = line.find('"');
+            const std::size_t r = line.rfind('"');
+            name = q != std::string_view::npos && r > q ? std::string(line.substr(q + 1, r - q - 1))
+                                                        : std::string();
+            if (name.empty())
+                name = "set_" + std::to_string(sid);
+            ids.clear();
+            continue;
+        }
+        if (!open)
+            continue;
+        for (std::string_view tok : t) {
+            std::int64_t v = 0;
+            if (z88_int(tok, v))
+                ids.push_back(v);
+        }
+    }
+    flush();
+    if (skipped)
+        log::warn("Z88: {} surface set(s) of '{}' skipped", skipped, rPath);
+}
+
+// `z88mat.txt` (with the material files it names), `z88elp.txt` and
+// `z88int.txt` as `z88:` cell data.
+void z88_attach_inputs(Mesh& rMesh, const std::filesystem::path& rDir,
+                       const std::unordered_map<std::int64_t, std::size_t>& rElementIndex,
+                       const std::vector<std::size_t>& rBlockStart) {
+    const std::size_t ncells = rBlockStart.back();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto any = [](const std::vector<std::vector<double>>& rValues) {
+        for (const auto& v : rValues)
+            if (!v.empty())
+                return true;
+        return false;
+    };
+    // One column `Col` of the per-cell values, or the fill where a cell has none.
+    auto column = [&](const std::vector<std::vector<double>>& rValues, std::size_t Col,
+                      std::size_t Width, double Fill, DType Type) {
+        std::vector<NDArray> out;
+        for (std::size_t b = 0; b + 1 < rBlockStart.size(); ++b) {
+            const std::size_t n = rBlockStart[b + 1] - rBlockStart[b];
+            NDArray a(Type,
+                      Width ? std::vector<std::size_t>{n, Width} : std::vector<std::size_t>{n});
+            const std::size_t w = Width ? Width : 1;
+            for (std::size_t r = 0; r < n; ++r)
+                for (std::size_t k = 0; k < w; ++k) {
+                    const auto& v = rValues[rBlockStart[b] + r];
+                    const double x = v.empty() ? Fill : v[Col + k];
+                    if (Type == DType::Int64)
+                        a.As<std::int64_t>()[r * w + k] = static_cast<std::int64_t>(x);
+                    else
+                        a.As<double>()[r * w + k] = x;
+                }
+            out.push_back(std::move(a));
+        }
+        return out;
+    };
+
+    const std::filesystem::path mat = z88_sibling(rDir, "z88mat.txt");
+    if (!mat.empty()) {
+        const std::string text = z88_read_text(mat.string());
+        std::size_t k = 0;
+        const auto values =
+            z88_ranges(z88_lines(text), mat.string(), rElementIndex, ncells,
+                       [&](const std::vector<std::string_view>& rT, std::vector<double>& rOut) {
+                           ++k;
+                           if (rT.empty())
+                               return false;
+                           const std::string file(rT[0]);
+                           const std::string stem = file.substr(0, file.rfind('.'));
+                           std::int64_t number = 0;
+                           if (!z88_int(stem, number) || number <= 0)
+                               number = static_cast<std::int64_t>(k);
+                           const std::filesystem::path found = z88_sibling(rDir, z88_lower(file));
+                           double e = nan, nu = nan;
+                           bool ok = false;
+                           if (!found.empty()) {
+                               const std::string mtext = z88_read_text(found.string());
+                               const std::vector<std::string_view> ml = z88_lines(mtext);
+                               const std::vector<std::string_view> t =
+                                   ml.empty() ? std::vector<std::string_view>{} : z88_tokens(ml[0]);
+                               ok = t.size() >= 2 && z88_real(t[0], e) && z88_real(t[1], nu);
+                           }
+                           if (!ok) {
+                               log::warn("Z88: material file '{}' is missing or malformed", file);
+                               e = nu = nan;
+                           }
+                           rOut = {static_cast<double>(number), e, nu};
+                           return true;
+                       });
+        if (any(values)) {
+            rMesh.AddCellData("z88:material", column(values, 0, 0, 0.0, DType::Int64));
+            rMesh.AddCellData("z88:E", column(values, 1, 0, nan, DType::Float64));
+            rMesh.AddCellData("z88:nu", column(values, 2, 0, nan, DType::Float64));
+        }
+    }
+    const std::filesystem::path elp = z88_sibling(rDir, "z88elp.txt");
+    if (!elp.empty()) {
+        const std::string text = z88_read_text(elp.string());
+        const auto values =
+            z88_ranges(z88_lines(text), elp.string(), rElementIndex, ncells,
+                       [nan](const std::vector<std::string_view>& rT, std::vector<double>& rOut) {
+                           // Fields a row leaves out stay absent (NaN): Z88R leaves them untouched.
+                           rOut.assign(12, nan);
+                           for (std::size_t k = 0; k < rT.size() && k < 12; ++k)
+                               if (!z88_real(rT[k], rOut[k]))
+                                   return false;
+                           return true;
+                       });
+        if (any(values))
+            rMesh.AddCellData("z88:elp", column(values, 0, 12, nan, DType::Float64));
+    }
+    const std::filesystem::path integ = z88_sibling(rDir, "z88int.txt");
+    if (!integ.empty()) {
+        const std::string text = z88_read_text(integ.string());
+        const auto values =
+            z88_ranges(z88_lines(text), integ.string(), rElementIndex, ncells,
+                       [](const std::vector<std::string_view>& rT, std::vector<double>& rOut) {
+                           std::int64_t a = 0, b = 0;
+                           if (rT.size() < 2 || !z88_int(rT[0], a) || !z88_int(rT[1], b))
+                               return false;
+                           rOut = {static_cast<double>(a), static_cast<double>(b)};
+                           return true;
+                       });
+        if (any(values))
+            rMesh.AddCellData("z88:int", column(values, 0, 2, -1.0, DType::Int64));
+    }
 }
 
 }  // namespace
@@ -114900,6 +119911,7 @@ Mesh read_z88(const std::string& rPath, bool Results) {
     coords.reserve(3 * nnodes);
     std::unordered_map<std::int64_t, std::size_t> node_index;
     node_index.reserve(nnodes);
+    std::int64_t node_dof = 0;
     for (std::size_t n = 0; n < nnodes; ++n, ++i) {
         while (i < lines.size() && z88_tokens(lines[i]).empty())
             ++i;
@@ -114926,6 +119938,9 @@ Mesh read_z88(const std::string& rPath, bool Results) {
         if (!node_index.emplace(id, n).second)
             z88_fail("node " + std::to_string(id) + " is defined twice", i + 1);
         coords.insert(coords.end(), x, x + 3);
+        std::int64_t dof = 0;
+        if (z88_int(t[1], dof))
+            node_dof = std::max(node_dof, dof);
     }
     if (kflag == 1)
         log::warn("Z88: cylindrical input (KFLAG = 1) converted to Cartesian coordinates");
@@ -115022,11 +120037,31 @@ Mesh read_z88(const std::string& rPath, bool Results) {
     if (!type_blocks.empty())
         mesh.AddCellData("z88:type", std::move(type_blocks));
 
+    const std::size_t width = (node_dof == 2 || node_dof == 3 || node_dof == 6)
+                                  ? static_cast<std::size_t>(node_dof)
+                                  : (ndim == 2 ? 2u : 3u);
+    const fs::path dir = structure.parent_path();
+    const fs::path i2 = z88_sibling(dir, "z88i2.txt");
+    if (!i2.empty())
+        z88_attach_constraints(mesh, i2.string(), node_index, width);
+    if (!cell_code.empty())
+        z88_attach_inputs(mesh, dir, element_index, block_start);
+    const fs::path sets = z88_sibling(dir, "z88sets.txt");
+    if (!sets.empty()) {
+        std::vector<int> cell_dim;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
+            cell_dim.insert(
+                cell_dim.end(), mesh.Cells(b).NumCells(),
+                cell_type_dimension(cell_type_from_name(std::string(mesh.Cells(b).Type()))));
+        z88_attach_sets(mesh, sets.string(), node_index, element_index, cell_dim);
+    }
     if (Results) {
-        const fs::path dir = structure.parent_path();
         const fs::path o2 = z88_sibling(dir, "z88o2.txt");
         if (!o2.empty())
             z88_attach_displacements(mesh, o2.string(), node_index);
+        const fs::path o4 = z88_sibling(dir, "z88o4.txt");
+        if (!o4.empty())
+            z88_attach_forces(mesh, o4.string(), node_index, width);
         const fs::path o3 = z88_sibling(dir, "z88o3.txt");
         if (!o3.empty() && !cell_code.empty())
             z88_attach_stresses(mesh, o3.string(), element_index, cell_code, block_start);
@@ -115039,6 +120074,27 @@ Mesh read_z88(const std::string& rPath, bool Results) {
 // ===========================================================================
 
 namespace {
+
+// Whether a Z88 type only exists in a 3-D structure file.
+bool z88_needs_3d(int Code) {
+    switch (Code) {
+        case 1:
+        case 2:
+        case 4:
+        case 5:
+        case 10:
+        case 16:
+        case 17:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+        case 25:
+            return true;
+        default:
+            return false;
+    }
+}
 
 // The Z88 type a cell of `rCell` is written as, given the file dimension.
 int z88_default_code(std::string_view Cell, int Dim) {
@@ -115059,6 +120115,172 @@ int z88_default_code(std::string_view Cell, int Dim) {
     return 0;
 }
 
+// The input files the `z88:` arrays describe: `z88i2.txt` from the
+// constraints, `z88mat.txt` and one `<n>.txt` per material, `z88elp.txt`,
+// `z88int.txt`; element ranges over the written element ids.
+std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
+                                                  const std::vector<std::vector<int>>& rCodes,
+                                                  const std::vector<int>& rDof) {
+    std::map<std::string, std::string> files;
+    char buf[512];
+    const std::size_t npts = rMesh.NumPoints();
+    const NDArray* u = rMesh.HasPointData("z88:bc:u") ? &rMesh.PointData("z88:bc:u") : nullptr;
+    const NDArray* f = rMesh.HasPointData("z88:bc:f") ? &rMesh.PointData("z88:bc:f") : nullptr;
+    if (u || f) {
+        std::string rows;
+        std::size_t count = 0;
+        const std::pair<int, const NDArray*> kinds[2] = {{2, u}, {1, f}};
+        for (std::size_t p = 0; p < npts; ++p)
+            for (int d = 0; d < rDof[p]; ++d)
+                for (const auto& [flag, pA] : kinds) {
+                    if (!pA || !npts)
+                        continue;
+                    const std::size_t w = pA->Size() / npts;
+                    if (static_cast<std::size_t>(d) >= w)
+                        continue;
+                    const double v = detail::read_double(*pA, p * w + static_cast<std::size_t>(d));
+                    if (std::isnan(v))
+                        continue;
+                    detail::snprintf_c(buf, sizeof(buf), "%9zu %2d %2d %+.16E\n", p + 1, d + 1,
+                                       flag, v);
+                    rows += buf;
+                    ++count;
+                }
+        files["z88i2.txt"] = std::to_string(count) + "\n" + rows;
+    }
+
+    // An array's rows of the written elements, in element order.
+    auto written = [&](const std::string& rName) {
+        std::vector<std::vector<double>> out;
+        for (std::size_t b = 0; b < rCodes.size(); ++b) {
+            const NDArray& a = rMesh.CellData(rName, b);
+            const std::size_t n = rCodes[b].size();
+            const std::size_t w = n ? a.Size() / n : 0;
+            for (std::size_t r = 0; r < n; ++r) {
+                if (!rCodes[b][r])
+                    continue;
+                std::vector<double> row(w);
+                for (std::size_t k = 0; k < w; ++k)
+                    row[k] = detail::read_double(a, r * w + k);
+                out.push_back(std::move(row));
+            }
+        }
+        return out;
+    };
+    // Runs of equal values as (first id, last id, value); empty values skipped.
+    struct Run {
+        std::size_t mFirst, mLast;
+        std::vector<double> mValue;
+    };
+    auto ranges = [](const std::vector<std::vector<double>>& rValues) {
+        std::vector<Run> runs;
+        for (std::size_t k = 0; k < rValues.size(); ++k) {
+            if (!runs.empty() && runs.back().mValue == rValues[k] && runs.back().mLast == k)
+                runs.back().mLast = k + 1;
+            else
+                runs.push_back({k + 1, k + 1, rValues[k]});
+        }
+        std::vector<Run> out;
+        for (Run& r : runs)
+            if (!r.mValue.empty())
+                out.push_back(std::move(r));
+        return out;
+    };
+
+    if (rMesh.HasCellData("z88:E") && rMesh.HasCellData("z88:nu")) {
+        const auto e = written("z88:E");
+        const auto nu = written("z88:nu");
+        const bool has_want = rMesh.HasCellData("z88:material");
+        const auto want = has_want ? written("z88:material") : std::vector<std::vector<double>>{};
+        std::vector<std::pair<std::pair<double, double>, std::int64_t>> number;  // insertion order
+        auto find = [&](std::pair<double, double> Key) -> std::int64_t {
+            for (const auto& [k, n] : number)
+                if (k == Key)
+                    return n;
+            return 0;
+        };
+        for (std::size_t k = 0; k < e.size(); ++k) {
+            const std::pair<double, double> key{e[k][0], nu[k][0]};
+            if (std::isnan(key.first) || std::isnan(key.second) || find(key))
+                continue;
+            std::int64_t w = has_want ? static_cast<std::int64_t>(want[k][0]) : 0;
+            std::int64_t used_max = 0;
+            bool used = false;
+            for (const auto& [kk, n] : number) {
+                used_max = std::max(used_max, n);
+                used = used || n == w;
+            }
+            if (w <= 0 || used)
+                w = used_max + 1;
+            number.emplace_back(key, w);
+        }
+        std::vector<std::vector<double>> values(e.size());
+        for (std::size_t k = 0; k < e.size(); ++k)
+            if (!std::isnan(e[k][0]) && !std::isnan(nu[k][0]))
+                values[k] = {static_cast<double>(find({e[k][0], nu[k][0]}))};
+        const std::vector<Run> runs = ranges(values);
+        if (!runs.empty()) {
+            std::string body = std::to_string(runs.size()) + "\n";
+            for (const Run& r : runs) {
+                detail::snprintf_c(buf, sizeof(buf), "%9zu %9zu %lld.txt\n", r.mFirst, r.mLast,
+                                   static_cast<long long>(r.mValue[0]));
+                body += buf;
+            }
+            files["z88mat.txt"] = body;
+            for (const auto& [key, n] : number) {
+                detail::snprintf_c(buf, sizeof(buf), "%+.16E %+.16E\n", key.first, key.second);
+                files[std::to_string(n) + ".txt"] = buf;
+            }
+        }
+    }
+    if (rMesh.HasCellData("z88:elp")) {
+        // The leading fields up to the first NaN, at least the seven section values.
+        std::vector<std::vector<double>> values = written("z88:elp");
+        for (auto& v : values) {
+            std::size_t n = 0;
+            while (n < v.size() && !std::isnan(v[n]))
+                ++n;
+            v.resize(n >= 7 ? n : 0);
+        }
+        const std::vector<Run> runs = ranges(values);
+        if (!runs.empty()) {
+            std::string body = std::to_string(runs.size()) + "\n";
+            for (const Run& r : runs) {
+                detail::snprintf_c(buf, sizeof(buf), "%9zu %9zu", r.mFirst, r.mLast);
+                body += buf;
+                for (std::size_t k = 0; k < r.mValue.size(); ++k) {
+                    if (k == 7)
+                        detail::snprintf_c(buf, sizeof(buf), " %lld",
+                                           static_cast<long long>(r.mValue[k]));
+                    else
+                        detail::snprintf_c(buf, sizeof(buf), " %+.16E", r.mValue[k]);
+                    body += buf;
+                }
+                body += "\n";
+            }
+            files["z88elp.txt"] = body;
+        }
+    }
+    if (rMesh.HasCellData("z88:int")) {
+        std::vector<std::vector<double>> values = written("z88:int");
+        for (auto& v : values)
+            if (v.size() != 2 || v[0] < 0)
+                v.clear();
+        const std::vector<Run> runs = ranges(values);
+        if (!runs.empty()) {
+            std::string body = std::to_string(runs.size()) + "\n";
+            for (const Run& r : runs) {
+                detail::snprintf_c(buf, sizeof(buf), "%9zu %9zu %lld %lld\n", r.mFirst, r.mLast,
+                                   static_cast<long long>(r.mValue[0]),
+                                   static_cast<long long>(r.mValue[1]));
+                body += buf;
+            }
+            files["z88int.txt"] = body;
+        }
+    }
+    return files;
+}
+
 }  // namespace
 
 void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
@@ -115075,10 +120297,24 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         for (std::size_t p = 0; p < npts && flat; ++p)
             flat = detail::read_double(points, p * pdim + 2) == 0.0;
     }
-    const int ndim = (flat && !any_3d_cell) ? 2 : 3;
+    // Types that only exist in a 3-D file (solids, 3-D beams, trusses and the
+    // shaft, shells) make it 3-D even when every z is 0.
+    const bool has_type = rMesh.HasCellData("z88:type");
+    bool needs_3d = false;
+    for (std::size_t b = 0; has_type && b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged())
+            continue;
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            const std::int64_t want = detail::read_int(rMesh.CellData("z88:type", b), r);
+            const Z88Type* t = z88_type(want);
+            needs_3d = needs_3d || (t && t->mKeep == t->mNodes && cb.Type() == t->mCell &&
+                                    z88_needs_3d(static_cast<int>(want)));
+        }
+    }
+    const int ndim = (flat && !any_3d_cell && !needs_3d) ? 2 : 3;
 
     // The Z88 type of every block (0: dropped).
-    const bool has_type = rMesh.HasCellData("z88:type");
     std::vector<std::vector<int>> codes(rMesh.NumCellBlocks());
     std::set<std::string> dropped_types;
     std::size_t nelem = 0;
@@ -115109,11 +120345,18 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         log::warn("Z88 structure files hold no groups; {} region(s) dropped", rMesh.NumRegions());
         detail::provenance_note("regions-dropped", "a Z88 structure file holds no groups");
     }
-    const std::size_t other_data =
-        rMesh.NumPointData() + rMesh.NumFieldData() + rMesh.NumCellData() - (has_type ? 1 : 0);
+    std::size_t deck = 0;
+    for (const char* name : {"z88:bc:u", "z88:bc:f"})
+        deck += rMesh.HasPointData(name) ? 1 : 0;
+    for (const char* name : {"z88:material", "z88:E", "z88:nu", "z88:elp", "z88:int"})
+        deck += rMesh.HasCellData(name) ? 1 : 0;
+    const std::size_t other_data = rMesh.NumPointData() + rMesh.NumFieldData() +
+                                   rMesh.NumCellData() - (has_type ? 1 : 0) - deck;
     if (other_data) {
-        log::warn("Z88 structure files hold no data arrays; point, cell and field data dropped");
-        detail::provenance_note("data-dropped", "a Z88 structure file holds no data arrays");
+        log::warn(
+            "Z88 decks hold no other data arrays; point, cell and field data other than the z88: "
+            "constraints, materials and element parameters dropped");
+        detail::provenance_note("data-dropped", "a Z88 deck holds no other data arrays");
     }
     if (!nelem)
         throw WriteError("Z88 writer: no cell has a Z88 element type");
@@ -115198,15 +120441,20 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
     f << out;
     if (!f)
         throw WriteError("Z88 writer: failed writing " + rPath);
+    std::map<std::string, std::string> files = z88_deck_files(rMesh, codes, dof);
     if (Stubs) {
-        const std::filesystem::path dir = std::filesystem::path(rPath).parent_path();
-        for (const char* name : {"z88i2.txt", "z88i5.txt"}) {
-            auto s = detail::make_classic_ofstream((dir / name).string(), std::ios::binary);
-            if (!s)
-                throw WriteError(std::string("Could not open file for writing: ") +
-                                 (dir / name).string());
-            s << "0\n";
-        }
+        files.emplace("z88i2.txt", "0\n");
+        files.emplace("z88i5.txt", "0\n");
+    }
+    const std::filesystem::path dir = std::filesystem::path(rPath).parent_path();
+    for (const auto& [name, body] : files) {
+        auto s = detail::make_classic_ofstream((dir / name).string(), std::ios::binary);
+        if (!s)
+            throw WriteError(std::string("Could not open file for writing: ") +
+                             (dir / name).string());
+        s << body;
+        if (!s)
+            throw WriteError("Z88 writer: failed writing " + (dir / name).string());
     }
 }
 
@@ -134510,12 +139758,14 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // lsdyna_d3plot joined in v16.9.0: its steps are the states of the family.
     // nastran_op2 joined in v16.9.0: its steps are the (subcase, mode or time)
     // of its result tables.
+    // radioss_anim joined in v16.11.0: one step per animation file, its time
+    // taken from the file rather than from the number in its name.
     return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "lsdyna_d3plot" ||
-           rFormat == "nastran_op2" || rFormat == "unv" || rFormat == "nastran_h5" ||
-           rFormat == "xplt" || rFormat == "ansys_rst" || rFormat == "ansys_rst_cyclic" ||
-           rFormat == "marc_t19" || rFormat == "femap" || rFormat == "xdmf" ||
-           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
-           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "radioss_anim" || rFormat == "nastran_op2" || rFormat == "unv" ||
+           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
+           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
+           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
            rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
@@ -136919,6 +142169,9 @@ std::string sniff_format(const std::string& rPath) {
     // Tecplot binary (.plt): "#!TDV" and a three-character version.
     if (head.size() >= 5 && head.compare(0, 5, "#!TDV") == 0)
         return "tecplot";
+    // OpenRadioss animation file: the big-endian magic 0x542C.
+    if (head.size() >= 4 && head.compare(0, 4, std::string("\0\0T,", 4)) == 0)
+        return "radioss_anim";
     // FEBio plot file: the magic 0x00464542, in either byte order.
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))
@@ -140568,6 +145821,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
         {"libmesh", meshioplusplus::read_libmesh},
         {"radioss", meshioplusplus::read_radioss},
+        // Found by name (`<run>A001`...) or magic, never an extension.
+        {"radioss_anim", meshioplusplus::read_radioss_anim},
         // A .dat file is Tecplot's unless it opens as a Marc deck (resolve_format).
         {"marc", meshioplusplus::read_marc},
         {"marc_t19", [](const std::string& path) { return meshioplusplus::read_marc_t19(path); }},
@@ -140704,9 +145959,11 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"code_aster", meshioplusplus::write_code_aster},
         {"patran", meshioplusplus::write_patran},
         {"femap", meshioplusplus::write_femap},
+        {"libmesh", meshioplusplus::write_libmesh},
         {"z88",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
-        {"elmer", meshioplusplus::write_elmer},
+        {"elmer",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
@@ -140941,6 +146198,10 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".neu", "femap"},
         {".xda", "libmesh"},
         {".xdr", "libmesh"},
+        {".xda.gz", "libmesh"},
+        {".xdr.gz", "libmesh"},
+        {".xda.bz2", "libmesh"},
+        {".xdr.bz2", "libmesh"},
         {".rad", "radioss"},
         {".t19", "marc_t19"},
         {".feb", "febio"},
@@ -141110,6 +146371,9 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
     // numbered members (`d3plot01`...) go to the reader, which names the base.
     if (is_d3plot_filename(base) || registry_is_d3plot_member(rPath))
         return "lsdyna_d3plot";
+    // OpenRadioss animation files: `<run>A001`..., no extension.
+    if (base.find('.') == std::string::npos && is_radioss_anim_filename(base))
+        return "radioss_anim";
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
         const std::string suffix = base.substr(pos);
@@ -141192,6 +146456,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
         // mLenient (skip element types with no meshio++ cell type).
         {"elmer", meshioplusplus::read_elmer},
+        // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
+        {"mfem",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_mfem(path, {}, opts);
+         }},
         // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
         {"ansysinp",
          [](const std::string& path, const ReadOptions& opts) {
@@ -141283,6 +146552,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"femap", meshioplusplus::read_femap_metadata},
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
+        {"radioss_anim", meshioplusplus::read_radioss_anim_metadata},
         {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},

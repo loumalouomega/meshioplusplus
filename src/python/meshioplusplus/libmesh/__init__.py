@@ -14,8 +14,12 @@ _EXTENSIONS = [".xda", ".xdr", ".xda.gz", ".xdr.gz", ".xda.bz2", ".xdr.bz2"]
 
 
 def _is_bzip2(filename):
-    with open(filename, "rb") as fh:
-        return fh.read(3) == b"BZh"
+    # A file that cannot be opened is left to the reader, which says why.
+    try:
+        with open(filename, "rb") as fh:
+            return fh.read(3) == b"BZh"
+    except OSError:
+        return False
 
 
 def read(filename):
