@@ -1628,9 +1628,32 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
             m.mMesh.AddCellData("nastran:eid", std::move(eids));
         return m;
     }
+    // A file can repeat a GRID in a second GEOM1 table (a restart's): kept
+    // once when both definitions agree.
+    {
+        Op2Grids unique;
+        unique.mScalarPoints = g.mScalarPoints;
+        unique.mCords = g.mCords;
+        std::unordered_map<std::int64_t, std::size_t> seen;
+        for (std::size_t i = 0; i < g.mIds.size(); ++i) {
+            const auto [it, fresh] = seen.emplace(g.mIds[i], i);
+            if (!fresh) {
+                const std::size_t j = it->second;
+                const bool same = g.mCp[i] == g.mCp[j] && g.mCd[i] == g.mCd[j] &&
+                                  std::equal(&g.mXyz[3 * i], &g.mXyz[3 * i + 3], &g.mXyz[3 * j]);
+                if (!same)
+                    op2_fail("GRID " + std::to_string(g.mIds[i]) + " is defined twice");
+                continue;
+            }
+            unique.mIds.push_back(g.mIds[i]);
+            unique.mCp.push_back(g.mCp[i]);
+            unique.mCd.push_back(g.mCd[i]);
+            unique.mXyz.insert(unique.mXyz.end(), &g.mXyz[3 * i], &g.mXyz[3 * i + 3]);
+        }
+        g = std::move(unique);
+    }
     for (std::size_t i = 0; i < g.mIds.size(); ++i)
-        if (!m.mGridIndex.emplace(g.mIds[i], i).second)
-            op2_fail("GRID " + std::to_string(g.mIds[i]) + " is defined twice");
+        m.mGridIndex.emplace(g.mIds[i], i);
     NDArray points(DType::Float64, {g.mIds.size(), 3});
     std::copy(g.mXyz.begin(), g.mXyz.end(), points.As<double>());
     m.mMesh.AssignPoints(std::move(points));

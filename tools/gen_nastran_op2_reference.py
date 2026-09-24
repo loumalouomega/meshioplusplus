@@ -43,6 +43,11 @@ FIXTURES = {
     "freq_elements2.op2": "elements/freq_elements2.op2",
     "modes_complex_elements.op2": "elements/modes_complex_elements.op2",
     "test_vba.op2": "nx/test_vba/test_vba.op2",
+    "cbush.op2": "unit/cbush/cbush.op2",
+    "cbush_2021.op2": "msc/cbush_2021/cbush_test.op2",
+    "sdbush01.op2": "other/sdbush01.op2",
+    "cc188b.op2": "other/cc188b.op2",
+    "rms_tri_oesrmx1.op2": "random/rms_tri_oesrmx1.op2",
 }
 # Random result groups of pyNastran's op2_results -> meshio++'s suffix.
 _RANDOM = {"psd": "_PSD", "ato": "_ATO", "rms": "_RMS", "no": "_NO", "crm": "_CRM"}
@@ -323,7 +328,13 @@ _FLUX = dict(
         + ["FAPPLIED", "FREECONV", "FORCECONV", "FRAD", "FTOTAL"],
     )
 )
-_ENERGY = {"strain_energy": "ENERGY", "percent": "PCT", "strain_energy_density": "DEN"}
+_ENERGY = {
+    "strain_energy": "ENERGY",
+    "strain_energy_real": "ENERGY_real",
+    "strain_energy_imag": "ENERGY_imag",
+    "percent": "PCT",
+    "strain_energy_density": "DEN",
+}
 
 
 def _forces(model, stem, out):
@@ -356,6 +367,11 @@ def _forces(model, stem, out):
                 sub, ana = _key(key)
                 ana = int(obj.analysis_code) if ana is None else ana
                 heads = [str(h) for h in obj.get_headers()]
+                if "ComplexStrainEnergy" in cls:
+                    # four columns under three headers: the real and imaginary
+                    # energy, the percentage, the density
+                    heads = ["strain_energy_real", "strain_energy_imag", "percent"]
+                    heads += ["strain_energy_density"]
                 for it, _t in enumerate(np.atleast_1d(obj._times)):
                     if hasattr(obj, "element_node"):
                         en = obj.element_node

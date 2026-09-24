@@ -118,8 +118,12 @@ def test_every_step_matches_pynastran(engine, path):
             name, values, ids = parts[4], ref[key], ref[key + "|ids"]
             if len(parts) == 5:  # nodal
                 got = mesh.point_data[name]
-                rows = [point[int(g)] for g in ids if int(g) in point]
-                sel = [k for k, g in enumerate(ids) if int(g) in point]
+                # pyNastran leaves a GRID's results in its output system (CD);
+                # meshio++ rotates them to basic (checked on the _cord file)
+                cd = mesh.point_data.get("nastran:cd")
+                basic = {g for g, p in point.items() if cd is None or cd[p] == 0}
+                rows = [point[int(g)] for g in ids if int(g) in basic]
+                sel = [k for k, g in enumerate(ids) if int(g) in basic]
                 np.testing.assert_allclose(
                     got[rows], values[sel], rtol=1e-6, atol=1e-30
                 )
@@ -378,6 +382,10 @@ def test_multi_valued_results_match_pynastran(engine, path):
         if ana not in (2, 8, 9):
             rank[(sub, ana)][0] += 1
         cell = _cell_lookup(mesh)
+        # pyNastran leaves grid point forces in the GRID's output system (CD);
+        # meshio++ rotates them to basic (checked on the _cord file)
+        cd = mesh.point_data.get("nastran:cd")
+        rotated = {g for g, p in point.items() if cd is not None and cd[p] != 0}
         for key in ref.files:
             parts = key.split("|")
             if len(parts) != 6 or parts[0] != stem or "@" not in parts[4] + parts[5]:
@@ -389,7 +397,9 @@ def test_multi_valued_results_match_pynastran(engine, path):
             ids, cols = ref[key + "|ids"], ref[key + "|cols"]
             if name.startswith("GRID_FORCE:") and name.count(":") == 2:  # by GRID
                 keep = [
-                    k for k, g in enumerate(ids.tolist()) if g in point
+                    k
+                    for k, g in enumerate(ids.tolist())
+                    if g in point and g not in rotated
                 ]  # not SPOINTs
                 got = mesh.point_data[name][[point[int(ids[k])] for k in keep]]
                 np.testing.assert_allclose(got, values[keep], rtol=1e-6, atol=1e-9)
@@ -398,7 +408,9 @@ def test_multi_valued_results_match_pynastran(engine, path):
             data = mesh.cell_data[name]
             station_sd = mesh.cell_data.get(name.split(":")[0] + ":SD@station")
             for e, col, v in zip(ids.tolist(), cols.tolist(), values.tolist()):
-                if int(e) not in cell:  # springs and dampers have no cell
+                if int(e) not in cell:  # an element without a cell
+                    continue
+                if parts[5] == "gpf" and int(col) in rotated:
                     continue
                 b, i = cell[int(e)]
                 if name.endswith("@ply"):

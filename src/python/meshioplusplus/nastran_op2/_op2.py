@@ -1245,11 +1245,25 @@ def _build_mesh(nf):
                 "results stay in them"
             )
         cd = [0] * len(ids)
+    # A file can repeat a GRID in a second GEOM1 table (a restart's): kept
+    # once when both definitions agree.
     grid_index = {}
+    keep = []
     for i, g in enumerate(ids):
-        if g in grid_index:
-            _fail(f"GRID {g} is defined twice")
-        grid_index[g] = i
+        j = grid_index.get(g)
+        if j is not None:
+            k = keep[j]
+            same = cp[i] == cp[k] and cd[i] == cd[k]
+            if not same or list(np.ravel(xyz[i])) != list(np.ravel(xyz[k])):
+                _fail(f"GRID {g} is defined twice")
+            continue
+        grid_index[g] = len(keep)
+        keep.append(i)
+    if len(keep) != len(ids):
+        ids = [ids[i] for i in keep]
+        cp = [cp[i] for i in keep]
+        cd = [cd[i] for i in keep]
+        xyz = [xyz[i] for i in keep]
     points = np.asarray(xyz, dtype=np.float64).reshape(len(ids), 3)
     point_data = {}
     systems = apply_frames(points, point_data, cords, ids, cp, cd, WHO)
