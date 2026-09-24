@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/nastran_model.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -670,7 +671,12 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Nastran writer: failed writing " + rPath);
 }
 
-Mesh read_nastran(const std::string& rPath) {
+namespace {
+
+// The bulk reader proper; also hands back the GRID ids (point order) and the
+// element ids (global cell order) when asked.
+Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
+              std::vector<std::int64_t>* pCellIds) {
     auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -705,6 +711,7 @@ Mesh read_nastran(const std::string& rPath) {
         int mN = 0;
         std::vector<std::int64_t> mConn;
         std::vector<std::int64_t> mRefs;
+        std::vector<std::int64_t> mIds;
     };
     std::vector<Blk> blocks;
     std::vector<double> pts;
@@ -727,6 +734,8 @@ Mesh read_nastran(const std::string& rPath) {
             any_point_ref = any_point_ref || !ref.empty();
             point_refs.push_back(nas_int(ref, kw));
             point_index[id] = static_cast<std::int64_t>(point_refs.size() - 1);
+            if (pGridIds)
+                pGridIds->push_back(id);
             for (std::size_t c = 3; c < 6; ++c)
                 pts.push_back(nas_real(nas_field(f, c), kw));
             continue;
@@ -775,6 +784,7 @@ Mesh read_nastran(const std::string& rPath) {
             blk.mConn.insert(blk.mConn.end(), nodes.begin(), nodes.end());
             any_cell_ref = any_cell_ref || !ref.empty();
             blk.mRefs.push_back(nas_int(ref, kw));
+            blk.mIds.push_back(id);
             cell_pids.push_back(blk.mRefs.back());
             cell_index[id] = static_cast<std::int64_t>(cell_dims.size());
             cell_dims.push_back(cell_type_dimension(cell_type_from_name(type)));
@@ -914,7 +924,27 @@ Mesh read_nastran(const std::string& rPath) {
     }
     if (missing > 0)
         log::warn("Nastran: {} region member id(s) name no grid or element; dropped", missing);
+    if (pCellIds)
+        for (const Blk& blk : blocks)
+            pCellIds->insert(pCellIds->end(), blk.mIds.begin(), blk.mIds.end());
     return mesh;
 }
+
+}  // namespace
+
+Mesh read_nastran(const std::string& rPath) {
+    return nas_read(rPath, nullptr, nullptr);
+}
+
+namespace detail {
+
+Mesh nastran_read_deck(const std::string& rPath, std::vector<std::int64_t>& rGridIds,
+                       std::vector<std::int64_t>& rCellIds) {
+    rGridIds.clear();
+    rCellIds.clear();
+    return nas_read(rPath, &rGridIds, &rCellIds);
+}
+
+}  // namespace detail
 
 }  // namespace meshioplusplus

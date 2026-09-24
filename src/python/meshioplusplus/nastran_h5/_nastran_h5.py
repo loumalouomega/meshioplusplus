@@ -13,8 +13,8 @@ import numpy as np
 
 from .._common import warn
 from .._exceptions import ReadError
-from .._mesh import CellBlock, Mesh
-from .._regions import Region
+from .._mesh import Mesh
+from ..nastran._model import CARDS, add_cells, frame_point_data
 
 __all__ = ["read", "time_values"]
 
@@ -27,54 +27,6 @@ _PROPERTIES = "/NASTRAN/INPUT/PROPERTY"
 _DOMAINS = "/NASTRAN/RESULT/DOMAINS"
 _NODAL = "/NASTRAN/RESULT/NODAL"
 _ELEMENTAL = "/NASTRAN/RESULT/ELEMENTAL"
-
-# Nastran numbers the hex20/wedge15 mid-side nodes bottom, vertical, top;
-# meshio++ (VTK) numbers them bottom, top, vertical: conn[k] = G[perm[k]].
-_HEXA20 = list(range(12)) + [16, 17, 18, 19, 12, 13, 14, 15]
-_PENTA15 = list(range(9)) + [12, 13, 14, 9, 10, 11]
-
-# card -> (linear type, nodes, quadratic type or None, nodes, permutation or None)
-_CARDS = {
-    "CBAR": ("line", 2, None, 0, None),
-    "CBEAM": ("line", 2, None, 0, None),
-    "CBUSH": ("line", 2, None, 0, None),
-    "CHEXA": ("hexahedron", 8, "hexahedron20", 20, _HEXA20),
-    "CONM2": ("vertex", 1, None, 0, None),
-    "CONROD": ("line", 2, None, 0, None),
-    "CPENTA": ("wedge", 6, "wedge15", 15, _PENTA15),
-    "CPYRAM": ("pyramid", 5, "pyramid13", 13, None),
-    "CQUAD": ("quad", 4, "quad9", 9, None),
-    "CQUAD4": ("quad", 4, None, 0, None),
-    "CQUAD8": ("quad", 4, "quad8", 8, None),
-    "CQUADR": ("quad", 4, None, 0, None),
-    "CROD": ("line", 2, None, 0, None),
-    "CSHEAR": ("quad", 4, None, 0, None),
-    "CTETRA": ("tetra", 4, "tetra10", 10, None),
-    "CTRIA3": ("triangle", 3, None, 0, None),
-    "CTRIA6": ("triangle", 3, "triangle6", 6, None),
-    "CTRIAR": ("triangle", 3, None, 0, None),
-    "CTUBE": ("line", 2, None, 0, None),
-    "CVISC": ("line", 2, None, 0, None),
-    "PLOTEL": ("line", 2, None, 0, None),
-}
-
-_DIM = {
-    "vertex": 0,
-    "line": 1,
-    "triangle": 2,
-    "triangle6": 2,
-    "quad": 2,
-    "quad8": 2,
-    "quad9": 2,
-    "tetra": 3,
-    "tetra10": 3,
-    "pyramid": 3,
-    "pyramid13": 3,
-    "wedge": 3,
-    "wedge15": 3,
-    "hexahedron": 3,
-    "hexahedron20": 3,
-}
 
 
 def _fail(message):
@@ -280,28 +232,28 @@ def _nodal_outputs(table, ds):
     return out
 
 
-def _read_cells(nf):
+def _read_cards(nf):
+    """Every element table with a cell type, as ``(card, eid, pid, g)`` rows."""
     f = nf.f
-    blocks = []  # [type, conn list, eid list, pid list, card]
+    cards = []
     skipped_cards = []
-    dropped = 0
     for card in _children(f, _ELEMENTS, False):
-        spec = _CARDS.get(card)
+        spec = CARDS.get(card)
         if spec is None:
             skipped_cards.append(card)
             continue
-        lin_type, lin_n, quad_type, quad_n, perm = spec
+        lin_n = spec[1]
         path = f"{_ELEMENTS}/{card}"
         data = f[path][()]
         names = _names(f[path])
         n = len(data)
         if "EID" not in names:
             _fail(f"{path} has no EID column")
-        eid = np.asarray(data["EID"], dtype=np.int64).tolist()
+        eid = np.asarray(data["EID"], dtype=np.int64)
         pid = (
-            np.asarray(data["PID"], dtype=np.int64).tolist()
+            np.asarray(data["PID"], dtype=np.int64)
             if "PID" in names
-            else [-1] * n
+            else np.full(n, -1, dtype=np.int64)
         )
         if "G" in names:
             g = np.asarray(data["G"], dtype=np.int64).reshape(n, -1)
@@ -319,53 +271,13 @@ def _read_cells(nf):
         width = g.shape[1]
         if width < lin_n:
             _fail(f"{path} has {width} node columns, {card} needs {lin_n}")
-        linear = [lin_type, [], [], [], card]
-        quadratic = [quad_type, [], [], [], card]
-        partial = 0
-        for i, row in enumerate(g.tolist()):
-            quad = False
-            if quad_type is not None and width >= quad_n:
-                given = sum(1 for k in range(lin_n, quad_n) if row[k] != 0)
-                quad = given == quad_n - lin_n
-                if given and not quad:
-                    partial += 1
-            nodes = quad_n if quad else lin_n
-            src = perm if (quad and perm) else range(nodes)
-            conn = []
-            for k in src:
-                p = nf.grid_index.get(row[k])
-                if p is None:
-                    if row[k] not in nf.scalar_points:
-                        what = "no node" if row[k] == 0 else f"undefined GRID {row[k]}"
-                        _fail(f"{card} {eid[i]} references {what} as its node {k + 1}")
-                    conn = None  # a scalar point, not a GRID
-                    break
-                conn.append(p)
-            if conn is None:
-                dropped += 1
-                continue
-            b = quadratic if quad else linear
-            b[1].append(conn)
-            b[2].append(eid[i])
-            b[3].append(pid[i])
-        if partial:
-            warn(
-                f"MSC Nastran HDF5: {partial} {card} element(s) have only some "
-                f"mid-side nodes; read as {lin_type}"
-            )
-        for b in (linear, quadratic):
-            if b[2]:
-                blocks.append(b)
+        cards.append((card, eid, pid, g))
     if skipped_cards:
         warn(
             "MSC Nastran HDF5: skipped element tables with no cell type: "
             + ", ".join(skipped_cards)
         )
-    if dropped:
-        warn(
-            f"MSC Nastran HDF5: skipped {dropped} element(s) that connect scalar points"
-        )
-    return blocks
+    return cards
 
 
 def _property_types(f):
@@ -415,77 +327,20 @@ def _read(nf, points_only, arrays, time_step):
     points = np.asarray(grid["X"], dtype=np.float64).reshape(npts, 3)
     point_data = {}
     for frame in ("CP", "CD"):
-        if frame not in grid.dtype.names:
-            continue
-        v = np.asarray(grid[frame], dtype=np.int64)
-        nonzero = int(np.count_nonzero(v))
-        if nonzero == 0:
-            continue
-        if frame == "CP":
-            warn(
-                f"MSC Nastran HDF5: {nonzero} GRID(s) have CP != 0; their coordinates "
-                "are kept in the local system, not transformed"
-            )
-        else:
-            warn(
-                f"MSC Nastran HDF5: {nonzero} GRID(s) have CD != 0; their results are "
-                "in the local output system"
-            )
-        point_data["nastran:" + frame.lower()] = v
+        if frame in grid.dtype.names:
+            frame_point_data(point_data, frame, grid[frame], "MSC Nastran HDF5")
 
-    blocks = _read_cells(nf)
-    cells = []
-    cell_data = {}
-    # EID -> global cell, for the element results. A CONM2 has none, and MSC
-    # accepts one sharing its id with a structural element, so it stays out.
-    cell_index = {}
-    offsets = []
-    ncells = 0
-    shared = 0
-    for ctype, conn, eid, pid, card in blocks:
-        offsets.append(ncells)
-        if card != "CONM2":
-            for i, e in enumerate(eid):
-                if e in cell_index:
-                    shared += 1
-                else:
-                    cell_index[e] = ncells + i
-        ncells += len(eid)
-        cells.append(
-            CellBlock(ctype, np.asarray(conn, dtype=np.int64).reshape(len(eid), -1))
-        )
-    if shared:
-        warn(
-            f"MSC Nastran HDF5: {shared} element id(s) are used by more than one card; "
-            "their element results go to the first"
-        )
-    if blocks:
-        cell_data["nastran:eid"] = [np.asarray(b[2], dtype=np.int64) for b in blocks]
-        cell_data["nastran:pid"] = [np.asarray(b[3], dtype=np.int64) for b in blocks]
-
-    ptype = _property_types(f)
-    by_pid = {}
-    for b, (ctype, _, _, pid, _) in enumerate(blocks):
-        dim = _DIM[ctype]
-        for i, p in enumerate(pid):
-            if p <= 0:
-                continue
-            entry = by_pid.setdefault(p, [[], dim])
-            entry[0].append(offsets[b] + i)
-            entry[1] = max(entry[1], dim)
-    regions = [
-        Region(
-            f"{ptype.get(p, 'PID')}_{p}",
-            "cell",
-            np.asarray(entries, dtype=np.int64),
-            dim,
-            p,
-        )
-        for p, (entries, dim) in sorted(by_pid.items())
-    ]
+    cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
+        _read_cards(nf),
+        nf.grid_index,
+        nf.scalar_points,
+        _property_types(f),
+        "MSC Nastran HDF5",
+    )
+    ncells = sum(sizes)
 
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
-    mesh.regions = sorted(regions, key=lambda r: r.name)
+    mesh.regions = regions
     mesh.time_values = [s["time"] for s in nf.steps]
 
     s = _resolve_step(time_step, len(nf.steps))
@@ -559,8 +414,7 @@ def _read(nf, points_only, arrays, time_step):
                 values[dst] = _first(rows[members[0]])[src]
     for name, values in cell_arrays.items():
         mesh.cell_data[name] = [
-            values[offsets[b] : offsets[b] + len(blocks[b][2])]
-            for b in range(len(blocks))
+            values[offsets[b] : offsets[b] + sizes[b]] for b in range(len(sizes))
         ]
     return mesh
 
