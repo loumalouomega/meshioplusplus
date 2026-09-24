@@ -1140,7 +1140,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          lfs: false
           submodules: recursive  # vendored Eigen (MED transpose)
+      # The tool tests convert binary reference fixtures (.rst, .op2, d3plot),
+      # which are Git LFS content: fetched as in the other test jobs.
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -1153,6 +1168,7 @@ jobs:
           pip install ".[mcp,dashboard]" pytest httpx
 
       - name: MCP and HTTP front-end tests
+        if: steps.lfs.outputs.available != 'false'
         run: python -m pytest tests/python/test_mcp.py tests/python/test_mcp_http.py -v
 
   # --------------------------------------------------------------------------
