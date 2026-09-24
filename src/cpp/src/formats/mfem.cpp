@@ -581,6 +581,13 @@ struct MfAttributeSet {
 
 struct MfFile {
     bool mNonConforming = false;  // read from an `MFEM NC mesh`: its leaves
+    // One rank of a parallel mesh (ParMesh::Print): its rank (group 0's only
+    // member), and per communication group its ranks and shared vertices
+    // (local ids, in the order every rank of the group lists them).
+    bool mParallel = false;
+    std::int64_t mRank = 0;
+    std::vector<std::vector<std::int64_t>> mGroups;
+    std::vector<std::vector<std::int64_t>> mGroupVertices;
     int mDim = -1;
     std::vector<MfElement> mElements;
     std::vector<MfElement> mBoundary;
@@ -839,6 +846,65 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
     return f;
 }
 
+// A parallel mesh's `communication_groups` (GroupTopology::Save) and shared
+// entities (ParMesh::ParPrint), after `mfem_serial_mesh_end`. Only the shared
+// vertices matter: shared edges and faces follow from them.
+void mf_read_groups(MfLexer& rLex, MfFile& rF) {
+    rF.mParallel = true;
+    const MfToken& head = rLex.Next("communication_groups");
+    if (head.mText != "communication_groups")
+        rLex.Fail("expected communication_groups, found '" + head.mText + "'", head.mLine);
+    if (rLex.Next("number_of_groups").mText != "number_of_groups")
+        rLex.Fail("expected number_of_groups", head.mLine);
+    const std::int64_t ngroups = rLex.Int("a group count");
+    if (ngroups < 1)
+        rLex.Fail("a parallel mesh needs at least one communication group", head.mLine);
+    for (std::int64_t g = 0; g < ngroups; ++g) {
+        const std::int64_t size = rLex.Int("a group size");
+        if (size < 1)
+            rLex.Fail("an empty communication group", rLex.Line());
+        std::vector<std::int64_t> ranks;
+        for (std::int64_t k = 0; k < size; ++k)
+            ranks.push_back(rLex.Int("a rank"));
+        std::sort(ranks.begin(), ranks.end());
+        rF.mGroups.push_back(std::move(ranks));
+    }
+    if (rF.mGroups[0].size() != 1)
+        rLex.Fail("communication group 0 must hold this rank alone", head.mLine);
+    rF.mRank = rF.mGroups[0][0];
+    rF.mGroupVertices.assign(static_cast<std::size_t>(ngroups), {});
+    std::int64_t group = 0;
+    while (!rLex.AtEnd()) {
+        const MfToken& t = rLex.Next("a shared-entity section");
+        if (t.mText == "mfem_mesh_end")
+            break;
+        if (t.mText == "total_shared_vertices" || t.mText == "total_shared_edges" ||
+            t.mText == "total_shared_faces") {
+            rLex.Int("a count");
+        } else if (t.mText == "shared_vertices") {
+            if (++group >= ngroups)
+                rLex.Fail("more shared-vertex groups than communication groups", t.mLine);
+            const std::int64_t n = rLex.Int("a vertex count");
+            for (std::int64_t k = 0; k < n; ++k)
+                rF.mGroupVertices[static_cast<std::size_t>(group)].push_back(
+                    rLex.Int("a shared vertex"));
+        } else if (t.mText == "shared_edges") {
+            const std::int64_t n = rLex.Int("an edge count");
+            for (std::int64_t k = 0; k < 2 * n; ++k)
+                rLex.Int("an edge vertex");
+        } else if (t.mText == "shared_faces") {
+            const std::int64_t n = rLex.Int("a face count");
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t geom = rLex.Int("a face geometry");
+                for (int v = 0; v < (geom == 3 ? 4 : 3); ++v)
+                    rLex.Int("a face vertex");
+            }
+        } else {
+            rLex.Fail("unexpected '" + t.mText + "' in the communication groups", t.mLine);
+        }
+    }
+}
+
 MfFile mf_parse(const std::string& rPath) {
     const std::string what = "MFEM mesh";
     MfLexer lex(what, mf_read_text(rPath, "MFEM mesh"));
@@ -901,10 +967,7 @@ MfFile mf_parse(const std::string& rPath) {
                     lex.Next("a value");
             }
         } else if (t.mText == "mfem_serial_mesh_end") {
-            log::warn(
-                "MFEM mesh: '{}' is one rank of a parallel mesh; reading its local part and "
-                "ignoring the communication groups",
-                rPath);
+            mf_read_groups(lex, f);
             break;
         } else if (t.mText == "mfem_mesh_end") {
             break;
@@ -1015,38 +1078,6 @@ void mf_add_regions(Mesh& rMesh, const MfFile& rF, const std::vector<std::int64_
     };
     add_sets(rF.mSets, false);
     add_sets(rF.mBdrSets, true);
-}
-
-// An element-wise (L2 order-0) grid function as cell data: one value per
-// element, NaN on boundary cells. `rElementCell` is each element's global
-// cell; `rBlockSizes` the cell count of each block.
-void mf_add_cell_gf(Mesh& rMesh, const MfGridData& rG, std::size_t NumElements,
-                    const std::vector<std::size_t>& rElementCell,
-                    const std::vector<std::size_t>& rBlockSizes) {
-    const MfSpace& s = rG.mSpace;
-    const std::size_t vdim = static_cast<std::size_t>(s.mVDim);
-    const std::size_t ndofs = rG.mValues.size() / vdim;
-    if (ndofs != NumElements)
-        throw ReadError("MFEM grid function '" + rG.mName + "' has " + std::to_string(ndofs) +
-                        " dofs for " + std::to_string(NumElements) + " elements");
-    std::size_t total = 0;
-    for (std::size_t n : rBlockSizes)
-        total += n;
-    std::vector<double> per_cell(total * vdim, std::numeric_limits<double>::quiet_NaN());
-    for (std::size_t e = 0; e < NumElements; ++e)
-        for (std::size_t c = 0; c < vdim; ++c)
-            per_cell[rElementCell[e] * vdim + c] = mf_value(rG.mValues, s, ndofs, e, c);
-    std::vector<NDArray> out;
-    std::size_t start = 0;
-    for (std::size_t n : rBlockSizes) {
-        NDArray a = vdim == 1 ? NDArray(DType::Float64, {n}) : NDArray(DType::Float64, {n, vdim});
-        std::copy(per_cell.begin() + static_cast<std::ptrdiff_t>(start * vdim),
-                  per_cell.begin() + static_cast<std::ptrdiff_t>((start + n) * vdim),
-                  a.As<double>());
-        start += n;
-        out.push_back(std::move(a));
-    }
-    rMesh.AddCellData(rG.mName, std::move(out));
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,97 +1467,135 @@ const MfInterp& mf_interp(std::map<std::pair<int, int>, MfInterp>& rCache, int G
     return rCache.emplace(key, std::move(in)).first->second;
 }
 
-// A nodal field over the mesh: its space layout and a value accessor.
+// A nodal field over one part: its space layout and a value accessor.
 struct MfField {
     MfDofs mDofs;
     std::size_t mComponents = 1;
     std::function<double(std::size_t, std::size_t)> mValue;  // (dof, component)
 };
 
-Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, bool NodesH1,
-                        const std::vector<double>& rVertexXyz, int Order,
-                        const std::string& rPath) {
-    const auto& geoms = mf_geoms();
-    const int dim = rF.mDim;
-    const std::size_t nv = rF.mNumVertices;
-    const std::size_t sdim = static_cast<std::size_t>(rF.mSpaceDim);
-    for (const MfElement& el : rF.mElements)
-        if (el.mGeom == 0 || geoms[static_cast<std::size_t>(el.mGeom)].mDim != dim)
-            throw ReadError("MFEM mesh: element of geometry " + std::to_string(el.mGeom) +
-                            " in a " + std::to_string(dim) + "-D mesh (line " +
-                            std::to_string(el.mLine) + ")");
-    const MfEntities ent = mf_entities(rF.mElements, dim);
+// One part of the mesh to read: a whole serial file, or one rank of a parallel
+// mesh, with its local vertices' output numbers.
+struct MfPart {
+    const MfFile* mpF = nullptr;
+    std::vector<const MfGridData*> mGfs;  // the grid functions, in the caller's order
+    bool mNodesH1 = false;                // coordinates from H1 nodes, else the vertices
+    std::vector<double> mVertexXyz;       // local vertices, SpaceDim each
+    std::vector<std::int64_t> mGlobal;    // local vertex -> output vertex
+};
 
-    // The fields: the coordinates, then each H1 grid function.
-    std::vector<MfField> fields;
-    {
+// The output type of a cell: VTK Lagrange at order 3 and up, else the linear or
+// complete quadratic type (their node order is VTK's order-1 and order-2
+// Lagrange order).
+std::string mf_cell_type(int Geom, int Order) {
+    if (Geom == 0 || Order <= 1)
+        return mf_geoms()[static_cast<std::size_t>(Geom)].mLinear;
+    if (Order == 2)
+        return mf_geoms()[static_cast<std::size_t>(Geom)].mQuadratic;
+    return mf_lagrange_type(Geom);
+}
+
+// Reads the parts into one mesh of order-`Order` cells: every cell's nodes
+// keyed by the output vertices they combine, so parts share their interface
+// nodes; values from each part's own dof numbering; `partition:part` (the
+// rank) on every cell when `Labels`.
+Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, int Order,
+                   bool Labels, const std::string& rPath) {
+    const auto& geoms = mf_geoms();
+    const MfFile& first = *rParts[0].mpF;
+    const int dim = first.mDim;
+    const std::size_t sdim = static_cast<std::size_t>(first.mSpaceDim);
+    const std::size_t ngfs = rParts[0].mGfs.size();
+
+    // Per part: its entities and fields (the coordinates, then each H1 grid
+    // function); the L2 ones become cell data.
+    std::vector<MfEntities> ents(rParts.size());
+    std::vector<std::vector<MfField>> fields(rParts.size());
+    std::vector<std::size_t> point_gfs;  // indices into mGfs
+    for (std::size_t g = 0; g < ngfs; ++g)
+        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1)
+            point_gfs.push_back(g);
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfPart& part = rParts[q];
+        const MfFile& f = *part.mpF;
+        if (f.mDim != dim || static_cast<std::size_t>(f.mSpaceDim) != sdim)
+            throw ReadError("MFEM mesh: the parts of " + rPath + " disagree on the dimension");
+        for (const MfElement& el : f.mElements)
+            if (el.mGeom == 0 || geoms[static_cast<std::size_t>(el.mGeom)].mDim != dim ||
+                (el.mGeom == 7 && Order > 1))
+                throw ReadError("MFEM mesh: element of geometry " + std::to_string(el.mGeom) +
+                                " in a " + std::to_string(dim) + "-D mesh of order " +
+                                std::to_string(Order) + " (line " + std::to_string(el.mLine) + ")");
+        ents[q] = mf_entities(f.mElements, dim);
         MfField xyz;
         xyz.mComponents = sdim;
-        if (NodesH1) {
-            const MfSpace& s = rF.mNodesSpace;
-            xyz.mDofs = mf_dofs(rF, ent, s.mOrder, s.mPoints);
-            const std::size_t ndofs = rF.mNodes.size() / static_cast<std::size_t>(s.mVDim);
+        if (part.mNodesH1) {
+            const MfSpace& s = f.mNodesSpace;
+            xyz.mDofs = mf_dofs(f, ents[q], s.mOrder, s.mPoints);
+            const std::size_t ndofs = f.mNodes.size() / static_cast<std::size_t>(s.mVDim);
             if (ndofs != xyz.mDofs.mSize)
                 throw ReadError("MFEM mesh: the order-" + std::to_string(s.mOrder) + " nodes of " +
                                 rPath + " have " + std::to_string(ndofs) +
                                 " dofs; the mesh numbers " + std::to_string(xyz.mDofs.mSize));
-            xyz.mValue = [&rF, ndofs](std::size_t Dof, std::size_t C) {
-                return mf_value(rF.mNodes, rF.mNodesSpace, ndofs, Dof, C);
+            xyz.mValue = [&f, ndofs](std::size_t Dof, std::size_t C) {
+                return mf_value(f.mNodes, f.mNodesSpace, ndofs, Dof, C);
             };
         } else {
-            xyz.mDofs = mf_dofs(rF, ent, 1, MfSpace::Gll);
-            xyz.mValue = [&rVertexXyz, sdim](std::size_t Dof, std::size_t C) {
-                return rVertexXyz[Dof * sdim + C];
+            xyz.mDofs = mf_dofs(f, ents[q], 1, MfSpace::Gll);
+            xyz.mValue = [&part, sdim](std::size_t Dof, std::size_t C) {
+                return part.mVertexXyz[Dof * sdim + C];
             };
         }
-        fields.push_back(std::move(xyz));
-    }
-    std::vector<const MfGridData*> point_gfs, cell_gfs;
-    for (const MfGridData& g : rGfs) {
-        if (g.mSpace.mKind != MfSpace::H1) {
-            cell_gfs.push_back(&g);
-            continue;
+        fields[q].push_back(std::move(xyz));
+        for (std::size_t g : point_gfs) {
+            const MfGridData& gd = *part.mGfs[g];
+            const MfSpace& s = gd.mSpace;
+            const std::size_t vdim = static_cast<std::size_t>(s.mVDim);
+            if (gd.mValues.size() % vdim != 0)
+                throw ReadError("MFEM grid function '" + gd.mName +
+                                "': " + std::to_string(gd.mValues.size()) +
+                                " values, not a multiple of VDim " + std::to_string(vdim));
+            MfField field;
+            field.mDofs = mf_dofs(f, ents[q], s.mOrder, s.mPoints);
+            field.mComponents = vdim;
+            const std::size_t ndofs = gd.mValues.size() / vdim;
+            if (ndofs != field.mDofs.mSize)
+                throw ReadError("MFEM grid function '" + gd.mName + "' has " +
+                                std::to_string(ndofs) + " dofs; the mesh has " +
+                                std::to_string(field.mDofs.mSize) + " at order " +
+                                std::to_string(s.mOrder));
+            field.mValue = [&gd, ndofs](std::size_t Dof, std::size_t C) {
+                return mf_value(gd.mValues, gd.mSpace, ndofs, Dof, C);
+            };
+            fields[q].push_back(std::move(field));
         }
-        const MfSpace& s = g.mSpace;
-        const std::size_t vdim = static_cast<std::size_t>(s.mVDim);
-        if (g.mValues.size() % vdim != 0)
-            throw ReadError("MFEM grid function '" + g.mName +
-                            "': " + std::to_string(g.mValues.size()) +
-                            " values, not a multiple of VDim " + std::to_string(vdim));
-        MfField field;
-        field.mDofs = mf_dofs(rF, ent, s.mOrder, s.mPoints);
-        field.mComponents = vdim;
-        const std::size_t ndofs = g.mValues.size() / vdim;
-        if (ndofs != field.mDofs.mSize)
-            throw ReadError("MFEM grid function '" + g.mName + "' has " + std::to_string(ndofs) +
-                            " dofs; the mesh has " + std::to_string(field.mDofs.mSize) +
-                            " at order " + std::to_string(s.mOrder));
-        field.mValue = [&g, ndofs](std::size_t Dof, std::size_t C) {
-            return mf_value(g.mValues, g.mSpace, ndofs, Dof, C);
-        };
-        fields.push_back(std::move(field));
-        point_gfs.push_back(&g);
     }
+    const std::size_t nfields = 1 + point_gfs.size();
 
     // Output points: the vertices first, then every other VTK node by the
-    // corner weights that place it.
+    // output vertices and corner weights that place it.
     using NodeKey = std::vector<std::pair<std::int64_t, std::int64_t>>;
     std::map<NodeKey, std::size_t> node_of;
     const std::int64_t p3 = static_cast<std::int64_t>(Order) * Order * Order;
-    for (std::size_t v = 0; v < nv; ++v)
+    for (std::size_t v = 0; v < NumVertices; ++v)
         node_of.emplace(NodeKey{{static_cast<std::int64_t>(v), p3}}, v);
-    std::size_t npoints = nv;
-    const auto cell_nodes = [&](const MfElement& rEl, std::vector<std::size_t>& rIds) {
+    std::size_t npoints = NumVertices;
+    const auto cell_nodes = [&](const MfPart& rPart, const MfElement& rEl,
+                                std::vector<std::size_t>& rIds) {
         rIds.clear();
-        if (rEl.mGeom == 0) {
-            rIds.push_back(static_cast<std::size_t>(rEl.mVertices[0]));
+        const auto global = [&](std::int64_t V) {
+            return rPart.mGlobal[static_cast<std::size_t>(V)];
+        };
+        if (rEl.mGeom == 0 || rEl.mGeom == 7) {  // a point; a (linear) pyramid
+            for (std::int64_t v : rEl.mVertices)
+                rIds.push_back(static_cast<std::size_t>(global(v)));
             return;
         }
         const lagrange::Shape shape = mf_shape(rEl.mGeom);
         for (const auto& ijk : lagrange::vtk_lattice(shape, Order)) {
             NodeKey key;
             for (const auto& [corner, w] : lagrange::lattice_weights(shape, Order, ijk))
-                key.emplace_back(rEl.mVertices[static_cast<std::size_t>(corner)], w);
+                key.emplace_back(global(rEl.mVertices[static_cast<std::size_t>(corner)]), w);
             std::sort(key.begin(), key.end());
             const auto [it, fresh] = node_of.emplace(std::move(key), npoints);
             if (fresh)
@@ -1534,92 +1603,122 @@ Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, b
             rIds.push_back(it->second);
         }
     };
-    std::vector<std::vector<std::size_t>> element_nodes(rF.mElements.size());
-    for (std::size_t e = 0; e < rF.mElements.size(); ++e)
-        cell_nodes(rF.mElements[e], element_nodes[e]);
-    std::vector<std::vector<std::size_t>> boundary_nodes(rF.mBoundary.size());
-    for (std::size_t b = 0; b < rF.mBoundary.size(); ++b)
-        cell_nodes(rF.mBoundary[b], boundary_nodes[b]);
+    std::vector<std::vector<std::vector<std::size_t>>> element_nodes(rParts.size()),
+        boundary_nodes(rParts.size());
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfFile& f = *rParts[q].mpF;
+        element_nodes[q].resize(f.mElements.size());
+        for (std::size_t e = 0; e < f.mElements.size(); ++e)
+            cell_nodes(rParts[q], f.mElements[e], element_nodes[q][e]);
+        boundary_nodes[q].resize(f.mBoundary.size());
+        for (std::size_t b = 0; b < f.mBoundary.size(); ++b)
+            cell_nodes(rParts[q], f.mBoundary[b], boundary_nodes[q][b]);
+    }
 
     // Values at the nodes, element by element (a node shared by several takes
     // the first's; a conforming mesh gives the same value).
-    std::vector<std::vector<double>> values(fields.size());
-    for (std::size_t k = 0; k < fields.size(); ++k)
-        values[k].assign(npoints * fields[k].mComponents, std::numeric_limits<double>::quiet_NaN());
+    std::vector<std::vector<double>> values(nfields);
+    values[0].assign(npoints * sdim, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t k = 1; k < nfields; ++k)
+        values[k].assign(npoints * fields[0][k].mComponents,
+                         std::numeric_limits<double>::quiet_NaN());
     std::vector<bool> known(npoints, false);
-    std::vector<std::map<std::pair<int, int>, MfInterp>> caches(fields.size());
     std::vector<std::pair<std::size_t, MfPos>> dofs;
     std::vector<std::size_t> perm;
-    for (std::size_t e = 0; e < rF.mElements.size(); ++e) {
-        const MfElement& el = rF.mElements[e];
-        const auto& ids = element_nodes[e];
-        bool any = false;
-        for (std::size_t id : ids)
-            any = any || !known[id];
-        if (!any)
-            continue;
-        for (std::size_t k = 0; k < fields.size(); ++k) {
-            const MfField& fld = fields[k];
-            const MfInterp& in = mf_interp(caches[k], el.mGeom, dim, fld.mDofs, Order, 0);
-            mf_element_dofs(el, dim, &ent, fld.mDofs, e, dofs);
-            perm.assign(in.mNodes, static_cast<std::size_t>(-1));
-            for (const auto& [dof, pos] : dofs) {
-                const std::size_t c = in.mIndex.Find(pos);
-                if (c >= in.mNodes)
-                    throw ReadError("MFEM mesh: a degree of freedom of element " +
-                                    std::to_string(e) + " matches no node of its element");
-                perm[c] = dof;
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfFile& f = *rParts[q].mpF;
+        std::vector<std::map<std::pair<int, int>, MfInterp>> caches(nfields);
+        for (std::size_t e = 0; e < f.mElements.size(); ++e) {
+            const MfElement& el = f.mElements[e];
+            const auto& ids = element_nodes[q][e];
+            bool any = false;
+            for (std::size_t id : ids)
+                any = any || !known[id];
+            if (!any)
+                continue;
+            if (el.mGeom == 7) {  // a linear pyramid: its vertices
+                for (std::size_t k = 0; k < nfields; ++k) {
+                    const MfField& fld = fields[q][k];
+                    for (std::size_t j = 0; j < ids.size(); ++j)
+                        for (std::size_t c = 0; c < fld.mComponents; ++c)
+                            values[k][ids[j] * fld.mComponents + c] =
+                                fld.mValue(static_cast<std::size_t>(el.mVertices[j]), c);
+                }
+                for (std::size_t id : ids)
+                    known[id] = true;
+                continue;
             }
-            const std::size_t nc = fld.mComponents;
-            std::vector<double> u(in.mNodes * nc);
-            for (std::size_t m = 0; m < in.mNodes; ++m)
-                for (std::size_t c = 0; c < nc; ++c)
-                    u[m * nc + c] = fld.mValue(perm[m], c);
-            for (std::size_t t = 0; t < ids.size(); ++t) {
-                if (known[ids[t]])
-                    continue;
-                const double* row = in.mMatrix.data() + t * in.mNodes;
-                for (std::size_t c = 0; c < nc; ++c) {
-                    double v = 0.0;
-                    for (std::size_t m = 0; m < in.mNodes; ++m)
-                        v += row[m] * u[m * nc + c];
-                    values[k][ids[t] * nc + c] = v;
+            for (std::size_t k = 0; k < nfields; ++k) {
+                const MfField& fld = fields[q][k];
+                const MfInterp& in = mf_interp(caches[k], el.mGeom, dim, fld.mDofs, Order, 0);
+                mf_element_dofs(el, dim, &ents[q], fld.mDofs, e, dofs);
+                perm.assign(in.mNodes, static_cast<std::size_t>(-1));
+                for (const auto& [dof, pos] : dofs) {
+                    const std::size_t c = in.mIndex.Find(pos);
+                    if (c >= in.mNodes)
+                        throw ReadError("MFEM mesh: a degree of freedom of element " +
+                                        std::to_string(e) + " matches no node of its element");
+                    perm[c] = dof;
+                }
+                const std::size_t nc = fld.mComponents;
+                std::vector<double> u(in.mNodes * nc);
+                for (std::size_t m = 0; m < in.mNodes; ++m)
+                    for (std::size_t c = 0; c < nc; ++c)
+                        u[m * nc + c] = fld.mValue(perm[m], c);
+                for (std::size_t t = 0; t < ids.size(); ++t) {
+                    if (known[ids[t]])
+                        continue;
+                    const double* row = in.mMatrix.data() + t * in.mNodes;
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        double v = 0.0;
+                        for (std::size_t m = 0; m < in.mNodes; ++m)
+                            v += row[m] * u[m * nc + c];
+                        values[k][ids[t] * nc + c] = v;
+                    }
                 }
             }
+            for (std::size_t id : ids)
+                known[id] = true;
         }
-        for (std::size_t id : ids)
-            known[id] = true;
     }
     // Vertices no element holds keep their own coordinates; a boundary node on
     // no element face is placed from its corners.
-    std::size_t orphans = 0;
-    for (std::size_t v = 0; v < nv; ++v)
-        if (!known[v]) {
-            for (std::size_t c = 0; c < sdim; ++c)
-                values[0][v * sdim + c] = rVertexXyz[v * sdim + c];
-            known[v] = true;
-        }
-    for (std::size_t b = 0; b < rF.mBoundary.size(); ++b) {
-        const MfElement& el = rF.mBoundary[b];
-        if (el.mGeom == 0)
-            continue;
-        const lagrange::Shape shape = mf_shape(el.mGeom);
-        const auto lattice = lagrange::vtk_lattice(shape, Order);
-        for (std::size_t t = 0; t < lattice.size(); ++t) {
-            const std::size_t id = boundary_nodes[b][t];
-            if (known[id])
+    for (const MfPart& part : rParts)
+        for (std::size_t v = 0; v < part.mGlobal.size(); ++v) {
+            const auto g = static_cast<std::size_t>(part.mGlobal[v]);
+            if (known[g])
                 continue;
-            ++orphans;
-            for (const auto& [corner, w] : lagrange::lattice_weights(shape, Order, lattice[t])) {
-                const auto v =
-                    static_cast<std::size_t>(el.mVertices[static_cast<std::size_t>(corner)]);
-                for (std::size_t c = 0; c < sdim; ++c) {
-                    double& x = values[0][id * sdim + c];
-                    x = (std::isnan(x) ? 0.0 : x) +
-                        static_cast<double>(w) / static_cast<double>(p3) * rVertexXyz[v * sdim + c];
+            for (std::size_t c = 0; c < sdim; ++c)
+                values[0][g * sdim + c] = part.mVertexXyz[v * sdim + c];
+            known[g] = true;
+        }
+    std::size_t orphans = 0;
+    for (std::size_t q = 0; q < rParts.size(); ++q) {
+        const MfPart& part = rParts[q];
+        for (std::size_t b = 0; b < part.mpF->mBoundary.size(); ++b) {
+            const MfElement& el = part.mpF->mBoundary[b];
+            if (el.mGeom == 0 || el.mGeom == 7)
+                continue;
+            const lagrange::Shape shape = mf_shape(el.mGeom);
+            const auto lattice = lagrange::vtk_lattice(shape, Order);
+            for (std::size_t t = 0; t < lattice.size(); ++t) {
+                const std::size_t id = boundary_nodes[q][b][t];
+                if (known[id])
+                    continue;
+                ++orphans;
+                for (const auto& [corner, w] :
+                     lagrange::lattice_weights(shape, Order, lattice[t])) {
+                    const auto v =
+                        static_cast<std::size_t>(el.mVertices[static_cast<std::size_t>(corner)]);
+                    for (std::size_t c = 0; c < sdim; ++c) {
+                        double& x = values[0][id * sdim + c];
+                        x = (std::isnan(x) ? 0.0 : x) + static_cast<double>(w) /
+                                                            static_cast<double>(p3) *
+                                                            part.mVertexXyz[v * sdim + c];
+                    }
                 }
+                known[id] = true;
             }
-            known[id] = true;
         }
     }
     if (orphans)
@@ -1633,71 +1732,421 @@ Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, b
     std::copy(values[0].begin(), values[0].end(), points.As<double>());
     mesh.AssignPoints(std::move(points));
 
-    // Cells: elements then boundary elements, a block per type in order of
-    // first appearance within each group.
+    // Cells: elements then boundary elements (every part's), a block per type
+    // in order of first appearance within each group.
     struct Cell {
+        std::size_t mPart;
         std::size_t mSource;
         bool mBoundary;
     };
     std::vector<std::pair<std::string, std::vector<Cell>>> blocks;
-    auto add_group = [&](const std::vector<MfElement>& rList, bool Boundary) {
+    for (const bool boundary : {false, true}) {
         std::map<std::string, std::size_t> index;
-        for (std::size_t k = 0; k < rList.size(); ++k) {
-            const std::string t = mf_lagrange_type(rList[k].mGeom);
-            auto [it, fresh] = index.emplace(t, blocks.size());
-            if (fresh)
-                blocks.push_back({t, {}});
-            blocks[it->second].second.push_back({k, Boundary});
+        for (std::size_t q = 0; q < rParts.size(); ++q) {
+            const auto& list = boundary ? rParts[q].mpF->mBoundary : rParts[q].mpF->mElements;
+            for (std::size_t k = 0; k < list.size(); ++k) {
+                const std::string t = mf_cell_type(list[k].mGeom, Order);
+                auto [it, fresh] = index.emplace(t, blocks.size());
+                if (fresh)
+                    blocks.push_back({t, {}});
+                blocks[it->second].second.push_back({q, k, boundary});
+            }
         }
-    };
-    add_group(rF.mElements, false);
-    add_group(rF.mBoundary, true);
-    std::vector<NDArray> attr_blocks;
+    }
+    std::vector<NDArray> attr_blocks, part_blocks;
     std::vector<std::int64_t> cell_attr;
     std::vector<bool> cell_is_boundary;
-    std::vector<std::size_t> element_cell(rF.mElements.size());
+    std::vector<std::vector<std::size_t>> element_cell(rParts.size());
+    for (std::size_t q = 0; q < rParts.size(); ++q)
+        element_cell[q].resize(rParts[q].mpF->mElements.size());
     std::vector<std::size_t> block_sizes;
     std::size_t global = 0;
     for (const auto& [type, members] : blocks) {
-        const auto& first = members[0].mBoundary ? boundary_nodes[members[0].mSource]
-                                                 : element_nodes[members[0].mSource];
-        const std::size_t k = first.size();
+        const Cell& c0 = members[0];
+        const std::size_t k =
+            (c0.mBoundary ? boundary_nodes : element_nodes)[c0.mPart][c0.mSource].size();
         NDArray conn(DType::Int64, {members.size(), k});
         NDArray attrs(DType::Int64, {members.size()});
+        NDArray parts(DType::Int64, {members.size()});
         std::int64_t* c = conn.As<std::int64_t>();
         for (std::size_t r = 0; r < members.size(); ++r) {
             const Cell& cell = members[r];
+            const MfFile& f = *rParts[cell.mPart].mpF;
             const MfElement& el =
-                cell.mBoundary ? rF.mBoundary[cell.mSource] : rF.mElements[cell.mSource];
+                cell.mBoundary ? f.mBoundary[cell.mSource] : f.mElements[cell.mSource];
             const auto& ids =
-                cell.mBoundary ? boundary_nodes[cell.mSource] : element_nodes[cell.mSource];
+                (cell.mBoundary ? boundary_nodes : element_nodes)[cell.mPart][cell.mSource];
             for (std::size_t j = 0; j < k; ++j)
                 c[r * k + j] = static_cast<std::int64_t>(ids[j]);
             attrs.As<std::int64_t>()[r] = el.mAttribute;
+            parts.As<std::int64_t>()[r] = f.mRank;
             cell_attr.push_back(el.mAttribute);
             cell_is_boundary.push_back(cell.mBoundary);
             if (!cell.mBoundary)
-                element_cell[cell.mSource] = global;
+                element_cell[cell.mPart][cell.mSource] = global;
             ++global;
         }
         mesh.AddCellBlock(type, std::move(conn));
         attr_blocks.push_back(std::move(attrs));
+        part_blocks.push_back(std::move(parts));
         block_sizes.push_back(members.size());
     }
     if (!attr_blocks.empty())
         mesh.AddCellData("mfem:attribute", std::move(attr_blocks));
+    if (Labels && !part_blocks.empty())
+        mesh.AddCellData("partition:part", std::move(part_blocks));
 
-    for (std::size_t k = 1; k < fields.size(); ++k) {
-        const std::size_t nc = fields[k].mComponents;
+    for (std::size_t k = 1; k < nfields; ++k) {
+        const std::size_t nc = fields[0][k].mComponents;
         NDArray data =
             nc == 1 ? NDArray(DType::Float64, {npoints}) : NDArray(DType::Float64, {npoints, nc});
         std::copy(values[k].begin(), values[k].end(), data.As<double>());
-        mesh.AddPointData(point_gfs[k - 1]->mName, std::move(data));
+        mesh.AddPointData(rParts[0].mGfs[point_gfs[k - 1]]->mName, std::move(data));
     }
-    for (const MfGridData* g : cell_gfs)
-        mf_add_cell_gf(mesh, *g, rF.mElements.size(), element_cell, block_sizes);
-    mf_add_regions(mesh, rF, cell_attr, cell_is_boundary);
+    // Element-wise grid functions: each part's values on its elements.
+    for (std::size_t g = 0; g < ngfs; ++g) {
+        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1)
+            continue;
+        const std::size_t vdim = static_cast<std::size_t>(rParts[0].mGfs[g]->mSpace.mVDim);
+        std::vector<double> per_cell(global * vdim, std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t q = 0; q < rParts.size(); ++q) {
+            const MfGridData& gd = *rParts[q].mGfs[g];
+            const std::size_t ne = rParts[q].mpF->mElements.size();
+            const std::size_t ndofs = gd.mValues.size() / vdim;
+            if (ndofs != ne)
+                throw ReadError("MFEM grid function '" + gd.mName + "' has " +
+                                std::to_string(ndofs) + " dofs for " + std::to_string(ne) +
+                                " elements");
+            for (std::size_t e = 0; e < ne; ++e)
+                for (std::size_t c = 0; c < vdim; ++c)
+                    per_cell[element_cell[q][e] * vdim + c] =
+                        mf_value(gd.mValues, gd.mSpace, ndofs, e, c);
+        }
+        std::vector<NDArray> out;
+        std::size_t start = 0;
+        for (std::size_t n : block_sizes) {
+            NDArray a =
+                vdim == 1 ? NDArray(DType::Float64, {n}) : NDArray(DType::Float64, {n, vdim});
+            std::copy(per_cell.begin() + static_cast<std::ptrdiff_t>(start * vdim),
+                      per_cell.begin() + static_cast<std::ptrdiff_t>((start + n) * vdim),
+                      a.As<double>());
+            start += n;
+            out.push_back(std::move(a));
+        }
+        mesh.AddCellData(rParts[0].mGfs[g]->mName, std::move(out));
+    }
+    mf_add_regions(mesh, first, cell_attr, cell_is_boundary);
     return mesh;
+}
+
+// The order-3-and-up read of one serial file.
+Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, bool NodesH1,
+                        const std::vector<double>& rVertexXyz, int Order,
+                        const std::string& rPath) {
+    MfPart part;
+    part.mpF = &rF;
+    for (const MfGridData& g : rGfs)
+        part.mGfs.push_back(&g);
+    part.mNodesH1 = NodesH1;
+    part.mVertexXyz = rVertexXyz;
+    part.mGlobal.resize(rF.mNumVertices);
+    for (std::size_t v = 0; v < rF.mNumVertices; ++v)
+        part.mGlobal[v] = static_cast<std::int64_t>(v);
+    return mf_read_parts({part}, rF.mNumVertices, Order, false, rPath);
+}
+
+// `<prefix>.NNNNNN`: the rank a parallel-mesh file name carries, or -1.
+std::int64_t mf_rank_suffix(const std::string& rPath, std::string& rPrefix) {
+    const std::size_t dot = rPath.rfind('.');
+    if (dot == std::string::npos || rPath.size() - dot != 7)
+        return -1;
+    std::int64_t rank = 0;
+    for (std::size_t k = dot + 1; k < rPath.size(); ++k) {
+        if (rPath[k] < '0' || rPath[k] > '9')
+            return -1;
+        rank = 10 * rank + (rPath[k] - '0');
+    }
+    rPrefix = rPath.substr(0, dot + 1);
+    return rank;
+}
+
+std::string mf_rank_path(const std::string& rPrefix, std::int64_t Rank) {
+    std::string digits = std::to_string(Rank);
+    if (digits.size() < 6)
+        digits.insert(0, 6 - digits.size(), '0');
+    return rPrefix + digits;
+}
+
+// Whether `rPath` is `<prefix>.NNNNNN` beside rank files 000000 and 000001:
+// one rank of a parallel mesh as ParMesh::Save writes it.
+bool mf_rank_siblings(const std::string& rPath) {
+    std::string prefix;
+    if (mf_rank_suffix(rPath, prefix) < 0)
+        return false;
+    std::error_code ec;
+    return std::filesystem::exists(mf_rank_path(prefix, 0), ec) &&
+           std::filesystem::exists(mf_rank_path(prefix, 1), ec);
+}
+
+// A parallel mesh: every rank file beside `rPath` (or the one piece asked for).
+// With communication groups (ParMesh::ParPrint) the ranks' shared vertices are
+// merged by group; without them (ParMesh::Save, the files GLVis reads) every
+// rank is a serial mesh whose boundary also lists its faces on other ranks:
+// boundary vertices at identical coordinates are merged, and a boundary face
+// two ranks list is dropped.
+Mesh mf_read_parallel(const std::string& rPath, MfFile First,
+                      const std::vector<MfemGridFunction>& rGridFunctions,
+                      const ReadOptions& rOptions) {
+    namespace fs = std::filesystem;
+    std::string prefix;
+    std::vector<std::string> paths;
+    if (mf_rank_suffix(rPath, prefix) >= 0) {
+        std::error_code ec;
+        for (std::int64_t r = 0; fs::exists(mf_rank_path(prefix, r), ec); ++r)
+            paths.push_back(mf_rank_path(prefix, r));
+    }
+    if (paths.empty()) {
+        log::warn(
+            "MFEM mesh: '{}' is one rank of a parallel mesh, not named <prefix>.NNNNNN "
+            "beside its siblings; reading that rank alone",
+            rPath);
+        paths = {rPath};
+    }
+    if (paths.size() == 1 && !First.mParallel)
+        paths = {rPath};
+    std::vector<std::size_t> selected;
+    if (rOptions.mPieceSet) {
+        if (rOptions.mPiece < 0 || static_cast<std::size_t>(rOptions.mPiece) >= paths.size())
+            throw ReadError("MFEM mesh: piece " + std::to_string(rOptions.mPiece) +
+                            " is out of range: " + rPath + " has " + std::to_string(paths.size()) +
+                            " ranks");
+        selected = {static_cast<std::size_t>(rOptions.mPiece)};
+    } else {
+        for (std::size_t r = 0; r < paths.size(); ++r)
+            selected.push_back(r);
+    }
+    std::vector<MfFile> files;
+    for (std::size_t r : selected) {
+        files.push_back(paths[r] == rPath ? First : mf_parse(paths[r]));
+        MfFile& f = files.back();
+        if (f.mNonConforming)
+            throw ReadError("MFEM mesh: " + paths[r] +
+                            " is a non-conforming rank; parallel non-conforming meshes are not "
+                            "read");
+        if (f.mParallel && paths.size() > 1 && f.mRank != static_cast<std::int64_t>(r))
+            throw ReadError("MFEM mesh: " + paths[r] + " holds rank " + std::to_string(f.mRank));
+        if (!f.mParallel)
+            f.mRank = static_cast<std::int64_t>(r);
+    }
+
+    bool groups = true;
+    for (const MfFile& f : files)
+        groups = groups && f.mParallel;
+    std::vector<MfPart> parts(files.size());
+    bool pyramid = false, corners = false;
+    int order = 1;
+    for (std::size_t q = 0; q < files.size(); ++q) {
+        const MfFile& f = files[q];
+        MfPart& part = parts[q];
+        part.mpF = &f;
+        const std::size_t sdim = static_cast<std::size_t>(f.mSpaceDim);
+        if (f.mHasNodes) {
+            const MfSpace& s = f.mNodesSpace;
+            if (s.mKind == MfSpace::L2T1 || s.mKind == MfSpace::L2 || s.mKind == MfSpace::Other)
+                throw ReadError("MFEM mesh: nodes in '" + s.mCollection +
+                                "' are not supported in a parallel mesh");
+            const std::size_t ndofs = f.mNodes.size() / static_cast<std::size_t>(s.mVDim);
+            if (ndofs < f.mNumVertices)
+                throw ReadError("MFEM mesh: the nodes of " + paths[selected[q]] + " have " +
+                                std::to_string(ndofs) + " dofs for " +
+                                std::to_string(f.mNumVertices) + " vertices");
+            part.mVertexXyz.resize(f.mNumVertices * sdim);
+            for (std::size_t v = 0; v < f.mNumVertices; ++v)
+                for (std::size_t c = 0; c < sdim; ++c)
+                    part.mVertexXyz[v * sdim + c] = mf_value(f.mNodes, s, ndofs, v, c);
+            part.mNodesH1 = s.mKind == MfSpace::H1;
+            corners = corners || s.mKind == MfSpace::H1Other;
+            if (part.mNodesH1)
+                order = std::max(order, s.mOrder);
+        } else {
+            part.mVertexXyz = f.mCoords;
+        }
+        for (const MfElement& el : f.mElements)
+            pyramid = pyramid || el.mGeom == 7;
+    }
+
+    // Output vertices. With communication groups (ParPrint), a shared vertex by
+    // (its group's ranks, its place in the group's list: every rank of a group
+    // lists its vertices in the same order). Without them (ParMesh::Save), a
+    // boundary vertex (any vertex of a 1-D mesh) is merged with the one at the
+    // same position, to 1e-9 of the mesh's extent: ranks compute curved nodes
+    // from their own elements, so they agree to rounding only. Every other
+    // vertex is its own.
+    std::size_t sdim_all = static_cast<std::size_t>(files[0].mSpaceDim);
+    double extent = 0.0;
+    {
+        std::vector<double> lo(sdim_all, std::numeric_limits<double>::max()),
+            hi(sdim_all, std::numeric_limits<double>::lowest());
+        for (const MfPart& part : parts)
+            for (std::size_t k = 0; k < part.mVertexXyz.size(); ++k) {
+                lo[k % sdim_all] = std::min(lo[k % sdim_all], part.mVertexXyz[k]);
+                hi[k % sdim_all] = std::max(hi[k % sdim_all], part.mVertexXyz[k]);
+            }
+        for (std::size_t c = 0; c < sdim_all; ++c)
+            extent = std::max(extent, hi[c] - lo[c]);
+    }
+    const double tol = std::max(extent, 1.0) * 1e-9;
+    std::map<std::vector<std::int64_t>, std::vector<std::int64_t>> buckets;
+    std::vector<std::vector<double>> global_xyz;
+    std::map<std::pair<std::vector<std::int64_t>, std::size_t>, std::int64_t> by_group;
+    std::int64_t nglobal = 0;
+    for (std::size_t q = 0; q < files.size(); ++q) {
+        const MfFile& f = files[q];
+        MfPart& part = parts[q];
+        part.mGlobal.assign(f.mNumVertices, -1);
+        const std::size_t sdim = static_cast<std::size_t>(f.mSpaceDim);
+        std::vector<bool> candidate(f.mNumVertices, f.mDim == 1 && !groups);
+        if (groups) {
+            for (std::size_t g = 1; g < f.mGroupVertices.size(); ++g)
+                for (std::size_t k = 0; k < f.mGroupVertices[g].size(); ++k) {
+                    const std::int64_t v = f.mGroupVertices[g][k];
+                    if (v < 0 || static_cast<std::size_t>(v) >= f.mNumVertices)
+                        throw ReadError("MFEM mesh: shared vertex " + std::to_string(v) +
+                                        " out of range in " + paths[selected[q]]);
+                    const auto [it, fresh] =
+                        by_group.emplace(std::make_pair(f.mGroups[g], k), nglobal);
+                    if (fresh) {
+                        ++nglobal;
+                        global_xyz.emplace_back();
+                    }
+                    part.mGlobal[static_cast<std::size_t>(v)] = it->second;
+                }
+        } else {
+            for (const MfElement& b : f.mBoundary)
+                for (std::int64_t v : b.mVertices)
+                    candidate[static_cast<std::size_t>(v)] = true;
+        }
+        for (std::size_t v = 0; v < f.mNumVertices; ++v) {
+            if (!candidate[v])
+                continue;
+            const double* x = part.mVertexXyz.data() + v * sdim;
+            std::vector<std::int64_t> cell(sdim);
+            for (std::size_t c = 0; c < sdim; ++c)
+                cell[c] = static_cast<std::int64_t>(std::floor(x[c] / tol));
+            // Search the 3^sdim neighbouring buckets for a vertex within tol.
+            std::int64_t match = -1;
+            std::vector<std::int64_t> probe(sdim);
+            const std::size_t combos = sdim == 1 ? 3 : (sdim == 2 ? 9 : 27);
+            for (std::size_t m = 0; m < combos && match < 0; ++m) {
+                std::size_t code = m;
+                for (std::size_t c = 0; c < sdim; ++c) {
+                    probe[c] = cell[c] + static_cast<std::int64_t>(code % 3) - 1;
+                    code /= 3;
+                }
+                const auto it = buckets.find(probe);
+                if (it == buckets.end())
+                    continue;
+                for (std::int64_t g : it->second) {
+                    bool close = true;
+                    for (std::size_t c = 0; c < sdim; ++c)
+                        close = close &&
+                                std::fabs(global_xyz[static_cast<std::size_t>(g)][c] - x[c]) <= tol;
+                    if (close) {
+                        match = g;
+                        break;
+                    }
+                }
+            }
+            if (match < 0) {
+                match = nglobal++;
+                global_xyz.emplace_back(x, x + sdim);
+                buckets[cell].push_back(match);
+            }
+            part.mGlobal[v] = match;
+        }
+        for (std::int64_t& g : part.mGlobal)
+            if (g < 0) {
+                g = nglobal++;
+                global_xyz.emplace_back();
+            }
+    }
+    // Without groups, a boundary face two ranks list is their interface.
+    if (!groups && files.size() > 1) {
+        std::map<std::vector<std::int64_t>, std::set<std::size_t>> owners;
+        const auto key_of = [&](std::size_t Q, const MfElement& rB) {
+            std::vector<std::int64_t> key;
+            for (std::int64_t v : rB.mVertices)
+                key.push_back(parts[Q].mGlobal[static_cast<std::size_t>(v)]);
+            std::sort(key.begin(), key.end());
+            return key;
+        };
+        for (std::size_t q = 0; q < files.size(); ++q)
+            for (const MfElement& b : files[q].mBoundary)
+                owners[key_of(q, b)].insert(q);
+        std::size_t dropped = 0;
+        for (std::size_t q = 0; q < files.size(); ++q) {
+            std::vector<MfElement> kept;
+            for (MfElement& b : files[q].mBoundary) {
+                if (owners[key_of(q, b)].size() > 1)
+                    ++dropped;
+                else
+                    kept.push_back(std::move(b));
+            }
+            files[q].mBoundary = std::move(kept);
+        }
+        if (dropped)
+            log::debug("MFEM mesh: {} rank-interface boundary element(s) of {} dropped", dropped,
+                       rPath);
+    }
+    if (corners)
+        log::warn("MFEM mesh: nodes of {} that are not nodal H1 are read at the vertices only",
+                  rPath);
+
+    // Grid functions: each rank its own `<name>.NNNNNN`.
+    std::vector<std::vector<MfGridData>> gdata(files.size());
+    std::vector<std::string> gf_names;
+    for (const MfemGridFunction& g : rGridFunctions) {
+        std::string gprefix;
+        if (mf_rank_suffix(g.mPath, gprefix) < 0)
+            throw ReadError("MFEM grid function '" + g.mPath +
+                            "': a parallel mesh's grid function is named by one of its rank "
+                            "files, <name>.NNNNNN");
+        std::vector<MfGridData> per_rank;
+        for (std::size_t q = 0; q < files.size(); ++q)
+            per_rank.push_back(mf_parse_gf({g.mName, mf_rank_path(gprefix, files[q].mRank)}));
+        const MfSpace& s = per_rank[0].mSpace;
+        const bool h1 = s.mKind == MfSpace::H1;
+        const bool l2p0 = (s.mKind == MfSpace::L2 || s.mKind == MfSpace::L2T1) && s.mOrder == 0;
+        if (!h1 && !l2p0) {
+            log::warn("MFEM grid function '{}': the '{}' space is not supported; skipped", g.mPath,
+                      s.mCollection);
+            continue;
+        }
+        if (h1 && s.mOrder >= 2 && pyramid) {
+            log::warn(
+                "MFEM grid function '{}': an order-{} field on this mesh is not supported; "
+                "skipped",
+                g.mPath, s.mOrder);
+            continue;
+        }
+        if (h1)
+            order = std::max(order, s.mOrder);
+        for (std::size_t q = 0; q < files.size(); ++q)
+            gdata[q].push_back(std::move(per_rank[q]));
+    }
+    if (pyramid && order >= 2) {
+        log::warn(
+            "MFEM mesh: '{}' has pyramids, which meshio++ holds at order 1 only; reading "
+            "the vertices",
+            rPath);
+        order = 1;
+        for (MfPart& part : parts)
+            part.mNodesH1 = false;
+    }
+    for (std::size_t q = 0; q < files.size(); ++q)
+        for (const MfGridData& g : gdata[q])
+            parts[q].mGfs.push_back(&g);
+    return mf_read_parts(parts, static_cast<std::size_t>(nglobal), order, true, rPath);
 }
 
 }  // namespace
@@ -1707,7 +2156,16 @@ Mesh read_mfem(const std::string& rPath) {
 }
 
 Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
+    return read_mfem(rPath, rGridFunctions, ReadOptions{});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions) {
     MfFile f = mf_parse(rPath);
+    if (f.mParallel || mf_rank_siblings(rPath))
+        return mf_read_parallel(rPath, std::move(f), rGridFunctions, rOptions);
+    if (rOptions.mPieceSet && rOptions.mPiece != 0)
+        throw ReadError("MFEM mesh: " + rPath + " is not parallel; its only piece is 0");
     const auto& geoms = mf_geoms();
     const int dim = f.mDim;
     const std::size_t nv = f.mNumVertices;

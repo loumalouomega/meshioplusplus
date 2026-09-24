@@ -2865,14 +2865,21 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "mfem_read",
         [](const std::string& path,
-           const std::vector<std::pair<std::string, std::string>>& grid_functions) {
+           const std::vector<std::pair<std::string, std::string>>& grid_functions,
+           py::object piece) {
             std::vector<meshioplusplus::MfemGridFunction> gfs;
             for (const auto& [name, gf] : grid_functions)
                 gfs.push_back({name, gf});
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfem(path, gfs));
+            meshioplusplus::ReadOptions opts;
+            if (!piece.is_none()) {
+                opts.mPiece = piece.cast<std::int64_t>();
+                opts.mPieceSet = true;
+            }
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfem(path, gfs, opts));
         },
         py::arg("path"),
-        py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{});
+        py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{},
+        py::arg("piece") = py::none());
 
     // Femap neutral file (.neu) reader / mesh writer.
     m.def(

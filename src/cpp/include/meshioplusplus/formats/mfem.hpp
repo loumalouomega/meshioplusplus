@@ -53,6 +53,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -74,10 +75,11 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath);
 /**
  * @brief Read an MFEM `.mesh` file and grid functions defined on it.
  *
- * An `H1` order-1 or order-2 grid function becomes point data (an order-2 field
- * on a linear mesh makes the cells quadratic, with the new nodes at edge, face
- * and cell centres); an `L2` order-0 one becomes cell data (NaN on boundary
- * cells). Any other space is skipped with a warning.
+ * An `H1` grid function becomes point data (an order-2 field on a linear mesh
+ * makes the cells quadratic, with the new nodes at edge, face and cell centres;
+ * order 3 and up makes them VTK Lagrange cells, since v16.11.0); an `L2`
+ * order-0 one becomes cell data (NaN on boundary cells). Any other space is
+ * skipped with a warning.
  *
  * @param rPath filesystem path of the mesh
  * @param rGridFunctions the `.gf` files, each with the data name it gets
@@ -87,6 +89,27 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath);
  */
 MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
                                   const std::vector<MfemGridFunction>& rGridFunctions);
+
+/**
+ * @brief `read_mfem(rPath, rGridFunctions)`, honouring `ReadOptions::mPiece`
+ * for a parallel mesh (since v16.11.0).
+ *
+ * A rank file of a parallel mesh (`<prefix>.000000`, ... as `ParMesh::Save`
+ * writes them) is read with its sibling ranks as one mesh: the vertices the
+ * communication groups share are merged, and `cell_data["partition:part"]`
+ * holds each cell's rank. With `mPieceSet`, rank `mPiece` alone is read (still
+ * labelled). A grid function of a parallel mesh is named by one of its rank
+ * files, `<name>.000000`, ...; each rank reads its own.
+ *
+ * @param rPath filesystem path of the mesh (or of one rank file)
+ * @param rGridFunctions the `.gf` files, each with the data name it gets
+ * @param rOptions `mPiece`/`mPieceSet` select one rank of a parallel mesh
+ * @return the mesh with the grid functions as data
+ * @throws ReadError as the other overloads, or for a piece out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
+                                  const std::vector<MfemGridFunction>& rGridFunctions,
+                                  const ReadOptions& rOptions);
 
 /**
  * @brief Write `rMesh` as an MFEM `.mesh` file.

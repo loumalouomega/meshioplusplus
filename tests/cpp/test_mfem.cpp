@@ -25,11 +25,14 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -39,6 +42,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
+#include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
 
@@ -273,4 +277,72 @@ TEST(Mfem, NonConformingMeshReadsAsItsLeaves) {
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8 + 1), 1.0);
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5), 2.0);  // midpoint of 1-2
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5 + 1), 1.0);
+}
+
+namespace {
+
+// Two unit squares side by side over two ranks, each rank its own serial mesh
+// (local vertices), written as <dir>/m.000000 and m.000001: with communication
+// groups (ParPrint) or without (ParMesh::Save, which lists the interface edge
+// as boundary on both ranks, attribute 3 on rank 0 and 4 on rank 1).
+std::string two_rank_mesh(bool Groups) {
+    const std::string dir = mt::temp_path("_pmesh");
+    std::filesystem::create_directories(dir);
+    const char* rank_body[2] = {
+        "elements\n1\n1 3 0 1 3 2\n\nboundary\n%B\n\nvertices\n4\n2\n0 0\n1 0\n0 1\n1 1\n",
+        "elements\n1\n1 3 0 1 2 3\n\nboundary\n%B\n\nvertices\n4\n2\n1 0\n2 0\n2 1\n1 1\n"};
+    const char* boundary[2][2] = {{"1\n1 1 0 1\n", "2\n1 1 0 1\n3 1 1 3\n"},
+                                  {"1\n1 1 0 1\n", "2\n1 1 0 1\n4 1 0 3\n"}};
+    const char* groups[2] = {
+        "mfem_serial_mesh_end\n\ncommunication_groups\nnumber_of_groups 2\n\n"
+        "# number of entities in each group, followed by ranks in group\n1 0\n2 0 1\n\n"
+        "total_shared_vertices 2\ntotal_shared_edges 1\n\n# group 1\nshared_vertices 2\n1\n3\n\n"
+        "shared_edges 1\n1 3\n\nmfem_mesh_end\n",
+        "mfem_serial_mesh_end\n\ncommunication_groups\nnumber_of_groups 2\n\n1 1\n2 0 1\n\n"
+        "total_shared_vertices 2\ntotal_shared_edges 1\n\n# group 1\nshared_vertices 2\n0\n3\n\n"
+        "shared_edges 1\n0 3\n\nmfem_mesh_end\n"};
+    for (int r = 0; r < 2; ++r) {
+        std::string body = rank_body[r];
+        body.replace(body.find("%B"), 2, boundary[r][Groups ? 0 : 1]);
+        std::ofstream(dir + "/m.00000" + std::to_string(r)) << "MFEM mesh v1.0\n\ndimension\n2\n\n"
+                                                            << body << (Groups ? groups[r] : "");
+    }
+    return dir + "/m.000001";
+}
+
+}  // namespace
+
+TEST(Mfem, ParallelRanksMergeIntoOneMesh) {
+    for (const bool groups : {true, false}) {
+        const std::string path = two_rank_mesh(groups);
+        const Mesh mesh = meshioplusplus::read_mfem(path);
+        EXPECT_EQ(mesh.NumPoints(), 6u) << "groups " << groups;
+        ASSERT_EQ(mesh.NumCellBlocks(), 2u);
+        EXPECT_EQ(mesh.Cells(0).Type(), "quad");
+        EXPECT_EQ(mesh.Cells(0).NumCells(), 2u);
+        // The two bottom edges; the interface edge the ranks both list is gone.
+        EXPECT_EQ(mesh.Cells(1).NumCells(), 2u) << "groups " << groups;
+        const auto& parts = mesh.CellData("partition:part", 0);
+        EXPECT_EQ(detail::read_int(parts, 0), 0);
+        EXPECT_EQ(detail::read_int(parts, 1), 1);
+        // The shared corner (1, 1) is one point used by both quads.
+        const auto& conn = mesh.Cells(0).Conn();
+        std::set<std::int64_t> a, b;
+        for (std::size_t k = 0; k < 4; ++k) {
+            a.insert(detail::read_int(conn, k));
+            b.insert(detail::read_int(conn, 4 + k));
+        }
+        std::vector<std::int64_t> common;
+        std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(common));
+        EXPECT_EQ(common.size(), 2u);
+        // One rank alone.
+        meshioplusplus::ReadOptions one;
+        one.mPiece = 1;
+        one.mPieceSet = true;
+        const Mesh piece = meshioplusplus::read_mfem(path, {}, one);
+        EXPECT_EQ(piece.Cells(0).NumCells(), 1u);
+        EXPECT_EQ(detail::read_int(piece.CellData("partition:part", 0), 0), 1);
+        one.mPiece = 2;
+        EXPECT_THROW(meshioplusplus::read_mfem(path, {}, one), ReadError);
+    }
 }

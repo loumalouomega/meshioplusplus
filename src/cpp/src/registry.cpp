@@ -750,6 +750,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
         // mLenient (skip element types with no meshio++ cell type).
         {"elmer", meshioplusplus::read_elmer},
+        // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
+        {"mfem",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_mfem(path, {}, opts);
+         }},
         // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
         {"ansysinp",
          [](const std::string& path, const ReadOptions& opts) {

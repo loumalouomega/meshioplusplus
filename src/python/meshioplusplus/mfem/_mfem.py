@@ -441,12 +441,66 @@ def _read_sets(lex):
     return out
 
 
+def _read_groups(lex, f):
+    """``mf_read_groups``: a parallel mesh's communication groups and their
+    shared vertices, after ``mfem_serial_mesh_end``."""
+    f["parallel"] = True
+    text, line, _ = lex.next("communication_groups")
+    if text != "communication_groups":
+        lex.fail(f"expected communication_groups, found '{text}'", line)
+    if lex.next("number_of_groups")[0] != "number_of_groups":
+        lex.fail("expected number_of_groups", line)
+    ngroups = lex.int("a group count")
+    if ngroups < 1:
+        lex.fail("a parallel mesh needs at least one communication group", line)
+    for _ in range(ngroups):
+        size = lex.int("a group size")
+        if size < 1:
+            lex.fail("an empty communication group", lex.line())
+        f["groups"].append(tuple(sorted(lex.int("a rank") for _ in range(size))))
+    if len(f["groups"][0]) != 1:
+        lex.fail("communication group 0 must hold this rank alone", line)
+    f["rank"] = f["groups"][0][0]
+    f["group_vertices"] = [[] for _ in range(ngroups)]
+    group = 0
+    while not lex.at_end():
+        text, tline, _ = lex.next("a shared-entity section")
+        if text == "mfem_mesh_end":
+            break
+        if text in (
+            "total_shared_vertices",
+            "total_shared_edges",
+            "total_shared_faces",
+        ):
+            lex.int("a count")
+        elif text == "shared_vertices":
+            group += 1
+            if group >= ngroups:
+                lex.fail("more shared-vertex groups than communication groups", tline)
+            n = lex.int("a vertex count")
+            f["group_vertices"][group] = [lex.int("a shared vertex") for _ in range(n)]
+        elif text == "shared_edges":
+            for _ in range(2 * lex.int("an edge count")):
+                lex.int("an edge vertex")
+        elif text == "shared_faces":
+            for _ in range(lex.int("a face count")):
+                geom = lex.int("a face geometry")
+                for _ in range(4 if geom == 3 else 3):
+                    lex.int("a face vertex")
+        else:
+            lex.fail(f"unexpected '{text}' in the communication groups", tline)
+
+
 def _parse_nc(lex, filename, scaled):
     """An ``MFEM NC mesh`` (``mf_parse_nc``): the refinement tree read as its
     leaves; top-level vertices from ``coordinates``, the rest between their
     ``vertex_parents``; only the leaves of the file's own rank."""
     f = {
         "nc": True,
+        "parallel": False,
+        "rank": 0,
+        "groups": [],
+        "group_vertices": [],
         "dim": -1,
         "elements": [],
         "boundary": [],
@@ -640,6 +694,10 @@ def _parse(filename):
         lex.fail(f"not an MFEM mesh (the first line is '{header}')", lex.header_line)
     f = {
         "nc": False,
+        "parallel": False,
+        "rank": 0,
+        "groups": [],
+        "group_vertices": [],
         "dim": -1,
         "elements": [],
         "boundary": [],
@@ -706,10 +764,7 @@ def _parse(filename):
                 while not lex.at_end() and lex.line() == row_line:
                     lex.next("a value")
         elif text == "mfem_serial_mesh_end":
-            warn(
-                f"MFEM mesh: '{filename}' is one rank of a parallel mesh; reading its "
-                "local part and ignoring the communication groups"
-            )
+            _read_groups(lex, f)
             break
         elif text == "mfem_mesh_end":
             break
@@ -745,8 +800,32 @@ def _parse_gf(name, path):
     return name, space, values
 
 
-def read(filename, grid_functions=None):
+def _rank_suffix(path):
+    """``(prefix, rank)`` of a ``<prefix>.NNNNNN`` rank-file name, else None."""
+    path = str(path)
+    dot = path.rfind(".")
+    if dot < 0 or len(path) - dot != 7 or not path[dot + 1 :].isdigit():
+        return None
+    return path[: dot + 1], int(path[dot + 1 :])
+
+
+def _rank_path(prefix, rank):
+    return f"{prefix}{rank:06d}"
+
+
+def _rank_siblings(path):
+    found = _rank_suffix(path)
+    return found is not None and all(
+        os.path.exists(_rank_path(found[0], r)) for r in (0, 1)
+    )
+
+
+def read(filename, grid_functions=None, piece=None):
     f = _parse(filename)
+    if f["parallel"] or _rank_siblings(filename):
+        return _read_parallel(filename, f, grid_functions, piece)
+    if piece not in (None, 0):
+        raise ReadError(f"MFEM mesh: {filename} is not parallel; its only piece is 0")
     dim = f["dim"]
     nv = f["nv"]
     elements = f["elements"]
@@ -1371,189 +1450,432 @@ class _Interp:
         return _find_node(self.index, pos)
 
 
-def _read_high_order(f, gfs, nodes_h1, vxyz, order, filename):
-    dim, nv, sdim = f["dim"], f["nv"], f["sdim"]
-    elements, boundary = f["elements"], f["boundary"]
-    for _, geom, _, line in elements:
-        if geom == 0 or _GEOMS[geom][2] != dim:
-            raise ReadError(
-                f"MFEM mesh: element of geometry {geom} in a {dim}-D mesh (line {line})"
-            )
-    ent = _entities(elements, dim)
+def _cell_type(geom, order):
+    """``mf_cell_type``: VTK Lagrange at order 3 and up, else the linear or
+    complete quadratic type."""
+    if geom == 0 or order <= 1:
+        return _GEOMS[geom][0]
+    if order == 2:
+        return _GEOMS[geom][1]
+    return _LAGRANGE_TYPES[geom]
 
-    # (dof layout, components, values accessor) of the coordinates and each H1 field
-    fields = []
-    if nodes_h1:
-        s = f["nodes_space"]
-        d = _Dofs(f, ent, s.order, s.points)
-        ndofs = len(f["nodes"]) // s.vdim
-        if ndofs != d.size:
-            raise ReadError(
-                f"MFEM mesh: the order-{s.order} nodes of {filename} have {ndofs} dofs; "
-                f"the mesh numbers {d.size}"
-            )
-        vals = np.asarray(f["nodes"], dtype=np.float64)
-        table = (
-            vals.reshape(sdim, ndofs).T
-            if s.ordering == 0
-            else vals.reshape(ndofs, s.vdim)
-        )
-        fields.append((d, table[:, :sdim]))
-    else:
-        fields.append((_Dofs(f, ent, 1, "gll"), vxyz))
-    point_gfs, cell_gfs = [], []
-    for name, space, values in gfs:
-        if space.kind != "h1":
-            cell_gfs.append((name, space, values))
-            continue
-        vdim = space.vdim
-        if len(values) % vdim:
-            raise ReadError(
-                f"MFEM grid function '{name}': {len(values)} values, not a multiple of "
-                f"VDim {vdim}"
-            )
-        d = _Dofs(f, ent, space.order, space.points)
-        ndofs = len(values) // vdim
-        if ndofs != d.size:
-            raise ReadError(
-                f"MFEM grid function '{name}' has {ndofs} dofs; the mesh has {d.size} at "
-                f"order {space.order}"
-            )
-        vals = np.asarray(values, dtype=np.float64)
-        table = (
-            vals.reshape(vdim, ndofs).T
-            if space.ordering == 0
-            else vals.reshape(ndofs, vdim)
-        )
-        fields.append((d, table))
-        point_gfs.append(name)
 
-    # output points: the vertices first, then every VTK node by its corner weights
+def _field_table(values, space, sdim=None):
+    vdim = space.vdim
+    ndofs = len(values) // vdim
+    vals = np.asarray(values, dtype=np.float64)
+    table = (
+        vals.reshape(vdim, ndofs).T
+        if space.ordering == 0
+        else vals.reshape(ndofs, vdim)
+    )
+    return table if sdim is None else table[:, :sdim]
+
+
+def _read_parts(parts, nvertices, order, labels, filename):
+    """``mf_read_parts``: the parts (dicts with the parsed file ``f``, its grid
+    functions ``gfs``, ``nodes_h1``, the vertex coordinates ``vxyz`` and the
+    output number ``global`` of each local vertex) as one mesh of order-``order``
+    cells, nodes keyed by the output vertices they combine."""
+    first = parts[0]["f"]
+    dim, sdim = first["dim"], first["sdim"]
+    point_gfs = [
+        g for g, (_, space, _) in enumerate(parts[0]["gfs"]) if space.kind == "h1"
+    ]
+    ents, fields = [], []
+    for part in parts:
+        f = part["f"]
+        if f["dim"] != dim or f["sdim"] != sdim:
+            raise ReadError(
+                f"MFEM mesh: the parts of {filename} disagree on the dimension"
+            )
+        for _, geom, _, line in f["elements"]:
+            if geom == 0 or _GEOMS[geom][2] != dim or (geom == 7 and order > 1):
+                raise ReadError(
+                    f"MFEM mesh: element of geometry {geom} in a {dim}-D mesh of order "
+                    f"{order} (line {line})"
+                )
+        ent = _entities(f["elements"], dim)
+        ents.append(ent)
+        mine = []
+        if part["nodes_h1"]:
+            s = f["nodes_space"]
+            d = _Dofs(f, ent, s.order, s.points)
+            ndofs = len(f["nodes"]) // s.vdim
+            if ndofs != d.size:
+                raise ReadError(
+                    f"MFEM mesh: the order-{s.order} nodes of {filename} have {ndofs} "
+                    f"dofs; the mesh numbers {d.size}"
+                )
+            mine.append((d, _field_table(f["nodes"], s, sdim)))
+        else:
+            mine.append((_Dofs(f, ent, 1, "gll"), part["vxyz"]))
+        for g in point_gfs:
+            name, space, values = part["gfs"][g]
+            if len(values) % space.vdim:
+                raise ReadError(
+                    f"MFEM grid function '{name}': {len(values)} values, not a multiple "
+                    f"of VDim {space.vdim}"
+                )
+            d = _Dofs(f, ent, space.order, space.points)
+            ndofs = len(values) // space.vdim
+            if ndofs != d.size:
+                raise ReadError(
+                    f"MFEM grid function '{name}' has {ndofs} dofs; the mesh has {d.size} "
+                    f"at order {space.order}"
+                )
+            mine.append((d, _field_table(values, space)))
+        fields.append(mine)
+
     p3 = order**3
-    node_of = {((v, p3),): v for v in range(nv)}
+    node_of = {((v, p3),): v for v in range(nvertices)}
 
-    def cell_nodes(geom, verts):
-        if geom == 0:
-            return [verts[0]]
+    def cell_nodes(part, geom, verts):
+        glob = part["global"]
+        if geom in (0, 7):  # a point; a (linear) pyramid
+            return [glob[v] for v in verts]
         shape = _SHAPES[geom]
         ids = []
         for ijk in _lagrange.vtk_lattice(shape, order):
             key = tuple(
                 sorted(
-                    (verts[c], w)
+                    (glob[verts[c]], w)
                     for c, w in _lagrange.lattice_weights(shape, order, ijk)
                 )
             )
             ids.append(node_of.setdefault(key, len(node_of)))
         return ids
 
-    element_nodes = [cell_nodes(geom, verts) for _, geom, verts, _ in elements]
-    boundary_nodes = [cell_nodes(geom, verts) for _, geom, verts, _ in boundary]
+    element_nodes = [
+        [cell_nodes(part, g, v) for _, g, v, _ in part["f"]["elements"]]
+        for part in parts
+    ]
+    boundary_nodes = [
+        [cell_nodes(part, g, v) for _, g, v, _ in part["f"]["boundary"]]
+        for part in parts
+    ]
     npoints = len(node_of)
 
-    values = [np.full((npoints, t.shape[1]), np.nan) for _, t in fields]
+    values = [np.full((npoints, t.shape[1]), np.nan) for _, t in fields[0]]
     known = np.zeros(npoints, dtype=bool)
-    caches = [{} for _ in fields]
-    for e, (_, geom, verts, _) in enumerate(elements):
-        ids = element_nodes[e]
-        fresh = [t for t, i in enumerate(ids) if not known[i]]
-        if not fresh:
-            continue
-        for k, (d, table) in enumerate(fields):
-            interp = caches[k].get(geom)
-            if interp is None:
-                interp = caches[k][geom] = _Interp(geom, dim, d, order)
-            perm = [None] * interp.nodes
-            for dof, pos in _element_dofs(geom, verts, dim, ent, d, e):
-                c = interp.find(pos)
-                if c is None:
-                    raise ReadError(
-                        f"MFEM mesh: a degree of freedom of element {e} matches no node "
-                        "of its element"
-                    )
-                perm[c] = dof
-            u = table[perm]
-            rows = interp.matrix[fresh]
-            values[k][[ids[t] for t in fresh]] = rows @ u
-        known[ids] = True
-    for v in range(nv):
-        if not known[v]:
-            values[0][v] = vxyz[v]
-            known[v] = True
-    orphans = 0
-    for b, (_, geom, verts, _) in enumerate(boundary):
-        if geom == 0:
-            continue
-        shape = _SHAPES[geom]
-        for t, ijk in enumerate(_lagrange.vtk_lattice(shape, order)):
-            i = boundary_nodes[b][t]
-            if known[i]:
+    for q, part in enumerate(parts):
+        f = part["f"]
+        caches = [{} for _ in fields[q]]
+        for e, (_, geom, verts, _) in enumerate(f["elements"]):
+            ids = element_nodes[q][e]
+            fresh = [t for t, i in enumerate(ids) if not known[i]]
+            if not fresh:
                 continue
-            orphans += 1
-            values[0][i] = sum(
-                w / p3 * vxyz[verts[c]]
-                for c, w in _lagrange.lattice_weights(shape, order, ijk)
-            )
-            known[i] = True
+            if geom == 7:  # a linear pyramid: its vertices
+                for k, (_, table) in enumerate(fields[q]):
+                    values[k][ids] = table[verts]
+                known[ids] = True
+                continue
+            for k, (d, table) in enumerate(fields[q]):
+                interp = caches[k].get(geom)
+                if interp is None:
+                    interp = caches[k][geom] = _Interp(geom, dim, d, order)
+                perm = [None] * interp.nodes
+                for dof, pos in _element_dofs(geom, verts, dim, ents[q], d, e):
+                    c = interp.find(pos)
+                    if c is None:
+                        raise ReadError(
+                            f"MFEM mesh: a degree of freedom of element {e} matches no "
+                            "node of its element"
+                        )
+                    perm[c] = dof
+                values[k][[ids[t] for t in fresh]] = interp.matrix[fresh] @ table[perm]
+            known[ids] = True
+    for part in parts:
+        for v, g in enumerate(part["global"]):
+            if not known[g]:
+                values[0][g] = part["vxyz"][v]
+                known[g] = True
+    orphans = 0
+    for q, part in enumerate(parts):
+        for b, (_, geom, verts, _) in enumerate(part["f"]["boundary"]):
+            if geom in (0, 7):
+                continue
+            shape = _SHAPES[geom]
+            for t, ijk in enumerate(_lagrange.vtk_lattice(shape, order)):
+                i = boundary_nodes[q][b][t]
+                if known[i]:
+                    continue
+                orphans += 1
+                values[0][i] = sum(
+                    w / p3 * part["vxyz"][verts[c]]
+                    for c, w in _lagrange.lattice_weights(shape, order, ijk)
+                )
+                known[i] = True
     if orphans:
         warn(
             f"MFEM mesh: {orphans} boundary node(s) lie on no element face; placed "
             "from their corners"
         )
 
-    blocks = []  # (type, [(source, is_boundary)])
-
-    def add_group(items, is_boundary):
+    blocks = []  # (type, [(part, source, is_boundary)])
+    for is_boundary in (False, True):
         index = {}
-        for k, el in enumerate(items):
-            t = _LAGRANGE_TYPES[el[1]]
-            if t not in index:
-                index[t] = len(blocks)
-                blocks.append((t, []))
-            blocks[index[t]][1].append((k, is_boundary))
-
-    add_group(elements, False)
-    add_group(boundary, True)
-    cells, attr_blocks, cell_attr, cell_is_boundary = [], [], [], []
-    element_cell = [0] * len(elements)
+        for q, part in enumerate(parts):
+            items = part["f"]["boundary" if is_boundary else "elements"]
+            for k, el in enumerate(items):
+                t = _cell_type(el[1], order)
+                if t not in index:
+                    index[t] = len(blocks)
+                    blocks.append((t, []))
+                blocks[index[t]][1].append((q, k, is_boundary))
+    cells, attr_blocks, part_blocks = [], [], []
+    cell_attr, cell_is_boundary = [], []
+    element_cell = [[0] * len(part["f"]["elements"]) for part in parts]
     for cell_type, members in blocks:
-        rows, attrs = [], []
-        for source, is_boundary in members:
-            attr = (boundary if is_boundary else elements)[source][0]
-            rows.append((boundary_nodes if is_boundary else element_nodes)[source])
+        rows, attrs, ranks = [], [], []
+        for q, source, is_boundary in members:
+            f = parts[q]["f"]
+            attr = f["boundary" if is_boundary else "elements"][source][0]
+            rows.append((boundary_nodes if is_boundary else element_nodes)[q][source])
             attrs.append(attr)
+            ranks.append(f["rank"])
             cell_attr.append(attr)
             cell_is_boundary.append(is_boundary)
             if not is_boundary:
-                element_cell[source] = len(cell_attr) - 1
+                element_cell[q][source] = len(cell_attr) - 1
         cells.append((cell_type, np.array(rows, dtype=np.int64)))
         attr_blocks.append(np.array(attrs, dtype=np.int64))
+        part_blocks.append(np.array(ranks, dtype=np.int64))
     mesh = Mesh(values[0], cells)
     if attr_blocks:
         mesh.cell_data["mfem:attribute"] = attr_blocks
-    for name, data in zip(point_gfs, values[1:]):
+    if labels and part_blocks:
+        mesh.cell_data["partition:part"] = part_blocks
+    for g, data in zip(point_gfs, values[1:]):
+        name = parts[0]["gfs"][g][0]
         mesh.point_data[name] = data[:, 0].copy() if data.shape[1] == 1 else data
     ncells = len(cell_attr)
-    for name, space, gvalues in cell_gfs:
+    for g, (name, space, _) in enumerate(parts[0]["gfs"]):
+        if space.kind == "h1":
+            continue
         vdim = space.vdim
-        ndofs = len(gvalues) // vdim
-        if ndofs != len(elements):
-            raise ReadError(
-                f"MFEM grid function '{name}' has {ndofs} dofs for {len(elements)} "
-                "elements"
-            )
         per_cell = np.full((ncells, vdim), np.nan)
-        for e in range(len(elements)):
-            for c in range(vdim):
-                per_cell[element_cell[e], c] = _value(gvalues, space, ndofs, e, c)
+        for q, part in enumerate(parts):
+            _, gspace, gvalues = part["gfs"][g]
+            ne = len(part["f"]["elements"])
+            ndofs = len(gvalues) // vdim
+            if ndofs != ne:
+                raise ReadError(
+                    f"MFEM grid function '{name}' has {ndofs} dofs for {ne} elements"
+                )
+            for e in range(ne):
+                for c in range(vdim):
+                    per_cell[element_cell[q][e], c] = _value(
+                        gvalues, gspace, ndofs, e, c
+                    )
         out, start = [], 0
         for _, members in blocks:
             a = per_cell[start : start + len(members)]
             start += len(members)
             out.append(a[:, 0].copy() if vdim == 1 else a.copy())
         mesh.cell_data[name] = out
-    mesh.regions = _regions(f, cell_attr, cell_is_boundary)
+    mesh.regions = _regions(first, cell_attr, cell_is_boundary)
     return mesh
+
+
+def _read_high_order(f, gfs, nodes_h1, vxyz, order, filename):
+    part = {
+        "f": f,
+        "gfs": list(gfs),
+        "nodes_h1": nodes_h1,
+        "vxyz": vxyz,
+        "global": list(range(f["nv"])),
+    }
+    return _read_parts([part], f["nv"], order, False, filename)
+
+
+def _read_parallel(filename, first, grid_functions, piece):
+    """``mf_read_parallel``: every rank file beside ``filename`` (or the one
+    ``piece``), vertices merged through the communication groups (ParPrint) or,
+    without them (ParMesh::Save), boundary vertices by position; a boundary
+    face two ranks list is their interface and is dropped."""
+    found = _rank_suffix(filename)
+    paths = []
+    if found is not None:
+        r = 0
+        while os.path.exists(_rank_path(found[0], r)):
+            paths.append(_rank_path(found[0], r))
+            r += 1
+    if not paths:
+        warn(
+            f"MFEM mesh: '{filename}' is one rank of a parallel mesh, not named "
+            "<prefix>.NNNNNN beside its siblings; reading that rank alone"
+        )
+        paths = [str(filename)]
+    if piece is not None:
+        if not 0 <= piece < len(paths):
+            raise ReadError(
+                f"MFEM mesh: piece {piece} is out of range: {filename} has {len(paths)} ranks"
+            )
+        selected = [piece]
+    else:
+        selected = list(range(len(paths)))
+    files = []
+    for r in selected:
+        f = first if paths[r] == str(filename) else _parse(paths[r])
+        if f["nc"]:
+            raise ReadError(
+                f"MFEM mesh: {paths[r]} is a non-conforming rank; parallel "
+                "non-conforming meshes are not read"
+            )
+        if f["parallel"] and len(paths) > 1 and f["rank"] != r:
+            raise ReadError(f"MFEM mesh: {paths[r]} holds rank {f['rank']}")
+        if not f["parallel"]:
+            f["rank"] = r
+        files.append(f)
+    groups = all(f["parallel"] for f in files)
+
+    parts, pyramid, corners, order = [], False, False, 1
+    for q, f in enumerate(files):
+        sdim, nv = f["sdim"], f["nv"]
+        part = {"f": f, "gfs": [], "nodes_h1": False}
+        s = f["nodes_space"]
+        if s is not None:
+            if s.kind not in ("h1", "h1-other"):
+                raise ReadError(
+                    f"MFEM mesh: nodes in '{s.collection}' are not supported in a parallel "
+                    "mesh"
+                )
+            table = _field_table(f["nodes"], s, sdim)
+            if len(table) < nv:
+                raise ReadError(
+                    f"MFEM mesh: the nodes of {paths[selected[q]]} have {len(table)} dofs "
+                    f"for {nv} vertices"
+                )
+            part["vxyz"] = table[:nv].copy()
+            part["nodes_h1"] = s.kind == "h1"
+            corners = corners or s.kind == "h1-other"
+            if part["nodes_h1"]:
+                order = max(order, s.order)
+        else:
+            part["vxyz"] = np.array(f["coords"], dtype=np.float64).reshape(nv, sdim)
+        pyramid = pyramid or any(el[1] == 7 for el in f["elements"])
+        parts.append(part)
+
+    # output vertices
+    allxyz = np.concatenate([p["vxyz"] for p in parts])
+    extent = float(np.ptp(allxyz, axis=0).max()) if len(allxyz) else 0.0
+    tol = max(extent, 1.0) * 1e-9
+    buckets, by_group, global_xyz = {}, {}, []
+    nglobal = 0
+    for q, f in enumerate(files):
+        part = parts[q]
+        glob = [-1] * f["nv"]
+        sdim = f["sdim"]
+        candidate = [f["dim"] == 1 and not groups] * f["nv"]
+        if groups:
+            for g in range(1, len(f["group_vertices"])):
+                for k, v in enumerate(f["group_vertices"][g]):
+                    if not 0 <= v < f["nv"]:
+                        raise ReadError(
+                            f"MFEM mesh: shared vertex {v} out of range in "
+                            f"{paths[selected[q]]}"
+                        )
+                    key = (f["groups"][g], k)
+                    if key not in by_group:
+                        by_group[key] = nglobal
+                        nglobal += 1
+                        global_xyz.append(None)
+                    glob[v] = by_group[key]
+        else:
+            for _, _, verts, _ in f["boundary"]:
+                for v in verts:
+                    candidate[v] = True
+        for v in range(f["nv"]):
+            if not candidate[v]:
+                continue
+            x = part["vxyz"][v]
+            cell = tuple(int(np.floor(c / tol)) for c in x)
+            match = None
+            for m in range(3**sdim):
+                code, probe = m, []
+                for c in range(sdim):
+                    probe.append(cell[c] + code % 3 - 1)
+                    code //= 3
+                for g in buckets.get(tuple(probe), []):
+                    if np.all(np.abs(global_xyz[g] - x) <= tol):
+                        match = g
+                        break
+                if match is not None:
+                    break
+            if match is None:
+                match = nglobal
+                nglobal += 1
+                global_xyz.append(np.array(x))
+                buckets.setdefault(cell, []).append(match)
+            glob[v] = match
+        for v in range(f["nv"]):
+            if glob[v] < 0:
+                glob[v] = nglobal
+                nglobal += 1
+                global_xyz.append(None)
+        part["global"] = glob
+    if not groups and len(files) > 1:
+        owners = {}
+        for q, f in enumerate(files):
+            for b in f["boundary"]:
+                key = tuple(sorted(parts[q]["global"][v] for v in b[2]))
+                owners.setdefault(key, set()).add(q)
+        for q, f in enumerate(files):
+            f["boundary"] = [
+                b
+                for b in f["boundary"]
+                if len(owners[tuple(sorted(parts[q]["global"][v] for v in b[2]))]) == 1
+            ]
+    if corners:
+        warn(
+            f"MFEM mesh: nodes of {filename} that are not nodal H1 are read at the "
+            "vertices only"
+        )
+
+    if isinstance(grid_functions, dict):
+        items = list(grid_functions.items())
+    else:
+        items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
+    for name, path in items:
+        found = _rank_suffix(path)
+        if found is None:
+            raise ReadError(
+                f"MFEM grid function '{path}': a parallel mesh's grid function is named "
+                "by one of its rank files, <name>.NNNNNN"
+            )
+        per_rank = [
+            _parse_gf(str(name), _rank_path(found[0], f["rank"])) for f in files
+        ]
+        space = per_rank[0][1]
+        h1 = space.kind == "h1"
+        l2p0 = space.kind in ("l2", "l2t1") and space.order == 0
+        if not h1 and not l2p0:
+            warn(
+                f"MFEM grid function '{path}': the '{space.collection}' space is not "
+                "supported; skipped"
+            )
+            continue
+        if h1 and space.order >= 2 and pyramid:
+            warn(
+                f"MFEM grid function '{path}': an order-{space.order} field on this mesh "
+                "is not supported; skipped"
+            )
+            continue
+        if h1:
+            order = max(order, space.order)
+        for q in range(len(files)):
+            parts[q]["gfs"].append(per_rank[q])
+    if pyramid and order >= 2:
+        warn(
+            f"MFEM mesh: '{filename}' has pyramids, which meshio++ holds at order 1 "
+            "only; reading the vertices"
+        )
+        order = 1
+        for part in parts:
+            part["nodes_h1"] = False
+    return _read_parts(parts, nglobal, order, True, filename)
 
 
 # --- writer -------------------------------------------------------------------

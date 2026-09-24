@@ -16,27 +16,34 @@ def _grid_function_items(grid_functions):
     return [(pathlib.Path(p).stem, str(p)) for p in grid_functions]
 
 
-def read(filename, grid_functions=None):
+def read(filename, grid_functions=None, piece=None):
     """Read an MFEM mesh (``.mesh``), optionally with grid functions (``.gf``).
 
     Elements and boundary elements become cell blocks with an ``mfem:attribute``
     cell data array and ``attribute_<n>``/``boundary_<n>`` cell regions; v1.3
     attribute sets become named cell regions. Order-2 ``H1`` nodes give quadratic
-    cells whose points are MFEM's degrees of freedom; higher orders keep the
-    vertices only.
+    cells whose points are MFEM's degrees of freedom; order 3 and up (nodal
+    ``H1`` spaces and the legacy ``Cubic``) give VTK Lagrange cells. An ``MFEM
+    NC mesh`` is read as its leaf elements.
 
     ``grid_functions`` is a ``{name: path}`` dict, or a list of paths named by
-    their stem. ``H1`` order-1/2 fields become point data (an order-2 field on a
-    linear mesh makes the cells quadratic) and ``L2`` order-0 fields cell data.
+    their stem. ``H1`` fields become point data (an order-2 field on a linear
+    mesh makes the cells quadratic, a higher one VTK Lagrange) and ``L2``
+    order-0 fields cell data.
+
+    A rank file of a parallel mesh (``<prefix>.000000``, ...) is read with its
+    siblings as one mesh, ``cell_data["partition:part"]`` holding each cell's
+    rank; ``piece=k`` reads rank ``k`` alone. A parallel mesh's grid function is
+    named by one of its rank files, ``<name>.000000``.
     """
     items = _grid_function_items(grid_functions)
     if not is_buffer(filename, "r"):
         try:
-            return _core.mfem_read(str(filename), items)
+            return _core.mfem_read(str(filename), items, piece)
         except Exception as exc:
             if not core_declined(exc, "mfem", "read", filename):
                 raise
-    return _py_read(filename, dict(items) if items else None)
+    return _py_read(filename, dict(items) if items else None, piece=piece)
 
 
 def write(filename, mesh, grid_functions=False):

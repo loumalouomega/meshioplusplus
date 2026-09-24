@@ -533,3 +533,98 @@ def test_grid_function_mismatch_is_an_error(engine, tmp_path):
     )
     with pytest.raises(meshioplusplus.ReadError, match="dofs"):
         engine.read(MESHES / "compass.mesh", {"x": str(bad)})
+
+
+# --- parallel meshes ------------------------------------------------------------------
+
+PARALLEL = MESHES / "parallel"
+PARALLEL_REFERENCE = np.load(PARALLEL / "reference.npz")
+# case -> (ranks, merged point count of the conforming mesh)
+PARALLEL_CASES = {"star-p2": (4, 361), "beam-tet": (3, 153)}
+# MFEM's VTK cell type -> ours (it writes order-1 and order-2 cells as VTK
+# Lagrange too)
+_PARALLEL_TYPES = {
+    10: ["tetra"],
+    28: ["quad9"],
+    70: ["quad9"],
+    71: ["tetra"],
+}
+
+
+@pytest.mark.parametrize("layout", ["mesh", "pmesh"])
+@pytest.mark.parametrize("name", sorted(PARALLEL_CASES))
+def test_parallel_mesh_merges_its_ranks(engine, name, layout):
+    """Every rank file of a parallel mesh, ParMesh::Save's (no communication
+    groups: boundary vertices merged by position, the ranks' interface faces
+    dropped) or ParPrint's (merged by group), reads as one conforming mesh whose
+    cells are MFEM's own, with each cell's rank."""
+    ranks, npoints = PARALLEL_CASES[name]
+    mesh = engine.read(
+        PARALLEL / f"{name}.{layout}.000001", {"u": str(PARALLEL / f"{name}.u.000000")}
+    )
+    assert len(mesh.points) == npoints
+    labels = np.concatenate(mesh.cell_data["partition:part"])
+    assert sorted(set(labels.tolist())) == list(range(ranks))
+    cells = {}
+    for block in mesh.cells:
+        cells.setdefault(block.type, []).extend(np.asarray(block.data))
+    codes = {
+        int(k.split(":")[1])
+        for k in PARALLEL_REFERENCE.files
+        if k.startswith(name + ":")
+    }
+    for code in codes:
+        ref = PARALLEL_REFERENCE[f"{name}:{code}:points"]
+        ref_u = PARALLEL_REFERENCE[f"{name}:{code}:u"]
+        mine = [row for t in _PARALLEL_TYPES[code] for row in cells[t]]
+        assert len(mine) == len(ref)
+        dim = mesh.points.shape[1]
+        centres = np.array([mesh.points[row].mean(axis=0) for row in mine])
+        for k, want in enumerate(ref):
+            want = want[:, :dim]
+            i = int(np.argmin(np.abs(centres - want.mean(axis=0)).max(axis=1)))
+            np.testing.assert_allclose(mesh.points[mine[i]], want, atol=1e-12)
+            np.testing.assert_allclose(
+                mesh.point_data["u"][mine[i]], ref_u[k], atol=1e-12
+            )
+    # the interface faces a ParMesh::Save rank lists as boundary are gone
+    boundary = sum(len(b.data) for b in mesh.cells if b.dim < mesh.cells[0].dim)
+    # (serial MFEM: star 40, beam-tet 272 boundary elements once refined)
+    serial_boundary = {"star-p2": 40, "beam-tet": 272}[name]
+    assert boundary == serial_boundary
+
+
+def test_parallel_engines_agree():
+    for name in PARALLEL_CASES:
+        a = meshioplusplus.mfem.read(PARALLEL / f"{name}.mesh.000000")
+        b = py_mfem.read(PARALLEL / f"{name}.mesh.000000")
+        np.testing.assert_allclose(a.points, b.points, atol=1e-13)
+        assert [(t, x.tolist()) for t, x in _blocks(a)] == [
+            (t, x.tolist()) for t, x in _blocks(b)
+        ]
+
+
+def test_parallel_piece_reads_one_rank(engine):
+    whole = engine.read(PARALLEL / "star-p2.mesh.000000")
+    piece = engine.read(PARALLEL / "star-p2.mesh.000000", piece=2)
+    labels = np.concatenate(piece.cell_data["partition:part"])
+    assert set(labels.tolist()) == {2}
+    merged = np.concatenate(whole.cell_data["partition:part"])
+    n2 = int((merged[: len(whole.cells[0].data)] == 2).sum())
+    assert len(piece.cells[0].data) == n2
+    with pytest.raises(meshioplusplus.ReadError, match="out of range"):
+        engine.read(PARALLEL / "star-p2.mesh.000000", piece=4)
+    # through the generic API too
+    same = meshioplusplus.read(
+        PARALLEL / "star-p2.mesh.000000", file_format="mfem", piece=2
+    )
+    assert len(same.cells[0].data) == n2
+
+
+def test_parallel_grid_function_must_be_a_rank_file(engine, tmp_path):
+    gf = tmp_path / "u.gf"
+    gf.write_text(
+        "FiniteElementSpace\nFiniteElementCollection: H1_2D_P2\nVDim: 1\nOrdering: 0\n\n"
+    )
+    with pytest.raises(meshioplusplus.ReadError, match="rank files"):
+        engine.read(PARALLEL / "star-p2.mesh.000000", {"u": str(gf)})
