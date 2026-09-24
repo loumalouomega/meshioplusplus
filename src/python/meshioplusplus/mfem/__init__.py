@@ -52,7 +52,8 @@ def write(filename, mesh, grid_functions=False):
     The highest-dimensional cells are the elements and the cells one dimension
     lower the boundary; side regions add boundary elements. Attributes come from
     ``mfem:attribute``, else cell regions, else 1; named regions become v1.3
-    attribute sets. Quadratic cells are written as an ``H1_<d>D_P2`` nodes space.
+    attribute sets. Quadratic cells are written as an ``H1_<d>D_P2`` nodes space
+    and VTK Lagrange cells of order p as ``H1_<d>D_P<p>`` (Gauss-Lobatto).
 
     With ``grid_functions=True`` every point data array is also written as an
     ``H1`` grid function ``<stem>.<name>.gf`` next to the mesh (and cell data as

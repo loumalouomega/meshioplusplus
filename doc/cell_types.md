@@ -162,4 +162,4 @@ Higher-order VTK Lagrange elements (arbitrary polynomial order, controlled at ru
 | `VTK_LAGRANGE_WEDGE` |
 | `VTK_LAGRANGE_PYRAMID` |
 
-These are read and written by the VTK/VTU readers/writers only.
+These are read and written by the VTK/VTU readers/writers, and read and written by the [MFEM](formats/mfem.md) reader and writer for meshes and fields of order 3 and up (v16.11.0; `VTK_LAGRANGE_PYRAMID` excepted). They are ragged blocks: the node count follows from the order, which is not stored in the type.

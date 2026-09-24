@@ -942,8 +942,8 @@ def roadmap_map():
             [
                 ("d3plot · OP2 halves", "S"),
                 ("Marc · .rst halves", "S"),
-                ("Patran · Femap · MFEM halves", "S"),
-                ("libMesh · Z88 · .fil · Radioss halves", "S"),
+                ("Femap · MFEM NURBS halves", "M"),
+                (".fil · Radioss · Z88 checks", "S"),
             ],
             [],
         ),

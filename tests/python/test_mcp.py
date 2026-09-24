@@ -249,6 +249,25 @@ def test_elmer_directory_converts_both_ways(tmp_path):
     assert [b.type for b in written.cells] == ["tetra10", "triangle6", "vertex"]
 
 
+def test_mfem_parallel_convert(tmp_path):
+    # A parallel MFEM run (v16.11.0): merged by default, one rank with `piece`,
+    # its grid function named by a rank file either way.
+    import pathlib
+
+    par = pathlib.Path(__file__).parent / "meshes" / "mfem" / "parallel"
+    whole, rank = str(tmp_path / "whole.vtu"), str(tmp_path / "rank1.vtu")
+    gfs = {"u": str(par / "star-p2.u.000000")}
+    _tools.tool_convert(str(par / "star-p2.pmesh.000000"), whole, grid_functions=gfs)
+    _tools.tool_convert(
+        str(par / "star-p2.pmesh.000000"), rank, grid_functions=gfs, piece=1
+    )
+    merged, one = meshioplusplus.read(whole), meshioplusplus.read(rank)
+    parts = np.concatenate([np.ravel(a) for a in merged.cell_data["partition:part"]])
+    assert sorted(set(parts.tolist())) == [0, 1, 2, 3]
+    assert sum(len(c.data) for c in one.cells) == int((parts == 1).sum())
+    assert "u" in one.point_data
+
+
 def test_elmer_halo_convert(tmp_path):
     import pathlib
 

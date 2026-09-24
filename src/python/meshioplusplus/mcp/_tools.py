@@ -592,6 +592,7 @@ def tool_convert(
                 str(name): str(_resolve(path, must_exist=True))
                 for name, path in grid_functions.items()
             },
+            piece=piece,
         )
     else:
         mesh = _load(
