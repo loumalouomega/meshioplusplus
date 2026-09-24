@@ -123,6 +123,9 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 #
 # **`ansys_rst_cyclic` joined in v16.8.0.** The full-rotor reading of a static
 # cyclic `.rst`: the same result sets as `ansys_rst`, so the same steps.
+#
+# **`marc_t19` joined in v16.8.0.** Its steps are the increments of a Marc
+# formatted post file; the C++ metadata reader parses the whole file.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -142,6 +145,7 @@ _TIME_CAPABLE_READERS = (
     "xplt",
     "ansys_rst",
     "ansys_rst_cyclic",
+    "marc_t19",
     "femap",
     "abaqus_fil",
 )

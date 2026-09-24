@@ -31,6 +31,7 @@
 // Project includes
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/formats/marc.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
 namespace meshioplusplus {
@@ -443,6 +444,20 @@ std::string sniff_format(const std::string& rPath) {
         return "abaqus_fil";
     if (sniff_is_radioss(stripped))
         return "radioss";
+    // MSC Marc formatted post file: the analysis title block opens it.
+    if (sniff_starts_with(stripped, "=beg=50100"))
+        return "marc_t19";
+    // MSC Marc input deck: a Marc parameter opens it and an END, CONNECTIVITY or
+    // COORDINATES line follows -- which can be past 512 bytes, so read on.
+    if (!stripped.empty() && std::isalpha(static_cast<unsigned char>(stripped[0])) &&
+        stripped.substr(0, stripped.find('\n')).find('=') == std::string::npos) {
+        auto deck = detail::make_classic_ifstream(rPath, std::ios::binary);
+        std::string text(65536, '\0');
+        deck.read(text.data(), static_cast<std::streamsize>(text.size()));
+        text.resize(static_cast<std::size_t>(deck.gcount()));
+        if (is_marc_deck(text))
+            return "marc";
+    }
     if (sniff_is_femap(head))
         return "femap";
     if (sniff_is_patran(head))

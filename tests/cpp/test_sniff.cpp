@@ -79,6 +79,10 @@ TEST(Sniff, RecognizesKnownSignatures) {
         {std::string("\0\0\x10\0\0\0\0\0\0\0\0\x09\0\0\0\0\0\0\x07\x81", 20), "abaqus_fil"},
         {"#RADIOSS STARTER\n/BEGIN\nrun\n", "radioss"},
         {"# a comment\n$ another\n/BEGIN\nrun\n", "radioss"},
+        {"title               pull\n$ a comment\nextended\nsizing 0 1 8\nend\n", "marc"},
+        {"=beg=50100 (Analysis Title)\n          job1\n=end=\n", "marc_t19"},
+        {"title               pull\nsizing 0 1 8\n", ""},  // no END or model option
+        {"TITLE = \"a tecplot file\"\nVARIABLES = x y\nend\n", ""},
         {"*I am not a results file\n", ""},
         {"/NODE\n1 0 0 0\n", ""},
         {"25       0       0       0       0       0       0       0       0\n", ""},

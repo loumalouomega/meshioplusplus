@@ -62,6 +62,7 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/ip.hpp"
+#include "meshioplusplus/formats/marc.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/medit.hpp"
@@ -114,6 +115,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
         {"libmesh", meshioplusplus::read_libmesh},
         {"radioss", meshioplusplus::read_radioss},
+        // A .dat file is Tecplot's unless it opens as a Marc deck (resolve_format).
+        {"marc", meshioplusplus::read_marc},
+        {"marc_t19", [](const std::string& path) { return meshioplusplus::read_marc_t19(path); }},
         // Fixed file names (z88i1.txt ...): resolve_format matches the basename.
         {"z88", [](const std::string& path) { return meshioplusplus::read_z88(path); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
@@ -483,6 +487,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".xda", "libmesh"},
         {".xdr", "libmesh"},
         {".rad", "radioss"},
+        {".t19", "marc_t19"},
         {".feb", "febio"},
         {".xplt", "xplt"},
         {".rst", "ansys_rst"},
@@ -601,6 +606,18 @@ bool registry_is_mfem_mesh(const std::string& rPath) {
     return first != std::string::npos && head.compare(first, 5, "MFEM ") == 0;
 }
 
+// Whether `rPath` exists and opens as a Marc input deck; only for the `.dat`
+// suffix Tecplot and Marc share.
+bool registry_is_marc_dat(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return false;
+    std::string head(65536, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+    return is_marc_deck(head);
+}
+
 std::string basename_of(const std::string& rPath) {
     auto pos = rPath.find_last_of("/\\");
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
@@ -622,10 +639,13 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
         auto it = defaults.find(suffix);
         if (it == defaults.end())
             continue;
-        // `.mesh` is both Medit's and MFEM's. The one content-aware default: an
-        // existing file whose first line names an MFEM mesh goes to mfem.
+        // `.mesh` is both Medit's and MFEM's: an existing file whose first line
+        // names an MFEM mesh goes to mfem.
         if (suffix == ".mesh" && registry_is_mfem_mesh(rPath))
             return "mfem";
+        // `.dat` is Tecplot's, and Marc's input deck's when it opens as one.
+        if (suffix == ".dat" && registry_is_marc_dat(rPath))
+            return "marc";
         return it->second;
     }
     throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
@@ -698,6 +718,8 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"ansys_rst", meshioplusplus::read_ansys_rst},
         // Its full-rotor reading (a static cyclic model): no extension, by name only.
         {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic},
+        // Marc .t19: mTimeStep picks the increment.
+        {"marc_t19", meshioplusplus::read_marc_t19},
         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
         // narrowing options.
         {"unv", [](const std::string& path,
@@ -774,6 +796,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},
+        {"marc_t19", meshioplusplus::read_marc_t19_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5

@@ -140,3 +140,6 @@ tests/python/meshes/abaqus_fil/model_be.fil binary
 # OpenRadioss starter decks written by tools/gen_radioss_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/radioss/** -filter -diff -merge text
+# MSC Marc decks and a formatted post file written by tools/gen_marc_fixtures.py:
+# small text kept out of LFS, like the other generated deck fixtures.
+tests/python/meshes/marc/** -filter -diff -merge text

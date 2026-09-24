@@ -19,10 +19,9 @@ tool's ``wraps`` (or consciously exempted in ``_NOT_TOOLS``).
 import json
 import os
 
+import meshioplusplus
 import numpy as np
 import pytest
-
-import meshioplusplus
 from meshioplusplus.mcp import TOOL_REGISTRY, _tools
 
 from . import helpers
@@ -1885,3 +1884,34 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     assert meshioplusplus.read(back).cells[0].type == "hexahedron"
     rad = meshes / "radioss" / "old_0000.rad"
     assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8
+
+
+def test_marc_and_ansys_results_formats(tmp_path):
+    import pathlib
+
+    meshes = pathlib.Path(__file__).parent / "meshes"
+    out = _dump(_tools.tool_formats())
+    for fmt in ("marc", "marc_t19", "ansys_rst_cyclic"):
+        assert fmt in out["readable"], fmt
+        assert fmt not in out["writable"], fmt
+    assert out["extensions"][".t19"] == ["marc_t19"]
+    assert out["extensions"][".dat"] == ["marc", "tecplot"]
+    deck = meshes / "marc" / "hex20.dat"
+    assert _dump(_tools.tool_sniff(str(deck)))["format"] == "marc"
+    target = str(tmp_path / "hex20.vtu")
+    _tools.tool_convert(str(deck), target)
+    assert meshioplusplus.read(target).cells[0].type == "hexahedron20"
+    post = str(meshes / "marc" / "results.t19")
+    last = str(tmp_path / "last.vtu")
+    _tools.tool_convert(post, last, time_step=-1)
+    assert (
+        float(
+            np.asarray(meshioplusplus.read(last).field_data["meshio:time"]).ravel()[0]
+        )
+        == 1.0
+    )
+    # Element results of an Ansys .rst reach a converted file.
+    rst = str(meshes / "ansys" / "rst" / "beam_static_bc.rst")
+    stress = str(tmp_path / "stress.vtu")
+    _tools.tool_convert(rst, stress)
+    assert "S" in meshioplusplus.read(stress).point_data

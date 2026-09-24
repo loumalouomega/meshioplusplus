@@ -51,6 +51,9 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("mesh.xdr", ""), "libmesh");
     EXPECT_EQ(resolve_format("job.fil", ""), "abaqus_fil");
     EXPECT_EQ(resolve_format("deck_0000.rad", ""), "radioss");
+    EXPECT_EQ(resolve_format("job.t19", ""), "marc_t19");
+    // `.dat` is Tecplot's unless the file opens as a Marc deck (tested in test_marc.cpp).
+    EXPECT_EQ(resolve_format("/nonexistent/job.dat", ""), "tecplot");
     // Z88's fixed file names win over `.txt` (xyz), in any case.
     EXPECT_EQ(resolve_format("run/z88i1.txt", ""), "z88");
     EXPECT_EQ(resolve_format("Z88STRUCTURE.TXT", ""), "z88");

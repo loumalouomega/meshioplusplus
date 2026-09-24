@@ -217,11 +217,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // femap joined in v16.5.0: its steps are the 450 output sets.
     // abaqus_fil joined in v16.7.0: its steps are the increments (2000 ... 2001).
     // ansys_rst_cyclic joined in v16.8.0: ansys_rst's result sets, full rotor.
+    // marc_t19 joined in v16.8.0: its steps are the post file's increments.
     return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "unv" ||
            rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
-           rFormat == "ansys_rst_cyclic" || rFormat == "femap" || rFormat == "xdmf" ||
-           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
-           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
+           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
            rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
