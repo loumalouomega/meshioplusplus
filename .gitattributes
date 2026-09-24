@@ -126,6 +126,10 @@ tests/python/meshes/febio/xplt/*.xplt binary
 # does not match these .dat files.
 tests/python/meshes/tecplot/plt/*.plt binary
 tests/python/meshes/tecplot/plt/*.dat -filter -diff -merge text
+# Older-version Tecplot files from VisIt's test data (see that directory's README.md):
+# at most a few tens of KB, kept out of LFS like the ones above.
+tests/python/meshes/tecplot/visit/*.plt binary
+tests/python/meshes/tecplot/visit/*.tec -filter -diff -merge text
 # Ansys .cdb decks from mapdl-archive (see that directory's README.md): small text kept
 # out of LFS like the ones above, and byte-for-byte (-text), since two carry the CRLF
 # line endings their writers produced and the reader must handle.

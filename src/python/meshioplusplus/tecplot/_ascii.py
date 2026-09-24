@@ -170,7 +170,8 @@ def _face_map_tokens(z):
 
 
 def _tokens(line):
-    return line.split()
+    """Data tokens: Tecplot separates values by blanks or commas."""
+    return line.replace(",", " ").split()
 
 
 class AsciiSource:
@@ -250,7 +251,10 @@ class AsciiSource:
 def load(filename):
     """Parses an ASCII file: (variables, zones, source)."""
     with open_file(filename, "r") as f:
-        raw = f.read().splitlines()
+        try:
+            raw = f.read().splitlines()
+        except UnicodeDecodeError as exc:
+            raise ReadError("Tecplot: not a text file and no #!TDV magic") from exc
     lines = [s for s in (r.strip() for r in raw) if s and not s.startswith("#")]
 
     variables = []

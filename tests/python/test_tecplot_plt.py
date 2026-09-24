@@ -14,6 +14,7 @@ from meshioplusplus.tecplot import _tecplot
 
 HERE = pathlib.Path(__file__).resolve().parent
 PLT = HERE / "meshes" / "tecplot" / "plt"
+VISIT = HERE / "meshes" / "tecplot" / "visit"
 NAMES = ["fe_mixed", "fe_2d", "ordered", "transient", "poly_2d", "poly_3d"]
 
 try:
@@ -209,7 +210,9 @@ def test_refusals(tmp_path, engine):
     with pytest.raises(ReadError, match="BIT"):
         _read(engine, _write_plt(tmp_path / "bit.plt", [2, 2, 6]))
     with pytest.raises(ReadError, match="version"):
-        _read(engine, _write_plt(tmp_path / "old.plt", [2, 2, 2], version=b"102"))
+        _read(engine, _write_plt(tmp_path / "old.plt", [2, 2, 2], version=b"99 "))
+    with pytest.raises(ReadError, match="version"):
+        _read(engine, _write_plt(tmp_path / "new.plt", [2, 2, 2], version=b"114"))
     good = _write_plt(tmp_path / "good.plt", [2, 2, 2]).read_bytes()
     (tmp_path / "cut.plt").write_bytes(good[:-10])
     with pytest.raises(ReadError, match="truncated"):
@@ -362,3 +365,102 @@ def test_ascii_ordered_forms(tmp_path, engine):
         mesh.point_data["P"], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     )
     np.testing.assert_array_equal(mesh.points[7:], mesh.points[3:7])
+
+
+# --- older versions (#!TDV71-111), VisIt's test data ----------------------------------------
+
+VISIT_PLT = [
+    "simpscat",
+    "fluid",
+    "jetflow",
+    "eddy",
+    "polarplot",
+    "fetebk",
+    "fetetpt",
+    "movie",
+]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize(
+    "plt, twin",
+    [
+        ("simpscat.plt", "simpscat.tec"),  # 71, big-endian, point packing, text records
+        ("eddy.plt", "fetebk.tec"),  # 75, 1-based FE connectivity
+        ("fetebk.plt", "fetebk.tec"),  # 108, block packing
+        ("fetetpt.plt", "fetebk.tec"),  # 108, point packing
+        ("movie.plt", "movie.tec"),  # 108; the ASCII values are comma-separated
+    ],
+)
+def test_old_versions_read_as_their_ascii_twin(engine, plt, twin):
+    # The ASCII files print single-precision values to about seven digits.
+    a, b = _read(engine, VISIT / plt), _read(engine, VISIT / twin)
+    np.testing.assert_allclose(a.points, b.points, rtol=1e-6)
+    assert [_cell_lists(c) for c in a.cells] == [_cell_lists(c) for c in b.cells]
+    assert set(a.point_data) == set(b.point_data)
+    for k in a.point_data:
+        np.testing.assert_allclose(a.point_data[k], b.point_data[k], rtol=1e-6)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_tecplot7_block_ordered(engine):
+    # The same flow field written by Tecplot 7.0 (big-endian) and 7.5
+    # (little-endian), fluid.plt over index coordinates: the values agree.
+    fluid = _read(engine, VISIT / "fluid.plt")
+    jet = _read(engine, VISIT / "jetflow.plt")
+    assert [(c.type, len(c.data)) for c in fluid.cells] == [("hexahedron", 880)]
+    np.testing.assert_array_equal(fluid.cells[0].data, jet.cells[0].data)
+    for k in ("RHO-V", "E"):
+        np.testing.assert_array_equal(fluid.point_data[k], jet.point_data[k])
+    np.testing.assert_array_equal(fluid.points.min(axis=0), [1, 1, 1])
+    np.testing.assert_array_equal(fluid.points.max(axis=0), [9, 12, 11])
+    # "X(M)" style names are coordinates too
+    assert sorted(jet.point_data) == ["E", "RHO", "RHO-U", "RHO-V", "RHO-W"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_version_106_double_precision(engine):
+    mesh = _read(engine, VISIT / "polarplot.plt")
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [("line", 125), ("quad", 693)]
+    assert mesh.points.shape == (926, 2)
+    assert list(mesh.point_data) == ["Mix"]
+    np.testing.assert_allclose(np.abs(mesh.points).max(), 1.71671689, rtol=1e-8)
+
+
+@pytest.mark.skipif(not HAS_CORE, reason="needs the C++ core")
+@pytest.mark.parametrize("name", VISIT_PLT)
+def test_old_versions_engines_agree(name):
+    _same(_read("core", VISIT / f"{name}.plt"), _read("python", VISIT / f"{name}.plt"))
+
+
+def test_old_version_dispatch():
+    path = VISIT / "eddy.plt"
+    assert meshioplusplus.sniff_format(str(path)) == "tecplot"
+    assert [c.type for c in meshioplusplus.read(path).cells] == ["tetra"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize("bo", ["<", ">"])
+def test_tecplot7_text_circle_and_fe_point_zone(tmp_path, engine, bo):
+    """The Tecplot 7.5 layouts the VisIt files show, with the 2-D text and
+    geometry records none of the committed ones has together (cstream.plt's
+    circle): the twin of the C++ Tecplot7PointPackedFeZone test."""
+    i = lambda *v: struct.pack(bo + f"{len(v)}i", *v)  # noqa: E731
+    d = lambda *v: struct.pack(bo + f"{len(v)}d", *v)  # noqa: E731
+    f = lambda *v: struct.pack(bo + f"{len(v)}f", *v)  # noqa: E731
+    out = b"#!TDV75 " + i(1) + _s("old", bo) + i(3)
+    out += _s("X(M)", bo) + _s("Y(M)", bo) + _s("P", bo)
+    out += f(499.0) + i(1, 1) + d(40.0, 2.5) + i(0, 1) + d(3.0) + i(0) + d(15.0, 0.1)
+    out += i(0, 7) + d(90.0, 1.5) + i(0, 0, -1, 0) + _s("label", bo)
+    out += f(399.0) + i(0, 1) + d(1.0, 2.0) + i(0, 0, -1, 0, 7, 0, 3, 0) + d(2.0, 0.1)
+    out += i(72, 0, 0) + d(1.0, 15.0) + _s("", bo) + i(1) + f(0.5)
+    out += f(299.0) + _s("zone", bo) + i(3, -1, 4, 2, 1) + f(357.0)
+    out += f(299.0) + i(0, 1, 1, 1)
+    out += f(0, 0, 1, 1, 0, 2, 1, 1, 3, 0, 1, 4)
+    out += i(0, 1, 2, 3, 4, 1, 3, 4, 2)
+    path = tmp_path / "old.plt"
+    path.write_bytes(out)
+    mesh = _read(engine, path)
+    np.testing.assert_array_equal(mesh.cells[0].data, [[0, 1, 2, 3], [0, 2, 3, 1]])
+    np.testing.assert_array_equal(mesh.points, [[0, 0], [1, 0], [1, 1], [0, 1]])
+    np.testing.assert_array_equal(mesh.point_data["P"], [1, 2, 3, 4])
