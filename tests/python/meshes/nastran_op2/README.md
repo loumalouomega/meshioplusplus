@@ -22,7 +22,7 @@ They come unmodified from the [pyNastran](https://github.com/SteveDoyle2/pyNastr
 
 `static_solid_shell_bar_cord.op2` is `static_solid_shell_bar.op2` with the CP and CD words of its GRID record set to the file's own CORD2R/C/S systems (every other byte unchanged), and `cord_reference.npz` pyNastran's basic positions and subcase-1 displacements of it; `tools/gen_nastran_cord_reference.py` writes both (see its docstring for why the displacements use upstream pyNastran's rotation matrices rather than 1.4.1's).
 
-`pynastran_reference.npz` freezes pyNastran 1.4.1's reading of every file: per step the nodal vectors by GRID id and the centre stress and strain by element id, under meshio++'s names. `test_nastran_op2.py` compares against it without pyNastran installed; `tools/gen_nastran_op2_reference.py` regenerates it.
+`pynastran_reference.npz` freezes pyNastran 1.4.1's reading of every file: per step the nodal vectors by GRID id, the centre stress and strain by element id, and the multi-valued results (composite plies, plate and solid corners, CBEAM stations, grid point forces) with a `|cols` array naming each value's ply, GRID or station distance, under meshio++'s names. `test_nastran_op2.py` compares against it without pyNastran installed; `tools/gen_nastran_op2_reference.py` regenerates it.
 
 ## pyNastran licence
 

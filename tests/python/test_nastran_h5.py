@@ -39,6 +39,15 @@ MIDS = {
 }
 
 
+def _block_row(mesh, cell):
+    base = 0
+    for b, c in enumerate(mesh.cells):
+        if cell < base + len(c.data):
+            return b, cell - base
+        base += len(c.data)
+    raise IndexError(cell)
+
+
 def path_of(name):
     path = FIXTURES / f"{name}.h5"
     with open(path, "rb") as f:
@@ -369,11 +378,83 @@ class TestRealFiles:
         # a line element has no STRESS:X
         assert np.isnan(sx[types == "line"]).all()
 
-    def test_per_ply_and_per_grid_tables_are_skipped(self, engine):
+    def test_ply_values_by_ply_id(self, engine):
+        path = path_of("static_elements")
+        mesh = engine(path)
+        with h5py.File(path) as f:
+            comp = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD4_COMP"][()]
+        eids = np.concatenate(mesh.cell_data["nastran:eid"])
+        types = types_of(mesh)
+        x1 = np.concatenate(mesh.cell_data["STRESS:X1@ply"])
+        assert mesh.field_data["nastran:layout:STRESS:X1@ply"].tolist() == [
+            x1.shape[1],
+            1,
+        ]
+        for row in comp:  # the file lists element 23's plies 1, 2, 4, 3
+            cell = np.flatnonzero((eids == row["EID"]) & (types == "quad"))[0]
+            assert x1[cell, row["PLY"] - 1] == row["X1"]
+
+    def test_corner_values_in_node_order(self, engine):
+        path = path_of("static_elements")
+        mesh = engine(path)
+        with h5py.File(path) as f:
+            hexa = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/HEXA"][0]
+            ids = f["/NASTRAN/INPUT/NODE/GRID"]["ID"][()]
+        eids = np.concatenate(mesh.cell_data["nastran:eid"])
+        types = types_of(mesh)
+        corner = np.concatenate(
+            [c.reshape(len(c), -1) for c in mesh.cell_data["STRESS:X@corner"]]
+        )
+        cell = np.flatnonzero((eids == hexa["EID"]) & (types == "hexahedron"))[0]
+        b, i = _block_row(mesh, cell)
+        nodes = ids[mesh.cells[b].data[i]].tolist()
+        for k in range(1, 9):  # entry 0 is the centre; GRID(k) says which corner
+            assert corner[cell, nodes.index(hexa["GRID"][k])] == hexa["X"][k]
+
+    def test_beam_and_bar_stations(self, engine):
+        path = path_of("static_elements")
+        mesh = engine(path)
+        with h5py.File(path) as f:
+            beam = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/BEAM"][0]
+            bars = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/BARS"][()]
+        eids = np.concatenate(mesh.cell_data["nastran:eid"])
+        xc = np.concatenate([c for c in mesh.cell_data["STRESS:XC@station"]])
+        sd = np.concatenate([c for c in mesh.cell_data["STRESS:SD@station"]])
+        cell = np.flatnonzero(eids == beam["EID"])[0]
+        output = [k for k in range(11) if k == 0 or beam["GRID"][k] or beam["SD"][k]]
+        for k in range(11):
+            if k in output:
+                assert xc[cell, k] == beam["XC"][k] and sd[cell, k] == beam["SD"][k]
+            else:  # a station that was not output stays NaN
+                assert np.isnan(xc[cell, k])
+        # BARS: one row per station, in order
+        cell = np.flatnonzero(eids == bars["EID"][0])[0]
+        rows = bars[bars["EID"] == bars["EID"][0]]
+        assert sd[cell, : len(rows)].tolist() == rows["SD"].tolist()
+
+    def test_grid_point_forces_balance(self, engine):
+        """GRID_FORCE: element rows per element node, the others by GRID; at every
+        GRID the element forces, applied loads and SPC forces add up to *TOTALS*."""
         mesh = engine(path_of("static_elements"))
-        assert not any(k.startswith("GRID_FORCE") for k in mesh.point_data)
-        # the _COMP tables would have given STRESS:PLY-shaped members
-        assert "STRESS:L1" not in mesh.cell_data
+        npts = len(mesh.points)
+        for m in ("F1", "F2", "F3", "M1", "M2", "M3"):
+            total = np.zeros(npts)
+            for b, c in enumerate(mesh.cells):
+                values = mesh.cell_data[f"GRID_FORCE:{m}"][b]
+                width = values.shape[1]
+                for i, row in enumerate(c.data):
+                    for k, p in enumerate(row[:width]):
+                        if not np.isnan(values[i, k]):
+                            total[p] += values[i, k]
+            for label in ("APP-LOAD", "F-OF-SPC"):
+                extra = mesh.point_data.get(f"GRID_FORCE:{label}:{m}")
+                if extra is not None:
+                    total += np.nan_to_num(extra)
+            ref = mesh.point_data[f"GRID_FORCE:TOTALS:{m}"]
+            ok = ~np.isnan(ref)
+            # springs and dampers (no cell) contribute too: compare where none acts
+            close = np.isclose(total[ok], ref[ok], atol=1e-6 * np.abs(total).max())
+            assert close.mean() > 0.5, m
 
     def test_partial_mid_side_nodes_read_as_linear(self, engine):
         # the fixtures' CTRIA6 lists [6, 4, 60, 0, 65, 64]
