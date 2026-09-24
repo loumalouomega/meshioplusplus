@@ -26,6 +26,8 @@
 
 // System includes
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -287,4 +289,117 @@ TEST(Patran, Quad9AndTriangle7RoundTrip) {
         EXPECT_EQ(
             meshioplusplus::detail::read_int(back.Cells(1).Conn(), static_cast<std::size_t>(k)),
             tri[k]);
+}
+
+namespace {
+
+// One quad (element 7, nodes 1-4) with a force (07), a constraint (08), a node
+// and an element temperature (10, 11) and a pressure on its edge 2 (06).
+std::string quad_with_loads() {
+    std::string s = header(25, 0, 0, 1) + "loads\n";
+    s += node(1, 0, 0, 0) + node(2, 1, 0, 0) + node(3, 1, 1, 0) + node(4, 0, 1, 0);
+    s += element(7, 4, 1, {1, 2, 3, 4});
+    s += header(7, 3, 2, 2) + "       9001100\n" + " 5.000000000E+00-1.000000000E+00\n";
+    s += header(8, 1, 1, 2) + "       0111000\n" +
+         " 0.000000000E+00 0.000000000E+00 0.000000000E+00\n";
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "%2d%8d%8d%8d%8d%8d%8d%8d%8d\n", 10, 2, 4, 1, 1, 0, 0, 0, 0);
+    s += std::string(buf) + " 3.000000000E+02\n";
+    std::snprintf(buf, sizeof(buf), "%2d%8d%8d%8d%8d%8d%8d%8d%8d\n", 11, 7, 4, 1, 1, 0, 0, 0, 0);
+    s += std::string(buf) + " 2.500000000E+01\n";
+    // a line load (LTYPE 0) at the edge's two nodes (GFLAG), component 3
+    s += header(6, 7, 2, 2) + "00100100011000000 2\n" + " 1.000000000E+00 2.000000000E+00\n";
+    s += header(99, 0, 0, 1);
+    return s;
+}
+
+std::string result_file(const std::string& rBody, const std::string& rSuffix) {
+    const std::string path = mt::temp_path(rSuffix);
+    std::ofstream(path, std::ios::binary) << rBody;
+    return path;
+}
+
+// A Fortran unformatted record: its length, the bytes, the length again.
+void fortran_record(std::string& rOut, const std::string& rBytes, bool Big) {
+    std::uint32_t n = static_cast<std::uint32_t>(rBytes.size());
+    char len[4];
+    for (int k = 0; k < 4; ++k)
+        len[Big ? 3 - k : k] = static_cast<char>((n >> (8 * k)) & 0xFF);
+    rOut.append(len, 4);
+    rOut += rBytes;
+    rOut.append(len, 4);
+}
+
+std::string word(std::uint32_t V, bool Big) {
+    char b[4];
+    for (int k = 0; k < 4; ++k)
+        b[Big ? 3 - k : k] = static_cast<char>((V >> (8 * k)) & 0xFF);
+    return std::string(b, 4);
+}
+
+std::string word(float V, bool Big) {
+    std::uint32_t u;
+    std::memcpy(&u, &V, 4);
+    return word(u, Big);
+}
+
+}  // namespace
+
+TEST(Patran, LoadsAndBoundaryConditions) {
+    const Mesh mesh = meshioplusplus::read_patran(write_file(quad_with_loads()));
+    const NDArray& f = mesh.PointData("patran:force:2");
+    EXPECT_DOUBLE_EQ(detail::read_double(f, 2 * 6 + 2), 5.0);  // node 3, component 3
+    EXPECT_DOUBLE_EQ(detail::read_double(f, 2 * 6 + 3), -1.0);
+    EXPECT_TRUE(std::isnan(detail::read_double(f, 0)));
+    EXPECT_EQ(detail::read_int(mesh.PointData("patran:force_frame:2"), 2), 9);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.PointData("patran:displacement:1"), 1), 0.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.PointData("patran:temperature:4"), 1), 300.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.CellData("patran:element_temperature:4", 0), 0),
+                     25.0);
+    const NDArray& d = mesh.FieldData("patran:distributed_load");
+    EXPECT_EQ(detail::read_int(d, 1), 2);   // set
+    EXPECT_EQ(detail::read_int(d, 19), 2);  // edge 2
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.FieldData("patran:distributed_load_values"), 1), 2.0);
+    // written back as the same packets
+    const std::string out = mt::temp_path(".pat");
+    meshioplusplus::write_patran(out, mesh);
+    const Mesh back = meshioplusplus::read_patran(out);
+    EXPECT_EQ(detail::read_int(back.PointData("patran:force_frame:2"), 2), 9);
+    EXPECT_EQ(detail::read_int(back.FieldData("patran:distributed_load"), 19), 2);
+    EXPECT_NE(read_text(out).find("00100100011000000 2"), std::string::npos);
+}
+
+TEST(Patran, TextAndBinaryResultFiles) {
+    const std::string pat = write_file(quad_with_loads());
+    // text: nodal (NWIDTH 2) and element (NWIDTH 7: two lines)
+    const std::string nod = result_file(
+        "title\n        4        4   0.000000E+00        0        2\nsub\nsub\n"
+        "       1 0.100000E+01-0.200000E+01\n       3 0.300000E+01 0.400000E+01\n",
+        ".nod");
+    const std::string els = result_file(
+        "title\n    7\nsub\nsub\n       7       4\n"
+        " 0.100000E+01 0.200000E+01 0.300000E+01 0.400000E+01 0.500000E+01 0.600000E+01\n"
+        " 0.700000E+01\n",
+        ".els");
+    for (const bool big : {false, true}) {
+        std::string bin, rec(80 * 4, ' ');
+        rec += word(std::uint32_t{4}, big) + word(std::uint32_t{4}, big) + word(0.0F, big) +
+               word(std::uint32_t{0}, big) + word(std::uint32_t{1}, big);
+        fortran_record(bin, rec, big);
+        fortran_record(bin, std::string(80 * 4, ' '), big);
+        fortran_record(bin, std::string(80 * 4, ' '), big);
+        fortran_record(bin, word(std::uint32_t{2}, big) + word(7.5F, big), big);
+        const std::string dis = result_file(bin, ".dis");
+        const Mesh mesh = meshioplusplus::read_patran(pat, {{"n", nod}, {"e", els}, {"d", dis}});
+        const NDArray& n = mesh.PointData("n");
+        EXPECT_DOUBLE_EQ(detail::read_double(n, 1), -2.0);
+        EXPECT_DOUBLE_EQ(detail::read_double(n, 2 * 2 + 1), 4.0);
+        EXPECT_TRUE(std::isnan(detail::read_double(n, 2)));  // node 2: no record
+        EXPECT_DOUBLE_EQ(detail::read_double(mesh.CellData("e", 0), 6), 7.0);
+        const NDArray& dd = mesh.PointData("d");  // one column: 1-D
+        ASSERT_EQ(dd.Shape().size(), 1u);
+        EXPECT_DOUBLE_EQ(detail::read_double(dd, 1), 7.5);
+    }
+    EXPECT_THROW(meshioplusplus::read_patran(pat, {{"x", result_file("t\n1\n", ".nod")}}),
+                 ReadError);
 }

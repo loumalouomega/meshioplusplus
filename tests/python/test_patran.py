@@ -347,3 +347,125 @@ def test_quad9_and_triangle7(engine, tmp_path):
     assert [b.type for b in back.cells] == ["quad9", "triangle7"]
     for x, y in zip(back.cells, mesh.cells):
         np.testing.assert_array_equal(x.data, y.data)
+
+
+# --- loads, boundary conditions and result files ---------------------------------------------
+
+
+def test_loads_and_boundary_conditions(engine):
+    """mixed_linear.pat carries a uniform pressure on face 6 of the hex
+    (packet 06) and a node temperature (packet 10)."""
+    mesh = engine.read(MESHES / "mixed_linear.pat")
+    np.testing.assert_array_equal(mesh.point_data["patran:temperature:1"][0], 300.0)
+    assert np.isnan(mesh.point_data["patran:temperature:1"][1:]).all()
+    flags = mesh.field_data["patran:distributed_load"]
+    values = mesh.field_data["patran:distributed_load_values"]
+    # cell 0 (the hex), set 1, surface load at the centroid, component 1, face 6
+    np.testing.assert_array_equal(flags, [[0, 1, 1, 1, 0, 1] + [0] * 13 + [6]])
+    assert values[0, 0] == 1.0 and np.isnan(values[0, 1:]).all()
+
+
+def _synthetic_loads(mesh):
+    n = len(mesh.points)
+    ncells = sum(len(c.data) for c in mesh.cells)
+    force = np.full((n, 6), np.nan)
+    force[0, [0, 2]] = [1.5, -2.0]
+    force[3] = np.arange(6)
+    frame = np.zeros(n, dtype=np.int64)
+    frame[3] = 5
+    fixed = np.full((n, 6), np.nan)
+    fixed[1, :3] = 0.0
+    temps = np.full(ncells, np.nan)
+    temps[1] = 25.0
+    offsets = np.cumsum([0] + [len(c.data) for c in mesh.cells])
+    mesh.point_data["patran:force:3"] = force
+    mesh.point_data["patran:force_frame:3"] = frame
+    mesh.point_data["patran:displacement:1"] = fixed
+    mesh.cell_data["patran:element_temperature:7"] = [
+        temps[offsets[b] : offsets[b + 1]] for b in range(len(mesh.cells))
+    ]
+    flags = np.zeros((2, 20), dtype=np.int64)
+    flags[0] = [0, 4, 1, 1, 0, 1, 0, 0, 0, 0, 0] + [1, 1] + [0] * 6 + [2]
+    flags[1] = [1, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0] + [1, 1, 1] + [0] * 5 + [1]
+    values = np.full((2, 54), np.nan)
+    values[0, 0] = 10.0
+    values[1, :6] = np.arange(6) + 0.5  # 2 components at 3 nodes
+    mesh.field_data["patran:distributed_load"] = flags
+    mesh.field_data["patran:distributed_load_values"] = values
+    return mesh
+
+
+@pytest.mark.parametrize("writer", ["core", "python"])
+def test_loads_round_trip(writer, engine, tmp_path):
+    mesh = _synthetic_loads(meshioplusplus.read(MESHES / "mixed_linear.pat"))
+    w = meshioplusplus.patran if writer == "core" else py_patran
+    w.write(tmp_path / "m.pat", mesh)
+    back = engine.read(tmp_path / "m.pat")
+    for key in ("patran:force:3", "patran:force_frame:3", "patran:displacement:1"):
+        np.testing.assert_array_equal(back.point_data[key], mesh.point_data[key])
+    for a, b in zip(
+        back.cell_data["patran:element_temperature:7"],
+        mesh.cell_data["patran:element_temperature:7"],
+    ):
+        np.testing.assert_array_equal(a, b)
+    for key in ("patran:distributed_load", "patran:distributed_load_values"):
+        np.testing.assert_array_equal(back.field_data[key], mesh.field_data[key])
+
+
+def test_loads_write_the_same_bytes(tmp_path):
+    mesh = _synthetic_loads(meshioplusplus.read(MESHES / "mixed_linear.pat"))
+    meshioplusplus.patran.write(tmp_path / "a.pat", mesh)
+    py_patran.write(tmp_path / "b.pat", mesh)
+    assert (tmp_path / "a.pat").read_bytes() == (tmp_path / "b.pat").read_bytes()
+
+
+WARP3D = MESHES / "real" / "warp3d_ssy"
+WARP3D_RESULTS = {
+    k: f"{WARP3D}.{k}" for k in ("wnfr00001", "wefe00001", "wnbd00001", "webs00001")
+}
+
+
+def test_warp3d_result_files(engine):
+    """WARP3D's Patran 2.5 result files, text (wnfr nodal, wefe element) and
+    Fortran binary (wnbd nodal, webs element), read onto its neutral file."""
+    mesh = engine.read(f"{WARP3D}.out", WARP3D_RESULTS)
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [("hexahedron", 40)]
+    assert mesh.point_data["wnfr00001"].shape == (164, 3)
+    assert mesh.point_data["wnbd00001"].shape == (164, 3)
+    assert mesh.cell_data["wefe00001"][0].shape == (40, 22)
+    assert mesh.cell_data["webs00001"][0].shape == (40, 26)
+    # the first records of the files, as printed
+    np.testing.assert_array_equal(
+        mesh.point_data["wnfr00001"][0], [0.390875e-04, -0.113240e-02, -0.139326e-03]
+    )
+    np.testing.assert_allclose(
+        mesh.cell_data["wefe00001"][0][0, :3],
+        [-0.583119e-03, 0.386872e-02, -0.113706e-03],
+    )
+    assert np.isfinite(mesh.point_data["wnbd00001"]).all()
+    assert np.isfinite(mesh.cell_data["webs00001"][0]).all()
+    # packet 08: WARP3D's constraints, two or three components per node
+    fixed = mesh.point_data["patran:displacement:1"]
+    assert (fixed[~np.isnan(fixed)] == 0).all() and (~np.isnan(fixed)).any()
+
+
+def test_warp3d_results_engines_agree():
+    a = meshioplusplus.patran.read(f"{WARP3D}.out", WARP3D_RESULTS)
+    b = py_patran.read(f"{WARP3D}.out", WARP3D_RESULTS)
+    for key in a.point_data:
+        np.testing.assert_array_equal(a.point_data[key], b.point_data[key])
+    for key in a.cell_data:
+        for x, y in zip(a.cell_data[key], b.cell_data[key]):
+            np.testing.assert_array_equal(x, y)
+
+
+def test_result_file_errors(engine, tmp_path, capfd):
+    bad = tmp_path / "bad.nod"
+    bad.write_text("title\n     1     1  0.0  0     3\nsub\nsub\n       1 1.0\n")
+    with pytest.raises(meshioplusplus.ReadError, match="ends inside"):
+        engine.read(MESHES / "mixed_linear.pat", {"r": str(bad)})
+    stray = tmp_path / "stray.nod"
+    stray.write_text("title\n     1     1  0.0  0     1\nsub\nsub\n  999999 1.0\n")
+    mesh = engine.read(MESHES / "mixed_linear.pat", {"r": str(stray)})
+    assert np.isnan(mesh.point_data["r"]).all()
+    assert "undefined node" in capfd.readouterr().err

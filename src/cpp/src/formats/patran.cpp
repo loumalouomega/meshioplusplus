@@ -16,6 +16,10 @@
 //
 // System includes
 #include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstring>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
@@ -31,6 +35,7 @@
 // Project includes
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
@@ -166,9 +171,234 @@ std::string pat_trim(std::string_view Text) {
     return std::string(Text.substr(b, e - b + 1));
 }
 
+// A load or boundary-condition packet (06, 07, 08, 10, 11) as read: its data
+// card 1 fields (packet 10/11: the data flag N1) and its values.
+struct PatLoad {
+    std::int64_t mPacket, mId, mSet;
+    std::vector<std::int64_t> mFlags;
+    std::vector<double> mValues;
+    std::size_t mLine;
+};
+
+// The first `N` `E16.9` fields of the cards `rLines[First, First + Count)`.
+std::vector<double> pat_real_cards(const std::vector<std::string_view>& rLines, std::size_t First,
+                                   std::size_t Count, std::size_t N, std::size_t HeadLine) {
+    static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(5E16.9)");
+    std::vector<double> out;
+    for (std::size_t c = 0; c < Count; ++c) {
+        const std::vector<std::string> f = detail::split_fixed(rLines[First + c], layout);
+        for (const std::string& t : f)
+            out.push_back(pat_real(t, First + c + 1));
+    }
+    if (out.size() < N)
+        pat_fail("expected " + std::to_string(N) + " values, found " + std::to_string(out.size()),
+                 HeadLine);
+    out.resize(N);
+    return out;
+}
+
+std::vector<std::int64_t> pat_int_fields(std::string_view Line, std::size_t LineNo,
+                                         const std::vector<detail::CardField>& rLayout,
+                                         std::size_t Count) {
+    const std::vector<std::string> f = detail::split_fixed(Line, rLayout);
+    std::vector<std::int64_t> out(Count, 0);
+    for (std::size_t k = 0; k < Count && k < f.size(); ++k)
+        out[k] = pat_int(f[k], LineNo);
+    return out;
+}
+
+// Packet 06: NPV, the value count its data card 1 flags announce.
+std::size_t pat_distributed_count(const std::vector<std::int64_t>& rF) {
+    std::size_t nc = 0, nn = 0;
+    for (std::size_t k = 3; k < 9; ++k)
+        nc += rF[k] ? 1 : 0;
+    for (std::size_t k = 9; k < 17; ++k)
+        nn += rF[k] ? 1 : 0;
+    return nc * ((rF[1] ? 1 : 0) + nn * (rF[2] ? 1 : 0));
+}
+
+// A Patran 2.5 result file: nodal (`.nod`/`.dis`: NODID and NWIDTH values) or
+// element (`.els`: ID, shape and NWIDTH values), text or Fortran unformatted
+// binary (4-byte words, 4- or 8-byte reals, either byte order).
+struct PatResult {
+    bool mNodal = true;
+    std::size_t mWidth = 0;
+    std::vector<std::pair<std::int64_t, std::vector<double>>> mRows;
+};
+
+PatResult pat_parse_binary_result(const std::string& rRaw, bool BigEndian, bool Nodal,
+                                  const std::string& rPath) {
+    const bool swap = BigEndian != (std::endian::native == std::endian::big);
+    const auto i4 = [&](std::size_t Pos) {
+        std::uint32_t u;
+        std::memcpy(&u, rRaw.data() + Pos, 4);
+        if (swap)
+            u = detail::bswap32(u);
+        return static_cast<std::int32_t>(u);
+    };
+    std::vector<std::pair<std::size_t, std::size_t>> records;  // (offset, size)
+    std::size_t pos = 0;
+    while (pos + 4 <= rRaw.size()) {
+        const std::int32_t size = i4(pos);
+        if (size < 0 || pos + 8 + static_cast<std::size_t>(size) > rRaw.size())
+            throw ReadError("Patran results: " + rPath + " has a truncated record");
+        records.emplace_back(pos + 4, static_cast<std::size_t>(size));
+        pos += 8 + static_cast<std::size_t>(size);
+    }
+    if (records.size() < 3)
+        throw ReadError("Patran results: " + rPath + " is too short");
+    PatResult r;
+    r.mNodal = Nodal;
+    const std::int32_t width = i4(records[0].first + records[0].second - 4);
+    if (width < 1)
+        throw ReadError("Patran results: " + rPath + " has " + std::to_string(width) + " columns");
+    r.mWidth = static_cast<std::size_t>(width);
+    const std::size_t lead = Nodal ? 1 : 2;
+    for (std::size_t k = 3; k < records.size(); ++k) {
+        const auto [offset, size] = records[k];
+        if (size < 4)
+            break;
+        const std::int64_t id = i4(offset);
+        if (id == 0)
+            break;
+        const std::size_t real = size - 4 * lead;
+        std::size_t bytes = 0;
+        if (real == 4 * r.mWidth)
+            bytes = 4;
+        else if (real == 8 * r.mWidth)
+            bytes = 8;
+        else
+            throw ReadError("Patran results: a record of " + rPath + " holds " +
+                            std::to_string(size) + " bytes for " + std::to_string(r.mWidth) +
+                            " columns");
+        std::vector<double> vals(r.mWidth);
+        for (std::size_t j = 0; j < r.mWidth; ++j) {
+            const std::size_t at = offset + 4 * lead + j * bytes;
+            if (bytes == 4) {
+                std::uint32_t u;
+                std::memcpy(&u, rRaw.data() + at, 4);
+                if (swap)
+                    u = detail::bswap32(u);
+                float v;
+                std::memcpy(&v, &u, 4);
+                vals[j] = v;
+            } else {
+                std::uint64_t u;
+                std::memcpy(&u, rRaw.data() + at, 8);
+                if (swap)
+                    u = detail::bswap64(u);
+                double v;
+                std::memcpy(&v, &u, 8);
+                vals[j] = v;
+            }
+        }
+        r.mRows.emplace_back(id, std::move(vals));
+    }
+    return r;
+}
+
+PatResult pat_parse_result(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Patran results: cannot open " + rPath);
+    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (raw.size() >= 4) {
+        for (const bool big : {false, true}) {
+            std::uint32_t u;
+            std::memcpy(&u, raw.data(), 4);
+            if (big != (std::endian::native == std::endian::big))
+                u = detail::bswap32(u);
+            if (u == 340 || u == 324)
+                return pat_parse_binary_result(raw, big, u == 340, rPath);
+        }
+    }
+    const std::vector<std::string_view> lines = pat_lines(raw);
+    if (lines.size() < 4)
+        throw ReadError("Patran results: " + rPath + " is too short");
+    PatResult r;
+    std::vector<std::string> head;
+    {
+        auto iss = detail::make_classic_istringstream(std::string(lines[1]));
+        std::string t;
+        while (iss >> t)
+            head.push_back(t);
+    }
+    r.mNodal = head.size() >= 3;
+    const std::int64_t width =
+        r.mNodal
+            ? pat_int(head.back(), 2)
+            : pat_int(std::string(lines[1].substr(0, std::min<std::size_t>(5, lines[1].size()))),
+                      2);
+    if (width < 1)
+        throw ReadError("Patran results: " + rPath + " has " + std::to_string(width) + " columns");
+    r.mWidth = static_cast<std::size_t>(width);
+    const auto field = [](std::string_view Line, std::size_t At, std::size_t Len) {
+        return At < Line.size() ? std::string(Line.substr(At, Len)) : std::string();
+    };
+    std::size_t i = 4;
+    while (i < lines.size()) {
+        const std::string_view line = lines[i];
+        if (pat_trim(line).empty()) {
+            ++i;
+            continue;
+        }
+        std::int64_t id = 0;
+        std::vector<double> vals;
+        std::size_t per_line = 5;
+        if (r.mNodal) {
+            id = pat_int(field(line, 0, 8), i + 1);
+            for (std::size_t k = 0; k < 5; ++k) {
+                const std::string t = field(line, 8 + 13 * k, 13);
+                if (!pat_trim(t).empty())
+                    vals.push_back(pat_real(t, i + 1));
+            }
+        } else {
+            id = pat_int(field(line, 0, 8), i + 1);
+            if (id == 0)
+                break;
+            per_line = 6;
+        }
+        ++i;
+        while (vals.size() < r.mWidth) {
+            if (i >= lines.size())
+                throw ReadError("Patran results: " + rPath + " ends inside record " +
+                                std::to_string(id));
+            for (std::size_t k = 0; k < per_line; ++k) {
+                const std::string t = field(lines[i], 13 * k, 13);
+                if (!pat_trim(t).empty())
+                    vals.push_back(pat_real(t, i + 1));
+            }
+            ++i;
+        }
+        vals.resize(r.mWidth);
+        r.mRows.emplace_back(id, std::move(vals));
+    }
+    return r;
+}
+
+// Slices a per-cell array into per-block arrays of the mesh's blocks.
+std::vector<NDArray> pat_per_block(const Mesh& rMesh, const std::vector<double>& rData,
+                                   std::size_t Width) {
+    std::vector<NDArray> out;
+    std::size_t start = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::size_t n = rMesh.Cells(b).NumCells();
+        NDArray a = Width == 1 ? NDArray(DType::Float64, {n}) : NDArray(DType::Float64, {n, Width});
+        std::copy(rData.begin() + static_cast<std::ptrdiff_t>(start * Width),
+                  rData.begin() + static_cast<std::ptrdiff_t>((start + n) * Width), a.As<double>());
+        start += n;
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
 }  // namespace
 
 Mesh read_patran(const std::string& rPath) {
+    return read_patran(rPath, {});
+}
+
+Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& rResults) {
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Patran neutral: cannot open " + rPath);
@@ -184,6 +414,7 @@ Mesh read_patran(const std::string& rPath) {
     std::vector<double> coords;
     std::vector<PatElement> elements;
     std::vector<PatComponent> components;
+    std::vector<PatLoad> loads;
     std::set<std::pair<std::int64_t, std::size_t>> warned_shapes;
     std::set<std::int64_t> warned_packets;
     bool saw_end = false;
@@ -257,6 +488,42 @@ Mesh read_patran(const std::string& rPath) {
                 for (std::size_t k = 0; k + 1 < count; k += 2)
                     comp.mEntries.emplace_back(values[k], values[k + 1]);
                 components.push_back(std::move(comp));
+                break;
+            }
+            case 6:
+            case 7:
+            case 8: {
+                if (kc < 1)
+                    pat_fail("packet " + std::to_string(h.mIt) + " of " + std::to_string(h.mId) +
+                                 " has no data card",
+                             head_line);
+                static const std::vector<detail::CardField> dist =
+                    detail::parse_fortran_format("(17I1,I2)");
+                static const std::vector<detail::CardField> frame =
+                    detail::parse_fortran_format("(I8,6I1)");
+                PatLoad load{h.mIt, h.mId, h.mIv, {}, {}, head_line};
+                std::size_t count = 0;
+                if (h.mIt == 6) {
+                    load.mFlags = pat_int_fields(lines[i], i + 1, dist, 18);
+                    count = pat_distributed_count(load.mFlags);
+                } else {
+                    load.mFlags = pat_int_fields(lines[i], i + 1, frame, 7);
+                    for (std::size_t k = 1; k < 7; ++k)
+                        count += load.mFlags[k] ? 1 : 0;
+                }
+                load.mValues = pat_real_cards(lines, i + 1, kc - 1, count, head_line);
+                loads.push_back(std::move(load));
+                break;
+            }
+            case 10:
+            case 11: {
+                if (kc < 1)
+                    pat_fail("temperature packet " + std::to_string(h.mIt) + " of " +
+                                 std::to_string(h.mId) + " has no data card",
+                             head_line);
+                const std::string t =
+                    std::string(lines[i].substr(0, std::min<std::size_t>(16, lines[i].size())));
+                loads.push_back({h.mIt, h.mId, h.mIv, {h.mN[0]}, {pat_real(t, i + 1)}, head_line});
                 break;
             }
             case 25:
@@ -388,6 +655,121 @@ Mesh read_patran(const std::string& rPath) {
     for (const auto& [pid, ids] : by_pid)
         mesh.AddRegion(Region("property_" + std::to_string(pid), RegionKind::Cell, pid_dim[pid],
                               pid, entries_of(ids)));
+
+    // --- loads and boundary conditions ------------------------------------------
+    const std::size_t npts = node_ids.size();
+    const std::size_t ncells = cell_pid.size();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::map<std::string, std::vector<double>> point6, point1;  // (npts x 6), (npts)
+    std::map<std::string, std::vector<std::int64_t>> frames;
+    std::map<std::int64_t, std::vector<double>> element_temps;
+    std::vector<std::int64_t> dist_flags;
+    std::vector<double> dist_values;
+    std::size_t missing = 0;
+    for (const PatLoad& load : loads) {
+        const std::string set = std::to_string(load.mSet);
+        if (load.mPacket == 6 || load.mPacket == 11) {
+            const auto it = element_index.find(load.mId);
+            if (it == element_index.end()) {
+                ++missing;
+                continue;
+            }
+            if (load.mPacket == 6) {
+                dist_flags.push_back(it->second);
+                dist_flags.push_back(load.mSet);
+                dist_flags.insert(dist_flags.end(), load.mFlags.begin(), load.mFlags.end());
+                std::vector<double> row(54, nan);
+                std::copy(load.mValues.begin(), load.mValues.end(), row.begin());
+                dist_values.insert(dist_values.end(), row.begin(), row.end());
+            } else {
+                auto& a = element_temps.try_emplace(load.mSet, ncells, nan).first->second;
+                a[static_cast<std::size_t>(it->second)] = load.mFlags[0] ? load.mValues[0] : nan;
+            }
+            continue;
+        }
+        const auto it = node_index.find(load.mId);
+        if (it == node_index.end()) {
+            ++missing;
+            continue;
+        }
+        const auto p = static_cast<std::size_t>(it->second);
+        if (load.mPacket == 10) {
+            auto& a = point1.try_emplace("patran:temperature:" + set, npts, nan).first->second;
+            a[p] = load.mFlags[0] ? load.mValues[0] : nan;
+            continue;
+        }
+        const std::string kind = load.mPacket == 7 ? "force" : "displacement";
+        auto& a = point6.try_emplace("patran:" + kind + ":" + set, npts * 6, nan).first->second;
+        std::size_t k = 0;
+        for (std::size_t c = 0; c < 6; ++c)
+            if (load.mFlags[1 + c])
+                a[p * 6 + c] = load.mValues[k++];
+        if (load.mFlags[0])
+            frames.try_emplace("patran:" + kind + "_frame:" + set, npts, 0).first->second[p] =
+                load.mFlags[0];
+    }
+    if (missing)
+        log::warn(
+            "Patran neutral: {} load or boundary condition record(s) name an undefined node or "
+            "element; skipped",
+            missing);
+    for (const auto& [key, a] : point6) {
+        NDArray d(DType::Float64, {npts, 6});
+        std::copy(a.begin(), a.end(), d.As<double>());
+        mesh.AddPointData(key, std::move(d));
+    }
+    for (const auto& [key, a] : point1) {
+        NDArray d(DType::Float64, {npts});
+        std::copy(a.begin(), a.end(), d.As<double>());
+        mesh.AddPointData(key, std::move(d));
+    }
+    for (const auto& [key, a] : frames) {
+        NDArray d(DType::Int64, {npts});
+        std::copy(a.begin(), a.end(), d.As<std::int64_t>());
+        mesh.AddPointData(key, std::move(d));
+    }
+    for (const auto& [set, a] : element_temps)
+        mesh.AddCellData("patran:element_temperature:" + std::to_string(set),
+                         pat_per_block(mesh, a, 1));
+    if (!dist_flags.empty()) {
+        const std::size_t rows = dist_flags.size() / 20;
+        NDArray f(DType::Int64, {rows, 20});
+        std::copy(dist_flags.begin(), dist_flags.end(), f.As<std::int64_t>());
+        NDArray v(DType::Float64, {rows, 54});
+        std::copy(dist_values.begin(), dist_values.end(), v.As<double>());
+        mesh.AddFieldData("patran:distributed_load", std::move(f));
+        mesh.AddFieldData("patran:distributed_load_values", std::move(v));
+    }
+
+    // --- result files -----------------------------------------------------------
+    for (const PatranResultFile& file : rResults) {
+        const PatResult r = pat_parse_result(file.mPath);
+        const auto& index = r.mNodal ? node_index : element_index;
+        const std::size_t size = r.mNodal ? npts : ncells;
+        std::vector<double> data(size * r.mWidth, nan);
+        std::size_t unknown = 0;
+        for (const auto& [id, vals] : r.mRows) {
+            const auto it = index.find(id);
+            if (it == index.end()) {
+                ++unknown;
+                continue;
+            }
+            std::copy(vals.begin(), vals.end(),
+                      data.begin() + static_cast<std::ptrdiff_t>(
+                                         static_cast<std::size_t>(it->second) * r.mWidth));
+        }
+        if (unknown)
+            log::warn("Patran results: {} record(s) of {} name an undefined {}; skipped", unknown,
+                      file.mPath, r.mNodal ? "node" : "element");
+        if (r.mNodal) {
+            NDArray d = r.mWidth == 1 ? NDArray(DType::Float64, {npts})
+                                      : NDArray(DType::Float64, {npts, r.mWidth});
+            std::copy(data.begin(), data.end(), d.As<double>());
+            mesh.AddPointData(file.mName, std::move(d));
+        } else {
+            mesh.AddCellData(file.mName, pat_per_block(mesh, data, r.mWidth));
+        }
+    }
     return mesh;
 }
 
@@ -440,6 +822,170 @@ std::string pat_component_name(const std::string& rName, std::set<std::string>& 
     return out;
 }
 
+// A `patran:<kind>[_frame]:<set>` load array name: kind force, displacement,
+// temperature or element_temperature.
+bool pat_load_key(const std::string& rKey, std::string& rKind, bool& rFrame, std::int64_t& rSet) {
+    static const std::string prefix = "patran:";
+    if (rKey.rfind(prefix, 0) != 0)
+        return false;
+    const std::size_t colon = rKey.rfind(':');
+    if (colon <= prefix.size())
+        return false;
+    std::string kind = rKey.substr(prefix.size(), colon - prefix.size());
+    const std::string set = rKey.substr(colon + 1);
+    if (set.empty() || set.find_first_not_of("-0123456789") != std::string::npos || set.size() > 18)
+        return false;
+    rFrame = kind.size() > 6 && kind.compare(kind.size() - 6, 6, "_frame") == 0;
+    if (rFrame)
+        kind.resize(kind.size() - 6);
+    if (kind != "force" && kind != "displacement" && kind != "temperature" &&
+        kind != "element_temperature")
+        return false;
+    rKind = kind;
+    rSet = std::stoll(set);
+    return true;
+}
+
+void pat_append_reals(std::string& rOut, const std::vector<double>& rValues) {
+    for (std::size_t k = 0; k < rValues.size(); ++k) {
+        pat_append_real(rOut, rValues[k]);
+        if (k % 5 == 4 || k + 1 == rValues.size())
+            rOut += '\n';
+    }
+}
+
+// The load and boundary-condition arrays the writer turns into packets 06,
+// 07, 08, 10 and 11.
+struct PatLoadArrays {
+    std::map<std::pair<std::string, std::int64_t>, const NDArray*> mPoint, mFrame;
+    std::map<std::int64_t, std::string> mCell;  // set -> cell data name
+    const NDArray* mDistFlags = nullptr;
+    const NDArray* mDistValues = nullptr;
+    std::size_t mCount = 0;
+};
+
+PatLoadArrays pat_load_arrays(const Mesh& rMesh) {
+    PatLoadArrays out;
+    const std::size_t npts = rMesh.NumPoints();
+    std::string kind;
+    bool frame = false;
+    std::int64_t set = 0;
+    for (const std::string& key : rMesh.PointDataNames()) {
+        if (!pat_load_key(key, kind, frame, set) || kind == "element_temperature")
+            continue;
+        const NDArray& a = rMesh.PointData(key);
+        const auto& shape = a.Shape();
+        const bool scalar = kind == "temperature" || frame;
+        const bool ok = scalar ? (shape.size() == 1 && shape[0] == npts)
+                               : (shape.size() == 2 && shape[0] == npts && shape[1] == 6);
+        if (!ok)
+            continue;
+        (frame ? out.mFrame : out.mPoint)[{kind, set}] = &a;
+        ++out.mCount;
+    }
+    for (const std::string& key : rMesh.CellDataNames())
+        if (pat_load_key(key, kind, frame, set) && kind == "element_temperature" && !frame) {
+            out.mCell[set] = key;
+            ++out.mCount;
+        }
+    if (rMesh.HasFieldData("patran:distributed_load") &&
+        rMesh.HasFieldData("patran:distributed_load_values")) {
+        const NDArray& f = rMesh.FieldData("patran:distributed_load");
+        const NDArray& v = rMesh.FieldData("patran:distributed_load_values");
+        if (f.Shape().size() == 2 && f.Shape()[1] == 20 && v.Shape().size() == 2 &&
+            v.Shape()[0] == f.Shape()[0]) {
+            out.mDistFlags = &f;
+            out.mDistValues = &v;
+            out.mCount += 2;
+        }
+    }
+    return out;
+}
+
+void pat_append_loads(std::string& rOut, const Mesh& rMesh, const PatLoadArrays& rLoads,
+                      const std::vector<std::int64_t>& rCellLabel) {
+    char buf[64];
+    if (rLoads.mDistFlags) {
+        const NDArray& f = *rLoads.mDistFlags;
+        const NDArray& v = *rLoads.mDistValues;
+        const std::size_t width = v.Shape()[1];
+        for (std::size_t r = 0; r < f.Shape()[0]; ++r) {
+            const std::int64_t cell = detail::read_int(f, r * 20);
+            if (cell < 0 || static_cast<std::size_t>(cell) >= rCellLabel.size() ||
+                !rCellLabel[static_cast<std::size_t>(cell)])
+                continue;
+            std::vector<std::int64_t> flags(18);
+            for (std::size_t k = 0; k < 18; ++k)
+                flags[k] = detail::read_int(f, r * 20 + 2 + k);
+            const std::size_t npv = std::min(pat_distributed_count(flags), width);
+            std::vector<double> vals(npv);
+            for (std::size_t k = 0; k < npv; ++k)
+                vals[k] = detail::read_double(v, r * width + k);
+            pat_append_header(rOut, 6, rCellLabel[static_cast<std::size_t>(cell)],
+                              detail::read_int(f, r * 20 + 1),
+                              1 + static_cast<std::int64_t>((npv + 4) / 5));
+            for (std::size_t k = 0; k < 17; ++k)
+                rOut += static_cast<char>('0' + (flags[k] % 10 + 10) % 10);
+            detail::snprintf_c(buf, sizeof(buf), "%2lld\n", static_cast<long long>(flags[17]));
+            rOut += buf;
+            pat_append_reals(rOut, vals);
+        }
+    }
+    for (const auto& [packet, kind] : {std::pair<int, const char*>{7, "force"},
+                                       std::pair<int, const char*>{8, "displacement"}}) {
+        for (const auto& [key, a] : rLoads.mPoint) {
+            if (key.first != kind)
+                continue;
+            const auto fr = rLoads.mFrame.find(key);
+            const NDArray* frame = fr == rLoads.mFrame.end() ? nullptr : fr->second;
+            for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
+                std::vector<double> vals;
+                std::string flags;
+                for (std::size_t c = 0; c < 6; ++c) {
+                    const double x = detail::read_double(*a, p * 6 + c);
+                    flags += std::isnan(x) ? '0' : '1';
+                    if (!std::isnan(x))
+                        vals.push_back(x);
+                }
+                if (vals.empty())
+                    continue;
+                pat_append_header(rOut, packet, static_cast<std::int64_t>(p + 1), key.second,
+                                  1 + static_cast<std::int64_t>((vals.size() + 4) / 5));
+                detail::snprintf_c(buf, sizeof(buf), "%8lld",
+                                   static_cast<long long>(frame ? detail::read_int(*frame, p) : 0));
+                rOut += buf + flags + "\n";
+                pat_append_reals(rOut, vals);
+            }
+        }
+    }
+    for (const auto& [key, a] : rLoads.mPoint) {
+        if (key.first != "temperature")
+            continue;
+        for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
+            const double x = detail::read_double(*a, p);
+            if (std::isnan(x))
+                continue;
+            pat_append_header(rOut, 10, static_cast<std::int64_t>(p + 1), key.second, 1, 1);
+            pat_append_real(rOut, x);
+            rOut += '\n';
+        }
+    }
+    for (const auto& [set, name] : rLoads.mCell) {
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const NDArray& a = rMesh.CellData(name, b);
+            for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r, ++g) {
+                const double x = detail::read_double(a, r);
+                if (std::isnan(x) || g >= rCellLabel.size() || !rCellLabel[g])
+                    continue;
+                pat_append_header(rOut, 11, rCellLabel[g], set, 1, 1);
+                pat_append_real(rOut, x);
+                rOut += '\n';
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void write_patran(const std::string& rPath, const Mesh& rMesh) {
@@ -485,13 +1031,16 @@ void write_patran(const std::string& rPath, const Mesh& rMesh) {
             "regions-dropped",
             std::to_string(side_regions) + " side region(s) have no Patran neutral component");
     }
-    const std::size_t other_data =
-        rMesh.NumPointData() + rMesh.NumFieldData() + rMesh.NumCellData() - (has_pid ? 1 : 0);
+    const PatLoadArrays loads = pat_load_arrays(rMesh);
+    const std::size_t other_data = rMesh.NumPointData() + rMesh.NumFieldData() +
+                                   rMesh.NumCellData() - (has_pid ? 1 : 0) - loads.mCount;
     if (other_data) {
-        log::warn("Patran neutral holds no data arrays; point, cell and field data dropped");
+        log::warn(
+            "Patran neutral holds no data arrays but the element property and the loads; the "
+            "other point, cell and field data are dropped");
         detail::provenance_note("data-dropped",
                                 "a Patran neutral file holds no data arrays besides the "
-                                "element property");
+                                "element property and its loads and boundary conditions");
     }
 
     auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
@@ -567,6 +1116,8 @@ void write_patran(const std::string& rPath, const Mesh& rMesh) {
             }
         }
     }
+
+    pat_append_loads(out, rMesh, loads, cell_label);
 
     // One component per region name: a point and a cell region of one name merge.
     std::vector<std::string> names;

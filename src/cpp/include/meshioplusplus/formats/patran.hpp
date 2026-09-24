@@ -38,13 +38,21 @@
  *    region of the same name, tagged with the component number;
  *  - `99` end of file.
  *
- * Every other packet (materials, properties, loads, ...) is skipped by its
+ * Loads and boundary conditions become `patran:`-prefixed data per load or
+ * constraint set: packet 06 distributed loads the `patran:distributed_load`
+ * (flags) and `patran:distributed_load_values` field data, 07 node forces and
+ * 08 node displacements `patran:force:<set>` / `patran:displacement:<set>`
+ * point data (six components, NaN where not given; a nonzero coordinate frame
+ * in `..._frame:<set>`), 10 node and 11 element temperatures
+ * `patran:temperature:<set>` point data and `patran:element_temperature:<set>`
+ * cell data. Every other packet (materials, properties, ...) is skipped by its
  * `KC`. Elements no component names are grouped by property into
  * `property_<pid>` cell regions (tag = pid). See doc/formats/patran.md.
  */
 
 // System includes
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
@@ -62,11 +70,33 @@ namespace meshioplusplus {
  */
 MESHIOPLUSPLUS_API Mesh read_patran(const std::string& rPath);
 
+/// One Patran 2.5 result file (`.nod`/`.dis` nodal, `.els` element; text or
+/// binary) to read onto a neutral file's mesh, and the data name it gets.
+struct PatranResultFile {
+    std::string mName;
+    std::string mPath;
+};
+
+/**
+ * @brief Read a Patran 2 neutral file and result files onto its mesh.
+ *
+ * A nodal file becomes point data, an element file cell data (one column is a
+ * 1-D array, more a 2-D one), NaN where the file has no value. Text files and
+ * Fortran unformatted binary ones (4- or 8-byte reals, either byte order) are
+ * told apart by content.
+ *
+ * @throws ReadError as read_patran, or for a malformed or truncated result file
+ */
+MESHIOPLUSPLUS_API Mesh read_patran(const std::string& rPath,
+                                    const std::vector<PatranResultFile>& rResults);
+
 /**
  * @brief Write `rMesh` as a Patran 2 neutral file.
  *
  * Emits packets 25 (the title carries the provenance line), 26, 01, 02 and 99,
- * plus one packet 21 per region name: a point region and a cell region of the
+ * the loads and boundary conditions a read produces (packets 06, 07, 08, 10
+ * and 11, from the `patran:` data arrays above), plus one packet 21 per region
+ * name: a point region and a cell region of the
  * same name share one component. Coordinates are written `E16.9`, so they keep
  * ten significant digits. The element property comes from the
  * `patran:property` cell data (else 1). Cell types without a Patran shape,

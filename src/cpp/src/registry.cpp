@@ -126,7 +126,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"lsdyna_binout",
          [](const std::string& path) { return meshioplusplus::read_lsdyna_binout(path); }},
         {"code_aster", meshioplusplus::read_code_aster},
-        {"patran", meshioplusplus::read_patran},
+        // A lambda: read_patran is overloaded (result files).
+        {"patran", [](const std::string& path) { return meshioplusplus::read_patran(path); }},
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
         {"libmesh", meshioplusplus::read_libmesh},
         {"radioss", meshioplusplus::read_radioss},

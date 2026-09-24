@@ -15,8 +15,19 @@ The file is a sequence of packets. Each opens with a fixed-width header card
 - ``21`` named component: type 5 (node) entries become a point region, element
   entries (6 bar ... 12 hex) a cell region of the same name, tagged with the
   component number.
+- Loads and boundary conditions, per load or constraint set ``<set>``:
+  ``06`` distributed loads as the ``patran:distributed_load`` (flags) and
+  ``patran:distributed_load_values`` field data tables; ``07`` node forces and
+  ``08`` node displacements as ``patran:force:<set>`` and
+  ``patran:displacement:<set>`` point data (six components, NaN where not
+  given; a nonzero coordinate frame in ``..._frame:<set>``); ``10`` node and
+  ``11`` element temperatures as ``patran:temperature:<set>`` point data and
+  ``patran:element_temperature:<set>`` cell data.
 - ``25``/``26`` (title, summary) and every other packet are skipped; ``99``
   ends the file.
+
+Patran 2.5 result files (``.nod``/``.dis`` nodal, ``.els`` element; text or
+binary) are read onto the mesh with ``read(filename, results={name: path})``.
 
 Elements no component names are grouped by property into ``property_<pid>``
 cell regions (tag = pid).
@@ -107,6 +118,9 @@ def _fields(line, widths):
 
 
 _HEADER = (2,) + (8,) * 8
+_LOAD_FLAGS = (1,) * 17 + (2,)  # packet 06 data card 1: (3I1,6I1,8I1,I2)
+_FRAME_FLAGS = (8,) + (1,) * 6  # packets 07/08 data card 1: (I8,6I1)
+_REALS = (16,) * 5
 _XYZ = (16, 16, 16)
 _ELEM = (8, 8, 8, 8, 16, 16, 16)
 _INTS = (8,) * 10
@@ -128,7 +142,17 @@ def _int_cards(lines, first, count):
     return out
 
 
-def read(filename):
+def _reals(lines, first, count, n, line_no):
+    """The first ``n`` ``E16.9`` fields of the cards ``lines[first:first+count]``."""
+    out = []
+    for c in range(count):
+        out += [_real(t, first + c + 1) for t in _fields(lines[first + c], _REALS)]
+    if len(out) < n:
+        _fail(f"expected {n} values, found {len(out)}", line_no)
+    return out[:n]
+
+
+def read(filename, results=None):
     with open_file(filename, "rb") as f:
         raw = f.read()
     text = raw.decode("latin-1") if isinstance(raw, bytes) else raw
@@ -141,6 +165,7 @@ def read(filename):
     coords = []
     elements = []  # (id, type, pid, node ids, line)
     components = []  # (number, name, [(code, id)])
+    loads = []  # (packet, id, set, fields, values, line)
     warned_shapes = set()
     saw_end = False
 
@@ -200,6 +225,32 @@ def read(filename):
             count = min(max(iv, 0), len(values))
             pairs = [(values[k], values[k + 1]) for k in range(0, count - 1, 2)]
             components.append((ident, name, pairs))
+        elif it in (7, 8):
+            if kc < 1:
+                _fail(f"packet {it} of node {ident} has no data card", head_line)
+            f = [_int(t, i + 1) for t in _fields(lines[i], _FRAME_FLAGS)]
+            f += [0] * (7 - len(f))
+            given = sum(1 for v in f[1:] if v)
+            values = _reals(lines, i + 1, kc - 1, given, head_line)
+            loads.append((it, ident, iv, f, values, head_line))
+        elif it == 6:
+            if kc < 1:
+                _fail(
+                    f"distributed load on element {ident} has no data card", head_line
+                )
+            f = [_int(t, i + 1) for t in _fields(lines[i], _LOAD_FLAGS)]
+            f += [0] * (18 - len(f))
+            nc = sum(1 for v in f[3:9] if v)
+            nn = sum(1 for v in f[9:17] if v)
+            npv = nc * ((1 if f[1] else 0) + nn * (1 if f[2] else 0))
+            values = _reals(lines, i + 1, kc - 1, npv, head_line)
+            loads.append((it, ident, iv, f, values, head_line))
+        elif it in (10, 11):
+            if kc < 1:
+                _fail(f"temperature packet {it} of {ident} has no data card", head_line)
+            header = _header(lines[head_line - 1], head_line)
+            value = _real(lines[i][:16], i + 1)
+            loads.append((it, ident, iv, [header[4]], [value], head_line))
         i += kc
     if not saw_end:
         warn(
@@ -317,7 +368,208 @@ def read(filename):
             )
         )
     mesh.regions = regions
+    _attach_loads(mesh, loads, node_index, element_index, cells)
+    for name, path in _result_items(results):
+        _attach_result(mesh, name, path, node_index, element_index, cells)
     return mesh
+
+
+def _attach_loads(mesh, loads, node_index, element_index, cells):
+    """Packets 06, 07, 08, 10 and 11 as point, cell and field data."""
+    npts = len(mesh.points)
+    ncells = len(element_index)
+    offsets = np.cumsum([0] + [len(c) for _, c in cells])
+    point = {}  # key -> array
+    frames = {}
+    element_temps = {}
+    dist_flags, dist_values = [], []
+    missing = 0
+    for packet, ident, iv, f, values, _ in loads:
+        if packet == 6:
+            idx = element_index.get(ident)
+            if idx is None:
+                missing += 1
+                continue
+            dist_flags.append([idx, iv] + list(f))
+            dist_values.append(values + [np.nan] * (54 - len(values)))
+            continue
+        if packet == 11:
+            idx = element_index.get(ident)
+            if idx is None:
+                missing += 1
+                continue
+            arr = element_temps.setdefault(iv, np.full(ncells, np.nan))
+            arr[idx] = values[0] if f[0] else np.nan
+            continue
+        idx = node_index.get(ident)
+        if idx is None:
+            missing += 1
+            continue
+        if packet == 10:
+            arr = point.setdefault(f"patran:temperature:{iv}", np.full(npts, np.nan))
+            arr[idx] = values[0] if f[0] else np.nan
+            continue
+        kind = "force" if packet == 7 else "displacement"
+        arr = point.setdefault(f"patran:{kind}:{iv}", np.full((npts, 6), np.nan))
+        k = 0
+        for c in range(6):
+            if f[1 + c]:
+                arr[idx, c] = values[k]
+                k += 1
+        if f[0]:
+            frame = frames.setdefault(
+                f"patran:{kind}_frame:{iv}", np.zeros(npts, dtype=np.int64)
+            )
+            frame[idx] = f[0]
+    if missing:
+        warn(
+            f"Patran neutral: {missing} load or boundary condition record(s) name an "
+            "undefined node or element; skipped"
+        )
+    for key in sorted(point):
+        mesh.point_data[key] = point[key]
+    for key in sorted(frames):
+        mesh.point_data[key] = frames[key]
+    for s_id in sorted(element_temps):
+        a = element_temps[s_id]
+        mesh.cell_data[f"patran:element_temperature:{s_id}"] = [
+            a[offsets[b] : offsets[b + 1]] for b in range(len(cells))
+        ]
+    if dist_flags:
+        mesh.field_data["patran:distributed_load"] = np.array(
+            dist_flags, dtype=np.int64
+        )
+        mesh.field_data["patran:distributed_load_values"] = np.array(
+            dist_values, dtype=np.float64
+        )
+
+
+def _result_items(results):
+    if not results:
+        return []
+    if isinstance(results, dict):
+        return [(str(k), str(v)) for k, v in results.items()]
+    import pathlib
+
+    return [(pathlib.Path(p).stem, str(p)) for p in results]
+
+
+def _parse_result(path):
+    """A Patran 2.5 result file: ``(kind, width, [(id, values)])``, ``kind``
+    ``"nodal"`` (``.nod``/``.dis``: NODID and NWIDTH values) or ``"element"``
+    (``.els``: ID, shape and NWIDTH values); text or Fortran unformatted
+    binary (4-byte words, 4- or 8-byte reals, either byte order)."""
+    with open_file(path, "rb") as f:
+        raw = f.read()
+    for order in ("<", ">"):
+        if len(raw) >= 4:
+            head = int(np.frombuffer(raw[:4], dtype=order + "i4")[0])
+            if head in (340, 324):
+                return _parse_binary_result(raw, order, head == 340, path)
+    text = raw.decode("latin-1").replace("\r", "")
+    lines = text.split("\n")
+    if len(lines) < 4:
+        raise ReadError(f"Patran results: {path} is too short")
+    head = lines[1].split()
+    nodal = len(head) >= 3
+    width = _int(head[-1] if nodal else lines[1][:5], 2)
+    if width < 1:
+        raise ReadError(f"Patran results: {path} has {width} columns")
+    rows = []
+    i = 4
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        if nodal:
+            ident = _int(line[:8], i + 1)
+            vals = [_real(line[8 + 13 * k : 21 + 13 * k], i + 1) for k in range(5)]
+            vals = [
+                v for k, v in enumerate(vals) if line[8 + 13 * k : 21 + 13 * k].strip()
+            ]
+            per_line = 5
+        else:
+            f = _fields(line, (8, 8))
+            ident = _int(f[0], i + 1)
+            if ident == 0:
+                break
+            vals = []
+            per_line = 6
+        i += 1
+        while len(vals) < width:
+            if i >= n:
+                raise ReadError(f"Patran results: {path} ends inside record {ident}")
+            cont = lines[i]
+            fields = [cont[13 * k : 13 * k + 13] for k in range(per_line)]
+            vals += [_real(t, i + 1) for t in fields if t.strip()]
+            i += 1
+        rows.append((ident, vals[:width]))
+    return ("nodal" if nodal else "element"), width, rows
+
+
+def _parse_binary_result(raw, order, nodal, path):
+    i4 = np.dtype(order + "i4")
+    pos = 0
+    records = []
+    while pos + 4 <= len(raw):
+        size = int(np.frombuffer(raw, dtype=i4, count=1, offset=pos)[0])
+        if size < 0 or pos + 8 + size > len(raw):
+            raise ReadError(f"Patran results: {path} has a truncated record")
+        records.append(raw[pos + 4 : pos + 4 + size])
+        pos += 8 + size
+    if len(records) < 3:
+        raise ReadError(f"Patran results: {path} is too short")
+    first = records[0]
+    width = int(np.frombuffer(first, dtype=i4, count=1, offset=len(first) - 4)[0])
+    lead = 1 if nodal else 2
+    rows = []
+    for rec in records[3:]:
+        ident = int(np.frombuffer(rec, dtype=i4, count=1)[0])
+        if ident == 0:
+            break
+        real = len(rec) - 4 * lead
+        if real == 4 * width:
+            dt = np.dtype(order + "f4")
+        elif real == 8 * width:
+            dt = np.dtype(order + "f8")
+        else:
+            raise ReadError(
+                f"Patran results: a record of {path} holds {len(rec)} bytes for "
+                f"{width} columns"
+            )
+        vals = np.frombuffer(rec, dtype=dt, count=width, offset=4 * lead)
+        rows.append((ident, [float(v) for v in vals]))
+    return ("nodal" if nodal else "element"), width, rows
+
+
+def _attach_result(mesh, name, path, node_index, element_index, cells):
+    kind, width, rows = _parse_result(path)
+    index = node_index if kind == "nodal" else element_index
+    size = len(mesh.points) if kind == "nodal" else len(element_index)
+    data = np.full((size, width), np.nan)
+    missing = 0
+    for ident, vals in rows:
+        idx = index.get(ident)
+        if idx is None:
+            missing += 1
+            continue
+        data[idx] = vals
+    if missing:
+        warn(
+            f"Patran results: {missing} record(s) of {path} name an undefined "
+            f"{'node' if kind == 'nodal' else 'element'}; skipped"
+        )
+    if width == 1:
+        data = data[:, 0].copy()
+    if kind == "nodal":
+        mesh.point_data[name] = data
+        return
+    offsets = np.cumsum([0] + [len(c) for _, c in cells])
+    mesh.cell_data[name] = [
+        data[offsets[b] : offsets[b + 1]].copy() for b in range(len(cells))
+    ]
 
 
 def _header_card(it, ident, iv, kc, n1=0, n2=0, n3=0, n4=0, n5=0):
@@ -343,6 +595,105 @@ def _component_name(name, taken):
     taken.add(out)
     if out != name:
         warn(f"Patran neutral: component '{name}' is written as '{out}'")
+    return out
+
+
+_LOAD_KEY = re.compile(
+    r"^patran:(force|displacement|temperature|element_temperature)"
+    r"(_frame)?:(-?\d+)$"
+)
+
+
+def _load_arrays(mesh, npts):
+    """The load and boundary-condition arrays the writer turns into packets
+    06, 07, 08, 10 and 11, keyed by (kind, set), and how many there are."""
+    out = {"point": {}, "frame": {}, "cell": {}, "count": 0, "dist": None}
+    for key, a in mesh.point_data.items():
+        m = _LOAD_KEY.match(key)
+        a = np.asarray(a)
+        if not m or m.group(1) == "element_temperature":
+            continue
+        kind, frame, set_id = m.group(1), m.group(2), int(m.group(3))
+        want = (npts,) if kind == "temperature" or frame else (npts, 6)
+        if a.shape != want:
+            continue
+        out["frame" if frame else "point"][(kind, set_id)] = a
+        out["count"] += 1
+    for key, blocks in mesh.cell_data.items():
+        m = _LOAD_KEY.match(key)
+        if m and m.group(1) == "element_temperature" and not m.group(2):
+            out["cell"][int(m.group(3))] = [np.asarray(b).ravel() for b in blocks]
+            out["count"] += 1
+    flags = mesh.field_data.get("patran:distributed_load")
+    values = mesh.field_data.get("patran:distributed_load_values")
+    if flags is not None and values is not None:
+        flags, values = np.asarray(flags), np.asarray(values)
+        if flags.ndim == 2 and flags.shape[1] == 20 and len(values) == len(flags):
+            out["dist"] = (flags, values)
+            out["count"] += 2
+    return out
+
+
+def _real_lines(values):
+    out = []
+    for k in range(0, len(values), 5):
+        out.append("".join("%16.9E" % v for v in values[k : k + 5]) + "\n")
+    return "".join(out)
+
+
+def _load_packets(mesh, loads, cell_label):
+    """Packets 06 (distributed loads), 07 (node forces), 08 (node
+    displacements), 10 (node temperatures) and 11 (element temperatures)."""
+    out = []
+    if loads["dist"] is not None:
+        flags, values = loads["dist"]
+        for row, vals in zip(flags, values):
+            cell = int(row[0])
+            if not 0 <= cell < len(cell_label) or not cell_label[cell]:
+                continue
+            f = [int(v) for v in row[2:]]
+            nc = sum(1 for v in f[3:9] if v)
+            nn = sum(1 for v in f[9:17] if v)
+            npv = nc * ((1 if f[1] else 0) + nn * (1 if f[2] else 0))
+            vals = [float(v) for v in vals[:npv]]
+            out.append(
+                _header_card(6, cell_label[cell], int(row[1]), 1 + (npv + 4) // 5)
+            )
+            out.append("".join(str(v) for v in f[:17]) + f"{f[17]:2d}\n")
+            out.append(_real_lines(vals))
+    for packet, kind in ((7, "force"), (8, "displacement")):
+        for (k, set_id), a in sorted(loads["point"].items()):
+            if k != kind:
+                continue
+            frame = loads["frame"].get((kind, set_id))
+            for p in range(len(a)):
+                given = [not np.isnan(v) for v in a[p]]
+                if not any(given):
+                    continue
+                vals = [float(v) for v, g in zip(a[p], given) if g]
+                out.append(
+                    _header_card(packet, p + 1, set_id, 1 + (len(vals) + 4) // 5)
+                )
+                cid = int(frame[p]) if frame is not None else 0
+                out.append(
+                    f"{cid:8d}" + "".join("1" if g else "0" for g in given) + "\n"
+                )
+                out.append(_real_lines(vals))
+    for (k, set_id), a in sorted(loads["point"].items()):
+        if k != "temperature":
+            continue
+        for p, v in enumerate(a):
+            if not np.isnan(v):
+                out.append(_header_card(10, p + 1, set_id, 1, 1))
+                out.append("%16.9E\n" % float(v))
+    for set_id, blocks in sorted(loads["cell"].items()):
+        g = 0
+        for a in blocks:
+            for v in a:
+                if not np.isnan(v) and g < len(cell_label) and cell_label[g]:
+                    out.append(_header_card(11, cell_label[g], set_id, 1, 1))
+                    out.append("%16.9E\n" % float(v))
+                g += 1
     return out
 
 
@@ -393,17 +744,23 @@ def write(filename, mesh):
             "regions-dropped",
             f"{side_regions} side region(s) have no Patran neutral component",
         )
+    loads = _load_arrays(mesh, npts)
     other = (
         len(mesh.point_data)
         + len(mesh.field_data)
         + len(mesh.cell_data)
         - (1 if pid_data is not None else 0)
+        - loads["count"]
     )
     if other:
-        warn("Patran neutral holds no data arrays; point, cell and field data dropped")
+        warn(
+            "Patran neutral holds no data arrays but the element property and the "
+            "loads; the other point, cell and field data are dropped"
+        )
         _provenance.note(
             "data-dropped",
-            "a Patran neutral file holds no data arrays besides the element property",
+            "a Patran neutral file holds no data arrays besides the element property "
+            "and its loads and boundary conditions",
         )
 
     out = []
@@ -446,6 +803,8 @@ def write(filename, mesh):
             p = 1 if pid is None else int(pid[r])
             out.append(f"{k:8d}{0:8d}{p:8d}{0:8d}" + zeros * 3 + "\n")
             out.append(_int_lines([int(v) + 1 for v in data[r]]))
+
+    out += _load_packets(mesh, loads, cell_label)
 
     cell_code = []
     for b, block in enumerate(mesh.cells):

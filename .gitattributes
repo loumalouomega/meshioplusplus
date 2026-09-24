@@ -142,6 +142,9 @@ tests/python/meshes/ansys/rst/dist_static/*.rst filter=lfs diff=lfs merge=lfs -t
 # Patran 2 neutral fixtures written by tools/gen_patran_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/patran/** -filter -diff -merge text
+# WARP3D wrote these Patran 2.5 result files as Fortran unformatted binary.
+tests/python/meshes/patran/real/*.webs* binary
+tests/python/meshes/patran/real/*.wnbd* binary
 # MFEM sample meshes (BSD-3-Clause, see that directory's README.md) and the grid
 # functions and reference tools/gen_mfem_fixtures.py writes with PyMFEM: small, kept
 # out of LFS like the ones above.

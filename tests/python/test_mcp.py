@@ -235,6 +235,31 @@ def test_mfem_grid_functions_convert_both_ways(tmp_path):
         _tools.tool_convert(target, str(tmp_path / "x.vtu"), write_grid_functions=True)
 
 
+def test_patran_results_convert(tmp_path):
+    import pathlib
+
+    real = pathlib.Path(__file__).parent / "meshes" / "patran" / "real"
+    target = str(tmp_path / "ssy.vtu")
+    _tools.tool_convert(
+        str(real / "warp3d_ssy.out"),
+        target,
+        patran_results={
+            "disp": str(real / "warp3d_ssy.wnbd00001"),
+            "stress": str(real / "warp3d_ssy.webs00001"),
+        },
+    )
+    vtu = meshioplusplus.read(target)
+    assert vtu.point_data["disp"].shape == (164, 3)
+    assert vtu.cell_data["stress"][0].shape == (40, 26)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _tools.tool_convert(
+            str(real / "warp3d_ssy.out"),
+            target,
+            patran_results={"d": str(real / "warp3d_ssy.wnbd00001")},
+            grid_functions={"u": "x.gf"},
+        )
+
+
 def test_elmer_directory_converts_both_ways(tmp_path):
     import pathlib
 
