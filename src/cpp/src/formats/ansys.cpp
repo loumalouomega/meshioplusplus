@@ -730,6 +730,13 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("Fluent: the mesh has no 2-D or 3-D cells");
     if (dim == 3 && pdim != 3)
         throw WriteError("Fluent: 3-D cells need 3-D points");
+    // A 2-D Fluent mesh lies in the xy plane: z is dropped only when it is 0.
+    if (dim == 2 && pdim == 3)
+        for (std::size_t i = 0; i < npoints; ++i)
+            if (detail::read_double(points, i * 3 + 2) != 0.0)
+                throw WriteError("Fluent: a 2-D mesh must lie in the z = 0 plane (point " +
+                                 std::to_string(i) +
+                                 " has z != 0); Fluent has no 3-D surface meshes");
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const bool has_zone = rMesh.HasCellData("ansys:zone");
     auto zone_value = [&](std::size_t Block, std::size_t Cell, std::int64_t& rOut) {

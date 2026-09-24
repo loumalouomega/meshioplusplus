@@ -531,6 +531,14 @@ def write(filename, mesh, binary=True):
         raise WriteError("Fluent: the mesh has no 2-D or 3-D cells")
     if dim == 3 and pdim != 3:
         raise WriteError("Fluent: 3-D cells need 3-D points")
+    # a 2-D Fluent mesh lies in the xy plane: z is dropped only when it is 0
+    if dim == 2 and pdim == 3:
+        nonzero = np.flatnonzero(points[:, 2] != 0.0)
+        if len(nonzero):
+            raise WriteError(
+                f"Fluent: a 2-D mesh must lie in the z = 0 plane (point {nonzero[0]} "
+                "has z != 0); Fluent has no 3-D surface meshes"
+            )
     bases = np.concatenate([[0], np.cumsum([len(b) for b in mesh.cells])]).astype(
         np.int64
     )

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus
+from meshioplusplus import _core
 from meshioplusplus.ansys import _ansys
 
 from . import helpers
@@ -68,6 +69,20 @@ def test_engines_write_the_same_bytes(tmp_path):
 def test_an_empty_mesh_is_refused(tmp_path):
     with pytest.raises(meshioplusplus.WriteError):
         meshioplusplus.ansys.write(tmp_path / "e.msh", helpers.empty_mesh)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_a_surface_off_the_xy_plane_is_refused(engine, tmp_path):
+    """A 2-D Fluent mesh lies in z = 0; a 3-D surface is not dropped to it."""
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.5]], [("triangle", [[0, 1, 2]])]
+    )
+    write = meshioplusplus.ansys.write if engine == "core" else _ansys.write
+    with pytest.raises(meshioplusplus.WriteError, match="z = 0 plane"):
+        write(tmp_path / "s.msh", mesh)
+    if engine == "core":
+        with pytest.raises(meshioplusplus.WriteError, match="z = 0 plane"):
+            _core.ansys_write(str(tmp_path / "s.msh"), mesh, True)
 
 
 def _FLUENT_FILES():

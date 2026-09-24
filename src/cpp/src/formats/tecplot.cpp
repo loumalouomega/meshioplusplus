@@ -1340,7 +1340,7 @@ struct TecplotFile {
 void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, TecplotFile& rFile) {
     bool binary = false;
     {
-        std::ifstream probe(rPath, std::ios::binary);
+        auto probe = detail::make_classic_ifstream(rPath, std::ios::binary);
         if (!probe)
             throw ReadError("Could not open file: " + rPath);
         char head[5] = {0, 0, 0, 0, 0};
