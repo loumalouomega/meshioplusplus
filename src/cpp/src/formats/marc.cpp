@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <ios>
 #include <iterator>
 #include <limits>
@@ -31,6 +32,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -72,28 +74,45 @@ struct MarcType {
 const MarcType* marc_type(std::int64_t Type) {
     static const std::unordered_map<std::int64_t, MarcType> kTypes = [] {
         std::unordered_map<std::int64_t, MarcType> m;
-        for (int t : {3, 10, 11, 18, 75, 139, 140})
+        // Plain types, and (v16.12.0) the Herrmann (mixed) types whose pressure
+        // sits at the corners, the rebar and the composite types, all with the
+        // node lists of their plain twins.
+        for (int t : {3, 10, 11, 18, 75, 139, 140, 143, 144, 145, 147, 151, 152})
             m[t] = {"quad", 4};
         for (int t : {2, 6, 138, 158, 201})
             m[t] = {"triangle", 3};
-        for (int t : {22, 26, 27, 28, 30, 53, 54, 55})
+        for (int t :
+             {22, 26, 27, 28, 30, 32, 33, 46, 48, 53, 54, 55, 58, 59, 63, 66, 142, 148, 153, 154})
             m[t] = {"quad8", 8};
-        for (int t : {124, 125, 126, 128, 200})
+        for (int t : {124, 125, 126, 128, 129, 200})
             m[t] = {"triangle6", 6};
-        for (int t : {7, 43, 117, 123})
+        for (int t : {7, 43, 117, 123, 146, 149})
             m[t] = {"hexahedron", 8};
-        for (int t : {21, 44, 57})
+        for (int t : {21, 23, 35, 44, 57, 61, 150})
             m[t] = {"hexahedron20", 20};
         for (int t : {134, 135})
             m[t] = {"tetra", 4};
-        m[157] = {"tetra", 5};  // four corners and a bubble node
         for (int t : {127, 130, 133})
             m[t] = {"tetra10", 10};
         for (int t : {136, 137})
             m[t] = {"wedge", 6};
-        for (int t : {9, 31, 52, 98})
+        for (int t : {9, 31, 52, 98, 165, 166, 167})
             m[t] = {"line", 2};
-        m[64] = {"line3", 3};
+        for (int t : {64, 168, 169, 170})
+            m[t] = {"line3", 3};
+        // Elements with more nodes than their cell keeps: the leading
+        // geometric nodes are the cell, the rest (a Herrmann pressure node, a
+        // centroid bubble node, generalized plane strain nodes) are dropped.
+        for (int t : {80, 82, 83, 118, 119})
+            m[t] = {"quad", 5};
+        m[81] = {"quad", 7};
+        for (int t : {34, 47, 60})
+            m[t] = {"quad8", 10};
+        for (int t : {84, 120})
+            m[t] = {"hexahedron", 9};
+        for (int t : {155, 156})
+            m[t] = {"triangle", 4};
+        m[157] = {"tetra", 5};
         return m;
     }();
     const auto it = kTypes.find(Type);
@@ -180,6 +199,48 @@ std::vector<std::string> marc_lines(const std::string& rPath, const char* pLabel
     return lines;
 }
 
+// An `INCLUDE` option line (the keyword at the start of the line, then the
+// file name after a blank or comma): the file it names, else empty.
+std::string marc_include_target(const std::string& rLine) {
+    if (rLine.size() < 7 || marc_lower(rLine.substr(0, 7)) != "include")
+        return "";
+    std::size_t k = 7;
+    if (k < rLine.size() && rLine[k] != ' ' && rLine[k] != '\t' && rLine[k] != ',')
+        return "";
+    while (k < rLine.size() && (rLine[k] == ' ' || rLine[k] == '\t' || rLine[k] == ','))
+        ++k;
+    std::string name = marc_trim(rLine.substr(k));
+    if (name.size() >= 2 && (name.front() == '"' || name.front() == '\'') &&
+        name.back() == name.front())
+        name = name.substr(1, name.size() - 2);
+    return name;
+}
+
+// The deck's lines with every `INCLUDE` replaced by the lines of the file it
+// names (relative to the including file), recursively.
+std::vector<std::string> marc_deck_lines(const std::string& rPath, int Depth = 0) {
+    if (Depth > 16)
+        marc_fail(kMarcDat, "INCLUDE files nest more than 16 deep (a cycle?) at " + rPath);
+    std::vector<std::string> out;
+    for (std::string& line : marc_lines(rPath, kMarcDat)) {
+        const std::string target = marc_include_target(line);
+        if (target.empty()) {
+            out.push_back(std::move(line));
+            continue;
+        }
+        std::filesystem::path file(target);
+        if (file.is_relative())
+            file = std::filesystem::path(rPath).parent_path() / file;
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(file, ec))
+            marc_fail(kMarcDat, "INCLUDE names " + file.string() + ", which does not exist");
+        std::vector<std::string> inner = marc_deck_lines(file.string(), Depth + 1);
+        out.insert(out.end(), std::make_move_iterator(inner.begin()),
+                   std::make_move_iterator(inner.end()));
+    }
+    return out;
+}
+
 std::int64_t marc_int(const std::string& rText, const char* pLabel, const std::string& rWhere) {
     return detail::card_to_int(marc_trim(rText), " (" + rWhere + ")", pLabel);
 }
@@ -237,6 +298,10 @@ struct MarcSet {
     bool mElements = true;  // else a node set
     std::vector<std::string> mTokens;
     std::vector<std::int64_t> mMembers;
+    // Edge (1) and face (2) sets: mMembers are elements, mSides their Marc
+    // edge or face numbers (Volume A's numbering, not mapped to facets).
+    int mSideKind = 0;
+    std::vector<std::int64_t> mSides;
 };
 
 struct MarcDeck {
@@ -387,6 +452,13 @@ std::vector<std::string> marc_set_tokens(std::string_view Text, std::size_t Widt
     return out;
 }
 
+bool marc_is_integer(const std::string& rText) {
+    std::size_t k = 0;
+    while (k < rText.size() && (rText[k] == '+' || rText[k] == '-'))
+        ++k;
+    return k < rText.size() && marc_all_digits(rText.substr(k));
+}
+
 std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines, std::size_t I) {
     const std::string where = marc_where(I);
     const auto raw = marc_words(rLines[I]);
@@ -416,7 +488,24 @@ std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines,
             break;
         tokens.pop_back();
     }
-    if (kind == "element" || kind == "elsq" || kind == "node" || kind == "ndsq") {
+    if (kind == "edge" || kind == "face") {
+        // `elem:number` members.
+        MarcSet s;
+        s.mName = name;
+        s.mSideKind = kind == "edge" ? 1 : 2;
+        for (const std::string& t : tokens) {
+            const std::size_t colon = t.find(':');
+            if (colon == std::string::npos || !marc_is_integer(t.substr(0, colon)) ||
+                !marc_is_integer(t.substr(colon + 1))) {
+                log::warn("{}: DEFINE {} SET '{}': '{}' is not an element:number pair ({})",
+                          kMarcDat, kind == "edge" ? "EDGE" : "FACE", name, t, where);
+                continue;
+            }
+            s.mMembers.push_back(marc_int(t.substr(0, colon), kMarcDat, where));
+            s.mSides.push_back(marc_int(t.substr(colon + 1), kMarcDat, where));
+        }
+        rDeck.mSets.push_back(std::move(s));
+    } else if (kind == "element" || kind == "elsq" || kind == "node" || kind == "ndsq") {
         MarcSet s;
         s.mName = name;
         s.mElements = kind == "element" || kind == "elsq";
@@ -476,13 +565,6 @@ MarcDeck marc_parse_deck(const std::vector<std::string>& rLines) {
             ++i;
     }
     return deck;
-}
-
-bool marc_is_integer(const std::string& rText) {
-    std::size_t k = 0;
-    while (k < rText.size() && (rText[k] == '+' || rText[k] == '-'))
-        ++k;
-    return k < rText.size() && marc_all_digits(rText.substr(k));
 }
 
 // The members of a set: numbers, `a TO b [BY c]` ranges and other sets' names,
@@ -597,8 +679,11 @@ Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
         }
         std::string cell = known->mCell;
         std::vector<std::int64_t> nodes = el.mNodes;
-        if (el.mType == 157)
-            nodes.resize(4);
+        nodes.resize(std::min(nodes.size(), static_cast<std::size_t>(
+                                                cell_type_num_nodes(cell_type_from_name(cell)))));
+        // The 3-node rebar lines list their middle node second.
+        if (el.mType >= 168 && el.mType <= 170 && nodes.size() == 3)
+            std::swap(nodes[1], nodes[2]);
         for (std::int64_t v : nodes)
             if (!index.count(v))
                 marc_fail(pLabel, "element " + std::to_string(el.mId) + " names undefined node " +
@@ -671,6 +756,23 @@ Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
     // One region per (kind, name): a later set replaces an earlier one.
     std::map<std::pair<int, std::string>, meshioplusplus::Region> regions;
     for (const MarcSet& s : rSets) {
+        if (s.mSideKind) {
+            // (cell or -1, Marc edge/face number): Marc numbers an element's
+            // edges and faces its own way (Volume A), not mapped to facets.
+            NDArray a(DType::Int64, {s.mMembers.size(), 2});
+            for (std::size_t k = 0; k < s.mMembers.size(); ++k) {
+                const auto it = element_cell.find(s.mMembers[k]);
+                a.As<std::int64_t>()[2 * k] =
+                    it == element_cell.end()
+                        ? -1
+                        : starts[static_cast<std::size_t>(it->second.mBlock)] + it->second.mRow;
+                a.As<std::int64_t>()[2 * k + 1] = k < s.mSides.size() ? s.mSides[k] : -1;
+            }
+            mesh.AddFieldData(
+                std::string(s.mSideKind == 1 ? "marc:edge_set:" : "marc:face_set:") + s.mName,
+                std::move(a));
+            continue;
+        }
         std::vector<std::int64_t> entries;
         int dim = -1;
         if (s.mElements) {
@@ -783,6 +885,7 @@ private:
 struct MarcIncrement {
     double mTime = 0.0;
     std::int64_t mInc = 0, mIncsub = 0, mJantyp = 0;
+    bool mNewModel = false;  // the increment remeshes (newmo)
 };
 
 class MarcPost {
@@ -832,10 +935,14 @@ public:
 
     MarcRecords Reader(const MarcBlock& rBlock) const { return MarcRecords(mLines, rBlock); }
 
+    // The model header (block 502) and element post codes (506) of `pBlocks`,
+    // else of the model before the first increment.
     void Header(std::vector<std::int64_t>& rLm,
-                std::vector<std::pair<std::int64_t, std::string>>& rCodes) const {
+                std::vector<std::pair<std::int64_t, std::string>>& rCodes,
+                const std::vector<MarcBlock>* pBlocks = nullptr) const {
         rLm.assign(30, 0);
-        for (const MarcBlock& b : mModel) {
+        rCodes.clear();
+        for (const MarcBlock& b : pBlocks ? *pBlocks : mModel) {
             const std::int64_t family = b.mNumber / 100;
             if (family == 502) {
                 const auto values = Reader(b).Ints(30);
@@ -858,10 +965,10 @@ public:
 
     void Model(const std::vector<std::int64_t>& rLm, std::vector<std::int64_t>& rNodeIds,
                std::vector<std::array<double, 3>>& rCoords, std::vector<MarcElement>& rElements,
-               std::vector<MarcSet>& rSets) const {
+               std::vector<MarcSet>& rSets, const std::vector<MarcBlock>* pBlocks = nullptr) const {
         const std::int64_t numnp = rLm[1], numel = rLm[2], ncrd = rLm[8], nnodmx = rLm[9];
         const std::int64_t postrv = rLm[13];
-        for (const MarcBlock& b : mModel) {
+        for (const MarcBlock& b : pBlocks ? *pBlocks : mModel) {
             const std::int64_t family = b.mNumber / 100;
             MarcRecords r = Reader(b);
             if (family == 507) {
@@ -914,16 +1021,19 @@ public:
                         marc_trim(std::string_view(line).substr(0, std::min(width, line.size())));
                     const auto head = r.Ints(2);
                     const std::int64_t isetn = head[0], isett = head[1];
-                    std::vector<std::int64_t> members;
+                    std::vector<std::int64_t> members, sides;
                     if (isetn > 0)
                         members = r.Ints(static_cast<std::size_t>(isetn));
-                    if ((isett == 12 || isett == 13 || isett == 18 || isett == 19) && isetn > 0)
-                        r.Ints(static_cast<std::size_t>(isetn));  // the edge or face numbers
-                    if (isett == 0 || isett == 1) {
+                    const bool side_set = isett == 12 || isett == 13 || isett == 18 || isett == 19;
+                    if (side_set && isetn > 0)
+                        sides = r.Ints(static_cast<std::size_t>(isetn));  // edge or face numbers
+                    if (isett == 0 || isett == 1 || side_set) {
                         MarcSet set;
                         set.mName = name;
-                        set.mElements = isett == 0;
+                        set.mElements = isett != 1;
+                        set.mSideKind = side_set ? (isett == 12 ? 1 : 2) : 0;
                         set.mMembers = std::move(members);
+                        set.mSides = std::move(sides);
                         rSets.push_back(std::move(set));
                     } else {
                         log::warn("{}: set '{}' of type {} is not read", kMarcT19, name, isett);
@@ -947,18 +1057,15 @@ public:
                 const std::int64_t nw = r.Ints(1)[0];
                 xlm = r.Reals(static_cast<std::size_t>(std::max<std::int64_t>(nw, 0)));
                 xlm.resize(xlm.size() + 6, 0.0);
-            } else if (family == 519 && lm[0]) {
-                marc_fail(kMarcT19, "increments that remesh the model are not supported");
             }
         }
-        if (lm[0])
-            marc_fail(kMarcT19, "increments that remesh the model are not supported");
         const std::int64_t ihresp = lm[6];
         MarcIncrement out;
         out.mTime = ihresp >= 1 && ihresp <= 4 ? xlm[1] : xlm[0];
         out.mInc = lm[1];
         out.mIncsub = lm[2];
         out.mJantyp = lm[3];
+        out.mNewModel = lm[0] != 0;
         return out;
     }
 
@@ -1061,26 +1168,50 @@ void marc_scalar_field(Mesh& rMesh, const char* pName, DType Type, double Value)
 
 Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
     const MarcPost post(rPath);
+    const std::size_t n = post.Increments().size();
+    const std::size_t index = n ? rOptions.ResolveTimeStep(n) : 0;
+    // An increment that remeshes (newmo, BLOCK 517) repeats the model blocks
+    // 502 to 514 (BLOCK 519): a step's mesh is the latest model at or before it.
+    std::vector<MarcBlock> remeshed;
+    for (std::size_t k = 0; n && k <= index; ++k) {
+        const auto& inc = post.Increments()[k];
+        if (!post.Info(inc).mNewModel)
+            continue;
+        remeshed.clear();
+        for (const MarcBlock& b : inc)
+            if (b.mNumber / 100 >= 502 && b.mNumber / 100 <= 514)
+                remeshed.push_back(b);
+    }
+    const std::vector<MarcBlock>* model = remeshed.empty() ? nullptr : &remeshed;
     std::vector<std::int64_t> lm;
     std::vector<std::pair<std::int64_t, std::string>> codes;
     post.Header(lm, codes);
+    if (model && std::any_of(remeshed.begin(), remeshed.end(),
+                             [](const MarcBlock& rB) { return rB.mNumber / 100 == 502; })) {
+        // A remeshed model repeats the header; the post codes stay the first's
+        // when it does not repeat them.
+        std::vector<std::int64_t> lm2;
+        std::vector<std::pair<std::int64_t, std::string>> codes2;
+        post.Header(lm2, codes2, model);
+        lm = lm2;
+        if (!codes2.empty())
+            codes = codes2;
+    }
     const std::int64_t npost = lm[0], numnp = lm[1], numel = lm[2];
     const std::int64_t nstres = std::max<std::int64_t>(lm[4], 1);
     std::vector<std::int64_t> node_ids;
     std::vector<std::array<double, 3>> coords;
     std::vector<MarcElement> elements;
     std::vector<MarcSet> sets;
-    post.Model(lm, node_ids, coords, elements, sets);
+    post.Model(lm, node_ids, coords, elements, sets, model);
     std::vector<MarcLocation> locs;
     Mesh mesh = marc_build(kMarcT19, node_ids, coords, elements, sets, locs);
-    const std::size_t n = post.Increments().size();
     if (n == 0) {
         if (rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
             marc_fail(kMarcT19, "time step " + std::to_string(rOptions.mTimeStep) +
                                     " is out of range: the file has no increments");
         return mesh;
     }
-    const std::size_t index = rOptions.ResolveTimeStep(n);
     const auto& blocks = post.Increments()[index];
     const MarcIncrement info = post.Info(blocks);
     marc_scalar_field(mesh, "meshio:time", DType::Float64, info.mTime);
@@ -1194,7 +1325,7 @@ bool is_marc_deck(std::string_view Head) {
 }
 
 Mesh read_marc(const std::string& rPath) {
-    const std::vector<std::string> lines = marc_lines(rPath, kMarcDat);
+    const std::vector<std::string> lines = marc_deck_lines(rPath);
     std::string head;
     for (const std::string& line : lines) {
         if (head.size() >= 65536)
@@ -1209,6 +1340,8 @@ Mesh read_marc(const std::string& rPath) {
         marc_fail(kMarcDat, "no COORDINATES or CONNECTIVITY found");
     std::map<std::pair<bool, std::string>, std::vector<std::int64_t>> known;
     for (MarcSet& s : deck.mSets) {
+        if (s.mSideKind)
+            continue;  // members already read
         std::unordered_map<std::string, std::vector<std::int64_t>> refs;
         for (const auto& [key, members] : known)
             if (key.first == s.mElements)
