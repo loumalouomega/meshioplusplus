@@ -356,6 +356,9 @@ std::string sniff_format(const std::string& rPath) {
     // Tecplot binary (.plt): "#!TDV" and a three-character version.
     if (head.size() >= 5 && head.compare(0, 5, "#!TDV") == 0)
         return "tecplot";
+    // OpenRadioss animation file: the big-endian magic 0x542C.
+    if (head.size() >= 4 && head.compare(0, 4, std::string("\0\0T,", 4)) == 0)
+        return "radioss_anim";
     // FEBio plot file: the magic 0x00464542, in either byte order.
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))

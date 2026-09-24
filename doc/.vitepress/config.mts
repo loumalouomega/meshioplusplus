@@ -303,6 +303,7 @@ export default defineConfig({
           { text: "pvtp", link: "/formats/pvtp" },
           { text: "pvtu", link: "/formats/pvtu" },
           { text: "radioss", link: "/formats/radioss" },
+          { text: "radioss_anim", link: "/formats/radioss_anim" },
           { text: "stl", link: "/formats/stl" },
           { text: "su2", link: "/formats/su2" },
           { text: "svg", link: "/formats/svg" },

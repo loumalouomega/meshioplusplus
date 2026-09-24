@@ -133,6 +133,9 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 #
 # **`nastran_op2` joined in v16.9.0.** Its steps are the (subcase, mode, time
 # or frequency) of the result tables it reads.
+#
+# **`radioss_anim` joined in v16.11.0.** One step per animation file (`runA001`,
+# `runA002`...), its time read from the file rather than the name's number.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -157,6 +160,7 @@ _TIME_CAPABLE_READERS = (
     "abaqus_fil",
     "lsdyna_d3plot",
     "nastran_op2",
+    "radioss_anim",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which

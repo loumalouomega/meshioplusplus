@@ -179,3 +179,48 @@ TEST(Radioss, OldFormatColumnsAndRefusals) {
                                 node(1, 0, 0, 0) + "/TRUSS/1\n" + ints({1, 1, 2}) + "/END\n";
     EXPECT_THROW(meshioplusplus::read_radioss(write_deck(missing)), ReadError);
 }
+
+TEST(Radioss, UnitsBoxesGeneratorsAndSurfaces) {
+    // Two bricks (part 1) along x in millimetres, metres of work units.
+    std::string body = "#RADIOSS STARTER\n/BEGIN\nfeatures\n" + ints({2022, 0});
+    body += "                  kg                  mm                   s\n";
+    body += "                  kg                   m                   s\n/NODE\n";
+    auto id = [](int i, int j, int k) { return 1 + i + 3 * j + 6 * k; };
+    for (int k = 0; k < 2; ++k)
+        for (int j = 0; j < 2; ++j)
+            for (int i = 0; i < 3; ++i)
+                body += node(id(i, j, k), 1000.0 * i, 1000.0 * j, 1000.0 * k);
+    body += "/BRICK/1\n";
+    for (int i = 0; i < 2; ++i)
+        body += ints({101 + i, id(i, 0, 0), id(i + 1, 0, 0), id(i + 1, 1, 0), id(i, 1, 0),
+                      id(i, 0, 1), id(i + 1, 0, 1), id(i + 1, 1, 1), id(i, 1, 1)});
+    body += "/PART/1\nsolid\n" + ints({1, 5});
+    body += "/BOX/RECTA/1\nnear half\n" + ints({0, 0, 0});
+    body += node(0, -1.0, -1.0, -1.0, 0).substr(1) + node(0, 1001.0, 1001.0, 1001.0, 0).substr(1);
+    body += "/GRNOD/BOX/10\nin box\n" + ints({1});
+    body += "/GRBRIC/BOX/11\nbricks inside\n" + ints({1});
+    body += "/GRBRIC/BOX2/12\nbricks touching\n" + ints({1});
+    body += "/GRNOD/GENE/13\nranges\n" + ints({1, 3, 7, 8});
+    body += "/GRNOD/NODE/14/1\nunit suffix\n" + ints({5});
+    body += "/SURF/PART/EXT/20\noutside\n" + ints({1});
+    body += "/SURF/GRBRIC/FREE/21\nfirst free\n" + ints({11});
+    body += "/SURF/SURF/22\nsecond free\n" + ints({20, -21});
+    body += "/END\n";
+    const Mesh mesh = meshioplusplus::read_radioss(write_deck(body));
+    EXPECT_DOUBLE_EQ(mesh.FieldData("radioss:length_scale").As<double>()[0], 1e-3);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 3 * 2), 2.0);  // node 3: x = 2 m
+    auto entries = [&](const char* pName, RegionKind Kind) {
+        const std::size_t r = mesh.FindRegion(pName, Kind);
+        return r == Mesh::npos ? std::size_t(999) : mesh.Region(r).NumEntries();
+    };
+    EXPECT_EQ(entries("in box", RegionKind::Point), 8u);
+    EXPECT_EQ(entries("bricks inside", RegionKind::Cell), 1u);
+    EXPECT_EQ(entries("bricks touching", RegionKind::Cell), 2u);
+    EXPECT_EQ(entries("ranges", RegionKind::Point), 5u);
+    const std::size_t suffix = mesh.FindRegion("unit suffix", RegionKind::Point);
+    ASSERT_NE(suffix, Mesh::npos);
+    EXPECT_EQ(mesh.Region(suffix).mTag, 14);
+    EXPECT_EQ(entries("outside", RegionKind::Side), 10u);
+    EXPECT_EQ(entries("first free", RegionKind::Side), 5u);
+    EXPECT_EQ(entries("second free", RegionKind::Side), 5u);
+}

@@ -63,6 +63,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — |
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | — | — |
+| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — |
 | [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |

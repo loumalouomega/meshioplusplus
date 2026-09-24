@@ -40,6 +40,7 @@
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 #include "meshioplusplus/formats/radioss.hpp"
+#include "meshioplusplus/formats/radioss_anim.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -2961,6 +2962,10 @@ PYBIND11_MODULE(_core, m) {
 
     m.def("radioss_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
+    });
+    // OpenRadioss animation file (A001...) reader.
+    m.def("radioss_anim_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));
     });
 
     // Z88 structure file (z88i1.txt) reader / writer, with its results.

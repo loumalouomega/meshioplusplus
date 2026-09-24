@@ -266,6 +266,9 @@ def _sniff_format_py(path) -> str:
     # Tecplot binary (.plt): "#!TDV" and a three-character version.
     if head[:5] == b"#!TDV":
         return "tecplot"
+    # OpenRadioss animation file: the big-endian magic 0x542C.
+    if head[:4] == b"\x00\x00T,":
+        return "radioss_anim"
     # FEBio plot file: the magic 0x00464542, in either byte order.
     if head[:4] in (b"BEF\x00", b"\x00FEB"):
         return "xplt"
