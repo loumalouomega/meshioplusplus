@@ -60,6 +60,8 @@ CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESH
   pip install --no-build-isolation -e .
 ```
 
+Off by default and never auto-enabled: `-DMESHIOPLUSPLUS_WITH_ZSTD=ON` / `_LZ4=ON` add the VTK XML codecs of [compression codecs](codecs.md), and `-DMESHIOPLUSPLUS_WITH_BZIP2=ON` (v16.12.0; libbz2 through CMake's `FindBZip2`) lets the core read and write [libMesh](formats/libmesh.md)'s `.bz2` meshes, which otherwise go through Python's `bz2` (`_core.__has_bzip2__` reports it; Conan `with_bzip2`, vcpkg feature `bzip2`).
+
 ### Standalone C++ build
 
 For using the C++ library directly (without Python), two configure scripts live in `build/`:

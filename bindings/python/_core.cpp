@@ -327,6 +327,11 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_zstd__") = false;
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+    m.attr("__has_bzip2__") = true;
+#else
+    m.attr("__has_bzip2__") = false;
+#endif
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
     m.attr("__has_lz4__") = true;
 #else

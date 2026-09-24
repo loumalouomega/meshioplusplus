@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
@@ -348,10 +349,54 @@ TEST(LibMesh, WriterKeepsSparseNodeIds) {
     }
 }
 
-TEST(LibMesh, WriterRefusesCompressedNamesAndBadSubdomains) {
+TEST(LibMesh, WriterCompressesAsciiAndRefusesBadSubdomains) {
     const Mesh mesh = lm_sample();
-    EXPECT_THROW(meshioplusplus::write_libmesh(write_file("", ".xda.gz"), mesh), WriteError);
+    // `.gz`/`.bz2` compress an ASCII file; XDR stays plain, as libMesh writes it.
+    std::vector<std::string> suffixes{".xdr.gz", ".xdr.bz2"};
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    suffixes.push_back(".xda.gz");
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+    suffixes.push_back(".xda.bz2");
+#endif
+    for (const std::string& suffix : suffixes) {
+        const std::string path = write_file("", suffix);
+        meshioplusplus::write_libmesh(path, mesh);
+        std::ifstream in(path, std::ios::binary);
+        std::string head(4, '\0');
+        in.read(&head[0], 4);
+        if (suffix.rfind(".xdr", 0) == 0)
+            EXPECT_EQ(head, std::string("\0\0\0\x0d", 4)) << suffix;  // the version's length
+        else
+            EXPECT_TRUE(head.compare(0, 2, "\x1f\x8b") == 0 || head.compare(0, 3, "BZh") == 0)
+                << suffix;
+        expect_sample(meshioplusplus::read_libmesh(path));
+    }
     Mesh bad = lm_sample();
     bad.AddCellData("libmesh:subdomain", {lm_ints({0, 70000}), lm_ints({0}), lm_ints({0})});
     EXPECT_THROW(meshioplusplus::write_libmesh(write_file("", ".xda"), bad), WriteError);
+}
+
+TEST(LibMesh, WriterWritesTheRefinementTreeBack) {
+    const Mesh mesh = meshioplusplus::read_libmesh(write_file(kAmrXda, ".xda"));
+    ASSERT_TRUE(mesh.HasFieldData("libmesh:tree"));
+    EXPECT_EQ(mesh.FieldData("libmesh:tree").Shape(), (std::vector<std::size_t>{5, 5}));
+    for (const char* ext : {".xda", ".xdr"}) {
+        const std::string path = write_file("", ext);
+        meshioplusplus::write_libmesh(path, mesh);
+        const Mesh back = meshioplusplus::read_libmesh(path);
+        expect_amr(back);
+        const NDArray& a = mesh.FieldData("libmesh:tree");
+        const NDArray& b = back.FieldData("libmesh:tree");
+        for (std::size_t k = 0; k < a.Size(); ++k)
+            EXPECT_EQ(detail::read_int(a, k), detail::read_int(b, k)) << k;
+    }
+    // In ASCII: two levels, the side set on the parent (element 0, side 0).
+    const std::string path = write_file("", ".xda");
+    meshioplusplus::write_libmesh(path, mesh);
+    std::ifstream in(path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("4\t # n_elem at level 1, [ type parent sid p_level (n0 ... nN-1) ]"),
+              std::string::npos);
+    EXPECT_NE(text.find("1\t # number of side boundary conditions\n0 0 3"), std::string::npos);
 }

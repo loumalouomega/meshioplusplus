@@ -571,6 +571,23 @@ def read(filename):
     mesh.cell_data["libmesh:subdomain"] = sid_blocks
     if max_level > 0:
         mesh.cell_data["libmesh:level"] = level_blocks
+        # The refinement tree, every element in file order, so the writer can
+        # write it back: `libmesh:tree` (cell or -1, parent row or -1, libMesh
+        # type, subdomain, p-level) and `libmesh:tree:nodes` (its nodes as
+        # point indices, in libMesh's order, -1 past them).
+        code_of = {id(t): k for k, t in enumerate(_TYPES)}
+        width = max(len(el[5]) for el in elements)
+        tree_nodes = np.full((ne, width), -1, dtype=np.int64)
+        for e, el in enumerate(elements):
+            tree_nodes[e, : len(el[5])] = node_index[list(el[5])]
+        mesh.field_data["libmesh:tree"] = np.array(
+            [
+                [cell_of[e], el[1], code_of[id(el[0])], el[2], el[3]]
+                for e, el in enumerate(elements)
+            ],
+            dtype=np.int64,
+        ).reshape(-1, 5)
+        mesh.field_data["libmesh:tree:nodes"] = tree_nodes
     if f["inline_p"]:
         mesh.cell_data["libmesh:p_level"] = p_blocks
 
@@ -813,6 +830,172 @@ class _Out:
         return bytes(self.out) if self.xdr else "".join(self.out).encode()
 
 
+def _tree(mesh, elems, elem_of, ncells, npts):
+    """The refinement tree (``libmesh:tree``, as the reader keeps it) when it
+    still describes these cells: each written cell is exactly one leaf of the
+    tree, with the same type and nodes. Returns (rows, row of each written
+    element), a row being (cell, parent, code, subdomain, p-level, level,
+    nodes); None (with a warning) when it does not match, or is absent."""
+    t = mesh.field_data.get("libmesh:tree")
+    tn = mesh.field_data.get("libmesh:tree:nodes")
+    if t is None or tn is None:
+        return None
+    t = np.asarray(t)
+    tn = np.asarray(tn)
+    ok = (
+        t.ndim == 2
+        and t.shape[1] == 5
+        and len(t) > 0
+        and tn.ndim == 2
+        and len(tn) == len(t)
+        and tn.shape[1] > 0
+    )
+    rows = []
+    has_child = [False] * (len(t) if ok else 0)
+    last_level = 0
+    for r in range(len(t) if ok else 0):
+        cell, parent, code, sd, plev = (int(x) for x in t[r])
+        info = _TYPES[code] if 0 <= code < len(_TYPES) else None
+        nodes = []
+        for v in tn[r].tolist():
+            if v < 0:
+                break
+            nodes.append(int(v))
+        ok = (
+            info is not None
+            and info[0] > 0
+            and -1 <= parent < r
+            and 0 <= sd <= 65534
+            and len(nodes) == info[0]
+            and all(v < npts for v in nodes)
+        )
+        if not ok:
+            break
+        level = 0
+        if parent >= 0:
+            level = rows[parent][5] + 1
+            has_child[parent] = True
+        ok = level >= last_level
+        last_level = level
+        rows.append((cell, parent, code, sd, plev, level, nodes))
+    named = set()
+    row_of_elem = [-1] * len(elems)
+    for r in range(len(rows) if ok else 0):
+        cell, _, code, _, _, _, nodes = rows[r]
+        if has_child[r]:
+            ok = cell == -1
+        else:
+            ok = 0 <= cell < ncells and elem_of[cell] >= 0 and cell not in named
+            if ok:
+                named.add(cell)
+                i = int(elem_of[cell])
+                ok = elems[i][0] == code and list(elems[i][2]) == nodes
+                row_of_elem[i] = r
+        if not ok:
+            break
+    ok = ok and all(r >= 0 for r in row_of_elem)
+    if not ok:
+        warn(
+            "libMesh: `libmesh:tree` no longer matches the cells; the mesh is written "
+            "flat, as its active cells"
+        )
+        _provenance.note(
+            "refinement-tree-dropped", "libmesh:tree does not match the cells"
+        )
+        return None
+    return rows, row_of_elem
+
+
+def _lift(tree, points, sides, edges, shellfaces):
+    """libMesh keeps boundary ids on level-0 elements: a set's entries are
+    lifted to each level-0 side (edge, shell face) whose active pieces are all
+    in the set; the rest are dropped with a warning."""
+    rows, row_of_elem = tree
+    nt = len(rows)
+    kids = [[] for _ in range(nt)]
+    leaf = [True] * nt
+    for r, row in enumerate(rows):
+        if row[1] >= 0:
+            kids[row[1]].append(r)
+            leaf[row[1]] = False
+    pts = np.zeros((len(points), 3))
+    pts[:, : min(points.shape[1], 3)] = points[:, :3]
+
+    def leaves(root):
+        out, stack = [], [root]
+        while stack:
+            r = stack.pop()
+            if leaf[r]:
+                out.append(r)
+            else:
+                stack.extend(reversed(kids[r]))
+        return out
+
+    def table_of(r, use_edges):
+        shape = _TYPES[rows[r][2]][3]
+        return (
+            [list(e) for e in _EDGES.get(shape, [])]
+            if use_edges
+            else _SIDES.get(shape, [])
+        )
+
+    def pieces_on(root, on, use_edges):
+        out = []
+        for c in leaves(root):
+            for k, local in enumerate(table_of(c, use_edges)):
+                if all(_on_side(on, pts[rows[c][6][v]]) for v in local):
+                    out.append((c, k))
+        return out
+
+    roots = [r for r in range(nt) if rows[r][1] < 0]
+    lost = 0
+
+    def lift(values, use_edges):
+        nonlocal lost
+        want = {}
+        for e, k, bid in values:
+            want.setdefault(bid, set()).add((row_of_elem[e], k))
+        out = set()
+        for bid in sorted(want):
+            pieces = want[bid]
+            covered = set()
+            for r0 in roots:
+                for k, local in enumerate(table_of(r0, use_edges)):
+                    on = [pts[rows[r0][6][v]] for v in local]
+                    d = pieces_on(r0, on, use_edges)
+                    if d and all(x in pieces for x in d):
+                        out.add((r0, k, bid))
+                        covered.update(d)
+            lost += sum(1 for x in pieces if x not in covered)
+        return out
+
+    sides = lift(sides, False)
+    edges = lift(edges, True)
+    want = {}
+    for e, face, bid in shellfaces:
+        want.setdefault((bid, face), set()).add(row_of_elem[e])
+    lifted = set()
+    for bid, face in sorted(want):
+        cells = want[(bid, face)]
+        covered = set()
+        for r0 in roots:
+            under = leaves(r0)
+            if all(c in cells for c in under):
+                lifted.add((r0, face, bid))
+                covered.update(under)
+        lost += sum(1 for c in cells if c not in covered)
+    if lost:
+        warn(
+            f"libMesh: {lost} boundary set entries cover only part of a level-0 "
+            "element's side, edge or face and are dropped (libMesh keeps boundary ids "
+            "on level-0 elements)"
+        )
+        _provenance.note(
+            "regions-dropped", f"{lost} boundary entries are not whole level-0 sides"
+        )
+    return sides, edges, lifted
+
+
 def _shellface(name):
     """A shell-face region's ``(face, base name)``, else ``None``."""
     for k in (0, 1):
@@ -825,8 +1008,9 @@ def _shellface(name):
 def write(filename, mesh):
     """Write a libMesh ``.xda`` (ASCII) or ``.xdr`` (XDR) mesh, libMesh-1.8.0.
 
-    The encoding comes from the extension (a trailing ``.gz``/``.bz2``
-    compresses the result). See ``doc/formats/libmesh.md``.
+    The encoding comes from the extension; a trailing ``.gz``/``.bz2``
+    compresses an ASCII file (a ``.xdr.gz``/``.xdr.bz2`` is plain XDR, as
+    libMesh writes it). See ``doc/formats/libmesh.md``.
     """
     name = str(filename).lower()
     compress = None
@@ -835,6 +1019,10 @@ def write(filename, mesh):
             compress = module
             name = name[: -len(suffix)]
     xdr = name.endswith(".xdr")
+    # libMesh's XDR files ignore the suffix (its `Xdr` opens them with plain
+    # stdio): a `.xdr.gz`/`.xdr.bz2` is plain XDR, which libMesh then reads.
+    if xdr:
+        compress = None
 
     blocks = list(mesh.cells)
     starts = [0]
@@ -1006,6 +1194,9 @@ def write(filename, mesh):
     # Edge sets: each line cell on the first element holding that edge.
     edges = set()
     edges_lost = 0
+    # Edge cells no active element holds (a refined element's whole edge):
+    # (corner, corner, id), matched against the tree's level-0 elements.
+    edges_unmatched = []
     if edge_sets:
         owner = {}
         for e, (code, _, nodes) in enumerate(elems):
@@ -1016,9 +1207,10 @@ def write(filename, mesh):
             for cell in np.asarray(reg.entries, dtype=np.int64).ravel():
                 b = cell_block[cell]
                 row = blocks[b].data[cell - starts[b]]
-                hit = owner.get(tuple(sorted((int(row[0]), int(row[1])))))
+                key = tuple(sorted((int(row[0]), int(row[1]))))
+                hit = owner.get(key)
                 if hit is None:
-                    edges_lost += 1
+                    edges_unmatched.append((key, bid))
                     continue
                 edges.add((hit[0], hit[1], bid))
 
@@ -1030,15 +1222,6 @@ def write(filename, mesh):
         for cell in np.asarray(reg.entries, dtype=np.int64).ravel():
             if elem_of[cell] >= 0:
                 shellfaces.add((int(elem_of[cell]), face, bid))
-    if sides_lost or edges_lost:
-        warn(
-            f"libMesh: {sides_lost} side and {edges_lost} edge set entries match no "
-            "written element and are dropped"
-        )
-        _provenance.note(
-            "regions-dropped",
-            f"{sides_lost + edges_lost} side/edge set entries match no libMesh element",
-        )
 
     # Node sets.
     next_nid = max([0] + [r.tag + 1 for r in node_sets])
@@ -1055,12 +1238,40 @@ def write(filename, mesh):
         for p in np.asarray(reg.entries, dtype=np.int64).ravel():
             if 0 <= p < npts:
                 nodesets.add((int(node_id[p]), nid))
+    tree = _tree(mesh, elems, elem_of, ncells, npts)
+    if tree is not None:
+        sides, edges, shellfaces = _lift(tree, points, sides, edges, shellfaces)
+        # Whole edges of refined level-0 elements.
+        root_edge = {}
+        for r0, row in enumerate(tree[0]):
+            if row[1] >= 0:
+                break
+            for k, (a, b) in enumerate(_EDGES.get(_TYPES[row[2]][3], [])):
+                root_edge.setdefault(tuple(sorted((row[6][a], row[6][b]))), (r0, k))
+        still = []
+        for key, bid in edges_unmatched:
+            hit = root_edge.get(key)
+            if hit is None:
+                still.append((key, bid))
+            else:
+                edges.add((hit[0], hit[1], bid))
+        edges_unmatched = still
+    edges_lost += len(edges_unmatched)
+    if sides_lost or edges_lost:
+        warn(
+            f"libMesh: {sides_lost} side and {edges_lost} edge set entries match no "
+            "written element and are dropped"
+        )
+        _provenance.note(
+            "regions-dropped",
+            f"{sides_lost + edges_lost} side/edge set entries match no libMesh element",
+        )
     bcs = bool(sides or edges or shellfaces or nodesets)
 
     # The stream, as XdrIO::write lays it out (libMesh-1.8.0, 8-byte ids).
     io = _Out(xdr)
     io.string("libMesh-1.8.0")
-    io.scalar(len(elems), "# number of elements")
+    io.scalar(len(tree[0]) if tree is not None else len(elems), "# number of elements")
     io.scalar(max_node_id, "# number of nodes")
     io.string("." if bcs else "n/a", "# boundary condition specification file")
     io.string(".", "# subdomain id specification file")
@@ -1085,17 +1296,41 @@ def write(filename, mesh):
             io.string_vector([names[k] for k in sorted(names)])
 
     name_map(subdomain_names, "# subdomain id to name map")
-    if elems:
-        legend = "p_level " if write_p else ""
-        io.scalar(
-            len(elems), f"# n_elem at level 0, [ type sid {legend}(n0 ... nN-1) ]"
-        )
     p_flat = None
     if write_p:
         p_flat = np.concatenate(
             [np.asarray(a).ravel().astype(np.int64) for a in p_level]
         )
-    for code, cell, nodes in elems:
+    legend = "p_level " if write_p else ""
+    if tree is not None:
+        # Level by level, each element after its parent; the leaves' subdomain
+        # and p-level from the cells, their ancestors' from the tree.
+        rows = tree[0]
+        for r, (cell, parent, code, sd, plev, level, nodes) in enumerate(rows):
+            if r == 0 or level != rows[r - 1][5]:
+                n = sum(1 for row in rows[r:] if row[5] == level)
+                io.scalar(
+                    n,
+                    f"# n_elem at level {level}, [ type "
+                    + ("parent " if level else "")
+                    + f"sid {legend}(n0 ... nN-1) ]",
+                )
+            rec = [code] + ([parent] if level else [])
+            if cell >= 0:
+                rec.append(int(sid[cell]))
+                if write_p:
+                    rec.append(int(p_flat[cell]))
+            else:
+                rec.append(sd)
+                if write_p:
+                    rec.append(plev)
+            rec += node_id[nodes].tolist()
+            io.ints(rec)
+    elif elems:
+        io.scalar(
+            len(elems), f"# n_elem at level 0, [ type sid {legend}(n0 ... nN-1) ]"
+        )
+    for code, cell, nodes in elems if tree is None else []:
         rec = [code, int(sid[cell])]
         if write_p:
             rec.append(int(p_flat[cell]))

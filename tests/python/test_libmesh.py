@@ -53,7 +53,16 @@ def test_engines_agree_on_every_fixture(path):
     _same(meshioplusplus.libmesh.read(path), py_libmesh.read(path))
 
 
-@pytest.mark.parametrize("stem", sorted({p.stem for p in FIXTURES}))
+PAIRS = sorted(
+    {
+        p.stem
+        for p in FIXTURES
+        if (MESHES / f"{p.stem}.xda").exists() and (MESHES / f"{p.stem}.xdr").exists()
+    }
+)
+
+
+@pytest.mark.parametrize("stem", PAIRS)
 def test_ascii_and_xdr_read_the_same(read, stem):
     _same(read(MESHES / f"{stem}.xda"), read(MESHES / f"{stem}.xdr"))
 
@@ -179,9 +188,15 @@ def test_compressed_files(read, name):
     _same(read(MESHES / name), read(MESHES / "hex27.xda"))
 
 
-def test_core_leaves_bzip2_to_python():
-    with pytest.raises(Exception, match="bzip2"):
-        _core.libmesh_read(str(MESHES / "hex27.xdr.bz2"))
+def test_core_reads_bzip2_when_built_with_it():
+    if _core.__has_bzip2__:
+        _same(
+            _core.libmesh_read(str(MESHES / "hex27.xdr.bz2")),
+            py_libmesh.read(MESHES / "hex27.xda"),
+        )
+    else:
+        with pytest.raises(Exception, match="bzip2"):
+            _core.libmesh_read(str(MESHES / "hex27.xdr.bz2"))
     assert meshioplusplus.libmesh.read(MESHES / "hex27.xdr.bz2").cells
 
 
@@ -247,15 +262,79 @@ def test_writer_maps_foreign_regions(tmp_path, capfd):
         assert np.asarray(wall.entries).tolist() == [[0, 3]]
 
 
-@pytest.mark.parametrize("suffix", [".xda.gz", ".xdr.bz2"])
+@pytest.mark.parametrize("suffix", [".xda.gz", ".xda.bz2"])
 def test_writer_compresses(tmp_path, suffix):
     mesh = py_libmesh.read(MESHES / "hex27.xda")
     path = tmp_path / f"mesh{suffix}"
     meshioplusplus.write(path, mesh)
     first = path.read_bytes()
+    assert first[:3] in (b"\x1f\x8b\x08", b"BZh")
     meshioplusplus.write(path, mesh)
     assert path.read_bytes() == first  # no timestamp in the gzip header
     _same(meshioplusplus.read(path), mesh)
+    python = tmp_path / f"python{suffix}"
+    py_libmesh.write(python, mesh)
+    assert python.read_bytes()[:3] == first[:3]
+    _same(py_libmesh.read(python), mesh)
+
+
+@pytest.mark.parametrize("suffix", [".xdr.gz", ".xdr.bz2"])
+def test_xdr_is_never_compressed(tmp_path, suffix):
+    # libMesh's XDR files ignore the suffix (plain stdio), and read only plain XDR.
+    mesh = py_libmesh.read(MESHES / "hex27.xda")
+    core, python = tmp_path / f"core{suffix}", tmp_path / f"python{suffix}"
+    meshioplusplus.write(core, mesh)
+    py_libmesh.write(python, mesh)
+    assert core.read_bytes() == python.read_bytes()
+    assert core.read_bytes()[4:11] == b"libMesh"
+    _same(meshioplusplus.read(core), mesh)
+
+
+@pytest.mark.parametrize("name", ["tree_quad.xdr", "tree_hex20.xdr"])
+@pytest.mark.parametrize("ext", [".xda", ".xdr"])
+def test_refinement_tree_round_trips(tmp_path, name, ext):
+    """libMesh wrote tree_quad (three levels, a side set, p-levels) and
+    tree_hex20 (an edge set on a refined element's edge): the tree comes back
+    level by level with its boundary ids on the level-0 elements."""
+    mesh = meshioplusplus.libmesh.read(MESHES / name)
+    tree = mesh.field_data["libmesh:tree"]
+    assert tree.shape[1] == 5 and (tree[:, 1] >= -1).all()
+    np.testing.assert_array_equal(
+        tree, py_libmesh.read(MESHES / name).field_data["libmesh:tree"]
+    )
+    core, python = tmp_path / f"core{ext}", tmp_path / f"python{ext}"
+    _core.libmesh_write(str(core), mesh)
+    py_libmesh.write(python, mesh)
+    assert core.read_bytes() == python.read_bytes()
+    for back in (meshioplusplus.libmesh.read(core), py_libmesh.read(core)):
+        _same(back, mesh)
+        for key in ("libmesh:tree", "libmesh:tree:nodes"):
+            np.testing.assert_array_equal(back.field_data[key], mesh.field_data[key])
+
+
+def test_refinement_tree_matches_libmesh_text(tmp_path):
+    # The ASCII file libMesh wrote, line for line (its node-set rows aside,
+    # which libMesh lists in its own order).
+    mesh = meshioplusplus.libmesh.read(MESHES / "tree_quad.xda")
+    path = tmp_path / "tree.xda"
+    meshioplusplus.libmesh.write(path, mesh)
+    ours = path.read_text().splitlines()
+    theirs = (MESHES / "tree_quad.xda").read_text().splitlines()
+    assert sorted(ours) == sorted(theirs)
+    assert "4\t # n_elem at level 2, [ type parent sid p_level (n0 ... nN-1) ]" in ours
+
+
+def test_refinement_tree_that_no_longer_matches_is_written_flat(tmp_path):
+    mesh = meshioplusplus.libmesh.read(MESHES / "tree_quad.xdr")
+    nodes = mesh.field_data["libmesh:tree:nodes"].copy()
+    nodes[-1, 0] = nodes[-1, 1]  # a leaf that is no longer its cell
+    mesh.field_data["libmesh:tree:nodes"] = nodes
+    for write in (_core.libmesh_write, py_libmesh.write):
+        path = tmp_path / "flat.xdr"
+        write(str(path), mesh)
+        back = meshioplusplus.libmesh.read(path)
+        assert "libmesh:tree" not in back.field_data
+        assert len(back.cells[0].data) == len(mesh.cells[0].data)
 
 
 def test_writer_sparse_node_ids(tmp_path):

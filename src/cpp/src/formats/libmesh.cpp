@@ -50,11 +50,106 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+#include <bzlib.h>
+#endif
+
 namespace meshioplusplus {
 
 namespace {
 
 constexpr const char* kLmWhat = "libMesh";
+
+// --- compression: libMesh's `.gz` (gzip) and `.bz2` (bzip2) files ---------------
+
+// gzip, laid out as Python's gzip.compress(data, mtime=0) lays it out (raw
+// deflate at level 9, mtime 0, XFL 2, OS 255), so both engines write the same
+// bytes when they share a zlib.
+std::string lm_gzip(const std::string& rIn) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    z_stream z{};
+    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        throw WriteError("libMesh: zlib deflateInit2 failed");
+    std::string out("\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff", 10);
+    out.resize(10 + deflateBound(&z, static_cast<uLong>(rIn.size())));
+    z.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(rIn.data()));
+    z.avail_in = static_cast<uInt>(rIn.size());
+    z.next_out = reinterpret_cast<Bytef*>(&out[10]);
+    z.avail_out = static_cast<uInt>(out.size() - 10);
+    const int rc = deflate(&z, Z_FINISH);
+    const std::size_t produced = 10 + z.total_out;
+    deflateEnd(&z);
+    if (rc != Z_STREAM_END)
+        throw WriteError("libMesh: zlib deflate failed");
+    out.resize(produced);
+    const uLong crc =
+        crc32(0L, reinterpret_cast<const Bytef*>(rIn.data()), static_cast<uInt>(rIn.size()));
+    for (const std::uint32_t v :
+         {static_cast<std::uint32_t>(crc), static_cast<std::uint32_t>(rIn.size())})
+        for (int b = 0; b < 4; ++b)
+            out += static_cast<char>((v >> (8 * b)) & 0xff);
+    return out;
+#else
+    (void)rIn;
+    throw WriteError("libMesh: this build has no zlib (MESHIOPLUSPLUS_WITH_ZLIB) to write .gz");
+#endif
+}
+
+std::string lm_bzip2(const std::string& rIn) {
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+    // The bound bzip2 documents: 1% larger plus 600 bytes.
+    unsigned int size = static_cast<unsigned int>(rIn.size() + rIn.size() / 100 + 601);
+    std::string out(size, '\0');
+    const int rc = BZ2_bzBuffToBuffCompress(&out[0], &size, const_cast<char*>(rIn.data()),
+                                            static_cast<unsigned int>(rIn.size()), 9, 0, 0);
+    if (rc != BZ_OK)
+        throw WriteError("libMesh: bzip2 compression failed (" + std::to_string(rc) + ")");
+    out.resize(size);
+    return out;
+#else
+    (void)rIn;
+    throw WriteError("libMesh: this build has no bzip2 (MESHIOPLUSPLUS_WITH_BZIP2) to write .bz2");
+#endif
+}
+
+// Every bzip2 stream of `rIn`, one after the other (as `bzip2 -d` reads them).
+std::string lm_bunzip2(const std::string& rIn, const std::string& rPath) {
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+    std::string out;
+    std::size_t pos = 0;
+    char buf[1 << 16];
+    while (pos < rIn.size()) {
+        bz_stream z{};
+        if (BZ2_bzDecompressInit(&z, 0, 0) != BZ_OK)
+            throw ReadError("libMesh: bzip2 initialisation failed");
+        z.next_in = const_cast<char*>(rIn.data() + pos);
+        z.avail_in = static_cast<unsigned int>(rIn.size() - pos);
+        int rc = BZ_OK;
+        while (rc == BZ_OK) {
+            z.next_out = buf;
+            z.avail_out = sizeof(buf);
+            rc = BZ2_bzDecompress(&z);
+            out.append(buf, sizeof(buf) - z.avail_out);
+            if (rc == BZ_OK && z.avail_in == 0 && z.avail_out != 0)
+                rc = BZ_UNEXPECTED_EOF;
+        }
+        pos = rIn.size() - z.avail_in;
+        BZ2_bzDecompressEnd(&z);
+        if (rc != BZ_STREAM_END)
+            throw ReadError("libMesh: " + rPath + " is a corrupt or truncated bzip2 stream");
+    }
+    return out;
+#else
+    (void)rIn;
+    throw ReadError("libMesh: " + rPath +
+                    " is bzip2-compressed and this build has no bzip2 "
+                    "(MESHIOPLUSPLUS_WITH_BZIP2; the Python reader inflates it)");
+#endif
+}
 
 // --- element types ----------------------------------------------------------------
 
@@ -749,9 +844,7 @@ Mesh read_libmesh(const std::string& rPath) {
         static_cast<unsigned char>(text[1]) == 0x8b)
         text = detail::zlib_inflate(text, 15 + 16, nullptr, kLmWhat);
     else if (text.compare(0, 3, "BZh") == 0)
-        throw ReadError("libMesh: " + rPath +
-                        " is bzip2-compressed; the native reader inflates only gzip (the "
-                        "Python reader inflates both)");
+        text = lm_bunzip2(text, rPath);
 
     // XDR starts with the version string's 4-byte big-endian length; ASCII with
     // the version text itself.
@@ -925,8 +1018,33 @@ Mesh read_libmesh(const std::string& rPath) {
                       unmatched);
     }
     mesh.AddCellData("libmesh:subdomain", std::move(sid_blocks));
-    if (max_level > 0)
+    if (max_level > 0) {
         mesh.AddCellData("libmesh:level", std::move(level_blocks));
+        // The refinement tree, every element in file order, so the writer can
+        // write it back: `libmesh:tree` (cell or -1, parent row or -1, libMesh
+        // type, subdomain, p-level) and `libmesh:tree:nodes` (its nodes as
+        // point indices, in libMesh's order, -1 past them).
+        std::size_t width = 0;
+        for (const LmElement& el : f.mElements)
+            width = std::max(width, el.mNodes.size());
+        NDArray tree(DType::Int64, {ne, 5});
+        NDArray tree_nodes(DType::Int64, {ne, width});
+        std::int64_t* t = tree.As<std::int64_t>();
+        std::int64_t* tn = tree_nodes.As<std::int64_t>();
+        std::fill(tn, tn + ne * width, -1);
+        for (std::size_t e = 0; e < ne; ++e) {
+            const LmElement& el = f.mElements[e];
+            t[5 * e] = cell_of[e];
+            t[5 * e + 1] = el.mParent;
+            t[5 * e + 2] = static_cast<std::int64_t>(el.mCode);
+            t[5 * e + 3] = el.mSubdomain;
+            t[5 * e + 4] = el.mPLevel;
+            for (std::size_t k = 0; k < el.mNodes.size(); ++k)
+                tn[e * width + k] = node_index[static_cast<std::size_t>(el.mNodes[k])];
+        }
+        mesh.AddFieldData("libmesh:tree", std::move(tree));
+        mesh.AddFieldData("libmesh:tree:nodes", std::move(tree_nodes));
+    }
     if (f.mInlinePLevel)
         mesh.AddCellData("libmesh:p_level", std::move(p_blocks));
 
@@ -1128,11 +1246,18 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     std::string lower;
     for (char c : rPath)
         lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (lm_ends_with(lower, ".gz") || lm_ends_with(lower, ".bz2"))
-        throw WriteError("libMesh: the native writer does not compress; write " +
-                         rPath.substr(0, rPath.rfind('.')) +
-                         " and compress it (the Python writer does both)");
+    // A trailing `.gz`/`.bz2` compresses an ASCII stream, as libMesh does: its
+    // XDR files ignore the suffix (`Xdr` opens them with plain stdio), so a
+    // `.xdr.gz`/`.xdr.bz2` is plain XDR, which libMesh then reads.
+    bool gz = lm_ends_with(lower, ".gz");
+    bool bz2 = lm_ends_with(lower, ".bz2");
+    if (gz)
+        lower.resize(lower.size() - 3);
+    if (bz2)
+        lower.resize(lower.size() - 4);
     const bool xdr = lm_ends_with(lower, ".xdr");
+    gz = gz && !xdr;
+    bz2 = bz2 && !xdr;
 
     // Cells: global (block-major) offsets and each cell's dimension.
     const std::size_t nb = rMesh.NumCellBlocks();
@@ -1349,6 +1474,9 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     // Edge sets: each line cell on the first element holding that edge.
     std::set<std::array<std::int64_t, 3>> edges;
     std::size_t edges_lost = 0;
+    // Edge cells no active element holds (a refined element's whole edge):
+    // (corner, corner, id), matched against the tree's level-0 elements.
+    std::vector<std::array<std::int64_t, 3>> edges_unmatched;
     if (!edge_sets.empty()) {
         std::map<std::pair<std::int64_t, std::int64_t>, std::pair<std::int64_t, std::int64_t>>
             edge_owner;
@@ -1377,7 +1505,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
                 const std::int64_t n1 = detail::read_int(conn, r * w + 1);
                 const auto it = edge_owner.find({std::min(n0, n1), std::max(n0, n1)});
                 if (it == edge_owner.end()) {
-                    ++edges_lost;
+                    edges_unmatched.push_back({std::min(n0, n1), std::max(n0, n1), id});
                     continue;
                 }
                 edges.insert({it->second.first, it->second.second, id});
@@ -1396,15 +1524,6 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
             if (elem_of[static_cast<std::size_t>(e[k])] >= 0)
                 shellfaces.insert({elem_of[static_cast<std::size_t>(e[k])], face, id});
     }
-    if (sides_lost || edges_lost) {
-        log::warn(
-            "libMesh: {} side and {} edge set entries match no written element and are "
-            "dropped",
-            sides_lost, edges_lost);
-        detail::provenance_note("regions-dropped",
-                                std::to_string(sides_lost + edges_lost) +
-                                    " side/edge set entries match no libMesh element");
-    }
 
     // Node sets.
     std::int64_t next_nid = 0;
@@ -1421,12 +1540,253 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
             if (e[k] >= 0 && static_cast<std::size_t>(e[k]) < np)
                 nodesets.insert({node_id[static_cast<std::size_t>(e[k])], id});
     }
+    // The refinement tree (`libmesh:tree`, as the reader keeps it), when it
+    // still describes these cells: each written cell is exactly one leaf of
+    // the tree, with the same type and nodes; else the mesh is written flat.
+    struct LmTreeRow {
+        std::int64_t mCell, mParent, mCode, mSid, mP;
+        int mLevel;
+        std::vector<std::int64_t> mNodes;
+    };
+    std::vector<LmTreeRow> tree;
+    std::vector<std::int64_t> row_of_elem(elems.size(), -1);
+    bool use_tree = false;
+    if (rMesh.HasFieldData("libmesh:tree") && rMesh.HasFieldData("libmesh:tree:nodes")) {
+        const NDArray& t = rMesh.FieldData("libmesh:tree");
+        const NDArray& tn = rMesh.FieldData("libmesh:tree:nodes");
+        const std::size_t nt = t.Shape().size() == 2 && t.Shape()[1] == 5 ? t.Shape()[0] : 0;
+        const std::size_t w = tn.Shape().size() == 2 && tn.Shape()[0] == nt ? tn.Shape()[1] : 0;
+        bool ok = nt > 0 && w > 0;
+        std::vector<bool> has_child(nt, false);
+        int last_level = 0;
+        for (std::size_t r = 0; ok && r < nt; ++r) {
+            LmTreeRow row{detail::read_int(t, 5 * r),
+                          detail::read_int(t, 5 * r + 1),
+                          detail::read_int(t, 5 * r + 2),
+                          detail::read_int(t, 5 * r + 3),
+                          detail::read_int(t, 5 * r + 4),
+                          0,
+                          {}};
+            const LmType* type =
+                row.mCode >= 0 ? lm_type(static_cast<std::uint64_t>(row.mCode)) : nullptr;
+            ok = type && type->mNodes > 0 && row.mParent >= -1 &&
+                 row.mParent < static_cast<std::int64_t>(r) && row.mSid >= 0 && row.mSid <= 65534;
+            for (std::size_t k = 0; ok && k < w; ++k) {
+                const std::int64_t v = detail::read_int(tn, r * w + k);
+                if (v < 0)
+                    break;
+                ok = static_cast<std::size_t>(v) < np;
+                row.mNodes.push_back(v);
+            }
+            if (!ok || row.mNodes.size() != static_cast<std::size_t>(type->mNodes)) {
+                ok = false;
+                break;
+            }
+            if (row.mParent >= 0) {
+                row.mLevel = tree[static_cast<std::size_t>(row.mParent)].mLevel + 1;
+                has_child[static_cast<std::size_t>(row.mParent)] = true;
+            }
+            ok = row.mLevel >= last_level;
+            last_level = row.mLevel;
+            tree.push_back(std::move(row));
+        }
+        std::vector<bool> named(ncells, false);
+        for (std::size_t r = 0; ok && r < nt; ++r) {
+            const LmTreeRow& row = tree[r];
+            if (has_child[r]) {
+                ok = row.mCell == -1;
+                continue;
+            }
+            ok = row.mCell >= 0 && static_cast<std::size_t>(row.mCell) < ncells &&
+                 elem_of[static_cast<std::size_t>(row.mCell)] >= 0 &&
+                 !named[static_cast<std::size_t>(row.mCell)];
+            if (!ok)
+                break;
+            named[static_cast<std::size_t>(row.mCell)] = true;
+            const std::size_t i =
+                static_cast<std::size_t>(elem_of[static_cast<std::size_t>(row.mCell)]);
+            ok = elems[i].mCode == row.mCode && elems[i].mNodes == row.mNodes;
+            row_of_elem[i] = static_cast<std::int64_t>(r);
+        }
+        for (std::size_t i = 0; ok && i < elems.size(); ++i)
+            ok = row_of_elem[i] >= 0;
+        if (!ok) {
+            log::warn(
+                "libMesh: `libmesh:tree` no longer matches the cells; the mesh is written "
+                "flat, as its active cells");
+            detail::provenance_note("refinement-tree-dropped",
+                                    "libmesh:tree does not match the cells");
+            tree.clear();
+        }
+        use_tree = ok;
+    }
+    if (use_tree) {
+        // libMesh keeps boundary ids on level-0 elements: a set's entries are
+        // lifted to each level-0 side (edge, shell face) whose active pieces
+        // are all in the set.
+        const std::size_t nt = tree.size();
+        std::vector<std::vector<std::size_t>> kids(nt);
+        std::vector<bool> leaf(nt, true);
+        for (std::size_t r = 0; r < nt; ++r)
+            if (tree[r].mParent >= 0) {
+                kids[static_cast<std::size_t>(tree[r].mParent)].push_back(r);
+                leaf[static_cast<std::size_t>(tree[r].mParent)] = false;
+            }
+        const NDArray& pts_in = rMesh.Points();
+        const std::size_t dim = rMesh.PointDim();
+        auto point = [&](std::int64_t P) {
+            LmPoint q{0.0, 0.0, 0.0};
+            for (std::size_t d = 0; d < dim && d < 3; ++d)
+                q[d] = detail::read_double(pts_in, static_cast<std::size_t>(P) * dim + d);
+            return q;
+        };
+        auto leaves = [&](std::size_t Root) {
+            std::vector<std::size_t> out, stack{Root};
+            while (!stack.empty()) {
+                const std::size_t r = stack.back();
+                stack.pop_back();
+                if (leaf[r])
+                    out.push_back(r);
+                else
+                    stack.insert(stack.end(), kids[r].rbegin(), kids[r].rend());
+            }
+            return out;
+        };
+        auto shape_of = [&](std::size_t R) {
+            return lm_type(static_cast<std::uint64_t>(tree[R].mCode))->mShape;
+        };
+        // A shape's sides, or its edges (corner pairs), as corner lists.
+        auto table_of = [&](std::size_t R, bool Edges) {
+            if (!Edges)
+                return lm_sides(shape_of(R));
+            std::vector<std::vector<int>> out;
+            for (const auto& e : lm_edges(shape_of(R)))
+                out.push_back({e[0], e[1]});
+            return out;
+        };
+        // (row, local index) pieces of the leaves under Root lying on the
+        // polygon (or segment) `rOn`, from the `rTable` of each leaf's shape.
+        using Pieces = std::vector<std::pair<std::int64_t, std::int64_t>>;
+        auto pieces_on = [&](std::size_t Root, const std::vector<LmPoint>& rOn, bool Edges) {
+            Pieces out;
+            for (const std::size_t c : leaves(Root)) {
+                const auto table = table_of(c, Edges);
+                for (std::size_t k = 0; k < table.size(); ++k) {
+                    bool on = true;
+                    for (int v : table[k])
+                        on = on &&
+                             lm_on_side(rOn, point(tree[c].mNodes[static_cast<std::size_t>(v)]));
+                    if (on)
+                        out.emplace_back(static_cast<std::int64_t>(c),
+                                         static_cast<std::int64_t>(k));
+                }
+            }
+            return out;
+        };
+        std::size_t lifted_lost = 0;
+        auto lift = [&](const std::set<std::array<std::int64_t, 3>>& rIn, bool Edges) {
+            std::map<std::int64_t, std::set<std::pair<std::int64_t, std::int64_t>>> want;
+            for (const auto& t : rIn)
+                want[t[2]].emplace(row_of_elem[static_cast<std::size_t>(t[0])], t[1]);
+            std::set<std::array<std::int64_t, 3>> out;
+            for (const auto& [id, pieces] : want) {
+                std::set<std::pair<std::int64_t, std::int64_t>> covered;
+                for (std::size_t r0 = 0; r0 < nt && tree[r0].mParent < 0; ++r0) {
+                    const auto table = table_of(r0, Edges);
+                    for (std::size_t k = 0; k < table.size(); ++k) {
+                        std::vector<LmPoint> on;
+                        for (int v : table[k])
+                            on.push_back(point(tree[r0].mNodes[static_cast<std::size_t>(v)]));
+                        const Pieces d = pieces_on(r0, on, Edges);
+                        bool all = !d.empty();
+                        for (const auto& piece : d)
+                            all = all && pieces.count(piece);
+                        if (!all)
+                            continue;
+                        out.insert(
+                            {static_cast<std::int64_t>(r0), static_cast<std::int64_t>(k), id});
+                        covered.insert(d.begin(), d.end());
+                    }
+                }
+                for (const auto& piece : pieces)
+                    lifted_lost += covered.count(piece) ? 0 : 1;
+            }
+            return out;
+        };
+        sides = lift(sides, false);
+        edges = lift(edges, true);
+        // Whole edges of refined level-0 elements.
+        std::map<std::pair<std::int64_t, std::int64_t>, std::pair<std::int64_t, std::int64_t>>
+            root_edge;
+        for (std::size_t r0 = 0; r0 < nt && tree[r0].mParent < 0; ++r0) {
+            const auto table = table_of(r0, true);
+            for (std::size_t k = 0; k < table.size(); ++k) {
+                const std::int64_t a = tree[r0].mNodes[static_cast<std::size_t>(table[k][0])];
+                const std::int64_t b = tree[r0].mNodes[static_cast<std::size_t>(table[k][1])];
+                root_edge.emplace(
+                    std::make_pair(std::min(a, b), std::max(a, b)),
+                    std::make_pair(static_cast<std::int64_t>(r0), static_cast<std::int64_t>(k)));
+            }
+        }
+        std::vector<std::array<std::int64_t, 3>> still;
+        for (const auto& u : edges_unmatched) {
+            const auto it = root_edge.find({u[0], u[1]});
+            if (it == root_edge.end())
+                still.push_back(u);
+            else
+                edges.insert({it->second.first, it->second.second, u[2]});
+        }
+        edges_unmatched = std::move(still);
+        {
+            std::map<std::pair<std::int64_t, std::int64_t>, std::set<std::int64_t>> want;
+            for (const auto& t : shellfaces)
+                want[{t[2], t[1]}].insert(row_of_elem[static_cast<std::size_t>(t[0])]);
+            std::set<std::array<std::int64_t, 3>> out;
+            for (const auto& [key, rows] : want) {
+                std::set<std::int64_t> covered;
+                for (std::size_t r0 = 0; r0 < nt && tree[r0].mParent < 0; ++r0) {
+                    bool all = true;
+                    const std::vector<std::size_t> under = leaves(r0);
+                    for (const std::size_t c : under)
+                        all = all && rows.count(static_cast<std::int64_t>(c));
+                    if (!all)
+                        continue;
+                    out.insert({static_cast<std::int64_t>(r0), key.second, key.first});
+                    covered.insert(under.begin(), under.end());
+                }
+                for (const std::int64_t r : rows)
+                    lifted_lost += covered.count(r) ? 0 : 1;
+            }
+            shellfaces = std::move(out);
+        }
+        if (lifted_lost) {
+            log::warn(
+                "libMesh: {} boundary set entries cover only part of a level-0 element's "
+                "side, edge or face and are dropped (libMesh keeps boundary ids on level-0 "
+                "elements)",
+                lifted_lost);
+            detail::provenance_note(
+                "regions-dropped",
+                std::to_string(lifted_lost) + " boundary entries are not whole level-0 sides");
+        }
+    }
+    edges_lost += edges_unmatched.size();
+    if (sides_lost || edges_lost) {
+        log::warn(
+            "libMesh: {} side and {} edge set entries match no written element and are "
+            "dropped",
+            sides_lost, edges_lost);
+        detail::provenance_note("regions-dropped",
+                                std::to_string(sides_lost + edges_lost) +
+                                    " side/edge set entries match no libMesh element");
+    }
     const bool bcs = !sides.empty() || !edges.empty() || !shellfaces.empty() || !nodesets.empty();
 
     // The stream, as XdrIO::write lays it out (libMesh-1.8.0, 8-byte ids).
     LmOut io(xdr);
     io.String("libMesh-1.8.0");
-    io.Scalar(static_cast<std::int64_t>(elems.size()), "# number of elements");
+    io.Scalar(static_cast<std::int64_t>(use_tree ? tree.size() : elems.size()),
+              "# number of elements");
     io.Scalar(max_node_id, "# number of nodes");
     io.String(bcs ? "." : "n/a", "# boundary condition specification file");
     io.String(".", "# subdomain id specification file");
@@ -1460,12 +1820,47 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     };
     name_map(subdomain_names, "# subdomain id to name map");
 
-    if (!elems.empty()) {
+    if (use_tree) {
+        // Level by level, each element after its parent; the leaves' subdomain
+        // and p-level from the cells, their ancestors' from the tree.
+        for (std::size_t r = 0; r < tree.size(); ++r) {
+            const LmTreeRow& row = tree[r];
+            if (r == 0 || row.mLevel != tree[r - 1].mLevel) {
+                std::size_t n = 0;
+                for (std::size_t q = r; q < tree.size() && tree[q].mLevel == row.mLevel; ++q)
+                    ++n;
+                const std::string legend = "# n_elem at level " + std::to_string(row.mLevel) +
+                                           ", [ type " + (row.mLevel ? "parent " : "") + "sid " +
+                                           (write_p ? "p_level " : "") + "(n0 ... nN-1) ]";
+                io.Scalar(static_cast<std::int64_t>(n), legend.c_str());
+            }
+            std::vector<std::int64_t> rec{row.mCode};
+            if (row.mLevel)
+                rec.push_back(row.mParent);
+            if (row.mCell >= 0) {
+                const std::size_t c = static_cast<std::size_t>(row.mCell);
+                rec.push_back(sid[c]);
+                if (write_p) {
+                    const std::size_t b = block_of(row.mCell);
+                    rec.push_back(
+                        detail::read_int(rMesh.CellData("libmesh:p_level", b), c - start[b]));
+                }
+            } else {
+                rec.push_back(row.mSid);
+                if (write_p)
+                    rec.push_back(row.mP);
+            }
+            for (std::int64_t n : row.mNodes)
+                rec.push_back(node_id[static_cast<std::size_t>(n)]);
+            io.Ints(rec);
+        }
+    }
+    if (!use_tree && !elems.empty()) {
         const std::string legend = std::string("# n_elem at level 0, [ type sid ") +
                                    (write_p ? "p_level " : "") + "(n0 ... nN-1) ]";
         io.Scalar(static_cast<std::int64_t>(elems.size()), legend.c_str());
     }
-    for (const LmOutElem& el : elems) {
+    for (const LmOutElem& el : use_tree ? std::vector<LmOutElem>{} : elems) {
         const std::size_t c = static_cast<std::size_t>(el.mCell);
         std::vector<std::int64_t> rec{el.mCode, sid[c]};
         if (write_p) {
@@ -1505,10 +1900,11 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     triples(edges, "# number of edge boundary conditions");
     triples(shellfaces, "# number of shellface boundary conditions");
 
+    const std::string data = gz ? lm_gzip(io.Data()) : bz2 ? lm_bzip2(io.Data()) : io.Data();
     auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!out)
         throw WriteError("libMesh: cannot open " + rPath + " for writing");
-    out.write(io.Data().data(), static_cast<std::streamsize>(io.Data().size()));
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
     if (!out)
         throw WriteError("libMesh: failed writing " + rPath);
 }

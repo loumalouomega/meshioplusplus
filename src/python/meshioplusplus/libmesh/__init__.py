@@ -32,11 +32,13 @@ def read(filename):
     edge sets ``line`` cells in a ``<name>:edge`` cell region and shell-face sets
     ``<name>:shellface0``/``1`` cell regions. The encoding is detected from the
     content, and gzip/bzip2 compression is inflated. The C++ core reads the
-    whole format except bzip2, which the Python reader inflates; the Python
-    reader is also the fallback for buffers and for anything the C++ path
-    raises on.
+    whole format (bzip2 when built with it, ``_core.__has_bzip2__``); the
+    Python reader is the fallback for buffers, for bzip2 without it, and for
+    anything the C++ path raises on. A refined mesh also keeps its refinement
+    tree as ``libmesh:tree``/``libmesh:tree:nodes`` field data.
     """
-    if not is_buffer(filename, "r") and not _is_bzip2(filename):
+    native_bz2 = getattr(_core, "__has_bzip2__", False)
+    if not is_buffer(filename, "r") and (native_bz2 or not _is_bzip2(filename)):
         try:
             return _core.libmesh_read(str(filename))
         except Exception as exc:
@@ -49,9 +51,11 @@ def write(filename, mesh):
     """Write a libMesh ``.xda`` (ASCII) or ``.xdr`` (XDR binary) mesh.
 
     The libMesh-1.8.0 layout, encoded by the extension; a trailing ``.gz`` or
-    ``.bz2`` compresses it. Every cell with a libMesh type becomes a level-0
-    element (polygons, polyhedra and Lagrange cells are dropped with a
-    warning). Subdomain ids come from ``libmesh:subdomain``, else the cell
+    ``.bz2`` compresses an ASCII file (XDR files stay plain, as libMesh writes
+    them). Every cell with a libMesh type becomes an element
+    (polygons, polyhedra and Lagrange cells are dropped with a warning): the
+    refinement tree ``libmesh:tree`` describes, when it still matches the
+    cells, else one level-0 element each. Subdomain ids come from ``libmesh:subdomain``, else the cell
     regions; side regions become side sets, point regions node sets, and the
     ``:edge``/``:shellface<k>`` cell regions edge and shell-face sets.
     """
@@ -63,7 +67,14 @@ def write(filename, mesh):
     compress = (
         gzip if lower.endswith(".gz") else bz2 if lower.endswith(".bz2") else None
     )
-    if compress is None:
+    if lower.endswith((".xdr.gz", ".xdr.bz2")):
+        compress = None  # plain XDR, as libMesh writes (and reads) them
+    native = compress is None or (
+        getattr(_core, "__has_zlib__", False)
+        if compress is gzip
+        else getattr(_core, "__has_bzip2__", False)
+    )
+    if native:
         try:
             _core.libmesh_write(path, mesh)
             return
@@ -72,7 +83,8 @@ def write(filename, mesh):
                 raise
         _py_write(filename, mesh)
         return
-    # The core writes the plain stream; Python compresses it.
+    # The core writes the plain stream; Python compresses it (a build without
+    # zlib or bzip2).
     plain = path[: path.rfind(".")]
     fd, tmp = tempfile.mkstemp(
         suffix=os.path.splitext(plain)[1], dir=os.path.dirname(os.path.abspath(path))

@@ -28,6 +28,7 @@ vcpkg_check_features(
         zlib    MESHIOPLUSPLUS_WITH_ZLIB
         zstd    MESHIOPLUSPLUS_WITH_ZSTD
         lz4     MESHIOPLUSPLUS_WITH_LZ4
+        bzip2   MESHIOPLUSPLUS_WITH_BZIP2
         kahip   MESHIOPLUSPLUS_WITH_KAHIP
         cgnslib MESHIOPLUSPLUS_WITH_CGNSLIB
         gidpost MESHIOPLUSPLUS_WITH_GIDPOST

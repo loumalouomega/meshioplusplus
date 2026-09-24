@@ -64,6 +64,12 @@
         "zstd"
       ]
     },
+    "bzip2": {
+      "description": "libMesh .xda.bz2/.xdr.bz2 meshes read and written natively",
+      "dependencies": [
+        "bzip2"
+      ]
+    },
     "lz4": {
       "description": "VTK XML lz4 block compression (vtkLZ4DataCompressor; ParaView-readable)",
       "dependencies": [
