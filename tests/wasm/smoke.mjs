@@ -2381,10 +2381,12 @@ step('availableFormats reports what this build can read and write', () => {
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    // libMesh, Abaqus .fil and OpenRadioss (v16.7.0) read-only; Z88 both ways.
-    for (const fmt of ['libmesh', 'abaqus_fil', 'radioss'])
+    // Abaqus .fil and OpenRadioss (v16.7.0) read-only; Z88 and libMesh (its
+    // writer is v16.11.0) both ways.
+    for (const fmt of ['abaqus_fil', 'radioss'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    assert.ok(readers.includes('z88') && writers.includes('z88'));
+    for (const fmt of ['z88', 'libmesh'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // MSC Marc decks and post files, and the full rotor of a cyclic Ansys .rst
     // (v16.8.0): read-only.
     for (const fmt of ['marc', 'marc_t19', 'ansys_rst_cyclic'])
@@ -2690,6 +2692,11 @@ step('z88 is found by its file name; libmesh, abaqus_fil and radioss read by ext
         '0 0 0\n1 0 0\n0 1 0\n0 0 1\n';
     m.FS.writeFile('/one_tet.xda', xda);
     assert.deepEqual(m.readMesh('/one_tet.xda').cells.map((c) => c.type), ['tetra']);
+    // And written back (v16.11.0), ASCII and XDR.
+    for (const ext of ['xda', 'xdr']) {
+        m.writeMesh(`/tet10.${ext}`, tet10, 'libmesh');
+        assert.deepEqual(m.readMesh(`/tet10.${ext}`).cells.map((c) => c.type), ['tetra10'], ext);
+    }
     const i = (v) => `I${String(String(v).length).padStart(2, ' ')}${v}`;
     const d = (v) => `D${v < 0 ? '-' : ' '}${Math.abs(v).toExponential(15).replace('e', 'D').replace(/D([+-])(\d)$/, 'D$10$2')}`;
     const rec = (...items) => `*${i(items.length + 1)}${items.join('')}`;

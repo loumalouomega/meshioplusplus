@@ -49,6 +49,8 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("model.neu", ""), "femap");
     EXPECT_EQ(resolve_format("mesh.xda", ""), "libmesh");
     EXPECT_EQ(resolve_format("mesh.xdr", ""), "libmesh");
+    EXPECT_EQ(resolve_format("mesh.xda.gz", ""), "libmesh");
+    EXPECT_EQ(resolve_format("mesh.xdr.bz2", ""), "libmesh");
     EXPECT_EQ(resolve_format("job.fil", ""), "abaqus_fil");
     EXPECT_EQ(resolve_format("deck_0000.rad", ""), "radioss");
     EXPECT_EQ(resolve_format("job.t19", ""), "marc_t19");

@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <ios>
 #include <iterator>
@@ -43,6 +44,8 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -145,6 +148,66 @@ const std::vector<std::vector<int>>& lm_sides(LmShape Shape) {
             return none;
     }
 }
+
+// Corner nodes of each edge, libMesh's edge numbering (Hex8::edge_nodes_map ...).
+// A quadratic element's mid-edge node for edge k is node `vertices + k`.
+const std::vector<std::array<int, 2>>& lm_edges(LmShape Shape) {
+    static const std::vector<std::array<int, 2>> none;
+    static const std::vector<std::array<int, 2>> tri = {{0, 1}, {1, 2}, {2, 0}};
+    static const std::vector<std::array<int, 2>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    static const std::vector<std::array<int, 2>> tet = {{0, 1}, {1, 2}, {0, 2},
+                                                        {0, 3}, {1, 3}, {2, 3}};
+    static const std::vector<std::array<int, 2>> hex = {{0, 1}, {1, 2}, {2, 3}, {0, 3},
+                                                        {0, 4}, {1, 5}, {2, 6}, {3, 7},
+                                                        {4, 5}, {5, 6}, {6, 7}, {4, 7}};
+    static const std::vector<std::array<int, 2>> prism = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 4},
+                                                          {2, 5}, {3, 4}, {4, 5}, {3, 5}};
+    static const std::vector<std::array<int, 2>> pyramid = {{0, 1}, {1, 2}, {2, 3}, {0, 3},
+                                                            {0, 4}, {1, 4}, {2, 4}, {3, 4}};
+    switch (Shape) {
+        case LmShape::Tri:
+            return tri;
+        case LmShape::Quad:
+            return quad;
+        case LmShape::Tet:
+            return tet;
+        case LmShape::Hex:
+            return hex;
+        case LmShape::Prism:
+            return prism;
+        case LmShape::Pyramid:
+            return pyramid;
+        default:
+            return none;
+    }
+}
+
+int lm_vertices(LmShape Shape) {
+    switch (Shape) {
+        case LmShape::Point:
+            return 1;
+        case LmShape::Edge:
+            return 2;
+        case LmShape::Tri:
+            return 3;
+        case LmShape::Quad:
+        case LmShape::Tet:
+            return 4;
+        case LmShape::Pyramid:
+            return 5;
+        case LmShape::Prism:
+            return 6;
+        case LmShape::Hex:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+// Region-name suffixes for the sets that are not sides: an edge set's line
+// cells, and a shell face (0 or 1) of 2-D elements.
+constexpr const char* kLmEdgeSuffix = ":edge";
+constexpr const char* kLmShellfaceSuffix = ":shellface";
 
 // --- the value stream ---------------------------------------------------------------
 
@@ -318,9 +381,8 @@ struct LmFile {
     std::vector<LmElement> mElements;
     std::vector<double> mCoords;  // 3 per node id
     std::map<std::int64_t, std::string> mSubdomainNames, mSidesetNames, mNodesetNames;
-    std::vector<LmBoundary> mSides;
+    std::vector<LmBoundary> mSides, mEdges, mShellfaces;
     std::vector<std::pair<std::int64_t, std::int64_t>> mNodesets;  // (node, id)
-    std::size_t mSkippedEdgeBcs = 0;
     bool mInlinePLevel = false;
 };
 
@@ -441,22 +503,21 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
 
     if (bc_file == "n/a")
         return f;
-    auto read_triples = [&](std::vector<LmBoundary>* pOut) {
-        std::map<std::int64_t, std::string> names;
+    // Side, edge and shell-face sets share one id space, and each repeats the
+    // sideset name map.
+    auto read_triples = [&](std::vector<LmBoundary>& rOut) {
         if (v092)
-            names = lm_name_map(io, hw);
+            f.mSidesetNames.merge(lm_name_map(io, hw));
         const std::int64_t n = io.Scalar(hw);
         for (std::int64_t k = 0; k < n; ++k) {
             LmBoundary b{};
             b.mElem = io.StreamInt(tw);
             b.mSide = io.StreamInt(tw);
             b.mId = io.StreamInt(tw);
-            if (pOut)
-                pOut->push_back(b);
+            rOut.push_back(b);
         }
-        return std::make_pair(names, static_cast<std::size_t>(n));
     };
-    f.mSidesetNames = read_triples(&f.mSides).first;
+    read_triples(f.mSides);
     if (v092) {
         f.mNodesetNames = lm_name_map(io, hw);
         const std::int64_t n = io.Scalar(hw);
@@ -467,8 +528,8 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
         }
     }
     if (v110) {
-        f.mSkippedEdgeBcs += read_triples(nullptr).second;  // edge
-        f.mSkippedEdgeBcs += read_triples(nullptr).second;  // shell face
+        read_triples(f.mEdges);
+        read_triples(f.mShellfaces);
     }
     return f;
 }
@@ -530,13 +591,167 @@ NDArray lm_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
     return a;
 }
 
+// --- writing --------------------------------------------------------------------------
+
+// libMesh's `Xdr` in WRITE (ASCII) or ENCODE (XDR) mode, the reverse of
+// `LmStream`: a scalar is `value\t # comment`, a vector its length line then
+// `item\t ` per item, bulk data bare values; XDR is big-endian with 4-byte
+// lengths and strings padded to 4 bytes.
+class LmOut {
+public:
+    explicit LmOut(bool Xdr) : mXdr(Xdr) {}
+
+    void String(const std::string& rValue, const char* pComment = "") {
+        if (mXdr) {
+            BinString(rValue);
+            return;
+        }
+        mOut += rValue;
+        Comment(pComment);
+    }
+
+    void Scalar(std::int64_t Value, const char* pComment, int Width = 8) {
+        if (mXdr) {
+            BinInt(Value, Width);
+            return;
+        }
+        mOut += std::to_string(Value);
+        Comment(pComment);
+    }
+
+    void IntVector(const std::vector<std::int64_t>& rValues, const char* pComment = "") {
+        if (mXdr) {
+            BinInt(static_cast<std::int64_t>(rValues.size()), 4);
+            for (std::int64_t v : rValues)
+                BinInt(v, 8);
+            return;
+        }
+        Scalar(static_cast<std::int64_t>(rValues.size()), "# vector length");
+        for (std::int64_t v : rValues)
+            mOut += std::to_string(v) + "\t ";
+        Comment(pComment);
+    }
+
+    void StringVector(const std::vector<std::string>& rValues, const char* pComment = "") {
+        if (mXdr) {
+            BinInt(static_cast<std::int64_t>(rValues.size()), 4);
+            for (const std::string& v : rValues)
+                BinString(v);
+            return;
+        }
+        Scalar(static_cast<std::int64_t>(rValues.size()), "# vector length");
+        for (const std::string& v : rValues)
+            mOut += v + "\t ";
+        Comment(pComment);
+    }
+
+    // `data_stream` of 8-byte integers, one line in ASCII.
+    void Ints(const std::vector<std::int64_t>& rValues) {
+        if (mXdr) {
+            for (std::int64_t v : rValues)
+                BinInt(v, 8);
+            return;
+        }
+        for (std::size_t k = 0; k < rValues.size(); ++k) {
+            if (k)
+                mOut += ' ';
+            mOut += std::to_string(rValues[k]);
+        }
+        mOut += '\n';
+    }
+
+    // `data_stream` of reals, three to a line in ASCII (`%.17e`, as libMesh's
+    // `std::scientific` with `max_digits10`).
+    void Reals(const double* pValues, std::size_t N) {
+        char buf[40];
+        for (std::size_t k = 0; k < N; ++k) {
+            if (mXdr) {
+                std::uint64_t bits = 0;
+                std::memcpy(&bits, &pValues[k], 8);
+                BinInt(static_cast<std::int64_t>(bits), 8);
+                continue;
+            }
+            detail::snprintf_c(buf, sizeof(buf), "%.17e", pValues[k]);
+            mOut += buf;
+            mOut += (k % 3 == 2 || k + 1 == N) ? '\n' : ' ';
+        }
+    }
+
+    const std::string& Data() const { return mOut; }
+
+private:
+    void Comment(const char* pComment) {
+        if (*pComment) {
+            mOut += "\t ";
+            mOut += pComment;
+        }
+        mOut += '\n';
+    }
+
+    void BinInt(std::int64_t Value, int Width) {
+        const std::uint64_t v = static_cast<std::uint64_t>(Value);
+        for (int b = Width - 1; b >= 0; --b)
+            mOut += static_cast<char>((v >> (8 * b)) & 0xff);
+    }
+
+    void BinString(const std::string& rValue) {
+        BinInt(static_cast<std::int64_t>(rValue.size()), 4);
+        mOut += rValue;
+        mOut.append((4 - rValue.size() % 4) % 4, '\0');
+    }
+
+    bool mXdr;
+    std::string mOut;
+};
+
+// meshio++ type -> libMesh ElemType, for the types libMesh stores as they are.
+int lm_code(std::string_view Type) {
+    static const std::pair<const char*, int> codes[] = {
+        {"line", 0},          {"line3", 1},      {"line4", 2},       {"triangle", 3},
+        {"triangle6", 4},     {"quad", 5},       {"quad8", 6},       {"quad9", 7},
+        {"tetra", 8},         {"tetra10", 9},    {"hexahedron", 10}, {"hexahedron20", 11},
+        {"hexahedron27", 12}, {"wedge", 13},     {"wedge15", 14},    {"wedge18", 15},
+        {"pyramid", 16},      {"pyramid13", 17}, {"pyramid14", 18},  {"vertex", 27},
+        {"triangle7", 33},
+    };
+    for (const auto& [name, code] : codes)
+        if (Type == name)
+            return code;
+    return -1;
+}
+
+bool lm_ends_with(const std::string& rName, std::string_view Suffix) {
+    return rName.size() > Suffix.size() &&
+           rName.compare(rName.size() - Suffix.size(), Suffix.size(), Suffix) == 0;
+}
+
+// A shell-face region's face (0 or 1) and base name, else -1.
+int lm_shellface(const std::string& rName, std::string* pBase) {
+    for (int k = 0; k < 2; ++k)
+        if (lm_ends_with(rName, std::string(kLmShellfaceSuffix) + std::to_string(k))) {
+            if (pBase)
+                *pBase =
+                    rName.substr(0, rName.size() - std::string_view(kLmShellfaceSuffix).size() - 1);
+            return k;
+        }
+    return -1;
+}
+
 }  // namespace
 
 Mesh read_libmesh(const std::string& rPath) {
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("libMesh: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // libMesh writes `.xda.gz`/`.xdr.gz` through gzip and `.bz2` through bzip2.
+    if (text.size() >= 2 && static_cast<unsigned char>(text[0]) == 0x1f &&
+        static_cast<unsigned char>(text[1]) == 0x8b)
+        text = detail::zlib_inflate(text, 15 + 16, nullptr, kLmWhat);
+    else if (text.compare(0, 3, "BZh") == 0)
+        throw ReadError("libMesh: " + rPath +
+                        " is bzip2-compressed; the native reader inflates only gzip (the "
+                        "Python reader inflates both)");
 
     // XDR starts with the version string's 4-byte big-endian length; ASCII with
     // the version text itself.
@@ -647,6 +862,68 @@ Mesh read_libmesh(const std::string& rPath) {
     }
     if (block_types.empty())
         return mesh;
+
+    // Edge sets -> line cells (the element's edge corners, plus its mid-edge
+    // node when it is quadratic), shared by every set naming that edge. They
+    // are not libMesh elements: their subdomain (and level, p-level) is -1.
+    std::map<std::int64_t, std::set<std::int64_t>> by_edge_set;
+    if (!f.mEdges.empty()) {
+        std::map<std::vector<std::int64_t>, std::pair<int, std::size_t>> seen;
+        std::vector<std::int64_t> rows[2];  // line, line3
+        std::size_t unmatched = 0;
+        std::vector<std::pair<std::int64_t, std::pair<int, std::size_t>>> members;
+        for (const LmBoundary& b : f.mEdges) {
+            if (b.mElem < 0 || static_cast<std::size_t>(b.mElem) >= ne) {
+                ++unmatched;
+                continue;
+            }
+            const LmElement& el = f.mElements[static_cast<std::size_t>(b.mElem)];
+            const auto& edges = lm_edges(el.mType->mShape);
+            if (b.mSide < 0 || static_cast<std::size_t>(b.mSide) >= edges.size()) {
+                ++unmatched;
+                continue;
+            }
+            const std::size_t k = static_cast<std::size_t>(b.mSide);
+            const std::size_t nv = static_cast<std::size_t>(lm_vertices(el.mType->mShape));
+            std::vector<std::int64_t> row;
+            for (int c : edges[k])
+                row.push_back(
+                    node_index[static_cast<std::size_t>(el.mNodes[static_cast<std::size_t>(c)])]);
+            if (el.mNodes.size() >= nv + edges.size())
+                row.push_back(node_index[static_cast<std::size_t>(el.mNodes[nv + k])]);
+            std::vector<std::int64_t> key = row;
+            std::sort(key.begin(), key.end());
+            const int kind = row.size() == 3 ? 1 : 0;
+            auto [it, fresh] =
+                seen.emplace(key, std::make_pair(kind, rows[kind].size() / (2 + kind)));
+            if (fresh)
+                rows[kind].insert(rows[kind].end(), row.begin(), row.end());
+            members.emplace_back(b.mId, it->second);
+        }
+        std::size_t first[2] = {0, 0};
+        for (int kind = 0; kind < 2; ++kind) {
+            const std::size_t width = static_cast<std::size_t>(2 + kind);
+            const std::size_t n = rows[kind].size() / width;
+            if (n == 0)
+                continue;
+            first[kind] = static_cast<std::size_t>(next_cell);
+            NDArray conn(DType::Int64, {n, width});
+            std::copy(rows[kind].begin(), rows[kind].end(), conn.As<std::int64_t>());
+            mesh.AddCellBlock(kind ? "line3" : "line", std::move(conn));
+            NDArray none(DType::Int64, {n});
+            std::fill(none.As<std::int64_t>(), none.As<std::int64_t>() + n, -1);
+            sid_blocks.push_back(none);
+            level_blocks.push_back(none);
+            p_blocks.push_back(std::move(none));
+            next_cell += static_cast<std::int64_t>(n);
+            cell_dim.insert(cell_dim.end(), n, 1);
+        }
+        for (const auto& [id, at] : members)
+            by_edge_set[id].insert(static_cast<std::int64_t>(first[at.first] + at.second));
+        if (unmatched)
+            log::warn("libMesh: {} edge boundary condition(s) name no element edge and are skipped",
+                      unmatched);
+    }
     mesh.AddCellData("libmesh:subdomain", std::move(sid_blocks));
     if (max_level > 0)
         mesh.AddCellData("libmesh:level", std::move(level_blocks));
@@ -784,6 +1061,54 @@ Mesh read_libmesh(const std::string& rPath) {
         }
     }
 
+    // Edge sets -> cell regions on their line cells.
+    auto set_name = [&](std::int64_t id) {
+        const auto name = f.mSidesetNames.find(id);
+        return name != f.mSidesetNames.end() ? name->second : "boundary_" + std::to_string(id);
+    };
+    for (const auto& [id, cells] : by_edge_set)
+        mesh.AddRegion(Region(set_name(id) + kLmEdgeSuffix, RegionKind::Cell, 1, id,
+                              lm_ids(std::vector<std::int64_t>(cells.begin(), cells.end()))));
+
+    // Shell-face sets -> cell regions `<name>:shellface<k>` on the 2-D cells
+    // (a refined element's face is carried to all its active descendants).
+    if (!f.mShellfaces.empty()) {
+        std::map<std::pair<std::int64_t, std::int64_t>, std::set<std::int64_t>> by_face;
+        std::size_t unmatched = 0;
+        for (const LmBoundary& b : f.mShellfaces) {
+            if (b.mElem < 0 || static_cast<std::size_t>(b.mElem) >= ne || b.mSide < 0 ||
+                b.mSide > 1) {
+                ++unmatched;
+                continue;
+            }
+            std::set<std::int64_t>& cells = by_face[{b.mId, b.mSide}];
+            std::vector<std::size_t> stack{static_cast<std::size_t>(b.mElem)};
+            while (!stack.empty()) {
+                const std::size_t e = stack.back();
+                stack.pop_back();
+                if (!active[e]) {
+                    stack.insert(stack.end(), children[e].begin(), children[e].end());
+                    continue;
+                }
+                if (cell_of[e] >= 0 && cell_dim[static_cast<std::size_t>(cell_of[e])] == 2)
+                    cells.insert(cell_of[e]);
+                else
+                    ++unmatched;
+            }
+        }
+        if (unmatched)
+            log::warn(
+                "libMesh: {} shell-face boundary condition(s) name no 2-D element and are "
+                "skipped",
+                unmatched);
+        for (const auto& [key, cells] : by_face)
+            if (!cells.empty())
+                mesh.AddRegion(
+                    Region(set_name(key.first) + kLmShellfaceSuffix + std::to_string(key.second),
+                           RegionKind::Cell, 2, key.first,
+                           lm_ids(std::vector<std::int64_t>(cells.begin(), cells.end()))));
+    }
+
     // Node sets -> point regions.
     std::map<std::int64_t, std::vector<std::int64_t>> by_nodeset;
     for (const auto& [node, id] : f.mNodesets)
@@ -796,9 +1121,396 @@ Mesh read_libmesh(const std::string& rPath) {
             Region(name != f.mNodesetNames.end() ? name->second : "nodeset_" + std::to_string(id),
                    RegionKind::Point, -1, id, lm_ids(pts_in)));
     }
-    if (f.mSkippedEdgeBcs)
-        log::warn("libMesh: {} edge/shell-face boundary condition(s) skipped", f.mSkippedEdgeBcs);
     return mesh;
+}
+
+void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
+    std::string lower;
+    for (char c : rPath)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lm_ends_with(lower, ".gz") || lm_ends_with(lower, ".bz2"))
+        throw WriteError("libMesh: the native writer does not compress; write " +
+                         rPath.substr(0, rPath.rfind('.')) +
+                         " and compress it (the Python writer does both)");
+    const bool xdr = lm_ends_with(lower, ".xdr");
+
+    // Cells: global (block-major) offsets and each cell's dimension.
+    const std::size_t nb = rMesh.NumCellBlocks();
+    std::vector<std::size_t> start{0};
+    std::vector<int> block_dim(nb, -1);
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        start.push_back(start.back() + cb.NumCells());
+        block_dim[b] = cell_type_dimension(cell_type_from_name(std::string(cb.Type())));
+    }
+    const std::size_t ncells = start.back();
+    auto block_of = [&](std::int64_t Cell) {
+        return static_cast<std::size_t>(
+            std::upper_bound(start.begin(), start.end(), static_cast<std::size_t>(Cell)) -
+            start.begin() - 1);
+    };
+    auto dim_of = [&](std::int64_t Cell) { return block_dim[block_of(Cell)]; };
+
+    // Region roles: edge sets and shell faces (by name suffix), side sets,
+    // node sets, and the remaining cell regions as subdomains.
+    std::vector<const Region*> edge_sets, shell_sets, side_sets, node_sets, subdomains;
+    std::vector<bool> placeholder(ncells, false);  // an edge set's line cells
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        const std::int64_t* e = reg.mEntries.As<std::int64_t>();
+        const std::size_t n = reg.mEntries.Size();
+        if (reg.mKind == RegionKind::Side) {
+            side_sets.push_back(&reg);
+            continue;
+        }
+        if (reg.mKind == RegionKind::Point) {
+            node_sets.push_back(&reg);
+            continue;
+        }
+        bool valid = true;
+        for (std::size_t k = 0; k < n; ++k)
+            valid = valid && e[k] >= 0 && static_cast<std::size_t>(e[k]) < ncells;
+        auto all_dim = [&](int Dim) {
+            for (std::size_t k = 0; k < n; ++k)
+                if (dim_of(e[k]) != Dim)
+                    return false;
+            return true;
+        };
+        if (valid && n && lm_ends_with(reg.mName, kLmEdgeSuffix) && all_dim(1)) {
+            edge_sets.push_back(&reg);
+            for (std::size_t k = 0; k < n; ++k)
+                placeholder[static_cast<std::size_t>(e[k])] = true;
+        } else if (valid && n && lm_shellface(reg.mName, nullptr) >= 0 && all_dim(2)) {
+            shell_sets.push_back(&reg);
+        } else if (valid) {
+            subdomains.push_back(&reg);
+        }
+    }
+
+    // Elements: every cell libMesh has a type for, in cell order.
+    struct LmOutElem {
+        int mCode;
+        std::int64_t mCell;
+        std::vector<std::int64_t> mNodes;  // point indices, libMesh order
+    };
+    std::vector<LmOutElem> elems;
+    std::vector<std::int64_t> elem_of(ncells, -1);
+    std::map<std::string, std::size_t> dropped;
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const int code = cb.IsRagged() ? -1 : lm_code(type);
+        if (code < 0) {
+            if (cb.NumCells())
+                dropped[type] += cb.NumCells();
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        const detail::NodeOrder* order = detail::node_order("libmesh", type);
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            const std::size_t g = start[b] + r;
+            if (placeholder[g])
+                continue;
+            LmOutElem el{code, static_cast<std::int64_t>(g), {}};
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
+                el.mNodes.push_back(detail::read_int(conn, r * k + src));
+            }
+            elem_of[g] = static_cast<std::int64_t>(elems.size());
+            elems.push_back(std::move(el));
+        }
+    }
+    for (const auto& [type, count] : dropped) {
+        log::warn("libMesh: {} '{}' cell(s) have no libMesh element type and are dropped", count,
+                  type);
+        detail::provenance_note("cells-dropped", std::to_string(count) + " '" + type +
+                                                     "' cell(s) have no libMesh element type");
+    }
+
+    // Node ids: `libmesh:id` when it is a valid numbering, else the point index.
+    const std::size_t np = rMesh.NumPoints();
+    std::vector<std::int64_t> node_id(np);
+    for (std::size_t p = 0; p < np; ++p)
+        node_id[p] = static_cast<std::int64_t>(p);
+    std::int64_t max_node_id = static_cast<std::int64_t>(np);
+    if (rMesh.HasPointData("libmesh:id")) {
+        const NDArray& ids = rMesh.PointData("libmesh:id");
+        std::set<std::int64_t> unique;
+        std::vector<std::int64_t> v(np);
+        bool ok = ids.Size() == np;
+        for (std::size_t p = 0; ok && p < np; ++p) {
+            v[p] = detail::read_int(ids, p);
+            ok = v[p] >= 0 && unique.insert(v[p]).second;
+        }
+        if (ok) {
+            node_id = std::move(v);
+            max_node_id = np ? *unique.rbegin() + 1 : 0;
+        }
+    }
+
+    // Subdomain ids: `libmesh:subdomain`, else the first cell region holding
+    // the cell (its tag, or a fresh id), else 0.
+    std::vector<std::int64_t> sid(ncells, 0);
+    std::map<std::int64_t, std::string> subdomain_names;
+    if (rMesh.HasCellData("libmesh:subdomain")) {
+        for (std::size_t b = 0; b < nb; ++b)
+            for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r)
+                sid[start[b] + r] = detail::read_int(rMesh.CellData("libmesh:subdomain", b), r);
+        for (const Region* pReg : subdomains)
+            if (pReg->mTag >= 0 && pReg->mName != "subdomain_" + std::to_string(pReg->mTag))
+                subdomain_names.emplace(pReg->mTag, pReg->mName);
+    } else {
+        std::int64_t next = 0;
+        for (const Region* pReg : subdomains)
+            next = std::max(next, pReg->mTag + 1);
+        std::vector<bool> assigned(ncells, false);
+        for (const Region* pReg : subdomains) {
+            const std::int64_t id = pReg->mTag >= 0 ? pReg->mTag : next++;
+            const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+            for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k) {
+                const std::size_t c = static_cast<std::size_t>(e[k]);
+                if (!assigned[c]) {
+                    assigned[c] = true;
+                    sid[c] = id;
+                }
+            }
+            if (pReg->mName != "subdomain_" + std::to_string(id))
+                subdomain_names.emplace(id, pReg->mName);
+        }
+    }
+    for (const LmOutElem& el : elems)
+        if (sid[static_cast<std::size_t>(el.mCell)] < 0 ||
+            sid[static_cast<std::size_t>(el.mCell)] > 65534)
+            throw WriteError("libMesh: subdomain id " +
+                             std::to_string(sid[static_cast<std::size_t>(el.mCell)]) +
+                             " is outside libMesh's 0..65534");
+    const bool write_p = rMesh.HasCellData("libmesh:p_level");
+
+    // Boundary ids: one id space for side, edge and shell-face sets.
+    std::int64_t next_bid = 0;
+    for (const auto* pList : {&side_sets, &edge_sets, &shell_sets})
+        for (const Region* pReg : *pList)
+            next_bid = std::max(next_bid, pReg->mTag + 1);
+    std::map<const Region*, std::int64_t> bid;
+    std::map<std::int64_t, std::string> sideset_names;
+    auto boundary_id = [&](const Region* pReg, const std::string& rBase) {
+        auto it = bid.find(pReg);
+        if (it != bid.end())
+            return it->second;
+        const std::int64_t id = pReg->mTag >= 0 ? pReg->mTag : next_bid++;
+        bid.emplace(pReg, id);
+        if (rBase != "boundary_" + std::to_string(id))
+            sideset_names.emplace(id, rBase);
+        return id;
+    };
+
+    // Side sets: (element, libMesh side, id), matched by the facet's corners.
+    std::set<std::array<std::int64_t, 3>> sides;
+    std::size_t sides_lost = 0;
+    for (const Region* pReg : side_sets) {
+        const std::int64_t id = boundary_id(pReg, pReg->mName);
+        const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+        for (std::size_t k = 0; k + 1 < pReg->mEntries.Size(); k += 2) {
+            CellType ftype{};
+            std::vector<std::int64_t> fnodes;
+            if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= ncells ||
+                elem_of[static_cast<std::size_t>(e[k])] < 0 ||
+                !detail::facet_nodes(rMesh, e[k], e[k + 1], ftype, fnodes)) {
+                ++sides_lost;
+                continue;
+            }
+            const LmOutElem& el =
+                elems[static_cast<std::size_t>(elem_of[static_cast<std::size_t>(e[k])])];
+            const std::string& fname = cell_type_name(ftype);
+            const std::size_t corners = cell_type_dimension(ftype) == 1   ? 2
+                                        : fname.rfind("triangle", 0) == 0 ? 3
+                                                                          : 4;
+            fnodes.resize(std::min(corners, fnodes.size()));
+            std::sort(fnodes.begin(), fnodes.end());
+            const auto& table = lm_sides(lm_type(static_cast<std::uint64_t>(el.mCode))->mShape);
+            bool found = false;
+            for (std::size_t s = 0; s < table.size() && !found; ++s) {
+                std::vector<std::int64_t> key;
+                for (int c : table[s])
+                    key.push_back(el.mNodes[static_cast<std::size_t>(c)]);
+                std::sort(key.begin(), key.end());
+                if (key == fnodes) {
+                    sides.insert({elem_of[static_cast<std::size_t>(e[k])],
+                                  static_cast<std::int64_t>(s), id});
+                    found = true;
+                }
+            }
+            if (!found)
+                ++sides_lost;
+        }
+    }
+
+    // Edge sets: each line cell on the first element holding that edge.
+    std::set<std::array<std::int64_t, 3>> edges;
+    std::size_t edges_lost = 0;
+    if (!edge_sets.empty()) {
+        std::map<std::pair<std::int64_t, std::int64_t>, std::pair<std::int64_t, std::int64_t>>
+            edge_owner;
+        for (std::size_t i = 0; i < elems.size(); ++i) {
+            const auto& table =
+                lm_edges(lm_type(static_cast<std::uint64_t>(elems[i].mCode))->mShape);
+            for (std::size_t k = 0; k < table.size(); ++k) {
+                std::int64_t a = elems[i].mNodes[static_cast<std::size_t>(table[k][0])];
+                std::int64_t b = elems[i].mNodes[static_cast<std::size_t>(table[k][1])];
+                edge_owner.emplace(
+                    std::make_pair(std::min(a, b), std::max(a, b)),
+                    std::make_pair(static_cast<std::int64_t>(i), static_cast<std::int64_t>(k)));
+            }
+        }
+        for (const Region* pReg : edge_sets) {
+            const std::string base =
+                pReg->mName.substr(0, pReg->mName.size() - std::string_view(kLmEdgeSuffix).size());
+            const std::int64_t id = boundary_id(pReg, base);
+            const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+            for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k) {
+                const std::size_t b = block_of(e[k]);
+                const NDArray& conn = rMesh.Cells(b).Conn();
+                const std::size_t w = rMesh.Cells(b).NodesPerCell();
+                const std::size_t r = static_cast<std::size_t>(e[k]) - start[b];
+                const std::int64_t n0 = detail::read_int(conn, r * w);
+                const std::int64_t n1 = detail::read_int(conn, r * w + 1);
+                const auto it = edge_owner.find({std::min(n0, n1), std::max(n0, n1)});
+                if (it == edge_owner.end()) {
+                    ++edges_lost;
+                    continue;
+                }
+                edges.insert({it->second.first, it->second.second, id});
+            }
+        }
+    }
+
+    // Shell faces.
+    std::set<std::array<std::int64_t, 3>> shellfaces;
+    for (const Region* pReg : shell_sets) {
+        std::string base;
+        const int face = lm_shellface(pReg->mName, &base);
+        const std::int64_t id = boundary_id(pReg, base);
+        const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+        for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k)
+            if (elem_of[static_cast<std::size_t>(e[k])] >= 0)
+                shellfaces.insert({elem_of[static_cast<std::size_t>(e[k])], face, id});
+    }
+    if (sides_lost || edges_lost) {
+        log::warn(
+            "libMesh: {} side and {} edge set entries match no written element and are "
+            "dropped",
+            sides_lost, edges_lost);
+        detail::provenance_note("regions-dropped",
+                                std::to_string(sides_lost + edges_lost) +
+                                    " side/edge set entries match no libMesh element");
+    }
+
+    // Node sets.
+    std::int64_t next_nid = 0;
+    for (const Region* pReg : node_sets)
+        next_nid = std::max(next_nid, pReg->mTag + 1);
+    std::set<std::array<std::int64_t, 2>> nodesets;
+    std::map<std::int64_t, std::string> nodeset_names;
+    for (const Region* pReg : node_sets) {
+        const std::int64_t id = pReg->mTag >= 0 ? pReg->mTag : next_nid++;
+        if (pReg->mName != "nodeset_" + std::to_string(id))
+            nodeset_names.emplace(id, pReg->mName);
+        const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+        for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k)
+            if (e[k] >= 0 && static_cast<std::size_t>(e[k]) < np)
+                nodesets.insert({node_id[static_cast<std::size_t>(e[k])], id});
+    }
+    const bool bcs = !sides.empty() || !edges.empty() || !shellfaces.empty() || !nodesets.empty();
+
+    // The stream, as XdrIO::write lays it out (libMesh-1.8.0, 8-byte ids).
+    LmOut io(xdr);
+    io.String("libMesh-1.8.0");
+    io.Scalar(static_cast<std::int64_t>(elems.size()), "# number of elements");
+    io.Scalar(max_node_id, "# number of nodes");
+    io.String(bcs ? "." : "n/a", "# boundary condition specification file");
+    io.String(".", "# subdomain id specification file");
+    io.String("n/a", "# processor id specification file");
+    io.String(write_p ? "." : "n/a", "# p-level specification file");
+    io.Scalar(8, "# type size");
+    io.Scalar(0, "# uid size");
+    io.Scalar(0, "# pid size");
+    io.Scalar(8, "# sid size");
+    io.Scalar(write_p ? 8 : 0, "# p-level size");
+    io.Scalar(bcs ? 8 : 0, "# eid size");
+    io.Scalar(bcs ? 8 : 0, "# side size");
+    io.Scalar(bcs ? 8 : 0, "# bid size");
+    io.Scalar(0, "# extra integer size");
+    io.StringVector({}, "# node integer names");
+    io.StringVector({}, "# elem integer names");
+    io.IntVector({}, "# elemset codes");
+
+    auto name_map = [&](const std::map<std::int64_t, std::string>& rNames, const char* pComment) {
+        io.Scalar(static_cast<std::int64_t>(rNames.size()), pComment);
+        if (rNames.empty())
+            return;
+        std::vector<std::int64_t> ids;
+        std::vector<std::string> names;
+        for (const auto& [id, name] : rNames) {
+            ids.push_back(id);
+            names.push_back(name);
+        }
+        io.IntVector(ids);
+        io.StringVector(names);
+    };
+    name_map(subdomain_names, "# subdomain id to name map");
+
+    if (!elems.empty()) {
+        const std::string legend = std::string("# n_elem at level 0, [ type sid ") +
+                                   (write_p ? "p_level " : "") + "(n0 ... nN-1) ]";
+        io.Scalar(static_cast<std::int64_t>(elems.size()), legend.c_str());
+    }
+    for (const LmOutElem& el : elems) {
+        const std::size_t c = static_cast<std::size_t>(el.mCell);
+        std::vector<std::int64_t> rec{el.mCode, sid[c]};
+        if (write_p) {
+            const std::size_t b = block_of(el.mCell);
+            rec.push_back(detail::read_int(rMesh.CellData("libmesh:p_level", b), c - start[b]));
+        }
+        for (std::int64_t n : el.mNodes)
+            rec.push_back(node_id[static_cast<std::size_t>(n)]);
+        io.Ints(rec);
+    }
+
+    // Unused node ids: NaN in XDR, as libMesh writes them; 0 in ASCII, where
+    // libMesh's `>>` cannot read back the `nan` it writes (it only loads nodes
+    // elements use, so the value is never looked at).
+    std::vector<double> coords(3 * static_cast<std::size_t>(max_node_id),
+                               xdr ? std::numeric_limits<double>::quiet_NaN() : 0.0);
+    const NDArray& pts = rMesh.Points();
+    const std::size_t pd = rMesh.PointDim();
+    for (std::size_t p = 0; p < np; ++p)
+        for (std::size_t d = 0; d < 3; ++d)
+            coords[3 * static_cast<std::size_t>(node_id[p]) + d] =
+                d < pd ? detail::read_double(pts, p * pd + d) : 0.0;
+    io.Reals(coords.data(), coords.size());
+    io.Scalar(0, "# presence of unique ids", 4);
+
+    auto triples = [&](const std::set<std::array<std::int64_t, 3>>& rSet, const char* pComment) {
+        name_map(sideset_names, "# sideset id to name map");
+        io.Scalar(static_cast<std::int64_t>(rSet.size()), pComment);
+        for (const auto& t : rSet)
+            io.Ints({t[0], t[1], t[2]});
+    };
+    triples(sides, "# number of side boundary conditions");
+    name_map(nodeset_names, "# nodeset id to name map");
+    io.Scalar(static_cast<std::int64_t>(nodesets.size()), "# number of nodesets");
+    for (const auto& t : nodesets)
+        io.Ints({t[0], t[1]});
+    triples(edges, "# number of edge boundary conditions");
+    triples(shellfaces, "# number of shellface boundary conditions");
+
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("libMesh: cannot open " + rPath + " for writing");
+    out.write(io.Data().data(), static_cast<std::streamsize>(io.Data().size()));
+    if (!out)
+        throw WriteError("libMesh: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus

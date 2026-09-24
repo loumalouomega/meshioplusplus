@@ -18,7 +18,8 @@
  * @file test_libmesh.cpp
  * @brief libMesh `.xda`/`.xdr` reader: an ASCII refined mesh with inline
  *        subdomains and p-levels, the same stream as XDR, the HEX20 node order,
- *        side sets carried to refined children, and the refusals.
+ *        side sets carried to refined children, and the refusals; the writer
+ *        round-tripping edge, shell-face, side and node sets in both encodings.
  */
 
 // External includes
@@ -44,8 +45,11 @@
 namespace {
 
 using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 using meshioplusplus::ReadError;
+using meshioplusplus::Region;
 using meshioplusplus::RegionKind;
+using meshioplusplus::WriteError;
 namespace detail = meshioplusplus::detail;
 
 std::string write_file(const std::string& rBody, const std::string& rSuffix) {
@@ -244,4 +248,110 @@ TEST(LibMesh, RefusesLegacyAndTruncatedFiles) {
     std::string bad = kAmrXda;
     bad.replace(bad.find("5 7 0 0 1 2 3"), 13, "5 7 0 0 1 2 99");
     EXPECT_THROW(meshioplusplus::read_libmesh(write_file(bad, ".xda")), ReadError);
+}
+
+namespace {
+
+NDArray lm_ints(std::vector<std::int64_t> v, std::size_t Cols = 1) {
+    NDArray a(meshioplusplus::DType::Int64, Cols == 1
+                                                ? std::vector<std::size_t>{v.size()}
+                                                : std::vector<std::size_t>{v.size() / Cols, Cols});
+    std::copy(v.begin(), v.end(), a.As<std::int64_t>());
+    return a;
+}
+
+// Two unit hexes side by side, a quad shell on the first one's top face and a
+// line on the shared bottom edge x = 1, z = 0, with every region kind the
+// writer maps: subdomains from cell regions (no `libmesh:subdomain`), a side
+// set, a node set, an edge set and both shell faces.
+Mesh lm_sample() {
+    Mesh mesh;
+    NDArray pts(meshioplusplus::DType::Float64, {12, 3});
+    double* p = pts.As<double>();
+    for (int k = 0; k < 12; ++k) {
+        const int i = k % 3, j = (k / 3) % 2, z = k / 6;
+        p[3 * k] = i;
+        p[3 * k + 1] = j;
+        p[3 * k + 2] = z;
+    }
+    mesh.AssignPoints(std::move(pts));
+    auto id = [](int i, int j, int z) { return static_cast<std::int64_t>(i + 3 * j + 6 * z); };
+    std::vector<std::int64_t> hexes;
+    for (int i = 0; i < 2; ++i)
+        for (std::int64_t n : {id(i, 0, 0), id(i + 1, 0, 0), id(i + 1, 1, 0), id(i, 1, 0),
+                               id(i, 0, 1), id(i + 1, 0, 1), id(i + 1, 1, 1), id(i, 1, 1)})
+            hexes.push_back(n);
+    mesh.AddCellBlock("hexahedron", lm_ints(hexes, 8));
+    mesh.AddCellBlock("quad", lm_ints({id(0, 0, 1), id(1, 0, 1), id(1, 1, 1), id(0, 1, 1)}, 4));
+    mesh.AddCellBlock("line", lm_ints({id(1, 0, 0), id(1, 1, 0)}, 2));
+    mesh.AddRegion(Region("solid", RegionKind::Cell, 3, 4, lm_ints({0, 1})));
+    mesh.AddRegion(Region("skin", RegionKind::Cell, 2, -1, lm_ints({2})));
+    mesh.AddRegion(Region("x0", RegionKind::Side, 2, -1, lm_ints({0, 4}, 2)));  // hex 0, x = 0
+    mesh.AddRegion(Region("corner", RegionKind::Point, -1, 9, lm_ints({0})));
+    mesh.AddRegion(Region("seam:edge", RegionKind::Cell, 1, 30, lm_ints({3})));
+    mesh.AddRegion(Region("front:shellface0", RegionKind::Cell, 2, 40, lm_ints({2})));
+    mesh.AddRegion(Region("boundary_41:shellface1", RegionKind::Cell, 2, 41, lm_ints({2})));
+    return mesh;
+}
+
+void expect_sample(const Mesh& rBack) {
+    ASSERT_EQ(rBack.NumCellBlocks(), 3u);  // hexahedron, quad, then the edge-set line
+    EXPECT_EQ(rBack.Cells(2).Type(), "line");
+    EXPECT_EQ(rBack.Cells(2).NumCells(), 1u);
+    EXPECT_EQ(detail::read_int(rBack.CellData("libmesh:subdomain", 2), 0), -1);
+    const std::size_t solid = rBack.FindRegion("solid", RegionKind::Cell);
+    ASSERT_NE(solid, Mesh::npos);
+    EXPECT_EQ(rBack.Region(solid).mTag, 4);
+    const std::size_t skin = rBack.FindRegion("skin", RegionKind::Cell);
+    ASSERT_NE(skin, Mesh::npos);
+    EXPECT_EQ(rBack.Region(skin).mTag, 5);  // a fresh id after the tagged 4
+    const std::size_t x0 = rBack.FindRegion("x0", RegionKind::Side);
+    ASSERT_NE(x0, Mesh::npos);
+    EXPECT_EQ(rBack.Region(x0).mTag, 42);  // a fresh id after the tagged 41
+    ASSERT_EQ(rBack.Region(x0).NumEntries(), 1u);
+    EXPECT_EQ(rBack.Region(x0).Entries()[0], 0);
+    EXPECT_EQ(rBack.Region(x0).Entries()[1], 4);
+    const std::size_t seam = rBack.FindRegion("seam:edge", RegionKind::Cell);
+    ASSERT_NE(seam, Mesh::npos);
+    EXPECT_EQ(rBack.Region(seam).mTag, 30);
+    EXPECT_EQ(rBack.Region(seam).Entries()[0], 3);
+    EXPECT_NE(rBack.FindRegion("front:shellface0", RegionKind::Cell), Mesh::npos);
+    EXPECT_NE(rBack.FindRegion("boundary_41:shellface1", RegionKind::Cell), Mesh::npos);
+    const std::size_t corner = rBack.FindRegion("corner", RegionKind::Point);
+    ASSERT_NE(corner, Mesh::npos);
+    EXPECT_EQ(rBack.Region(corner).mTag, 9);
+}
+
+}  // namespace
+
+TEST(LibMesh, WriterRoundTripsEverySetInBothEncodings) {
+    const Mesh mesh = lm_sample();
+    for (const char* ext : {".xda", ".xdr"}) {
+        const std::string path = write_file("", ext);
+        meshioplusplus::write_libmesh(path, mesh);
+        expect_sample(meshioplusplus::read_libmesh(path));
+    }
+}
+
+TEST(LibMesh, WriterKeepsSparseNodeIds) {
+    Mesh mesh = lm_sample();
+    std::vector<std::int64_t> ids(12);
+    for (std::size_t k = 0; k < 12; ++k)
+        ids[k] = static_cast<std::int64_t>(2 * k);  // every other id unused
+    mesh.AddPointData("libmesh:id", lm_ints(ids));
+    for (const char* ext : {".xda", ".xdr"}) {
+        const std::string path = write_file("", ext);
+        meshioplusplus::write_libmesh(path, mesh);
+        const Mesh back = meshioplusplus::read_libmesh(path);
+        ASSERT_EQ(back.NumPoints(), 12u);
+        EXPECT_EQ(detail::read_int(back.PointData("libmesh:id"), 11), 22);
+    }
+}
+
+TEST(LibMesh, WriterRefusesCompressedNamesAndBadSubdomains) {
+    const Mesh mesh = lm_sample();
+    EXPECT_THROW(meshioplusplus::write_libmesh(write_file("", ".xda.gz"), mesh), WriteError);
+    Mesh bad = lm_sample();
+    bad.AddCellData("libmesh:subdomain", {lm_ints({0, 70000}), lm_ints({0}), lm_ints({0})});
+    EXPECT_THROW(meshioplusplus::write_libmesh(write_file("", ".xda"), bad), WriteError);
 }

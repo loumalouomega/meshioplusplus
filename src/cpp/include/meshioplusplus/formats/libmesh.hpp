@@ -18,7 +18,7 @@
 
 /**
  * @file libmesh.hpp
- * @brief libMesh `.xda` (ASCII) / `.xdr` (XDR binary) mesh reader.
+ * @brief libMesh `.xda` (ASCII) / `.xdr` (XDR binary) mesh reader and writer.
  *
  * libMesh's native mesh file (`XdrIO`), also what MOOSE's `--mesh-only` and
  * checkpoint meshes use. Both encodings carry one value stream: a version
@@ -39,8 +39,9 @@
  *  - Side sets become `Side` regions (named by the sideset map, else
  *    `boundary_<id>`). A side of a refined element is carried down to the
  *    active descendants whose sides lie on it. Node sets become `Point`
- *    regions (`nodeset_<id>` when unnamed). Edge and shell-face sets are
- *    skipped with a warning.
+ *    regions (`nodeset_<id>` when unnamed). An edge set becomes `line`/`line3`
+ *    cells (subdomain -1) in a `Cell` region `<name>:edge`, a shell-face set
+ *    a `Cell` region `<name>:shellface0`/`1` on its 2-D cells.
  *  - HEX20/HEX27/PRISM15/PRISM18 are reordered through the `"libmesh"` tables
  *    of `detail/node_order.hpp`; the other shapes are already in meshio++'s
  *    order. TET14, PRISM20/21 and PYRAMID18 keep the nodes meshio++ has a type
@@ -51,8 +52,10 @@
  *    are dropped; the original ids are then kept as `libmesh:id` point data.
  *
  * Legacy pre-`libMesh` files (`DEAL 003`, `LIBM 0`) are refused, as libMesh
- * itself does. Compressed `.xda.gz`/`.xdr.bz2` files must be decompressed
- * first. See doc/formats/libmesh.md.
+ * itself does. gzip-compressed files are inflated (with zlib); bzip2 ones are
+ * left to the Python reader. C0POLYGON/C0POLYHEDRON are refused: `XdrIO`
+ * stores no per-element node count, so libMesh cannot write them either. See
+ * doc/formats/libmesh.md.
  */
 
 // System includes
@@ -76,5 +79,24 @@ namespace meshioplusplus {
  *         polygon/polyhedron elements
  */
 MESHIOPLUSPLUS_API Mesh read_libmesh(const std::string& rPath);
+
+/**
+ * @brief Write a libMesh `.xda` (ASCII) or `.xdr` (XDR) mesh, libMesh-1.8.0.
+ *
+ * The encoding comes from the extension (`.xdr` is XDR, anything else
+ * ASCII); compressed names are refused (the Python writer compresses).
+ * Every cell with a libMesh type becomes a level-0 element; polygons,
+ * polyhedra and Lagrange cells are dropped with a warning. Subdomain ids come
+ * from `libmesh:subdomain`, else the cell regions (tag, or a fresh id); `Side`
+ * regions become side sets, `Point` regions node sets, and the `:edge` and
+ * `:shellface<k>` cell regions the reader makes become edge and shell-face
+ * sets again. `libmesh:id` restores the original node ids (gaps written as
+ * NaN, as libMesh does); `libmesh:p_level` is written inline.
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh
+ * @throws WriteError if the file can't be written, the name is compressed or
+ *         a subdomain id is outside 0..65534
+ */
+MESHIOPLUSPLUS_API void write_libmesh(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus

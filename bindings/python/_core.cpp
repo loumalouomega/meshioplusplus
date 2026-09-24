@@ -2937,6 +2937,10 @@ PYBIND11_MODULE(_core, m) {
     m.def("libmesh_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_libmesh(path));
     });
+    m.def("libmesh_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_libmesh(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
 
     // OpenRadioss starter deck (.rad) reader.
     // MSC Marc input deck (.dat) and formatted post file (.t19) readers.

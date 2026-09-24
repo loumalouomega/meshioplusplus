@@ -1895,8 +1895,9 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     for fmt in ("libmesh", "z88", "abaqus_fil", "radioss"):
         assert fmt in out["readable"], fmt
     assert "z88" in out["writable"]
-    assert out["extensions"][".xda"] == ["libmesh"]
-    assert out["extensions"][".xdr"] == ["libmesh"]
+    assert "libmesh" in out["writable"]  # v16.11.0
+    for ext in (".xda", ".xdr", ".xda.gz", ".xdr.gz", ".xda.bz2", ".xdr.bz2"):
+        assert out["extensions"][ext] == ["libmesh"], ext
     assert out["extensions"][".fil"] == ["abaqus_fil"]
     assert out["extensions"][".rad"] == ["radioss"]
     fil = meshes / "abaqus_fil" / "model_le.fil"
@@ -1912,6 +1913,9 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     back = str(tmp_path / "out" / "z88i1.txt")
     _tools.tool_convert(str(meshes / "libmesh" / "one_hex.xdr"), back)
     assert meshioplusplus.read(back).cells[0].type == "hexahedron"
+    xdr = str(tmp_path / "back.xdr.gz")
+    _tools.tool_convert(str(meshes / "libmesh" / "one_hex.xdr"), xdr)
+    assert meshioplusplus.read(xdr).cells[0].type == "hexahedron"
     rad = meshes / "radioss" / "old_0000.rad"
     assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8
 

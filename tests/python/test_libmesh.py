@@ -153,3 +153,122 @@ def test_sniffed_without_the_extension(tmp_path, name):
 def test_extension_dispatch():
     mesh = meshioplusplus.read(MESHES / "hex27.xda")
     assert mesh.cells[0].type == "hexahedron27"
+
+
+def test_edge_and_shellface_sets(read):
+    mesh = read(MESHES / "edges_shell.xda")
+    assert [c.type for c in mesh.cells] == ["hexahedron20", "quad8", "line3"]
+    # The hex's edge 0 and its top edge (named twice, by the hex and the shell).
+    assert len(mesh.cells[2].data) == 2
+    np.testing.assert_array_equal(mesh.cell_data["libmesh:subdomain"][2], [-1, -1])
+    regions = {(r.kind, r.name): r for r in mesh.regions}
+    axis = regions[("cell", "axis:edge")]
+    top = regions[("cell", "boundary_12:edge")]
+    assert (axis.tag, axis.dim, top.tag) == (11, 1, 12)
+    for region, z in ((axis, 0.0), (top, 1.0)):
+        (cell,) = np.asarray(region.entries)
+        line = mesh.cells[2].data[cell - 2]
+        np.testing.assert_array_equal(mesh.points[line][:, 1:], [[0, z]] * 3)
+        assert mesh.points[line[2], 0] == 0.5  # the mid-edge node
+    assert np.asarray(regions[("cell", "front:shellface0")].entries).tolist() == [1]
+    assert regions[("cell", "boundary_21:shellface1")].tag == 21
+
+
+@pytest.mark.parametrize("name", ["hex27.xda.gz", "hex27.xdr.bz2"])
+def test_compressed_files(read, name):
+    _same(read(MESHES / name), read(MESHES / "hex27.xda"))
+
+
+def test_core_leaves_bzip2_to_python():
+    with pytest.raises(Exception, match="bzip2"):
+        _core.libmesh_read(str(MESHES / "hex27.xdr.bz2"))
+    assert meshioplusplus.libmesh.read(MESHES / "hex27.xdr.bz2").cells
+
+
+@pytest.mark.parametrize("stem", ["hex27", "one_hex", "edges_shell"])
+@pytest.mark.parametrize("ext", [".xda", ".xdr"])
+def test_writer_round_trips(tmp_path, stem, ext):
+    mesh = py_libmesh.read(MESHES / f"{stem}{ext}")
+    core, python = tmp_path / f"core{ext}", tmp_path / f"python{ext}"
+    _core.libmesh_write(str(core), mesh)
+    py_libmesh.write(python, mesh)
+    assert core.read_bytes() == python.read_bytes()
+    _same(py_libmesh.read(core), mesh)
+    _same(meshioplusplus.libmesh.read(core), mesh)
+
+
+def test_writer_matches_libmesh_layout(tmp_path):
+    # libMesh-1.8.0's own header lines and legend (XdrIO::write).
+    mesh = py_libmesh.read(MESHES / "hex27.xda")
+    path = tmp_path / "mesh.xda"
+    meshioplusplus.write(path, mesh)
+    lines = path.read_text().splitlines()
+    assert lines[:4] == [
+        "libMesh-1.8.0",
+        "2\t # number of elements",
+        "45\t # number of nodes",
+        ".\t # boundary condition specification file",
+    ]
+    assert "2\t # n_elem at level 0, [ type sid (n0 ... nN-1) ]" in lines
+    assert lines[-1] == "0\t # number of shellface boundary conditions"
+
+
+def test_writer_maps_foreign_regions(tmp_path, capfd):
+    from meshioplusplus._regions import Region
+
+    points = np.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0], [2, 1, 0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points.astype(float),
+        [("quad", np.array([[0, 1, 2, 3], [1, 4, 5, 2]])), ("polygon", [[0, 1, 2]])],
+    )
+    mesh.regions = [
+        Region("left", "cell", np.array([0]), 2, -1),
+        Region("right", "cell", np.array([1]), 2, 3),
+        Region("wall", "side", np.array([[0, 3]]), 1, -1),
+        Region("pin", "point", np.array([4]), -1, -1),
+    ]
+    for ext in (".xda", ".xdr"):
+        path = tmp_path / f"mesh{ext}"
+        py_libmesh.write(path, mesh)
+        assert "polygon" in capfd.readouterr().err
+        back = meshioplusplus.libmesh.read(path)
+        assert [c.type for c in back.cells] == ["quad"]
+        np.testing.assert_array_equal(back.cell_data["libmesh:subdomain"][0], [4, 3])
+        got = {(r.kind, r.name, r.tag) for r in back.regions}
+        assert got == {
+            ("cell", "left", 4),
+            ("cell", "right", 3),
+            ("side", "wall", 0),
+            ("point", "pin", 0),
+        }
+        wall = next(r for r in back.regions if r.name == "wall")
+        assert np.asarray(wall.entries).tolist() == [[0, 3]]
+
+
+@pytest.mark.parametrize("suffix", [".xda.gz", ".xdr.bz2"])
+def test_writer_compresses(tmp_path, suffix):
+    mesh = py_libmesh.read(MESHES / "hex27.xda")
+    path = tmp_path / f"mesh{suffix}"
+    meshioplusplus.write(path, mesh)
+    first = path.read_bytes()
+    meshioplusplus.write(path, mesh)
+    assert path.read_bytes() == first  # no timestamp in the gzip header
+    _same(meshioplusplus.read(path), mesh)
+
+
+def test_writer_sparse_node_ids(tmp_path):
+    mesh = py_libmesh.read(MESHES / "hex27.xda")
+    mesh.point_data["libmesh:id"] = 2 * np.arange(len(mesh.points), dtype=np.int64)
+    for ext in (".xda", ".xdr"):
+        core, python = tmp_path / f"core{ext}", tmp_path / f"python{ext}"
+        _core.libmesh_write(str(core), mesh)
+        py_libmesh.write(python, mesh)
+        assert core.read_bytes() == python.read_bytes()
+        back = meshioplusplus.libmesh.read(core)
+        np.testing.assert_array_equal(
+            back.point_data["libmesh:id"], mesh.point_data["libmesh:id"]
+        )
+    # ASCII writes the unused ids as 0 (libMesh cannot read back `nan`).
+    assert "nan" not in (tmp_path / "core.xda").read_text()

@@ -33,7 +33,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — |
-| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` | ✓ | — | — |
+| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading needs zlib; bzip2 and compressed writing are Python-only |
 | [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — |
 | [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` (and its `d3plot01`... family) | ✓ | — | — |
 | [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | — | — |
