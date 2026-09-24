@@ -10,9 +10,10 @@ import collections
 import math
 import pathlib
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus import _core
 from meshioplusplus.ansys_rst import _ansys_rst as py_rst
 

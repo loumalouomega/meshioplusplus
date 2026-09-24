@@ -19,9 +19,10 @@ tool's ``wraps`` (or consciously exempted in ``_NOT_TOOLS``).
 import json
 import os
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus.mcp import TOOL_REGISTRY, _tools
 
 from . import helpers

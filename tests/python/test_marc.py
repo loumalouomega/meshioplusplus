@@ -6,9 +6,10 @@ and Tecplot's ``.dat``, and the refusals."""
 import pathlib
 import shutil
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus import _core
 from meshioplusplus.marc import _marc as py_marc
 
