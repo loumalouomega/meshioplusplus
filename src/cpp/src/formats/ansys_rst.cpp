@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -34,6 +35,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -242,6 +244,11 @@ std::string rst_name(const RstRecord& rTable, std::size_t Begin, std::size_t End
     return out.substr(a);
 }
 
+// numpy.isclose's default tolerances: how mode pairs are recognised.
+bool rst_close(double A, double B) {
+    return std::fabs(A - B) <= 1e-8 + 1e-5 * std::fabs(B);
+}
+
 struct RstSet {
     std::uint64_t mPointer = 0;
     double mTime = 0.0;
@@ -251,8 +258,9 @@ struct RstSet {
 // The headers and the per-set pointers of a results file.
 struct RstResults {
     std::int64_t mNumNodes = 0, mNumSectors = 0, mKan = 0;
-    std::int64_t mCsEls = 0, mCsCord = 0, mGlobalNodes = 0;
-    bool mSparseEns = true;  // else ENS holds 11 items per node
+    std::int64_t mCsEls = 0, mCsCord = 0, mCsNds = 0, mGlobalNodes = 0;
+    std::vector<std::int64_t> mHarmonic;  // a cyclic model's harmonic index per set
+    bool mSparseEns = true;               // else ENS holds 11 items per node
     bool mDistributed = false;
     std::uint64_t mPtrGnod = 0;
     std::vector<std::int64_t> mNeqv;
@@ -270,6 +278,7 @@ struct RstResults {
         mCsEls = h.Int(18);
         mNumSectors = h.Int(20);
         mCsCord = h.Int(21);
+        mCsNds = h.Int(31);
         mSparseEns = h.Int(39) != 0;
         mGlobalNodes = h.Int(48);
         mPtrGnod = rst_pointer(h, 49, 50);
@@ -300,6 +309,18 @@ struct RstResults {
             }
         }
         mGeometry = rst_pointer(h, 15, 46);
+        if (const std::uint64_t ptr_cyc = rst_pointer(h, 16, 43); ptr_cyc && nsets > 0) {
+            const RstRecord cyc = rFile.Record(ptr_cyc);
+            for (std::size_t k = 0; k < mSets.size() && k < cyc.mValues.size(); ++k)
+                mHarmonic.push_back(cyc.Int(k));
+            // Before v18 the second set of a mode pair repeats the positive
+            // index: negated, as later versions write it.
+            if (std::none_of(mHarmonic.begin(), mHarmonic.end(),
+                             [](std::int64_t H) { return H < -1; }))
+                for (std::size_t k = 0; k + 1 < mHarmonic.size(); ++k)
+                    if (rst_close(mSets[k].mTime, mSets[k + 1].mTime))
+                        mHarmonic[k + 1] = -mHarmonic[k + 1];
+        }
     }
 };
 
@@ -558,6 +579,18 @@ constexpr RstTensor kRstTensors[] = {
     {"EPCR", kRstEcr, 7, false}, {"EPTH", kRstEth, 8, false},
 };
 constexpr const char* kRstTop = "@top";  // a layered shell's top surface
+
+// Element records read as they are written, one row per element (NaN-padded to
+// the longest): their items depend on the element type (the element's
+// documentation, "Element Output Definitions").
+struct RstRawRecord {
+    const char* mName;
+    std::size_t mEntry;
+};
+constexpr RstRawRecord kRstRawRecords[] = {
+    {"EMS", 0},  {"ENG", 3},  {"EGR", 4},  {"EFX", 10}, {"EMN", 12},
+    {"ENL", 14}, {"EPT", 16}, {"ECT", 20}, {"ESV", 23},
+};
 
 bool rst_is_tensor(const std::string& rName, bool* pStress) {
     for (const RstTensor& t : kRstTensors)
@@ -1001,8 +1034,14 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         want_any_tensor = want_any_tensor || rOptions.WantsArray(t.mName) ||
                           rOptions.WantsArray(std::string(t.mName) + kRstTop);
     const bool want_enf = rOptions.WantsArray("ENF");
-    if (!want_any_tensor && !want_enf)
+    bool want_any_raw = false;
+    for (const RstRawRecord& r : kRstRawRecords)
+        want_any_raw = want_any_raw || rOptions.WantsArray(r.mName);
+    if (!want_any_tensor && !want_enf && !want_any_raw)
         return;
+    // Per raw record: per block, the rows read and their values.
+    std::map<std::string, std::vector<std::vector<std::pair<std::size_t, std::vector<double>>>>>
+        raw;
     std::vector<NDArray> enf;
     std::size_t enf_width = 0;
     std::vector<double> values, rotation;
@@ -1030,14 +1069,26 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
             const detail::AnsysCellLocation& loc = rModel.mCells[pos];
             const auto b = static_cast<std::size_t>(loc.mBlock);
             const auto row = static_cast<std::size_t>(loc.mRow);
+            const std::uint64_t table = base + ptr_esl + static_cast<std::uint64_t>(off);
+            const RstRecord pointers = file.Record(table);
+            for (const RstRawRecord& r : kRstRawRecords) {
+                if (!rOptions.WantsArray(r.mName) ||
+                    !rst_element_record(file, table, pointers, r.mEntry, values) || values.empty())
+                    continue;
+                for (double& v : values)
+                    if (std::fabs(v) == kRstUndefined)
+                        v = std::numeric_limits<double>::quiet_NaN();
+                auto& per_block = raw[r.mName];
+                if (per_block.empty())
+                    per_block.resize(n_blocks);
+                per_block[b].emplace_back(row, values);
+            }
             if (rst_no_result_cell(types[b]))
                 continue;
             RstLayout layout;
             if (const auto it = rModel.mLayout.find(rModel.mModel.mElements[pos].mSlot);
                 it != rModel.mLayout.end())
                 layout = it->second;
-            const std::uint64_t table = base + ptr_esl + static_cast<std::uint64_t>(off);
-            const RstRecord pointers = file.Record(table);
             const std::int64_t* cell_nodes = conn[b] + row * width_of[b];
             const auto nodstr = static_cast<std::size_t>(std::max<std::int64_t>(layout.mNodstr, 0));
             bool have_rotation = false;
@@ -1153,12 +1204,47 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         layout("ENF", enf_width);
         mesh.AddCellData("ENF", std::move(enf));
     }
+    for (auto& [name, per_block] : raw) {
+        std::size_t width = 0;
+        for (const auto& rows : per_block)
+            for (const auto& [row, v] : rows)
+                width = std::max(width, v.size());
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < n_blocks; ++b) {
+            NDArray arr(DType::Float64, {rows_of[b], width});
+            double* p = arr.As<double>();
+            std::fill(p, p + arr.Size(), std::numeric_limits<double>::quiet_NaN());
+            for (const auto& [row, v] : per_block[b])
+                std::copy(v.begin(), v.end(), p + row * width);
+            blocks.push_back(std::move(arr));
+        }
+        mesh.AddCellData(name, std::move(blocks));
+    }
 }
+
+bool rst_is_raw(const std::string& rName) {
+    for (const RstRawRecord& r : kRstRawRecords)
+        if (rName == r.mName)
+            return true;
+    return false;
+}
+
+// A modal set's other half: the arrays of its mode pair, or of the duplicate
+// sector moved onto the base sector's points and cells (zero when neither
+// exists: a standing wave), and its harmonic index.
+struct RstModal {
+    std::int64_t mHarmonic = 0;
+    std::map<std::string, NDArray> mPoint;
+    std::map<std::string, std::vector<NDArray>> mCell;
+};
 
 // The full rotor: the base sector's cells (element numbers up to csEls) and
 // their points repeated round the cyclic axis, results rotated with them.
-// Coincident nodes on the sector boundaries are not merged.
-Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& rEnfDofs) {
+// Coincident nodes on the sector boundaries are not merged. A modal set
+// (pModal) is combined with its other half per sector first, as MAPDL's
+// /CYCEXPAND does: scale * (x cos(h theta) - x' sin(h theta)).
+Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& rEnfDofs,
+                       const RstModal* pModal = nullptr) {
     const RstPart& part = *rModel.mParts[0];
     const RstResults& results = part.mResults;
     const Mesh& mesh = rModel.mMesh;
@@ -1205,6 +1291,24 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
     for (std::size_t i = 0; i < n; ++i)
         rotations.push_back(
             rst_axis_rotation(axis, 2.0 * pi * static_cast<double>(i) / static_cast<double>(n)));
+    // Per sector, the weights of a modal set's two halves.
+    std::vector<double> weight(n, 1.0), weight_pair(n, 0.0);
+    if (pModal) {
+        const std::int64_t h = pModal->mHarmonic;
+        const bool single = h == 0 || 2 * std::llabs(h) == static_cast<long long>(n);
+        const double scale = single ? 1.0 / std::sqrt(static_cast<double>(n))
+                                    : 1.0 / std::sqrt(static_cast<double>(n) / 2.0);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double phase =
+                2.0 * pi * static_cast<double>(h) * static_cast<double>(i) / static_cast<double>(n);
+            weight[i] = scale * std::cos(phase);
+            weight_pair[i] = -scale * std::sin(phase);
+        }
+    }
+    const auto combine = [&](std::size_t I, double* pData, const double* pPair, std::size_t Count) {
+        for (std::size_t k = 0; k < Count; ++k)
+            pData[k] = weight[I] * pData[k] + (pPair ? weight_pair[I] * pPair[k] : 0.0);
+    };
     const auto rotate = [](const std::array<double, 9>& rQ, const double* pIn, double* pOut) {
         for (std::size_t d = 0; d < 3; ++d)
             pOut[d] = rQ[d * 3] * pIn[0] + rQ[d * 3 + 1] * pIn[1] + rQ[d * 3 + 2] * pIn[2];
@@ -1314,10 +1418,22 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
         const std::size_t item = dtype_size(src.Dtype()) * width;
         const auto* s = reinterpret_cast<const unsigned char*>(src.Data());
         auto* d = reinterpret_cast<unsigned char*>(dst.Data());
+        const bool modal = pModal && src.Dtype() == DType::Float64 && !rst_is_raw(name);
+        const NDArray* pair = nullptr;
+        if (modal)
+            if (const auto it = pModal->mPoint.find(name); it != pModal->mPoint.end())
+                pair = &it->second;
         for (std::size_t i = 0; i < n; ++i) {
-            for (std::size_t k = 0; k < n_pts; ++k)
+            for (std::size_t k = 0; k < n_pts; ++k) {
                 std::memcpy(d + (i * n_pts + k) * item,
                             s + static_cast<std::size_t>(old_point[k]) * item, item);
+                if (modal)
+                    combine(
+                        i, dst.As<double>() + (i * n_pts + k) * width,
+                        pair ? pair->As<double>() + static_cast<std::size_t>(old_point[k]) * width
+                             : nullptr,
+                        width);
+            }
             if (src.Dtype() == DType::Float64)
                 spin(name, i, dst.As<double>() + i * n_pts * width, n_pts, width, nullptr);
         }
@@ -1337,9 +1453,19 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
             const auto* s = reinterpret_cast<const unsigned char*>(src.Data());
             auto* d = reinterpret_cast<unsigned char*>(dst.Data());
             const std::size_t count = kept_rows[kb].size();
+            const bool modal = pModal && src.Dtype() == DType::Float64 && !rst_is_raw(name);
+            const NDArray* pair = nullptr;
+            if (modal)
+                if (const auto it = pModal->mCell.find(name); it != pModal->mCell.end())
+                    pair = &it->second[b];
             for (std::size_t i = 0; i < n; ++i) {
-                for (std::size_t k = 0; k < count; ++k)
+                for (std::size_t k = 0; k < count; ++k) {
                     std::memcpy(d + (i * count + k) * item, s + kept_rows[kb][k] * item, item);
+                    if (modal)
+                        combine(i, dst.As<double>() + (i * count + k) * width,
+                                pair ? pair->As<double>() + kept_rows[kb][k] * width : nullptr,
+                                width);
+                }
                 if (src.Dtype() == DType::Float64) {
                     // Per element node, flattened: width = nodes * components.
                     std::size_t comps = width;
@@ -1373,6 +1499,11 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
         NDArray sectors(DType::Int64, {1});
         sectors.As<std::int64_t>()[0] = static_cast<std::int64_t>(n);
         out.AddFieldData("ansys:sectors", std::move(sectors));
+    }
+    if (pModal) {
+        NDArray harmonic(DType::Int64, {1});
+        harmonic.As<std::int64_t>()[0] = pModal->mHarmonic;
+        out.AddFieldData("ansys:harmonic_index", std::move(harmonic));
     }
     // Block of each base cell among the kept blocks.
     std::vector<std::int64_t> kept_index(n_blocks, -1);
@@ -1417,19 +1548,124 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
     return out;
 }
 
+// The other half of modal set Index of a cyclic model: its mode pair (the
+// neighbouring set of the same frequency), else the duplicate sector (nodes
+// past csNds and elements past csEls, paired with the base sector's in number
+// order), else nothing.
+RstModal rst_modal(const std::string& rPath, const ReadOptions& rOptions, const RstModel& rModel,
+                   std::size_t Index) {
+    const RstResults& results = rModel.mParts[0]->mResults;
+    RstModal out;
+    if (Index < results.mHarmonic.size())
+        out.mHarmonic = results.mHarmonic[Index];
+    if (rOptions.mPointsOnly)
+        return out;
+    const std::vector<RstSet>& sets = results.mSets;
+    std::size_t pair = sets.size();
+    if (sets.size() > 1) {
+        const std::size_t before = (Index + sets.size() - 1) % sets.size();
+        const std::size_t after = (Index + 1) % sets.size();
+        if (rst_close(sets[Index].mTime, sets[before].mTime))
+            pair = before;
+        else if (rst_close(sets[Index].mTime, sets[after].mTime))
+            pair = after;
+    }
+    const Mesh& mesh = rModel.mMesh;
+    if (pair < sets.size()) {
+        RstModel other = rst_model(rst_open(rPath, rOptions), rOptions.mLenient);
+        std::vector<std::int64_t> dofs;
+        rst_solution(other, pair, rOptions);
+        rst_reactions(other, pair, rOptions);
+        rst_elements(other, pair, rOptions, dofs);
+        for (const std::string& name : other.mMesh.PointDataNames())
+            out.mPoint.emplace(name, other.mMesh.PointData(name));
+        for (const std::string& name : other.mMesh.CellDataNames()) {
+            std::vector<NDArray> blocks;
+            for (std::size_t b = 0; b < other.mMesh.NumCellBlocks(); ++b)
+                blocks.push_back(other.mMesh.CellData(name, b));
+            out.mCell.emplace(name, std::move(blocks));
+        }
+        return out;
+    }
+    // The duplicate sector, paired with the base sector in number order.
+    std::vector<std::pair<std::int64_t, std::int64_t>> base_nodes, dup_nodes;
+    for (const auto& [number, point] : rModel.mNodeIndex)
+        (number <= results.mCsNds ? base_nodes : dup_nodes).emplace_back(number, point);
+    if (dup_nodes.empty() || dup_nodes.size() != base_nodes.size())
+        return out;
+    std::sort(base_nodes.begin(), base_nodes.end());
+    std::sort(dup_nodes.begin(), dup_nodes.end());
+    std::vector<std::tuple<std::int64_t, std::int64_t, std::int64_t>> base_cells, dup_cells;
+    for (std::size_t pos = 0; pos < rModel.mCells.size(); ++pos) {
+        const detail::AnsysCellLocation& loc = rModel.mCells[pos];
+        if (loc.mBlock < 0)
+            continue;
+        const std::int64_t id = rModel.mModel.mElements[pos].mId;
+        (id <= results.mCsEls ? base_cells : dup_cells).emplace_back(id, loc.mBlock, loc.mRow);
+    }
+    std::sort(base_cells.begin(), base_cells.end());
+    std::sort(dup_cells.begin(), dup_cells.end());
+    for (const std::string& name : mesh.PointDataNames()) {
+        const NDArray& src = mesh.PointData(name);
+        if (src.Dtype() != DType::Float64)
+            continue;
+        const std::size_t width = src.Size() / std::max<std::size_t>(mesh.NumPoints(), 1);
+        NDArray dst(DType::Float64, src.Shape());
+        std::fill(dst.As<double>(), dst.As<double>() + dst.Size(), 0.0);
+        for (std::size_t k = 0; k < base_nodes.size(); ++k)
+            std::copy_n(src.As<double>() + static_cast<std::size_t>(dup_nodes[k].second) * width,
+                        width,
+                        dst.As<double>() + static_cast<std::size_t>(base_nodes[k].second) * width);
+        out.mPoint.emplace(name, std::move(dst));
+    }
+    if (dup_cells.size() != base_cells.size())
+        return out;
+    for (const std::string& name : mesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        bool ok = true;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+            const NDArray& src = mesh.CellData(name, b);
+            ok = ok && src.Dtype() == DType::Float64;
+            NDArray dst(src.Dtype(), src.Shape());
+            std::memset(dst.Data(), 0, dst.Size() * dtype_size(dst.Dtype()));
+            blocks.push_back(std::move(dst));
+        }
+        if (!ok)
+            continue;
+        for (std::size_t k = 0; k < base_cells.size(); ++k) {
+            const auto [bid, bb, br] = base_cells[k];
+            const auto [did, db, dr] = dup_cells[k];
+            const NDArray& src = mesh.CellData(name, static_cast<std::size_t>(db));
+            const std::size_t w = src.Size() / std::max<std::size_t>(src.Shape()[0], 1);
+            const std::size_t wb =
+                blocks[static_cast<std::size_t>(bb)].Size() /
+                std::max<std::size_t>(blocks[static_cast<std::size_t>(bb)].Shape()[0], 1);
+            if (w != wb)
+                continue;
+            std::copy_n(src.As<double>() + static_cast<std::size_t>(dr) * w, w,
+                        blocks[static_cast<std::size_t>(bb)].As<double>() +
+                            static_cast<std::size_t>(br) * w);
+        }
+        out.mCell.emplace(name, std::move(blocks));
+    }
+    return out;
+}
+
 Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic) {
     std::vector<std::unique_ptr<RstPart>> parts = rst_open(rPath, rOptions);
     const RstResults& main = parts[0]->mResults;
     if (Cyclic) {
         if (main.mNumSectors <= 1)
             rst_fail("not a cyclic-symmetry model; read it as ansys_rst");
-        if (main.mKan != 0)
-            rst_fail("only static cyclic-symmetry results can be expanded (this is analysis type " +
-                     std::to_string(main.mKan) + "); read the base sector as ansys_rst");
+        if (main.mKan != 0 && main.mKan != 2)
+            rst_fail(
+                "only static and modal cyclic-symmetry results can be expanded (this is "
+                "analysis type " +
+                std::to_string(main.mKan) + "); read the base sector as ansys_rst");
     } else if (main.mNumSectors > 1) {
         log::warn(
             "Ansys .rst: a cyclic-symmetry model ({} sectors); only the base sector is read "
-            "(ansys_rst_cyclic expands a static one)",
+            "(ansys_rst_cyclic expands it)",
             main.mNumSectors);
     }
     RstModel model = rst_model(std::move(parts), rOptions.mLenient);
@@ -1462,6 +1698,10 @@ Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic
         rst_solution(model, index, rOptions);
         rst_reactions(model, index, rOptions);
         rst_elements(model, index, rOptions, enf_dofs);
+    }
+    if (Cyclic && results.mKan == 2) {
+        const RstModal modal = rst_modal(rPath, rOptions, model, index);
+        return rst_expand_cyclic(model, enf_dofs, &modal);
     }
     return Cyclic ? rst_expand_cyclic(model, enf_dofs) : std::move(model.mMesh);
 }

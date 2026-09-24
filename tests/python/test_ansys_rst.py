@@ -1,7 +1,8 @@
 """Ansys MAPDL results (``.rst``, ``.rth``): both engines against files MAPDL
 wrote (and pymapdl-reader's frozen reading of them: nodal solutions, averaged
-element stresses and strains, reaction forces, a distributed solve, the full
-rotor of static cyclic models), plus a synthetic file that pins what those
+element stresses and strains, reaction forces, the element records read as they
+are written, a distributed solve, the full rotor of static and modal cyclic
+models), plus a synthetic file that pins what those
 files do not exercise -- a node rotated about all three axes, a result set
 holding only some nodes, MAPDL's undefined value, a rotated element, a layered
 shell, an all-zero record and the refusals."""
@@ -361,14 +362,193 @@ def test_cyclic_full_rotor_matches_pymapdl_reader(engine, path):
         assert sorted(set(sector.tolist())) == list(range(r.n_sectors))
 
 
-def test_cyclic_refusals_and_dispatch(engine):
+def test_cyclic_refusals_and_dispatch(engine, tmp_path):
     with pytest.raises(meshioplusplus.ReadError, match="not a cyclic-symmetry model"):
         engine.read_cyclic(RST / "file.rst")
+    # A cyclic model of another analysis type (here: transient, 4) is refused.
+    other = tmp_path / "transient.rst"
+    modal_variant(RST / "cyc12.rst", other, (0, 0, 0), (1.0, 2.0, 3.0))
+    data = bytearray(other.read_bytes())
+    header = int(np.frombuffer(bytes(data[:4]), "<i4")[0]) + 3
+    data[(header + 9) * 4 : (header + 10) * 4] = np.int32(4).tobytes()
+    other.write_bytes(bytes(data))
+    with pytest.raises(meshioplusplus.ReadError, match="only static and modal"):
+        engine.read_cyclic(other)
     mesh = meshioplusplus.read(RST / "cyclic_v182.rst", file_format="ansys_rst_cyclic")
     assert mesh.field_data["ansys:sectors"].tolist() == [15]
     assert meshioplusplus.read_metadata(
         RST / "cyc12.rst", file_format="ansys_rst_cyclic"
     )["time_values"] == pytest.approx(py_rst.time_values(RST / "cyc12.rst"))
+
+
+def modal_variant(source, target, harmonic, times):
+    """Write ``source`` (a static cyclic results file) to ``target`` as a modal
+    one: analysis type 2, the harmonic index table and the set times rewritten.
+    ``tools/gen_ansys_rst_reference.py`` holds the same function."""
+    data = bytearray(pathlib.Path(source).read_bytes())
+    words = np.frombuffer(bytes(data), "<i4")
+    header = int(words[0]) + 3  # the result header follows the standard one
+    h = words[header + 2 : header + 2 + int(words[header])]
+
+    def pointer(lo, hi):
+        return (int(h[lo]) & 0xFFFFFFFF) | (int(h[hi]) << 32)
+
+    def put(word, value):
+        raw = value.tobytes()
+        data[word * 4 : word * 4 + len(raw)] = raw
+
+    put(header + 2 + 7, np.int32(2))
+    cyc = pointer(16, 43)
+    for k, v in enumerate(harmonic):
+        put(cyc + 2 + k, np.int32(v))
+    tim = pointer(11, 41)
+    for k, v in enumerate(times):
+        put(tim + 2 + 2 * k, np.float64(v))
+    pathlib.Path(target).write_bytes(bytes(data))
+
+
+def _rotor_rows(path):
+    """The base model, its cyclic axis and origin, and each base point's row in
+    a sector of the full rotor (the base sector's points in point order)."""
+    base = py_rst._Model(py_rst._open(str(path)), True)
+    r = base.files[0]
+    if r.cs_cord > 1:
+        axes, origin = r.coordinate_system(r.cs_cord)
+        axis = axes[2] / np.linalg.norm(axes[2])
+    else:
+        axis, origin = np.array([0.0, 0.0, 1.0]), np.zeros(3)
+    used = set()
+    for e, loc in zip(base.deck["elements"], base.locs):
+        if loc is not None and e["id"] <= r.cs_els:
+            used.update(int(v) for v in base.mesh.cells[loc[0]].data[loc[1]])
+    rank = {p: k for k, p in enumerate(sorted(used))}
+    return base, axis, origin, rank
+
+
+def _sector_rotation(axis, n, i):
+    return np.array(py_rst._axis_rotation(axis, 2 * math.pi * i / n)).reshape(3, 3)
+
+
+def test_modal_cyclic_mode_pair_matches_pymapdl_reader(engine, tmp_path):
+    """A modal cyclic set is combined with its mode pair (the neighbouring set
+    of the same frequency) per sector, as pymapdl-reader's CyclicResult does:
+    the stresses match its full rotor on every sector. pymapdl-reader rotates
+    modal displacements about the global Z axis whatever the cyclic axis
+    (cyc12.rst's is a local system's), so they are compared unrotated."""
+    path = tmp_path / "cyc12_modal_pair.rst"
+    modal_variant(RST / "cyc12.rst", path, (4, -4, 9), (5.0, 5.0, 7.0))
+    ref = np.load(RST / "pymapdl_reference.npz")
+    key = path.name
+    base, axis, _, rank = _rotor_rows(path)
+    n = base.files[0].n_sectors
+    for step, harmonic in enumerate((4, -4, 9)):
+        mesh = engine.read_cyclic(path, time_step=step, lenient=True)
+        assert mesh.field_data["ansys:harmonic_index"].tolist() == [harmonic]
+        numbers = ref[f"{key}/{step}/rotor_nnum"]
+        values = ref[f"{key}/{step}/rotor_values"]
+        stress = ref[f"{key}/{step}/rotor_stress"]
+        rows = [rank[base.node_index[int(v)]] for v in numbers]
+        for i in range(n):
+            here = [i * len(rank) + k for k in rows]
+            ours = mesh.point_data["U"][here] @ _sector_rotation(axis, n, i)
+            theirs = values[i][:, :3] @ _sector_rotation([0.0, 0.0, 1.0], n, i)
+            np.testing.assert_allclose(
+                ours, theirs, rtol=0, atol=1e-12 * np.abs(values).max()
+            )
+            np.testing.assert_allclose(
+                mesh.point_data["S"][here],
+                stress[i],
+                rtol=0,
+                atol=1e-12 * np.nanmax(np.abs(stress)),
+            )
+
+
+def test_modal_cyclic_duplicate_sector(engine, tmp_path):
+    """Without a mode pair, a modal set's other half is its duplicate sector
+    (nodes past csNds, paired with the base sector's in number order): sector i
+    is scale * (x cos(h theta_i) - x' sin(h theta_i)), rotated. The base sector
+    matches pymapdl-reader (whose own duplicate-sector branch never runs: it
+    tests the reduced array's size against the full node count)."""
+    path = tmp_path / "cyc12_modal_dup.rst"
+    modal_variant(RST / "cyc12.rst", path, (2, 3, 0), (1.0 / 3.0, 2.0 / 3.0, 1.0))
+    ref = np.load(RST / "pymapdl_reference.npz")
+    key = path.name
+    base, axis, _, rank = _rotor_rows(path)
+    r = base.files[0]
+    n = r.n_sectors
+    pairs = sorted(v for v in base.node_index if v <= r.cs_nds)
+    dups = sorted(v for v in base.node_index if v > r.cs_nds)
+    assert len(pairs) == len(dups)
+    for step, harmonic in enumerate((2, 3, 0)):
+        plain = engine.read(path, time_step=step, lenient=True)
+        mesh = engine.read_cyclic(path, time_step=step, lenient=True)
+        u = plain.point_data["U"]
+        x = u[[base.node_index[v] for v in pairs]]
+        x_dup = u[[base.node_index[v] for v in dups]]
+        rows = [rank[base.node_index[v]] for v in pairs]
+        single = harmonic == 0 or 2 * abs(harmonic) == n
+        scale = 1 / math.sqrt(n) if single else 1 / math.sqrt(n / 2)
+        for i in range(n):
+            phase = 2 * math.pi * harmonic * i / n
+            expected = scale * (x * math.cos(phase) - x_dup * math.sin(phase))
+            here = [i * len(rank) + k for k in rows]
+            np.testing.assert_allclose(
+                mesh.point_data["U"][here] @ _sector_rotation(axis, n, i),
+                expected,
+                rtol=0,
+                atol=1e-14 * np.abs(u).max(),
+            )
+        numbers = ref[f"{key}/{step}/rotor_nnum"]
+        rows = [rank[base.node_index[int(v)]] for v in numbers]
+        np.testing.assert_allclose(
+            mesh.point_data["U"][rows], ref[f"{key}/{step}/rotor_values"][0][:, :3]
+        )
+        np.testing.assert_allclose(
+            mesh.point_data["S"][rows], ref[f"{key}/{step}/rotor_stress"][0]
+        )
+
+
+_RAW = sorted(
+    {
+        (k.split("/raw/")[0], k.split("/raw/")[1].split("/")[0])
+        for k in np.load(RST / "pymapdl_reference.npz").files
+        if "/raw/" in k
+    }
+)
+
+
+@pytest.mark.parametrize("key,name", _RAW, ids=[f"{k}:{n}" for k, n in _RAW])
+def test_raw_element_records_match_pymapdl_reader(engine, key, name):
+    """ENG, EMS, EMN, EGR, EFX, ENL, EPT ...: one row per element, the record as
+    written (NaN-padded to the longest), as pymapdl-reader's
+    ``element_solution_data`` reads it. On the release 13 files pymapdl-reader
+    reads twice each record's length (it counts 4-byte words as values): only
+    the first half is the record."""
+    path = RST / key
+    ref = np.load(RST / "pymapdl_reference.npz")
+    enum = ref[f"{key}/raw/{name}/enum"]
+    lengths = ref[f"{key}/raw/{name}/lengths"]
+    values = np.split(ref[f"{key}/raw/{name}/values"], np.cumsum(lengths)[:-1])
+    if key in ("beam44.rst", "temp_v13.rst"):
+        lengths = lengths // 2
+    model = py_rst._Model(py_rst._open(str(path)), True)
+    where = {
+        e["id"]: loc
+        for e, loc in zip(model.deck["elements"], model.locs)
+        if loc is not None
+    }
+    mesh = engine.read(path, lenient=True)
+    data = mesh.cell_data[name]
+    checked = 0
+    for number, length, expected in zip(enum, lengths, values):
+        if int(number) not in where or not length:
+            continue
+        b, row = where[int(number)][:2]
+        got = data[b][row]
+        np.testing.assert_array_equal(got[:length], expected[:length])
+        assert np.isnan(got[length:]).all()
+        checked += 1
+    assert checked
 
 
 def test_zero_records(engine):
@@ -616,9 +796,12 @@ def _write_element_solution(w, base):
     w.patch(brick, 9, w.doubles([90.0, 0.0, 0.0]) - brick)
     forces = [[i, 0.0, 0.0, -i] for i in range(8)]
     w.patch(brick, 1, w.doubles(np.ravel(forces)) - brick)
+    # Energies (ENG), read as written: the undefined value becomes NaN.
+    w.patch(brick, 3, w.doubles([1.0, 2.0, 2.0**100, 4.0]) - brick)
     # The shell: bottom then top, four corners each.
     shell = w.ints([0] * 25)
     w.patch(esl, 2, shell - esl)
+    w.patch(shell, 3, -2)  # an all-zero energy record, not written
     stresses = [_shell_stress(i, 0) for i in range(4)] + [
         _shell_stress(i, 1) for i in range(4)
     ]
@@ -713,6 +896,12 @@ def test_synthetic_element_solution(engine, tmp_path):
     forces = cell("ENF", 0)
     np.testing.assert_array_equal(forces, [[i, 0.0, 0.0, -i] for i in range(8)])
     assert np.isnan(mesh.cell_data["ENF"][1]).all()
+    # Raw records: one row per element, NaN-padded to the longest.
+    np.testing.assert_array_equal(mesh.cell_data["ENG"][0], [[1.0, 2.0, np.nan, 4.0]])
+    np.testing.assert_array_equal(
+        mesh.cell_data["ENG"][1], [[0.0, 0.0, np.nan, np.nan]]
+    )
+    assert "EMS" not in mesh.cell_data
 
     rf = mesh.point_data["RF"]
     np.testing.assert_allclose(rf[2], _rotation(*_ANGLES) @ [7.0, 0.0, 0.0], atol=1e-14)

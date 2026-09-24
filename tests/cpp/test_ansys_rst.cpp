@@ -148,8 +148,11 @@ void write_element_solution(RstWriter& rW, std::size_t Base) {
     for (int i = 0; i < 8; ++i)
         forces.insert(forces.end(), {double(i), 0.0, 0.0, -double(i)});
     rW.Patch(brick, 1, rel(rW.Doubles(forces), brick));
+    // Energies (ENG), read as written: the undefined value becomes NaN.
+    rW.Patch(brick, 3, rel(rW.Doubles({1.0, 2.0, std::ldexp(1.0, 100), 4.0}), brick));
     const std::size_t shell = rW.Ints(std::vector<std::int32_t>(25, 0));
     rW.Patch(esl, 2, rel(shell, esl));
+    rW.Patch(shell, 3, -2);  // an all-zero energy record, not written
     stresses.clear();
     for (int top = 0; top < 2; ++top)
         for (int i = 0; i < 4; ++i)
@@ -348,6 +351,13 @@ TEST(AnsysRst, SyntheticElementSolution) {
     EXPECT_NEAR(read_point(mesh, "S", 4 * 6), 2.0, 1e-12);
     EXPECT_EQ(read_point(mesh, "S@top", 0), 110.0);
     EXPECT_TRUE(std::isnan(read_point(mesh, "S@top", 4 * 6)));
+    // Raw records: one row per element, NaN-padded to the longest.
+    ASSERT_EQ(mesh.CellData("ENG", 0).Shape(), (std::vector<std::size_t>{1, 4}));
+    EXPECT_EQ(read_double(mesh.CellData("ENG", 0), 1), 2.0);
+    EXPECT_TRUE(std::isnan(read_double(mesh.CellData("ENG", 0), 2)));
+    EXPECT_EQ(read_double(mesh.CellData("ENG", 1), 1), 0.0);
+    EXPECT_TRUE(std::isnan(read_double(mesh.CellData("ENG", 1), 2)));
+    EXPECT_FALSE(mesh.HasCellData("EMS"));
     const auto& forces = mesh.CellData("ENF", 0);
     ASSERT_EQ(forces.Shape(), (std::vector<std::size_t>{1, 32}));
     EXPECT_EQ(read_double(forces, 7 * 4), 7.0);
