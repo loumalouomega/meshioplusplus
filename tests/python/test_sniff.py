@@ -45,6 +45,44 @@ from meshioplusplus._sniff import _sniff_format_py
             "abaqus_fil",
         ),
         (b"#RADIOSS STARTER\n/BEGIN\nrun\n", "radioss"),
+        # Nastran OP2 header blocks: [3] date [7] tape code, 4- and 8-byte words
+        (
+            b"".join(
+                n.to_bytes(4, "little") + p + n.to_bytes(4, "little")
+                for p in (
+                    (3).to_bytes(4, "little"),
+                    b"\x09\x00\x00\x00\x18\x00\x00\x00\x1a\x00\x00\x00",
+                    (7).to_bytes(4, "little"),
+                    b"NASTRAN FORT TAPE ID CODE - ",
+                )
+                for n in [len(p)]
+            ),
+            "nastran_op2",
+        ),
+        (
+            b"".join(
+                n.to_bytes(4, "big") + p + n.to_bytes(4, "big")
+                for p in (
+                    (3).to_bytes(8, "big"),
+                    (9).to_bytes(8, "big") * 3,
+                    (7).to_bytes(8, "big"),
+                    b"NAST    RAN     FORT    TAPE    ID C    ODE     -       ",
+                )
+                for n in [len(p)]
+            ),
+            "nastran_op2",
+        ),
+        # LS-DYNA d3plot control block (version 971, NDIM 4, one shell)
+        (
+            b" " * 40
+            + b"".join((v).to_bytes(4, "little", signed=True) for v in [0, 1, 0, 0])
+            + np.float32(971.0).tobytes()
+            + b"".join(
+                (v).to_bytes(4, "little", signed=True)
+                for v in [4, 4, 6, 0, 0, 1, 0, 0] + [0] * 8 + [1, 1, 7] + [0] * 30
+            ),
+            "lsdyna_d3plot",
+        ),
         (b"# a comment\n$ another\n/BEGIN\nrun\n      2019         0\n", "radioss"),
     ],
 )

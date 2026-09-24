@@ -10240,6 +10240,107 @@ MESHIOPLUSPLUS_API std::vector<MeshPart> carve_by_region(const Mesh& rMesh,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/mesh_carve.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/nastran_model.hpp =====
+/**
+ * @file nastran_model.hpp
+ * @brief The Nastran model half shared by the result readers (`nastran_h5`,
+ *        `nastran_op2`): element cards to cell blocks, element ids to cells,
+ *        property ids to regions.
+ *
+ * Both readers get their model as rows per card (`EID`, `PID`, the `G`
+ * connectivity) and a GRID id -> point index map, and build the same mesh from
+ * them: the linear or quadratic cell type of each element (a quadratic one only
+ * when every mid-side node is given), `cell_data["nastran:eid"]` and
+ * `["nastran:pid"]`, and one cell region per property id named
+ * `<PTYPE>_<pid>` (`PID_<pid>` when the property card is unknown). An element
+ * on a scalar point is dropped; one on an undefined GRID is an error.
+ *
+ * Python twin: `src/python/meshioplusplus/nastran/_model.py`.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/** @brief One element card with a cell type: its linear and (optional) quadratic shape. */
+struct NastranCardSpec {
+    const char* mCard;
+    const char* mLinear;
+    std::size_t mLinearNodes;
+    const char* mQuadratic;  ///< nullptr: no quadratic variant
+    std::size_t mQuadraticNodes;
+    const int* mPermutation;  ///< quadratic connectivity: conn[k] = G[perm[k]]; nullptr = identity
+};
+
+/** @brief The spec of an element card, or nullptr when it has no cell type. */
+const NastranCardSpec* nastran_card_spec(std::string_view Card);
+
+/** @brief The elements of one card: rows of `mWidth` grid ids each. */
+struct NastranCardRows {
+    std::string mCard;
+    std::vector<std::int64_t> mEid;
+    std::vector<std::int64_t> mPid;  ///< -1 where the card has none (CONM2)
+    std::vector<std::int64_t> mNodes;
+    std::size_t mWidth = 0;
+};
+
+/** @brief How elements map to the cells a Nastran model's blocks hold. */
+struct NastranCells {
+    /// EID -> global cell. A CONM2 has none: MSC accepts one sharing its id
+    /// with a structural element, so it stays out.
+    std::unordered_map<std::int64_t, std::size_t> mCellIndex;
+    std::vector<std::size_t> mOffsets;  ///< first global cell of each block
+    std::vector<std::size_t> mSizes;    ///< cells per block
+    std::size_t mNumCells = 0;
+};
+
+/**
+ * @brief Add the cell blocks, `nastran:eid`/`nastran:pid` and property regions
+ *        of a model to @p rMesh, whose points are the GRIDs.
+ * @param rCards the cards with a spec, in the order their blocks should take
+ * @param rGridIndex GRID id -> point index
+ * @param rScalarPoints SPOINT/EPOINT ids (an element on one is dropped)
+ * @param rPtype property id -> property card name, for the region names
+ * @param rWho the reader's name, prefixed to its warnings and errors
+ * @throws ReadError when an element references an undefined GRID or no node
+ */
+NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& rCards,
+                               const std::unordered_map<std::int64_t, std::size_t>& rGridIndex,
+                               const std::unordered_set<std::int64_t>& rScalarPoints,
+                               const std::map<std::int64_t, std::string>& rPtype,
+                               const std::string& rWho);
+
+/**
+ * @brief Keep a GRID output or definition frame as point data when any is set:
+ *        `nastran:cp` (coordinates stay in the local system) or `nastran:cd`
+ *        (results are in the local output system), with a warning.
+ * @param rFrame "CP" or "CD"
+ */
+void nastran_add_frame(Mesh& rMesh, const std::string& rFrame,
+                       const std::vector<std::int64_t>& rValues, const std::string& rWho);
+
+/**
+ * @brief Read a bulk-data deck as `read_nastran` does, also returning the GRID
+ *        ids in point order and the element ids in global cell order (the OP2
+ *        reader's sibling-deck route).
+ */
+Mesh nastran_read_deck(const std::string& rPath, std::vector<std::int64_t>& rGridIds,
+                       std::vector<std::int64_t>& rCellIds);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/nastran_model.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
 /**
  * @file node_adjacency.hpp
@@ -10643,7 +10744,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 8
+#define MESHIOPLUSPLUS_VERSION_MINOR 9
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10653,7 +10754,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.8.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.9.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -16138,6 +16239,111 @@ MESHIOPLUSPLUS_API Mesh read_lsdyna(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/lsdyna.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/lsdyna_d3plot.hpp =====
+/**
+ * @file lsdyna_d3plot.hpp
+ * @brief LS-DYNA binary state database (the `d3plot` family) reader.
+ *
+ * The file LS-DYNA writes for post-processing (LS-PrePost, lasso-python and
+ * most public crash datasets start from it). It is word-addressed -- 4-byte
+ * words, or 8 in a double-precision run, in either byte order, sniffed from
+ * the control block -- and split across `d3plot`, `d3plot01`, `d3plot02`...:
+ * the family is one stream of states, none of which straddles a file. Open
+ * the base file; a numbered member is refused with a message naming it.
+ *
+ * The mesh comes from the geometry section: the initial coordinates (the user
+ * node ids as `point_data["lsdyna:nid"]`), then one cell block per element
+ * family and cell type, in the order solids, thick shells, beams, shells.
+ * Degenerate 8-node solids and thick shells collapse through
+ * `detail::collapse_brick` (the keyword reader's rules), a shell with
+ * `n4 == n3` is a triangle, ten-node solids (`NEL8 < 0`) are `tetra10` and
+ * eight-node shells (`NEL48`) `quad8`. Element user ids are
+ * `cell_data["lsdyna:eid"]` and user part ids `cell_data["lsdyna:part"]`; every
+ * part with elements is a cell region tagged with its id and named by its
+ * title, or `Part <id>` without one.
+ *
+ * Every state is a step: `time_step` selects one (0 = first, negative from the
+ * end), its time is `field_data["meshio:time"]` with `lsdyna:state`. It
+ * becomes
+ *  - point data: `displacement` (current minus initial coordinates; the points
+ *    stay where the geometry put them), `velocity`, `acceleration`,
+ *    `temperature`, `heat_flux`, `mass_scaling`, `temperature_gradient`,
+ *    `residual_forces`, `residual_moments`, whichever the header flags;
+ *  - cell data: `stress`, `effective_plastic_strain`, `history_variables`,
+ *    `strain`, `plastic_strain_tensor` and `thermal_strain_tensor` per
+ *    integration point (solids: 1 or 8) or through-thickness layer (shells,
+ *    thick shells: `MAXINT`; beams: their integration points) as
+ *    `(cells, points * components)` with `field_data["lsdyna_d3plot:layout:<name>"]
+ *    = [points, components]`, NaN where a family has fewer points or no such
+ *    variable; `strain_inner`/`strain_outer`, `thickness`, `internal_energy`,
+ *    `shell_bending_moment`, `shell_shear_force`, `shell_normal_force`,
+ *    `shell_element_variables` for shells, `beam_axial_force`,
+ *    `beam_shear_force`, `beam_bending_moment`, `beam_torsion_moment`,
+ *    `beam_axial_stress`, `beam_shear_stress`, `beam_axial_strain` for beams,
+ *    `thermal_variables` for solids;
+ *  - the deletion flags as an int8 mask `lsdyna:alive` (1 = active, 0 =
+ *    deleted), per cell (`MDLOPT = 2`) or per point (`MDLOPT = 1`); deleted
+ *    cells stay in the mesh;
+ *  - field data: `global_kinetic_energy`, `global_internal_energy`,
+ *    `global_total_energy`, `global_velocity` and the per-part
+ *    `part_internal_energy`, `part_kinetic_energy`, `part_velocity`,
+ *    `part_mass`, `part_hourglass_energy`.
+ *
+ * Rigid-body, rigid-road, SPH and airbag data are skipped. Refused by name:
+ * `d3part`/`intfor` files, femzip-compressed files, two-dimensional databases,
+ * CFD/multi-solver data, adaptive remeshing and 20/27/21/15/40/64-node solids.
+ *
+ * See doc/formats/lsdyna_d3plot.md.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read one state of a d3plot family.
+ * @param rPath the family's base file (`d3plot`)
+ * @param rOpts `mTimeStep` selects the state; `mArrays`/`mPointsOnly` narrow
+ *        the data
+ * @return the mesh with the selected state's results
+ * @throws ReadError if the file is not a d3plot, is truncated, uses a refused
+ *         feature, is a numbered member of a family, or `mTimeStep` is out of
+ *         range
+ */
+MESHIOPLUSPLUS_API Mesh read_lsdyna_d3plot(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief The time of every state of the family, in family order.
+ */
+MESHIOPLUSPLUS_API std::vector<double> lsdyna_d3plot_time_values(const std::string& rPath);
+
+/**
+ * @brief Metadata (counts, data names, `mTimeValues`) of a d3plot family.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_lsdyna_d3plot_metadata(const std::string& rPath,
+                                                            const ReadOptions& rOpts = {});
+
+/**
+ * @brief Whether a path names a d3plot base file: its file name is `d3plot`
+ *        (any case). Format inference uses it, as `z88i1.txt` names Z88.
+ */
+MESHIOPLUSPLUS_API bool is_d3plot_filename(const std::string& rPath);
+
+/**
+ * @brief Whether the first bytes of a file are a d3plot control block.
+ * @param pHead the file's first bytes
+ * @param Size how many there are (a control block needs 256, or 512 in
+ *        double precision)
+ */
+MESHIOPLUSPLUS_API bool is_d3plot_head(const char* pHead, std::size_t Size);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/lsdyna_d3plot.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/marc.hpp =====
 /**
  * @file marc.hpp
@@ -17309,6 +17515,76 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_h5_metadata(const std::string& rPat
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/include/meshioplusplus/formats/nastran_h5.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/nastran_op2.hpp =====
+/**
+ * @file nastran_op2.hpp
+ * @brief Nastran OP2 result file reader (MSC and NX/Simcenter, 32- and 64-bit).
+ *
+ * An OP2 is a Fortran unformatted file (`detail/fortran_records.hpp`; 4-byte
+ * record markers, 4- or 8-byte words) of named tables: a name, a header record,
+ * then records separated by marker triples `[-k, 1, 0]` and closed by `0`.
+ *
+ * The mesh comes from the geometry tables, as `nastran_h5` builds it
+ * (`detail/nastran_model.hpp`): `GEOM1` GRIDs are the points (CP/CD frames kept
+ * as `nastran:cp`/`nastran:cd` with a warning, coordinates not transformed),
+ * `GEOM2` element records the cells (`nastran:eid`, `nastran:pid`; CONM2 as
+ * `vertex`; records with no cell type are named in a warning) and `EPT` the
+ * property card of each region `<PTYPE>_<pid>`. Without GRID records the input
+ * deck beside the file (`<stem>.bdf`, `.dat`, `.nas` or `.blk`) gives the
+ * mesh, read by the bulk-data reader, with `nastran:eid`.
+ *
+ * Every (subcase, analysis, mode/time/frequency/load step) of the supported
+ * tables is a step: `time_step` selects one (0 = first, negative from the
+ * end); `field_data["meshio:time"]` is its frequency or time, the eigenvalue of
+ * a mode, 0 for a static subcase, with `nastran:subcase`, `nastran:analysis`
+ * and `nastran:mode`. Read:
+ *  - `OUG*`/`BOUG*`, `OQG*`, `OQMG*`, `OPG*` real SORT1 tables as point data
+ *    `DISPLACEMENT`, `EIGENVECTOR`, `VELOCITY`, `ACCELERATION`, `SPC_FORCE`,
+ *    `MPC_FORCE`, `APPLIED_LOAD` (each with a `_ROT` twin) and `TEMPERATURE`,
+ *    NaN for points without a value;
+ *  - `OES*`/`OSTR*` real SORT1 stress and strain of rods (1, 3, 10), shear
+ *    panels (4), bars (34), shells (33, 74, and the centre of 64, 70, 75, 82,
+ *    144) and solids (39, 67, 68, 255) as cell data `STRESS:<M>`/`STRAIN:<M>`
+ *    named like `nastran_h5`'s members (`X1`, `TXY1`, `X`, `TZX`, `A`...) plus
+ *    the derived values (`VON_MISES1`, `MAJOR1`, `PRINCIPAL_A`...), centre
+ *    values only, NaN on cells without them.
+ * Complex, random and SORT2 tables, other element types and other tables are
+ * skipped with a warning naming them.
+ *
+ * See doc/formats/nastran_op2.md.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read one step of a Nastran OP2 file.
+ * @param rPath filesystem path to read
+ * @param rOpts `mTimeStep` selects the step; `mArrays`/`mPointsOnly` narrow
+ *        the data
+ * @throws ReadError if the file is not an OP2, is truncated, has no geometry
+ *         and no sibling deck, or `mTimeStep` is out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief The time (frequency, time, eigenvalue, or 0) of every step, in file order.
+ */
+MESHIOPLUSPLUS_API std::vector<double> nastran_op2_time_values(const std::string& rPath);
+
+/**
+ * @brief Metadata (counts, data names, `mTimeValues`) of an OP2 file.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_nastran_op2_metadata(const std::string& rPath,
+                                                          const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/nastran_op2.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/netgen.hpp =====
 /**
  * @file netgen.hpp
@@ -48722,6 +48998,220 @@ std::vector<MeshPart> carve_by_region(const Mesh& rMesh, const std::string& rCal
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/mesh_carve.cpp =====
+// ===== begin src/cpp/src/detail/nastran_model.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// Nastran numbers the hex20/wedge15 mid-side nodes bottom, vertical, top;
+// meshio++ (VTK) numbers them bottom, top, vertical (the bulk reader's tables).
+constexpr int kNmHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
+constexpr int kNmPenta15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
+
+constexpr NastranCardSpec kNmCards[] = {
+    {"CBAR", "line", 2, nullptr, 0, nullptr},
+    {"CBEAM", "line", 2, nullptr, 0, nullptr},
+    {"CBUSH", "line", 2, nullptr, 0, nullptr},
+    {"CHEXA", "hexahedron", 8, "hexahedron20", 20, kNmHexa20},
+    {"CONM2", "vertex", 1, nullptr, 0, nullptr},
+    {"CONROD", "line", 2, nullptr, 0, nullptr},
+    {"CPENTA", "wedge", 6, "wedge15", 15, kNmPenta15},
+    {"CPYRAM", "pyramid", 5, "pyramid13", 13, nullptr},
+    {"CQUAD", "quad", 4, "quad9", 9, nullptr},
+    {"CQUAD4", "quad", 4, nullptr, 0, nullptr},
+    {"CQUAD8", "quad", 4, "quad8", 8, nullptr},
+    {"CQUADR", "quad", 4, nullptr, 0, nullptr},
+    {"CROD", "line", 2, nullptr, 0, nullptr},
+    {"CSHEAR", "quad", 4, nullptr, 0, nullptr},
+    {"CTETRA", "tetra", 4, "tetra10", 10, nullptr},
+    {"CTRIA3", "triangle", 3, nullptr, 0, nullptr},
+    {"CTRIA6", "triangle", 3, "triangle6", 6, nullptr},
+    {"CTRIAR", "triangle", 3, nullptr, 0, nullptr},
+    {"CTUBE", "line", 2, nullptr, 0, nullptr},
+    {"CVISC", "line", 2, nullptr, 0, nullptr},
+    {"PLOTEL", "line", 2, nullptr, 0, nullptr},
+};
+
+NDArray nm_int_array(const std::vector<std::int64_t>& rV) {
+    NDArray a(DType::Int64, {rV.size()});
+    std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+    return a;
+}
+
+struct NmBlock {
+    std::string mCard;
+    std::string mType;
+    std::size_t mNodes;
+    std::vector<std::int64_t> mConn;
+    std::vector<std::int64_t> mEid;
+    std::vector<std::int64_t> mPid;
+};
+
+}  // namespace
+
+const NastranCardSpec* nastran_card_spec(std::string_view Card) {
+    for (const NastranCardSpec& spec : kNmCards)
+        if (Card == spec.mCard)
+            return &spec;
+    return nullptr;
+}
+
+NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& rCards,
+                               const std::unordered_map<std::int64_t, std::size_t>& rGridIndex,
+                               const std::unordered_set<std::int64_t>& rScalarPoints,
+                               const std::map<std::int64_t, std::string>& rPtype,
+                               const std::string& rWho) {
+    std::vector<NmBlock> blocks;
+    std::size_t dropped = 0;
+    for (const NastranCardRows& card : rCards) {
+        const NastranCardSpec* spec = nastran_card_spec(card.mCard);
+        if (spec == nullptr)
+            continue;
+        const std::size_t width = card.mWidth;
+        const std::size_t n = card.mEid.size();
+        NmBlock linear{card.mCard, spec->mLinear, spec->mLinearNodes, {}, {}, {}};
+        NmBlock quadratic{
+            card.mCard, spec->mQuadratic ? spec->mQuadratic : "", spec->mQuadraticNodes, {}, {},
+            {}};
+        std::size_t partial = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::int64_t* row = card.mNodes.data() + i * width;
+            bool quad = false;
+            if (spec->mQuadratic != nullptr && width >= spec->mQuadraticNodes) {
+                std::size_t given = 0;
+                for (std::size_t k = spec->mLinearNodes; k < spec->mQuadraticNodes; ++k)
+                    given += row[k] != 0 ? 1 : 0;
+                quad = given == spec->mQuadraticNodes - spec->mLinearNodes;
+                partial += (given != 0 && !quad) ? 1 : 0;
+            }
+            NmBlock& b = quad ? quadratic : linear;
+            std::vector<std::int64_t> conn(b.mNodes);
+            bool ok = true;
+            for (std::size_t k = 0; k < b.mNodes && ok; ++k) {
+                const std::size_t src = (quad && spec->mPermutation)
+                                            ? static_cast<std::size_t>(spec->mPermutation[k])
+                                            : k;
+                const auto it = rGridIndex.find(row[src]);
+                if (it == rGridIndex.end()) {
+                    if (rScalarPoints.count(row[src]) == 0)
+                        throw ReadError(rWho + ": " + card.mCard + " " +
+                                        std::to_string(card.mEid[i]) + " references " +
+                                        (row[src] == 0
+                                             ? std::string("no node")
+                                             : "undefined GRID " + std::to_string(row[src])) +
+                                        " as its node " + std::to_string(src + 1));
+                    ok = false;  // a scalar point, not a GRID
+                } else {
+                    conn[k] = static_cast<std::int64_t>(it->second);
+                }
+            }
+            if (!ok) {
+                ++dropped;
+                continue;
+            }
+            b.mConn.insert(b.mConn.end(), conn.begin(), conn.end());
+            b.mEid.push_back(card.mEid[i]);
+            b.mPid.push_back(card.mPid[i]);
+        }
+        if (partial != 0)
+            log::warn("{}: {} {} element(s) have only some mid-side nodes; read as {}", rWho,
+                      partial, card.mCard, spec->mLinear);
+        if (!linear.mEid.empty())
+            blocks.push_back(std::move(linear));
+        if (!quadratic.mEid.empty())
+            blocks.push_back(std::move(quadratic));
+    }
+    if (dropped != 0)
+        log::warn("{}: skipped {} element(s) that connect scalar points", rWho, dropped);
+
+    NastranCells out;
+    {
+        std::vector<NDArray> eids;
+        std::vector<NDArray> pids;
+        std::size_t shared = 0;
+        for (NmBlock& b : blocks) {
+            out.mOffsets.push_back(out.mNumCells);
+            out.mSizes.push_back(b.mEid.size());
+            if (b.mCard != "CONM2")
+                for (std::size_t i = 0; i < b.mEid.size(); ++i)
+                    shared += out.mCellIndex.emplace(b.mEid[i], out.mNumCells + i).second ? 0 : 1;
+            out.mNumCells += b.mEid.size();
+            NDArray conn(DType::Int64, {b.mEid.size(), b.mNodes});
+            std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
+            rMesh.AddCellBlock(b.mType, std::move(conn));
+            eids.push_back(nm_int_array(b.mEid));
+            pids.push_back(nm_int_array(b.mPid));
+        }
+        if (shared != 0)
+            log::warn(
+                "{}: {} element id(s) are used by more than one card; their element results "
+                "go to the first",
+                rWho, shared);
+        if (!blocks.empty()) {
+            rMesh.AddCellData("nastran:eid", std::move(eids));
+            rMesh.AddCellData("nastran:pid", std::move(pids));
+        }
+    }
+
+    std::map<std::int64_t, std::pair<std::vector<std::int64_t>, int>> by_pid;
+    for (std::size_t b = 0; b < blocks.size(); ++b) {
+        const int dim = cell_type_dimension(cell_type_from_name(blocks[b].mType));
+        for (std::size_t i = 0; i < blocks[b].mPid.size(); ++i) {
+            const std::int64_t p = blocks[b].mPid[i];
+            if (p <= 0)
+                continue;
+            auto& entry = by_pid[p];
+            if (entry.first.empty())
+                entry.second = dim;
+            entry.first.push_back(static_cast<std::int64_t>(out.mOffsets[b] + i));
+            entry.second = std::max(entry.second, dim);
+        }
+    }
+    for (auto& [p, entry] : by_pid) {
+        const auto it = rPtype.find(p);
+        const std::string name =
+            (it != rPtype.end() ? it->second : std::string("PID")) + "_" + std::to_string(p);
+        rMesh.AddRegion(Region(name, RegionKind::Cell, entry.second, p, nm_int_array(entry.first)));
+    }
+    return out;
+}
+
+void nastran_add_frame(Mesh& rMesh, const std::string& rFrame,
+                       const std::vector<std::int64_t>& rValues, const std::string& rWho) {
+    const auto nonzero =
+        std::count_if(rValues.begin(), rValues.end(), [](std::int64_t c) { return c != 0; });
+    if (nonzero == 0)
+        return;
+    if (rFrame == "CP")
+        log::warn(
+            "{}: {} GRID(s) have CP != 0; their coordinates are kept in the local system, not "
+            "transformed",
+            rWho, nonzero);
+    else
+        log::warn("{}: {} GRID(s) have CD != 0; their results are in the local output system", rWho,
+                  nonzero);
+    rMesh.AddPointData(std::string("nastran:") + (rFrame == "CP" ? "cp" : "cd"),
+                       nm_int_array(rValues));
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/nastran_model.cpp =====
 // ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
 #include <utility>
@@ -78445,6 +78935,1353 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/lsdyna.cpp =====
+// ===== begin src/cpp/src/formats/lsdyna_d3plot.cpp =====
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <ios>
+#include <limits>
+#include <map>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+constexpr std::int64_t kD3FemzipNmmat = 76893465;
+constexpr double kD3EofMarker = -999999.0;
+const double kD3Nan = std::numeric_limits<double>::quiet_NaN();
+
+[[noreturn]] void d3_fail(const std::string& rMessage) {
+    throw ReadError("LS-DYNA d3plot: " + rMessage);
+}
+
+std::int64_t d3_digit(std::int64_t Value, int I) {
+    std::int64_t v = Value < 0 ? -Value : Value;
+    for (int k = 0; k < I; ++k)
+        v /= 10;
+    return v % 10;
+}
+
+// --- words ---------------------------------------------------------------------------
+
+// Word access into a byte buffer: 4- or 8-byte words in a given byte order.
+struct D3Words {
+    const char* mData = nullptr;
+    std::size_t mSize = 0;
+    int mWs = 4;
+    bool mSwap = false;
+
+    std::size_t NumWords() const { return mSize / static_cast<std::size_t>(mWs); }
+
+    void Need(std::size_t Pos, std::size_t N) const {
+        if ((Pos + N) * static_cast<std::size_t>(mWs) > mSize)
+            d3_fail("the file is truncated");
+    }
+
+    std::int64_t IntAt(std::size_t Pos) const {
+        const char* p = mData + Pos * static_cast<std::size_t>(mWs);
+        if (mWs == 4) {
+            std::uint32_t u;
+            std::memcpy(&u, p, 4);
+            if (mSwap)
+                u = detail::bswap32(u);
+            return static_cast<std::int32_t>(u);
+        }
+        std::uint64_t u;
+        std::memcpy(&u, p, 8);
+        if (mSwap)
+            u = detail::bswap64(u);
+        return static_cast<std::int64_t>(u);
+    }
+
+    double FloatAt(std::size_t Pos) const {
+        const char* p = mData + Pos * static_cast<std::size_t>(mWs);
+        if (mWs == 4) {
+            std::uint32_t u;
+            std::memcpy(&u, p, 4);
+            if (mSwap)
+                u = detail::bswap32(u);
+            return static_cast<double>(std::bit_cast<float>(u));
+        }
+        std::uint64_t u;
+        std::memcpy(&u, p, 8);
+        if (mSwap)
+            u = detail::bswap64(u);
+        return std::bit_cast<double>(u);
+    }
+
+    std::int64_t Int(std::size_t Pos) const {
+        Need(Pos, 1);
+        return IntAt(Pos);
+    }
+
+    double Float(std::size_t Pos) const {
+        Need(Pos, 1);
+        return FloatAt(Pos);
+    }
+
+    std::vector<std::int64_t> Ints(std::size_t Pos, std::size_t N) const {
+        Need(Pos, N);
+        std::vector<std::int64_t> out(N);
+        for (std::size_t i = 0; i < N; ++i)
+            out[i] = IntAt(Pos + i);
+        return out;
+    }
+
+    std::vector<double> Floats(std::size_t Pos, std::size_t N) const {
+        Need(Pos, N);
+        std::vector<double> out(N);
+        for (std::size_t i = 0; i < N; ++i)
+            out[i] = FloatAt(Pos + i);
+        return out;
+    }
+
+    // A NUL-terminated, space-trimmed string of NBytes bytes at byte offset At.
+    std::string Text(std::size_t At, std::size_t NBytes) const {
+        if (At >= mSize)
+            return {};
+        const std::size_t n = std::min(NBytes, mSize - At);
+        std::string s(mData + At, n);
+        const auto nul = s.find('\0');
+        if (nul != std::string::npos)
+            s.resize(nul);
+        const auto first = s.find_first_not_of(" \t\r\n\v\f");
+        if (first == std::string::npos)
+            return {};
+        const auto last = s.find_last_not_of(" \t\r\n\v\f");
+        return s.substr(first, last - first + 1);
+    }
+};
+
+// (word size, swap) of a control block, trying 4/8-byte words in both orders.
+std::optional<std::pair<int, bool>> d3_sniff(const char* pHead, std::size_t Size) {
+    const bool little = std::endian::native == std::endian::little;
+    for (const auto& [ws, file_little] :
+         std::array<std::pair<int, bool>, 4>{{{4, true}, {4, false}, {8, true}, {8, false}}}) {
+        if (Size < static_cast<std::size_t>(64 * ws))
+            continue;
+        const D3Words w{pHead, Size, ws, file_little != little};
+        std::int64_t filetype = w.IntAt(11);
+        if (filetype > 1000)
+            filetype -= 1000;
+        const std::int64_t ndim = w.IntAt(15);
+        if ((filetype == 1 || filetype == 4 || filetype == 5 || filetype == 11) && ndim >= 2 &&
+            ndim <= 9 && w.IntAt(16) >= 0)
+            return std::make_pair(ws, file_little != little);
+    }
+    return std::nullopt;
+}
+
+// --- the family ----------------------------------------------------------------------
+
+bool d3_all_digits(const std::string& rS) {
+    return !rS.empty() &&
+           std::all_of(rS.begin(), rS.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
+// The base file followed by `<name>NN` members, by number (then name).
+std::vector<std::string> d3_family(const std::string& rPath) {
+    const fs::path path(rPath);
+    const std::string base = path.filename().string();
+    fs::path folder = path.parent_path();
+    std::vector<std::pair<std::pair<unsigned long long, std::string>, std::string>> found;
+    std::error_code ec;
+    for (fs::directory_iterator it(folder.empty() ? fs::path(".") : folder, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.size() <= base.size() || name.compare(0, base.size(), base) != 0)
+            continue;
+        const std::string suffix = name.substr(base.size());
+        if (!d3_all_digits(suffix))
+            continue;
+        std::error_code ec2;
+        if (!fs::is_regular_file(it->path(), ec2))
+            continue;
+        unsigned long long number = 0;
+        for (char c : suffix)
+            number = number * 10 + static_cast<unsigned long long>(c - '0');
+        found.push_back({{number, name}, (folder / name).string()});
+    }
+    std::sort(found.begin(), found.end());
+    std::vector<std::string> out{rPath};
+    for (auto& f : found)
+        out.push_back(std::move(f.second));
+    return out;
+}
+
+std::string d3_read_bytes(const std::string& rPath, std::size_t Offset, std::size_t N) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        d3_fail("cannot open '" + rPath + "'");
+    in.seekg(static_cast<std::streamoff>(Offset));
+    std::string out(N, '\0');
+    in.read(out.data(), static_cast<std::streamsize>(N));
+    out.resize(static_cast<std::size_t>(in.gcount()));
+    return out;
+}
+
+// One past the last non-zero byte of a file (0 when all bytes are zero).
+std::size_t d3_last_nonzero(const std::string& rPath, std::size_t Size) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        d3_fail("cannot open '" + rPath + "'");
+    constexpr std::size_t chunk = std::size_t{1} << 16;
+    std::string block;
+    std::size_t end = Size;
+    while (end > 0) {
+        const std::size_t start = end > chunk ? end - chunk : 0;
+        block.assign(end - start, '\0');
+        in.seekg(static_cast<std::streamoff>(start));
+        in.read(block.data(), static_cast<std::streamsize>(block.size()));
+        for (std::size_t i = block.size(); i-- > 0;)
+            if (block[i] != '\0')
+                return start + i + 1;
+        end = start;
+    }
+    return 0;
+}
+
+bool d3_file_sniffs(const std::string& rPath) {
+    std::error_code ec;
+    if (!fs::is_regular_file(rPath, ec))
+        return false;
+    const std::string head = d3_read_bytes(rPath, 0, 64 * 8);
+    return d3_sniff(head.data(), head.size()).has_value();
+}
+
+// The base file when rPath is a numbered member of a family, else "".
+std::string d3_continuation_base(const std::string& rPath) {
+    const fs::path path(rPath);
+    const std::string name = path.filename().string();
+    std::size_t cut = name.size();
+    while (cut > 0 && name[cut - 1] >= '0' && name[cut - 1] <= '9')
+        --cut;
+    if (cut == name.size() || cut == 0)
+        return {};
+    const fs::path base = path.parent_path() / name.substr(0, cut);
+    std::error_code ec;
+    return fs::is_regular_file(base, ec) ? base.string() : std::string();
+}
+
+// --- the control block ---------------------------------------------------------------
+
+struct D3Header {
+    std::map<std::string, std::int64_t> mRaw;
+    std::size_t mBytes = 0;  // control block size
+    int mFiletype = 1;
+    bool mMaterialType = false, mRigidRoad = false, mRigidBodies = false,
+         mReducedRigidBodies = false;
+    std::int64_t mNodes = 0, mGlobals = 0;
+    bool mMassScaling = false, mTemperature = false, mHeatFlux = false, mTemperatureLayers = false,
+         mDisplacement = false, mVelocity = false, mAcceleration = false;
+    std::int64_t mSolids = 0, mBeams = 0, mShells = 0, mTshells = 0;
+    bool mSolidExtraNodes = false;
+    std::int64_t mNv3d = 0, mNv1d = 0, mNv2d = 0, mNv3dt = 0, mNeiph = 0, mNeips = 0, mNeipb = 0,
+                 mNt3d = 0;
+    bool mElementDeletion = false, mNodeDeletion = false;
+    std::int64_t mLayers = 0;
+    bool mShellStress = false, mSolidStress = false, mShellPstrain = false, mSolidPstrain = false,
+         mShellForces = false, mShellExtra = false;
+    std::int64_t mParts = 0, mAirbags = 0, mAirbagSubver = 0, mShells8 = 0, mSph = 0;
+    bool mTemperatureGradient = false, mResidualForces = false, mPlasticStrainTensor = false,
+         mThermalStrainTensor = false, mElementStrain = false;
+
+    std::int64_t R(const char* pName) const { return mRaw.at(pName); }
+
+    std::int64_t SolidLayers() const {
+        const std::int64_t base = 6 * mSolidStress + mSolidPstrain + mNeiph;
+        return mNv3d / std::max<std::int64_t>(base, 1) >= 8 ? 8 : 1;
+    }
+};
+
+D3Header d3_header(const D3Words& rW) {
+    static const std::pair<int, const char*> words[] = {
+        {10, "runtime"}, {11, "filetype"}, {12, "source_version"},
+        {15, "ndim"},    {16, "numnp"},    {17, "icode"},
+        {18, "nglbv"},   {19, "it"},       {20, "iu"},
+        {21, "iv"},      {22, "ia"},       {23, "nel8"},
+        {24, "nummat8"}, {25, "numds"},    {26, "numst"},
+        {27, "nv3d"},    {28, "nel2"},     {29, "nummat2"},
+        {30, "nv1d"},    {31, "nel4"},     {32, "nummat4"},
+        {33, "nv2d"},    {34, "neiph"},    {35, "neips"},
+        {36, "maxint"},  {37, "nmsph"},    {38, "ngpsph"},
+        {39, "narbs"},   {40, "nelt"},     {41, "nummatt"},
+        {42, "nv3dt"},   {43, "ioshl1"},   {44, "ioshl2"},
+        {45, "ioshl3"},  {46, "ioshl4"},   {47, "ialemat"},
+        {48, "ncfdv1"},  {49, "ncfdv2"},   {50, "nadapt"},
+        {51, "nmmat"},   {52, "numfluid"}, {53, "inn"},
+        {54, "npefg"},   {55, "nel48"},    {56, "idtdt"},
+        {57, "extra"}};
+    static const std::pair<int, const char*> extra_words[] = {
+        {64, "nel20"},  {65, "nt3d"},    {66, "nel27"},  {67, "neipb"},
+        {68, "nel21p"}, {69, "nel15t"},  {70, "soleng"}, {71, "nel20t"},
+        {72, "nel40p"}, {73, "nel64"},   {74, "quadr"},  {75, "cubic"},
+        {76, "tsheng"}, {77, "nbranch"}, {78, "penout"}, {79, "engout"}};
+    D3Header h;
+    for (const auto& [i, name] : words)
+        h.mRaw[name] = rW.Int(static_cast<std::size_t>(i));
+    const std::int64_t extra = h.mRaw["extra"];
+    for (const auto& [i, name] : extra_words)
+        h.mRaw[name] = (extra > 0 && i < 64 + extra) ? rW.Int(static_cast<std::size_t>(i)) : 0;
+    h.mBytes = static_cast<std::size_t>(64 + std::max<std::int64_t>(extra, 0)) *
+               static_cast<std::size_t>(rW.mWs);
+
+    std::int64_t filetype = h.R("filetype");
+    if (filetype > 1000)
+        filetype -= 1000;
+    if (filetype == 5 || filetype == 4)
+        d3_fail(std::string("a ") + (filetype == 5 ? "d3part" : "intfor") +
+                " file is not read (only d3plot/d3eigv)");
+    if (filetype != 1 && filetype != 11)
+        d3_fail("unknown file type " + std::to_string(h.R("filetype")));
+    h.mFiletype = static_cast<int>(filetype);
+    if (h.R("nmmat") == kD3FemzipNmmat)
+        d3_fail("the file is femzip-compressed; decompress it first");
+
+    const std::int64_t ndim = h.R("ndim");
+    h.mMaterialType = ndim == 5 || ndim == 7;
+    h.mRigidRoad = ndim == 6 || ndim == 7 || ndim == 9;
+    h.mRigidBodies = ndim == 8 || ndim == 9;
+    h.mReducedRigidBodies = ndim == 9;
+    if (ndim == 2)
+        d3_fail("two-dimensional databases (NDIM = 2) are not read");
+    h.mNodes = h.R("numnp");
+    h.mGlobals = h.R("nglbv");
+
+    const std::int64_t it = h.R("it");
+    h.mMassScaling = d3_digit(it, 1) == 1;
+    const std::int64_t it0 = d3_digit(it, 0);
+    h.mTemperature = it0 >= 1 && it0 <= 3;
+    h.mHeatFlux = it0 == 2 || it0 == 3;
+    h.mTemperatureLayers = it0 == 3;
+    h.mDisplacement = h.R("iu") != 0;
+    h.mVelocity = h.R("iv") != 0;
+    h.mAcceleration = h.R("ia") != 0;
+
+    h.mSolids = std::abs(h.R("nel8"));
+    h.mSolidExtraNodes = h.R("nel8") < 0;
+    h.mBeams = h.R("nel2");
+    h.mShells = h.R("nel4");
+    h.mTshells = h.R("nelt");
+    h.mNv3d = h.R("nv3d");
+    h.mNv1d = h.R("nv1d");
+    h.mNv2d = h.R("nv2d");
+    h.mNv3dt = h.R("nv3dt");
+    h.mNeiph = h.R("neiph");
+    h.mNeips = h.R("neips");
+    h.mNeipb = h.R("neipb");
+    h.mNt3d = h.R("nt3d");
+
+    const std::int64_t maxint = h.R("maxint");
+    h.mElementDeletion = maxint <= -10000;
+    h.mNodeDeletion = maxint > -10000 && maxint < 0;
+    h.mLayers = maxint <= -10000 ? std::abs(maxint) - 10000 : std::abs(maxint);
+
+    h.mShellStress = h.R("ioshl1") == 1000;
+    h.mSolidStress = h.R("ioshl1") == 999 || h.R("ioshl1") == 1000;
+    h.mShellPstrain = h.R("ioshl2") == 1000;
+    h.mSolidPstrain = h.R("ioshl2") == 999 || h.R("ioshl2") == 1000;
+    h.mShellForces = h.R("ioshl3") == 1000;
+    h.mShellExtra = h.R("ioshl4") == 1000;
+
+    if (h.R("ncfdv1") != 0)
+        d3_fail("CFD or multi-solver data (NCFDV1 != 0) is not read");
+    if (h.R("nadapt") != 0)
+        d3_fail("adaptive-remeshing databases (NADAPT != 0) are not read");
+    h.mParts = h.R("nmmat");
+    const std::int64_t npefg = h.R("npefg");
+    h.mAirbags = (npefg > 0 && npefg <= 10000000) ? npefg % 1000 : 0;
+    h.mAirbagSubver = h.mAirbags ? npefg / 1000 : 0;
+    h.mShells8 = h.R("nel48");
+    h.mSph = h.R("nmsph");
+
+    const std::int64_t idtdt = h.R("idtdt");
+    h.mTemperatureGradient = d3_digit(idtdt, 0) == 1;
+    h.mResidualForces = d3_digit(idtdt, 1) == 1;
+    h.mPlasticStrainTensor = d3_digit(idtdt, 2) == 1;
+    h.mThermalStrainTensor = d3_digit(idtdt, 3) == 1;
+    const std::int64_t layer_vars = 6 * h.mShellStress + h.mShellPstrain + h.mNeips;
+    if (idtdt > 100)
+        h.mElementStrain = d3_digit(idtdt, 4) == 1;
+    else if (h.mNv2d > 0)
+        h.mElementStrain =
+            h.mNv2d - h.mLayers * layer_vars - 8 * h.mShellForces - 4 * h.mShellExtra > 1;
+    else if (h.mNv3dt > 0)
+        h.mElementStrain = h.mNv3dt - h.mLayers * layer_vars > 1;
+
+    for (const char* key : {"nel20", "nel27", "nel21p", "nel15t", "nel20t", "nel40p", "nel64"})
+        if (h.R(key) > 0) {
+            std::string upper = key;
+            for (char& c : upper)
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            d3_fail("higher-order solids (" + upper + " = " + std::to_string(h.R(key)) +
+                    ") are not read");
+        }
+    return h;
+}
+
+// --- the geometry --------------------------------------------------------------------
+
+struct D3Geometry {
+    std::int64_t mRigidShells = 0;
+    std::vector<std::int64_t> mPartMattype;
+    std::int64_t mSphVars = 0;
+    bool mHasAirbag = false;
+    std::int64_t mAirbagGeom = 0, mAirbagVar = 0, mAirbagParticles = 0, mAirbagStateGeom = 0;
+    std::vector<double> mCoords;
+    std::vector<std::int64_t> mSolids, mTshells, mBeams, mShells;  // 9/9/6/5 words per element
+    std::vector<std::int64_t> mSolidExtra;                         // 2 per solid
+    std::vector<std::int64_t> mNodeIds, mSolidIds, mBeamIds, mShellIds, mTshellIds;
+    std::vector<std::int64_t> mPartIds;
+    bool mHasPartIds = false;
+    std::int64_t mRigidBodies = 0;       // from the numbering section
+    std::int64_t mRigidBodyMotions = 0;  // rigid bodies with motion in the states
+    std::int64_t mRoads = 0;
+    std::vector<std::int64_t> mShell8;  // 5 words per 8-node shell
+    std::map<std::int64_t, std::string> mPartTitles;
+    std::vector<std::int64_t> mPartTitleOrder;
+    std::size_t mEnd = 0;  // words
+};
+
+std::vector<std::int64_t> d3_iota(std::int64_t N) {
+    std::vector<std::int64_t> v(static_cast<std::size_t>(std::max<std::int64_t>(N, 0)));
+    for (std::size_t i = 0; i < v.size(); ++i)
+        v[i] = static_cast<std::int64_t>(i) + 1;
+    return v;
+}
+
+D3Geometry d3_geometry(const D3Words& rW, const D3Header& rH) {
+    D3Geometry g;
+    const auto sz = [](std::int64_t N) {
+        return static_cast<std::size_t>(std::max<std::int64_t>(N, 0));
+    };
+    std::size_t pos = rH.mBytes / static_cast<std::size_t>(rW.mWs);
+    const auto ws = static_cast<std::size_t>(rW.mWs);
+    if (rH.mMaterialType) {
+        g.mRigidShells = rW.Int(pos);
+        const std::int64_t nummat = rW.Int(pos + 1);
+        if (nummat != rH.mParts)
+            d3_fail("the material type section lists " + std::to_string(nummat) +
+                    " parts, the header " + std::to_string(rH.mParts));
+        g.mPartMattype = rW.Ints(pos + 2, sz(rH.mParts));
+        pos += 2 + sz(rH.mParts);
+    }
+    if (rH.R("ialemat") > 0)
+        pos += sz(rH.R("ialemat"));
+    if (rH.mSph > 0) {
+        const auto flags = rW.Ints(pos, 11);
+        const std::int64_t history = flags[0] == 10 ? 0 : flags[10];
+        std::int64_t sum = 0;
+        for (int i = 1; i < 8; ++i)
+            sum += flags[static_cast<std::size_t>(i)];
+        g.mSphVars = sum + std::abs(flags[8]) + flags[9] + history + 1;
+        pos += sz(flags[0]);
+    }
+    if (rH.mAirbags) {
+        const auto head = rW.Ints(pos, 4);
+        g.mAirbagGeom = head[0];
+        g.mAirbagVar = head[1];
+        g.mAirbagParticles = head[2];
+        g.mAirbagStateGeom = head[3];
+        g.mHasAirbag = true;
+        pos += 4;
+        if (rH.mAirbagSubver == 4)
+            pos += 1;
+        const std::size_t nvars = sz(g.mAirbagGeom + g.mAirbagVar + g.mAirbagStateGeom);
+        pos += nvars + 8 * nvars;
+    }
+
+    const std::size_t n = sz(rH.mNodes);
+    g.mCoords = rW.Floats(pos, 3 * n);
+    pos += 3 * n;
+    g.mSolids = rW.Ints(pos, 9 * sz(rH.mSolids));
+    pos += 9 * sz(rH.mSolids);
+    if (rH.mSolidExtraNodes) {
+        g.mSolidExtra = rW.Ints(pos, 2 * sz(rH.mSolids));
+        pos += 2 * sz(rH.mSolids);
+    }
+    g.mTshells = rW.Ints(pos, 9 * sz(rH.mTshells));
+    pos += 9 * sz(rH.mTshells);
+    g.mBeams = rW.Ints(pos, 6 * sz(rH.mBeams));
+    pos += 6 * sz(rH.mBeams);
+    g.mShells = rW.Ints(pos, 5 * sz(rH.mShells));
+    pos += 5 * sz(rH.mShells);
+
+    g.mNodeIds = d3_iota(rH.mNodes);
+    g.mSolidIds = d3_iota(rH.mSolids);
+    g.mBeamIds = d3_iota(rH.mBeams);
+    g.mShellIds = d3_iota(rH.mShells);
+    g.mTshellIds = d3_iota(rH.mTshells);
+    const std::int64_t narbs = rH.R("narbs");
+    if (narbs > 0) {
+        const std::size_t start = pos;
+        const auto head = rW.Ints(pos, 10);
+        pos += 10;
+        const std::int64_t nsort = head[0];
+        std::int64_t nparts_ids = rH.mParts;
+        if (nsort < 0) {
+            const auto extra = rW.Ints(pos, 6);
+            pos += 6;
+            nparts_ids = extra[3];
+            g.mRigidBodies = extra[4];
+        }
+        std::vector<std::vector<std::int64_t>> ids;
+        for (int k = 5; k < 10; ++k) {
+            const std::size_t count = sz(head[static_cast<std::size_t>(k)]);
+            ids.push_back(rW.Ints(pos, count));
+            pos += count;
+        }
+        if (ids[0].size() == n)
+            g.mNodeIds = ids[0];
+        if (ids[1].size() == sz(rH.mSolids))
+            g.mSolidIds = ids[1];
+        if (ids[2].size() == sz(rH.mBeams))
+            g.mBeamIds = ids[2];
+        if (ids[3].size() == sz(rH.mShells))
+            g.mShellIds = ids[3];
+        if (ids[4].size() == sz(rH.mTshells))
+            g.mTshellIds = ids[4];
+        if (nsort < 0 && nparts_ids == rH.mParts) {
+            g.mPartIds = rW.Ints(pos, sz(rH.mParts));
+            g.mHasPartIds = true;
+        }
+        pos = start + sz(narbs);
+    }
+
+    if (rH.mRigidBodies) {
+        const std::int64_t nrigid = rW.Int(pos);
+        pos += 1;
+        for (std::int64_t r = 0; r < nrigid; ++r) {
+            const std::int64_t numnodr = rW.Int(pos + 1);
+            pos += 2 + sz(numnodr);
+            const std::int64_t numnoda = rW.Int(pos);
+            pos += 1 + sz(numnoda);
+        }
+        g.mRigidBodyMotions = nrigid;
+    }
+    if (rH.mSph > 0)
+        pos += 2 * sz(rH.mSph);
+    if (g.mHasAirbag)
+        pos += sz(rH.mAirbags * g.mAirbagGeom);
+    if (rH.mRigidRoad) {
+        const auto head = rW.Ints(pos, 3);
+        const std::size_t nnode = sz(head[0]);
+        pos += 4 + nnode + 3 * nnode;
+        for (std::int64_t s = 0; s < head[2]; ++s) {
+            const std::int64_t nseg = rW.Int(pos + 1);
+            pos += 2 + 4 * sz(nseg);
+        }
+        g.mRoads = head[2];
+    }
+
+    // The ten-node solids' extra nodes follow the 8-node connectivity (database
+    // manual); lasso-python also writes and reads a second, identical copy
+    // here, which is skipped when present.
+    if (rH.mSolidExtraNodes && rH.mSolids > 0) {
+        const std::size_t n2 = 2 * sz(rH.mSolids);
+        if ((pos + n2) * ws <= rW.mSize && rW.Ints(pos, n2) == g.mSolidExtra)
+            pos += n2;
+    }
+    if (rH.mShells8 > 0) {
+        g.mShell8 = rW.Ints(pos, 5 * sz(rH.mShells8));
+        pos += 5 * sz(rH.mShells8);
+    }
+
+    if (pos < rW.NumWords() && rW.FloatAt(pos) == kD3EofMarker) {
+        pos += 1;
+        while (pos < rW.NumWords()) {
+            const std::int64_t ntype = rW.Int(pos);
+            if (ntype == 90000) {
+                pos += 1 + 72 / ws;
+            } else if (ntype == 90001 || ntype == 90002 || ntype == 90020) {
+                const std::int64_t count = rW.Int(pos + 1);
+                pos += 2;
+                const std::size_t entry = ws + 72;
+                for (std::int64_t k = 0; k < count; ++k) {
+                    const std::size_t at = pos * ws + static_cast<std::size_t>(k) * entry;
+                    if (ntype == 90001) {
+                        const std::int64_t pid = rW.Int(at / ws);
+                        if (g.mPartTitles.emplace(pid, rW.Text(at + ws, 72)).second)
+                            g.mPartTitleOrder.push_back(pid);
+                    }
+                }
+                pos += (sz(count) * entry) / ws;
+            } else {
+                break;
+            }
+            if (pos < rW.NumWords() && rW.FloatAt(pos) == kD3EofMarker)
+                pos += 1;
+        }
+    }
+    g.mEnd = pos;
+    return g;
+}
+
+// --- the state layout ----------------------------------------------------------------
+
+std::vector<std::pair<std::string, std::size_t>> d3_node_vars(const D3Header& rH) {
+    std::vector<std::pair<std::string, std::size_t>> out;
+    if (rH.mDisplacement)
+        out.emplace_back("coordinates", 3);
+    if (rH.mTemperature)
+        out.emplace_back("temperature", rH.mTemperatureLayers ? 3 : 1);
+    if (rH.mHeatFlux)
+        out.emplace_back("heat_flux", 3);
+    if (rH.mMassScaling)
+        out.emplace_back("mass_scaling", 1);
+    if (rH.mTemperatureGradient)
+        out.emplace_back("temperature_gradient", 1);
+    if (rH.mResidualForces) {
+        out.emplace_back("residual_forces", 3);
+        out.emplace_back("residual_moments", 3);
+    }
+    if (rH.mVelocity)
+        out.emplace_back("velocity", 3);
+    if (rH.mAcceleration)
+        out.emplace_back("acceleration", 3);
+    return out;
+}
+
+std::int64_t d3_state_words(const D3Header& rH, const D3Geometry& rG) {
+    std::int64_t n = 1 + rH.mGlobals;
+    std::int64_t comps = 0;
+    for (const auto& v : d3_node_vars(rH))
+        comps += static_cast<std::int64_t>(v.second);
+    n += comps * rH.mNodes;
+    n += rH.mNt3d * rH.mSolids;
+    n += rH.mSolids * rH.mNv3d;
+    n += rH.mTshells * rH.mNv3dt;
+    n += rH.mBeams * rH.mNv1d;
+    n += (rH.mShells - rG.mRigidShells) * rH.mNv2d;
+    n += rH.mSph * rG.mSphVars;
+    if (rH.mNodeDeletion)
+        n += rH.mNodes;
+    else if (rH.mElementDeletion)
+        n += rH.mBeams + rH.mShells + rH.mSolids + rH.mTshells;
+    if (rG.mHasAirbag)
+        n += rH.mAirbags * rG.mAirbagStateGeom + rG.mAirbagParticles * rG.mAirbagVar;
+    n += rG.mRoads * 6;
+    if (rH.mRigidBodies)
+        n += rG.mRigidBodyMotions * (rH.mReducedRigidBodies ? 12 : 24);
+    return n;
+}
+
+// The family: header, geometry, and where each state lies.
+struct D3File {
+    std::string mBase;  // the base file's bytes
+    D3Words mWords;
+    D3Header mHeader;
+    D3Geometry mGeometry;
+    std::size_t mStateWords = 0;
+    std::vector<std::pair<std::string, std::size_t>> mStates;  // (file, byte offset)
+
+    explicit D3File(const std::string& rPath) {
+        std::error_code ec;
+        if (!fs::is_regular_file(rPath, ec))
+            d3_fail("'" + rPath + "' does not exist");
+        const std::string base = d3_continuation_base(rPath);
+        if (!base.empty() && d3_file_sniffs(base))
+            d3_fail("'" + fs::path(rPath).filename().string() + "' continues the family of '" +
+                    fs::path(base).filename().string() + "'; open the base file");
+        const std::size_t size = static_cast<std::size_t>(fs::file_size(rPath, ec));
+        mBase = d3_read_bytes(rPath, 0, size);
+        std::string lower = rPath;
+        for (char& c : lower)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lower.size() >= 3 && lower.compare(lower.size() - 3, 3, ".fz") == 0)
+            d3_fail("the file is femzip-compressed; decompress it first");
+        const auto sniffed = d3_sniff(mBase.data(), mBase.size());
+        if (!sniffed)
+            d3_fail("'" + rPath + "' is not a d3plot file (no plausible control block)");
+        mWords = D3Words{mBase.data(), mBase.size(), sniffed->first, sniffed->second};
+        mHeader = d3_header(mWords);
+        mGeometry = d3_geometry(mWords, mHeader);
+        const std::int64_t words = d3_state_words(mHeader, mGeometry);
+        if (words <= 0)
+            d3_fail("the header describes an empty state");
+        mStateWords = static_cast<std::size_t>(words);
+        const std::size_t state_bytes = mStateWords * static_cast<std::size_t>(mWords.mWs);
+
+        const auto members = d3_family(rPath);
+        for (std::size_t k = 0; k < members.size(); ++k) {
+            const std::size_t fsize = static_cast<std::size_t>(fs::file_size(members[k], ec));
+            const std::size_t start =
+                k == 0 ? mGeometry.mEnd * static_cast<std::size_t>(mWords.mWs) : 0;
+            // the last non-zero *word*: a big-endian value can end in zero bytes
+            const std::size_t ws = static_cast<std::size_t>(mWords.mWs);
+            const std::size_t last = (d3_last_nonzero(members[k], fsize) + ws - 1) / ws * ws;
+            std::size_t count = last > start ? (last - start) / state_bytes : 0;
+            if (mHeader.mFiletype == 11 && k > 0 && count == 0 && state_bytes <= fsize)
+                count = 1;
+            for (std::size_t i = 0; i < count; ++i)
+                mStates.emplace_back(members[k], start + i * state_bytes);
+        }
+    }
+
+    std::vector<double> State(std::size_t Index) const {
+        const std::size_t bytes = mStateWords * static_cast<std::size_t>(mWords.mWs);
+        const std::string raw = d3_read_bytes(mStates[Index].first, mStates[Index].second, bytes);
+        if (raw.size() < bytes)
+            d3_fail("state " + std::to_string(Index) + " is truncated");
+        const D3Words w{raw.data(), raw.size(), mWords.mWs, mWords.mSwap};
+        return w.Floats(0, mStateWords);
+    }
+
+    std::vector<double> Times() const {
+        std::vector<double> out;
+        out.reserve(mStates.size());
+        for (const auto& [member, offset] : mStates) {
+            const std::string raw =
+                d3_read_bytes(member, offset, static_cast<std::size_t>(mWords.mWs));
+            if (raw.size() < static_cast<std::size_t>(mWords.mWs))
+                d3_fail("a state is truncated");
+            const D3Words w{raw.data(), raw.size(), mWords.mWs, mWords.mSwap};
+            out.push_back(w.FloatAt(0));
+        }
+        return out;
+    }
+};
+
+// --- the mesh ------------------------------------------------------------------------
+
+enum D3Family : int { kD3Solid = 0, kD3Tshell = 1, kD3Beam = 2, kD3Shell = 3 };
+
+struct D3Block {
+    std::string mType;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mConn;
+    int mFamily = 0;
+    std::vector<std::size_t> mElems;
+    std::vector<std::int64_t> mParts;  // 0-based part indices
+};
+
+struct D3Cells {
+    std::vector<D3Block> mBlocks;
+    // per family: (block, row) of each element
+    std::array<std::vector<std::pair<std::size_t, std::size_t>>, 4> mWhere;
+};
+
+int d3_dim(const std::string& rType) {
+    if (rType == "line")
+        return 1;
+    if (rType == "triangle" || rType == "quad" || rType == "quad8")
+        return 2;
+    return 3;
+}
+
+D3Cells d3_cells(const D3Header& rH, const D3Geometry& rG) {
+    D3Cells out;
+    const auto add = [&](int Family, const std::vector<std::int64_t>& rRows, std::size_t Width,
+                         std::size_t PartWord, const auto& rMake) {
+        const std::size_t count = Width ? rRows.size() / Width : 0;
+        std::map<std::string, std::size_t> index;
+        auto& where = out.mWhere[static_cast<std::size_t>(Family)];
+        where.resize(count);
+        for (std::size_t e = 0; e < count; ++e) {
+            const std::int64_t* row = rRows.data() + e * Width;
+            auto [type, nodes] = rMake(e, row);
+            auto it = index.find(type);
+            if (it == index.end()) {
+                it = index.emplace(type, out.mBlocks.size()).first;
+                D3Block b;
+                b.mType = type;
+                b.mNodes = nodes.size();
+                b.mFamily = Family;
+                out.mBlocks.push_back(std::move(b));
+            }
+            D3Block& b = out.mBlocks[it->second];
+            where[e] = {it->second, b.mElems.size()};
+            b.mConn.insert(b.mConn.end(), nodes.begin(), nodes.end());
+            b.mElems.push_back(e);
+            b.mParts.push_back(row[PartWord] - 1);
+        }
+    };
+    const auto solid = [&](std::size_t E, const std::int64_t* pRow) {
+        std::array<std::int64_t, 8> nodes;
+        for (std::size_t k = 0; k < 8; ++k)
+            nodes[k] = pRow[k] - 1;
+        if (!rG.mSolidExtra.empty() && rG.mSolidExtra[2 * E] > 0 && rG.mSolidExtra[2 * E + 1] > 0) {
+            std::vector<std::int64_t> v(nodes.begin(), nodes.end());
+            v.push_back(rG.mSolidExtra[2 * E] - 1);
+            v.push_back(rG.mSolidExtra[2 * E + 1] - 1);
+            return std::make_pair(std::string("tetra10"), v);
+        }
+        const detail::CollapsedBrick c = detail::collapse_brick(nodes);
+        return std::make_pair(std::string(c.mType), c.mNodes);
+    };
+    const auto tshell = [&](std::size_t /*E*/, const std::int64_t* pRow) {
+        std::array<std::int64_t, 8> nodes;
+        for (std::size_t k = 0; k < 8; ++k)
+            nodes[k] = pRow[k] - 1;
+        const detail::CollapsedBrick c = detail::collapse_brick(nodes);
+        return std::make_pair(std::string(c.mType), c.mNodes);
+    };
+    const auto beam = [](std::size_t /*E*/, const std::int64_t* pRow) {
+        return std::make_pair(std::string("line"),
+                              std::vector<std::int64_t>{pRow[0] - 1, pRow[1] - 1});
+    };
+    std::unordered_map<std::int64_t, std::array<std::int64_t, 4>> shell8;
+    for (std::size_t i = 0; i + 5 <= rG.mShell8.size(); i += 5)
+        shell8[rG.mShell8[i] - 1] = {rG.mShell8[i + 1] - 1, rG.mShell8[i + 2] - 1,
+                                     rG.mShell8[i + 3] - 1, rG.mShell8[i + 4] - 1};
+    const auto shell = [&](std::size_t E, const std::int64_t* pRow) {
+        std::vector<std::int64_t> nodes{pRow[0] - 1, pRow[1] - 1, pRow[2] - 1, pRow[3] - 1};
+        const auto it = shell8.find(static_cast<std::int64_t>(E));
+        if (it != shell8.end()) {
+            nodes.insert(nodes.end(), it->second.begin(), it->second.end());
+            return std::make_pair(std::string("quad8"), nodes);
+        }
+        if (nodes[3] == nodes[2] || nodes[3] < 0) {
+            nodes.resize(3);
+            return std::make_pair(std::string("triangle"), nodes);
+        }
+        return std::make_pair(std::string("quad"), nodes);
+    };
+    (void)rH;
+    add(kD3Solid, rG.mSolids, 9, 8, solid);
+    add(kD3Tshell, rG.mTshells, 9, 8, tshell);
+    add(kD3Beam, rG.mBeams, 6, 5, beam);
+    add(kD3Shell, rG.mShells, 5, 4, shell);
+    return out;
+}
+
+std::vector<std::int64_t> d3_part_user_ids(const D3Header& rH, const D3Geometry& rG) {
+    if (rG.mHasPartIds)
+        return rG.mPartIds;
+    if (static_cast<std::int64_t>(rG.mPartTitleOrder.size()) == rH.mParts)
+        return rG.mPartTitleOrder;
+    return d3_iota(rH.mParts);
+}
+
+NDArray d3_int_array(const std::vector<std::int64_t>& rValues) {
+    NDArray a(DType::Int64, {rValues.size()});
+    std::copy(rValues.begin(), rValues.end(), a.As<std::int64_t>());
+    return a;
+}
+
+NDArray d3_scalar(double V, DType T) {
+    NDArray a(T, {1});
+    if (T == DType::Float64)
+        a.As<double>()[0] = V;
+    else
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(V);
+    return a;
+}
+
+Mesh d3_build_mesh(const D3File& rF, D3Cells& rCells) {
+    const D3Header& h = rF.mHeader;
+    const D3Geometry& g = rF.mGeometry;
+    const auto nnodes = static_cast<std::size_t>(h.mNodes);
+    Mesh mesh;
+    NDArray points(DType::Float64, {nnodes, 3});
+    std::copy(g.mCoords.begin(), g.mCoords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+    rCells = d3_cells(h, g);
+    for (const D3Block& b : rCells.mBlocks)
+        for (std::int64_t v : b.mConn)
+            if (v < 0 || static_cast<std::size_t>(v) >= nnodes)
+                d3_fail("an element references a node outside the node table");
+    for (const D3Block& b : rCells.mBlocks) {
+        NDArray conn(DType::Int64, {b.mElems.size(), b.mNodes});
+        std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
+        mesh.AddCellBlock(b.mType, std::move(conn));
+    }
+    mesh.AddPointData("lsdyna:nid", d3_int_array(g.mNodeIds));
+    if (rCells.mBlocks.empty())
+        return mesh;
+
+    const std::array<const std::vector<std::int64_t>*, 4> family_ids{&g.mSolidIds, &g.mTshellIds,
+                                                                     &g.mBeamIds, &g.mShellIds};
+    const auto part_ids = d3_part_user_ids(h, g);
+    const auto user_part = [&](std::int64_t P) {
+        return (P >= 0 && static_cast<std::size_t>(P) < part_ids.size())
+                   ? part_ids[static_cast<std::size_t>(P)]
+                   : P + 1;
+    };
+    std::vector<NDArray> eids, parts;
+    std::map<std::int64_t, std::pair<int, std::vector<std::int64_t>>> by_part;
+    std::vector<std::int64_t> part_order;
+    std::int64_t base = 0;
+    for (const D3Block& b : rCells.mBlocks) {
+        const auto& ids = *family_ids[static_cast<std::size_t>(b.mFamily)];
+        std::vector<std::int64_t> e(b.mElems.size()), p(b.mElems.size());
+        const int dim = d3_dim(b.mType);
+        for (std::size_t i = 0; i < b.mElems.size(); ++i) {
+            e[i] = ids[b.mElems[i]];
+            p[i] = user_part(b.mParts[i]);
+            auto [it, inserted] = by_part.try_emplace(p[i], -1, std::vector<std::int64_t>{});
+            if (inserted)
+                part_order.push_back(p[i]);
+            it->second.first = std::max(it->second.first, dim);
+            it->second.second.push_back(base + static_cast<std::int64_t>(i));
+        }
+        base += static_cast<std::int64_t>(b.mElems.size());
+        eids.push_back(d3_int_array(e));
+        parts.push_back(d3_int_array(p));
+    }
+    mesh.AddCellData("lsdyna:eid", std::move(eids));
+    mesh.AddCellData("lsdyna:part", std::move(parts));
+    for (std::int64_t pid : part_order) {
+        auto& [dim, members] = by_part[pid];
+        const auto title = g.mPartTitles.find(pid);
+        const std::string name = (title != g.mPartTitles.end() && !title->second.empty())
+                                     ? title->second
+                                     : "Part " + std::to_string(pid);
+        mesh.AddRegion(Region(name, RegionKind::Cell, dim, pid, d3_int_array(members)));
+    }
+    return mesh;
+}
+
+// --- one state -----------------------------------------------------------------------
+
+// Named per-cell arrays assembled from the element families, NaN-padded to a
+// common (points, width) across blocks.
+class D3CellArrays {
+public:
+    explicit D3CellArrays(const D3Cells& rCells) : mrCells(rCells) {}
+
+    // rRows: (elements, points * width) of Family, in element order.
+    void Add(const std::string& rName, int Family, std::vector<double> Rows, std::size_t Points,
+             std::size_t Width) {
+        auto it = mEntries.find(rName);
+        if (it == mEntries.end()) {
+            it = mEntries.emplace(rName, Entry{}).first;
+            mOrder.push_back(rName);
+        }
+        Entry& e = it->second;
+        e.mPoints = std::max(e.mPoints, Points);
+        e.mWidth = std::max(e.mWidth, Width);
+        e.mParts.push_back({Family, std::move(Rows), Points, Width});
+    }
+
+    void Emit(Mesh& rMesh) const {
+        for (const std::string& name : mOrder) {
+            const Entry& e = mEntries.at(name);
+            const std::size_t cols = e.mPoints * e.mWidth;
+            std::vector<NDArray> out;
+            for (const D3Block& b : mrCells.mBlocks) {
+                NDArray a = cols == 1 ? NDArray(DType::Float64, {b.mElems.size()})
+                                      : NDArray(DType::Float64, {b.mElems.size(), cols});
+                std::fill(a.As<double>(), a.As<double>() + a.Size(), kD3Nan);
+                out.push_back(std::move(a));
+            }
+            for (const Part& p : e.mParts) {
+                const auto& where = mrCells.mWhere[static_cast<std::size_t>(p.mFamily)];
+                for (std::size_t el = 0; el < where.size(); ++el) {
+                    double* dst = out[where[el].first].As<double>() + where[el].second * cols;
+                    const double* src = p.mRows.data() + el * p.mPoints * p.mWidth;
+                    for (std::size_t q = 0; q < p.mPoints; ++q)
+                        for (std::size_t c = 0; c < p.mWidth; ++c)
+                            dst[q * e.mWidth + c] = src[q * p.mWidth + c];
+                }
+            }
+            rMesh.AddCellData(name, std::move(out));
+            if (e.mPoints > 1) {
+                NDArray layout(DType::Int64, {2});
+                layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(e.mPoints);
+                layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(e.mWidth);
+                rMesh.AddFieldData("lsdyna_d3plot:layout:" + name, std::move(layout));
+            }
+        }
+    }
+
+private:
+    struct Part {
+        int mFamily;
+        std::vector<double> mRows;
+        std::size_t mPoints, mWidth;
+    };
+    struct Entry {
+        std::size_t mPoints = 0, mWidth = 0;
+        std::vector<Part> mParts;
+    };
+    const D3Cells& mrCells;
+    std::map<std::string, Entry> mEntries;
+    std::vector<std::string> mOrder;
+};
+
+// Columns [C0, C0 + Count) of each row of a (rows, Stride) table, as (rows, Count).
+std::vector<double> d3_columns(const double* pData, std::size_t Rows, std::size_t Stride,
+                               std::size_t C0, std::size_t Count) {
+    std::vector<double> out(Rows * Count);
+    for (std::size_t r = 0; r < Rows; ++r)
+        std::copy(pData + r * Stride + C0, pData + r * Stride + C0 + Count, out.data() + r * Count);
+    return out;
+}
+
+// Per layered row (rows, Layers, LayerWidth) the columns [C0, C0 + Count) of
+// every layer, as (rows, Layers * Count).
+std::vector<double> d3_layer_columns(const double* pData, std::size_t Rows, std::size_t Stride,
+                                     std::size_t Layers, std::size_t LayerWidth, std::size_t C0,
+                                     std::size_t Count) {
+    std::vector<double> out(Rows * Layers * Count);
+    for (std::size_t r = 0; r < Rows; ++r)
+        for (std::size_t l = 0; l < Layers; ++l)
+            std::copy(pData + r * Stride + l * LayerWidth + C0,
+                      pData + r * Stride + l * LayerWidth + C0 + Count,
+                      out.data() + (r * Layers + l) * Count);
+    return out;
+}
+
+void d3_read_state(const D3File& rF, Mesh& rMesh, const D3Cells& rCells, std::size_t Index,
+                   const ReadOptions& rOpts) {
+    const D3Header& h = rF.mHeader;
+    const D3Geometry& g = rF.mGeometry;
+    const std::vector<double> s = rF.State(Index);
+    const auto nn = static_cast<std::size_t>(h.mNodes);
+    const auto want = [&](const std::string& rName) { return rOpts.WantsArray(rName); };
+    std::size_t k = 1;
+    const auto nglbv = static_cast<std::size_t>(std::max<std::int64_t>(h.mGlobals, 0));
+    const double* globals = s.data() + k;
+    k += nglbv;
+
+    std::size_t gi = 0;
+    for (const auto& [name, width] :
+         std::array<std::pair<const char*, std::size_t>, 4>{{{"global_kinetic_energy", 1},
+                                                             {"global_internal_energy", 1},
+                                                             {"global_total_energy", 1},
+                                                             {"global_velocity", 3}}}) {
+        if (gi + width <= nglbv) {
+            if (want(name)) {
+                NDArray a(DType::Float64, {width});
+                std::copy(globals + gi, globals + gi + width, a.As<double>());
+                rMesh.AddFieldData(name, std::move(a));
+            }
+            gi += width;
+        }
+    }
+    const auto nparts = static_cast<std::size_t>(std::max<std::int64_t>(
+        h.R("nummat8") + h.R("nummat2") + h.R("nummat4") + h.R("nummatt") + g.mRigidBodies, 0));
+    for (const auto& [name, width] :
+         std::array<std::pair<const char*, std::size_t>, 5>{{{"part_internal_energy", 1},
+                                                             {"part_kinetic_energy", 1},
+                                                             {"part_velocity", 3},
+                                                             {"part_mass", 1},
+                                                             {"part_hourglass_energy", 1}}}) {
+        if (gi + width * nparts <= nglbv) {
+            if (want(name)) {
+                NDArray a = width == 3 ? NDArray(DType::Float64, {nparts, 3})
+                                       : NDArray(DType::Float64, {nparts});
+                std::copy(globals + gi, globals + gi + width * nparts, a.As<double>());
+                rMesh.AddFieldData(name, std::move(a));
+            }
+            gi += width * nparts;
+        }
+    }
+
+    for (const auto& [name, comps] : d3_node_vars(h)) {
+        const double* v = s.data() + k;
+        k += comps * nn;
+        if (name == "coordinates") {
+            if (want("displacement")) {
+                NDArray a(DType::Float64, {nn, 3});
+                double* out = a.As<double>();
+                for (std::size_t i = 0; i < 3 * nn; ++i)
+                    out[i] = v[i] - g.mCoords[i];
+                rMesh.AddPointData("displacement", std::move(a));
+            }
+        } else if (want(name)) {
+            NDArray a =
+                comps > 1 ? NDArray(DType::Float64, {nn, comps}) : NDArray(DType::Float64, {nn});
+            std::copy(v, v + comps * nn, a.As<double>());
+            rMesh.AddPointData(name, std::move(a));
+        }
+    }
+
+    D3CellArrays cells(rCells);
+    const auto put = [&](const std::string& rName, int Family, std::vector<double> Rows,
+                         std::size_t Points, std::size_t Width) {
+        if (want(rName))
+            cells.Add(rName, Family, std::move(Rows), Points, Width);
+    };
+    const auto zu = [](std::int64_t N) {
+        return static_cast<std::size_t>(std::max<std::int64_t>(N, 0));
+    };
+
+    if (h.mNt3d > 0) {
+        const std::size_t n = zu(h.mSolids), nt = zu(h.mNt3d);
+        put("thermal_variables", kD3Solid, std::vector<double>(s.data() + k, s.data() + k + n * nt),
+            1, nt);
+        k += n * nt;
+    }
+
+    if (h.mSolids > 0 && h.mNv3d > 0) {
+        const std::size_t n = zu(h.mSolids), nv = zu(h.mNv3d);
+        const std::size_t layers = zu(h.SolidLayers());
+        const std::size_t lw = nv / layers;
+        const double* d = s.data() + k;
+        std::size_t i = 0;
+        if (h.mSolidStress) {
+            put("stress", kD3Solid, d3_layer_columns(d, n, nv, layers, lw, i, 6), layers, 6);
+            i += 6;
+        }
+        if (h.mSolidPstrain) {
+            put("effective_plastic_strain", kD3Solid, d3_layer_columns(d, n, nv, layers, lw, i, 1),
+                layers, 1);
+            i += 1;
+        }
+        // history = [i, i + neiph) of each layer, less what is split off it
+        std::size_t h0 = i;
+        std::size_t hn = std::min(zu(h.mNeiph), lw > i ? lw - i : 0);
+        const std::size_t nstrain = h.mElementStrain ? 6 : 0;
+        if (nstrain && hn >= nstrain) {
+            put("strain", kD3Solid, d3_layer_columns(d, n, nv, layers, lw, h0 + hn - nstrain, 6),
+                layers, 6);
+            hn -= nstrain;
+        }
+        if (h.mPlasticStrainTensor && hn >= 6) {
+            put("plastic_strain_tensor", kD3Solid, d3_layer_columns(d, n, nv, layers, lw, h0, 6),
+                layers, 6);
+            h0 += 6;
+            hn -= 6;
+        }
+        if (h.mThermalStrainTensor && hn >= 6) {
+            put("thermal_strain_tensor", kD3Solid, d3_layer_columns(d, n, nv, layers, lw, h0, 6),
+                layers, 6);
+            h0 += 6;
+            hn -= 6;
+        }
+        if (hn)
+            put("history_variables", kD3Solid, d3_layer_columns(d, n, nv, layers, lw, h0, hn),
+                layers, hn);
+        k += n * nv;
+    }
+
+    if (h.mTshells > 0 && h.mNv3dt > 0) {
+        const std::size_t n = zu(h.mTshells), nv = zu(h.mNv3dt), nl = zu(h.mLayers),
+                          nh = zu(h.mNeips);
+        const std::size_t lw = 6 * h.mShellStress + h.mShellPstrain + nh;
+        const std::size_t nlayer = nl * lw;
+        const double* d = s.data() + k;
+        std::size_t i = 0;
+        if (h.mShellStress) {
+            put("stress", kD3Tshell, d3_layer_columns(d, n, nv, nl, lw, i, 6), nl, 6);
+            i += 6;
+        }
+        if (h.mShellPstrain) {
+            put("effective_plastic_strain", kD3Tshell, d3_layer_columns(d, n, nv, nl, lw, i, 1), nl,
+                1);
+            i += 1;
+        }
+        if (nh)
+            put("history_variables", kD3Tshell, d3_layer_columns(d, n, nv, nl, lw, i, nh), nl, nh);
+        if (h.mElementStrain) {
+            put("strain_inner", kD3Tshell, d3_columns(d, n, nv, nlayer, 6), 1, 6);
+            put("strain_outer", kD3Tshell, d3_columns(d, n, nv, nlayer + 6, 6), 1, 6);
+        }
+        k += n * nv;
+    }
+
+    if (h.mBeams > 0 && h.mNv1d > 0) {
+        const std::size_t n = zu(h.mBeams), nv = zu(h.mNv1d), nh = zu(h.mNeipb);
+        const std::int64_t nl_signed = (-3 * h.mNeipb + h.mNv1d - 6) / (h.mNeipb + 5);
+        const std::size_t nl = zu(nl_signed);
+        const double* d = s.data() + k;
+        put("beam_axial_force", kD3Beam, d3_columns(d, n, nv, 0, 1), 1, 1);
+        put("beam_shear_force", kD3Beam, d3_columns(d, n, nv, 1, 2), 1, 2);
+        put("beam_bending_moment", kD3Beam, d3_columns(d, n, nv, 3, 2), 1, 2);
+        put("beam_torsion_moment", kD3Beam, d3_columns(d, n, nv, 5, 1), 1, 1);
+        if (nl > 0) {
+            const double* layered = d + 6;
+            put("beam_axial_stress", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 0, 1), nl, 1);
+            put("beam_shear_stress", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 1, 2), nl, 2);
+            put("effective_plastic_strain", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 3, 1),
+                nl, 1);
+            put("beam_axial_strain", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 4, 1), nl, 1);
+        }
+        if (nh && nv > 6 + 5 * nl)
+            put("history_variables", kD3Beam, d3_columns(d, n, nv, 6 + 5 * nl, nv - 6 - 5 * nl),
+                3 + nl, nh);
+        k += n * nv;
+    }
+
+    const std::int64_t nreduced = h.mShells - g.mRigidShells;
+    if (nreduced > 0 && h.mNv2d > 0) {
+        const std::size_t nv = zu(h.mNv2d), nl = zu(h.mLayers), nh = zu(h.mNeips);
+        const std::size_t lw = 6 * h.mShellStress + h.mShellPstrain + nh;
+        const std::size_t nlayer = nl * lw;
+        const std::size_t n = zu(h.mShells);
+        std::vector<double> full;
+        const double* d = s.data() + k;
+        k += zu(nreduced) * nv;
+        if (g.mRigidShells) {
+            full.assign(n * nv, kD3Nan);
+            std::size_t r = 0;
+            for (std::size_t e = 0; e < n; ++e) {
+                const std::int64_t part = g.mShells[5 * e + 4] - 1;
+                const bool rigid = part >= 0 &&
+                                   static_cast<std::size_t>(part) < g.mPartMattype.size() &&
+                                   g.mPartMattype[static_cast<std::size_t>(part)] == 20;
+                if (!rigid) {
+                    std::copy(d + r * nv, d + (r + 1) * nv, full.data() + e * nv);
+                    ++r;
+                }
+            }
+            d = full.data();
+        }
+        std::size_t i = 0;
+        if (h.mShellStress) {
+            put("stress", kD3Shell, d3_layer_columns(d, n, nv, nl, lw, i, 6), nl, 6);
+            i += 6;
+        }
+        if (h.mShellPstrain) {
+            put("effective_plastic_strain", kD3Shell, d3_layer_columns(d, n, nv, nl, lw, i, 1), nl,
+                1);
+            i += 1;
+        }
+        if (nh)
+            put("history_variables", kD3Shell, d3_layer_columns(d, n, nv, nl, lw, i, nh), nl, nh);
+        std::size_t j = nlayer;
+        if (h.mShellForces) {
+            put("shell_bending_moment", kD3Shell, d3_columns(d, n, nv, j, 3), 1, 3);
+            put("shell_shear_force", kD3Shell, d3_columns(d, n, nv, j + 3, 2), 1, 2);
+            put("shell_normal_force", kD3Shell, d3_columns(d, n, nv, j + 5, 3), 1, 3);
+            j += 8;
+        }
+        if (h.mShellExtra) {
+            put("thickness", kD3Shell, d3_columns(d, n, nv, j, 1), 1, 1);
+            put("shell_element_variables", kD3Shell, d3_columns(d, n, nv, j + 1, 2), 1, 2);
+            j += 3;
+        }
+        if (h.mElementStrain) {
+            put("strain_inner", kD3Shell, d3_columns(d, n, nv, j, 6), 1, 6);
+            put("strain_outer", kD3Shell, d3_columns(d, n, nv, j + 6, 6), 1, 6);
+            j += 12;
+        }
+        if (h.mShellExtra) {
+            put("internal_energy", kD3Shell, d3_columns(d, n, nv, j, 1), 1, 1);
+            j += 1;
+        }
+        if (h.mPlasticStrainTensor) {
+            put("plastic_strain_tensor", kD3Shell, d3_columns(d, n, nv, j, 6 * nl), nl, 6);
+            j += 6 * nl;
+        }
+        if (h.mThermalStrainTensor) {
+            put("thermal_strain_tensor", kD3Shell, d3_columns(d, n, nv, j, 6), 1, 6);
+            j += 6;
+        }
+    }
+
+    k += zu(h.mSph * g.mSphVars);
+
+    if (h.mNodeDeletion) {
+        if (want("lsdyna:alive")) {
+            NDArray a(DType::Int8, {nn});
+            for (std::size_t i = 0; i < nn; ++i)
+                a.As<std::int8_t>()[i] = s[k + i] != 0.0 ? 1 : 0;
+            rMesh.AddPointData("lsdyna:alive", std::move(a));
+        }
+        k += nn;
+    } else if (h.mElementDeletion) {
+        std::array<std::size_t, 4> offset{};
+        for (const auto& [family, count] :
+             std::array<std::pair<int, std::int64_t>, 4>{{{kD3Solid, h.mSolids},
+                                                          {kD3Tshell, h.mTshells},
+                                                          {kD3Shell, h.mShells},
+                                                          {kD3Beam, h.mBeams}}}) {
+            offset[static_cast<std::size_t>(family)] = k;
+            k += zu(count);
+        }
+        if (want("lsdyna:alive") && !rCells.mBlocks.empty()) {
+            std::vector<NDArray> out;
+            for (const D3Block& b : rCells.mBlocks) {
+                NDArray a(DType::Int8, {b.mElems.size()});
+                for (std::size_t i = 0; i < b.mElems.size(); ++i)
+                    a.As<std::int8_t>()[i] =
+                        s[offset[static_cast<std::size_t>(b.mFamily)] + b.mElems[i]] != 0.0 ? 1 : 0;
+                out.push_back(std::move(a));
+            }
+            rMesh.AddCellData("lsdyna:alive", std::move(out));
+        }
+    }
+    cells.Emit(rMesh);
+}
+
+}  // namespace
+
+bool is_d3plot_filename(const std::string& rPath) {
+    std::string name = fs::path(rPath).filename().string();
+    for (char& c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return name == "d3plot";
+}
+
+bool is_d3plot_head(const char* pHead, std::size_t Size) {
+    const auto sniffed = d3_sniff(pHead, Size);
+    if (!sniffed)
+        return false;
+    const D3Words w{pHead, Size, sniffed->first, sniffed->second};
+    const double version = w.FloatAt(14);
+    if (!(version == 0.0 || (version >= 900.0 && version < 100000.0)))
+        return false;
+    for (int i : {16, 18, 28, 31, 40})
+        if (w.IntAt(static_cast<std::size_t>(i)) < 0)
+            return false;
+    for (std::size_t i = 0; i < 40; ++i) {
+        const auto b = static_cast<unsigned char>(pHead[i]);
+        if (b != 0 && (b < 32 || b >= 127))
+            return false;
+    }
+    return true;
+}
+
+Mesh read_lsdyna_d3plot(const std::string& rPath, const ReadOptions& rOpts) {
+    const D3File file(rPath);
+    D3Cells cells;
+    Mesh mesh = d3_build_mesh(file, cells);
+    const std::size_t n = file.mStates.size();
+    if (n == 0) {
+        if (rOpts.mTimeStep != 0 && rOpts.mTimeStep != -1)
+            throw ReadError("time step " + std::to_string(rOpts.mTimeStep) +
+                            " is out of range: the file has no states");
+        return mesh;
+    }
+    const std::size_t index = rOpts.ResolveTimeStep(n);
+    const std::vector<double> times = file.Times();
+    mesh.AddFieldData(kSequenceTimeKey, d3_scalar(times[index], DType::Float64));
+    mesh.AddFieldData("lsdyna:state", d3_scalar(static_cast<double>(index), DType::Int64));
+    if (rOpts.mPointsOnly)
+        return mesh;
+    d3_read_state(file, mesh, cells, index, rOpts);
+    if (file.mHeader.mAirbagSubver || file.mHeader.mSph)
+        log::warn("LS-DYNA d3plot: airbag particle and SPH data are skipped");
+    return mesh;
+}
+
+std::vector<double> lsdyna_d3plot_time_values(const std::string& rPath) {
+    return D3File(rPath).Times();
+}
+
+MeshMetadata read_lsdyna_d3plot_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    ReadOptions options = rOpts;
+    options.mPointsOnly = true;
+    options.mTimeStep = 0;
+    MeshMetadata meta = metadata_from_mesh(read_lsdyna_d3plot(rPath, options));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "lsdyna_d3plot";
+    meta.mTimeValues = lsdyna_d3plot_time_values(rPath);
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/lsdyna_d3plot.cpp =====
 // ===== begin src/cpp/src/formats/marc.cpp =====
 #include <algorithm>
 #include <array>
@@ -86751,7 +88588,12 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Nastran writer: failed writing " + rPath);
 }
 
-Mesh read_nastran(const std::string& rPath) {
+namespace {
+
+// The bulk reader proper; also hands back the GRID ids (point order) and the
+// element ids (global cell order) when asked.
+Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
+              std::vector<std::int64_t>* pCellIds) {
     auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -86786,6 +88628,7 @@ Mesh read_nastran(const std::string& rPath) {
         int mN = 0;
         std::vector<std::int64_t> mConn;
         std::vector<std::int64_t> mRefs;
+        std::vector<std::int64_t> mIds;
     };
     std::vector<Blk> blocks;
     std::vector<double> pts;
@@ -86808,6 +88651,8 @@ Mesh read_nastran(const std::string& rPath) {
             any_point_ref = any_point_ref || !ref.empty();
             point_refs.push_back(nas_int(ref, kw));
             point_index[id] = static_cast<std::int64_t>(point_refs.size() - 1);
+            if (pGridIds)
+                pGridIds->push_back(id);
             for (std::size_t c = 3; c < 6; ++c)
                 pts.push_back(nas_real(nas_field(f, c), kw));
             continue;
@@ -86856,6 +88701,7 @@ Mesh read_nastran(const std::string& rPath) {
             blk.mConn.insert(blk.mConn.end(), nodes.begin(), nodes.end());
             any_cell_ref = any_cell_ref || !ref.empty();
             blk.mRefs.push_back(nas_int(ref, kw));
+            blk.mIds.push_back(id);
             cell_pids.push_back(blk.mRefs.back());
             cell_index[id] = static_cast<std::int64_t>(cell_dims.size());
             cell_dims.push_back(cell_type_dimension(cell_type_from_name(type)));
@@ -86995,8 +88841,28 @@ Mesh read_nastran(const std::string& rPath) {
     }
     if (missing > 0)
         log::warn("Nastran: {} region member id(s) name no grid or element; dropped", missing);
+    if (pCellIds)
+        for (const Blk& blk : blocks)
+            pCellIds->insert(pCellIds->end(), blk.mIds.begin(), blk.mIds.end());
     return mesh;
 }
+
+}  // namespace
+
+Mesh read_nastran(const std::string& rPath) {
+    return nas_read(rPath, nullptr, nullptr);
+}
+
+namespace detail {
+
+Mesh nastran_read_deck(const std::string& rPath, std::vector<std::int64_t>& rGridIds,
+                       std::vector<std::int64_t>& rCellIds) {
+    rGridIds.clear();
+    rCellIds.clear();
+    return nas_read(rPath, &rGridIds, &rCellIds);
+}
+
+}  // namespace detail
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/nastran.cpp =====
@@ -87034,53 +88900,6 @@ constexpr const char* kNh5Elemental = "/NASTRAN/RESULT/ELEMENTAL";
 
 [[noreturn]] void nh5_fail(const std::string& rMessage) {
     throw ReadError("MSC Nastran HDF5: " + rMessage);
-}
-
-/** One element card with a cell type: its linear and (optional) quadratic shape. */
-struct Nh5CardSpec {
-    const char* mCard;
-    const char* mLinear;
-    std::size_t mLinearNodes;
-    const char* mQuadratic;  // nullptr: no quadratic variant
-    std::size_t mQuadraticNodes;
-    const int* mPermutation;  // quadratic connectivity: conn[k] = G[perm[k]]
-};
-
-// Nastran numbers the hex20/wedge15 mid-side nodes bottom, vertical, top;
-// meshio++ (VTK) numbers them bottom, top, vertical (the bulk reader's tables).
-constexpr int kNh5Hexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
-                                10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
-constexpr int kNh5Penta15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
-
-constexpr Nh5CardSpec kNh5Cards[] = {
-    {"CBAR", "line", 2, nullptr, 0, nullptr},
-    {"CBEAM", "line", 2, nullptr, 0, nullptr},
-    {"CBUSH", "line", 2, nullptr, 0, nullptr},
-    {"CHEXA", "hexahedron", 8, "hexahedron20", 20, kNh5Hexa20},
-    {"CONM2", "vertex", 1, nullptr, 0, nullptr},
-    {"CONROD", "line", 2, nullptr, 0, nullptr},
-    {"CPENTA", "wedge", 6, "wedge15", 15, kNh5Penta15},
-    {"CPYRAM", "pyramid", 5, "pyramid13", 13, nullptr},
-    {"CQUAD", "quad", 4, "quad9", 9, nullptr},
-    {"CQUAD4", "quad", 4, nullptr, 0, nullptr},
-    {"CQUAD8", "quad", 4, "quad8", 8, nullptr},
-    {"CQUADR", "quad", 4, nullptr, 0, nullptr},
-    {"CROD", "line", 2, nullptr, 0, nullptr},
-    {"CSHEAR", "quad", 4, nullptr, 0, nullptr},
-    {"CTETRA", "tetra", 4, "tetra10", 10, nullptr},
-    {"CTRIA3", "triangle", 3, nullptr, 0, nullptr},
-    {"CTRIA6", "triangle", 3, "triangle6", 6, nullptr},
-    {"CTRIAR", "triangle", 3, nullptr, 0, nullptr},
-    {"CTUBE", "line", 2, nullptr, 0, nullptr},
-    {"CVISC", "line", 2, nullptr, 0, nullptr},
-    {"PLOTEL", "line", 2, nullptr, 0, nullptr},
-};
-
-const Nh5CardSpec* nh5_card_spec(const std::string& rCard) {
-    for (const Nh5CardSpec& spec : kNh5Cards)
-        if (rCard == spec.mCard)
-            return &spec;
-    return nullptr;
 }
 
 bool nh5_has_member(const std::vector<h5::CompoundMember>& rMembers, const std::string& rName) {
@@ -87409,43 +89228,17 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             nh5_fail("GRID X is not a 3-vector");
         mesh.AssignPoints(std::move(x));
         const auto members = h5::compound_members(f, kNh5Grid);
-        for (const char* frame : {"CP", "CD"}) {
-            if (!nh5_has_member(members, frame))
-                continue;
-            const auto v = nh5_int_member(f, kNh5Grid, frame, 0, npts);
-            const auto nonzero =
-                std::count_if(v.begin(), v.end(), [](std::int64_t c) { return c != 0; });
-            if (nonzero == 0)
-                continue;
-            if (std::string(frame) == "CP")
-                log::warn(
-                    "MSC Nastran HDF5: {} GRID(s) have CP != 0; their coordinates are kept in "
-                    "the local system, not transformed",
-                    nonzero);
-            else
-                log::warn(
-                    "MSC Nastran HDF5: {} GRID(s) have CD != 0; their results are in the "
-                    "local output system",
-                    nonzero);
-            mesh.AddPointData(std::string("nastran:") + (frame[1] == 'P' ? "cp" : "cd"),
-                              nh5_int_array(v));
-        }
+        for (const char* frame : {"CP", "CD"})
+            if (nh5_has_member(members, frame))
+                detail::nastran_add_frame(mesh, frame, nh5_int_member(f, kNh5Grid, frame, 0, npts),
+                                          "MSC Nastran HDF5");
     }
 
-    // --- cells ----------------------------------------------------------------
-    struct Block {
-        std::string mCard;
-        std::string mType;
-        std::size_t mNodes;
-        std::vector<std::int64_t> mConn;
-        std::vector<std::int64_t> mEid;
-        std::vector<std::int64_t> mPid;
-    };
-    std::vector<Block> blocks;
+    // --- cells and property regions ------------------------------------------------
+    std::vector<detail::NastranCardRows> cards;
     std::vector<std::string> skipped_cards;
-    std::size_t dropped = 0;
     for (const std::string& card : nh5_children(f, kNh5Elements, false)) {
-        const Nh5CardSpec* spec = nh5_card_spec(card);
+        const detail::NastranCardSpec* spec = detail::nastran_card_spec(card);
         if (spec == nullptr) {
             skipped_cards.push_back(card);
             continue;
@@ -87455,13 +89248,13 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
         const std::size_t n = nh5_rows(f, path);
         if (!nh5_has_member(members, "EID"))
             nh5_fail(path + " has no EID column");
-        const auto eid = nh5_int_member(f, path, "EID", 0, n);
-        const auto pid = nh5_has_member(members, "PID") ? nh5_int_member(f, path, "PID", 0, n)
-                                                        : std::vector<std::int64_t>(n, -1);
-        std::vector<std::int64_t> g;
-        std::size_t width = 0;
+        detail::NastranCardRows rows;
+        rows.mCard = card;
+        rows.mEid = nh5_int_member(f, path, "EID", 0, n);
+        rows.mPid = nh5_has_member(members, "PID") ? nh5_int_member(f, path, "PID", 0, n)
+                                                   : std::vector<std::int64_t>(n, -1);
         if (nh5_has_member(members, "G")) {
-            g = nh5_int_member(f, path, "G", 0, n, &width);
+            rows.mNodes = nh5_int_member(f, path, "G", 0, n, &rows.mWidth);
         } else {
             const char* a = nh5_has_member(members, "GA") ? "GA" : "G1";
             const char* b = nh5_has_member(members, "GA") ? "GB" : "G2";
@@ -87469,144 +89262,41 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
                 nh5_fail(path + " has no G, GA/GB or G1/G2 columns");
             const auto ga = nh5_int_member(f, path, a, 0, n);
             const auto gb = nh5_int_member(f, path, b, 0, n);
-            width = 2;
-            g.resize(2 * n);
+            rows.mWidth = 2;
+            rows.mNodes.resize(2 * n);
             for (std::size_t i = 0; i < n; ++i) {
-                g[2 * i] = ga[i];
-                g[2 * i + 1] = gb[i];
+                rows.mNodes[2 * i] = ga[i];
+                rows.mNodes[2 * i + 1] = gb[i];
             }
         }
-        if (width < spec->mLinearNodes)
-            nh5_fail(path + " has " + std::to_string(width) + " node columns, " + card + " needs " +
-                     std::to_string(spec->mLinearNodes));
-        Block linear{card, spec->mLinear, spec->mLinearNodes, {}, {}, {}};
-        Block quadratic{
-            card, spec->mQuadratic ? spec->mQuadratic : "", spec->mQuadraticNodes, {}, {}, {}};
-        std::size_t partial = 0;
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::int64_t* row = g.data() + i * width;
-            bool quad = false;
-            if (spec->mQuadratic != nullptr && width >= spec->mQuadraticNodes) {
-                std::size_t given = 0;
-                for (std::size_t k = spec->mLinearNodes; k < spec->mQuadraticNodes; ++k)
-                    given += row[k] != 0 ? 1 : 0;
-                quad = given == spec->mQuadraticNodes - spec->mLinearNodes;
-                partial += (given != 0 && !quad) ? 1 : 0;
-            }
-            Block& b = quad ? quadratic : linear;
-            std::vector<std::int64_t> conn(b.mNodes);
-            bool ok = true;
-            for (std::size_t k = 0; k < b.mNodes && ok; ++k) {
-                const std::size_t src = (quad && spec->mPermutation)
-                                            ? static_cast<std::size_t>(spec->mPermutation[k])
-                                            : k;
-                const auto it = file.mGridIndex.find(row[src]);
-                if (it == file.mGridIndex.end()) {
-                    if (file.mScalarPoints.count(row[src]) == 0)
-                        nh5_fail(card + " " + std::to_string(eid[i]) + " references " +
-                                 (row[src] == 0 ? std::string("no node")
-                                                : "undefined GRID " + std::to_string(row[src])) +
-                                 " as its node " + std::to_string(src + 1));
-                    ok = false;  // a scalar point, not a GRID
-                } else {
-                    conn[k] = static_cast<std::int64_t>(it->second);
-                }
-            }
-            if (!ok) {
-                ++dropped;
-                continue;
-            }
-            b.mConn.insert(b.mConn.end(), conn.begin(), conn.end());
-            b.mEid.push_back(eid[i]);
-            b.mPid.push_back(pid[i]);
-        }
-        if (partial != 0)
-            log::warn(
-                "MSC Nastran HDF5: {} {} element(s) have only some mid-side nodes; read as {}",
-                partial, card, spec->mLinear);
-        if (!linear.mEid.empty())
-            blocks.push_back(std::move(linear));
-        if (!quadratic.mEid.empty())
-            blocks.push_back(std::move(quadratic));
+        if (rows.mWidth < spec->mLinearNodes)
+            nh5_fail(path + " has " + std::to_string(rows.mWidth) + " node columns, " + card +
+                     " needs " + std::to_string(spec->mLinearNodes));
+        cards.push_back(std::move(rows));
     }
     if (!skipped_cards.empty())
         log::warn("MSC Nastran HDF5: skipped element tables with no cell type: {}",
                   nh5_join(skipped_cards));
-    if (dropped != 0)
-        log::warn("MSC Nastran HDF5: skipped {} element(s) that connect scalar points", dropped);
-
-    // EID -> global cell, for the element results. A CONM2 has none, and MSC
-    // accepts one sharing its id with a structural element, so it stays out.
-    std::unordered_map<std::int64_t, std::size_t> cell_index;
-    std::vector<std::size_t> offsets;
-    std::size_t ncells = 0;
-    {
-        std::vector<NDArray> eids;
-        std::vector<NDArray> pids;
-        std::size_t shared = 0;
-        for (Block& b : blocks) {
-            offsets.push_back(ncells);
-            if (b.mCard != "CONM2")
-                for (std::size_t i = 0; i < b.mEid.size(); ++i)
-                    shared += cell_index.emplace(b.mEid[i], ncells + i).second ? 0 : 1;
-            ncells += b.mEid.size();
-            NDArray conn(DType::Int64, {b.mEid.size(), b.mNodes});
-            std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
-            mesh.AddCellBlock(b.mType, std::move(conn));
-            eids.push_back(nh5_int_array(b.mEid));
-            pids.push_back(nh5_int_array(b.mPid));
-        }
-        if (shared != 0)
-            log::warn(
-                "MSC Nastran HDF5: {} element id(s) are used by more than one card; their "
-                "element results go to the first",
-                shared);
-        if (!blocks.empty()) {
-            mesh.AddCellData("nastran:eid", std::move(eids));
-            mesh.AddCellData("nastran:pid", std::move(pids));
-        }
+    std::map<std::int64_t, std::string> ptype;
+    for (const std::string& prop : nh5_children(f, kNh5Properties, false)) {
+        const std::string path = std::string(kNh5Properties) + "/" + prop;
+        if (!nh5_has_member(h5::compound_members(f, path), "PID"))
+            continue;
+        for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
+            ptype.emplace(p, prop);
     }
-
-    // --- property regions -----------------------------------------------------
-    {
-        std::map<std::int64_t, std::string> ptype;
-        for (const std::string& prop : nh5_children(f, kNh5Properties, false)) {
-            const std::string path = std::string(kNh5Properties) + "/" + prop;
-            if (!nh5_has_member(h5::compound_members(f, path), "PID"))
-                continue;
-            for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
-                ptype.emplace(p, prop);
-        }
-        // Grouped properties (PCOMP/IDENTITY) live one level deeper.
-        for (const std::string& prop : nh5_children(f, kNh5Properties, true)) {
-            const std::string path = std::string(kNh5Properties) + "/" + prop + "/IDENTITY";
-            if (!nh5_is_dataset(f, path) || !nh5_has_member(h5::compound_members(f, path), "PID"))
-                continue;
-            for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
-                ptype.emplace(p, prop);
-        }
-        std::map<std::int64_t, std::pair<std::vector<std::int64_t>, int>> by_pid;
-        for (std::size_t b = 0; b < blocks.size(); ++b) {
-            const int dim = cell_type_dimension(cell_type_from_name(blocks[b].mType));
-            for (std::size_t i = 0; i < blocks[b].mPid.size(); ++i) {
-                const std::int64_t p = blocks[b].mPid[i];
-                if (p <= 0)
-                    continue;
-                auto& entry = by_pid[p];
-                if (entry.first.empty())
-                    entry.second = dim;
-                entry.first.push_back(static_cast<std::int64_t>(offsets[b] + i));
-                entry.second = std::max(entry.second, dim);
-            }
-        }
-        for (auto& [p, entry] : by_pid) {
-            const auto it = ptype.find(p);
-            const std::string name =
-                (it != ptype.end() ? it->second : std::string("PID")) + "_" + std::to_string(p);
-            mesh.AddRegion(
-                Region(name, RegionKind::Cell, entry.second, p, nh5_int_array(entry.first)));
-        }
+    // Grouped properties (PCOMP/IDENTITY) live one level deeper.
+    for (const std::string& prop : nh5_children(f, kNh5Properties, true)) {
+        const std::string path = std::string(kNh5Properties) + "/" + prop + "/IDENTITY";
+        if (!nh5_is_dataset(f, path) || !nh5_has_member(h5::compound_members(f, path), "PID"))
+            continue;
+        for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
+            ptype.emplace(p, prop);
     }
+    const detail::NastranCells model = detail::nastran_add_cells(
+        mesh, cards, file.mGridIndex, file.mScalarPoints, ptype, "MSC Nastran HDF5");
+    const auto& cell_index = model.mCellIndex;
+    const std::size_t ncells = model.mNumCells;
 
     // --- the step -------------------------------------------------------------
     if (file.mSteps.empty()) {
@@ -87721,11 +89411,11 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
     for (const std::string& name : cell_order) {
         const std::vector<double>& values = cell_arrays[name];
         std::vector<NDArray> per_block;
-        for (std::size_t b = 0; b < blocks.size(); ++b) {
-            NDArray a(DType::Float64, {blocks[b].mEid.size()});
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b]});
             std::copy(
-                values.begin() + static_cast<std::ptrdiff_t>(offsets[b]),
-                values.begin() + static_cast<std::ptrdiff_t>(offsets[b] + blocks[b].mEid.size()),
+                values.begin() + static_cast<std::ptrdiff_t>(model.mOffsets[b]),
+                values.begin() + static_cast<std::ptrdiff_t>(model.mOffsets[b] + model.mSizes[b]),
                 a.As<double>());
             per_block.push_back(std::move(a));
         }
@@ -87750,6 +89440,1157 @@ MeshMetadata read_nastran_h5_metadata(const std::string& rPath, const ReadOption
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/formats/nastran_h5.cpp =====
+// ===== begin src/cpp/src/formats/nastran_op2.cpp =====
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <initializer_list>
+#include <limits>
+#include <map>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+const std::string kOp2Who = "Nastran OP2";
+const double kOp2Nan = std::numeric_limits<double>::quiet_NaN();
+
+[[noreturn]] void op2_fail(const std::string& rMessage) {
+    throw ReadError(kOp2Who + ": " + rMessage);
+}
+
+// --- words ---------------------------------------------------------------------------
+
+struct Op2Words {
+    int mWs = 4;
+    bool mSwap = false;
+
+    std::int64_t Int(const char* p) const {
+        if (mWs == 4) {
+            std::uint32_t u;
+            std::memcpy(&u, p, 4);
+            if (mSwap)
+                u = detail::bswap32(u);
+            return static_cast<std::int32_t>(u);
+        }
+        std::uint64_t u;
+        std::memcpy(&u, p, 8);
+        if (mSwap)
+            u = detail::bswap64(u);
+        return static_cast<std::int64_t>(u);
+    }
+
+    double Float(const char* p) const {
+        if (mWs == 4) {
+            std::uint32_t u;
+            std::memcpy(&u, p, 4);
+            if (mSwap)
+                u = detail::bswap32(u);
+            return static_cast<double>(std::bit_cast<float>(u));
+        }
+        return Double(p);
+    }
+
+    double Double(const char* p) const {
+        std::uint64_t u;
+        std::memcpy(&u, p, 8);
+        if (mSwap)
+            u = detail::bswap64(u);
+        return std::bit_cast<double>(u);
+    }
+
+    std::vector<std::int64_t> Ints(const std::string& rRaw) const {
+        const std::size_t n = rRaw.size() / static_cast<std::size_t>(mWs);
+        std::vector<std::int64_t> out(n);
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = Int(rRaw.data() + i * static_cast<std::size_t>(mWs));
+        return out;
+    }
+};
+
+// --- framing -------------------------------------------------------------------------
+
+// A data record: one or more Fortran blocks, joined on demand.
+struct Op2Record {
+    std::vector<std::pair<std::size_t, std::size_t>> mSpans;  // (offset, size)
+
+    std::size_t Size() const {
+        std::size_t n = 0;
+        for (const auto& s : mSpans)
+            n += s.second;
+        return n;
+    }
+
+    std::string Join(const char* pBase) const {
+        std::string out;
+        out.reserve(Size());
+        for (const auto& [off, size] : mSpans)
+            out.append(pBase + off, size);
+        return out;
+    }
+};
+
+class Op2Stream {
+public:
+    Op2Stream(const char* pData, std::size_t Size) : mpData(pData) {
+        const auto layout = detail::sniff_fortran_records(pData, Size);
+        if (!layout)
+            op2_fail("the file is not Fortran unformatted (no record framing)");
+        mBlocks = detail::fortran_records(pData, Size, *layout, kOp2Who);
+        const std::size_t first = mBlocks.front().mSize;
+        if (first != 4 && first != 8)
+            op2_fail("the first record is not a one-word marker");
+        mWords.mWs = static_cast<int>(first);
+        mWords.mSwap = layout->mBigEndian != (std::endian::native == std::endian::big);
+    }
+
+    const Op2Words& Words() const { return mWords; }
+    const char* Base() const { return mpData; }
+    bool Done() const { return mI >= mBlocks.size(); }
+
+    std::int64_t Peek() const { return MarkerValue(mI); }
+
+    std::int64_t Marker() {
+        const std::int64_t v = MarkerValue(mI);
+        ++mI;
+        return v;
+    }
+
+    std::pair<std::size_t, std::size_t> Block() {
+        if (Done())
+            op2_fail("the file is truncated");
+        const auto& b = mBlocks[mI++];
+        return {b.mOffset, b.mSize};
+    }
+
+    Op2Record Record() {
+        const std::int64_t n = Marker();
+        if (n <= 0)
+            op2_fail("expected a record, found marker " + std::to_string(n));
+        Op2Record r;
+        r.mSpans.push_back(Block());
+        while (!Done()) {
+            const auto& b = mBlocks[mI];
+            if (b.mSize != static_cast<std::size_t>(mWords.mWs) || MarkerValue(mI) <= 0)
+                break;
+            ++mI;
+            r.mSpans.push_back(Block());
+        }
+        return r;
+    }
+
+private:
+    std::int64_t MarkerValue(std::size_t Index) const {
+        if (Index >= mBlocks.size())
+            op2_fail("the file is truncated");
+        const auto& b = mBlocks[Index];
+        if (b.mSize != static_cast<std::size_t>(mWords.mWs))
+            op2_fail("expected a marker at byte " + std::to_string(b.mOffset - 4) + ", found a " +
+                     std::to_string(b.mSize) + "-byte record");
+        return mWords.Int(mpData + b.mOffset);
+    }
+
+    const char* mpData;
+    std::vector<detail::FortranRecord> mBlocks;
+    Op2Words mWords;
+    std::size_t mI = 0;
+};
+
+// A Nastran string: 8-byte words hold 4 characters then 4 blanks in NX 64-bit
+// files (interlaced) and 8 characters in MSC ones.
+std::string op2_text(const std::string& rRaw, int Ws) {
+    if (Ws == 8 && rRaw.size() % 8 == 0 && rRaw.size() >= 16) {
+        bool interlaced = rRaw.compare(8, 4, "    ") != 0;
+        for (std::size_t k = 0; interlaced && k < rRaw.size(); k += 8)
+            interlaced = rRaw.compare(k + 4, 4, "    ") == 0;
+        if (interlaced) {
+            std::string out;
+            for (std::size_t k = 0; k < rRaw.size(); k += 8)
+                out.append(rRaw, k, 4);
+            return out;
+        }
+    }
+    return rRaw;
+}
+
+std::string op2_strip(const std::string& rS) {
+    const char* ws = " \t\r\n\v\f";
+    const auto first = rS.find_first_not_of(ws);
+    if (first == std::string::npos)
+        return {};
+    return rS.substr(first, rS.find_last_not_of(ws) - first + 1);
+}
+
+struct Op2Table {
+    std::string mName;
+    std::vector<std::pair<std::int64_t, Op2Record>> mRecords;  // (mark, record)
+};
+
+std::vector<Op2Table> op2_parse(Op2Stream& rS) {
+    if (rS.Peek() == 3) {  // PARAM,POST,-1 header: date, tape code, version
+        rS.Marker();
+        rS.Block();
+        rS.Marker();
+        rS.Block();
+        rS.Record();
+        if (rS.Marker() != -1 || rS.Marker() != 0)
+            op2_fail("the file header is not closed by the markers -1, 0");
+    }
+    std::vector<Op2Table> tables;
+    while (!rS.Done()) {
+        std::int64_t m = rS.Peek();
+        if (m == 0) {
+            rS.Marker();
+            continue;
+        }
+        if (m < 0)
+            op2_fail("expected a table name, found marker " + std::to_string(m));
+        Op2Table t;
+        t.mName = op2_strip(op2_text(rS.Record().Join(rS.Base()), rS.Words().mWs).substr(0, 8));
+        std::int64_t mark = 0;
+        while (true) {
+            if (rS.Done())
+                op2_fail("table " + t.mName + " is truncated");
+            m = rS.Peek();
+            if (m == 0) {
+                rS.Marker();
+                break;
+            }
+            if (m == -1) {
+                rS.Marker();
+                mark = -1;
+                continue;
+            }
+            if (m < 0) {
+                const std::int64_t a = rS.Marker(), b = rS.Marker(), c = rS.Marker();
+                if (b != 1 || (c != 0 && c != 1))
+                    op2_fail("table " + t.mName + ": malformed marker triple (" +
+                             std::to_string(a) + ", " + std::to_string(b) + ", " +
+                             std::to_string(c) + ")");
+                mark = m;
+                continue;
+            }
+            t.mRecords.emplace_back(mark, rS.Record());
+        }
+        tables.push_back(std::move(t));
+    }
+    return tables;
+}
+
+// --- geometry ------------------------------------------------------------------------
+
+struct Op2ElementSpec {
+    int mK1, mK2;
+    const char* mCard;
+    int mSizes[3];
+    int mNumSizes;
+    int mFirst;    // word of the first node
+    int mCount;    // nodes
+    int mPidWord;  // -1: none
+};
+
+// Where versions wrote different sizes (NX and MSC CQUAD4: 14 and 15 words) the
+// first size whose entries validate (increasing ids, corners that are GRIDs)
+// wins, in pyNastran's order.
+constexpr Op2ElementSpec kOp2Elements[] = {
+    {2408, 24, "CBAR", {16}, 1, 2, 2, 1},
+    {5408, 54, "CBEAM", {18}, 1, 2, 2, 1},
+    {2608, 26, "CBUSH", {14}, 1, 2, 2, 1},
+    {1501, 15, "CONM2", {13}, 1, 1, 1, -1},
+    {1601, 16, "CONROD", {8}, 1, 1, 2, -1},
+    {4108, 41, "CPENTA", {17}, 1, 2, 15, 1},
+    {17200, 172, "CPYRAM", {16}, 1, 2, 13, 1},
+    {9108, 91, "CQUAD", {11}, 1, 2, 9, 1},
+    {2958, 51, "CQUAD4", {14, 15}, 2, 2, 4, 1},
+    {4701, 47, "CQUAD8", {17, 16, 18}, 3, 2, 8, 1},
+    {8009, 80, "CQUADR", {14, 15}, 2, 2, 4, 1},
+    {3001, 30, "CROD", {4}, 1, 2, 2, 1},
+    {3101, 31, "CSHEAR", {6}, 1, 2, 4, 1},
+    {7308, 73, "CHEXA", {22}, 1, 2, 20, 1},
+    {5508, 55, "CTETRA", {12}, 1, 2, 10, 1},
+    {5959, 59, "CTRIA3", {13, 14}, 2, 2, 3, 1},
+    {4801, 48, "CTRIA6", {13, 14, 15}, 3, 2, 6, 1},
+    {9200, 92, "CTRIAR", {13, 14}, 2, 2, 3, 1},
+    {3701, 37, "CTUBE", {4}, 1, 2, 2, 1},
+    {3901, 39, "CVISC", {4}, 1, 2, 2, 1},
+    {5201, 52, "PLOTEL", {3}, 1, 1, 2, -1},
+    // NX 2019 and later write CQUAD4/CTRIA3 as these (pyNastran's CQUADRN/CTRIARN)
+    {15401, 154, "CQUAD4", {14, 15}, 2, 2, 4, 1},
+    {15301, 153, "CTRIA3", {13, 14}, 2, 2, 3, 1},
+};
+
+// Element records without a cell type, named in the warning.
+constexpr std::tuple<int, int, const char*> kOp2NamedElements[] = {
+    {601, 6, "CELAS1"},   {701, 7, "CELAS2"},     {801, 8, "CELAS3"},    {901, 9, "CELAS4"},
+    {201, 2, "CDAMP1"},   {301, 3, "CDAMP2"},     {401, 4, "CDAMP3"},    {501, 5, "CDAMP4"},
+    {1001, 10, "CMASS1"}, {1101, 11, "CMASS2"},   {1201, 12, "CMASS3"},  {1301, 13, "CMASS4"},
+    {1401, 14, "CONM1"},  {1908, 19, "CGAP"},     {5608, 56, "CBUSH1D"}, {6108, 61, "CTRIAX6"},
+    {9008, 90, "CQUADX"}, {10108, 101, "CTRIAX"},
+};
+
+enum class Op2PropLayout { Fixed, Sizes, Pcomp, Pcompg, Terminated };
+
+struct Op2PropertySpec {
+    int mK1, mK2;
+    const char* mCard;
+    Op2PropLayout mLayout;
+    int mSizes[4];
+    int mNumSizes;
+};
+
+constexpr Op2PropertySpec kOp2Properties[] = {
+    {2302, 23, "PSHELL", Op2PropLayout::Fixed, {11}, 1},
+    {2402, 24, "PSOLID", Op2PropLayout::Fixed, {7}, 1},
+    {902, 9, "PROD", Op2PropLayout::Fixed, {6}, 1},
+    {1002, 10, "PSHEAR", Op2PropLayout::Fixed, {6}, 1},
+    {1602, 16, "PTUBE", Op2PropLayout::Fixed, {5}, 1},
+    {52, 20, "PBAR", Op2PropLayout::Fixed, {19}, 1},
+    {5402, 54, "PBEAM", Op2PropLayout::Fixed, {197}, 1},
+    {302, 3, "PELAS", Op2PropLayout::Fixed, {4}, 1},
+    {1802, 18, "PVISC", Op2PropLayout::Fixed, {3}, 1},
+    {202, 2, "PDAMP", Op2PropLayout::Fixed, {2}, 1},
+    {402, 4, "PMASS", Op2PropLayout::Fixed, {2}, 1},
+    {2102, 21, "PGAP", Op2PropLayout::Fixed, {11}, 1},
+    {4706, 47, "PLSOLID", Op2PropLayout::Fixed, {7}, 1},
+    {4606, 46, "PLPLANE", Op2PropLayout::Fixed, {11}, 1},
+    {1402, 14, "PBUSH", Op2PropLayout::Sizes, {18, 23, 24, 27}, 4},
+    {2706, 27, "PCOMP", Op2PropLayout::Pcomp, {}, 0},
+    {15006, 150, "PCOMPG", Op2PropLayout::Pcompg, {}, 0},
+    {9102, 91, "PBARL", Op2PropLayout::Terminated, {}, 0},
+    {9202, 92, "PBEAML", Op2PropLayout::Terminated, {}, 0},
+};
+
+// A card record: its key and its raw bytes (key included).
+struct Op2CardRecord {
+    std::int64_t mK1, mK2, mK3;
+    std::string mRaw;
+};
+
+std::vector<Op2CardRecord> op2_geometry_records(const Op2Stream& rS,
+                                                const std::vector<Op2Table>& rTables,
+                                                const std::vector<std::string>& rPrefixes) {
+    const Op2Words& w = rS.Words();
+    const auto ws = static_cast<std::size_t>(w.mWs);
+    std::vector<Op2CardRecord> out;
+    for (const Op2Table& t : rTables) {
+        bool match = false;
+        for (const std::string& p : rPrefixes)
+            match = match || t.mName.compare(0, p.size(), p) == 0;
+        if (!match)
+            continue;
+        for (const auto& [mark, rec] : t.mRecords) {
+            const std::size_t size = rec.Size();
+            if (mark > -3 || size < 3 * ws || size % ws)
+                continue;
+            std::string raw = rec.Join(rS.Base());
+            out.push_back({w.Int(raw.data()), w.Int(raw.data() + ws), w.Int(raw.data() + 2 * ws),
+                           std::move(raw)});
+        }
+    }
+    return out;
+}
+
+struct Op2Grids {
+    std::vector<std::int64_t> mIds, mCp, mCd;
+    std::vector<double> mXyz;
+    std::unordered_set<std::int64_t> mScalarPoints;
+};
+
+// Entries are `id, cp, x, y, z, cd, ps, seid`: 8 words, the coordinates in the
+// file's precision; or, in 32-bit files, 11 words with the coordinates as
+// doubles (NX writes them under the key (4501, 45, 1120001)).
+bool op2_grid_rows(const Op2Words& rW, const std::string& rRaw, std::int64_t K3, Op2Grids& rOut) {
+    const auto ws = static_cast<std::size_t>(rW.mWs);
+    const char* body = rRaw.data() + 3 * ws;
+    const std::size_t nwords = (rRaw.size() - 3 * ws) / ws;
+    const std::vector<std::size_t> layouts =
+        K3 != 1120001 ? std::vector<std::size_t>{8, 11} : std::vector<std::size_t>{11, 8};
+    for (std::size_t size : layouts) {
+        if (size == 11 && ws != 4)
+            continue;
+        if (nwords == 0 || nwords % size)
+            continue;
+        const std::size_t n = nwords / size;
+        const std::size_t stride = size * ws;
+        std::vector<std::int64_t> id(n), cp(n), cd(n);
+        std::vector<double> xyz(3 * n);
+        bool ok = true;
+        for (std::size_t i = 0; i < n && ok; ++i) {
+            const char* e = body + i * stride;
+            id[i] = rW.Int(e);
+            cp[i] = rW.Int(e + ws);
+            for (std::size_t k = 0; k < 3; ++k)
+                xyz[3 * i + k] = size == 8 ? rW.Float(e + (2 + k) * ws) : rW.Double(e + 8 + 8 * k);
+            cd[i] = rW.Int(e + (size == 8 ? 5 * ws : 32));
+            ok = id[i] > 0 && (i == 0 || id[i] > id[i - 1]) && cd[i] >= 0;
+        }
+        if (!ok)
+            continue;
+        rOut.mIds.insert(rOut.mIds.end(), id.begin(), id.end());
+        rOut.mCp.insert(rOut.mCp.end(), cp.begin(), cp.end());
+        rOut.mCd.insert(rOut.mCd.end(), cd.begin(), cd.end());
+        rOut.mXyz.insert(rOut.mXyz.end(), xyz.begin(), xyz.end());
+        return true;
+    }
+    return false;
+}
+
+Op2Grids op2_read_grids(const Op2Stream& rS, const std::vector<Op2Table>& rTables) {
+    const Op2Words& w = rS.Words();
+    Op2Grids g;
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM1"})) {
+        if (r.mK1 == 4501 && r.mK2 == 45) {
+            if (!op2_grid_rows(w, r.mRaw, r.mK3, g))
+                log::warn("{}: a GRID record of {} words matches no GRID layout; skipped", kOp2Who,
+                          r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
+        }
+    }
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2", "GEOM1"}))
+        if ((r.mK1 == 5551 && r.mK2 == 49) || (r.mK1 == 707 && r.mK2 == 7)) {
+            const auto words = w.Ints(r.mRaw);
+            for (std::size_t i = 3; i < words.size(); ++i)
+                g.mScalarPoints.insert(words[i]);
+        }
+    return g;
+}
+
+std::vector<detail::NastranCardRows> op2_read_elements(
+    const Op2Stream& rS, const std::vector<Op2Table>& rTables,
+    const std::unordered_set<std::int64_t>& rGrids) {
+    const Op2Words& w = rS.Words();
+    std::map<std::string, detail::NastranCardRows> cards;
+    std::vector<std::string> skipped;
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2"})) {
+        if ((r.mK1 == 65535 && r.mK2 == 65535) || (r.mK1 == 5551 && r.mK2 == 49) ||
+            (r.mK1 == 707 && r.mK2 == 7))
+            continue;
+        const Op2ElementSpec* spec = nullptr;
+        for (const Op2ElementSpec& e : kOp2Elements)
+            if (e.mK1 == r.mK1 && e.mK2 == r.mK2) {
+                spec = &e;
+                break;
+            }
+        if (spec == nullptr) {
+            std::string name = "(" + std::to_string(r.mK1) + "," + std::to_string(r.mK2) + "," +
+                               std::to_string(r.mK3) + ")";
+            for (const auto& [k1, k2, n] : kOp2NamedElements)
+                if (k1 == r.mK1 && k2 == r.mK2)
+                    name = n;
+            if (std::find(skipped.begin(), skipped.end(), name) == skipped.end())
+                skipped.push_back(name);
+            continue;
+        }
+        const std::vector<std::int64_t> all = w.Ints(r.mRaw);
+        const std::vector<std::int64_t> words(all.begin() + 3, all.end());
+        const std::size_t corners = detail::nastran_card_spec(spec->mCard)->mLinearNodes;
+        const auto first = static_cast<std::size_t>(spec->mFirst);
+        std::size_t chosen = 0;
+        for (int k = 0; k < spec->mNumSizes && chosen == 0; ++k) {
+            const auto size = static_cast<std::size_t>(spec->mSizes[k]);
+            if (words.size() % size)
+                continue;
+            const std::size_t n = words.size() / size;
+            bool ok = n > 0;
+            for (std::size_t i = 0; i < n && ok; ++i) {
+                const std::int64_t* row = words.data() + i * size;
+                ok = row[0] > 0 && (i == 0 || row[0] > words[(i - 1) * size]);
+                for (std::size_t c = 0; c < corners && ok; ++c)
+                    ok = row[first + c] > 0 && rGrids.count(row[first + c]) != 0;
+            }
+            if (ok)
+                chosen = size;
+        }
+        if (chosen == 0) {
+            log::warn("{}: a {} record of {} words matches no known layout; skipped", kOp2Who,
+                      spec->mCard, words.size());
+            continue;
+        }
+        detail::NastranCardRows& rows = cards[spec->mCard];
+        rows.mCard = spec->mCard;
+        rows.mWidth = static_cast<std::size_t>(spec->mCount);
+        for (std::size_t i = 0; i < words.size() / chosen; ++i) {
+            const std::int64_t* row = words.data() + i * chosen;
+            rows.mEid.push_back(row[0]);
+            rows.mPid.push_back(spec->mPidWord >= 0 ? row[spec->mPidWord] : -1);
+            rows.mNodes.insert(rows.mNodes.end(), row + first, row + first + spec->mCount);
+        }
+    }
+    if (!skipped.empty()) {
+        std::string list;
+        for (const std::string& s : skipped)
+            list += (list.empty() ? "" : ", ") + s;
+        log::warn("{}: skipped element records with no cell type: {}", kOp2Who, list);
+    }
+    std::vector<detail::NastranCardRows> out;
+    for (auto& [card, rows] : cards)
+        out.push_back(std::move(rows));
+    return out;
+}
+
+// NX also writes each PCOMP as a PSHELL whose material ids are 100000000 and
+// up; those PSHELL entries are ignored, and a PCOMPG wins over a PCOMP of the
+// same id, as pyNastran reads them.
+std::map<std::int64_t, std::string> op2_read_properties(const Op2Stream& rS,
+                                                        const std::vector<Op2Table>& rTables) {
+    const Op2Words& w = rS.Words();
+    std::map<std::int64_t, std::vector<std::string>> found;
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"EPT"})) {
+        const Op2PropertySpec* spec = nullptr;
+        for (const Op2PropertySpec& p : kOp2Properties)
+            if (p.mK1 == r.mK1 && p.mK2 == r.mK2) {
+                spec = &p;
+                break;
+            }
+        if (spec == nullptr)
+            continue;
+        const std::vector<std::int64_t> all = w.Ints(r.mRaw);
+        const std::vector<std::int64_t> words(all.begin() + 3, all.end());
+        const std::size_t n = words.size();
+        std::vector<std::int64_t> pids;
+        switch (spec->mLayout) {
+            case Op2PropLayout::Fixed: {
+                const auto size = static_cast<std::size_t>(spec->mSizes[0]);
+                if (n % size == 0)
+                    for (std::size_t k = 0; k < n; k += size)
+                        if (std::string(spec->mCard) != "PSHELL" || words[k + 1] < 100000000)
+                            pids.push_back(words[k]);
+                break;
+            }
+            case Op2PropLayout::Sizes:
+                for (int s = 0; s < spec->mNumSizes; ++s) {
+                    const auto size = static_cast<std::size_t>(spec->mSizes[s]);
+                    if (n % size)
+                        continue;
+                    bool ok = true;
+                    for (std::size_t k = 0; k < n && ok; k += size)
+                        ok = words[k] > 0 && (k == 0 || words[k] > words[k - size]);
+                    if (ok) {
+                        for (std::size_t k = 0; k < n; k += size)
+                            pids.push_back(words[k]);
+                        break;
+                    }
+                }
+                break;
+            case Op2PropLayout::Pcomp: {
+                std::size_t k = 0;
+                while (k + 8 <= n) {
+                    const std::size_t nlayers = static_cast<std::size_t>(std::abs(words[k + 1]));
+                    if (words[k] <= 0 || nlayers == 0 || k + 8 + 4 * nlayers > n)
+                        break;
+                    pids.push_back(words[k]);
+                    k += 8 + 4 * nlayers;
+                }
+                break;
+            }
+            case Op2PropLayout::Pcompg: {
+                std::size_t k = 0;
+                while (k + 8 <= n) {
+                    if (words[k] <= 0)
+                        break;
+                    const std::int64_t pid = words[k];
+                    k += 8;
+                    const auto terminator = [&](std::size_t At) {
+                        for (std::size_t j = 0; j < 5; ++j)
+                            if (words[At + j] != -1)
+                                return false;
+                        return true;
+                    };
+                    while (k + 5 <= n && !terminator(k))
+                        k += 5;
+                    if (k + 5 > n)
+                        break;
+                    pids.push_back(pid);
+                    k += 5;
+                }
+                break;
+            }
+            case Op2PropLayout::Terminated: {
+                std::size_t k = 0;
+                while (k + 6 <= n) {
+                    if (words[k] <= 0 || (!pids.empty() && words[k] <= pids.back()))
+                        break;
+                    std::size_t end = k + 6;
+                    while (end < n && words[end] != -1)
+                        ++end;
+                    if (end >= n)
+                        break;
+                    pids.push_back(words[k]);
+                    k = end + 1;
+                }
+                break;
+            }
+        }
+        for (std::int64_t p : pids)
+            found[p].push_back(spec->mCard);
+    }
+    std::map<std::int64_t, std::string> ptype;
+    for (const auto& [pid, list] : found) {
+        std::string chosen = list.front();
+        for (const char* priority : {"PCOMPG", "PCOMP"})
+            if (std::find(list.begin(), list.end(), priority) != list.end()) {
+                chosen = priority;
+                break;
+            }
+        ptype[pid] = chosen;
+    }
+    return ptype;
+}
+
+// --- results -------------------------------------------------------------------------
+
+bool op2_starts(const std::string& rName, std::initializer_list<const char*> Prefixes) {
+    for (const char* p : Prefixes)
+        if (rName.compare(0, std::strlen(p), p) == 0)
+            return true;
+    return false;
+}
+
+const char* op2_nodal_name(std::int64_t TableCode) {
+    switch (TableCode) {
+        case 1:
+            return "DISPLACEMENT";
+        case 7:
+            return "EIGENVECTOR";
+        case 10:
+            return "VELOCITY";
+        case 11:
+            return "ACCELERATION";
+        case 3:
+            return "SPC_FORCE";
+        case 39:
+            return "MPC_FORCE";
+        case 2:
+            return "APPLIED_LOAD";
+        default:
+            return nullptr;
+    }
+}
+
+std::string op2_element_type_name(std::int64_t Type) {
+    static const std::map<std::int64_t, const char*> names = {{1, "CROD"},
+                                                              {2, "CBEAM"},
+                                                              {3, "CTUBE"},
+                                                              {4, "CSHEAR"},
+                                                              {10, "CONROD"},
+                                                              {11, "CELAS1"},
+                                                              {12, "CELAS2"},
+                                                              {13, "CELAS3"},
+                                                              {14, "CELAS4"},
+                                                              {33, "CQUAD4"},
+                                                              {34, "CBAR"},
+                                                              {39, "CTETRA"},
+                                                              {64, "CQUAD8"},
+                                                              {67, "CHEXA"},
+                                                              {68, "CPENTA"},
+                                                              {70, "CTRIAR"},
+                                                              {74, "CTRIA3"},
+                                                              {75, "CTRIA6"},
+                                                              {82, "CQUADR"},
+                                                              {95, "CQUAD4 composite"},
+                                                              {96, "CQUAD8 composite"},
+                                                              {97, "CTRIA3 composite"},
+                                                              {98, "CTRIA6 composite"},
+                                                              {100, "CBAR stations"},
+                                                              {102, "CBUSH"},
+                                                              {144, "CQUAD4 corner"},
+                                                              {255, "CPYRAM"}};
+    const auto it = names.find(Type);
+    return it != names.end() ? it->second : "type " + std::to_string(Type);
+}
+
+using Op2Layout = std::vector<std::pair<std::size_t, std::string>>;  // (word, member)
+
+std::optional<Op2Layout> op2_element_layout(std::int64_t Type, std::int64_t NumWide,
+                                            std::int64_t SCode) {
+    static const char* plate[16] = {"FD1",    "X1",     "Y1",     "TXY1", "ANGLE1", "MAJOR1",
+                                    "MINOR1", nullptr,  "FD2",    "X2",   "Y2",     "TXY2",
+                                    "ANGLE2", "MAJOR2", "MINOR2", nullptr};
+    static const char* bar[15] = {"X1A", "X2A", "X3A", "X4A", "AX",   "MAXA", "MINA", "MST",
+                                  "X1B", "X2B", "X3B", "X4B", "MAXB", "MINB", "MSC"};
+    static const std::pair<std::size_t, const char*> solid[] = {
+        {1, "X"},     {2, "TXY"},  {3, "PRINCIPAL_A"}, {7, "PRESSURE"},
+        {8, nullptr}, {9, "Y"},    {10, "TYZ"},        {11, "PRINCIPAL_B"},
+        {15, "Z"},    {16, "TZX"}, {17, "PRINCIPAL_C"}};
+    const std::string vm = (SCode & 1) ? "VON_MISES" : "MAX_SHEAR";
+    const auto corner_nodes = [](std::int64_t T) -> std::int64_t {
+        switch (T) {
+            case 64:
+            case 82:
+            case 144:
+                return 5;
+            case 70:
+            case 75:
+                return 4;
+            default:
+                return 0;
+        }
+    };
+    const auto solid_nodes = [](std::int64_t T) -> std::int64_t {
+        switch (T) {
+            case 39:
+                return 5;
+            case 67:
+                return 9;
+            case 68:
+                return 7;
+            case 255:
+                return 6;
+            default:
+                return 0;
+        }
+    };
+    Op2Layout out;
+    if ((Type == 1 || Type == 10) && NumWide == 5)
+        return Op2Layout{{1, "A"}, {2, "MSA"}, {3, "T"}, {4, "MST"}};
+    if (Type == 3 && NumWide == 5)
+        return Op2Layout{{1, "AS"}, {2, "MSA"}, {3, "TS"}, {4, "MST"}};
+    if (Type == 4 && NumWide == 4)
+        return Op2Layout{{1, "TMAX"}, {2, "TAVG"}, {3, "MS"}};
+    if (Type == 34 && NumWide == 16) {
+        for (std::size_t k = 0; k < 15; ++k)
+            out.emplace_back(1 + k, bar[k]);
+        return out;
+    }
+    const bool centroid_plate = (Type == 33 || Type == 74) && NumWide == 17;
+    const std::int64_t cn = corner_nodes(Type);
+    if (centroid_plate || (cn && NumWide == 2 + 17 * cn)) {
+        const std::size_t base = centroid_plate ? 1 : 3;
+        for (std::size_t k = 0; k < 16; ++k)
+            out.emplace_back(base + k,
+                             plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
+        return out;
+    }
+    const std::int64_t sn = solid_nodes(Type);
+    if (sn && NumWide == 4 + 21 * sn) {
+        const std::string octa = (SCode & 1) ? "VON_MISES" : "OCT_SHEAR";
+        for (const auto& [word, name] : solid)
+            out.emplace_back(4 + word, name ? std::string(name) : octa);
+        return out;
+    }
+    return std::nullopt;
+}
+
+double op2_time_of(std::int64_t Analysis, double W5, double W6) {
+    switch (Analysis) {
+        case 5:
+        case 6:
+        case 10:
+        case 12:
+            return W5;
+        case 2:
+        case 8:
+        case 9:
+            return W6;
+        default:
+            return 0.0;
+    }
+}
+
+struct Op2Step {
+    std::int64_t mSubcase, mAnalysis, mMode;
+    double mTime;
+};
+
+struct Op2Block {
+    std::size_t mStep;
+    bool mNodal;
+    std::string mBase;  // nodal: point data name; element: STRESS/STRAIN
+    Op2Layout mLayout;
+    std::size_t mNumWide = 8;
+    const Op2Record* mRecord;
+};
+
+}  // namespace
+
+namespace {
+
+const detail::FileSource& op2_nonempty(const detail::FileSource& rSource,
+                                       const std::string& rPath) {
+    if (rSource.Size() == 0)
+        op2_fail("'" + rPath + "' is empty");
+    return rSource;
+}
+
+// The whole file: its tables, and the result blocks of the supported tables.
+class Op2Reader {
+public:
+    explicit Op2Reader(const std::string& rPath)
+        : mPath(rPath),
+          mSource(rPath),
+          mStream(op2_nonempty(mSource, rPath).Data(), mSource.Size()) {
+        mTables = op2_parse(mStream);
+        ScanResults();
+    }
+
+    const std::string mPath;
+    detail::FileSource mSource;
+    Op2Stream mStream;
+    std::vector<Op2Table> mTables;
+    std::vector<Op2Step> mSteps;
+    std::vector<Op2Block> mBlocks;
+    std::vector<std::string> mSkipped;
+
+private:
+    void Skip(const std::string& rReason) {
+        if (std::find(mSkipped.begin(), mSkipped.end(), rReason) == mSkipped.end())
+            mSkipped.push_back(rReason);
+    }
+
+    void ScanResults() {
+        const Op2Words& w = mStream.Words();
+        const auto ws = static_cast<std::size_t>(w.mWs);
+        std::map<std::tuple<std::int64_t, std::int64_t, std::int64_t>, std::size_t> step_index;
+        for (const Op2Table& t : mTables) {
+            const bool nodal = op2_starts(t.mName, {"OUG", "BOUG", "OQG", "OQMG", "OPG"});
+            const bool elemental = op2_starts(t.mName, {"OES", "OSTR"});
+            if (!nodal && !elemental) {
+                if (!t.mName.empty() && t.mName[0] == 'O')
+                    Skip(t.mName);
+                continue;
+            }
+            std::string header;
+            for (const auto& [mark, rec] : t.mRecords) {
+                if (mark > -3)
+                    continue;
+                if (rec.Size() == 146 * ws) {
+                    header = rec.Join(mStream.Base());
+                    continue;
+                }
+                if (header.empty())
+                    continue;
+                const char* h = header.data();
+                const auto word = [&](std::size_t I) { return w.Int(h + I * ws); };
+                const std::int64_t approach = word(0), tcode = word(1), etype = word(2),
+                                   subcase = word(3);
+                const std::int64_t device = approach % 10;
+                const std::int64_t analysis = (approach - device) / 10;
+                const std::int64_t table_code = tcode % 1000;
+                const std::int64_t sort_code = tcode / 1000;
+                const std::int64_t num_wide = word(9);
+                const std::int64_t s_code = word(10);
+                const std::int64_t thermal = word(22);
+                if (sort_code & 1) {
+                    Skip(t.mName + " (complex)");
+                    continue;
+                }
+                if (sort_code & 4) {
+                    Skip(t.mName + " (random)");
+                    continue;
+                }
+                if (sort_code & 2) {
+                    Skip(t.mName + " (SORT2)");
+                    continue;
+                }
+                Op2Block block{0, nodal, {}, {}, 8, &rec};
+                if (nodal) {
+                    const char* base = op2_nodal_name(table_code);
+                    // MPC forces share the SPC forces' table code; the name tells.
+                    if (op2_starts(t.mName, {"OQMG"}) && (table_code == 3 || table_code == 39))
+                        base = "MPC_FORCE";
+                    if (base == nullptr) {
+                        Skip(t.mName + " (table code " + std::to_string(table_code) + ")");
+                        continue;
+                    }
+                    if (num_wide != 8) {
+                        Skip(t.mName + " (" + std::to_string(num_wide) + " words per node)");
+                        continue;
+                    }
+                    if (thermal == 1) {
+                        if (table_code != 1) {
+                            Skip(t.mName + " (thermal table code " + std::to_string(table_code) +
+                                 ")");
+                            continue;
+                        }
+                        base = "TEMPERATURE";
+                    }
+                    block.mBase = base;
+                } else {
+                    if (table_code != 5) {
+                        Skip(t.mName + " (table code " + std::to_string(table_code) + ")");
+                        continue;
+                    }
+                    auto layout = op2_element_layout(etype, num_wide, s_code);
+                    if (!layout) {
+                        Skip(t.mName + " " + op2_element_type_name(etype));
+                        continue;
+                    }
+                    block.mBase = (s_code & 8) ? "STRAIN" : "STRESS";
+                    block.mLayout = std::move(*layout);
+                    block.mNumWide = static_cast<std::size_t>(num_wide);
+                }
+                const std::int64_t w5 = word(4);
+                const auto key = std::make_tuple(subcase, analysis, w5);
+                auto it = step_index.find(key);
+                if (it == step_index.end()) {
+                    it = step_index.emplace(key, mSteps.size()).first;
+                    const bool moded = analysis == 2 || analysis == 8 || analysis == 9;
+                    mSteps.push_back(
+                        {subcase, analysis, moded ? w5 : 0,
+                         op2_time_of(analysis, w.Float(h + 4 * ws), w.Float(h + 5 * ws))});
+                }
+                block.mStep = it->second;
+                mBlocks.push_back(std::move(block));
+            }
+        }
+    }
+};
+
+NDArray op2_int_array(const std::vector<std::int64_t>& rV) {
+    NDArray a(DType::Int64, {rV.size()});
+    std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+    return a;
+}
+
+NDArray op2_scalar(double V, DType T) {
+    NDArray a(T, {1});
+    if (T == DType::Float64)
+        a.As<double>()[0] = V;
+    else
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(V);
+    return a;
+}
+
+// The input deck beside an OP2, and the paths tried.
+std::pair<std::string, std::vector<std::string>> op2_sibling_deck(const std::string& rPath) {
+    // os.path.splitext: the last dot of the file name, leading dots excluded.
+    const std::size_t slash = rPath.find_last_of("/\\");
+    const std::size_t name = slash == std::string::npos ? 0 : slash + 1;
+    std::size_t lead = name;
+    while (lead < rPath.size() && rPath[lead] == '.')
+        ++lead;
+    const std::size_t dot = rPath.find_last_of('.');
+    const std::string stem =
+        (dot != std::string::npos && dot > lead) ? rPath.substr(0, dot) : rPath;
+    std::vector<std::string> tried;
+    for (const char* ext : {".bdf", ".dat", ".nas", ".blk", ".BDF", ".DAT", ".NAS", ".BLK"}) {
+        tried.push_back(stem + ext);
+        std::error_code ec;
+        if (fs::is_regular_file(tried.back(), ec))
+            return {tried.back(), tried};
+    }
+    return {std::string(), tried};
+}
+
+struct Op2Model {
+    Mesh mMesh;
+    std::unordered_map<std::int64_t, std::size_t> mGridIndex;
+    std::unordered_map<std::int64_t, std::size_t> mCellIndex;
+    std::vector<std::size_t> mOffsets, mSizes;
+};
+
+Op2Model op2_build_mesh(const Op2Reader& rR) {
+    Op2Model m;
+    Op2Grids g = op2_read_grids(rR.mStream, rR.mTables);
+    if (g.mIds.empty()) {
+        auto [deck, tried] = op2_sibling_deck(rR.mPath);
+        if (deck.empty()) {
+            std::string list;
+            for (const std::string& t : tried)
+                list += (list.empty() ? "" : ", ") + t;
+            op2_fail(
+                "the file has no GEOM1 GRID records (rerun with PARAM,POST,-1 or provide the "
+                "input deck beside it); looked for " +
+                list);
+        }
+        std::vector<std::int64_t> grid_ids, cell_ids;
+        m.mMesh = detail::nastran_read_deck(deck, grid_ids, cell_ids);
+        for (std::size_t i = 0; i < grid_ids.size(); ++i)
+            m.mGridIndex.emplace(grid_ids[i], i);
+        std::vector<NDArray> eids;
+        std::size_t base = 0;
+        for (const auto cb : m.mMesh.CellRange()) {
+            const std::size_t n = cb.NumCells();
+            m.mOffsets.push_back(base);
+            m.mSizes.push_back(n);
+            std::vector<std::int64_t> ids(cell_ids.begin() + static_cast<std::ptrdiff_t>(base),
+                                          cell_ids.begin() + static_cast<std::ptrdiff_t>(base + n));
+            for (std::size_t i = 0; i < n; ++i)
+                m.mCellIndex.emplace(ids[i], base + i);
+            eids.push_back(op2_int_array(ids));
+            base += n;
+        }
+        if (!eids.empty())
+            m.mMesh.AddCellData("nastran:eid", std::move(eids));
+        return m;
+    }
+    for (std::size_t i = 0; i < g.mIds.size(); ++i)
+        if (!m.mGridIndex.emplace(g.mIds[i], i).second)
+            op2_fail("GRID " + std::to_string(g.mIds[i]) + " is defined twice");
+    NDArray points(DType::Float64, {g.mIds.size(), 3});
+    std::copy(g.mXyz.begin(), g.mXyz.end(), points.As<double>());
+    m.mMesh.AssignPoints(std::move(points));
+    detail::nastran_add_frame(m.mMesh, "CP", g.mCp, kOp2Who);
+    detail::nastran_add_frame(m.mMesh, "CD", g.mCd, kOp2Who);
+    const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
+    const auto cards = op2_read_elements(rR.mStream, rR.mTables, grids);
+    const detail::NastranCells cells =
+        detail::nastran_add_cells(m.mMesh, cards, m.mGridIndex, g.mScalarPoints,
+                                  op2_read_properties(rR.mStream, rR.mTables), kOp2Who);
+    m.mCellIndex = cells.mCellIndex;
+    m.mOffsets = cells.mOffsets;
+    m.mSizes = cells.mSizes;
+    return m;
+}
+
+void op2_warn_skipped(const Op2Reader& rR) {
+    if (rR.mSkipped.empty())
+        return;
+    std::string list;
+    for (const std::string& s : rR.mSkipped)
+        list += (list.empty() ? "" : ", ") + s;
+    log::warn("{}: result tables not read: {}", kOp2Who, list);
+}
+
+}  // namespace
+
+Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
+    const Op2Reader r(rPath);
+    Op2Model model = op2_build_mesh(r);
+    Mesh& mesh = model.mMesh;
+    const std::size_t n = r.mSteps.size();
+    if (n == 0) {
+        if (rOpts.mTimeStep != 0 && rOpts.mTimeStep != -1)
+            throw ReadError("time step " + std::to_string(rOpts.mTimeStep) +
+                            " is out of range: the file has no steps");
+        op2_warn_skipped(r);
+        return mesh;
+    }
+    const std::size_t index = rOpts.ResolveTimeStep(n);
+    const Op2Step& step = r.mSteps[index];
+    mesh.AddFieldData(kSequenceTimeKey, op2_scalar(step.mTime, DType::Float64));
+    mesh.AddFieldData("nastran:subcase",
+                      op2_scalar(static_cast<double>(step.mSubcase), DType::Int64));
+    mesh.AddFieldData("nastran:analysis",
+                      op2_scalar(static_cast<double>(step.mAnalysis), DType::Int64));
+    mesh.AddFieldData("nastran:mode", op2_scalar(static_cast<double>(step.mMode), DType::Int64));
+    op2_warn_skipped(r);
+    if (rOpts.mPointsOnly)
+        return mesh;
+
+    const Op2Words& w = r.mStream.Words();
+    const auto ws = static_cast<std::size_t>(w.mWs);
+    const std::size_t npts = mesh.NumPoints();
+    std::size_t ncells = 0;
+    for (std::size_t s : model.mSizes)
+        ncells += s;
+    // name -> (components, values)
+    std::map<std::string, std::pair<std::size_t, std::vector<double>>> point_arrays;
+    std::map<std::string, std::vector<double>> cell_arrays;
+    for (const Op2Block& b : r.mBlocks) {
+        if (b.mStep != index)
+            continue;
+        const std::string raw = b.mRecord->Join(r.mStream.Base());
+        const std::size_t nwords = raw.size() / ws;
+        if (b.mNodal) {
+            if (nwords % 8)
+                op2_fail("a " + b.mBase + " record is not a whole number of rows");
+            std::vector<std::tuple<std::string, std::size_t, std::size_t>> outputs;
+            if (b.mBase == "TEMPERATURE")
+                outputs.emplace_back(b.mBase, 2, 1);
+            else {
+                outputs.emplace_back(b.mBase, 2, 3);
+                outputs.emplace_back(b.mBase + "_ROT", 5, 3);
+            }
+            for (const auto& [name, c0, nc] : outputs) {
+                if (!rOpts.WantsArray(name))
+                    continue;
+                auto it = point_arrays.find(name);
+                if (it == point_arrays.end())
+                    it = point_arrays
+                             .emplace(name,
+                                      std::make_pair(nc, std::vector<double>(npts * nc, kOp2Nan)))
+                             .first;
+                std::vector<double>& values = it->second.second;
+                for (std::size_t r0 = 0; r0 < nwords / 8; ++r0) {
+                    const char* row = raw.data() + r0 * 8 * ws;
+                    const auto p = model.mGridIndex.find(w.Int(row) / 10);
+                    if (p == model.mGridIndex.end() || !std::isnan(values[p->second * nc]))
+                        continue;
+                    for (std::size_t c = 0; c < nc; ++c)
+                        values[p->second * nc + c] = w.Float(row + (c0 + c) * ws);
+                }
+            }
+        } else {
+            const std::size_t nw = b.mNumWide;
+            if (nwords % nw)
+                op2_fail("a " + b.mBase + " record is not a whole number of elements");
+            for (const auto& [word, member] : b.mLayout) {
+                const std::string name = b.mBase + ":" + member;
+                if (!rOpts.WantsArray(name))
+                    continue;
+                auto it = cell_arrays.find(name);
+                if (it == cell_arrays.end())
+                    it = cell_arrays.emplace(name, std::vector<double>(ncells, kOp2Nan)).first;
+                std::vector<double>& values = it->second;
+                for (std::size_t r0 = 0; r0 < nwords / nw; ++r0) {
+                    const char* row = raw.data() + r0 * nw * ws;
+                    const auto c = model.mCellIndex.find(w.Int(row) / 10);
+                    if (c == model.mCellIndex.end() || !std::isnan(values[c->second]))
+                        continue;
+                    values[c->second] = w.Float(row + word * ws);
+                }
+            }
+        }
+    }
+    for (auto& [name, entry] : point_arrays) {
+        const auto& [nc, values] = entry;
+        NDArray a = nc == 1 ? NDArray(DType::Float64, {npts}) : NDArray(DType::Float64, {npts, nc});
+        std::copy(values.begin(), values.end(), a.As<double>());
+        mesh.AddPointData(name, std::move(a));
+    }
+    for (auto& [name, values] : cell_arrays) {
+        std::vector<NDArray> per_block;
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b]});
+            std::copy(
+                values.begin() + static_cast<std::ptrdiff_t>(model.mOffsets[b]),
+                values.begin() + static_cast<std::ptrdiff_t>(model.mOffsets[b] + model.mSizes[b]),
+                a.As<double>());
+            per_block.push_back(std::move(a));
+        }
+        mesh.AddCellData(name, std::move(per_block));
+    }
+    return mesh;
+}
+
+std::vector<double> nastran_op2_time_values(const std::string& rPath) {
+    const Op2Reader r(rPath);
+    std::vector<double> out;
+    for (const Op2Step& s : r.mSteps)
+        out.push_back(s.mTime);
+    return out;
+}
+
+MeshMetadata read_nastran_op2_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    ReadOptions options = rOpts;
+    options.mPointsOnly = true;
+    options.mTimeStep = 0;
+    MeshMetadata meta = metadata_from_mesh(read_nastran_op2(rPath, options));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "nastran_op2";
+    meta.mTimeValues = nastran_op2_time_values(rPath);
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/nastran_op2.cpp =====
 // ===== begin src/cpp/src/formats/netgen.cpp =====
 #include <cctype>
 #include <cstdint>
@@ -128881,6 +131722,7 @@ SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
 // ===== end src/cpp/src/operations/sdf.cpp =====
 // ===== begin src/cpp/src/operations/sequence.cpp =====
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -129072,11 +131914,15 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // abaqus_fil joined in v16.7.0: its steps are the increments (2000 ... 2001).
     // ansys_rst_cyclic joined in v16.8.0: ansys_rst's result sets, full rotor.
     // marc_t19 joined in v16.8.0: its steps are the post file's increments.
-    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "unv" ||
-           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
-           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
-           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+    // lsdyna_d3plot joined in v16.9.0: its steps are the states of the family.
+    // nastran_op2 joined in v16.9.0: its steps are the (subcase, mode or time)
+    // of its result tables.
+    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "lsdyna_d3plot" ||
+           rFormat == "nastran_op2" || rFormat == "unv" || rFormat == "nastran_h5" ||
+           rFormat == "xplt" || rFormat == "ansys_rst" || rFormat == "ansys_rst_cyclic" ||
+           rFormat == "marc_t19" || rFormat == "femap" || rFormat == "xdmf" ||
+           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
+           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
            rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
@@ -129184,6 +132030,22 @@ void seq_split_pattern(const std::string& rPattern, std::string& rDir, std::stri
             "' cannot contain '*' or '?'; glob one directory at a time");
 }
 
+// Whether a file is a numbered member (`d3plot01`...) of a d3plot family whose
+// base file sits beside it.
+bool seq_is_d3plot_member(const std::filesystem::path& rPath) {
+    std::string name = rPath.filename().string();
+    for (char& c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (name.size() <= 6 || name.compare(0, 6, "d3plot") != 0)
+        return false;
+    for (std::size_t i = 6; i < name.size(); ++i)
+        if (name[i] < '0' || name[i] > '9')
+            return false;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(
+        rPath.parent_path() / rPath.filename().string().substr(0, 6), ec);
+}
+
 std::vector<std::string> seq_glob(const std::string& rPattern) {
     std::string dir;
     std::string base;
@@ -129199,6 +132061,9 @@ std::vector<std::string> seq_glob(const std::string& rPattern) {
         if (!entry.is_regular_file(ec))
             continue;
         const std::string name = entry.path().filename().string();
+        // `d3plot01`, `d3plot02`... continue the `d3plot` beside them: one sample.
+        if (seq_is_d3plot_member(entry.path()))
+            continue;
         if (sequence_glob_match(base, name))
             out.push_back(entry.path().string());
     }
@@ -131132,11 +133997,15 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
 // ===== end src/cpp/src/operations/smooth.cpp =====
 // ===== begin src/cpp/src/operations/sniff.cpp =====
 #include <algorithm>
+#include <bit>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -131268,6 +134137,51 @@ bool sniff_is_patran(const std::string& rHead) {
     return kc >= 1;
 }
 
+// Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers, either
+// byte order) holding a one-word 3, a 3-word date, a one-word 7 and the 7-word
+// tape code, in 4- or 8-byte words.
+bool sniff_is_op2(const std::string& rHead) {
+    for (bool big : {false, true}) {
+        const auto u32 = [&](std::size_t At) -> std::int64_t {
+            if (At + 4 > rHead.size())
+                return -1;
+            std::uint32_t v;
+            std::memcpy(&v, rHead.data() + At, 4);
+            if (big != (std::endian::native == std::endian::big))
+                v = detail::bswap32(v);
+            return static_cast<std::int32_t>(v);
+        };
+        // Fortran blocks with 4-byte markers: [n][payload][n].
+        std::size_t pos = 0;
+        std::vector<std::pair<std::size_t, std::int64_t>> blocks;  // (payload offset, size)
+        while (blocks.size() < 4) {
+            const std::int64_t n = u32(pos);
+            if (n <= 0 || u32(pos + 4 + static_cast<std::size_t>(n)) != n)
+                break;
+            blocks.emplace_back(pos + 4, n);
+            pos += 8 + static_cast<std::size_t>(n);
+        }
+        if (blocks.size() < 4)
+            continue;
+        const std::int64_t ws = blocks[0].second;
+        if (ws != 4 && ws != 8)
+            continue;
+        const auto word = [&](std::size_t Block) {
+            if (ws == 4)
+                return u32(blocks[Block].first);
+            std::uint64_t v;
+            std::memcpy(&v, rHead.data() + blocks[Block].first, 8);
+            if (big != (std::endian::native == std::endian::big))
+                v = detail::bswap64(v);
+            return static_cast<std::int64_t>(v);
+        };
+        if (word(0) == 3 && blocks[1].second == 3 * ws && blocks[2].second == ws && word(2) == 7 &&
+            blocks[3].second == 7 * ws)
+            return true;
+    }
+    return false;
+}
+
 // Abaqus results file, binary: a 4096-byte Fortran record (marker 4096 in
 // either byte order) whose first 8-byte word is a record length and whose second
 // is the key of a record Abaqus writes first (1921 release, 1922 heading, 1900
@@ -131393,6 +134307,8 @@ std::string sniff_format(const std::string& rPath) {
         // Z88's input and output files have fixed names.
         if (is_z88_filename(rPath) && fs::is_regular_file(path, ec))
             return "z88";
+        if (is_d3plot_filename(rPath) && fs::is_regular_file(path, ec))
+            return "lsdyna_d3plot";
     }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -131422,6 +134338,13 @@ std::string sniff_format(const std::string& rPath) {
         return "libmesh";
     if (sniff_is_abaqus_fil_binary(head))
         return "abaqus_fil";
+    // Nastran OP2 (PARAM,POST,-1): a one-word record 3, a 3-word date, a
+    // one-word record 7 and the 7-word tape code, any word size and order.
+    if (sniff_is_op2(head))
+        return "nastran_op2";
+    // LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
+    if (is_d3plot_head(head.data(), head.size()))
+        return "lsdyna_d3plot";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";
@@ -135023,7 +137946,11 @@ bool regions_equal(const Region& rA, const Region& rB) {
  */
 
 // System includes
+#include <cctype>
+#include <filesystem>
 #include <ios>
+#include <string>
+#include <system_error>
 #include <unordered_map>
 
 // Project includes
@@ -135036,6 +137963,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"abaqus_fil",
          [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
         {"lsdyna", meshioplusplus::read_lsdyna},
+        // The d3plot family's base file is named `d3plot`: resolve_format
+        // matches the basename, sniff_format the control block.
+        {"lsdyna_d3plot",
+         [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); }},
         {"code_aster", meshioplusplus::read_code_aster},
         {"patran", meshioplusplus::read_patran},
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
@@ -135089,6 +138020,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"mphbin", meshioplusplus::read_mphbin},
         {"mphtxt", meshioplusplus::read_mphtxt},
         {"nastran", meshioplusplus::read_nastran},
+        {"nastran_op2",
+         [](const std::string& path) { return meshioplusplus::read_nastran_op2(path); }},
         {"netgen", meshioplusplus::read_netgen},
         {"obj", meshioplusplus::read_obj},
         {"off", meshioplusplus::read_off},
@@ -135435,6 +138368,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".bdf", "nastran"},
         {".nas", "nastran"},
         {".fem", "nastran"},
+        {".op2", "nastran_op2"},
         {".vol", "netgen"},
         {".obj", "obj"},
         // OpenFOAM: the `.foam` marker file. A case *directory* has no
@@ -135544,6 +138478,22 @@ bool registry_is_marc_dat(const std::string& rPath) {
     return is_marc_deck(head);
 }
 
+// `d3plot01`, `d3plot02`... beside an existing `d3plot`.
+bool registry_is_d3plot_member(const std::string& rPath) {
+    namespace fs = std::filesystem;
+    const fs::path path(rPath);
+    std::string name = path.filename().string();
+    for (char& c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (name.size() <= 6 || name.compare(0, 6, "d3plot") != 0)
+        return false;
+    for (std::size_t i = 6; i < name.size(); ++i)
+        if (name[i] < '0' || name[i] > '9')
+            return false;
+    std::error_code ec;
+    return fs::is_regular_file(path.parent_path() / path.filename().string().substr(0, 6), ec);
+}
+
 std::string basename_of(const std::string& rPath) {
     auto pos = rPath.find_last_of("/\\");
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
@@ -135559,6 +138509,10 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
     // Z88's files have fixed names; `.txt` alone is xyz's.
     if (is_z88_filename(base))
         return "z88";
+    // LS-DYNA's state database has a fixed name too, and no extension; its
+    // numbered members (`d3plot01`...) go to the reader, which names the base.
+    if (is_d3plot_filename(base) || registry_is_d3plot_member(rPath))
+        return "lsdyna_d3plot";
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
         const std::string suffix = base.substr(pos);
@@ -135621,6 +138575,18 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"abaqus_fil",
          [](const std::string& path, const ReadOptions& opts) {
              return meshioplusplus::read_abaqus_fil(path, opts);
+         }},
+        // Nastran OP2 honours mTimeStep (its steps are the subcases, modes and
+        // times of its result tables) and the narrowing options.
+        {"nastran_op2",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_nastran_op2(path, opts);
+         }},
+        // LS-DYNA d3plot honours mTimeStep (its steps are the family's states)
+        // and the narrowing options.
+        {"lsdyna_d3plot",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_lsdyna_d3plot(path, opts);
          }},
         // Femap honours mTimeStep (its steps are the 450 output sets) and the
         // data narrowing options.
@@ -135719,6 +138685,8 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"frd", meshioplusplus::read_frd_metadata},
         {"femap", meshioplusplus::read_femap_metadata},
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
+        {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
+        {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},

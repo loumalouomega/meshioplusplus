@@ -37,6 +37,7 @@
 #include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/nastran_model.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -57,53 +58,6 @@ constexpr const char* kNh5Elemental = "/NASTRAN/RESULT/ELEMENTAL";
 
 [[noreturn]] void nh5_fail(const std::string& rMessage) {
     throw ReadError("MSC Nastran HDF5: " + rMessage);
-}
-
-/** One element card with a cell type: its linear and (optional) quadratic shape. */
-struct Nh5CardSpec {
-    const char* mCard;
-    const char* mLinear;
-    std::size_t mLinearNodes;
-    const char* mQuadratic;  // nullptr: no quadratic variant
-    std::size_t mQuadraticNodes;
-    const int* mPermutation;  // quadratic connectivity: conn[k] = G[perm[k]]
-};
-
-// Nastran numbers the hex20/wedge15 mid-side nodes bottom, vertical, top;
-// meshio++ (VTK) numbers them bottom, top, vertical (the bulk reader's tables).
-constexpr int kNh5Hexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
-                                10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
-constexpr int kNh5Penta15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
-
-constexpr Nh5CardSpec kNh5Cards[] = {
-    {"CBAR", "line", 2, nullptr, 0, nullptr},
-    {"CBEAM", "line", 2, nullptr, 0, nullptr},
-    {"CBUSH", "line", 2, nullptr, 0, nullptr},
-    {"CHEXA", "hexahedron", 8, "hexahedron20", 20, kNh5Hexa20},
-    {"CONM2", "vertex", 1, nullptr, 0, nullptr},
-    {"CONROD", "line", 2, nullptr, 0, nullptr},
-    {"CPENTA", "wedge", 6, "wedge15", 15, kNh5Penta15},
-    {"CPYRAM", "pyramid", 5, "pyramid13", 13, nullptr},
-    {"CQUAD", "quad", 4, "quad9", 9, nullptr},
-    {"CQUAD4", "quad", 4, nullptr, 0, nullptr},
-    {"CQUAD8", "quad", 4, "quad8", 8, nullptr},
-    {"CQUADR", "quad", 4, nullptr, 0, nullptr},
-    {"CROD", "line", 2, nullptr, 0, nullptr},
-    {"CSHEAR", "quad", 4, nullptr, 0, nullptr},
-    {"CTETRA", "tetra", 4, "tetra10", 10, nullptr},
-    {"CTRIA3", "triangle", 3, nullptr, 0, nullptr},
-    {"CTRIA6", "triangle", 3, "triangle6", 6, nullptr},
-    {"CTRIAR", "triangle", 3, nullptr, 0, nullptr},
-    {"CTUBE", "line", 2, nullptr, 0, nullptr},
-    {"CVISC", "line", 2, nullptr, 0, nullptr},
-    {"PLOTEL", "line", 2, nullptr, 0, nullptr},
-};
-
-const Nh5CardSpec* nh5_card_spec(const std::string& rCard) {
-    for (const Nh5CardSpec& spec : kNh5Cards)
-        if (rCard == spec.mCard)
-            return &spec;
-    return nullptr;
 }
 
 bool nh5_has_member(const std::vector<h5::CompoundMember>& rMembers, const std::string& rName) {
@@ -432,43 +386,17 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             nh5_fail("GRID X is not a 3-vector");
         mesh.AssignPoints(std::move(x));
         const auto members = h5::compound_members(f, kNh5Grid);
-        for (const char* frame : {"CP", "CD"}) {
-            if (!nh5_has_member(members, frame))
-                continue;
-            const auto v = nh5_int_member(f, kNh5Grid, frame, 0, npts);
-            const auto nonzero =
-                std::count_if(v.begin(), v.end(), [](std::int64_t c) { return c != 0; });
-            if (nonzero == 0)
-                continue;
-            if (std::string(frame) == "CP")
-                log::warn(
-                    "MSC Nastran HDF5: {} GRID(s) have CP != 0; their coordinates are kept in "
-                    "the local system, not transformed",
-                    nonzero);
-            else
-                log::warn(
-                    "MSC Nastran HDF5: {} GRID(s) have CD != 0; their results are in the "
-                    "local output system",
-                    nonzero);
-            mesh.AddPointData(std::string("nastran:") + (frame[1] == 'P' ? "cp" : "cd"),
-                              nh5_int_array(v));
-        }
+        for (const char* frame : {"CP", "CD"})
+            if (nh5_has_member(members, frame))
+                detail::nastran_add_frame(mesh, frame, nh5_int_member(f, kNh5Grid, frame, 0, npts),
+                                          "MSC Nastran HDF5");
     }
 
-    // --- cells ----------------------------------------------------------------
-    struct Block {
-        std::string mCard;
-        std::string mType;
-        std::size_t mNodes;
-        std::vector<std::int64_t> mConn;
-        std::vector<std::int64_t> mEid;
-        std::vector<std::int64_t> mPid;
-    };
-    std::vector<Block> blocks;
+    // --- cells and property regions ------------------------------------------------
+    std::vector<detail::NastranCardRows> cards;
     std::vector<std::string> skipped_cards;
-    std::size_t dropped = 0;
     for (const std::string& card : nh5_children(f, kNh5Elements, false)) {
-        const Nh5CardSpec* spec = nh5_card_spec(card);
+        const detail::NastranCardSpec* spec = detail::nastran_card_spec(card);
         if (spec == nullptr) {
             skipped_cards.push_back(card);
             continue;
@@ -478,13 +406,13 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
         const std::size_t n = nh5_rows(f, path);
         if (!nh5_has_member(members, "EID"))
             nh5_fail(path + " has no EID column");
-        const auto eid = nh5_int_member(f, path, "EID", 0, n);
-        const auto pid = nh5_has_member(members, "PID") ? nh5_int_member(f, path, "PID", 0, n)
-                                                        : std::vector<std::int64_t>(n, -1);
-        std::vector<std::int64_t> g;
-        std::size_t width = 0;
+        detail::NastranCardRows rows;
+        rows.mCard = card;
+        rows.mEid = nh5_int_member(f, path, "EID", 0, n);
+        rows.mPid = nh5_has_member(members, "PID") ? nh5_int_member(f, path, "PID", 0, n)
+                                                   : std::vector<std::int64_t>(n, -1);
         if (nh5_has_member(members, "G")) {
-            g = nh5_int_member(f, path, "G", 0, n, &width);
+            rows.mNodes = nh5_int_member(f, path, "G", 0, n, &rows.mWidth);
         } else {
             const char* a = nh5_has_member(members, "GA") ? "GA" : "G1";
             const char* b = nh5_has_member(members, "GA") ? "GB" : "G2";
@@ -492,144 +420,41 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
                 nh5_fail(path + " has no G, GA/GB or G1/G2 columns");
             const auto ga = nh5_int_member(f, path, a, 0, n);
             const auto gb = nh5_int_member(f, path, b, 0, n);
-            width = 2;
-            g.resize(2 * n);
+            rows.mWidth = 2;
+            rows.mNodes.resize(2 * n);
             for (std::size_t i = 0; i < n; ++i) {
-                g[2 * i] = ga[i];
-                g[2 * i + 1] = gb[i];
+                rows.mNodes[2 * i] = ga[i];
+                rows.mNodes[2 * i + 1] = gb[i];
             }
         }
-        if (width < spec->mLinearNodes)
-            nh5_fail(path + " has " + std::to_string(width) + " node columns, " + card + " needs " +
-                     std::to_string(spec->mLinearNodes));
-        Block linear{card, spec->mLinear, spec->mLinearNodes, {}, {}, {}};
-        Block quadratic{
-            card, spec->mQuadratic ? spec->mQuadratic : "", spec->mQuadraticNodes, {}, {}, {}};
-        std::size_t partial = 0;
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::int64_t* row = g.data() + i * width;
-            bool quad = false;
-            if (spec->mQuadratic != nullptr && width >= spec->mQuadraticNodes) {
-                std::size_t given = 0;
-                for (std::size_t k = spec->mLinearNodes; k < spec->mQuadraticNodes; ++k)
-                    given += row[k] != 0 ? 1 : 0;
-                quad = given == spec->mQuadraticNodes - spec->mLinearNodes;
-                partial += (given != 0 && !quad) ? 1 : 0;
-            }
-            Block& b = quad ? quadratic : linear;
-            std::vector<std::int64_t> conn(b.mNodes);
-            bool ok = true;
-            for (std::size_t k = 0; k < b.mNodes && ok; ++k) {
-                const std::size_t src = (quad && spec->mPermutation)
-                                            ? static_cast<std::size_t>(spec->mPermutation[k])
-                                            : k;
-                const auto it = file.mGridIndex.find(row[src]);
-                if (it == file.mGridIndex.end()) {
-                    if (file.mScalarPoints.count(row[src]) == 0)
-                        nh5_fail(card + " " + std::to_string(eid[i]) + " references " +
-                                 (row[src] == 0 ? std::string("no node")
-                                                : "undefined GRID " + std::to_string(row[src])) +
-                                 " as its node " + std::to_string(src + 1));
-                    ok = false;  // a scalar point, not a GRID
-                } else {
-                    conn[k] = static_cast<std::int64_t>(it->second);
-                }
-            }
-            if (!ok) {
-                ++dropped;
-                continue;
-            }
-            b.mConn.insert(b.mConn.end(), conn.begin(), conn.end());
-            b.mEid.push_back(eid[i]);
-            b.mPid.push_back(pid[i]);
-        }
-        if (partial != 0)
-            log::warn(
-                "MSC Nastran HDF5: {} {} element(s) have only some mid-side nodes; read as {}",
-                partial, card, spec->mLinear);
-        if (!linear.mEid.empty())
-            blocks.push_back(std::move(linear));
-        if (!quadratic.mEid.empty())
-            blocks.push_back(std::move(quadratic));
+        if (rows.mWidth < spec->mLinearNodes)
+            nh5_fail(path + " has " + std::to_string(rows.mWidth) + " node columns, " + card +
+                     " needs " + std::to_string(spec->mLinearNodes));
+        cards.push_back(std::move(rows));
     }
     if (!skipped_cards.empty())
         log::warn("MSC Nastran HDF5: skipped element tables with no cell type: {}",
                   nh5_join(skipped_cards));
-    if (dropped != 0)
-        log::warn("MSC Nastran HDF5: skipped {} element(s) that connect scalar points", dropped);
-
-    // EID -> global cell, for the element results. A CONM2 has none, and MSC
-    // accepts one sharing its id with a structural element, so it stays out.
-    std::unordered_map<std::int64_t, std::size_t> cell_index;
-    std::vector<std::size_t> offsets;
-    std::size_t ncells = 0;
-    {
-        std::vector<NDArray> eids;
-        std::vector<NDArray> pids;
-        std::size_t shared = 0;
-        for (Block& b : blocks) {
-            offsets.push_back(ncells);
-            if (b.mCard != "CONM2")
-                for (std::size_t i = 0; i < b.mEid.size(); ++i)
-                    shared += cell_index.emplace(b.mEid[i], ncells + i).second ? 0 : 1;
-            ncells += b.mEid.size();
-            NDArray conn(DType::Int64, {b.mEid.size(), b.mNodes});
-            std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
-            mesh.AddCellBlock(b.mType, std::move(conn));
-            eids.push_back(nh5_int_array(b.mEid));
-            pids.push_back(nh5_int_array(b.mPid));
-        }
-        if (shared != 0)
-            log::warn(
-                "MSC Nastran HDF5: {} element id(s) are used by more than one card; their "
-                "element results go to the first",
-                shared);
-        if (!blocks.empty()) {
-            mesh.AddCellData("nastran:eid", std::move(eids));
-            mesh.AddCellData("nastran:pid", std::move(pids));
-        }
+    std::map<std::int64_t, std::string> ptype;
+    for (const std::string& prop : nh5_children(f, kNh5Properties, false)) {
+        const std::string path = std::string(kNh5Properties) + "/" + prop;
+        if (!nh5_has_member(h5::compound_members(f, path), "PID"))
+            continue;
+        for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
+            ptype.emplace(p, prop);
     }
-
-    // --- property regions -----------------------------------------------------
-    {
-        std::map<std::int64_t, std::string> ptype;
-        for (const std::string& prop : nh5_children(f, kNh5Properties, false)) {
-            const std::string path = std::string(kNh5Properties) + "/" + prop;
-            if (!nh5_has_member(h5::compound_members(f, path), "PID"))
-                continue;
-            for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
-                ptype.emplace(p, prop);
-        }
-        // Grouped properties (PCOMP/IDENTITY) live one level deeper.
-        for (const std::string& prop : nh5_children(f, kNh5Properties, true)) {
-            const std::string path = std::string(kNh5Properties) + "/" + prop + "/IDENTITY";
-            if (!nh5_is_dataset(f, path) || !nh5_has_member(h5::compound_members(f, path), "PID"))
-                continue;
-            for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
-                ptype.emplace(p, prop);
-        }
-        std::map<std::int64_t, std::pair<std::vector<std::int64_t>, int>> by_pid;
-        for (std::size_t b = 0; b < blocks.size(); ++b) {
-            const int dim = cell_type_dimension(cell_type_from_name(blocks[b].mType));
-            for (std::size_t i = 0; i < blocks[b].mPid.size(); ++i) {
-                const std::int64_t p = blocks[b].mPid[i];
-                if (p <= 0)
-                    continue;
-                auto& entry = by_pid[p];
-                if (entry.first.empty())
-                    entry.second = dim;
-                entry.first.push_back(static_cast<std::int64_t>(offsets[b] + i));
-                entry.second = std::max(entry.second, dim);
-            }
-        }
-        for (auto& [p, entry] : by_pid) {
-            const auto it = ptype.find(p);
-            const std::string name =
-                (it != ptype.end() ? it->second : std::string("PID")) + "_" + std::to_string(p);
-            mesh.AddRegion(
-                Region(name, RegionKind::Cell, entry.second, p, nh5_int_array(entry.first)));
-        }
+    // Grouped properties (PCOMP/IDENTITY) live one level deeper.
+    for (const std::string& prop : nh5_children(f, kNh5Properties, true)) {
+        const std::string path = std::string(kNh5Properties) + "/" + prop + "/IDENTITY";
+        if (!nh5_is_dataset(f, path) || !nh5_has_member(h5::compound_members(f, path), "PID"))
+            continue;
+        for (std::int64_t p : nh5_int_member(f, path, "PID", 0, nh5_rows(f, path)))
+            ptype.emplace(p, prop);
     }
+    const detail::NastranCells model = detail::nastran_add_cells(
+        mesh, cards, file.mGridIndex, file.mScalarPoints, ptype, "MSC Nastran HDF5");
+    const auto& cell_index = model.mCellIndex;
+    const std::size_t ncells = model.mNumCells;
 
     // --- the step -------------------------------------------------------------
     if (file.mSteps.empty()) {
@@ -744,11 +569,11 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
     for (const std::string& name : cell_order) {
         const std::vector<double>& values = cell_arrays[name];
         std::vector<NDArray> per_block;
-        for (std::size_t b = 0; b < blocks.size(); ++b) {
-            NDArray a(DType::Float64, {blocks[b].mEid.size()});
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b]});
             std::copy(
-                values.begin() + static_cast<std::ptrdiff_t>(offsets[b]),
-                values.begin() + static_cast<std::ptrdiff_t>(offsets[b] + blocks[b].mEid.size()),
+                values.begin() + static_cast<std::ptrdiff_t>(model.mOffsets[b]),
+                values.begin() + static_cast<std::ptrdiff_t>(model.mOffsets[b] + model.mSizes[b]),
                 a.As<double>());
             per_block.push_back(std::move(a));
         }

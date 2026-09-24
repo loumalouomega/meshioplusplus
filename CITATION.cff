@@ -38,6 +38,20 @@ license: MIT
 # there is pyNastran's own reading of them, frozen by tools/gen_nastran_h5_reference.py.
 # BSD-3-Clause is permissive and imposes no obligation on the rest of this repository. The
 # `nastran_h5` reader reads the published MSC schema; no pyNastran code is copied.
+# tests/python/meshes/nastran_op2/*.op2 and solid_bending.bdf are MSC and NX Nastran files
+# from the same repository (models/), redistributed unmodified under the same BSD-3-Clause
+# licence, whose text sits beside them in that directory's README.md, except
+# solid_bending_no_geom.op2, the same file with its geometry tables removed;
+# pynastran_reference.npz there is pyNastran's own reading of them, frozen by
+# tools/gen_nastran_op2_reference.py. The `nastran_op2` reader reads the record layouts
+# pyNastran documents; no pyNastran code is copied.
+# tests/python/meshes/lsdyna_d3plot/lasso/ are LS-DYNA d3plot families from the test data
+# of lasso-python (https://github.com/open-lasso-python/lasso-python), Copyright 2022
+# lasso-open-source, redistributed unmodified under the BSD-3-Clause licence, whose text
+# sits beside them in that directory's README.md; the generated/ families there were
+# written with lasso-python's D3plot writer and lasso_reference.npz is lasso-python's own
+# reading of every family, both by tools/gen_d3plot_reference.py. The `lsdyna_d3plot`
+# reader follows the LS-DYNA database manual as lasso-python reads it; no code is copied.
 # tests/python/meshes/nastran/composite_plate_2022.fem is an OptiStruct deck from the same
 # repository (models/optistruct/), redistributed unmodified under the same BSD-3-Clause
 # licence, whose text sits beside it in that directory's README.md.

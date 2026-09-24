@@ -9,7 +9,7 @@ The [LS-DYNA keyword input format](https://lsdyna.ansys.com/manuals-download/): 
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 
-meshio++ reads the mesh (nodes, elements, parts and sets) and nothing else. Materials, sections, contacts, loads and every other keyword are skipped without a message: they are not geometry.
+meshio++ reads the mesh (nodes, elements, parts and sets) and nothing else. Materials, sections, contacts, loads and every other keyword are skipped without a message: they are not geometry. The results of a run, in the binary `d3plot` family, are read by [`lsdyna_d3plot`](./lsdyna_d3plot.md).
 
 ## Reading & writing
 

@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -218,11 +219,15 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // abaqus_fil joined in v16.7.0: its steps are the increments (2000 ... 2001).
     // ansys_rst_cyclic joined in v16.8.0: ansys_rst's result sets, full rotor.
     // marc_t19 joined in v16.8.0: its steps are the post file's increments.
-    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "unv" ||
-           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
-           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
-           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+    // lsdyna_d3plot joined in v16.9.0: its steps are the states of the family.
+    // nastran_op2 joined in v16.9.0: its steps are the (subcase, mode or time)
+    // of its result tables.
+    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "lsdyna_d3plot" ||
+           rFormat == "nastran_op2" || rFormat == "unv" || rFormat == "nastran_h5" ||
+           rFormat == "xplt" || rFormat == "ansys_rst" || rFormat == "ansys_rst_cyclic" ||
+           rFormat == "marc_t19" || rFormat == "femap" || rFormat == "xdmf" ||
+           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
+           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
            rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
@@ -330,6 +335,22 @@ void seq_split_pattern(const std::string& rPattern, std::string& rDir, std::stri
             "' cannot contain '*' or '?'; glob one directory at a time");
 }
 
+// Whether a file is a numbered member (`d3plot01`...) of a d3plot family whose
+// base file sits beside it.
+bool seq_is_d3plot_member(const std::filesystem::path& rPath) {
+    std::string name = rPath.filename().string();
+    for (char& c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (name.size() <= 6 || name.compare(0, 6, "d3plot") != 0)
+        return false;
+    for (std::size_t i = 6; i < name.size(); ++i)
+        if (name[i] < '0' || name[i] > '9')
+            return false;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(
+        rPath.parent_path() / rPath.filename().string().substr(0, 6), ec);
+}
+
 std::vector<std::string> seq_glob(const std::string& rPattern) {
     std::string dir;
     std::string base;
@@ -345,6 +366,9 @@ std::vector<std::string> seq_glob(const std::string& rPattern) {
         if (!entry.is_regular_file(ec))
             continue;
         const std::string name = entry.path().filename().string();
+        // `d3plot01`, `d3plot02`... continue the `d3plot` beside them: one sample.
+        if (seq_is_d3plot_member(entry.path()))
+            continue;
         if (sequence_glob_match(base, name))
             out.push_back(entry.path().string());
     }

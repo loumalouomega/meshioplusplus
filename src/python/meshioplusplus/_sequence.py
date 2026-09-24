@@ -40,6 +40,7 @@ import pathlib
 import re
 
 from ._exceptions import ReadError, WriteError
+from ._files import is_d3plot_member
 from ._helpers import read, write
 
 __all__ = [
@@ -126,6 +127,12 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 #
 # **`marc_t19` joined in v16.8.0.** Its steps are the increments of a Marc
 # formatted post file; the C++ metadata reader parses the whole file.
+#
+# **`lsdyna_d3plot` joined in v16.9.0.** Its steps are the states of an LS-DYNA
+# d3plot family (`d3plot`, `d3plot01`...); a glob keeps the base file only.
+#
+# **`nastran_op2` joined in v16.9.0.** Its steps are the (subcase, mode, time
+# or frequency) of the result tables it reads.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -148,6 +155,8 @@ _TIME_CAPABLE_READERS = (
     "marc_t19",
     "femap",
     "abaqus_fil",
+    "lsdyna_d3plot",
+    "nastran_op2",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which
@@ -357,6 +366,8 @@ def _glob(pattern):
         os.path.join(directory, name)
         for name in names
         if glob_match(base, name) and is_sample_path(os.path.join(directory, name))
+        # `d3plot01`, `d3plot02`... continue the `d3plot` beside them: one sample.
+        and not is_d3plot_member(os.path.join(directory, name))
     ]
     matched.sort(key=_natural_sort_key)
     if not matched:

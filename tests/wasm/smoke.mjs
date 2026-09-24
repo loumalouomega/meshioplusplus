@@ -2389,6 +2389,9 @@ step('availableFormats reports what this build can read and write', () => {
     // (v16.8.0): read-only.
     for (const fmt of ['marc', 'marc_t19', 'ansys_rst_cyclic'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
+    // LS-DYNA d3plot state databases and Nastran OP2 results (v16.9.0): read-only.
+    for (const fmt of ['lsdyna_d3plot', 'nastran_op2'])
+        assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
 });
@@ -2711,6 +2714,54 @@ step('z88 is found by its file name; libmesh, abaqus_fil and radioss read by ext
     const deck = m.readMesh('/deck_0000.rad');
     assert.deepEqual(deck.cells.map((c) => c.type), ['tetra']);
     assert.ok(deck.regions.some((r) => r.name === 'tet'));
+});
+
+step('d3plot is found by its file name, its states across the family; .op2 by extension', () => {
+    // Little-endian 4-byte words, as the gtests build them.
+    const words = (list) => {
+        const buf = new DataView(new ArrayBuffer(4 * list.length));
+        list.forEach(([kind, v], k) => (kind === 'f' ? buf.setFloat32(4 * k, v, true) : buf.setInt32(4 * k, v, true)));
+        return new Uint8Array(buf.buffer);
+    };
+    const control = [];
+    for (let i = 0; i < 64; ++i) {
+        const v = { 11: 1, 15: 4, 16: 4, 17: 6, 20: 1, 31: 1, 32: 1, 33: 7, 36: -10001, 43: 1000, 44: 1000, 51: 1 }[i] ?? 0;
+        control.push(i < 10 ? ['i', 0x20202020] : i === 14 ? ['f', 971] : ['i', v]);
+    }
+    const xyz = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]];
+    const state = (k) => [
+        ['f', k * 1e-3],
+        ...xyz.flatMap((c) => [['f', c[0]], ['f', c[1]], ['f', c[2] + 0.1 * k]]),
+        ...[0, 1, 2, 3, 4, 5].map((c) => ['f', 10 * k + c]),
+        ['f', 0.5 * k],
+        ['f', k === 0 ? 1 : 0],
+    ];
+    const geometry = [...xyz.flatMap((c) => c.map((x) => ['f', x])), ['i', 1], ['i', 2], ['i', 3], ['i', 4], ['i', 1], ['f', -999999]];
+    m.FS.mkdir('/crash');
+    m.FS.writeFile('/crash/d3plot', words([...control, ...geometry, ...state(0)]));
+    m.FS.writeFile('/crash/d3plot01', words([...state(1), ['f', -999999]]));
+    // No format: `d3plot` is LS-DYNA's fixed name.
+    assert.deepEqual(m.readMesh('/crash/d3plot').cells.map((c) => c.type), ['quad']);
+    const last = m.readMeshSelective('/crash/d3plot', { format: 'lsdyna_d3plot', timeStep: -1 });
+    assert.ok('displacement' in last.point_data && 'lsdyna:alive' in last.cell_data);
+    // An OP2 with only a header and an empty result table reads no mesh, and
+    // says why: .op2 reaches the Nastran OP2 reader.
+    const block = (bytes) => {
+        const out = new Uint8Array(bytes.length + 8);
+        const dv = new DataView(out.buffer);
+        dv.setInt32(0, bytes.length, true);
+        out.set(bytes, 4);
+        dv.setInt32(4 + bytes.length, bytes.length, true);
+        return out;
+    };
+    const w = (v) => words([['i', v]]);
+    const text = (s) => new TextEncoder().encode(s);
+    const parts = [block(w(3)), block(words([['i', 9], ['i', 24], ['i', 26]])), block(w(7)),
+        block(text('NASTRAN FORT TAPE ID CODE - ')), block(w(2)), block(text('NX2019.2')), block(w(-1)), block(w(0))];
+    const op2 = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    parts.reduce((at, p) => (op2.set(p, at), at + p.length), 0);
+    m.FS.writeFile('/results.op2', op2);
+    assert.throws(() => m.readMesh('/results.op2'), /Nastran OP2: the file has no GEOM1 GRID records/);
 });
 
 step('a Marc deck named .dat reads as Marc, a Tecplot .dat as Tecplot; .t19 is Marc\'s post file', () => {

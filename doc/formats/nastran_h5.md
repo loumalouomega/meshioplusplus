@@ -109,7 +109,7 @@ Each `/NASTRAN/RESULT/ELEMENTAL/<G>/<T>` table (`<G>` is `STRESS`, `STRAIN`, `EL
 - **Coordinate systems.** `CP`/`CD` are recorded, not applied (above).
 - **Everything outside `/NASTRAN/INPUT/NODE`, `/ELEMENT`, `/PROPERTY` and `/NASTRAN/RESULT/NODAL`, `/ELEMENTAL`**: loads, constraints, materials, the eigenvalue summary, optimization and aerodynamic results.
 - **Per-ply, per-station and per-grid values** beyond the first entry of an array member.
-- **Other vendors' HDF5 schemas**, refused as above until a file is in hand; **OP2/OP4/punch** (see the [roadmap](../roadmap.md)).
+- **Other vendors' HDF5 schemas**, refused as above until a file is in hand. OP2 files are read by [`nastran_op2`](./nastran_op2.md), with the same mesh and member names; OP4 and punch files are not read.
 
 ## Verification
 

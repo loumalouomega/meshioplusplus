@@ -23,7 +23,11 @@
  */
 
 // System includes
+#include <cctype>
+#include <filesystem>
 #include <ios>
+#include <string>
+#include <system_error>
 #include <unordered_map>
 
 // Project includes
@@ -35,6 +39,7 @@
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
@@ -71,6 +76,7 @@
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
+#include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
@@ -110,6 +116,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"abaqus_fil",
          [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
         {"lsdyna", meshioplusplus::read_lsdyna},
+        // The d3plot family's base file is named `d3plot`: resolve_format
+        // matches the basename, sniff_format the control block.
+        {"lsdyna_d3plot",
+         [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); }},
         {"code_aster", meshioplusplus::read_code_aster},
         {"patran", meshioplusplus::read_patran},
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
@@ -163,6 +173,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"mphbin", meshioplusplus::read_mphbin},
         {"mphtxt", meshioplusplus::read_mphtxt},
         {"nastran", meshioplusplus::read_nastran},
+        {"nastran_op2",
+         [](const std::string& path) { return meshioplusplus::read_nastran_op2(path); }},
         {"netgen", meshioplusplus::read_netgen},
         {"obj", meshioplusplus::read_obj},
         {"off", meshioplusplus::read_off},
@@ -509,6 +521,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".bdf", "nastran"},
         {".nas", "nastran"},
         {".fem", "nastran"},
+        {".op2", "nastran_op2"},
         {".vol", "netgen"},
         {".obj", "obj"},
         // OpenFOAM: the `.foam` marker file. A case *directory* has no
@@ -618,6 +631,22 @@ bool registry_is_marc_dat(const std::string& rPath) {
     return is_marc_deck(head);
 }
 
+// `d3plot01`, `d3plot02`... beside an existing `d3plot`.
+bool registry_is_d3plot_member(const std::string& rPath) {
+    namespace fs = std::filesystem;
+    const fs::path path(rPath);
+    std::string name = path.filename().string();
+    for (char& c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (name.size() <= 6 || name.compare(0, 6, "d3plot") != 0)
+        return false;
+    for (std::size_t i = 6; i < name.size(); ++i)
+        if (name[i] < '0' || name[i] > '9')
+            return false;
+    std::error_code ec;
+    return fs::is_regular_file(path.parent_path() / path.filename().string().substr(0, 6), ec);
+}
+
 std::string basename_of(const std::string& rPath) {
     auto pos = rPath.find_last_of("/\\");
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
@@ -633,6 +662,10 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
     // Z88's files have fixed names; `.txt` alone is xyz's.
     if (is_z88_filename(base))
         return "z88";
+    // LS-DYNA's state database has a fixed name too, and no extension; its
+    // numbered members (`d3plot01`...) go to the reader, which names the base.
+    if (is_d3plot_filename(base) || registry_is_d3plot_member(rPath))
+        return "lsdyna_d3plot";
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
         const std::string suffix = base.substr(pos);
@@ -695,6 +728,18 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"abaqus_fil",
          [](const std::string& path, const ReadOptions& opts) {
              return meshioplusplus::read_abaqus_fil(path, opts);
+         }},
+        // Nastran OP2 honours mTimeStep (its steps are the subcases, modes and
+        // times of its result tables) and the narrowing options.
+        {"nastran_op2",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_nastran_op2(path, opts);
+         }},
+        // LS-DYNA d3plot honours mTimeStep (its steps are the family's states)
+        // and the narrowing options.
+        {"lsdyna_d3plot",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_lsdyna_d3plot(path, opts);
          }},
         // Femap honours mTimeStep (its steps are the 450 output sets) and the
         // data narrowing options.
@@ -793,6 +838,8 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"frd", meshioplusplus::read_frd_metadata},
         {"femap", meshioplusplus::read_femap_metadata},
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
+        {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
+        {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},

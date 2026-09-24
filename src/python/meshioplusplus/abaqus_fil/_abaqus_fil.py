@@ -18,6 +18,7 @@ import numpy as np
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError
 from .._files import open_file
+from .._fortran_records import fortran_records, sniff_fortran_records
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region
 from ..abaqus._abaqus import abaqus_to_meshio_type
@@ -226,51 +227,15 @@ class _Data:
         return w.value.decode("latin-1")
 
 
-def _sniff_fortran(data):
-    """(marker bytes, byte order) framing the first record, or ``None``."""
-    for width in (4, 8):
-        for order in ("<", ">"):
-            if len(data) < width:
-                continue
-            n = struct.unpack(order + ("i" if width == 4 else "q"), data[:width])[0]
-            if n <= 0 or n > len(data) - 2 * width:
-                continue
-            tail = data[width + n : 2 * width + n]
-            if struct.unpack(order + ("i" if width == 4 else "q"), tail)[0] == n:
-                return width, order
-    return None
-
-
 def _parse_binary(data, out):
-    layout = _sniff_fortran(data)
+    layout = sniff_fortran_records(data)
     if layout is None:
         words = data
     else:
-        width, order = layout
-        fmt = order + ("i" if width == 4 else "q")
-        chunks = []
-        pos = 0
-        while pos < len(data):
-            if pos + width > len(data):
-                raise ReadError(
-                    f"Abaqus .fil: Fortran record at offset {pos} runs past the end of "
-                    "the file"
-                )
-            n = struct.unpack(fmt, data[pos : pos + width])[0]
-            if n < 0 or pos + 2 * width + n > len(data):
-                raise ReadError(
-                    f"Abaqus .fil: Fortran record at offset {pos} runs past the end of "
-                    "the file"
-                )
-            if struct.unpack(fmt, data[pos + width + n : pos + 2 * width + n])[0] != n:
-                raise ReadError(
-                    f"Abaqus .fil: Fortran record at offset {pos} has mismatched length "
-                    "markers"
-                )
-            chunks.append(data[pos + width : pos + width + n])
-            pos += 2 * width + n
-        words = b"".join(chunks)
-        out.order = order
+        words = b"".join(
+            data[o : o + n] for o, n in fortran_records(data, layout, "Abaqus .fil")
+        )
+        out.order = layout[1]
     if len(words) % 8:
         raise ReadError(
             "Abaqus .fil: binary payload is not a whole number of 8-byte words"

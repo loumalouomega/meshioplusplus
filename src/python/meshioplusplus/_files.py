@@ -29,3 +29,28 @@ def is_z88_filename(path) -> bool:
     except TypeError:
         return False
     return name.lower() in _Z88_FILENAMES
+
+
+def is_d3plot_filename(path) -> bool:
+    """Whether ``path``'s basename is ``d3plot``, LS-DYNA's state database."""
+    try:
+        name = os.path.basename(os.fspath(path))
+    except TypeError:
+        return False
+    return name.lower() == "d3plot"
+
+
+def is_d3plot_member(path) -> bool:
+    """Whether ``path`` is a numbered member (``d3plot01``...) of a d3plot family
+    whose base file sits beside it."""
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        return False
+    name = os.path.basename(text)
+    lower = name.lower()
+    if len(lower) <= 6 or not lower.startswith("d3plot") or not lower[6:].isdigit():
+        return False
+    if not lower[6:].isascii():
+        return False
+    return os.path.isfile(os.path.join(os.path.dirname(text), name[:6]))

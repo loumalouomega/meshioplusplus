@@ -21,17 +21,23 @@
 
 // System includes
 #include <algorithm>
+#include <bit>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/formats/marc.hpp"
+#include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
 namespace meshioplusplus {
@@ -161,6 +167,51 @@ bool sniff_is_patran(const std::string& rHead) {
     return kc >= 1;
 }
 
+// Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers, either
+// byte order) holding a one-word 3, a 3-word date, a one-word 7 and the 7-word
+// tape code, in 4- or 8-byte words.
+bool sniff_is_op2(const std::string& rHead) {
+    for (bool big : {false, true}) {
+        const auto u32 = [&](std::size_t At) -> std::int64_t {
+            if (At + 4 > rHead.size())
+                return -1;
+            std::uint32_t v;
+            std::memcpy(&v, rHead.data() + At, 4);
+            if (big != (std::endian::native == std::endian::big))
+                v = detail::bswap32(v);
+            return static_cast<std::int32_t>(v);
+        };
+        // Fortran blocks with 4-byte markers: [n][payload][n].
+        std::size_t pos = 0;
+        std::vector<std::pair<std::size_t, std::int64_t>> blocks;  // (payload offset, size)
+        while (blocks.size() < 4) {
+            const std::int64_t n = u32(pos);
+            if (n <= 0 || u32(pos + 4 + static_cast<std::size_t>(n)) != n)
+                break;
+            blocks.emplace_back(pos + 4, n);
+            pos += 8 + static_cast<std::size_t>(n);
+        }
+        if (blocks.size() < 4)
+            continue;
+        const std::int64_t ws = blocks[0].second;
+        if (ws != 4 && ws != 8)
+            continue;
+        const auto word = [&](std::size_t Block) {
+            if (ws == 4)
+                return u32(blocks[Block].first);
+            std::uint64_t v;
+            std::memcpy(&v, rHead.data() + blocks[Block].first, 8);
+            if (big != (std::endian::native == std::endian::big))
+                v = detail::bswap64(v);
+            return static_cast<std::int64_t>(v);
+        };
+        if (word(0) == 3 && blocks[1].second == 3 * ws && blocks[2].second == ws && word(2) == 7 &&
+            blocks[3].second == 7 * ws)
+            return true;
+    }
+    return false;
+}
+
 // Abaqus results file, binary: a 4096-byte Fortran record (marker 4096 in
 // either byte order) whose first 8-byte word is a record length and whose second
 // is the key of a record Abaqus writes first (1921 release, 1922 heading, 1900
@@ -286,6 +337,8 @@ std::string sniff_format(const std::string& rPath) {
         // Z88's input and output files have fixed names.
         if (is_z88_filename(rPath) && fs::is_regular_file(path, ec))
             return "z88";
+        if (is_d3plot_filename(rPath) && fs::is_regular_file(path, ec))
+            return "lsdyna_d3plot";
     }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -315,6 +368,13 @@ std::string sniff_format(const std::string& rPath) {
         return "libmesh";
     if (sniff_is_abaqus_fil_binary(head))
         return "abaqus_fil";
+    // Nastran OP2 (PARAM,POST,-1): a one-word record 3, a 3-word date, a
+    // one-word record 7 and the 7-word tape code, any word size and order.
+    if (sniff_is_op2(head))
+        return "nastran_op2";
+    // LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
+    if (is_d3plot_head(head.data(), head.size()))
+        return "lsdyna_d3plot";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";
