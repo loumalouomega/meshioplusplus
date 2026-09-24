@@ -392,3 +392,31 @@ TEST(Mfem, NurbsPatchSampledAtItsLattice) {
     EXPECT_THROW(meshioplusplus::read_mfem(write_file("MFEM NURBS NC-patch mesh v1.0\n")),
                  ReadError);
 }
+
+// One unit square with order-2 nodes whose bottom edge is pulled down, in
+// MFEM's Bernstein (H1Pos) and serendipity (H1Ser) spaces: their degrees of
+// freedom are coefficients, so the mid-edge and centre nodes are what the
+// basis makes of them, not the stored values.
+TEST(Mfem, BernsteinAndSerendipityNodesAreCoefficients) {
+    const std::string head =
+        "MFEM mesh v1.0\ndimension\n2\nelements\n1\n1 3 0 1 2 3\nboundary\n0\n"
+        "vertices\n4\n\nnodes\nFiniteElementSpace\nFiniteElementCollection: ";
+    const std::string corners = "0 0\n1 0\n1 1\n0 1\n";
+    // Bernstein: the bottom edge coefficient (0.5, -0.2) weighs 1/2 at the
+    // edge midpoint and 1/8 at the centre; the rest reproduce the square.
+    const Mesh pos =
+        meshioplusplus::read_mfem(write_file(head + "H1Pos_2D_P2\nVDim: 2\nOrdering: 1\n" +
+                                             corners + "0.5 -0.2\n1 0.5\n0.5 1\n0 0.5\n0.5 0.5\n"));
+    ASSERT_EQ(pos.Cells(0).Type(), "quad9");
+    const auto& q = pos.Cells(0).Conn();
+    EXPECT_NEAR(coord(pos, detail::read_int(q, 4), 1), -0.1, 1e-15);
+    EXPECT_NEAR(coord(pos, detail::read_int(q, 8), 1), 0.475, 1e-15);
+    // Serendipity: the edge value is nodal; its shape function is 1/2 at the
+    // centre. No interior dof at order 2.
+    const Mesh ser =
+        meshioplusplus::read_mfem(write_file(head + "H1Ser_2D_P2\nVDim: 2\nOrdering: 1\n" +
+                                             corners + "0.5 -0.1\n1 0.5\n0.5 1\n0 0.5\n"));
+    const auto& s = ser.Cells(0).Conn();
+    EXPECT_NEAR(coord(ser, detail::read_int(s, 4), 1), -0.1, 1e-15);
+    EXPECT_NEAR(coord(ser, detail::read_int(s, 8), 1), 0.45, 1e-15);
+}

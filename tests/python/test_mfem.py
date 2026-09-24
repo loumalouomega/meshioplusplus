@@ -718,3 +718,82 @@ def test_nurbs_skips_other_grid_functions(engine, tmp_path, capfd):
     mesh = engine.read(MESHES / "nurbs" / "cube-nurbs.mesh", {"p": str(gf)})
     assert "p" not in mesh.point_data
     assert "not the NURBS mesh's own" in capfd.readouterr().err
+
+
+# --- Bernstein and serendipity spaces ------------------------------------------------------
+
+MODAL = [
+    "pos-quad-p3",
+    "pos-tri-p4",
+    "pos-tet-p3",
+    "pos-hex-p3",
+    "pos-wedge-p3",
+    "pos-seg-p4",
+    "ser-quad-p3",
+    "ser-quad-p5",
+]
+MODAL_REF = np.load(MESHES / "modal" / "reference_modal.npz")
+_MODAL_TYPES = {
+    1: ("line3", "VTK_LAGRANGE_CURVE"),
+    2: ("triangle6", "VTK_LAGRANGE_TRIANGLE"),
+    3: ("quad9", "VTK_LAGRANGE_QUADRILATERAL"),
+    4: ("tetra10", "VTK_LAGRANGE_TETRAHEDRON"),
+    5: ("hexahedron27", "VTK_LAGRANGE_HEXAHEDRON"),
+    6: ("wedge18", "VTK_LAGRANGE_WEDGE"),
+}
+
+
+def _modal(engine, name):
+    return engine.read(
+        MESHES / "modal" / f"{name}.mesh",
+        {"u": str(MESHES / "modal" / f"{name}.u.gf")},
+    )
+
+
+@pytest.mark.parametrize("name", MODAL)
+def test_modal_spaces_match_mfem(engine, name):
+    """Bernstein (H1Pos) and serendipity (H1Ser) nodes and fields are
+    coefficients, not values: every VTK Lagrange node of every cell sits where
+    MFEM's element transformation puts it, and u has MFEM's value there
+    (frozen in modal/reference_modal.npz)."""
+    mesh = _modal(engine, name)
+    q = int(MODAL_REF[f"{name}:order"])
+    geoms = sorted(
+        {
+            int(k.split(":")[1])
+            for k in MODAL_REF.files
+            if k.startswith(name + ":") and k.count(":") == 2
+        }
+    )
+    for geom in geoms:
+        want_x = MODAL_REF[f"{name}:{geom}:x"]
+        want_u = MODAL_REF[f"{name}:{geom}:u"]
+        cell_type = _MODAL_TYPES[geom][0 if q == 2 else 1]
+        cells = np.asarray(next(b.data for b in mesh.cells if b.type == cell_type))
+        assert len(cells) == len(want_x)
+        np.testing.assert_allclose(
+            mesh.points[cells], want_x, rtol=0, atol=1e-13 * np.abs(want_x).max()
+        )
+        np.testing.assert_allclose(
+            mesh.point_data["u"][cells], want_u, rtol=0, atol=1e-12
+        )
+
+
+@pytest.mark.parametrize("name", MODAL)
+def test_modal_spaces_engines_agree(name):
+    a, b = _modal(meshioplusplus.mfem, name), _modal(py_mfem, name)
+    np.testing.assert_allclose(a.points, b.points, rtol=0, atol=1e-13)
+    assert [(t, x.tolist()) for t, x in _blocks(a)] == [
+        (t, x.tolist()) for t, x in _blocks(b)
+    ]
+    np.testing.assert_allclose(a.point_data["u"], b.point_data["u"], atol=1e-13)
+
+
+def test_serendipity_needs_quadrilaterals(engine, capfd):
+    # a serendipity field on a mesh of other cells is skipped
+    mesh = engine.read(
+        MESHES / "modal" / "pos-tri-p4.mesh",
+        {"u": str(MESHES / "modal" / "ser-quad-p3.u.gf")},
+    )
+    assert "u" not in mesh.point_data
+    assert "quadrilateral meshes only" in capfd.readouterr().err

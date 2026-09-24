@@ -19,6 +19,7 @@ geometry vertex...``), ``boundary``, ``vertices`` and, in v1.3, named
 - Every geometry, the prism included, is in meshio++'s node order.
 """
 
+import math
 import os
 import pathlib
 
@@ -332,7 +333,10 @@ class _Space:
         self.collection = name
         self.kind = "other"
         # an H1 space's nodes: "gll" (the default), "uniform" (H1@U) or "cubic"
-        # (the legacy Cubic collection: equispaced, its own hex interior)
+        # (the legacy Cubic collection: equispaced, its own hex interior);
+        # "bernstein" (H1Pos: Bernstein coefficients on the uniform lattice)
+        # and "serendipity" (H1Ser: MFEM's serendipity quadrilaterals) are
+        # modal and evaluated through their own basis
         self.points = "gll"
         self.order = -1
         self.vdim = 1
@@ -359,7 +363,9 @@ class _Space:
             self.kind = "h1" if self.order >= 1 and nodal else "h1-other"
         elif name.startswith(("H1Pos_", "H1Ser_")):
             self.order = order_after_p()
-            self.kind = "h1" if self.order == 1 else "h1-other"
+            self.kind = "h1" if self.order >= 1 else "h1-other"
+            if self.order >= 2:
+                self.points = "bernstein" if name[2] == "P" else "serendipity"
         elif name.startswith("NURBS"):
             # NURBS<p>, or NURBS alone for the orders of the mesh's knot vectors
             self.kind = "nurbs"
@@ -867,6 +873,9 @@ def read(filename, grid_functions=None, piece=None):
     node_dofs = 0
     nspace = f["nodes_space"]
     nodes = f["nodes"]
+    serendipity_ok = dim == 2 and all(el[1] == 3 for el in elements)
+    if nspace is not None and nspace.points == "serendipity" and not serendipity_ok:
+        nspace.kind = "h1-other"  # MFEM's serendipity elements are quadrilaterals
     if nspace is not None:
         if len(nodes) % nspace.vdim:
             raise ReadError(
@@ -918,6 +927,12 @@ def read(filename, grid_functions=None, piece=None):
                 "supported; skipped"
             )
             continue
+        if h1 and space.points == "serendipity" and not serendipity_ok:
+            warn(
+                f"MFEM grid function '{path}': serendipity fields are read on "
+                "quadrilateral meshes only; skipped"
+            )
+            continue
         if h1 and space.order >= 2 and (coords == "dg" or has_pyramid):
             warn(
                 f"MFEM grid function '{path}': an order-{space.order} field on this "
@@ -937,7 +952,13 @@ def read(filename, grid_functions=None, piece=None):
         order = 1
         if coords == "h1" and mesh_order >= 2:
             coords = "corners"
-    if order >= 3:
+    # Bernstein and serendipity coefficients are no nodal values: every order
+    # of them goes through the interpolating reader
+    modal = [s for s in [nspace if coords == "h1" else None] + [g[1] for g in gfs] if s]
+    modal = any(
+        s.kind == "h1" and s.points in ("bernstein", "serendipity") for s in modal
+    )
+    if order >= 3 or (order == 2 and modal):
         if coords == "vertices":
             vxyz = np.array(f["coords"], dtype=np.float64).reshape(nv, sdim)
         else:
@@ -1288,7 +1309,9 @@ def _entities(elements, dim):
     return edges, faces, face_vertices
 
 
-def _interior_count(geom, q):
+def _interior_count(geom, q, points="gll"):
+    if points == "serendipity" and geom == 3:
+        return (q - 2) * (q - 3) // 2  # MFEM's bubbles from order 4
     return {
         1: q - 1,
         2: (q - 1) * (q - 2) // 2,
@@ -1306,7 +1329,9 @@ class _Dofs:
         edges, _, face_vertices = ent
         self.order, self.points = q, points
         self.cp = (
-            _lagrange.gll_points(q) if points == "gll" else _lagrange.uniform_points(q)
+            _lagrange.gll_points(q)
+            if points in ("gll", "serendipity")
+            else _lagrange.uniform_points(q)
         )
         nxt = f["nv"]
         self.edge_base = nxt
@@ -1319,7 +1344,7 @@ class _Dofs:
         for _, geom, _, _ in f["elements"]:
             self.interior_offset.append(nxt)
             if _GEOMS[geom][2] == f["dim"]:
-                nxt += _interior_count(geom, q)
+                nxt += _interior_count(geom, q, points)
         self.size = nxt
 
 
@@ -1401,6 +1426,11 @@ def _element_dofs(geom, verts, dim, ent, d, element):
             interior = [(x, y, 0.0) for x, y in tri]
         else:
             interior = [(x, y, cp[k]) for k in range(1, q) for x, y in tri]
+    elif geom == 3 and d.points == "serendipity":
+        # non-nodal bubbles: positions outside the element only name them
+        interior = [
+            (-1.0 - n, -1.0, 0.0) for n in range(_interior_count(3, q, d.points))
+        ]
     elif geom == 3:
         interior = [(cp[i], cp[j], 0.0) for j in range(1, q) for i in range(1, q)]
     elif geom == 4:
@@ -1456,6 +1486,129 @@ def _cell_order(geom, num_nodes):
         q += 1
 
 
+def _bernstein_matrix(shape, q, nodes, targets):
+    """MFEM's positive (Bernstein) basis at ``targets``: the coefficient at
+    lattice point ``a / q`` weighs the Bernstein polynomial of multi-index
+    ``a``, a tensor product on quadrilaterals and hexahedra, barycentric on
+    simplices, a triangle times a segment on prisms."""
+    fact = [math.factorial(k) for k in range(q + 1)]
+
+    def b1(a, x):
+        return fact[q] / (fact[a] * fact[q - a]) * x**a * (1 - x) ** (q - a)
+
+    def bs(alpha, lam):
+        v = float(fact[q])
+        for a, x in zip(alpha, lam):
+            v *= x**a / fact[a]
+        return v
+
+    out = np.zeros((len(targets), len(nodes)))
+    for c, node in enumerate(nodes):
+        a = [int(round(x * q)) for x in node]
+        for t, x in enumerate(targets):
+            if shape == "line":
+                v = b1(a[0], x[0])
+            elif shape in ("quad", "hexahedron"):
+                v = 1.0
+                for d in range(2 if shape == "quad" else 3):
+                    v *= b1(a[d], x[d])
+            elif shape == "triangle":
+                v = bs((q - a[0] - a[1], a[0], a[1]), (1 - x[0] - x[1], x[0], x[1]))
+            elif shape == "tetra":
+                v = bs(
+                    (q - a[0] - a[1] - a[2], a[0], a[1], a[2]),
+                    (1 - x[0] - x[1] - x[2], x[0], x[1], x[2]),
+                )
+            else:  # wedge
+                v = bs((q - a[0] - a[1], a[0], a[1]), (1 - x[0] - x[1], x[0], x[1]))
+                v *= b1(a[2], x[2])
+            out[t, c] = v
+    return out
+
+
+def _serendipity_shape(p, cp, x, y):
+    """``H1Ser_QuadrilateralElement::CalcShape`` (MFEM fe_ser.cpp): nodal
+    Gauss-Lobatto edge functions times the linear function vanishing on the
+    opposite edge, bilinear vertex functions corrected by them, and Legendre
+    bubbles from order 4; in MFEM's local order."""
+
+    def lag(t):
+        out = np.ones(p + 1)
+        for i in range(p + 1):
+            for j in range(p + 1):
+                if j != i:
+                    out[i] *= (t - cp[j]) / (cp[i] - cp[j])
+        return out
+
+    nx, ny = lag(x), lag(y)
+    n = 4 + 4 * (p - 1) + (p - 2) * (p - 3) // 2
+    shape = np.zeros(n)
+    for i in range(p - 1):
+        shape[4 + 0 * (p - 1) + i] = nx[i + 1] * (1 - y)
+        shape[4 + 1 * (p - 1) + i] = ny[i + 1] * x
+        shape[4 + 3 * (p - 1) - i - 1] = nx[i + 1] * y
+        shape[4 + 4 * (p - 1) - i - 1] = ny[i + 1] * (1 - x)
+    bil = [(1 - x) * (1 - y), x * (1 - y), x * y, (1 - x) * y]
+    fix = [0.0] * 4
+    for i in range(p - 1):
+        w = 1 - cp[i + 1]
+        fix[0] += w * (shape[4 + i] + shape[4 + 4 * (p - 1) - i - 1])
+        fix[1] += w * (shape[4 + 1 * (p - 1) + i] + shape[4 + (p - 2) - i])
+        fix[2] += w * (shape[4 + 2 * (p - 1) + i] + shape[1 + 2 * p - i])
+        fix[3] += w * (shape[4 + 3 * (p - 1) + i] + shape[3 * p - i])
+    for v in range(4):
+        shape[v] = bil[v] - fix[v]
+    if p > 3:
+
+        def leg(t):
+            u = [1.0, 2 * t - 1]
+            for k in range(1, p - 2):
+                u.append(((2 * k + 1) * (2 * t - 1) * u[k] - k * u[k - 1]) / (k + 1))
+            return u
+
+        lx, ly = leg(x), leg(y)
+        m = 0
+        for j in range(4, p + 1):
+            for k in range(j - 3):
+                shape[4 + 4 * (p - 1) + m] = (
+                    lx[k] * ly[j - 4 - k] * x * (1 - x) * y * (1 - y)
+                )
+                m += 1
+    return shape
+
+
+def _serendipity_matrix(p, cp, nodes, targets):
+    """MFEM's serendipity basis at ``targets``, one column per canonical node:
+    the vertex, edge (by position) and bubble (by index) functions."""
+    local = []
+    for x, y, _ in nodes:
+        if x < 0:  # a bubble, named by its index
+            local.append(4 + 4 * (p - 1) + int(round(-1.0 - x)))
+            continue
+        corner = {(0, 0): 0, (1, 0): 1, (1, 1): 2, (0, 1): 3}.get(
+            (round(x, 12), round(y, 12))
+        )
+        if corner is not None:
+            local.append(corner)
+            continue
+        on = [
+            k for k in range(1, p) if abs(cp[k] - (x if y in (0.0, 1.0) else y)) < 1e-12
+        ]
+        i = on[0] - 1
+        if abs(y) < 1e-12:
+            local.append(4 + i)
+        elif abs(x - 1) < 1e-12:
+            local.append(4 + (p - 1) + i)
+        elif abs(y - 1) < 1e-12:
+            local.append(4 + 3 * (p - 1) - i - 1)
+        else:
+            local.append(4 + 4 * (p - 1) - i - 1)
+    out = np.zeros((len(targets), len(nodes)))
+    for t, (x, y, _) in enumerate(targets):
+        out[t] = _serendipity_shape(p, cp, x, y)[local]
+    return out
+
+
 class _Interp:
     """One (geometry, space) pair's canonical nodes and its matrix to the VTK
     Lagrange nodes of the output order."""
@@ -1475,7 +1628,12 @@ class _Interp:
             (i / order, j / order, k / order)
             for i, j, k in _lagrange.vtk_lattice(shape, order)
         ]
-        self.matrix = _lagrange.interpolation_matrix(shape, d.order, pos, targets)
+        if d.points == "bernstein":
+            self.matrix = _bernstein_matrix(shape, d.order, pos, targets)
+        elif d.points == "serendipity":
+            self.matrix = _serendipity_matrix(d.order, d.cp, pos, targets)
+        else:
+            self.matrix = _lagrange.interpolation_matrix(shape, d.order, pos, targets)
 
     def find(self, pos):
         return _find_node(self.index, pos)

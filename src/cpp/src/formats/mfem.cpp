@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <ios>
 #include <iterator>
 #include <limits>
@@ -473,8 +474,11 @@ std::string mf_read_text(const std::string& rPath, const char* pWhat) {
 struct MfSpace {
     enum Kind { H1, H1Other, L2T1, L2, Nurbs, Other } mKind = Other;
     // An H1 space's nodes: Gauss-Lobatto (the default), equispaced (`H1@U`), or
-    // the legacy `Cubic` collection (equispaced, its own hexahedron interior).
-    enum Points { Gll, Uniform, Cubic } mPoints = Gll;
+    // the legacy `Cubic` collection (equispaced, its own hexahedron interior);
+    // Bernstein (`H1Pos`: coefficients on the uniform lattice) and serendipity
+    // (`H1Ser`: MFEM's serendipity quadrilaterals) are modal, evaluated
+    // through their own basis.
+    enum Points { Gll, Uniform, Cubic, Bernstein, Serendipity } mPoints = Gll;
     int mOrder = -1;
     std::string mCollection;
     int mVDim = 1;
@@ -515,7 +519,9 @@ MfSpace mf_classify(const std::string& rName) {
         s.mKind = s.mOrder >= 1 && nodal ? MfSpace::H1 : MfSpace::H1Other;
     } else if (rName.rfind("H1Pos_", 0) == 0 || rName.rfind("H1Ser_", 0) == 0) {
         s.mOrder = order_after_P();
-        s.mKind = s.mOrder == 1 ? MfSpace::H1 : MfSpace::H1Other;
+        s.mKind = s.mOrder >= 1 ? MfSpace::H1 : MfSpace::H1Other;
+        if (s.mOrder >= 2)
+            s.mPoints = rName[2] == 'P' ? MfSpace::Bernstein : MfSpace::Serendipity;
     } else if (rName.rfind("NURBS", 0) == 0) {
         // NURBS<p>, or NURBS alone for the orders of the mesh's knot vectors
         std::int64_t v = -1;
@@ -2165,8 +2171,10 @@ struct MfDofs {
     std::size_t mSize = 0;
 };
 
-std::size_t mf_interior_count(int Geom, int Q) {
+std::size_t mf_interior_count(int Geom, int Q, MfSpace::Points Points = MfSpace::Gll) {
     const std::size_t q = static_cast<std::size_t>(Q);
+    if (Points == MfSpace::Serendipity && Geom == 3)
+        return q < 4 ? 0 : (q - 2) * (q - 3) / 2;  // MFEM's bubbles from order 4
     switch (Geom) {
         case 1:
             return q - 1;
@@ -2190,7 +2198,8 @@ MfDofs mf_dofs(const MfFile& rF, const MfEntities& rEnt, int Q, MfSpace::Points 
     MfDofs d;
     d.mOrder = Q;
     d.mPoints = Points;
-    d.mCp = Points == MfSpace::Gll ? lagrange::gll_points(Q) : lagrange::uniform_points(Q);
+    d.mCp = Points == MfSpace::Gll || Points == MfSpace::Serendipity ? lagrange::gll_points(Q)
+                                                                     : lagrange::uniform_points(Q);
     const std::size_t q = static_cast<std::size_t>(Q);
     std::size_t next = rF.mNumVertices;
     d.mEdgeBase = next;
@@ -2202,7 +2211,7 @@ MfDofs mf_dofs(const MfFile& rF, const MfEntities& rEnt, int Q, MfSpace::Points 
     for (const MfElement& el : rF.mElements) {
         d.mInteriorOffset.push_back(next);
         if (geoms[static_cast<std::size_t>(el.mGeom)].mDim == rF.mDim)
-            next += mf_interior_count(el.mGeom, Q);
+            next += mf_interior_count(el.mGeom, Q, Points);
     }
     d.mSize = next;
     return d;
@@ -2312,6 +2321,13 @@ void mf_element_dofs(const MfElement& rEl, int Dim, const MfEntities* pEnt, cons
             break;
         }
         case 3:
+            if (rD.mPoints == MfSpace::Serendipity) {
+                // non-nodal bubbles: positions outside the element only name them
+                const std::size_t n = mf_interior_count(3, q, rD.mPoints);
+                for (std::size_t b = 0; b < n; ++b)
+                    add({-1.0 - static_cast<double>(b), -1.0, 0});
+                break;
+            }
             for (int j = 1; j < q; ++j)
                 for (int i = 1; i < q; ++i)
                     add({cpq(i), cpq(j), 0});
@@ -2415,6 +2431,161 @@ int mf_cell_order(int Geom, std::size_t NumNodes) {
     return -1;
 }
 
+// MFEM's positive (Bernstein) basis at rTargets, one column per canonical
+// node: the coefficient at lattice point a / Q weighs the Bernstein polynomial
+// of multi-index a -- a tensor product on quadrilaterals and hexahedra,
+// barycentric on simplices, a triangle times a segment on prisms.
+std::vector<double> mf_bernstein_matrix(int Geom, int Q, const std::vector<MfPos>& rNodes,
+                                        const std::vector<MfPos>& rTargets) {
+    std::vector<double> fact(static_cast<std::size_t>(Q) + 1, 1.0);
+    for (std::size_t k = 1; k < fact.size(); ++k)
+        fact[k] = fact[k - 1] * static_cast<double>(k);
+    const auto b1 = [&](int A, double X) {
+        return fact[static_cast<std::size_t>(Q)] /
+               (fact[static_cast<std::size_t>(A)] * fact[static_cast<std::size_t>(Q - A)]) *
+               std::pow(X, A) * std::pow(1.0 - X, Q - A);
+    };
+    const auto bs = [&](std::initializer_list<std::pair<int, double>> Terms) {
+        double v = fact[static_cast<std::size_t>(Q)];
+        for (const auto& [a, x] : Terms)
+            v *= std::pow(x, a) / fact[static_cast<std::size_t>(a)];
+        return v;
+    };
+    std::vector<double> out(rTargets.size() * rNodes.size());
+    for (std::size_t c = 0; c < rNodes.size(); ++c) {
+        int a[3];
+        for (int d = 0; d < 3; ++d)
+            a[d] = static_cast<int>(std::lround(rNodes[c][static_cast<std::size_t>(d)] * Q));
+        for (std::size_t t = 0; t < rTargets.size(); ++t) {
+            const MfPos& x = rTargets[t];
+            double v = 1.0;
+            switch (Geom) {
+                case 1:
+                    v = b1(a[0], x[0]);
+                    break;
+                case 3:
+                    v = b1(a[0], x[0]) * b1(a[1], x[1]);
+                    break;
+                case 5:
+                    v = b1(a[0], x[0]) * b1(a[1], x[1]) * b1(a[2], x[2]);
+                    break;
+                case 2:
+                    v = bs({{Q - a[0] - a[1], 1.0 - x[0] - x[1]}, {a[0], x[0]}, {a[1], x[1]}});
+                    break;
+                case 4:
+                    v = bs({{Q - a[0] - a[1] - a[2], 1.0 - x[0] - x[1] - x[2]},
+                            {a[0], x[0]},
+                            {a[1], x[1]},
+                            {a[2], x[2]}});
+                    break;
+                default:  // a prism
+                    v = bs({{Q - a[0] - a[1], 1.0 - x[0] - x[1]}, {a[0], x[0]}, {a[1], x[1]}}) *
+                        b1(a[2], x[2]);
+                    break;
+            }
+            out[t * rNodes.size() + c] = v;
+        }
+    }
+    return out;
+}
+
+// H1Ser_QuadrilateralElement::CalcShape (MFEM fe_ser.cpp): nodal Gauss-Lobatto
+// edge functions times the linear function vanishing on the opposite edge,
+// bilinear vertex functions corrected by them, and Legendre bubbles from
+// order 4; in MFEM's local order.
+std::vector<double> mf_serendipity_shape(int P, const std::vector<double>& rCp, double X,
+                                         double Y) {
+    const auto p = static_cast<std::size_t>(P);
+    const auto lag = [&](double T) {
+        std::vector<double> out(p + 1, 1.0);
+        for (std::size_t i = 0; i <= p; ++i)
+            for (std::size_t j = 0; j <= p; ++j)
+                if (j != i)
+                    out[i] *= (T - rCp[j]) / (rCp[i] - rCp[j]);
+        return out;
+    };
+    const std::vector<double> nx = lag(X), ny = lag(Y);
+    const std::size_t e = p - 1;
+    std::vector<double> shape(4 + 4 * e + mf_interior_count(3, P, MfSpace::Serendipity), 0.0);
+    for (std::size_t i = 0; i < e; ++i) {
+        shape[4 + i] = nx[i + 1] * (1 - Y);
+        shape[4 + e + i] = ny[i + 1] * X;
+        shape[4 + 3 * e - i - 1] = nx[i + 1] * Y;
+        shape[4 + 4 * e - i - 1] = ny[i + 1] * (1 - X);
+    }
+    const double bil[4] = {(1 - X) * (1 - Y), X * (1 - Y), X * Y, (1 - X) * Y};
+    double fix[4] = {0, 0, 0, 0};
+    for (std::size_t i = 0; i < e; ++i) {
+        const double w = 1 - rCp[i + 1];
+        fix[0] += w * (shape[4 + i] + shape[4 + 4 * e - i - 1]);
+        fix[1] += w * (shape[4 + e + i] + shape[4 + (p - 2) - i]);
+        fix[2] += w * (shape[4 + 2 * e + i] + shape[1 + 2 * p - i]);
+        fix[3] += w * (shape[4 + 3 * e + i] + shape[3 * p - i]);
+    }
+    for (std::size_t v = 0; v < 4; ++v)
+        shape[v] = bil[v] - fix[v];
+    if (p > 3) {
+        const auto leg = [&](double T) {
+            std::vector<double> u = {1.0, 2 * T - 1};
+            for (std::size_t k = 1; k + 2 < p; ++k)
+                u.push_back((static_cast<double>(2 * k + 1) * (2 * T - 1) * u[k] -
+                             static_cast<double>(k) * u[k - 1]) /
+                            static_cast<double>(k + 1));
+            return u;
+        };
+        const std::vector<double> lx = leg(X), ly = leg(Y);
+        std::size_t m = 0;
+        for (std::size_t j = 4; j <= p; ++j)
+            for (std::size_t k = 0; k + 3 < j; ++k)
+                shape[4 + 4 * e + m++] = lx[k] * ly[j - 4 - k] * X * (1 - X) * Y * (1 - Y);
+    }
+    return shape;
+}
+
+// MFEM's serendipity basis at rTargets, one column per canonical node: the
+// vertex, edge (by position) and bubble (by index) functions.
+std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
+                                          const std::vector<MfPos>& rNodes,
+                                          const std::vector<MfPos>& rTargets) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t e = p - 1;
+    const auto near = [](double A, double B) { return std::abs(A - B) < 1e-12; };
+    std::vector<std::size_t> local;
+    for (const MfPos& n : rNodes) {
+        const double x = n[0], y = n[1];
+        if (x < 0) {  // a bubble, named by its index
+            local.push_back(4 + 4 * e + static_cast<std::size_t>(std::lround(-1.0 - x)));
+            continue;
+        }
+        const bool x0 = near(x, 0), x1 = near(x, 1), y0 = near(y, 0), y1 = near(y, 1);
+        if ((x0 || x1) && (y0 || y1)) {
+            local.push_back(x0 ? (y0 ? 0 : 3) : (y0 ? 1 : 2));
+            continue;
+        }
+        const double t = (y0 || y1) ? x : y;
+        std::size_t i = 0;
+        for (std::size_t k = 1; k < p; ++k)
+            if (near(rCp[k], t))
+                i = k - 1;
+        if (y0)
+            local.push_back(4 + i);
+        else if (x1)
+            local.push_back(4 + e + i);
+        else if (y1)
+            local.push_back(4 + 3 * e - i - 1);
+        else
+            local.push_back(4 + 4 * e - i - 1);
+    }
+    std::vector<double> out(rTargets.size() * rNodes.size());
+    for (std::size_t t = 0; t < rTargets.size(); ++t) {
+        const std::vector<double> shape =
+            mf_serendipity_shape(P, rCp, rTargets[t][0], rTargets[t][1]);
+        for (std::size_t c = 0; c < rNodes.size(); ++c)
+            out[t * rNodes.size() + c] = shape[local[c]];
+    }
+    return out;
+}
+
 const MfInterp& mf_interp(std::map<std::pair<int, int>, MfInterp>& rCache, int Geom, int Dim,
                           const MfDofs& rD, int Order, int Slot) {
     const auto key = std::make_pair(Geom, Slot);
@@ -2425,8 +2596,13 @@ const MfInterp& mf_interp(std::map<std::pair<int, int>, MfInterp>& rCache, int G
     const std::vector<MfPos> pos = mf_canonical(Geom, Dim, rD, in.mIndex);
     in.mNodes = pos.size();
     const lagrange::Shape shape = mf_shape(Geom);
-    in.mMatrix =
-        lagrange::interpolation_matrix(shape, rD.mOrder, pos, mf_vtk_positions(Geom, Order));
+    const std::vector<MfPos> targets = mf_vtk_positions(Geom, Order);
+    if (rD.mPoints == MfSpace::Bernstein)
+        in.mMatrix = mf_bernstein_matrix(Geom, rD.mOrder, pos, targets);
+    else if (rD.mPoints == MfSpace::Serendipity)
+        in.mMatrix = mf_serendipity_matrix(rD.mOrder, rD.mCp, pos, targets);
+    else
+        in.mMatrix = lagrange::interpolation_matrix(shape, rD.mOrder, pos, targets);
     return rCache.emplace(key, std::move(in)).first->second;
 }
 
@@ -3244,6 +3420,12 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
     int mesh_order = 1;
     std::size_t node_dofs = 0;
     const int sdim = f.mSpaceDim;
+    // MFEM's serendipity elements are quadrilaterals
+    bool serendipity_ok = dim == 2;
+    for (const MfElement& el : f.mElements)
+        serendipity_ok = serendipity_ok && el.mGeom == 3;
+    if (f.mHasNodes && f.mNodesSpace.mPoints == MfSpace::Serendipity && !serendipity_ok)
+        f.mNodesSpace.mKind = MfSpace::H1Other;
     if (f.mHasNodes) {
         const MfSpace& s = f.mNodesSpace;
         if (f.mNodes.size() % static_cast<std::size_t>(s.mVDim) != 0)
@@ -3293,6 +3475,13 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
                       s.mCollection);
             continue;
         }
+        if (h1 && s.mPoints == MfSpace::Serendipity && !serendipity_ok) {
+            log::warn(
+                "MFEM grid function '{}': serendipity fields are read on quadrilateral meshes "
+                "only; skipped",
+                g.mPath);
+            continue;
+        }
         if (h1 && s.mOrder >= 2 && (coords == Coords::Discontinuous || has_pyramid)) {
             log::warn(
                 "MFEM grid function '{}': an order-{} field on this mesh is not supported; "
@@ -3325,7 +3514,16 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
             for (std::size_t c = 0; c < pdim; ++c)
                 vxyz[v * pdim + c] = mf_value(f.mNodes, f.mNodesSpace, node_dofs, v, c);
     }
-    if (order >= 3)
+    // Bernstein and serendipity coefficients are no nodal values: every order
+    // of them goes through the interpolating reader.
+    const auto modal = [](const MfSpace& rS) {
+        return rS.mKind == MfSpace::H1 &&
+               (rS.mPoints == MfSpace::Bernstein || rS.mPoints == MfSpace::Serendipity);
+    };
+    bool any_modal = coords == Coords::H1 && modal(f.mNodesSpace);
+    for (const MfGridData& g : gfs)
+        any_modal = any_modal || modal(g.mSpace);
+    if (order >= 3 || (order == 2 && any_modal))
         return mf_read_high_order(f, gfs, coords == Coords::H1, vxyz, order, rPath);
     if (order == 2)
         for (const MfElement& el : f.mElements)
