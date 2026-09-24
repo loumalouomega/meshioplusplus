@@ -37,8 +37,22 @@
  *    3-component vectors, rotated from each node's coordinate system to the
  *    global one; other DOFs (`TEMP`, `PRES`, `VOLT` ...) as scalars. A node the
  *    set has no solution for, and MAPDL's undefined value, are NaN.
- *  - A partial file of a distributed solve is refused (read the combined file);
- *    of a cyclic-symmetry model only the base sector is read.
+ *  - Reaction forces are point data `RF` and `RMOM` (rotated to the global
+ *    axes) and `RF_<DOF label>`; NaN where a node has none.
+ *  - Element nodal stresses and strains (`S`, `EPEL`, `EPPL`, `EPCR`, `EPTH`:
+ *    `xx yy zz xy yz xz`, rotated from the element system by its Euler angles)
+ *    are cell data per element node, `(cells, nodes * 6)` flattened
+ *    point-major with the widest block's node count in every block (NaN at nodes
+ *    that carry none, midside nodes, and past a narrower cell's nodes;
+ *    `field_data["ansys:layout:<name>"]` is `[nodes, 6]`), and point data
+ *    averaged over the elements at each corner node; a layered shell's top
+ *    surface is `<name>@top`. Element nodal forces are cell data `ENF`,
+ *    `(cells, nodes * DOFs)` in the set's DOF order. Line and point elements
+ *    carry none.
+ *  - The main file of a distributed solve (`<job>0.rst`) reads its partial
+ *    files (`<job>1.rst` ...) with it, merged by node number; another partial
+ *    file is refused. Of a cyclic-symmetry model only the base sector is read;
+ *    `read_ansys_rst_cyclic` expands a static one to the full rotor.
  * See doc/formats/ansys_rst.md.
  */
 
@@ -60,8 +74,9 @@ namespace meshioplusplus {
  *        elements whose type has no meshio++ cell
  * @return the mesh with the chosen set's nodal solution
  * @throws ReadError for a file that is not a MAPDL results file, a compressed
- *         or truncated record, a distributed partial file, or an out-of-range
- *         time step
+ *         or truncated record, a distributed partial file other than the main
+ *         one (or a main one whose partial files are missing), or an
+ *         out-of-range time step
  */
 MESHIOPLUSPLUS_API Mesh read_ansys_rst(const std::string& rPath, const ReadOptions& rOptions = {});
 
@@ -70,5 +85,25 @@ MESHIOPLUSPLUS_API Mesh read_ansys_rst(const std::string& rPath, const ReadOptio
  */
 MESHIOPLUSPLUS_API MeshMetadata read_ansys_rst_metadata(const std::string& rPath,
                                                         const ReadOptions& rOptions = {});
+
+/**
+ * @brief Read one result set of a static cyclic-symmetry model as the full rotor.
+ *
+ * The base sector's cells (element numbers up to the model's `csEls`) and their
+ * points are repeated round the cyclic axis (global Z, or the Z axis of the
+ * local coordinate system the model names), each copy's vectors and tensors
+ * rotated with it; `"ansys:sector"` cell data numbers the copies and
+ * `"ansys:sectors"` field data counts them. Coincident nodes on the sector
+ * boundaries are not merged. Otherwise as read_ansys_rst().
+ * @throws ReadError for a model that is not cyclic, or not a static analysis
+ */
+MESHIOPLUSPLUS_API Mesh read_ansys_rst_cyclic(const std::string& rPath,
+                                              const ReadOptions& rOptions = {});
+
+/**
+ * @brief Summarise a static cyclic-symmetry model's full rotor, its set times included.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath,
+                                                               const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus

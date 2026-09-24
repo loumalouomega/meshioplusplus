@@ -212,6 +212,14 @@ std::size_t amod_num_corners(std::string_view Type) {
 Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view Label,
                       AnsysInfo& rInfo,
                       std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex) {
+    std::vector<AnsysCellLocation> cells;
+    return ansys_build_mesh(rModel, Lenient, Label, rInfo, rNodeIndex, cells);
+}
+
+Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view Label,
+                      AnsysInfo& rInfo, std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex,
+                      std::vector<AnsysCellLocation>& rCells) {
+    rCells.assign(rModel.mElements.size(), AnsysCellLocation{});
     std::vector<double> coords = rModel.mCoords;
     const std::string label(Label);
     std::unordered_map<std::int64_t, std::int64_t>& node_index = rNodeIndex;
@@ -233,7 +241,8 @@ Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view L
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_loc;
     std::map<int, std::size_t> skipped;  // routine -> count
 
-    for (const AnsysElement& e : rModel.mElements) {
+    for (std::size_t pos = 0; pos < rModel.mElements.size(); ++pos) {
+        const AnsysElement& e = rModel.mElements[pos];
         const auto rt = rModel.mRoutine.find(e.mSlot);
         if (rt == rModel.mRoutine.end())
             throw ReadError(label + ": element " + std::to_string(e.mId) + " uses element type " +
@@ -303,6 +312,8 @@ Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view L
             row[k] = mit->second;
         }
         element_loc[e.mId] = {it->second, b.Rows()};
+        rCells[pos] = AnsysCellLocation{static_cast<std::int64_t>(it->second),
+                                        static_cast<std::int64_t>(b.Rows()), shape.mSlots};
         b.mConn.insert(b.mConn.end(), row.begin(), row.end());
         b.mRoutine.push_back(routine);
         b.mSlot.push_back(e.mSlot);

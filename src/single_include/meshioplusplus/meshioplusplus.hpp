@@ -5878,6 +5878,24 @@ MESHIOPLUSPLUS_API Mesh
 ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view Label, AnsysInfo& rInfo,
                  std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex);
 
+/// Where one element of an AnsysModel landed: its block and row in the built
+/// mesh, and which element node became each of the cell's nodes (`mSlots[j]`
+/// for cell node `j`). `mBlock` is -1 for an element that has no cell.
+struct AnsysCellLocation {
+    std::int64_t mBlock = -1;
+    std::int64_t mRow = -1;
+    std::vector<int> mSlots;
+};
+
+/**
+ * @brief As above, also filling `rCells` (parallel to `rModel.mElements`) with
+ *        each element's cell, so element results can be placed on it.
+ */
+MESHIOPLUSPLUS_API Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient,
+                                         std::string_view Label, AnsysInfo& rInfo,
+                                         std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex,
+                                         std::vector<AnsysCellLocation>& rCells);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/ansys_model.hpp =====
@@ -10625,7 +10643,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 7
+#define MESHIOPLUSPLUS_VERSION_MINOR 8
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10635,7 +10653,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.7.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.8.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -13686,8 +13704,22 @@ MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath);
  *    3-component vectors, rotated from each node's coordinate system to the
  *    global one; other DOFs (`TEMP`, `PRES`, `VOLT` ...) as scalars. A node the
  *    set has no solution for, and MAPDL's undefined value, are NaN.
- *  - A partial file of a distributed solve is refused (read the combined file);
- *    of a cyclic-symmetry model only the base sector is read.
+ *  - Reaction forces are point data `RF` and `RMOM` (rotated to the global
+ *    axes) and `RF_<DOF label>`; NaN where a node has none.
+ *  - Element nodal stresses and strains (`S`, `EPEL`, `EPPL`, `EPCR`, `EPTH`:
+ *    `xx yy zz xy yz xz`, rotated from the element system by its Euler angles)
+ *    are cell data per element node, `(cells, nodes * 6)` flattened
+ *    point-major with the widest block's node count in every block (NaN at nodes
+ *    that carry none, midside nodes, and past a narrower cell's nodes;
+ *    `field_data["ansys:layout:<name>"]` is `[nodes, 6]`), and point data
+ *    averaged over the elements at each corner node; a layered shell's top
+ *    surface is `<name>@top`. Element nodal forces are cell data `ENF`,
+ *    `(cells, nodes * DOFs)` in the set's DOF order. Line and point elements
+ *    carry none.
+ *  - The main file of a distributed solve (`<job>0.rst`) reads its partial
+ *    files (`<job>1.rst` ...) with it, merged by node number; another partial
+ *    file is refused. Of a cyclic-symmetry model only the base sector is read;
+ *    `read_ansys_rst_cyclic` expands a static one to the full rotor.
  * See doc/formats/ansys_rst.md.
  */
 
@@ -13706,8 +13738,9 @@ namespace meshioplusplus {
  *        elements whose type has no meshio++ cell
  * @return the mesh with the chosen set's nodal solution
  * @throws ReadError for a file that is not a MAPDL results file, a compressed
- *         or truncated record, a distributed partial file, or an out-of-range
- *         time step
+ *         or truncated record, a distributed partial file other than the main
+ *         one (or a main one whose partial files are missing), or an
+ *         out-of-range time step
  */
 MESHIOPLUSPLUS_API Mesh read_ansys_rst(const std::string& rPath, const ReadOptions& rOptions = {});
 
@@ -13716,6 +13749,26 @@ MESHIOPLUSPLUS_API Mesh read_ansys_rst(const std::string& rPath, const ReadOptio
  */
 MESHIOPLUSPLUS_API MeshMetadata read_ansys_rst_metadata(const std::string& rPath,
                                                         const ReadOptions& rOptions = {});
+
+/**
+ * @brief Read one result set of a static cyclic-symmetry model as the full rotor.
+ *
+ * The base sector's cells (element numbers up to the model's `csEls`) and their
+ * points are repeated round the cyclic axis (global Z, or the Z axis of the
+ * local coordinate system the model names), each copy's vectors and tensors
+ * rotated with it; `"ansys:sector"` cell data numbers the copies and
+ * `"ansys:sectors"` field data counts them. Coincident nodes on the sector
+ * boundaries are not merged. Otherwise as read_ansys_rst().
+ * @throws ReadError for a model that is not cyclic, or not a static analysis
+ */
+MESHIOPLUSPLUS_API Mesh read_ansys_rst_cyclic(const std::string& rPath,
+                                              const ReadOptions& rOptions = {});
+
+/**
+ * @brief Summarise a static cyclic-symmetry model's full rotor, its set times included.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath,
+                                                               const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ansys_rst.hpp =====
@@ -16085,6 +16138,76 @@ MESHIOPLUSPLUS_API Mesh read_lsdyna(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/lsdyna.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/marc.hpp =====
+/**
+ * @file marc.hpp
+ * @brief MSC Marc input decks (`.dat`) and formatted post files (`.t19`), read.
+ *
+ *  - An input deck's model definition makes the mesh: `COORDINATES` (the last
+ *    definition of a node wins) and `CONNECTIVITY`, in fixed fields (5/10
+ *    columns, twice as wide after the `EXTENDED` parameter, reals with or
+ *    without an exponent letter) or free (comma) format. Every Marc element
+ *    type lists its nodes in meshio++'s order; an 8-node brick with repeated
+ *    nodes is a wedge, pyramid or tetrahedron. `"marc:element"` and
+ *    `"marc:type"` cell data keep the element number and Marc type; elements of
+ *    a type meshio++ has no cell for are skipped with a warning.
+ *  - `DEFINE ELEMENT SET` / `DEFINE NODE SET` become cell and point regions:
+ *    numbers, `a TO b [BY c]` ranges and earlier sets' names, combined by `AND`,
+ *    `EXCEPT` and `INTERSECT`, continued by a trailing `C`. Other set kinds
+ *    (edges, faces ...) are skipped with a warning. History definition is not
+ *    read.
+ *  - A `.t19` post file (Volume D, PLDUMP2000) gives the same mesh and sets,
+ *    and one step per increment: its time (a frequency or buckling factor in a
+ *    modal, harmonic or buckling analysis) is `field_data["meshio:time"]` with
+ *    `"marc:increment"` and `"marc:subincrement"`; nodal vectors are point data
+ *    named as the file names them; element post codes are cell data per
+ *    integration point, `(cells, points * components)` flattened point-major
+ *    with `field_data["marc:layout:<name>"]` = `[points, components]`
+ *    (`(cells[, components])` and no layout when an element has one), a
+ *    tensor's six codes combined as `xx yy zz xy yz zx`.
+ *    Increments that remesh the model are refused.
+ * See doc/formats/marc.md.
+ */
+
+// System includes
+#include <string>
+#include <string_view>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Whether `Head` (the start of a `.dat` file) is a Marc input deck: its
+ *        first keyword line is a Marc parameter with no `=` (unlike a Tecplot
+ *        header), and a `CONNECTIVITY`, `COORDINATES` or `END` line follows.
+ */
+MESHIOPLUSPLUS_API bool is_marc_deck(std::string_view Head);
+
+/**
+ * @brief Read an MSC Marc input deck.
+ * @throws ReadError for a file that is not a Marc deck, a malformed field, an
+ *         element naming an undefined node, or a set naming an undefined member
+ */
+MESHIOPLUSPLUS_API Mesh read_marc(const std::string& rPath);
+
+/**
+ * @brief Read one increment of an MSC Marc formatted post file.
+ * @param rOptions `mTimeStep` picks the increment (negative counts from the
+ *        end); `mPointsOnly`/`mDataArrays` narrow the data read
+ * @throws ReadError for a file that is not a post file, a remeshing increment,
+ *         or an out-of-range time step
+ */
+MESHIOPLUSPLUS_API Mesh read_marc_t19(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/**
+ * @brief Summarise an MSC Marc formatted post file, its increment times included.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_marc_t19_metadata(const std::string& rPath,
+                                                       const ReadOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/marc.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/mdpa.hpp =====
 /**
  * @file mdpa.hpp
@@ -44646,6 +44769,14 @@ std::size_t amod_num_corners(std::string_view Type) {
 Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view Label,
                       AnsysInfo& rInfo,
                       std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex) {
+    std::vector<AnsysCellLocation> cells;
+    return ansys_build_mesh(rModel, Lenient, Label, rInfo, rNodeIndex, cells);
+}
+
+Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view Label,
+                      AnsysInfo& rInfo, std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex,
+                      std::vector<AnsysCellLocation>& rCells) {
+    rCells.assign(rModel.mElements.size(), AnsysCellLocation{});
     std::vector<double> coords = rModel.mCoords;
     const std::string label(Label);
     std::unordered_map<std::int64_t, std::int64_t>& node_index = rNodeIndex;
@@ -44667,7 +44798,8 @@ Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view L
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_loc;
     std::map<int, std::size_t> skipped;  // routine -> count
 
-    for (const AnsysElement& e : rModel.mElements) {
+    for (std::size_t pos = 0; pos < rModel.mElements.size(); ++pos) {
+        const AnsysElement& e = rModel.mElements[pos];
         const auto rt = rModel.mRoutine.find(e.mSlot);
         if (rt == rModel.mRoutine.end())
             throw ReadError(label + ": element " + std::to_string(e.mId) + " uses element type " +
@@ -44737,6 +44869,8 @@ Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view L
             row[k] = mit->second;
         }
         element_loc[e.mId] = {it->second, b.Rows()};
+        rCells[pos] = AnsysCellLocation{static_cast<std::int64_t>(it->second),
+                                        static_cast<std::int64_t>(b.Rows()), shape.mSlots};
         b.mConn.insert(b.mConn.end(), row.begin(), row.end());
         b.mRoutine.push_back(routine);
         b.mSlot.push_back(e.mSlot);
@@ -55321,13 +55455,19 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
 // ===== end src/cpp/src/formats/ansys.cpp =====
 // ===== begin src/cpp/src/formats/ansys_rst.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <map>
+#include <memory>
 #include <string>
+#include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -55536,7 +55676,11 @@ struct RstSet {
 
 // The headers and the per-set pointers of a results file.
 struct RstResults {
-    std::int64_t mNumNodes = 0, mNumSectors = 0;
+    std::int64_t mNumNodes = 0, mNumSectors = 0, mKan = 0;
+    std::int64_t mCsEls = 0, mCsCord = 0, mGlobalNodes = 0;
+    bool mSparseEns = true;  // else ENS holds 11 items per node
+    bool mDistributed = false;
+    std::uint64_t mPtrGnod = 0;
     std::vector<std::int64_t> mNeqv;
     std::vector<RstSet> mSets;
     std::uint64_t mGeometry = 0;
@@ -55548,12 +55692,14 @@ struct RstResults {
         const RstRecord h = rFile.Record(standard.mNext);
         mNumNodes = h.Int(2);
         const std::int64_t resmax = h.Int(3), nsets = h.Int(8);
+        mKan = h.Int(7);
+        mCsEls = h.Int(18);
         mNumSectors = h.Int(20);
-        const std::int64_t global_nnod = h.Int(48);
-        if (global_nnod != 0 && global_nnod != mNumNodes)
-            rst_fail("a partial result file of a distributed solve (" + std::to_string(mNumNodes) +
-                     " of " + std::to_string(global_nnod) +
-                     " nodes); read the combined file (RESCOMBINE)");
+        mCsCord = h.Int(21);
+        mSparseEns = h.Int(39) != 0;
+        mGlobalNodes = h.Int(48);
+        mPtrGnod = rst_pointer(h, 49, 50);
+        mDistributed = mGlobalNodes != 0 && mGlobalNodes != mNumNodes;
         const RstRecord neqv = rFile.Record(rst_pointer(h, 14, 45));
         for (std::size_t k = 0; k < neqv.mValues.size() && k < static_cast<std::size_t>(mNumNodes);
              ++k)
@@ -55583,27 +55729,51 @@ struct RstResults {
     }
 };
 
-struct RstModel {
-    Mesh mMesh;
-    std::unordered_map<std::int64_t, std::int64_t> mNodeIndex;
-    std::vector<double> mAngles;  // THXY, THYZ, THZX per node, in degrees
+// Where an element type's results sit: nodes with element nodal forces (item 63),
+// nodes with stresses and strains (item 94: the corners), and the surfaces a
+// layered shell stores them for (SHELL181/281 with KEYOPT(8) = 0: bottom, top).
+struct RstLayout {
+    std::int64_t mNodfor = 0, mNodstr = 0;
+    int mLayers = 1;
 };
 
-RstModel rst_model(const RstFile& rFile, const RstResults& rResults, bool Lenient) {
-    const RstRecord g = rFile.Record(rResults.mGeometry);
+// One results file of a read: its records, headers and model.
+struct RstPart {
+    RstFile mFile;
+    RstResults mResults;
+    detail::AnsysModel mModel;
+    std::vector<double> mAngles;  // THXY, THYZ, THZX per node, in degrees
+    std::map<int, RstLayout> mLayout;
+    std::uint64_t mPtrCsy = 0;
+    std::int64_t mMaxCsy = 0;
+    bool mMapFlag = false;
+
+    RstPart(const std::string& rPath, const ReadOptions& rOptions)
+        : mFile(rPath, rOptions), mResults(mFile) {}
+
+    void ReadModel();
+    std::pair<std::array<double, 9>, std::array<double, 3>> CoordinateSystem(
+        std::int64_t Number) const;
+};
+
+void RstPart::ReadModel() {
+    const RstFile& file = mFile;
+    const RstRecord g = file.Record(mResults.mGeometry);
     const std::int64_t maxety = g.Int(1), nnod = g.Int(3), nelm = g.Int(4);
     const std::uint64_t ptr_ety = rst_pointer(g, 20, 21, 6);
     const std::uint64_t ptr_loc = rst_pointer(g, 26, 27, 8);
     const std::uint64_t ptr_eid = rst_pointer(g, 28, 29, 10);
+    mMapFlag = g.Int(64) != 0;
+    mPtrCsy = rst_pointer(g, 24, 25, 9);
+    mMaxCsy = g.Int(5);
 
-    detail::AnsysModel model;
     std::unordered_map<int, std::int64_t> nodelm;
     // Element types: an index record of offsets from ptrETY (in the record after
     // it since 2021R1's mapFlag), each to one type's description.
-    const RstRecord table = rFile.Record(ptr_ety);
+    const RstRecord table = file.Record(ptr_ety);
     std::vector<std::int64_t> offsets;
-    if (g.Int(64)) {
-        const RstRecord map = rFile.Record(table.mNext);
+    if (mMapFlag) {
+        const RstRecord map = file.Record(table.mNext);
         for (std::size_t k = 0; k < map.mValues.size(); ++k)
             offsets.push_back(map.Int(k));
     } else {
@@ -55613,40 +55783,45 @@ RstModel rst_model(const RstFile& rFile, const RstResults& rResults, bool Lenien
                 offsets.push_back(table.Int(k));
     }
     for (std::int64_t off : offsets) {
-        const RstRecord info = rFile.Record(ptr_ety + static_cast<std::uint64_t>(off));
+        const RstRecord info = file.Record(ptr_ety + static_cast<std::uint64_t>(off));
         if (info.mValues.size() < 2)
             continue;
         const int slot = static_cast<int>(info.Int(0));
-        model.mRoutine[slot] = static_cast<int>(info.Int(1));
-        model.mKeyopt[slot][1] = static_cast<int>(info.Int(2));
+        const int routine = static_cast<int>(info.Int(1));
+        mModel.mRoutine[slot] = routine;
+        mModel.mKeyopt[slot][1] = static_cast<int>(info.Int(2));
         nodelm[slot] = info.Int(60);
+        RstLayout layout;
+        layout.mNodfor = info.Int(62);
+        layout.mNodstr = info.Int(93);
+        layout.mLayers = (routine == 181 || routine == 281) && info.Int(9) == 0 ? 2 : 1;
+        mLayout[slot] = layout;
     }
 
-    std::vector<double> angles;
     std::uint64_t ptr = ptr_loc;
     for (std::int64_t k = 0; k < nnod; ++k) {
-        const RstRecord node = rFile.Record(ptr);
+        const RstRecord node = file.Record(ptr);
         ptr = node.mNext;
         const auto at = [&](std::size_t K) {
             return K < node.mValues.size() ? node.mValues[K] : 0.0;
         };
-        model.mNodeIds.push_back(static_cast<std::int64_t>(at(0)));
+        mModel.mNodeIds.push_back(static_cast<std::int64_t>(at(0)));
         for (std::size_t d = 1; d <= 3; ++d)
-            model.mCoords.push_back(at(d));
+            mModel.mCoords.push_back(at(d));
         for (std::size_t d = 4; d <= 6; ++d)
-            angles.push_back(at(d));
+            mAngles.push_back(at(d));
     }
 
     if (nelm > 0) {
         // The element index holds 64-bit offsets from ptrEID in 32-bit words.
-        const RstRecord index = rFile.Record(ptr_eid);
+        const RstRecord index = file.Record(ptr_eid);
         for (std::int64_t e = 0; e < nelm; ++e) {
             const auto k = static_cast<std::size_t>(e);
             const std::int64_t off = static_cast<std::int64_t>(
                 static_cast<std::uint64_t>(static_cast<std::uint32_t>(index.Int(2 * k))) |
                 (static_cast<std::uint64_t>(index.Int(2 * k + 1)) << 32));
             const std::uint64_t at = ptr_eid + static_cast<std::uint64_t>(off);
-            const RstRecord rec = rFile.Record(at);
+            const RstRecord rec = file.Record(at);
             if (rec.mValues.size() < 10)
                 rst_fail("the element record at word " + std::to_string(at) + " is truncated");
             detail::AnsysElement el;
@@ -55660,14 +55835,14 @@ RstModel rst_model(const RstFile& rFile, const RstResults& rResults, bool Lenien
                 n = std::min(n, static_cast<std::size_t>(it->second));
             for (std::size_t j = 0; j < n; ++j)
                 el.mNodes.push_back(rec.Int(10 + j));
-            model.mElements.push_back(std::move(el));
+            mModel.mElements.push_back(std::move(el));
         }
     }
 
     ptr = rst_pointer(g, 50, 51);
     const std::int64_t n_components = ptr ? g.Int(48) : 0;
     for (std::int64_t c = 0; c < n_components; ++c) {
-        const RstRecord comp = rFile.Record(ptr);
+        const RstRecord comp = file.Record(ptr);
         ptr = comp.mNext;
         const std::int64_t kind = comp.Int(0);
         if (comp.mValues.size() < 9 || (kind != 1 && kind != 2))
@@ -55684,14 +55859,43 @@ RstModel rst_model(const RstFile& rFile, const RstResults& rResults, bool Lenien
                 for (std::int64_t id = out.mIds.back() + 1; id <= -v; ++id)
                     out.mIds.push_back(id);
         }
-        model.mComponents.push_back(std::move(out));
+        mModel.mComponents.push_back(std::move(out));
     }
+}
 
-    RstModel out;
-    AnsysInfo info;
-    out.mMesh = detail::ansys_build_mesh(model, Lenient, "Ansys .rst", info, out.mNodeIndex);
-    out.mAngles = std::move(angles);
-    return out;
+// (axes, origin) of local coordinate system Number: the rows of axes are its X,
+// Y and Z axes in global coordinates.
+std::pair<std::array<double, 9>, std::array<double, 3>> RstPart::CoordinateSystem(
+    std::int64_t Number) const {
+    if (mPtrCsy) {
+        const RstRecord table = mFile.Record(mPtrCsy);
+        std::vector<std::int64_t> offsets;
+        if (mMapFlag) {
+            const RstRecord map = mFile.Record(table.mNext);
+            for (std::size_t k = 0; k < map.mValues.size(); ++k)
+                offsets.push_back(map.Int(k));
+        } else {
+            for (std::size_t k = 0;
+                 k < table.mValues.size() &&
+                 k < static_cast<std::size_t>(std::max<std::int64_t>(mMaxCsy, 0));
+                 ++k)
+                offsets.push_back(table.Int(k));
+        }
+        for (std::int64_t off : offsets) {
+            if (!off)
+                continue;
+            const RstRecord data = mFile.Record(mPtrCsy + static_cast<std::uint64_t>(off));
+            if (data.mValues.size() >= 22 && data.Int(21) == Number) {
+                std::array<double, 9> axes{};
+                std::array<double, 3> origin{};
+                std::copy(data.mValues.begin(), data.mValues.begin() + 9, axes.begin());
+                std::copy(data.mValues.begin() + 9, data.mValues.begin() + 12, origin.begin());
+                return {axes, origin};
+            }
+        }
+    }
+    rst_fail("coordinate system " + std::to_string(Number) +
+             " (the cyclic axis) is not in the file");
 }
 
 // Nodal to global: a node's axes are the global ones turned about Z by THXY,
@@ -55751,108 +55955,918 @@ const char* rst_scalar_name(std::int64_t Code) {
     }
 }
 
-void rst_solution(const RstFile& rFile, const RstResults& rResults, std::size_t Index,
-                  RstModel& rModel, const ReadOptions& rOptions) {
-    const std::uint64_t base = rResults.mSets[Index].mPointer;
-    const RstRecord s = rFile.Record(base);
-    const std::int64_t nnod = s.Int(2), numdof = s.Int(19);
-    std::vector<std::int64_t> dofs;
-    for (std::int64_t k = 0; k < numdof; ++k)
-        dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
-    const std::int64_t sumdof = numdof + s.Int(97);
-    const std::uint64_t ptr_nsl = rst_pointer(s, 104, 105, 10);
-    if (!ptr_nsl || numdof <= 0)
-        return;
-    const RstRecord values = rFile.Record(base + ptr_nsl);
-    const auto width = static_cast<std::size_t>(sumdof);
-    const std::size_t rows = std::min(static_cast<std::size_t>(std::max<std::int64_t>(nnod, 0)),
-                                      values.mValues.size() / width);
-    std::vector<std::int64_t> numbers;
-    if (rows < static_cast<std::size_t>(nnod)) {
-        // Not every node has a solution: the next record lists which.
-        const RstRecord which = rFile.Record(values.mNext);
-        if (which.mValues.size() < rows)
-            rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt node index");
-        for (std::size_t r = 0; r < rows; ++r) {
-            const std::int64_t k = which.Int(r) - 1;
-            if (k < 0 || k >= static_cast<std::int64_t>(rResults.mNeqv.size()))
-                rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt node index");
-            numbers.push_back(rResults.mNeqv[static_cast<std::size_t>(k)]);
-        }
-    } else {
-        for (std::size_t r = 0; r < rows; ++r)
-            numbers.push_back(r < rResults.mNeqv.size() ? rResults.mNeqv[r] : -1);
-    }
-    std::vector<std::int64_t> points(rows, -1);
-    for (std::size_t r = 0; r < rows; ++r)
-        if (const auto it = rModel.mNodeIndex.find(numbers[r]); it != rModel.mNodeIndex.end())
-            points[r] = it->second;
-    const auto cell = [&](std::size_t R, std::size_t K) {
-        const double v = values.mValues[R * width + K];
-        return std::fabs(v) == kRstUndefined ? std::numeric_limits<double>::quiet_NaN() : v;
-    };
+// A DOF's label, for RF_<label> reaction names.
+std::string rst_dof_label(std::int64_t Code) {
+    static const char* const kLabels[] = {"UX", "UY", "UZ", "ROTX", "ROTY", "ROTZ",
+                                          "AX", "AY", "AZ", "VX",   "VY",   "VZ"};
+    if (Code >= 1 && Code <= 12)
+        return kLabels[Code - 1];
+    if (const char* known = rst_scalar_name(Code))
+        return known;
+    return "DOF" + std::to_string(Code);
+}
 
-    std::unordered_map<std::int64_t, std::size_t> column;
-    for (std::size_t k = 0; k < dofs.size(); ++k)
-        column.emplace(dofs[k], k);
-    const std::size_t n_points = rModel.mMesh.NumPoints();
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    static const std::pair<const char*, std::int64_t> kVectors[] = {
-        {"U", 1}, {"ROT", 4}, {"A", 7}, {"V", 10}};
-    for (const auto& [name, first] : kVectors) {
-        const bool any = column.count(first) || column.count(first + 1) || column.count(first + 2);
-        if (!any || !rOptions.WantsArray(name))
-            continue;
-        NDArray out(DType::Float64, {n_points, 3});
-        double* p = out.As<double>();
-        std::fill(p, p + n_points * 3, nan);
-        for (std::size_t r = 0; r < rows; ++r) {
-            if (points[r] < 0)
-                continue;
-            double v[3] = {0.0, 0.0, 0.0};
-            for (std::int64_t d = 0; d < 3; ++d)
-                if (const auto it = column.find(first + d); it != column.end())
-                    v[d] = cell(r, it->second);
-            const auto point = static_cast<std::size_t>(points[r]);
-            if (point * 3 + 2 < rModel.mAngles.size())
-                rst_rotate(v, &rModel.mAngles[point * 3]);
-            std::copy(v, v + 3, p + point * 3);
+// The element solution: each element's pointer table (ptrESL) has one entry per
+// kind of record, in this order (fdresu.inc).
+constexpr std::size_t kRstEnf = 1, kRstEns = 2, kRstEel = 5, kRstEpl = 6, kRstEcr = 7, kRstEth = 8,
+                      kRstEul = 9;
+
+// Element nodal tensors: name, table entry, items per node (the first six are
+// the components xx yy zz xy yz xz), stress (else engineering strain).
+struct RstTensor {
+    const char* mName;
+    std::size_t mEntry;
+    std::size_t mItems;
+    bool mStress;
+};
+constexpr RstTensor kRstTensors[] = {
+    {"S", kRstEns, 6, true},     {"EPEL", kRstEel, 7, false}, {"EPPL", kRstEpl, 7, false},
+    {"EPCR", kRstEcr, 7, false}, {"EPTH", kRstEth, 8, false},
+};
+constexpr const char* kRstTop = "@top";  // a layered shell's top surface
+
+bool rst_is_tensor(const std::string& rName, bool* pStress) {
+    for (const RstTensor& t : kRstTensors)
+        if (rName == t.mName || rName == std::string(t.mName) + kRstTop) {
+            if (pStress)
+                *pStress = t.mStress;
+            return true;
         }
-        rModel.mMesh.AddPointData(name, std::move(out));
+    return false;
+}
+
+bool rst_is_vector(const std::string& rName) {
+    return rName == "U" || rName == "ROT" || rName == "A" || rName == "V" || rName == "RF" ||
+           rName == "RMOM";
+}
+
+// Q T Q^T for one tensor xx yy zz xy yz xz (in place); a strain's shear
+// components are engineering strains.
+void rst_rotate_tensor(double* pT, const double* pQ, bool Stress) {
+    const double shear = Stress ? 1.0 : 0.5;
+    const double t[9] = {pT[0],         shear * pT[3], shear * pT[5], shear * pT[3], pT[1],
+                         shear * pT[4], shear * pT[5], shear * pT[4], pT[2]};
+    double qt[9], out[9];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double v = 0.0;
+            for (int k = 0; k < 3; ++k)
+                v += pQ[i * 3 + k] * t[k * 3 + j];
+            qt[i * 3 + j] = v;
+        }
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double v = 0.0;
+            for (int k = 0; k < 3; ++k)
+                v += qt[i * 3 + k] * pQ[j * 3 + k];
+            out[i * 3 + j] = v;
+        }
+    pT[0] = out[0];
+    pT[1] = out[4];
+    pT[2] = out[8];
+    pT[3] = out[1] / shear;
+    pT[4] = out[5] / shear;
+    pT[5] = out[2] / shear;
+}
+
+// MAPDL's element rotation (THXY, THYZ, THZX in degrees, 3-1-2) as the matrix
+// Q = R^T taking a tensor from the element system to the global one.
+std::array<double, 9> rst_euler_to_global(const double* pAngles) {
+    const double deg = std::acos(-1.0) / 180.0;
+    const double c1 = std::cos(pAngles[0] * deg), c2 = std::cos(pAngles[1] * deg),
+                 c3 = std::cos(pAngles[2] * deg);
+    const double s1 = std::sin(pAngles[0] * deg), s2 = std::sin(pAngles[1] * deg),
+                 s3 = std::sin(pAngles[2] * deg);
+    const double r[9] = {
+        c1 * c3 - s1 * s2 * s3, s1 * c3 + c1 * s2 * s3, -s3 * c2, -s1 * c2, c1 * c2, s2,
+        c1 * s3 + s1 * s2 * c3, s1 * s3 - c1 * c3 * s2, c2 * c3};
+    return {r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]};
+}
+
+// Rodrigues: the rotation by Theta about unit vector pAxis.
+std::array<double, 9> rst_axis_rotation(const double* pAxis, double Theta) {
+    const double x = pAxis[0], y = pAxis[1], z = pAxis[2];
+    const double c = std::cos(Theta), s = std::sin(Theta), t = 1.0 - c;
+    return {c + t * x * x,     t * x * y - s * z, t * x * z + s * y,
+            t * x * y + s * z, c + t * y * y,     t * y * z - s * x,
+            t * x * z - s * y, t * y * z + s * x, c + t * z * z};
+}
+
+// The model of one results file, or of a distributed solve's files merged by
+// node number (each element lives in one file).
+struct RstModel {
+    std::vector<std::unique_ptr<RstPart>> mParts;
+    std::vector<std::size_t> mOffsets;  // each part's first element in the merged list
+    detail::AnsysModel mModel;
+    std::map<int, RstLayout> mLayout;
+    std::vector<double> mAngles;
+    Mesh mMesh;
+    std::unordered_map<std::int64_t, std::int64_t> mNodeIndex;
+    std::vector<detail::AnsysCellLocation> mCells;
+};
+
+// The results file, with its partial siblings when it is the main file of a
+// distributed solve (file0.rst beside file1.rst ...).
+std::vector<std::unique_ptr<RstPart>> rst_open(const std::string& rPath,
+                                               const ReadOptions& rOptions) {
+    std::vector<std::unique_ptr<RstPart>> parts;
+    parts.push_back(std::make_unique<RstPart>(rPath, rOptions));
+    const RstResults& main = parts[0]->mResults;
+    if (!main.mDistributed)
+        return parts;
+    if (!main.mPtrGnod)
+        rst_fail("a partial result file of a distributed solve (" + std::to_string(main.mNumNodes) +
+                 " of " + std::to_string(main.mGlobalNodes) +
+                 " nodes) that is not the main one; read the file whose name ends in 0 (it "
+                 "finds the others), or the combined file (RESCOMBINE)");
+    const std::filesystem::path path(rPath);
+    const std::string stem = path.stem().string();
+    const std::string ext = path.extension().string();
+    if (stem.empty() || stem.back() != '0')
+        rst_fail("the main file of a distributed solve must be named <job>0" + ext +
+                 " to find its partial files");
+    const std::string job = stem.substr(0, stem.size() - 1);
+    for (;;) {
+        const std::filesystem::path sibling =
+            path.parent_path() / (job + std::to_string(parts.size()) + ext);
+        std::error_code ec;
+        if (!std::filesystem::exists(sibling, ec))
+            break;
+        auto part = std::make_unique<RstPart>(sibling.string(), rOptions);
+        if (!part->mResults.mDistributed || part->mResults.mSets.size() != main.mSets.size())
+            rst_fail(sibling.filename().string() + " is not a partial file of the same solve");
+        parts.push_back(std::move(part));
     }
-    for (std::size_t k = 0; k < dofs.size(); ++k) {
-        const std::int64_t code = dofs[k];
-        if (code >= 1 && code <= 12)
+    return parts;
+}
+
+RstModel rst_model(std::vector<std::unique_ptr<RstPart>> Parts, bool Lenient) {
+    RstModel out;
+    out.mParts = std::move(Parts);
+    std::unordered_map<std::int64_t, std::size_t> seen;
+    std::vector<std::pair<std::string, bool>> component_order;
+    std::map<std::pair<std::string, bool>, std::vector<std::int64_t>> components;
+    for (auto& part : out.mParts) {
+        part->ReadModel();
+        const detail::AnsysModel& m = part->mModel;
+        out.mOffsets.push_back(out.mModel.mElements.size());
+        out.mModel.mElements.insert(out.mModel.mElements.end(), m.mElements.begin(),
+                                    m.mElements.end());
+        for (const auto& [slot, routine] : m.mRoutine)
+            out.mModel.mRoutine.emplace(slot, routine);
+        for (const auto& [slot, keys] : m.mKeyopt)
+            out.mModel.mKeyopt.emplace(slot, keys);
+        for (const auto& [slot, layout] : part->mLayout)
+            out.mLayout.emplace(slot, layout);
+        for (std::size_t k = 0; k < m.mNodeIds.size(); ++k) {
+            if (!seen.emplace(m.mNodeIds[k], out.mModel.mNodeIds.size()).second)
+                continue;
+            out.mModel.mNodeIds.push_back(m.mNodeIds[k]);
+            for (std::size_t d = 0; d < 3; ++d) {
+                out.mModel.mCoords.push_back(m.mCoords[k * 3 + d]);
+                out.mAngles.push_back(part->mAngles[k * 3 + d]);
+            }
+        }
+        for (const detail::AnsysComponent& c : m.mComponents) {
+            const auto key = std::make_pair(c.mName, c.mNodes);
+            auto [it, fresh] = components.emplace(key, std::vector<std::int64_t>{});
+            if (fresh) {
+                component_order.push_back(key);
+                it->second = c.mIds;
+                continue;
+            }
+            std::unordered_set<std::int64_t> known(it->second.begin(), it->second.end());
+            for (std::int64_t id : c.mIds)
+                if (known.insert(id).second)
+                    it->second.push_back(id);
+        }
+    }
+    if (out.mParts.size() > 1) {
+        const RstPart& main = *out.mParts[0];
+        const RstRecord gnod = main.mFile.Record(main.mResults.mPtrGnod);
+        std::size_t missing = 0;
+        for (std::size_t k = 0; k < gnod.mValues.size(); ++k)
+            if (!seen.count(gnod.Int(k)))
+                ++missing;
+        if (missing)
+            rst_fail("the partial files hold " + std::to_string(seen.size()) + " of the " +
+                     std::to_string(seen.size() + missing) +
+                     " nodes of the distributed solve; one is missing");
+    }
+    for (const auto& key : component_order) {
+        detail::AnsysComponent c;
+        c.mName = key.first;
+        c.mNodes = key.second;
+        c.mIds = components[key];
+        out.mModel.mComponents.push_back(std::move(c));
+    }
+    AnsysInfo info;
+    out.mMesh = detail::ansys_build_mesh(out.mModel, Lenient, "Ansys .rst", info, out.mNodeIndex,
+                                         out.mCells);
+    return out;
+}
+
+std::int64_t rst_point_of(const RstModel& rModel, std::int64_t Number) {
+    const auto it = rModel.mNodeIndex.find(Number);
+    return it == rModel.mNodeIndex.end() ? -1 : it->second;
+}
+
+NDArray rst_filled(std::size_t Rows, std::size_t Cols) {
+    NDArray out = Cols ? NDArray(DType::Float64, {Rows, Cols}) : NDArray(DType::Float64, {Rows});
+    double* p = out.As<double>();
+    std::fill(p, p + out.Size(), std::numeric_limits<double>::quiet_NaN());
+    return out;
+}
+
+// The nodal DOF solution of result set Index, from every part.
+void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptions) {
+    const std::size_t n_points = rModel.mMesh.NumPoints();
+    std::map<std::string, NDArray> vectors, scalars;
+    for (const auto& part : rModel.mParts) {
+        const RstFile& file = part->mFile;
+        const RstResults& results = part->mResults;
+        const std::uint64_t base = results.mSets[Index].mPointer;
+        const RstRecord s = file.Record(base);
+        const std::int64_t nnod = s.Int(2), numdof = s.Int(19);
+        std::vector<std::int64_t> dofs;
+        for (std::int64_t k = 0; k < numdof; ++k)
+            dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
+        const std::int64_t sumdof = numdof + s.Int(97);
+        const std::uint64_t ptr_nsl = rst_pointer(s, 104, 105, 10);
+        if (!ptr_nsl || numdof <= 0)
             continue;
-        const char* known = rst_scalar_name(code);
-        const std::string name = known ? known : "DOF" + std::to_string(code);
-        if (!rOptions.WantsArray(name))
-            continue;
-        NDArray out(DType::Float64, {n_points});
-        double* p = out.As<double>();
-        std::fill(p, p + n_points, nan);
+        const RstRecord values = file.Record(base + ptr_nsl);
+        const auto width = static_cast<std::size_t>(sumdof);
+        const std::size_t rows = std::min(static_cast<std::size_t>(std::max<std::int64_t>(nnod, 0)),
+                                          values.mValues.size() / width);
+        std::vector<std::int64_t> numbers;
+        if (rows < static_cast<std::size_t>(nnod)) {
+            // Not every node has a solution: the next record lists which.
+            const RstRecord which = file.Record(values.mNext);
+            if (which.mValues.size() < rows)
+                rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt node index");
+            for (std::size_t r = 0; r < rows; ++r) {
+                const std::int64_t k = which.Int(r) - 1;
+                if (k < 0 || k >= static_cast<std::int64_t>(results.mNeqv.size()))
+                    rst_fail("result set " + std::to_string(Index + 1) +
+                             " has a corrupt node index");
+                numbers.push_back(results.mNeqv[static_cast<std::size_t>(k)]);
+            }
+        } else {
+            for (std::size_t r = 0; r < rows; ++r)
+                numbers.push_back(r < results.mNeqv.size() ? results.mNeqv[r] : -1);
+        }
+        std::vector<std::int64_t> points(rows, -1);
         for (std::size_t r = 0; r < rows; ++r)
-            if (points[r] >= 0)
-                p[points[r]] = cell(r, k);
-        rModel.mMesh.AddPointData(name, std::move(out));
+            points[r] = rst_point_of(rModel, numbers[r]);
+        const auto cell = [&](std::size_t R, std::size_t K) {
+            const double v = values.mValues[R * width + K];
+            return std::fabs(v) == kRstUndefined ? std::numeric_limits<double>::quiet_NaN() : v;
+        };
+
+        std::unordered_map<std::int64_t, std::size_t> column;
+        for (std::size_t k = 0; k < dofs.size(); ++k)
+            column.emplace(dofs[k], k);
+        static const std::pair<const char*, std::int64_t> kVectors[] = {
+            {"U", 1}, {"ROT", 4}, {"A", 7}, {"V", 10}};
+        for (const auto& [name, first] : kVectors) {
+            const bool any =
+                column.count(first) || column.count(first + 1) || column.count(first + 2);
+            if (!any || !rOptions.WantsArray(name))
+                continue;
+            auto it = vectors.find(name);
+            if (it == vectors.end())
+                it = vectors.emplace(name, rst_filled(n_points, 3)).first;
+            double* p = it->second.As<double>();
+            for (std::size_t r = 0; r < rows; ++r) {
+                if (points[r] < 0)
+                    continue;
+                double v[3] = {0.0, 0.0, 0.0};
+                for (std::int64_t d = 0; d < 3; ++d)
+                    if (const auto c = column.find(first + d); c != column.end())
+                        v[d] = cell(r, c->second);
+                const auto point = static_cast<std::size_t>(points[r]);
+                rst_rotate(v, &rModel.mAngles[point * 3]);
+                std::copy(v, v + 3, p + point * 3);
+            }
+        }
+        for (std::size_t k = 0; k < dofs.size(); ++k) {
+            const std::int64_t code = dofs[k];
+            if (code >= 1 && code <= 12)
+                continue;
+            const char* known = rst_scalar_name(code);
+            const std::string name = known ? known : "DOF" + std::to_string(code);
+            if (!rOptions.WantsArray(name))
+                continue;
+            auto it = scalars.find(name);
+            if (it == scalars.end())
+                it = scalars.emplace(name, rst_filled(n_points, 0)).first;
+            double* p = it->second.As<double>();
+            for (std::size_t r = 0; r < rows; ++r)
+                if (points[r] >= 0)
+                    p[points[r]] = cell(r, k);
+        }
+    }
+    for (auto& [name, data] : vectors)
+        rModel.mMesh.AddPointData(name, std::move(data));
+    for (auto& [name, data] : scalars)
+        rModel.mMesh.AddPointData(name, std::move(data));
+}
+
+// The reaction forces of result set Index: RF and RMOM (global axes) and
+// RF_<DOF label>.
+void rst_reactions(RstModel& rModel, std::size_t Index, const ReadOptions& rOptions) {
+    const std::size_t n_points = rModel.mMesh.NumPoints();
+    std::map<std::string, NDArray> out;
+    for (const auto& part : rModel.mParts) {
+        const RstFile& file = part->mFile;
+        const RstResults& results = part->mResults;
+        const std::uint64_t base = results.mSets[Index].mPointer;
+        const RstRecord s = file.Record(base);
+        const std::int64_t nrf = s.Int(7), numdof = s.Int(19);
+        const std::uint64_t ptr_rf = rst_pointer(s, 106, 107, 12);
+        if (nrf <= 0 || !ptr_rf || numdof <= 0)
+            continue;
+        std::vector<std::int64_t> dofs;
+        for (std::int64_t k = 0; k < numdof; ++k)
+            dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
+        // (N - 1) * numdof + k: N the node's position in the nodal equivalence
+        // table, k the DOF's position in the set's DOF list (1-based).
+        const RstRecord table = file.Record(base + ptr_rf);
+        const RstRecord values = file.Record(table.mNext);
+        const auto n = static_cast<std::size_t>(nrf);
+        if (table.mValues.size() < 2 * n || values.mValues.size() < n)
+            rst_fail("result set " + std::to_string(Index + 1) +
+                     " has a truncated reaction record");
+        for (std::size_t r = 0; r < n; ++r) {
+            const std::int64_t index = static_cast<std::int64_t>(
+                static_cast<std::uint64_t>(static_cast<std::uint32_t>(table.Int(2 * r))) |
+                (static_cast<std::uint64_t>(table.Int(2 * r + 1)) << 32));
+            const std::int64_t position = (index - 1) / numdof;
+            const auto k = static_cast<std::size_t>((index - 1) % numdof);
+            if (index < 1 || position >= static_cast<std::int64_t>(results.mNeqv.size()))
+                rst_fail("result set " + std::to_string(Index + 1) +
+                         " has a corrupt reaction record");
+            const std::int64_t point =
+                rst_point_of(rModel, results.mNeqv[static_cast<std::size_t>(position)]);
+            if (point < 0)
+                continue;
+            const std::int64_t code = dofs[k];
+            std::string name;
+            std::size_t component = 0, width = 0;
+            if (code >= 1 && code <= 3) {
+                name = "RF";
+                component = static_cast<std::size_t>(code - 1);
+                width = 3;
+            } else if (code >= 4 && code <= 6) {
+                name = "RMOM";
+                component = static_cast<std::size_t>(code - 4);
+                width = 3;
+            } else {
+                name = "RF_" + rst_dof_label(code);
+            }
+            if (!rOptions.WantsArray(name))
+                continue;
+            auto it = out.find(name);
+            if (it == out.end())
+                it = out.emplace(name, rst_filled(n_points, width)).first;
+            // A distributed solve's files each hold their share of a reaction at
+            // the nodes they have in common: summed.
+            double* p = it->second.As<double>();
+            if (width) {
+                double* row = p + static_cast<std::size_t>(point) * 3;
+                for (std::size_t d = 0; d < 3; ++d)
+                    if (std::isnan(row[d]))
+                        row[d] = 0.0;
+                row[component] += values.mValues[r];
+            } else {
+                p[point] = std::isnan(p[point]) ? values.mValues[r] : p[point] + values.mValues[r];
+            }
+        }
+    }
+    for (const char* name : {"RF", "RMOM"}) {
+        const auto it = out.find(name);
+        if (it == out.end())
+            continue;
+        double* p = it->second.As<double>();
+        for (std::size_t point = 0; point < n_points; ++point)
+            if (!std::isnan(p[point * 3]))
+                rst_rotate(p + point * 3, &rModel.mAngles[point * 3]);
+    }
+    for (auto& [name, data] : out)
+        rModel.mMesh.AddPointData(name, std::move(data));
+}
+
+// Entry Entry of the pointer table at word Table: false when the element has
+// no such record. A negative entry -n stands for a record of n zeros that is
+// not written.
+bool rst_element_record(const RstFile& rFile, std::uint64_t Table, const RstRecord& rPointers,
+                        std::size_t Entry, std::vector<double>& rOut) {
+    if (Entry >= rPointers.mValues.size())
+        return false;
+    const std::int64_t ptr = rPointers.Int(Entry);
+    if (ptr == 0)
+        return false;
+    if (ptr < 0) {
+        rOut.assign(static_cast<std::size_t>(-ptr), 0.0);
+        return true;
+    }
+    rOut = rFile.Record(Table + static_cast<std::uint64_t>(ptr)).mValues;
+    return true;
+}
+
+bool rst_no_result_cell(const std::string& rType) {
+    return rType == "vertex" || rType == "line" || rType == "line3";
+}
+
+// Element nodal stresses and strains (cell data per element node, and averaged
+// at the corner nodes as point data) and element nodal forces of result set
+// Index.
+void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptions,
+                  std::vector<std::int64_t>& rEnfDofs) {
+    Mesh& mesh = rModel.mMesh;
+    const std::size_t n_points = mesh.NumPoints();
+    const std::size_t n_blocks = mesh.NumCellBlocks();
+    std::vector<std::string> types(n_blocks);
+    std::vector<std::size_t> rows_of(n_blocks), width_of(n_blocks);
+    std::vector<const std::int64_t*> conn(n_blocks);
+    std::size_t npc = 0;  // the widest block's node count: every array's
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+        const auto view = mesh.Cells(b);
+        types[b] = view.Type();
+        rows_of[b] = view.NumCells();
+        width_of[b] = view.NodesPerCell();
+        conn[b] = view.Conn().template As<std::int64_t>();
+        npc = std::max(npc, width_of[b]);
+    }
+    struct Accumulator {
+        std::vector<NDArray> mCells;
+        std::vector<double> mSum;
+        std::vector<std::int64_t> mCount;
+    };
+    std::map<std::string, Accumulator> tensors;
+    const auto accumulator = [&](const std::string& rName) -> Accumulator& {
+        auto it = tensors.find(rName);
+        if (it != tensors.end())
+            return it->second;
+        Accumulator a;
+        // (cells, nodes, 6) flattened point-major, NaN-padded to the widest
+        // block, so that any writer holds it.
+        for (std::size_t b = 0; b < n_blocks; ++b) {
+            NDArray arr(DType::Float64, {rows_of[b], npc * 6});
+            std::fill(arr.As<double>(), arr.As<double>() + arr.Size(),
+                      std::numeric_limits<double>::quiet_NaN());
+            a.mCells.push_back(std::move(arr));
+        }
+        a.mSum.assign(n_points * 6, 0.0);
+        a.mCount.assign(n_points, 0);
+        return tensors.emplace(rName, std::move(a)).first->second;
+    };
+    bool want_any_tensor = false;
+    for (const RstTensor& t : kRstTensors)
+        want_any_tensor = want_any_tensor || rOptions.WantsArray(t.mName) ||
+                          rOptions.WantsArray(std::string(t.mName) + kRstTop);
+    const bool want_enf = rOptions.WantsArray("ENF");
+    if (!want_any_tensor && !want_enf)
+        return;
+    std::vector<NDArray> enf;
+    std::size_t enf_width = 0;
+    std::vector<double> values, rotation;
+    for (std::size_t p = 0; p < rModel.mParts.size(); ++p) {
+        const RstPart& part = *rModel.mParts[p];
+        const RstFile& file = part.mFile;
+        const RstResults& results = part.mResults;
+        const std::uint64_t base = results.mSets[Index].mPointer;
+        const RstRecord s = file.Record(base);
+        const std::uint64_t ptr_esl = rst_pointer(s, 118, 119, 11);
+        if (!ptr_esl)
+            continue;
+        std::vector<std::int64_t> dofs;
+        for (std::int64_t k = 0; k < s.Int(19); ++k)
+            dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
+        const RstRecord index = file.Record(base + ptr_esl);
+        const std::size_t n_elements = index.mValues.size() / 2;
+        for (std::size_t k = 0; k < n_elements; ++k) {
+            const std::int64_t off = static_cast<std::int64_t>(
+                static_cast<std::uint64_t>(static_cast<std::uint32_t>(index.Int(2 * k))) |
+                (static_cast<std::uint64_t>(index.Int(2 * k + 1)) << 32));
+            const std::size_t pos = rModel.mOffsets[p] + k;
+            if (off == 0 || pos >= rModel.mCells.size() || rModel.mCells[pos].mBlock < 0)
+                continue;
+            const detail::AnsysCellLocation& loc = rModel.mCells[pos];
+            const auto b = static_cast<std::size_t>(loc.mBlock);
+            const auto row = static_cast<std::size_t>(loc.mRow);
+            if (rst_no_result_cell(types[b]))
+                continue;
+            RstLayout layout;
+            if (const auto it = rModel.mLayout.find(rModel.mModel.mElements[pos].mSlot);
+                it != rModel.mLayout.end())
+                layout = it->second;
+            const std::uint64_t table = base + ptr_esl + static_cast<std::uint64_t>(off);
+            const RstRecord pointers = file.Record(table);
+            const std::int64_t* cell_nodes = conn[b] + row * width_of[b];
+            const auto nodstr = static_cast<std::size_t>(std::max<std::int64_t>(layout.mNodstr, 0));
+            bool have_rotation = false;
+            for (const RstTensor& t : kRstTensors) {
+                if (!rOptions.WantsArray(t.mName) &&
+                    !rOptions.WantsArray(std::string(t.mName) + kRstTop))
+                    continue;
+                const std::size_t items =
+                    t.mEntry == kRstEns && !results.mSparseEns ? 11 : t.mItems;
+                if (!nodstr || !rst_element_record(file, table, pointers, t.mEntry, values))
+                    continue;
+                std::size_t n_layers = static_cast<std::size_t>(layout.mLayers);
+                if (values.size() < nodstr * n_layers * items) {
+                    n_layers = 1;
+                    if (values.size() < nodstr * items)
+                        continue;
+                }
+                // The first six items of each node: xx yy zz xy yz xz.
+                std::vector<double> nodes(nodstr * n_layers * 6);
+                for (std::size_t i = 0; i < nodstr * n_layers; ++i)
+                    for (std::size_t c = 0; c < 6; ++c) {
+                        const double v = values[i * items + c];
+                        nodes[i * 6 + c] = std::fabs(v) == kRstUndefined
+                                               ? std::numeric_limits<double>::quiet_NaN()
+                                               : v;
+                    }
+                if (!have_rotation) {
+                    if (!rst_element_record(file, table, pointers, kRstEul, rotation))
+                        rotation.clear();
+                    have_rotation = true;
+                }
+                if (rotation.size() >= 3) {
+                    const std::size_t per_node = rotation.size() / 3;
+                    for (std::size_t i = 0; i < nodstr * n_layers; ++i) {
+                        const std::size_t j = per_node == 1 ? 0 : i % per_node;
+                        const double* angles = &rotation[3 * j];
+                        if (angles[0] == 0.0 && angles[1] == 0.0 && angles[2] == 0.0)
+                            continue;
+                        const auto q = rst_euler_to_global(angles);
+                        rst_rotate_tensor(&nodes[i * 6], q.data(), t.mStress);
+                    }
+                }
+                for (std::size_t layer = 0; layer < n_layers; ++layer) {
+                    const std::string key = std::string(t.mName) + (layer ? kRstTop : "");
+                    if (!rOptions.WantsArray(key))
+                        continue;
+                    Accumulator& acc = accumulator(key);
+                    double* target = acc.mCells[b].As<double>() + row * npc * 6;
+                    for (std::size_t j = 0; j < loc.mSlots.size() && j < width_of[b]; ++j) {
+                        const auto slot = static_cast<std::size_t>(loc.mSlots[j]);
+                        if (slot >= nodstr)
+                            continue;
+                        const double* v = &nodes[(layer * nodstr + slot) * 6];
+                        std::copy(v, v + 6, target + j * 6);
+                        bool finite = true;
+                        for (std::size_t c = 0; c < 6; ++c)
+                            finite = finite && std::isfinite(v[c]);
+                        if (finite) {
+                            const auto point = static_cast<std::size_t>(cell_nodes[j]);
+                            for (std::size_t c = 0; c < 6; ++c)
+                                acc.mSum[point * 6 + c] += v[c];
+                            ++acc.mCount[point];
+                        }
+                    }
+                }
+            }
+            const auto nodfor = static_cast<std::size_t>(std::max<std::int64_t>(layout.mNodfor, 0));
+            if (want_enf && nodfor && !dofs.empty() &&
+                rst_element_record(file, table, pointers, kRstEnf, values) &&
+                values.size() >= nodfor * dofs.size()) {
+                if (enf.empty()) {
+                    enf_width = dofs.size();
+                    rEnfDofs = dofs;
+                    for (std::size_t bb = 0; bb < n_blocks; ++bb)
+                        enf.push_back([&] {
+                            NDArray arr(DType::Float64, {rows_of[bb], npc * enf_width});
+                            std::fill(arr.As<double>(), arr.As<double>() + arr.Size(),
+                                      std::numeric_limits<double>::quiet_NaN());
+                            return arr;
+                        }());
+                }
+                if (dofs.size() != enf_width)
+                    continue;
+                double* target = enf[b].As<double>() + row * npc * enf_width;
+                for (std::size_t j = 0; j < loc.mSlots.size() && j < width_of[b]; ++j) {
+                    const auto slot = static_cast<std::size_t>(loc.mSlots[j]);
+                    if (slot < nodfor)
+                        std::copy(&values[slot * enf_width], &values[slot * enf_width] + enf_width,
+                                  target + j * enf_width);
+                }
+            }
+        }
+    }
+    const auto layout = [&](const std::string& rName, std::size_t Components) {
+        NDArray a(DType::Int64, {2});
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(npc);
+        a.As<std::int64_t>()[1] = static_cast<std::int64_t>(Components);
+        mesh.AddFieldData("ansys:layout:" + rName, std::move(a));
+    };
+    for (auto& [name, acc] : tensors) {
+        layout(name, 6);
+        NDArray mean(DType::Float64, {n_points, 6});
+        double* m = mean.As<double>();
+        for (std::size_t point = 0; point < n_points; ++point)
+            for (std::size_t c = 0; c < 6; ++c)
+                m[point * 6 + c] = acc.mCount[point] ? acc.mSum[point * 6 + c] /
+                                                           static_cast<double>(acc.mCount[point])
+                                                     : std::numeric_limits<double>::quiet_NaN();
+        mesh.AddCellData(name, std::move(acc.mCells));
+        mesh.AddPointData(name, std::move(mean));
+    }
+    if (!enf.empty()) {
+        layout("ENF", enf_width);
+        mesh.AddCellData("ENF", std::move(enf));
     }
 }
 
-}  // namespace
+// The full rotor: the base sector's cells (element numbers up to csEls) and
+// their points repeated round the cyclic axis, results rotated with them.
+// Coincident nodes on the sector boundaries are not merged.
+Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& rEnfDofs) {
+    const RstPart& part = *rModel.mParts[0];
+    const RstResults& results = part.mResults;
+    const Mesh& mesh = rModel.mMesh;
+    const auto n = static_cast<std::size_t>(results.mNumSectors);
+    double axis[3] = {0.0, 0.0, 1.0}, origin[3] = {0.0, 0.0, 0.0};
+    if (results.mCsCord > 1) {
+        const auto [axes, o] = part.CoordinateSystem(results.mCsCord);
+        const double norm = std::sqrt(axes[6] * axes[6] + axes[7] * axes[7] + axes[8] * axes[8]);
+        for (std::size_t d = 0; d < 3; ++d) {
+            axis[d] = axes[6 + d] / norm;
+            origin[d] = o[d];
+        }
+    }
+    const std::size_t n_blocks = mesh.NumCellBlocks();
+    std::vector<std::vector<char>> keep(n_blocks);
+    for (std::size_t b = 0; b < n_blocks; ++b)
+        keep[b].assign(mesh.Cells(b).NumCells(), 0);
+    for (std::size_t pos = 0; pos < rModel.mCells.size(); ++pos) {
+        const detail::AnsysCellLocation& loc = rModel.mCells[pos];
+        if (loc.mBlock >= 0 && rModel.mModel.mElements[pos].mId <= results.mCsEls)
+            keep[static_cast<std::size_t>(loc.mBlock)][static_cast<std::size_t>(loc.mRow)] = 1;
+    }
+    const std::size_t n_points = mesh.NumPoints();
+    std::vector<char> used(n_points, 0);
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+        const auto view = mesh.Cells(b);
+        const std::int64_t* c = view.Conn().template As<std::int64_t>();
+        const std::size_t w = view.NodesPerCell();
+        for (std::size_t r = 0; r < view.NumCells(); ++r)
+            if (keep[b][r])
+                for (std::size_t j = 0; j < w; ++j)
+                    if (c[r * w + j] >= 0)
+                        used[static_cast<std::size_t>(c[r * w + j])] = 1;
+    }
+    std::vector<std::int64_t> new_point(n_points, -1), old_point;
+    for (std::size_t p = 0; p < n_points; ++p)
+        if (used[p]) {
+            new_point[p] = static_cast<std::int64_t>(old_point.size());
+            old_point.push_back(static_cast<std::int64_t>(p));
+        }
+    const std::size_t n_pts = old_point.size();
+    std::vector<std::array<double, 9>> rotations;
+    const double pi = std::acos(-1.0);
+    for (std::size_t i = 0; i < n; ++i)
+        rotations.push_back(
+            rst_axis_rotation(axis, 2.0 * pi * static_cast<double>(i) / static_cast<double>(n)));
+    const auto rotate = [](const std::array<double, 9>& rQ, const double* pIn, double* pOut) {
+        for (std::size_t d = 0; d < 3; ++d)
+            pOut[d] = rQ[d * 3] * pIn[0] + rQ[d * 3 + 1] * pIn[1] + rQ[d * 3 + 2] * pIn[2];
+    };
 
-Mesh read_ansys_rst(const std::string& rPath, const ReadOptions& rOptions) {
-    const RstFile file(rPath, rOptions);
-    const RstResults results(file);
-    if (results.mNumSectors > 1)
-        log::warn("Ansys .rst: a cyclic-symmetry model ({} sectors); only the base sector is read",
-                  results.mNumSectors);
-    RstModel model = rst_model(file, results, rOptions.mLenient);
+    Mesh out;
+    {
+        const double* src = mesh.Points().template As<double>();
+        NDArray points(DType::Float64, {n * n_pts, 3});
+        double* dst = points.As<double>();
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < n_pts; ++k) {
+                const double* p = src + static_cast<std::size_t>(old_point[k]) * 3;
+                const double rel[3] = {p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]};
+                double* q = dst + (i * n_pts + k) * 3;
+                rotate(rotations[i], rel, q);
+                for (std::size_t d = 0; d < 3; ++d)
+                    q[d] += origin[d];
+            }
+        out.AssignPoints(std::move(points));
+    }
+    // Kept blocks and, per kept block, the base mesh's global cell indices.
+    std::vector<std::size_t> kept_blocks;
+    std::vector<std::vector<std::size_t>> kept_rows;
+    std::vector<std::int64_t> new_cell;
+    std::int64_t base_cells = 0;
+    std::vector<std::int64_t> block_start(n_blocks, 0);
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+        block_start[b] = base_cells;
+        base_cells += static_cast<std::int64_t>(keep[b].size());
+    }
+    new_cell.assign(static_cast<std::size_t>(base_cells), -1);
+    std::vector<std::int64_t> expanded_start;
+    std::int64_t expanded = 0;
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+        std::vector<std::size_t> rows;
+        for (std::size_t r = 0; r < keep[b].size(); ++r)
+            if (keep[b][r])
+                rows.push_back(r);
+        if (rows.empty())
+            continue;
+        for (std::size_t k = 0; k < rows.size(); ++k)
+            new_cell[static_cast<std::size_t>(block_start[b]) + rows[k]] =
+                static_cast<std::int64_t>(k);
+        const auto view = mesh.Cells(b);
+        const std::size_t w = view.NodesPerCell();
+        const std::int64_t* c = view.Conn().template As<std::int64_t>();
+        NDArray conn(DType::Int64, {n * rows.size(), w});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < rows.size(); ++k)
+                for (std::size_t j = 0; j < w; ++j)
+                    dst[(i * rows.size() + k) * w + j] =
+                        new_point[static_cast<std::size_t>(c[rows[k] * w + j])] +
+                        static_cast<std::int64_t>(i * n_pts);
+        out.AddCellBlock(view.Type(), std::move(conn));
+        kept_blocks.push_back(b);
+        kept_rows.push_back(std::move(rows));
+        expanded_start.push_back(expanded);
+        expanded += static_cast<std::int64_t>(n * kept_rows.back().size());
+    }
+
+    // Values rotated with their sector: vectors, tensors, and ENF's UX..UZ and
+    // ROTX..ROTZ columns.
+    const auto spin = [&](const std::string& rName, std::size_t I, double* pData, std::size_t Count,
+                          std::size_t Width, const std::vector<std::int64_t>* pDofs) {
+        const auto& q = rotations[I];
+        bool stress = false;
+        if (Width == 6 && rst_is_tensor(rName, &stress)) {
+            for (std::size_t k = 0; k < Count; ++k)
+                rst_rotate_tensor(pData + k * 6, q.data(), stress);
+        } else if (Width == 3 && rst_is_vector(rName)) {
+            for (std::size_t k = 0; k < Count; ++k) {
+                double v[3];
+                rotate(q, pData + k * 3, v);
+                std::copy(v, v + 3, pData + k * 3);
+            }
+        } else if (pDofs) {
+            for (std::int64_t first : {1, 4}) {
+                std::size_t idx[3];
+                bool all = true;
+                for (std::int64_t d = 0; d < 3; ++d) {
+                    const auto it = std::find(pDofs->begin(), pDofs->end(), first + d);
+                    all = all && it != pDofs->end();
+                    if (all)
+                        idx[d] = static_cast<std::size_t>(it - pDofs->begin());
+                }
+                if (!all)
+                    continue;
+                for (std::size_t k = 0; k < Count; ++k) {
+                    double* row = pData + k * Width;
+                    const double in[3] = {row[idx[0]], row[idx[1]], row[idx[2]]};
+                    double v[3];
+                    rotate(q, in, v);
+                    for (std::size_t d = 0; d < 3; ++d)
+                        row[idx[d]] = v[d];
+                }
+            }
+        }
+    };
+    for (const std::string& name : mesh.PointDataNames()) {
+        const NDArray& src = mesh.PointData(name);
+        const std::size_t width = src.Size() / std::max<std::size_t>(n_points, 1);
+        std::vector<std::size_t> shape = src.Shape();
+        shape[0] = n * n_pts;
+        NDArray dst(src.Dtype(), shape);
+        const std::size_t item = dtype_size(src.Dtype()) * width;
+        const auto* s = reinterpret_cast<const unsigned char*>(src.Data());
+        auto* d = reinterpret_cast<unsigned char*>(dst.Data());
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t k = 0; k < n_pts; ++k)
+                std::memcpy(d + (i * n_pts + k) * item,
+                            s + static_cast<std::size_t>(old_point[k]) * item, item);
+            if (src.Dtype() == DType::Float64)
+                spin(name, i, dst.As<double>() + i * n_pts * width, n_pts, width, nullptr);
+        }
+        out.AddPointData(name, std::move(dst));
+    }
+    for (const std::string& name : mesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        for (std::size_t kb = 0; kb < kept_blocks.size(); ++kb) {
+            const std::size_t b = kept_blocks[kb];
+            const NDArray& src = mesh.CellData(name, b);
+            const std::size_t rows = keep[b].size();
+            const std::size_t width = src.Size() / std::max<std::size_t>(rows, 1);
+            std::vector<std::size_t> shape = src.Shape();
+            shape[0] = n * kept_rows[kb].size();
+            NDArray dst(src.Dtype(), shape);
+            const std::size_t item = dtype_size(src.Dtype()) * width;
+            const auto* s = reinterpret_cast<const unsigned char*>(src.Data());
+            auto* d = reinterpret_cast<unsigned char*>(dst.Data());
+            const std::size_t count = kept_rows[kb].size();
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::size_t k = 0; k < count; ++k)
+                    std::memcpy(d + (i * count + k) * item, s + kept_rows[kb][k] * item, item);
+                if (src.Dtype() == DType::Float64) {
+                    // Per element node, flattened: width = nodes * components.
+                    std::size_t comps = width;
+                    if (rst_is_tensor(name, nullptr) && width % 6 == 0)
+                        comps = 6;
+                    else if (name == "ENF" && !rEnfDofs.empty() && width % rEnfDofs.size() == 0)
+                        comps = rEnfDofs.size();
+                    spin(name, i, dst.As<double>() + i * count * width, count * (width / comps),
+                         comps, name == "ENF" ? &rEnfDofs : nullptr);
+                }
+            }
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+    {
+        std::vector<NDArray> sector;
+        for (std::size_t kb = 0; kb < kept_blocks.size(); ++kb) {
+            const std::size_t count = kept_rows[kb].size();
+            NDArray a(DType::Int64, {n * count});
+            for (std::size_t i = 0; i < n; ++i)
+                std::fill(a.As<std::int64_t>() + i * count, a.As<std::int64_t>() + (i + 1) * count,
+                          static_cast<std::int64_t>(i));
+            sector.push_back(std::move(a));
+        }
+        out.AddCellData("ansys:sector", std::move(sector));
+    }
+    for (const std::string& name : mesh.FieldDataNames())
+        out.AddFieldData(name, mesh.FieldData(name));
+    {
+        NDArray sectors(DType::Int64, {1});
+        sectors.As<std::int64_t>()[0] = static_cast<std::int64_t>(n);
+        out.AddFieldData("ansys:sectors", std::move(sectors));
+    }
+    // Block of each base cell among the kept blocks.
+    std::vector<std::int64_t> kept_index(n_blocks, -1);
+    for (std::size_t kb = 0; kb < kept_blocks.size(); ++kb)
+        kept_index[kept_blocks[kb]] = static_cast<std::int64_t>(kb);
+    for (std::size_t r = 0; r < mesh.NumRegions(); ++r) {
+        const meshioplusplus::Region& region = mesh.Region(r);
+        const std::int64_t* e = region.mEntries.template As<std::int64_t>();
+        const std::size_t count = region.mEntries.Size();
+        std::vector<std::int64_t> entries;
+        if (region.mKind == RegionKind::Point) {
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < count; ++k)
+                    if (e[k] >= 0 && static_cast<std::size_t>(e[k]) < n_points &&
+                        new_point[static_cast<std::size_t>(e[k])] >= 0)
+                        entries.push_back(new_point[static_cast<std::size_t>(e[k])] +
+                                          static_cast<std::int64_t>(i * n_pts));
+        } else if (region.mKind == RegionKind::Cell) {
+            for (std::size_t k = 0; k < count; ++k) {
+                if (e[k] < 0 || e[k] >= base_cells)
+                    continue;
+                const std::int64_t local = new_cell[static_cast<std::size_t>(e[k])];
+                if (local < 0)
+                    continue;
+                const auto b = static_cast<std::size_t>(
+                    std::upper_bound(block_start.begin(), block_start.end(), e[k]) -
+                    block_start.begin() - 1);
+                const auto kb = static_cast<std::size_t>(kept_index[b]);
+                const auto size = static_cast<std::int64_t>(kept_rows[kb].size());
+                for (std::size_t i = 0; i < n; ++i)
+                    entries.push_back(expanded_start[kb] + static_cast<std::int64_t>(i) * size +
+                                      local);
+            }
+        } else {
+            continue;
+        }
+        NDArray arr(DType::Int64, {entries.size()});
+        std::copy(entries.begin(), entries.end(), arr.As<std::int64_t>());
+        out.AddRegion(meshioplusplus::Region(region.mName, region.mKind, region.mDim, region.mTag,
+                                             std::move(arr)));
+    }
+    return out;
+}
+
+Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic) {
+    std::vector<std::unique_ptr<RstPart>> parts = rst_open(rPath, rOptions);
+    const RstResults& main = parts[0]->mResults;
+    if (Cyclic) {
+        if (main.mNumSectors <= 1)
+            rst_fail("not a cyclic-symmetry model; read it as ansys_rst");
+        if (main.mKan != 0)
+            rst_fail("only static cyclic-symmetry results can be expanded (this is analysis type " +
+                     std::to_string(main.mKan) + "); read the base sector as ansys_rst");
+    } else if (main.mNumSectors > 1) {
+        log::warn(
+            "Ansys .rst: a cyclic-symmetry model ({} sectors); only the base sector is read "
+            "(ansys_rst_cyclic expands a static one)",
+            main.mNumSectors);
+    }
+    RstModel model = rst_model(std::move(parts), rOptions.mLenient);
+    const RstResults& results = model.mParts[0]->mResults;
+    std::vector<std::int64_t> enf_dofs;
     const std::size_t n = results.mSets.size();
     if (n == 0) {
         if (rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
             rst_fail("time step " + std::to_string(rOptions.mTimeStep) +
                      " is out of range: the file has no result sets");
-        return std::move(model.mMesh);
+        return Cyclic ? rst_expand_cyclic(model, enf_dofs) : std::move(model.mMesh);
     }
     const std::size_t index = rOptions.ResolveTimeStep(n);
     const RstSet& set = results.mSets[index];
@@ -55870,23 +56884,45 @@ Mesh read_ansys_rst(const std::string& rPath, const ReadOptions& rOptions) {
     mesh.AddFieldData("ansys:substep", scalar(DType::Int64, static_cast<double>(set.mSubstep)));
     mesh.AddFieldData("ansys:cumulative",
                       scalar(DType::Int64, static_cast<double>(set.mCumulative)));
-    if (!rOptions.mPointsOnly)
-        rst_solution(file, results, index, model, rOptions);
-    return std::move(model.mMesh);
+    if (!rOptions.mPointsOnly) {
+        rst_solution(model, index, rOptions);
+        rst_reactions(model, index, rOptions);
+        rst_elements(model, index, rOptions, enf_dofs);
+    }
+    return Cyclic ? rst_expand_cyclic(model, enf_dofs) : std::move(model.mMesh);
 }
 
-MeshMetadata read_ansys_rst_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+MeshMetadata rst_metadata(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic,
+                          const char* pFormat) {
     ReadOptions options = rOptions;
     options.mPointsOnly = true;
     options.mTimeStep = 0;
     options.mLenient = true;  // a summary skips (and warns about) cell-less elements
-    MeshMetadata meta = metadata_from_mesh(read_ansys_rst(rPath, options));
+    MeshMetadata meta = metadata_from_mesh(rst_read(rPath, options, Cyclic));
     meta.mFellBackToFullRead = true;
-    meta.mFormat = "ansys_rst";
+    meta.mFormat = pFormat;
     const RstFile file(rPath, rOptions);
     for (const RstSet& s : RstResults(file).mSets)
         meta.mTimeValues.push_back(s.mTime);
     return meta;
+}
+
+}  // namespace
+
+Mesh read_ansys_rst(const std::string& rPath, const ReadOptions& rOptions) {
+    return rst_read(rPath, rOptions, false);
+}
+
+Mesh read_ansys_rst_cyclic(const std::string& rPath, const ReadOptions& rOptions) {
+    return rst_read(rPath, rOptions, true);
+}
+
+MeshMetadata read_ansys_rst_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    return rst_metadata(rPath, rOptions, false, "ansys_rst");
+}
+
+MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    return rst_metadata(rPath, rOptions, true, "ansys_rst_cyclic");
 }
 
 }  // namespace meshioplusplus
@@ -77409,6 +78445,1220 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/lsdyna.cpp =====
+// ===== begin src/cpp/src/formats/marc.cpp =====
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <ios>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kMarcDat = "Marc .dat";
+constexpr const char* kMarcT19 = "Marc .t19";
+
+[[noreturn]] void marc_fail(const char* pLabel, const std::string& rWhat) {
+    throw ReadError(std::string(pLabel) + ": " + rWhat);
+}
+
+struct MarcType {
+    const char* mCell;
+    std::size_t mNodes;
+};
+
+// Marc element type -> (meshio++ cell type, the element's node count), from
+// Volume B. Types whose topology the manuals were not checked for are left out:
+// their elements are skipped with a warning. Every type lists its nodes in
+// meshio++'s order (corners with the face 1-2-3(-4) normal pointing into the
+// element, then mid-edge nodes bottom ring, top ring, verticals), so no
+// permutation applies.
+const MarcType* marc_type(std::int64_t Type) {
+    static const std::unordered_map<std::int64_t, MarcType> kTypes = [] {
+        std::unordered_map<std::int64_t, MarcType> m;
+        for (int t : {3, 10, 11, 18, 75, 139, 140})
+            m[t] = {"quad", 4};
+        for (int t : {2, 6, 138, 158, 201})
+            m[t] = {"triangle", 3};
+        for (int t : {22, 26, 27, 28, 30, 53, 54, 55})
+            m[t] = {"quad8", 8};
+        for (int t : {124, 125, 126, 128, 200})
+            m[t] = {"triangle6", 6};
+        for (int t : {7, 43, 117, 123})
+            m[t] = {"hexahedron", 8};
+        for (int t : {21, 44, 57})
+            m[t] = {"hexahedron20", 20};
+        for (int t : {134, 135})
+            m[t] = {"tetra", 4};
+        m[157] = {"tetra", 5};  // four corners and a bubble node
+        for (int t : {127, 130, 133})
+            m[t] = {"tetra10", 10};
+        for (int t : {136, 137})
+            m[t] = {"wedge", 6};
+        for (int t : {9, 31, 52, 98})
+            m[t] = {"line", 2};
+        m[64] = {"line3", 3};
+        return m;
+    }();
+    const auto it = kTypes.find(Type);
+    return it == kTypes.end() ? nullptr : &it->second;
+}
+
+// An element's first line holds its number, type and 14 nodes; more continue.
+constexpr std::size_t kMarcFirstLineNodes = 14;
+
+std::string marc_lower(std::string_view Text) {
+    std::string out(Text);
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+std::string marc_trim(std::string_view Text) {
+    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    std::size_t a = 0, b = Text.size();
+    while (a < b && blank(Text[a]))
+        ++a;
+    while (b > a && blank(Text[b - 1]))
+        --b;
+    return std::string(Text.substr(a, b - a));
+}
+
+std::string marc_rstrip(std::string_view Text) {
+    std::size_t b = Text.size();
+    while (b > 0 && (Text[b - 1] == ' ' || Text[b - 1] == '\t' || Text[b - 1] == '\r' ||
+                     Text[b - 1] == '\n'))
+        --b;
+    return std::string(Text.substr(0, b));
+}
+
+// Words split on blanks and commas.
+std::vector<std::string> marc_words(std::string_view Text) {
+    std::vector<std::string> out;
+    std::string word;
+    for (char c : Text) {
+        if (c == ' ' || c == '\t' || c == ',' || c == '\r' || c == '\n') {
+            if (!word.empty())
+                out.push_back(std::move(word));
+            word.clear();
+        } else {
+            word += c;
+        }
+    }
+    if (!word.empty())
+        out.push_back(std::move(word));
+    return out;
+}
+
+bool marc_is_comment(std::string_view Line) {
+    const std::string s = marc_trim(Line);
+    return s.empty() || s[0] == '$';
+}
+
+// A data line starts (after blanks) with a number; a keyword with a letter.
+bool marc_is_data(std::string_view Line) {
+    const std::size_t k = Line.find_first_not_of(" \t");
+    if (k == std::string_view::npos || Line[k] == '\r' || Line[k] == '\n')
+        return false;
+    const char c = Line[k];
+    return std::isdigit(static_cast<unsigned char>(c)) || c == '+' || c == '-' || c == '.';
+}
+
+std::vector<std::string> marc_lines(const std::string& rPath, const char* pLabel) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        marc_fail(pLabel, "cannot open " + rPath);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<std::string> lines;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        std::size_t eol = text.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = text.size();
+        std::string line = text.substr(pos, eol - pos);
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        lines.push_back(std::move(line));
+        pos = eol + 1;
+    }
+    return lines;
+}
+
+std::int64_t marc_int(const std::string& rText, const char* pLabel, const std::string& rWhere) {
+    return detail::card_to_int(marc_trim(rText), " (" + rWhere + ")", pLabel);
+}
+
+double marc_real(const std::string& rText, const char* pLabel, const std::string& rWhere) {
+    return detail::card_to_real(marc_trim(rText), " (" + rWhere + ")", pLabel);
+}
+
+// The fields of a deck's data line: comma-separated (free format), or fixed
+// columns of Width up to the last non-blank one.
+std::vector<std::string> marc_fields(std::string_view Line, std::size_t Width) {
+    std::vector<std::string> out;
+    if (Line.find(',') != std::string_view::npos) {
+        std::size_t pos = 0;
+        for (;;) {
+            const std::size_t comma = Line.find(',', pos);
+            out.push_back(marc_trim(Line.substr(
+                pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos)));
+            if (comma == std::string_view::npos)
+                break;
+            pos = comma + 1;
+        }
+        while (!out.empty() && out.back().empty())
+            out.pop_back();  // a lone item is followed by a comma
+        return out;
+    }
+    const std::string body = marc_rstrip(Line);
+    for (std::size_t k = 0; k < body.size(); k += Width)
+        out.push_back(marc_trim(std::string_view(body).substr(k, Width)));
+    return out;
+}
+
+// The first word of a line that can open a deck (a Marc parameter).
+bool marc_is_parameter(const std::string& rWord) {
+    static const std::unordered_set<std::string> kParameters = {
+        "title",      "sizing",  "elements", "extended",   "version",       "table",
+        "processor",  "alloc",   "setname",  "dist",       "large",         "update",
+        "finite",     "all",     "no",       "state",      "heat",          "coupled",
+        "harmonic",   "buckle",  "dynamic",  "fluid",      "electrostatic", "magnetostatic",
+        "joule",      "bearing", "shell",    "print",      "lumping",       "assumed",
+        "constant",   "feature", "follow",   "plasticity", "rezoning",      "scale",
+        "structural", "thermal", "end"};
+    return kParameters.count(rWord) != 0;
+}
+
+// -- the input deck -------------------------------------------------------------
+
+struct MarcElement {
+    std::int64_t mId = 0, mType = 0;
+    std::vector<std::int64_t> mNodes;
+};
+
+struct MarcSet {
+    std::string mName;
+    bool mElements = true;  // else a node set
+    std::vector<std::string> mTokens;
+    std::vector<std::int64_t> mMembers;
+};
+
+struct MarcDeck {
+    bool mExtended = false;
+    std::int64_t mNcoord = 3;
+    std::unordered_map<std::int64_t, std::array<double, 3>> mNodes;  // the last definition wins
+    std::vector<std::int64_t> mNodeOrder;
+    std::vector<MarcElement> mElements;
+    std::vector<MarcSet> mSets;
+
+    std::size_t IntWidth() const { return mExtended ? 10 : 5; }
+    std::size_t RealWidth() const { return mExtended ? 20 : 10; }
+};
+
+std::size_t marc_next_data(const std::vector<std::string>& rLines, std::size_t I) {
+    while (I < rLines.size() && marc_is_comment(rLines[I]))
+        ++I;
+    return I;
+}
+
+std::string marc_where(std::size_t I) {
+    return "line " + std::to_string(I + 1);
+}
+
+std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& rLines,
+                              std::size_t I) {
+    I = marc_next_data(rLines, I);
+    if (I < rLines.size() && marc_is_data(rLines[I]))
+        ++I;  // the header line: element count, unit, print flag ...
+    const std::size_t width = rDeck.IntWidth();
+    for (;;) {
+        I = marc_next_data(rLines, I);
+        if (I >= rLines.size() || !marc_is_data(rLines[I]))
+            return I;
+        std::string where = marc_where(I);
+        const auto f = marc_fields(rLines[I], width);
+        if (f.size() < 2)
+            marc_fail(kMarcDat, "an element needs a number and a type (" + where + ")");
+        MarcElement el;
+        el.mId = marc_int(f[0], kMarcDat, where);
+        el.mType = marc_int(f[1], kMarcDat, where);
+        for (std::size_t k = 2; k < f.size(); ++k)
+            el.mNodes.push_back(marc_int(f[k], kMarcDat, where));
+        ++I;
+        const MarcType* known = marc_type(el.mType);
+        if (!known) {
+            if (f.size() >= 2 + kMarcFirstLineNodes)
+                marc_fail(kMarcDat, "element " + std::to_string(el.mId) + " is of type " +
+                                        std::to_string(el.mType) +
+                                        ", which meshio++ does not know the node count of (its "
+                                        "nodes continue on further lines)");
+            rDeck.mElements.push_back(std::move(el));
+            continue;
+        }
+        while (el.mNodes.size() < known->mNodes) {
+            I = marc_next_data(rLines, I);
+            if (I >= rLines.size() || !marc_is_data(rLines[I]))
+                marc_fail(kMarcDat, "element " + std::to_string(el.mId) + " lists " +
+                                        std::to_string(el.mNodes.size()) + " of its " +
+                                        std::to_string(known->mNodes) + " nodes");
+            where = marc_where(I);
+            for (const std::string& v : marc_fields(rLines[I], width))
+                el.mNodes.push_back(marc_int(v, kMarcDat, where));
+            ++I;
+        }
+        el.mNodes.resize(known->mNodes);
+        rDeck.mElements.push_back(std::move(el));
+    }
+}
+
+std::vector<std::string> marc_slices(std::string_view Body, std::size_t Width) {
+    std::vector<std::string> out;
+    const std::string body = marc_rstrip(Body);
+    for (std::size_t k = 0; k < body.size(); k += Width)
+        out.push_back(body.substr(k, Width));
+    return out;
+}
+
+std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rLines,
+                             std::size_t I) {
+    I = marc_next_data(rLines, I);
+    if (I < rLines.size() && marc_is_data(rLines[I])) {
+        const auto header = marc_fields(rLines[I], rDeck.IntWidth());
+        if (!header.empty() && !header[0].empty())
+            rDeck.mNcoord = std::max<std::int64_t>(1, marc_int(header[0], kMarcDat, marc_where(I)));
+        ++I;
+    }
+    const auto ncoord = static_cast<std::size_t>(rDeck.mNcoord);
+    const std::size_t iw = rDeck.IntWidth(), rw = rDeck.RealWidth();
+    for (;;) {
+        I = marc_next_data(rLines, I);
+        if (I >= rLines.size() || !marc_is_data(rLines[I]))
+            return I;
+        const std::string where = marc_where(I);
+        const std::string& line = rLines[I];
+        std::int64_t ident = 0;
+        std::vector<std::string> values;
+        if (line.find(',') != std::string::npos) {
+            const auto f = marc_fields(line, iw);
+            ident = marc_int(f[0], kMarcDat, where);
+            values.assign(f.begin() + 1, f.end());
+        } else {
+            ident = marc_int(line.substr(0, std::min(iw, line.size())), kMarcDat, where);
+            if (line.size() > iw)
+                values = marc_slices(std::string_view(line).substr(iw), rw);
+        }
+        ++I;
+        while (values.size() < ncoord) {  // continuation lines, six reals each
+            I = marc_next_data(rLines, I);
+            if (I >= rLines.size() || !marc_is_data(rLines[I]))
+                break;
+            const std::string& more = rLines[I];
+            const auto extra =
+                more.find(',') != std::string::npos ? marc_fields(more, rw) : marc_slices(more, rw);
+            values.insert(values.end(), extra.begin(), extra.end());
+            ++I;
+        }
+        std::array<double, 3> xyz{0.0, 0.0, 0.0};
+        for (std::size_t d = 0; d < ncoord && d < values.size(); ++d) {
+            const double v = marc_real(values[d], kMarcDat, where);
+            if (d < 3)
+                xyz[d] = v;
+        }
+        if (!rDeck.mNodes.count(ident))
+            rDeck.mNodeOrder.push_back(ident);
+        rDeck.mNodes[ident] = xyz;
+    }
+}
+
+bool marc_all_digits(const std::string& rText) {
+    return !rText.empty() && std::all_of(rText.begin(), rText.end(), [](char c) {
+        return std::isdigit(static_cast<unsigned char>(c));
+    });
+}
+
+// The items of a set's data line: words and numbers (touching fixed-width
+// integers split apart); `c` or `continue` last means more lines follow.
+std::vector<std::string> marc_set_tokens(std::string_view Text, std::size_t Width) {
+    std::vector<std::string> out;
+    for (const std::string& tok : marc_words(Text)) {
+        if (marc_all_digits(tok) && tok.size() > Width && tok.size() % Width == 0) {
+            for (std::size_t k = 0; k < tok.size(); k += Width)
+                out.push_back(tok.substr(k, Width));
+        } else {
+            out.push_back(marc_lower(tok));
+        }
+    }
+    return out;
+}
+
+std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines, std::size_t I) {
+    const std::string where = marc_where(I);
+    const auto raw = marc_words(rLines[I]);
+    const std::string kind = raw.size() > 1 ? marc_lower(raw[1]) : "";
+    std::size_t k = 2;
+    if (raw.size() > k && (marc_lower(raw[k]) == "set" || marc_lower(raw[k]) == "oset"))
+        ++k;
+    const std::string name = raw.size() > k ? raw[k] : "";
+    std::unordered_set<std::string> earlier;
+    for (const MarcSet& s : rDeck.mSets)
+        earlier.insert(marc_lower(s.mName));
+    ++I;
+    std::vector<std::string> tokens;
+    for (;;) {
+        I = marc_next_data(rLines, I);
+        if (I >= rLines.size())
+            break;
+        const std::string& line = rLines[I];
+        const auto items = marc_set_tokens(line, rDeck.IntWidth());
+        // The first data line starts with a number or an earlier set's name;
+        // later ones follow a line that ended in C (continue).
+        if (items.empty() || (tokens.empty() && !marc_is_data(line) && !earlier.count(items[0])))
+            break;
+        tokens.insert(tokens.end(), items.begin(), items.end());
+        ++I;
+        if (tokens.back() != "c" && tokens.back() != "continue")
+            break;
+        tokens.pop_back();
+    }
+    if (kind == "element" || kind == "elsq" || kind == "node" || kind == "ndsq") {
+        MarcSet s;
+        s.mName = name;
+        s.mElements = kind == "element" || kind == "elsq";
+        s.mTokens = std::move(tokens);
+        rDeck.mSets.push_back(std::move(s));
+    } else {
+        log::warn(
+            "{}: DEFINE {} SET '{}' is not read ({})", kMarcDat,
+            [&] {
+                std::string up = kind;
+                for (char& c : up)
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                return up;
+            }(),
+            name, where);
+    }
+    return I;
+}
+
+MarcDeck marc_parse_deck(const std::vector<std::string>& rLines) {
+    MarcDeck deck;
+    std::size_t i = 0;
+    bool in_parameters = true;
+    while (i < rLines.size()) {
+        const std::string& line = rLines[i];
+        if (marc_is_comment(line) || marc_is_data(line) || line.empty() || line[0] == ' ' ||
+            line[0] == '\t') {
+            ++i;
+            continue;
+        }
+        const auto words = marc_words(marc_lower(line));
+        const std::string key = words.empty() ? "" : words[0];
+        const bool end_option = key == "end" && words.size() > 1 && words[1] == "option";
+        if (in_parameters) {
+            if (key == "extended") {
+                deck.mExtended = true;
+            } else if (key == "end" && !end_option) {
+                in_parameters = false;
+                ++i;
+                continue;
+            }
+            if (key != "connectivity" && key != "coordinates" && key != "define") {
+                ++i;
+                continue;
+            }
+            in_parameters = false;  // a deck without END: the model starts here
+        }
+        if (end_option)
+            break;
+        if (key == "connectivity")
+            i = marc_connectivity(deck, rLines, i + 1);
+        else if (key == "coordinates")
+            i = marc_coordinates(deck, rLines, i + 1);
+        else if (key == "define")
+            i = marc_define(deck, rLines, i);
+        else
+            ++i;
+    }
+    return deck;
+}
+
+bool marc_is_integer(const std::string& rText) {
+    std::size_t k = 0;
+    while (k < rText.size() && (rText[k] == '+' || rText[k] == '-'))
+        ++k;
+    return k < rText.size() && marc_all_digits(rText.substr(k));
+}
+
+// The members of a set: numbers, `a TO b [BY c]` ranges and other sets' names,
+// combined left to right by AND (the default), EXCEPT and INTERSECT.
+std::vector<std::int64_t> marc_expand(
+    const std::vector<std::string>& rTokens, const std::string& rName,
+    const std::unordered_map<std::string, std::vector<std::int64_t>>& rKnown, const char* pLabel) {
+    std::vector<std::int64_t> out;
+    std::string op = "and";
+    const auto combine = [&](const std::vector<std::int64_t>& rItems) {
+        if (op == "and") {
+            std::unordered_set<std::int64_t> have(out.begin(), out.end());
+            for (std::int64_t v : rItems)
+                if (have.insert(v).second)
+                    out.push_back(v);
+        } else if (op == "except") {
+            const std::unordered_set<std::int64_t> drop(rItems.begin(), rItems.end());
+            out.erase(std::remove_if(out.begin(), out.end(),
+                                     [&](std::int64_t v) { return drop.count(v) != 0; }),
+                      out.end());
+        } else {
+            const std::unordered_set<std::int64_t> keep(rItems.begin(), rItems.end());
+            out.erase(std::remove_if(out.begin(), out.end(),
+                                     [&](std::int64_t v) { return keep.count(v) == 0; }),
+                      out.end());
+        }
+    };
+    const auto number = [&](const std::string& rText) {
+        return detail::card_to_int(rText, " (set '" + rName + "')", pLabel);
+    };
+    std::size_t k = 0;
+    while (k < rTokens.size()) {
+        const std::string& tok = rTokens[k];
+        if (tok == "and" || tok == "except" || tok == "intersect") {
+            op = tok;
+            ++k;
+            continue;
+        }
+        if (marc_is_integer(tok)) {
+            const std::int64_t start = number(tok);
+            ++k;
+            std::vector<std::int64_t> items;
+            if (k < rTokens.size() && (rTokens[k] == "to" || rTokens[k] == "through")) {
+                if (k + 1 >= rTokens.size())
+                    marc_fail(pLabel, "set '" + rName + "' ends in a range with no end");
+                const std::int64_t stop = number(rTokens[k + 1]);
+                k += 2;
+                std::int64_t step = 1;
+                if (k < rTokens.size() && rTokens[k] == "by") {
+                    if (k + 1 >= rTokens.size())
+                        marc_fail(pLabel, "set '" + rName + "' ends with BY and no step");
+                    step = std::abs(number(rTokens[k + 1]));
+                    if (step == 0)
+                        step = 1;
+                    k += 2;
+                }
+                if (stop >= start)
+                    for (std::int64_t v = start; v <= stop; v += step)
+                        items.push_back(v);
+                else
+                    for (std::int64_t v = start; v >= stop; v -= step)
+                        items.push_back(v);
+            } else {
+                items.push_back(start);
+            }
+            combine(items);
+            op = "and";
+            continue;
+        }
+        if (const auto it = rKnown.find(tok); it != rKnown.end()) {
+            combine(it->second);
+            op = "and";
+            ++k;
+            continue;
+        }
+        marc_fail(pLabel, "set '" + rName + "' names '" + tok + "', which is not an earlier set");
+    }
+    return out;
+}
+
+struct MarcLocation {
+    std::int64_t mBlock = -1, mRow = -1;
+};
+
+// The mesh of nodes, elements and sets (members expanded); each element's
+// (block, row) in rLocations (-1 when it has no cell).
+Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
+                const std::vector<std::array<double, 3>>& rCoords,
+                const std::vector<MarcElement>& rElements, const std::vector<MarcSet>& rSets,
+                std::vector<MarcLocation>& rLocations) {
+    std::unordered_map<std::int64_t, std::int64_t> index;
+    for (std::size_t k = 0; k < rNodeIds.size(); ++k)
+        index.emplace(rNodeIds[k], static_cast<std::int64_t>(k));
+    struct Block {
+        std::string mType;
+        std::vector<std::int64_t> mConn, mId, mMarcType;
+    };
+    std::vector<Block> blocks;
+    std::map<std::string, std::size_t> block_of;
+    std::map<std::int64_t, std::size_t> skipped;
+    std::size_t degenerate20 = 0;
+    std::unordered_map<std::int64_t, MarcLocation> element_cell;
+    std::unordered_set<std::int64_t> all_elements;
+    rLocations.assign(rElements.size(), MarcLocation{});
+    for (std::size_t e = 0; e < rElements.size(); ++e) {
+        const MarcElement& el = rElements[e];
+        all_elements.insert(el.mId);
+        const MarcType* known = marc_type(el.mType);
+        if (!known) {
+            ++skipped[el.mType];
+            continue;
+        }
+        std::string cell = known->mCell;
+        std::vector<std::int64_t> nodes = el.mNodes;
+        if (el.mType == 157)
+            nodes.resize(4);
+        for (std::int64_t v : nodes)
+            if (!index.count(v))
+                marc_fail(pLabel, "element " + std::to_string(el.mId) + " names undefined node " +
+                                      std::to_string(v));
+        if (cell == "hexahedron") {
+            std::array<std::int64_t, 8> a{};
+            std::copy(nodes.begin(), nodes.begin() + 8, a.begin());
+            detail::CollapsedBrick c = detail::collapse_brick(a);
+            cell = c.mType;
+            nodes = std::move(c.mNodes);
+        } else if (cell == "hexahedron20" &&
+                   std::set<std::int64_t>(nodes.begin(), nodes.begin() + 8).size() < 8) {
+            ++degenerate20;
+        }
+        const auto [it, fresh] = block_of.emplace(cell, blocks.size());
+        if (fresh)
+            blocks.push_back(Block{cell, {}, {}, {}});
+        Block& b = blocks[it->second];
+        const MarcLocation loc{static_cast<std::int64_t>(it->second),
+                               static_cast<std::int64_t>(b.mId.size())};
+        rLocations[e] = loc;
+        element_cell.emplace(el.mId, loc);
+        for (std::int64_t v : nodes)
+            b.mConn.push_back(index.at(v));
+        b.mId.push_back(el.mId);
+        b.mMarcType.push_back(el.mType);
+    }
+    if (!skipped.empty()) {
+        std::string listed;
+        for (const auto& [type, count] : skipped)
+            listed += (listed.empty() ? "" : ", ") + std::to_string(type) + " (" +
+                      std::to_string(count) + ")";
+        log::warn("{}: elements of types meshio++ has no cell for were skipped: {}", pLabel,
+                  listed);
+    }
+    if (degenerate20)
+        log::warn("{}: {} 20-node brick(s) with repeated corner nodes kept as hexahedron20", pLabel,
+                  degenerate20);
+
+    Mesh mesh;
+    NDArray points(DType::Float64, {rCoords.size(), 3});
+    double* p = points.As<double>();
+    for (std::size_t k = 0; k < rCoords.size(); ++k)
+        std::copy(rCoords[k].begin(), rCoords[k].end(), p + k * 3);
+    mesh.AssignPoints(std::move(points));
+    const auto column = [](const std::vector<std::int64_t>& rValues) {
+        NDArray a(DType::Int64, {rValues.size()});
+        std::copy(rValues.begin(), rValues.end(), a.As<std::int64_t>());
+        return a;
+    };
+    std::vector<NDArray> ids, types;
+    std::vector<std::int64_t> starts;
+    std::vector<int> dims;
+    std::int64_t start = 0;
+    for (Block& b : blocks) {
+        const std::size_t rows = b.mId.size();
+        NDArray conn(DType::Int64, {rows, b.mConn.size() / std::max<std::size_t>(rows, 1)});
+        std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
+        mesh.AddCellBlock(b.mType, std::move(conn));
+        ids.push_back(column(b.mId));
+        types.push_back(column(b.mMarcType));
+        starts.push_back(start);
+        start += static_cast<std::int64_t>(rows);
+        dims.push_back(cell_type_dimension(cell_type_from_name(b.mType)));
+    }
+    if (!blocks.empty()) {
+        mesh.AddCellData("marc:element", std::move(ids));
+        mesh.AddCellData("marc:type", std::move(types));
+    }
+    // One region per (kind, name): a later set replaces an earlier one.
+    std::map<std::pair<int, std::string>, meshioplusplus::Region> regions;
+    for (const MarcSet& s : rSets) {
+        std::vector<std::int64_t> entries;
+        int dim = -1;
+        if (s.mElements) {
+            for (std::int64_t m : s.mMembers) {
+                const auto it = element_cell.find(m);
+                if (it == element_cell.end()) {
+                    if (!all_elements.count(m))
+                        marc_fail(pLabel, "element set '" + s.mName + "' names undefined element " +
+                                              std::to_string(m));
+                    continue;
+                }
+                const auto b = static_cast<std::size_t>(it->second.mBlock);
+                entries.push_back(starts[b] + it->second.mRow);
+                dim = std::max(dim, dims[b]);
+            }
+        } else {
+            for (std::int64_t m : s.mMembers) {
+                const auto it = index.find(m);
+                if (it == index.end())
+                    marc_fail(pLabel, "node set '" + s.mName + "' names undefined node " +
+                                          std::to_string(m));
+                entries.push_back(it->second);
+            }
+        }
+        const RegionKind kind = s.mElements ? RegionKind::Cell : RegionKind::Point;
+        const auto key = std::make_pair(static_cast<int>(kind), s.mName);
+        if (regions.count(key))
+            log::warn("{}: a second {} set '{}' replaces the first", pLabel,
+                      s.mElements ? "element" : "node", s.mName);
+        regions.insert_or_assign(key,
+                                 meshioplusplus::Region(s.mName, kind, dim, -1, column(entries)));
+    }
+    for (auto& [key, region] : regions)
+        mesh.AddRegion(std::move(region));
+    return mesh;
+}
+
+// -- the formatted post file ------------------------------------------------------
+
+constexpr std::size_t kMarcW = 13;  // the post file's column width (i13, e13.6)
+
+std::vector<std::int64_t> marc_ints_of(const std::string& rLine, const std::string& rWhere) {
+    std::vector<std::int64_t> out;
+    const std::string body = marc_rstrip(rLine);
+    for (std::size_t k = 0; k < body.size(); k += kMarcW) {
+        const std::string field = marc_trim(std::string_view(body).substr(k, kMarcW));
+        if (!field.empty())
+            out.push_back(marc_int(field, kMarcT19, rWhere));
+    }
+    return out;
+}
+
+std::vector<double> marc_reals_of(std::string_view Line, const std::string& rWhere) {
+    std::vector<double> out;
+    const std::string body = marc_rstrip(Line);
+    for (std::size_t k = 0; k < body.size(); k += kMarcW) {
+        const std::string field = marc_trim(std::string_view(body).substr(k, kMarcW));
+        if (!field.empty())
+            out.push_back(marc_real(field, kMarcT19, rWhere));
+    }
+    return out;
+}
+
+// A block: its number and its body's lines [mBegin, mEnd); increment markers
+// (****, ----, ++++) carry number 0 and their own kind.
+struct MarcBlock {
+    char mKind = 'b';  // 'b' block, '*' ****, '-' ----, '+' ++++
+    std::int64_t mNumber = 0;
+    std::size_t mBegin = 0, mEnd = 0;
+};
+
+// Reads a block's lines as Fortran records: each record starts a line.
+class MarcRecords {
+public:
+    MarcRecords(const std::vector<std::string>& rLines, const MarcBlock& rBlock)
+        : mrLines(rLines), mI(rBlock.mBegin), mEnd(rBlock.mEnd) {}
+
+    const std::string& Line() {
+        if (mI >= mEnd)
+            marc_fail(kMarcT19, "a block ends early (line " + std::to_string(mI + 1) + ")");
+        return mrLines[mI++];
+    }
+    std::string Where() const { return "line " + std::to_string(mI + 1); }
+    std::vector<std::int64_t> Ints(std::size_t Count) {
+        std::vector<std::int64_t> out;
+        while (out.size() < Count) {
+            const std::string where = Where();
+            const auto more = marc_ints_of(Line(), where);
+            out.insert(out.end(), more.begin(), more.end());
+        }
+        out.resize(Count);
+        return out;
+    }
+    std::vector<double> Reals(std::size_t Count) {
+        std::vector<double> out;
+        while (out.size() < Count) {
+            const std::string where = Where();
+            const auto more = marc_reals_of(Line(), where);
+            out.insert(out.end(), more.begin(), more.end());
+        }
+        out.resize(Count);
+        return out;
+    }
+
+private:
+    const std::vector<std::string>& mrLines;
+    std::size_t mI, mEnd;
+};
+
+struct MarcIncrement {
+    double mTime = 0.0;
+    std::int64_t mInc = 0, mIncsub = 0, mJantyp = 0;
+};
+
+class MarcPost {
+public:
+    explicit MarcPost(const std::string& rPath) : mLines(marc_lines(rPath, kMarcT19)) {
+        if (mLines.empty() || mLines[0].rfind("=beg=501", 0) != 0)
+            marc_fail(kMarcT19, "not a Marc formatted post file (no =beg=501 title block)");
+        std::vector<MarcBlock> blocks;
+        std::size_t i = 0;
+        while (i < mLines.size()) {
+            const std::string s = marc_trim(mLines[i]);
+            if (s.rfind("=beg=", 0) == 0) {
+                MarcBlock b;
+                b.mNumber = marc_int(s.substr(5, 5), kMarcT19,
+                                     "block header, line " + std::to_string(i + 1));
+                std::size_t j = i + 1;
+                while (j < mLines.size() && mLines[j].rfind("=end=", 0) != 0)
+                    ++j;
+                if (j >= mLines.size())
+                    marc_fail(kMarcT19, "block " + std::to_string(b.mNumber) +
+                                            " has no =end= (line " + std::to_string(i + 1) + ")");
+                b.mBegin = i + 1;
+                b.mEnd = j;
+                blocks.push_back(b);
+                i = j + 1;
+                continue;
+            }
+            if (s == "****" || s == "----" || s == "++++")
+                blocks.push_back(MarcBlock{s[0], 0, i, i});
+            ++i;
+        }
+        // The model blocks come before the first increment.
+        bool inside = false;
+        for (const MarcBlock& b : blocks) {
+            if (b.mKind == '*') {
+                mIncrements.emplace_back();
+                inside = true;
+            } else if (b.mKind == '-' || b.mKind == '+') {
+                inside = false;
+            } else if (!inside) {
+                mModel.push_back(b);
+            } else {
+                mIncrements.back().push_back(b);
+            }
+        }
+    }
+
+    MarcRecords Reader(const MarcBlock& rBlock) const { return MarcRecords(mLines, rBlock); }
+
+    void Header(std::vector<std::int64_t>& rLm,
+                std::vector<std::pair<std::int64_t, std::string>>& rCodes) const {
+        rLm.assign(30, 0);
+        for (const MarcBlock& b : mModel) {
+            const std::int64_t family = b.mNumber / 100;
+            if (family == 502) {
+                const auto values = Reader(b).Ints(30);
+                std::copy(values.begin(), values.end(), rLm.begin());
+            } else if (family == 506) {
+                MarcRecords r = Reader(b);
+                for (std::int64_t k = 0; k < rLm[0]; ++k) {
+                    const std::string where = r.Where();
+                    const std::string& line = r.Line();
+                    const std::int64_t code =
+                        marc_int(line.substr(0, std::min(kMarcW, line.size())), kMarcT19, where);
+                    const std::string label =
+                        line.size() > kMarcW ? marc_trim(std::string_view(line).substr(kMarcW, 24))
+                                             : "";
+                    rCodes.emplace_back(code, label);
+                }
+            }
+        }
+    }
+
+    void Model(const std::vector<std::int64_t>& rLm, std::vector<std::int64_t>& rNodeIds,
+               std::vector<std::array<double, 3>>& rCoords, std::vector<MarcElement>& rElements,
+               std::vector<MarcSet>& rSets) const {
+        const std::int64_t numnp = rLm[1], numel = rLm[2], ncrd = rLm[8], nnodmx = rLm[9];
+        const std::int64_t postrv = rLm[13];
+        for (const MarcBlock& b : mModel) {
+            const std::int64_t family = b.mNumber / 100;
+            MarcRecords r = Reader(b);
+            if (family == 507) {
+                for (std::int64_t e = 0; e < numel; ++e) {
+                    const auto record = r.Ints(static_cast<std::size_t>(3 + nnodmx));
+                    MarcElement el;
+                    el.mId = record[0];
+                    el.mType = record[1];
+                    const auto nnod =
+                        static_cast<std::size_t>(std::max<std::int64_t>(record[2], 0));
+                    for (std::size_t k = 0; k < nnod && 3 + k < record.size(); ++k)
+                        el.mNodes.push_back(record[3 + k]);
+                    rElements.push_back(std::move(el));
+                }
+            } else if (family == 508) {
+                for (std::int64_t k = 0; k < numnp; ++k) {
+                    const std::string where = r.Where();
+                    const std::string& line = r.Line();
+                    const std::int64_t ident =
+                        marc_int(line.substr(0, std::min(kMarcW, line.size())), kMarcT19, where);
+                    std::vector<double> values =
+                        line.size() > kMarcW
+                            ? marc_reals_of(std::string_view(line).substr(kMarcW), where)
+                            : std::vector<double>{};
+                    if (values.size() > 5)
+                        values.resize(5);
+                    if (ncrd > 5) {
+                        const auto more = r.Reals(static_cast<std::size_t>(ncrd - 5));
+                        values.insert(values.end(), more.begin(), more.end());
+                    }
+                    std::array<double, 3> xyz{0.0, 0.0, 0.0};
+                    for (std::size_t d = 0;
+                         d < 3 && d < static_cast<std::size_t>(ncrd) && d < values.size(); ++d)
+                        xyz[d] = values[d];
+                    rNodeIds.push_back(ident);
+                    rCoords.push_back(xyz);
+                }
+            } else if (family == 513) {
+                std::int64_t count = 0;
+                std::size_t width = 12;
+                if (b.mNumber == 51301 || postrv > 10) {
+                    count = r.Ints(1)[0];
+                    width = 32;
+                } else {
+                    count = rLm[15];
+                }
+                for (std::int64_t s = 0; s < count; ++s) {
+                    const std::string& line = r.Line();
+                    const std::string name =
+                        marc_trim(std::string_view(line).substr(0, std::min(width, line.size())));
+                    const auto head = r.Ints(2);
+                    const std::int64_t isetn = head[0], isett = head[1];
+                    std::vector<std::int64_t> members;
+                    if (isetn > 0)
+                        members = r.Ints(static_cast<std::size_t>(isetn));
+                    if ((isett == 12 || isett == 13 || isett == 18 || isett == 19) && isetn > 0)
+                        r.Ints(static_cast<std::size_t>(isetn));  // the edge or face numbers
+                    if (isett == 0 || isett == 1) {
+                        MarcSet set;
+                        set.mName = name;
+                        set.mElements = isett == 0;
+                        set.mMembers = std::move(members);
+                        rSets.push_back(std::move(set));
+                    } else {
+                        log::warn("{}: set '{}' of type {} is not read", kMarcT19, name, isett);
+                    }
+                }
+            }
+        }
+    }
+
+    MarcIncrement Info(const std::vector<MarcBlock>& rBlocks) const {
+        std::vector<std::int64_t> lm(12, 0);
+        std::vector<double> xlm(6, 0.0);
+        for (const MarcBlock& b : rBlocks) {
+            const std::int64_t family = b.mNumber / 100;
+            if (family == 517) {
+                lm = Reader(b).Ints(12);
+            } else if (b.mNumber == 51800) {
+                xlm = Reader(b).Reals(6);
+            } else if (b.mNumber == 51801) {
+                MarcRecords r = Reader(b);
+                const std::int64_t nw = r.Ints(1)[0];
+                xlm = r.Reals(static_cast<std::size_t>(std::max<std::int64_t>(nw, 0)));
+                xlm.resize(xlm.size() + 6, 0.0);
+            } else if (family == 519 && lm[0]) {
+                marc_fail(kMarcT19, "increments that remesh the model are not supported");
+            }
+        }
+        if (lm[0])
+            marc_fail(kMarcT19, "increments that remesh the model are not supported");
+        const std::int64_t ihresp = lm[6];
+        MarcIncrement out;
+        out.mTime = ihresp >= 1 && ihresp <= 4 ? xlm[1] : xlm[0];
+        out.mInc = lm[1];
+        out.mIncsub = lm[2];
+        out.mJantyp = lm[3];
+        return out;
+    }
+
+    std::vector<double> Times() const {
+        std::vector<double> out;
+        for (const auto& inc : mIncrements)
+            out.push_back(Info(inc).mTime);
+        return out;
+    }
+
+    const std::vector<std::vector<MarcBlock>>& Increments() const { return mIncrements; }
+
+private:
+    std::vector<std::string> mLines;
+    std::vector<MarcBlock> mModel;
+    std::vector<std::vector<MarcBlock>> mIncrements;
+};
+
+// Element post codes (Volume C, Table 3-3) that open a symmetric tensor written
+// as six codes, components 11 22 33 12 23 31 (xx yy zz xy yz zx).
+const char* marc_tensor_name(std::int64_t Code) {
+    static const std::map<std::int64_t, const char*> kNames = {
+        {301, "Total Strain"},
+        {311, "Stress"},
+        {321, "Plastic Strain"},
+        {331, "Creep Strain"},
+        {341, "Cauchy Stress"},
+        {351, "Real Harmonic Stress"},
+        {361, "Imaginary Harmonic Stress"},
+        {371, "Thermal Strain"},
+        {381, "Cracking Strain"},
+        {391, "Stress in Preferred System"},
+        {401, "Elastic Strain"},
+        {411, "Global Stress"},
+        {421, "Global Elastic Strain"},
+        {431, "Global Plastic Strain"},
+        {441, "Global Creep Strain"},
+        {461, "Elastic Strain in Preferred System"},
+        {541, "Phase Transformation Strain"},
+    };
+    const auto it = kNames.find(Code);
+    return it == kNames.end() ? nullptr : it->second;
+}
+
+std::string marc_scalar_name(std::int64_t Code) {
+    static const std::map<std::int64_t, const char*> kNames = {
+        {7, "Equivalent Plastic Strain"},
+        {8, "Equivalent Creep Strain"},
+        {9, "Temperature"},
+        {17, "Equivalent Von Mises Stress"},
+        {18, "Mean Normal Stress"},
+        {20, "Thickness"},
+        {47, "Equivalent Cauchy Stress"},
+        {48, "Strain Energy Density"},
+        {127, "Equivalent Elastic Strain"},
+    };
+    const auto it = kNames.find(Code);
+    return it == kNames.end() ? "post code " + std::to_string(Code) : it->second;
+}
+
+// An element result: its name, its first post code column and its width (1 or 6).
+struct MarcColumn {
+    std::string mName;
+    std::size_t mFirst = 0, mWidth = 1;
+};
+
+std::vector<MarcColumn> marc_columns(
+    const std::vector<std::pair<std::int64_t, std::string>>& rCodes) {
+    std::vector<MarcColumn> out;
+    std::size_t k = 0;
+    while (k < rCodes.size()) {
+        const auto& [code, label] = rCodes[k];
+        const std::int64_t layer = code / 1000, base = code % 1000;
+        const std::string suffix = layer ? "@layer" + std::to_string(layer) : "";
+        if (const char* tensor = marc_tensor_name(base); tensor && k + 5 < rCodes.size()) {
+            bool consecutive = true;
+            for (std::size_t j = 0; j < 6; ++j)
+                consecutive =
+                    consecutive && rCodes[k + j].first == code + static_cast<std::int64_t>(j);
+            if (consecutive) {
+                out.push_back({(label.empty() ? std::string(tensor) : label) + suffix, k, 6});
+                k += 6;
+                continue;
+            }
+        }
+        out.push_back({(label.empty() ? marc_scalar_name(base) : label) + suffix, k, 1});
+        ++k;
+    }
+    return out;
+}
+
+void marc_scalar_field(Mesh& rMesh, const char* pName, DType Type, double Value) {
+    NDArray a(Type, {1});
+    if (Type == DType::Float64)
+        a.As<double>()[0] = Value;
+    else
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(Value);
+    rMesh.AddFieldData(pName, std::move(a));
+}
+
+Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
+    const MarcPost post(rPath);
+    std::vector<std::int64_t> lm;
+    std::vector<std::pair<std::int64_t, std::string>> codes;
+    post.Header(lm, codes);
+    const std::int64_t npost = lm[0], numnp = lm[1], numel = lm[2];
+    const std::int64_t nstres = std::max<std::int64_t>(lm[4], 1);
+    std::vector<std::int64_t> node_ids;
+    std::vector<std::array<double, 3>> coords;
+    std::vector<MarcElement> elements;
+    std::vector<MarcSet> sets;
+    post.Model(lm, node_ids, coords, elements, sets);
+    std::vector<MarcLocation> locs;
+    Mesh mesh = marc_build(kMarcT19, node_ids, coords, elements, sets, locs);
+    const std::size_t n = post.Increments().size();
+    if (n == 0) {
+        if (rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
+            marc_fail(kMarcT19, "time step " + std::to_string(rOptions.mTimeStep) +
+                                    " is out of range: the file has no increments");
+        return mesh;
+    }
+    const std::size_t index = rOptions.ResolveTimeStep(n);
+    const auto& blocks = post.Increments()[index];
+    const MarcIncrement info = post.Info(blocks);
+    marc_scalar_field(mesh, "meshio:time", DType::Float64, info.mTime);
+    marc_scalar_field(mesh, "marc:increment", DType::Int64, static_cast<double>(info.mInc));
+    marc_scalar_field(mesh, "marc:subincrement", DType::Int64, static_cast<double>(info.mIncsub));
+    if (rOptions.mPointsOnly)
+        return mesh;
+    const auto n_nodes = static_cast<std::size_t>(std::max<std::int64_t>(numnp, 0));
+    for (const MarcBlock& b : blocks) {
+        const std::int64_t family = b.mNumber / 100;
+        MarcRecords r = post.Reader(b);
+        if (family == 524) {
+            const std::int64_t nnqnod = r.Ints(2)[0];
+            for (std::int64_t q = 0; q < nnqnod; ++q) {
+                const std::string& line = r.Line();
+                const std::string name = marc_trim(
+                    std::string_view(line).substr(0, std::min<std::size_t>(48, line.size())));
+                const auto ivec = r.Ints(12);
+                if (ivec[6] != -1)
+                    continue;
+                const auto ncomp = static_cast<std::size_t>(std::max<std::int64_t>(ivec[3], 1));
+                std::vector<double> real = r.Reals(n_nodes * ncomp), imag;
+                if (ivec[5] == 4 || ivec[5] == 5)
+                    imag = r.Reals(n_nodes * ncomp);
+                for (int part = 0; part < 2; ++part) {
+                    const std::vector<double>& data = part ? imag : real;
+                    const std::string key = part ? name + "@imag" : name;
+                    if ((part && imag.empty()) || !rOptions.WantsArray(key))
+                        continue;
+                    NDArray a = ncomp == 1 ? NDArray(DType::Float64, {n_nodes})
+                                           : NDArray(DType::Float64, {n_nodes, ncomp});
+                    std::copy(data.begin(), data.end(), a.As<double>());
+                    mesh.AddPointData(key, std::move(a));
+                }
+            }
+        } else if (family == 523 && info.mJantyp > 100 && npost > 0 && numel > 0) {
+            const auto np = static_cast<std::size_t>(npost), ns = static_cast<std::size_t>(nstres);
+            std::vector<double> values;
+            values.reserve(static_cast<std::size_t>(numel) * ns * np);
+            for (std::int64_t e = 0; e < numel; ++e)
+                for (std::size_t p = 0; p < ns; ++p) {
+                    const auto record = r.Reals(np);
+                    values.insert(values.end(), record.begin(), record.end());
+                }
+            for (const MarcColumn& c : marc_columns(codes)) {
+                if (!rOptions.WantsArray(c.mName))
+                    continue;
+                // With several integration points, flattened point-major so that
+                // any writer holds it; its (points, components) is the layout.
+                const std::size_t width = ns * c.mWidth;
+                std::vector<NDArray> per_block;
+                for (std::size_t bi = 0; bi < mesh.NumCellBlocks(); ++bi) {
+                    const std::size_t rows = mesh.Cells(bi).NumCells();
+                    NDArray a = width > 1 ? NDArray(DType::Float64, {rows, width})
+                                          : NDArray(DType::Float64, {rows});
+                    std::fill(a.As<double>(), a.As<double>() + a.Size(),
+                              std::numeric_limits<double>::quiet_NaN());
+                    per_block.push_back(std::move(a));
+                }
+                for (std::size_t e = 0; e < locs.size() && e < static_cast<std::size_t>(numel);
+                     ++e) {
+                    if (locs[e].mBlock < 0)
+                        continue;
+                    double* target =
+                        per_block[static_cast<std::size_t>(locs[e].mBlock)].As<double>() +
+                        static_cast<std::size_t>(locs[e].mRow) * width;
+                    for (std::size_t p = 0; p < ns; ++p)
+                        for (std::size_t j = 0; j < c.mWidth; ++j)
+                            target[p * c.mWidth + j] = values[(e * ns + p) * np + c.mFirst + j];
+                }
+                if (ns > 1) {
+                    NDArray layout(DType::Int64, {2});
+                    layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(ns);
+                    layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(c.mWidth);
+                    mesh.AddFieldData("marc:layout:" + c.mName, std::move(layout));
+                }
+                mesh.AddCellData(c.mName, std::move(per_block));
+            }
+        }
+    }
+    return mesh;
+}
+
+}  // namespace
+
+bool is_marc_deck(std::string_view Head) {
+    bool first = true;
+    std::size_t pos = 0;
+    while (pos < Head.size()) {
+        std::size_t eol = Head.find('\n', pos);
+        if (eol == std::string_view::npos)
+            eol = Head.size();
+        const std::string stripped = marc_trim(Head.substr(pos, eol - pos));
+        pos = eol + 1;
+        if (stripped.empty() || stripped[0] == '$')
+            continue;
+        const auto words = marc_words(marc_lower(stripped));
+        const std::string word = words.empty() ? "" : words[0];
+        if (first) {
+            if (stripped.find('=') != std::string::npos || !marc_is_parameter(word))
+                return false;
+            first = false;
+            if (word == "end")
+                return true;
+            continue;
+        }
+        if (word == "end" || word == "connectivity" || word == "coordinates")
+            return true;
+    }
+    return false;
+}
+
+Mesh read_marc(const std::string& rPath) {
+    const std::vector<std::string> lines = marc_lines(rPath, kMarcDat);
+    std::string head;
+    for (const std::string& line : lines) {
+        if (head.size() >= 65536)
+            break;
+        head += line;
+        head += '\n';
+    }
+    if (!is_marc_deck(std::string_view(head).substr(0, std::min<std::size_t>(head.size(), 65536))))
+        marc_fail(kMarcDat, "not a Marc input deck (no Marc parameter opens the file)");
+    MarcDeck deck = marc_parse_deck(lines);
+    if (deck.mNodes.empty() && deck.mElements.empty())
+        marc_fail(kMarcDat, "no COORDINATES or CONNECTIVITY found");
+    std::map<std::pair<bool, std::string>, std::vector<std::int64_t>> known;
+    for (MarcSet& s : deck.mSets) {
+        std::unordered_map<std::string, std::vector<std::int64_t>> refs;
+        for (const auto& [key, members] : known)
+            if (key.first == s.mElements)
+                refs.emplace(key.second, members);
+        s.mMembers = marc_expand(s.mTokens, s.mName, refs, kMarcDat);
+        known[{s.mElements, marc_lower(s.mName)}] = s.mMembers;
+    }
+    std::vector<std::array<double, 3>> coords;
+    coords.reserve(deck.mNodeOrder.size());
+    for (std::int64_t id : deck.mNodeOrder)
+        coords.push_back(deck.mNodes.at(id));
+    std::vector<MarcLocation> locs;
+    return marc_build(kMarcDat, deck.mNodeOrder, coords, deck.mElements, deck.mSets, locs);
+}
+
+Mesh read_marc_t19(const std::string& rPath, const ReadOptions& rOptions) {
+    return marc_read_t19(rPath, rOptions);
+}
+
+MeshMetadata read_marc_t19_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    ReadOptions options = rOptions;
+    options.mPointsOnly = true;
+    options.mTimeStep = 0;
+    MeshMetadata meta = metadata_from_mesh(marc_read_t19(rPath, options));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "marc_t19";
+    meta.mTimeValues = MarcPost(rPath).Times();
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/marc.cpp =====
 // ===== begin src/cpp/src/formats/mdpa.cpp =====
 #include <cmath>
 #include <cstdint>
@@ -126820,11 +129070,14 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // ansys_rst joined in v16.3.0: its steps are the result sets.
     // femap joined in v16.5.0: its steps are the 450 output sets.
     // abaqus_fil joined in v16.7.0: its steps are the increments (2000 ... 2001).
+    // ansys_rst_cyclic joined in v16.8.0: ansys_rst's result sets, full rotor.
+    // marc_t19 joined in v16.8.0: its steps are the post file's increments.
     return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "unv" ||
            rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
-           rFormat == "femap" || rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" ||
-           rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
-           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
+           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
+           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -129298,6 +131551,20 @@ std::string sniff_format(const std::string& rPath) {
         return "abaqus_fil";
     if (sniff_is_radioss(stripped))
         return "radioss";
+    // MSC Marc formatted post file: the analysis title block opens it.
+    if (sniff_starts_with(stripped, "=beg=50100"))
+        return "marc_t19";
+    // MSC Marc input deck: a Marc parameter opens it and an END, CONNECTIVITY or
+    // COORDINATES line follows -- which can be past 512 bytes, so read on.
+    if (!stripped.empty() && std::isalpha(static_cast<unsigned char>(stripped[0])) &&
+        stripped.substr(0, stripped.find('\n')).find('=') == std::string::npos) {
+        auto deck = detail::make_classic_ifstream(rPath, std::ios::binary);
+        std::string text(65536, '\0');
+        deck.read(text.data(), static_cast<std::streamsize>(text.size()));
+        text.resize(static_cast<std::size_t>(deck.gcount()));
+        if (is_marc_deck(text))
+            return "marc";
+    }
     if (sniff_is_femap(head))
         return "femap";
     if (sniff_is_patran(head))
@@ -132774,6 +135041,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
         {"libmesh", meshioplusplus::read_libmesh},
         {"radioss", meshioplusplus::read_radioss},
+        // A .dat file is Tecplot's unless it opens as a Marc deck (resolve_format).
+        {"marc", meshioplusplus::read_marc},
+        {"marc_t19", [](const std::string& path) { return meshioplusplus::read_marc_t19(path); }},
         // Fixed file names (z88i1.txt ...): resolve_format matches the basename.
         {"z88", [](const std::string& path) { return meshioplusplus::read_z88(path); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
@@ -132781,6 +135051,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
         {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
         {"ansys_rst", [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); }},
+        {"ansys_rst_cyclic",
+         [](const std::string& path) { return meshioplusplus::read_ansys_rst_cyclic(path); }},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -133141,6 +135413,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".xda", "libmesh"},
         {".xdr", "libmesh"},
         {".rad", "radioss"},
+        {".t19", "marc_t19"},
         {".feb", "febio"},
         {".xplt", "xplt"},
         {".rst", "ansys_rst"},
@@ -133259,6 +135532,18 @@ bool registry_is_mfem_mesh(const std::string& rPath) {
     return first != std::string::npos && head.compare(first, 5, "MFEM ") == 0;
 }
 
+// Whether `rPath` exists and opens as a Marc input deck; only for the `.dat`
+// suffix Tecplot and Marc share.
+bool registry_is_marc_dat(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return false;
+    std::string head(65536, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+    return is_marc_deck(head);
+}
+
 std::string basename_of(const std::string& rPath) {
     auto pos = rPath.find_last_of("/\\");
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
@@ -133280,10 +135565,13 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
         auto it = defaults.find(suffix);
         if (it == defaults.end())
             continue;
-        // `.mesh` is both Medit's and MFEM's. The one content-aware default: an
-        // existing file whose first line names an MFEM mesh goes to mfem.
+        // `.mesh` is both Medit's and MFEM's: an existing file whose first line
+        // names an MFEM mesh goes to mfem.
         if (suffix == ".mesh" && registry_is_mfem_mesh(rPath))
             return "mfem";
+        // `.dat` is Tecplot's, and Marc's input deck's when it opens as one.
+        if (suffix == ".dat" && registry_is_marc_dat(rPath))
+            return "marc";
         return it->second;
     }
     throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
@@ -133354,6 +135642,10 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"xplt", meshioplusplus::read_xplt},
         // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
         {"ansys_rst", meshioplusplus::read_ansys_rst},
+        // Its full-rotor reading (a static cyclic model): no extension, by name only.
+        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic},
+        // Marc .t19: mTimeStep picks the increment.
+        {"marc_t19", meshioplusplus::read_marc_t19},
         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
         // narrowing options.
         {"unv", [](const std::string& path,
@@ -133429,6 +135721,8 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
+        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},
+        {"marc_t19", meshioplusplus::read_marc_t19_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5

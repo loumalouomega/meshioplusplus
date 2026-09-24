@@ -1,7 +1,10 @@
 """Ansys MAPDL results (``.rst``, ``.rth``): both engines against files MAPDL
-wrote (and pymapdl-reader's frozen reading of them), plus a synthetic file that
-pins what those files do not exercise -- a node rotated about all three axes, a
-result set holding only some nodes, MAPDL's undefined value and the refusals."""
+wrote (and pymapdl-reader's frozen reading of them: nodal solutions, averaged
+element stresses and strains, reaction forces, a distributed solve, the full
+rotor of static cyclic models), plus a synthetic file that pins what those
+files do not exercise -- a node rotated about all three axes, a result set
+holding only some nodes, MAPDL's undefined value, a rotated element, a layered
+shell, an all-zero record and the refusals."""
 
 import collections
 import math
@@ -16,6 +19,8 @@ from meshioplusplus.ansys_rst import _ansys_rst as py_rst
 
 RST = pathlib.Path(__file__).parent / "meshes" / "ansys" / "rst"
 FIXTURES = sorted(RST.glob("*.rst")) + sorted(RST.glob("*.rth"))
+DIST = RST / "dist_static"
+CYCLIC = [RST / "cyc12.rst", RST / "cyclic_v182.rst"]
 
 _VTK = {
     1: "vertex",
@@ -45,12 +50,31 @@ _DOF = {
 }
 
 
+class _PyCyclic:
+    """The Python engine's full-rotor read behind ``read_cyclic``."""
+
+    time_values = staticmethod(py_rst.time_values)
+
+    @staticmethod
+    def read(filename, **kwargs):
+        return py_rst.read(filename, **kwargs)
+
+    @staticmethod
+    def read_cyclic(filename, **kwargs):
+        return py_rst.read(filename, cyclic=True, **kwargs)
+
+
 @pytest.fixture(params=["core", "python"])
 def engine(request):
     """Both engines behind the same read signature."""
     if request.param == "core":
         return meshioplusplus.ansys_rst
-    return py_rst
+    return _PyCyclic
+
+
+def _node_index(path):
+    """Node number -> point index of the mesh both engines build."""
+    return py_rst._Model(py_rst._open(str(path)), True).node_index
 
 
 def _same(a, b):
@@ -109,12 +133,7 @@ def test_matches_pymapdl_reader(engine, path):
         got += _cells(mesh.points, block.type, block.data)
     assert got == expected
 
-    n_file = len(mesh.points)
-    node_ids = np.zeros(n_file, dtype=np.int64)
-    ids = py_rst._Results(str(path)).model(True)[1]
-    for number, point in ids.items():
-        node_ids[point] = number
-    index = {int(n): k for k, n in enumerate(node_ids)}
+    index = _node_index(path)
     for step, time in enumerate(times):
         mesh = engine.read(path, time_step=step, lenient=True)
         assert mesh.field_data["meshio:time"][0] == time
@@ -126,6 +145,239 @@ def test_matches_pymapdl_reader(engine, path):
             if component is not None:
                 ours = ours[:, component]
             np.testing.assert_allclose(ours, values[:, k], rtol=1e-12, atol=0)
+
+
+# pymapdl-reader's labels of reaction DOFs as (meshio++ array, component).
+_REACTION = {
+    "UX": ("RF", 0),
+    "UY": ("RF", 1),
+    "UZ": ("RF", 2),
+    "ROTX": ("RMOM", 0),
+    "ROTY": ("RMOM", 1),
+    "ROTZ": ("RMOM", 2),
+}
+
+
+def _element_keys():
+    ref = np.load(RST / "pymapdl_reference.npz")
+    keys = []
+    for name in ref.files:
+        key, _, rest = name.rpartition("/")
+        if rest in ("stress", "strain", "rf_values"):
+            keys.append((key.rsplit("/", 1)[0], int(key.rsplit("/", 1)[1]), rest))
+    return sorted(keys)
+
+
+@pytest.mark.parametrize(
+    "key, step, what",
+    _element_keys(),
+    ids=["/".join(map(str, k)) for k in _element_keys()],
+)
+def test_element_results_match_pymapdl_reader(engine, key, step, what):
+    """Node-averaged stresses and elastic strains (``nodal_stress``,
+    ``nodal_elastic_strain``) and reaction forces (``nodal_reaction_forces``,
+    which pymapdl-reader leaves in the nodal coordinate systems)."""
+    ref = np.load(RST / "pymapdl_reference.npz")
+    path = RST / key
+    if what == "stress" and key == "temp_v13.rst":
+        pytest.skip("pymapdl-reader does not read element results before v14.5")
+    if what != "rf_values" and key == "beam44.rst":
+        pytest.skip("line elements carry no element nodal stresses in meshio++")
+    mesh = engine.read(path, time_step=step, lenient=True)
+    index = _node_index(path)
+    if what == "rf_values":
+        model = py_rst._Model(py_rst._open(str(path)), True)
+        nodal = {}
+        for label, number, value in zip(
+            ref[f"{key}/{step}/rf_dofs"].tolist(),
+            ref[f"{key}/{step}/rf_nnum"],
+            ref[f"{key}/{step}/rf_values"],
+        ):
+            name, component = _REACTION.get(label, (f"RF_{label}", None))
+            point = index[int(number)]
+            if component is None:
+                assert mesh.point_data[name][point] == value
+                continue
+            nodal.setdefault((name, point), np.zeros(3))[component] = value
+        for (name, point), vec in nodal.items():
+            vec = vec.reshape(1, 3)
+            py_rst._rotate(vec, model.angles[[point]])
+            np.testing.assert_allclose(
+                mesh.point_data[name][point], vec[0], rtol=1e-12, atol=1e-12
+            )
+        return
+    name = "S" if what == "stress" else "EPEL"
+    rows = [index[int(n)] for n in ref[f"{key}/{step}/{what}_nnum"]]
+    expected = ref[f"{key}/{step}/{what}"]
+    np.testing.assert_allclose(
+        mesh.point_data[name][rows], expected, rtol=1e-12, atol=0
+    )
+
+
+def test_v13_stress_records_are_consistent():
+    """A release 13 file stores 11 items per node (``SX .. SXZ, S1 S2 S3, SINT,
+    SEQV``): the principal stresses are the eigenvalues of the first six."""
+    results = py_rst._Results(str(RST / "temp_v13.rst"))
+    results.deck()
+    assert not results.sparse_ens
+    base, offsets = results.element_tables(0)
+    checked = 0
+    for off in offsets[:20]:
+        values = results.element_record(base + int(off), py_rst._ENS)
+        for row in values.reshape(-1, 11):
+            xx, yy, zz, xy, yz, xz = row[:6]
+            t = np.array([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]])
+            principal = np.sort(np.linalg.eigvalsh(t))[::-1]
+            np.testing.assert_allclose(
+                principal, row[6:9], rtol=1e-5, atol=1e-6 * abs(row).max()
+            )
+            assert row[9] == pytest.approx(row[6] - row[8], rel=1e-5)
+            checked += 1
+    assert checked == 160
+
+
+def test_static_solid186_stresses(engine):
+    """The done-when of roadmap item 1.2: a static SOLID186 result's nodal
+    stresses match pymapdl-reader's ``nodal_stress``; per element node they are
+    cell data, NaN at the midside nodes."""
+    ref = np.load(RST / "pymapdl_reference.npz")
+    path = RST / "beam_static_bc.rst"
+    mesh = engine.read(path)
+    index = _node_index(path)
+    rows = [index[int(n)] for n in ref["beam_static_bc.rst/0/stress_nnum"]]
+    np.testing.assert_array_equal(
+        mesh.point_data["S"][rows], ref["beam_static_bc.rst/0/stress"]
+    )
+    # Per element node, flattened point-major: (cells, nodes * 6), and its
+    # (nodes, components) is the layout.
+    assert mesh.cell_data["S"][0].shape == (40, 120)
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:S"], [20, 6])
+    cells = mesh.cell_data["S"][0].reshape(40, 20, 6)
+    assert np.isfinite(cells[:, :8]).all() and np.isnan(cells[:, 8:]).all()
+    assert mesh.cell_data["ENF"][0].shape == (40, 60)
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:ENF"], [20, 3])
+    assert np.isfinite(mesh.cell_data["ENF"][0]).all()
+    # Nodal equilibrium: at each node the element nodal forces sum to minus the
+    # reaction, or to minus the applied load (FX 20, FY 30, FZ 40 at three
+    # nodes), and to zero everywhere else.
+    total = np.zeros((len(mesh.points), 3))
+    np.add.at(
+        total, mesh.cells[0].data.ravel(), mesh.cell_data["ENF"][0].reshape(-1, 3)
+    )
+    residual = total + np.nan_to_num(mesh.point_data["RF"])
+    scale = np.abs(np.nan_to_num(mesh.point_data["RF"])).max()
+    loaded = np.abs(residual) > 1e-6 * scale
+    assert sorted(residual[loaded].round(5).tolist()) == [-40.0, -30.0, -20.0]
+
+
+def test_distributed_solve_reads_its_partial_files(engine, tmp_path):
+    """file0.rst reads file1..3.rst with it: the same model and results as the
+    combined file MAPDL wrote (compared by node number)."""
+    merged = engine.read(DIST / "file0.rst")
+    combined = engine.read(DIST / "file.rst")
+    assert len(merged.points) == len(combined.points) == 1309
+    assert sorted(merged.point_data) == sorted(combined.point_data)
+    a, b = _node_index(DIST / "file0.rst"), _node_index(DIST / "file.rst")
+    numbers = sorted(b)
+    rows_a, rows_b = [a[n] for n in numbers], [b[n] for n in numbers]
+    np.testing.assert_array_equal(merged.points[rows_a], combined.points[rows_b])
+    for name in combined.point_data:
+        np.testing.assert_allclose(
+            merged.point_data[name][rows_a],
+            combined.point_data[name][rows_b],
+            rtol=1e-6,
+            atol=1e-9 * np.nanmax(np.abs(combined.point_data[name])),
+            err_msg=name,
+        )
+    got = collections.Counter(b.type for b in merged.cells for _ in b.data)
+    assert got == collections.Counter(b.type for b in combined.cells for _ in b.data)
+
+    with pytest.raises(meshioplusplus.ReadError, match="not the main one"):
+        engine.read(DIST / "file1.rst")
+    for k in range(3):  # file3.rst left out
+        (tmp_path / f"job{k}.rst").write_bytes((DIST / f"file{k}.rst").read_bytes())
+    with pytest.raises(meshioplusplus.ReadError, match="one is missing"):
+        engine.read(tmp_path / "job0.rst")
+    (tmp_path / "other.rst").write_bytes((DIST / "file0.rst").read_bytes())
+    with pytest.raises(meshioplusplus.ReadError, match="must be named"):
+        engine.read(tmp_path / "other.rst")
+
+
+@pytest.mark.parametrize("path", CYCLIC, ids=[p.name for p in CYCLIC])
+def test_cyclic_full_rotor_matches_pymapdl_reader(engine, path):
+    """ansys_rst_cyclic: the base sector repeated round the cyclic axis (a local
+    coordinate system's Z in cyc12.rst), as pymapdl-reader's full rotor."""
+    ref = np.load(RST / "pymapdl_reference.npz")
+    key = path.name
+    rotor = ref[f"{key}/rotor_points"]
+    base = py_rst._Model(py_rst._open(str(path)), True)
+    r = base.files[0]
+    if r.cs_cord > 1:
+        axes, origin = r.coordinate_system(r.cs_cord)
+        axis = axes[2] / np.linalg.norm(axes[2])
+    else:
+        axis, origin = np.array([0.0, 0.0, 1.0]), np.zeros(3)
+    # The rotor holds the base sector's points (those of its cells, in point
+    # order) once per sector, sector by sector.
+    used = set()
+    for e, loc in zip(base.deck["elements"], base.locs):
+        if loc is not None and e["id"] <= r.cs_els:
+            used.update(int(v) for v in base.mesh.cells[loc[0]].data[loc[1]])
+    rank = {p: k for k, p in enumerate(sorted(used))}
+    for step in range(len(ref[f"{key}/times"])):
+        mesh = engine.read_cyclic(path, time_step=step, lenient=True)
+        assert mesh.field_data["ansys:sectors"].tolist() == [r.n_sectors]
+        assert len(mesh.points) == len(rotor) == r.n_sectors * len(used)
+        scale = np.abs(rotor).max()
+        np.testing.assert_allclose(
+            np.sort(mesh.points.round(9), axis=0),
+            np.sort(rotor.round(9), axis=0),
+            atol=1e-8 * scale,
+        )
+        numbers = ref[f"{key}/{step}/rotor_nnum"]
+        values = ref[f"{key}/{step}/rotor_values"]
+        stress = ref[f"{key}/{step}/rotor_stress"]
+        base_rows = [rank[base.node_index[int(n)]] for n in numbers]
+        xyz = base.mesh.points[[base.node_index[int(n)] for n in numbers]] - origin
+        for i in range(r.n_sectors):
+            rows = [i * len(used) + k for k in base_rows]
+            q = np.array(py_rst._axis_rotation(axis, 2 * math.pi * i / r.n_sectors))
+            np.testing.assert_allclose(
+                mesh.points[rows], xyz @ q.reshape(3, 3).T + origin, atol=1e-12 * scale
+            )
+            np.testing.assert_allclose(
+                mesh.point_data["U"][rows],
+                values[i][:, :3],
+                rtol=0,
+                atol=1e-12 * np.abs(values).max(),
+            )
+            np.testing.assert_allclose(
+                mesh.point_data["S"][rows],
+                stress[i],
+                rtol=0,
+                atol=1e-12 * np.nanmax(np.abs(stress)),
+            )
+        sector = np.concatenate(mesh.cell_data["ansys:sector"])
+        assert sorted(set(sector.tolist())) == list(range(r.n_sectors))
+
+
+def test_cyclic_refusals_and_dispatch(engine):
+    with pytest.raises(meshioplusplus.ReadError, match="not a cyclic-symmetry model"):
+        engine.read_cyclic(RST / "file.rst")
+    mesh = meshioplusplus.read(RST / "cyclic_v182.rst", file_format="ansys_rst_cyclic")
+    assert mesh.field_data["ansys:sectors"].tolist() == [15]
+    assert meshioplusplus.read_metadata(
+        RST / "cyc12.rst", file_format="ansys_rst_cyclic"
+    )["time_values"] == pytest.approx(py_rst.time_values(RST / "cyc12.rst"))
+
+
+def test_zero_records(engine):
+    """A negative pointer-table entry ``-n`` stands for ``n`` zeros: MAPDL does
+    not write an all-zero record (cyclic_v182.rst's unloaded bricks)."""
+    mesh = engine.read(RST / "cyclic_v182.rst")
+    cells = np.concatenate([c.reshape(-1, 6) for c in mesh.cell_data["S"]])
+    corners = cells[np.isfinite(cells).all(1)]
+    assert (corners == 0).all(1).sum() >= 8 and (corners != 0).any()
 
 
 def test_modal_file(engine):
@@ -150,7 +402,7 @@ def test_modal_file(engine):
 
 def test_thermal_file_has_temperatures(engine):
     mesh = engine.read(RST / "file.rth")
-    assert sorted(mesh.point_data) == ["TEMP"]
+    assert sorted(mesh.point_data) == ["RF_TEMP", "TEMP"]
     assert np.isfinite(mesh.point_data["TEMP"]).all()
 
 
@@ -172,6 +424,9 @@ def test_selective_reads(engine):
     assert not engine.read(path, points_only=True).point_data
     assert sorted(engine.read(path, arrays=["ROT"]).point_data) == ["ROT"]
     assert not engine.read(path, arrays=[]).point_data
+    only = engine.read(path, arrays=["S", "RF"])
+    assert sorted(only.point_data) == ["RF", "S"]
+    assert sorted(k for k in only.cell_data if not k.startswith("ansys:")) == ["S"]
     with pytest.raises(meshioplusplus.ReadError, match="out of range"):
         engine.read(path, time_step=1)
 
@@ -195,6 +450,8 @@ def test_registered_and_sniffed(tmp_path):
     assert out["extensions"][".rst"] == ["ansys_rst"]
     assert out["extensions"][".rth"] == ["ansys_rst"]
     assert "ansys_rst" in out["readable"] and "ansys_rst" not in out["writable"]
+    assert "ansys_rst_cyclic" in out["readable"]
+    assert "ansys_rst_cyclic" not in out["writable"]
     renamed = tmp_path / "results.bin"
     renamed.write_bytes((RST / "beam44.rst").read_bytes())
     assert meshioplusplus.sniff_format(renamed) == "ansys_rst"
@@ -256,21 +513,44 @@ _HEX = [
 ]
 
 
-def _write_synthetic(path, zlib=False, global_nnod=0, sectors=1):
+# The synthetic element solution: the brick's stress at its node i (element
+# axes, turned 90 degrees about Z to the global ones), the shell's bottom and
+# top stresses, and three reactions (node 3's UX in its rotated axes).
+def _brick_stress(i):
+    return [1.0 + i, 2.0, 3.0, 0.5, 0.25, 0.125]
+
+
+def _shell_stress(i, top):
+    return [10.0 + i + 100.0 * top, 20.0, 0.0, 1.0, 0.0, 0.0]
+
+
+_REACTIONS = [(3, 1, 7.0), (1, 3, -2.0), (2, 4, 5.0)]  # node, DOF position, value
+
+
+def _write_synthetic(path, zlib=False, global_nnod=0, sectors=1, elements=False):
     w = _Writer()
     w.ints([12], 100)  # the standard header: file 12
     header = w.ints([12, 8, 8, 10, 4, 1, 1, 0, 2], 80)
     w.patch(header, 20, sectors)
     w.patch(header, 48, global_nnod)
+    w.patch(header, 39, 1)  # rstsprs: ENS holds six items per node
     w.patch(header, 14, w.ints(_NEQV))
 
-    geometry = w.ints([0, 1, 0, 8, 1], 80)
+    geometry = w.ints([0, 2 if elements else 1, 0, 8, 2 if elements else 1], 80)
     w.patch(header, 15, geometry)
-    ety = w.ints([0])
+    ety = w.ints([0, 0] if elements else [0])
     w.patch(geometry, 20, ety)
     solid185 = w.ints([1, 185, 0], 100)
     w.patch(solid185, 60, 8)  # nodelm
+    w.patch(solid185, 62, 8)  # nodfor
+    w.patch(solid185, 93, 8)  # nodstr
     w.patch(ety, 0, solid185 - ety)
+    if elements:
+        shell181 = w.ints([2, 181, 0], 100)  # KEYOPT(8) = 0: bottom and top
+        w.patch(shell181, 60, 4)
+        w.patch(shell181, 62, 4)
+        w.patch(shell181, 93, 4)
+        w.patch(ety, 1, shell181 - ety)
     nodes = None
     for number, xyz in enumerate(_HEX, start=1):
         angles = _ANGLES if number == 3 else (0.0, 0.0, 0.0)
@@ -278,9 +558,11 @@ def _write_synthetic(path, zlib=False, global_nnod=0, sectors=1):
         ptr = w.bsparse_doubles(values) if number == 1 else w.doubles(values)
         nodes = ptr if nodes is None else nodes
     w.patch(geometry, 26, nodes)
-    eid = w.ints([0, 0])
+    eid = w.ints([0, 0, 0, 0] if elements else [0, 0])
     w.patch(geometry, 28, eid)
     w.patch(eid, 0, w.shorts([2, 1, 3, 4, 0, 1, 0, 0, 11, 0, *range(1, 9)]) - eid)
+    if elements:
+        w.patch(eid, 2, w.ints([2, 2, 3, 4, 0, 1, 0, 0, 12, 0, 1, 2, 3, 4]) - eid)
     comp = w.ints([1] + [int.from_bytes(b"FACE", "big")] + [0x20202020] * 7 + [1, -4])
     w.patch(geometry, 50, comp)
     w.patch(geometry, 48, 1)
@@ -299,6 +581,8 @@ def _write_synthetic(path, zlib=False, global_nnod=0, sectors=1):
             nsl = w.doubles(np.ravel(rows))
             w.ints([_NEQV.index(5) + 1, _NEQV.index(2) + 1])
         w.patch(base, 104, nsl - base)
+        if elements and s == 0:
+            _write_element_solution(w, base)
         sets.append(base)
     dsi = w.ints(sets, 20)
     tim = w.doubles([0.5, 1.0] + [0.0] * 8)
@@ -308,6 +592,37 @@ def _write_synthetic(path, zlib=False, global_nnod=0, sectors=1):
     if zlib:
         w.words[tim + 1] = _i32(0x20 << 24)
     w.save(path)
+
+
+def _write_element_solution(w, base):
+    """Set 0's reactions and element solution (``ptrRF``, ``ptrESL``)."""
+    table = []
+    for node, k, _ in _REACTIONS:
+        index = _NEQV.index(node) * 4 + k  # (N - 1) * numdof + k, N 1-based
+        table += [index, 0]
+    rf = w.ints(table)
+    w.doubles([v for _, _, v in _REACTIONS])
+    w.patch(base, 7, len(_REACTIONS))
+    w.patch(base, 106, rf - base)
+
+    esl = w.ints([0, 0, 0, 0])
+    w.patch(base, 118, esl - base)
+    # The brick: stresses, a 90-degree element rotation, no elastic strain (an
+    # all-zero record, entry -56) and nodal forces.
+    brick = w.ints([0] * 25)
+    w.patch(esl, 0, brick - esl)
+    w.patch(brick, 2, w.doubles(np.ravel([_brick_stress(i) for i in range(8)])) - brick)
+    w.patch(brick, 5, -56)
+    w.patch(brick, 9, w.doubles([90.0, 0.0, 0.0]) - brick)
+    forces = [[i, 0.0, 0.0, -i] for i in range(8)]
+    w.patch(brick, 1, w.doubles(np.ravel(forces)) - brick)
+    # The shell: bottom then top, four corners each.
+    shell = w.ints([0] * 25)
+    w.patch(esl, 2, shell - esl)
+    stresses = [_shell_stress(i, 0) for i in range(4)] + [
+        _shell_stress(i, 1) for i in range(4)
+    ]
+    w.patch(shell, 2, w.doubles(np.ravel(stresses)) - shell)
 
 
 def _rotation(xy, yz, zx):
@@ -352,6 +667,64 @@ def test_synthetic_file(engine, tmp_path):
     assert np.isnan(u[[0, 2, 3, 5, 6, 7]]).all()
 
 
+def test_synthetic_element_solution(engine, tmp_path):
+    """A rotated brick, a layered shell, an all-zero record and reactions."""
+    path = tmp_path / "elements.rst"
+    _write_synthetic(path, elements=True)
+    mesh = engine.read(path)
+    assert [b.type for b in mesh.cells] == ["hexahedron", "quad"]
+
+    # The brick's element x axis is the global y axis.
+    q = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+
+    def to_global(t):
+        xx, yy, zz, xy, yz, xz = t
+        m = q @ np.array([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]) @ q.T
+        return [m[0, 0], m[1, 1], m[2, 2], m[0, 1], m[1, 2], m[0, 2]]
+
+    # Every block's arrays have the brick's eight nodes; the quad's last four
+    # are NaN.
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:S"], [8, 6])
+
+    def cell(name, block):
+        return mesh.cell_data[name][block][0].reshape(8, -1)
+
+    brick = np.array([to_global(_brick_stress(i)) for i in range(8)])
+    np.testing.assert_allclose(cell("S", 0), brick, atol=1e-12)
+    np.testing.assert_array_equal(cell("EPEL", 0), np.zeros((8, 6)))
+    assert np.isnan(mesh.cell_data["EPEL"][1]).all()  # the shell has none
+    shell_bottom = np.array([_shell_stress(i, 0) for i in range(4)])
+    shell_top = np.array([_shell_stress(i, 1) for i in range(4)])
+    np.testing.assert_array_equal(cell("S", 1)[:4], shell_bottom)
+    assert np.isnan(cell("S", 1)[4:]).all()
+    np.testing.assert_array_equal(cell("S@top", 1)[:4], shell_top)
+    assert np.isnan(mesh.cell_data["S@top"][0]).all()
+
+    # Averaged at the nodes: the bottom face (nodes 1-4) with the shell's bottom.
+    expected = brick.copy()
+    expected[:4] = (brick[:4] + shell_bottom) / 2
+    np.testing.assert_allclose(mesh.point_data["S"], expected, atol=1e-12)
+    top = np.full((8, 6), np.nan)
+    top[:4] = shell_top
+    np.testing.assert_array_equal(mesh.point_data["S@top"], top)
+    np.testing.assert_array_equal(mesh.point_data["EPEL"][4:], np.zeros((4, 6)))
+
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:ENF"], [8, 4])
+    forces = cell("ENF", 0)
+    np.testing.assert_array_equal(forces, [[i, 0.0, 0.0, -i] for i in range(8)])
+    assert np.isnan(mesh.cell_data["ENF"][1]).all()
+
+    rf = mesh.point_data["RF"]
+    np.testing.assert_allclose(rf[2], _rotation(*_ANGLES) @ [7.0, 0.0, 0.0], atol=1e-14)
+    np.testing.assert_array_equal(rf[0], [0.0, 0.0, -2.0])
+    assert np.isnan(rf[[1, 3, 4, 5, 6, 7]]).all()
+    temp = mesh.point_data["RF_TEMP"]
+    assert temp[1] == 5.0 and np.isnan(np.delete(temp, 1)).all()
+
+    later = engine.read(path, time_step=1)  # set 1 has no element solution
+    assert "S" not in later.point_data and "RF" not in later.point_data
+
+
 @pytest.mark.parametrize(
     "options, match",
     [
@@ -372,3 +745,17 @@ def test_refusals(engine, tmp_path, options, match):
     cut.write_bytes((RST / "beam44.rst").read_bytes()[:5000])
     with pytest.raises(meshioplusplus.ReadError, match="outside the file|past the end"):
         engine.read(cut)
+
+
+@pytest.mark.parametrize("ext", ["vtu", "xdmf"])
+def test_element_results_are_writable(tmp_path, ext):
+    """Per-element-node arrays are rectangular and as wide in every block
+    (quad8 and hexahedron20 here), so the writers hold them: they round-trip."""
+    mesh = meshioplusplus.read(DIST / "file0.rst")
+    assert len({a.shape[1] for a in mesh.cell_data["S"]}) == 1
+    target = tmp_path / f"out.{ext}"
+    meshioplusplus.write(target, mesh)
+    back = meshioplusplus.read(target)
+    for name in ("S", "EPEL", "ENF"):
+        for a, b in zip(mesh.cell_data[name], back.cell_data[name]):
+            np.testing.assert_array_equal(a, b)

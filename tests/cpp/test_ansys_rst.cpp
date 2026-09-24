@@ -104,21 +104,87 @@ std::int32_t neqv_position(std::int32_t Node) {
     return 0;
 }
 
-std::string write_synthetic(bool Zlib = false, std::int32_t GlobalNodes = 0) {
+// The synthetic element solution (the Python suite's twin): the brick's stress
+// at its node i (element axes, turned 90 degrees about Z to the global ones),
+// the shell's bottom and top stresses, and three reactions.
+std::vector<double> brick_stress(int I) {
+    return {1.0 + I, 2.0, 3.0, 0.5, 0.25, 0.125};
+}
+std::vector<double> shell_stress(int I, int Top) {
+    return {10.0 + I + 100.0 * Top, 20.0, 0.0, 1.0, 0.0, 0.0};
+}
+struct Reaction {
+    std::int32_t mNode, mPosition;
+    double mValue;
+};
+const Reaction kReactions[] = {{3, 1, 7.0}, {1, 3, -2.0}, {2, 4, 5.0}};
+
+void write_element_solution(RstWriter& rW, std::size_t Base) {
+    std::vector<std::int32_t> table;
+    std::vector<double> values;
+    for (const Reaction& r : kReactions) {
+        table.push_back((neqv_position(r.mNode) - 1) * 4 + r.mPosition);
+        table.push_back(0);
+        values.push_back(r.mValue);
+    }
+    const std::size_t rf = rW.Ints(table);
+    rW.Doubles(values);
+    rW.Patch(Base, 7, 3);
+    rW.Patch(Base, 106, static_cast<std::int64_t>(rf - Base));
+
+    const std::size_t esl = rW.Ints({0, 0, 0, 0});
+    rW.Patch(Base, 118, static_cast<std::int64_t>(esl - Base));
+    const auto rel = [](std::size_t A, std::size_t B) { return static_cast<std::int64_t>(A - B); };
+    const std::size_t brick = rW.Ints(std::vector<std::int32_t>(25, 0));
+    rW.Patch(esl, 0, rel(brick, esl));
+    std::vector<double> stresses;
+    for (int i = 0; i < 8; ++i)
+        for (double v : brick_stress(i))
+            stresses.push_back(v);
+    rW.Patch(brick, 2, rel(rW.Doubles(stresses), brick));
+    rW.Patch(brick, 5, -56);  // no elastic strain: 56 zeros
+    rW.Patch(brick, 9, rel(rW.Doubles({90.0, 0.0, 0.0}), brick));
+    std::vector<double> forces;
+    for (int i = 0; i < 8; ++i)
+        forces.insert(forces.end(), {double(i), 0.0, 0.0, -double(i)});
+    rW.Patch(brick, 1, rel(rW.Doubles(forces), brick));
+    const std::size_t shell = rW.Ints(std::vector<std::int32_t>(25, 0));
+    rW.Patch(esl, 2, rel(shell, esl));
+    stresses.clear();
+    for (int top = 0; top < 2; ++top)
+        for (int i = 0; i < 4; ++i)
+            for (double v : shell_stress(i, top))
+                stresses.push_back(v);
+    rW.Patch(shell, 2, rel(rW.Doubles(stresses), shell));
+}
+
+std::string write_synthetic(bool Zlib = false, std::int32_t GlobalNodes = 0,
+                            bool Elements = false) {
     RstWriter w;
     w.Ints({12}, 100);  // the standard header: file 12
     const std::size_t header = w.Ints({12, 8, 8, 10, 4, 1, 1, 0, 2}, 80);
     w.Patch(header, 20, 1);
     w.Patch(header, 48, GlobalNodes);
+    w.Patch(header, 39, 1);  // rstsprs: ENS holds six items per node
     w.Patch(header, 14, static_cast<std::int64_t>(w.Ints(kNeqv)));
 
-    const std::size_t geometry = w.Ints({0, 1, 0, 8, 1}, 80);
+    const std::int32_t n_types = Elements ? 2 : 1;
+    const std::size_t geometry = w.Ints({0, n_types, 0, 8, n_types}, 80);
     w.Patch(header, 15, static_cast<std::int64_t>(geometry));
-    const std::size_t ety = w.Ints({0});
+    const std::size_t ety = w.Ints(std::vector<std::int32_t>(static_cast<std::size_t>(n_types), 0));
     w.Patch(geometry, 20, static_cast<std::int64_t>(ety));
     const std::size_t solid185 = w.Ints({1, 185, 0}, 100);
     w.Patch(solid185, 60, 8);  // nodelm
+    w.Patch(solid185, 62, 8);  // nodfor
+    w.Patch(solid185, 93, 8);  // nodstr
     w.Patch(ety, 0, static_cast<std::int64_t>(solid185 - ety));
+    if (Elements) {
+        const std::size_t shell181 = w.Ints({2, 181, 0}, 100);  // KEYOPT(8) = 0
+        w.Patch(shell181, 60, 4);
+        w.Patch(shell181, 62, 4);
+        w.Patch(shell181, 93, 4);
+        w.Patch(ety, 1, static_cast<std::int64_t>(shell181 - ety));
+    }
     std::size_t nodes = 0;
     for (int n = 1; n <= 8; ++n) {
         std::vector<double> values = {
@@ -130,10 +196,14 @@ std::string write_synthetic(bool Zlib = false, std::int32_t GlobalNodes = 0) {
             nodes = ptr;
     }
     w.Patch(geometry, 26, static_cast<std::int64_t>(nodes));
-    const std::size_t eid = w.Ints({0, 0});
+    const std::size_t eid = w.Ints(std::vector<std::int32_t>(Elements ? 4 : 2, 0));
     w.Patch(geometry, 28, static_cast<std::int64_t>(eid));
     const std::size_t element = w.Shorts({2, 1, 3, 4, 0, 1, 0, 0, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8});
     w.Patch(eid, 0, static_cast<std::int64_t>(element - eid));
+    if (Elements) {
+        const std::size_t shell = w.Ints({2, 2, 3, 4, 0, 1, 0, 0, 12, 0, 1, 2, 3, 4});
+        w.Patch(eid, 2, static_cast<std::int64_t>(shell - eid));
+    }
     std::vector<std::int32_t> comp = {1, ('F' << 24) | ('A' << 16) | ('C' << 8) | 'E'};
     comp.resize(9, 0x20202020);
     comp.push_back(1);
@@ -160,6 +230,8 @@ std::string write_synthetic(bool Zlib = false, std::int32_t GlobalNodes = 0) {
             w.Ints({neqv_position(5), neqv_position(2)});
         }
         w.Patch(base, 104, static_cast<std::int64_t>(nsl - base));
+        if (Elements && s == 0)
+            write_element_solution(w, base);
         sets.push_back(static_cast<std::int32_t>(base));
     }
     const std::size_t dsi = w.Ints(sets, 20);
@@ -236,6 +308,66 @@ TEST(AnsysRst, PartialSetAndUndefinedValues) {
     EXPECT_EQ(meta.mTimeValues, (std::vector<double>{0.5, 1.0}));
     options.mTimeStep = 2;
     EXPECT_THROW(meshioplusplus::read_ansys_rst(path, options), meshioplusplus::ReadError);
+    remove_file(path);
+}
+
+TEST(AnsysRst, SyntheticElementSolution) {
+    using meshioplusplus::detail::read_double;
+    const std::string path = write_synthetic(false, 0, true);
+    const meshioplusplus::Mesh mesh = meshioplusplus::read_ansys_rst(path);
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);
+    EXPECT_EQ(mesh.Cells(0).Type(), "hexahedron");
+    EXPECT_EQ(mesh.Cells(1).Type(), "quad");
+    // The brick's element x axis is the global y axis: xx <-> yy, xy -> -xy,
+    // yz -> xz, xz -> -yz.
+    const auto& s_brick = mesh.CellData("S", 0);
+    // (cells, nodes * 6) with every block at the brick's eight nodes.
+    ASSERT_EQ(s_brick.Shape(), (std::vector<std::size_t>{1, 48}));
+    EXPECT_EQ(meshioplusplus::detail::read_int(mesh.FieldData("ansys:layout:S"), 0), 8);
+    for (int i = 0; i < 8; ++i) {
+        const auto t = brick_stress(i);
+        const double expected[6] = {t[1], t[0], t[2], -t[3], t[5], -t[4]};
+        for (std::size_t c = 0; c < 6; ++c)
+            EXPECT_NEAR(read_double(s_brick, static_cast<std::size_t>(i) * 6 + c), expected[c],
+                        1e-12);
+    }
+    for (std::size_t k = 0; k < 48; ++k)
+        EXPECT_EQ(read_double(mesh.CellData("EPEL", 0), k), 0.0);
+    const auto& s_shell = mesh.CellData("S", 1);
+    const auto& top = mesh.CellData("S@top", 1);
+    for (int i = 0; i < 4; ++i)
+        for (std::size_t c = 0; c < 6; ++c) {
+            const auto k = static_cast<std::size_t>(i) * 6 + c;
+            EXPECT_EQ(read_double(s_shell, k), shell_stress(i, 0)[c]);
+            EXPECT_EQ(read_double(top, k), shell_stress(i, 1)[c]);
+        }
+    EXPECT_TRUE(std::isnan(read_double(mesh.CellData("S@top", 0), 0)));
+    // Node 1 (point 0) averages the brick and the shell's bottom; node 5 only
+    // the brick; the top surface only at the shell's nodes.
+    EXPECT_NEAR(read_point(mesh, "S", 0), (2.0 + 10.0) / 2, 1e-12);
+    EXPECT_NEAR(read_point(mesh, "S", 4 * 6), 2.0, 1e-12);
+    EXPECT_EQ(read_point(mesh, "S@top", 0), 110.0);
+    EXPECT_TRUE(std::isnan(read_point(mesh, "S@top", 4 * 6)));
+    const auto& forces = mesh.CellData("ENF", 0);
+    ASSERT_EQ(forces.Shape(), (std::vector<std::size_t>{1, 32}));
+    EXPECT_EQ(read_double(forces, 7 * 4), 7.0);
+    EXPECT_EQ(read_double(forces, 7 * 4 + 3), -7.0);
+    // Reactions: node 1's UZ, node 2's TEMP; node 3's UX in its rotated axes.
+    EXPECT_EQ(read_point(mesh, "RF", 0 * 3 + 2), -2.0);
+    EXPECT_EQ(read_point(mesh, "RF", 0 * 3 + 0), 0.0);
+    EXPECT_TRUE(std::isnan(read_point(mesh, "RF", 1 * 3)));
+    EXPECT_EQ(read_point(mesh, "RF_TEMP", 1), 5.0);
+    double norm = 0.0;
+    for (std::size_t c = 0; c < 3; ++c)
+        norm += read_point(mesh, "RF", 2 * 3 + c) * read_point(mesh, "RF", 2 * 3 + c);
+    EXPECT_NEAR(std::sqrt(norm), 7.0, 1e-12);
+    EXPECT_NE(read_point(mesh, "RF", 2 * 3), 7.0);
+
+    meshioplusplus::ReadOptions options;
+    options.mDataArrays = std::vector<std::string>{"S@top"};
+    const meshioplusplus::Mesh only = meshioplusplus::read_ansys_rst(path, options);
+    EXPECT_EQ(only.PointDataNames(), (std::vector<std::string>{"S@top"}));
+    EXPECT_THROW(meshioplusplus::read_ansys_rst_cyclic(path), meshioplusplus::ReadError);
     remove_file(path);
 }
 

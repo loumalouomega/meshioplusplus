@@ -308,6 +308,18 @@ def _sniff_format_py(path) -> str:
         return "abaqus_fil"
     if _is_radioss(stripped):
         return "radioss"
+    # MSC Marc formatted post file: the analysis title block opens it.
+    if stripped.startswith(b"=beg=50100"):
+        return "marc_t19"
+    # MSC Marc input deck: a Marc parameter opens it and an END, CONNECTIVITY or
+    # COORDINATES line follows -- which can be past 512 bytes, so read on.
+    if stripped[:1].isalpha() and b"=" not in stripped.split(b"\n", 1)[0]:
+        from .marc._marc import is_marc_deck
+
+        with open(path, "rb") as f:
+            text = f.read(65536).decode("latin-1")
+        if is_marc_deck(text):
+            return "marc"
     if _is_femap(head):
         return "femap"
     if _is_patran(head):

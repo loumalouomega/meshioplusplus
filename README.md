@@ -21,7 +21,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary, read-only; every increment is a step, nodal and element results by output location),
 > ANSYS msh (`.msh`),
-> [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`, read-only; nodal solution, every result set is a step),
+> [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`, read-only; nodal solution, reactions and element nodal stresses, strains and forces, every result set is a step; distributed solves merged, the full rotor of a static cyclic model),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
 > [CAE sample layout](https://docs.nvidia.com/physicsnemo/) (`.npz`, what PhysicsNeMo's DoMINO/Transolver datapipes read),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
@@ -60,6 +60,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
 > [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups and surfaces as named regions, `#include` followed),
+> [MSC Marc](https://hexagon.com/products/marc) input deck and formatted post file (`.dat`, `.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
@@ -1042,7 +1043,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.7.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.8.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

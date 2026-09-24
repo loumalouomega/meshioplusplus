@@ -111,6 +111,7 @@ tests/python/meshes/ansys/*.cdb -filter -diff -merge -text
 # binary, a few hundred KB each, in LFS like the other binary reference fixtures.
 tests/python/meshes/ansys/rst/*.rst filter=lfs diff=lfs merge=lfs -text
 tests/python/meshes/ansys/rst/*.rth filter=lfs diff=lfs merge=lfs -text
+tests/python/meshes/ansys/rst/dist_static/*.rst filter=lfs diff=lfs merge=lfs -text
 # Patran 2 neutral fixtures written by tools/gen_patran_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/patran/** -filter -diff -merge text
@@ -139,3 +140,6 @@ tests/python/meshes/abaqus_fil/model_be.fil binary
 # OpenRadioss starter decks written by tools/gen_radioss_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/radioss/** -filter -diff -merge text
+# MSC Marc decks and a formatted post file written by tools/gen_marc_fixtures.py:
+# small text kept out of LFS, like the other generated deck fixtures.
+tests/python/meshes/marc/** -filter -diff -merge text

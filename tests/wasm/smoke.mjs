@@ -2385,6 +2385,10 @@ step('availableFormats reports what this build can read and write', () => {
     for (const fmt of ['libmesh', 'abaqus_fil', 'radioss'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     assert.ok(readers.includes('z88') && writers.includes('z88'));
+    // MSC Marc decks and post files, and the full rotor of a cyclic Ansys .rst
+    // (v16.8.0): read-only.
+    for (const fmt of ['marc', 'marc_t19', 'ansys_rst_cyclic'])
+        assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
 });
@@ -2707,6 +2711,48 @@ step('z88 is found by its file name; libmesh, abaqus_fil and radioss read by ext
     const deck = m.readMesh('/deck_0000.rad');
     assert.deepEqual(deck.cells.map((c) => c.type), ['tetra']);
     assert.ok(deck.regions.some((r) => r.name === 'tet'));
+});
+
+step('a Marc deck named .dat reads as Marc, a Tecplot .dat as Tecplot; .t19 is Marc\'s post file', () => {
+    const pad = (v, w) => String(v).padStart(w, ' ');
+    let deck = 'title               smoke\nend\nconnectivity\n' + pad(1, 5) + '\n';
+    deck += [1, 134, 1, 2, 3, 4].map((v) => pad(v, 5)).join('') + '\ncoordinates\n' + pad(3, 5) + pad(4, 5) + '\n';
+    [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach((p, k) => {
+        deck += pad(k + 1, 5) + p.map((x) => pad(x.toFixed(1), 10)).join('') + '\n';
+    });
+    deck += 'define              element             set                 all\n' + pad(1, 5) + '\nend option\n';
+    m.FS.writeFile('/marc_deck.dat', deck);
+    const marc = m.readMesh('/marc_deck.dat');
+    assert.deepEqual(marc.cells.map((c) => c.type), ['tetra']);
+    assert.ok(marc.regions.some((r) => r.name === 'all'));
+    const tri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+    };
+    m.writeMesh('/tecplot_file.dat', tri, 'tecplot');
+    assert.deepEqual(m.readMesh('/tecplot_file.dat').cells.map((c) => c.type), ['triangle']);
+    const i13 = (...v) => v.map((x) => pad(x, 13)).join('');
+    const e13 = (x) => (x === 0 ? ' 0.000000E+00' : ` 0.${String(Math.round(x * 1e5)).padStart(6, '0')}E+01`);
+    const block = (n, name, lines) => [`=beg=${n} (${name})`, ...lines, '=end='].join('\n') + '\n';
+    let post = block(50100, 'Analysis Title', ['          smoke']);
+    post += block(50200, 'Analysis Verification Data', [
+        i13(0, 4, 1, 3, 1, 0), i13(1, 0, 3, 4, 0, 0), i13(0, 12, 0, 0, 0, 0), i13(0, 0, 0, 0, 0, 0), i13(0, 0, 0, 0, 0, 0),
+    ]);
+    post += block(50700, 'Element Connectivities', [i13(1, 134, 4, 1, 2, 3), i13(4)]);
+    const xyz = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    post += block(50800, 'Nodal Coordinates', xyz.map((p, k) => pad(k + 1, 13) + p.map(e13).join('')));
+    post += '****\n' + block(51701, 'Integer Increment Verification Data', [i13(0, 1, 0, 2, 1, 0), i13(0, 0, 0, 0, 0, 0)]);
+    post += block(51801, 'Real Increment Verification Data', [i13(1), e13(0.5)]);
+    post += block(52401, 'Nodal Results', [
+        i13(1, 3), 'Displacement'.padEnd(48, ' '), i13(1, 0, 0, 3, 0, 0), i13(-1, 0, 0, 0, 0, 0),
+        [1, 0, 0, 0, 0, 0].map(e13).join(''), [0, 0, 0, 0, 0, 0].map(e13).join(''),
+    ]);
+    post += '----\n++++\n';
+    m.FS.writeFile('/job.t19', post);
+    const res = m.readMesh('/job.t19');
+    assert.deepEqual(res.cells.map((c) => c.type), ['tetra']);
+    assert.ok('Displacement' in res.point_data);
 });
 
 step('febio writes a spec-4.0 .feb and reads its surface back as a side region', () => {
