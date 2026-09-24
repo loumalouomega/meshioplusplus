@@ -75,7 +75,9 @@ constexpr std::uint32_t kMesh = 0x01040000, kNodeSection = 0x01041000, kNodeHead
                         kElementsetHdr = 0x01046101, kElementsetName = 0x01046103,
                         kElementsetList = 0x01046200, kFacetsetSection = 0x01047000,
                         kFacetset = 0x01047100, kFacetsetHdr = 0x01047101,
-                        kFacetsetName = 0x01047103, kFacetsetList = 0x01047200, kFacet = 0x01047201;
+                        kFacetsetName = 0x01047103, kFacetsetList = 0x01047200, kFacet = 0x01047201,
+                        kEdgeSection = 0x01048000, kEdge = 0x01048100, kEdgeHdr = 0x01048101,
+                        kEdgeName = 0x01048104, kEdgeList = 0x01048200, kLine = 0x01048201;
 constexpr std::uint32_t kState = 0x02000000, kStateHeader = 0x02010000, kStateTime = 0x02010002,
                         kStateStatus = 0x02010003, kStateData = 0x02020000,
                         kStateVariable = 0x02020001, kStateVarId = 0x02020002,
@@ -506,6 +508,7 @@ struct XpltRaw {
     std::vector<double> mCoords;
     std::vector<XpltDomain> mDomains;
     std::vector<XpltSurface> mSurfaces;
+    std::vector<XpltSurface> mEdges;  // their "facets" are line segments
     std::vector<std::pair<std::string, std::vector<std::int64_t>>> mNodeSets, mElemSets;
     std::map<std::int32_t, std::string> mParts;
 };
@@ -576,6 +579,19 @@ XpltRaw xplt_read_mesh(const XpltView& rView, std::size_t Begin, std::size_t End
                      xplt_facets(rView, C, D, facetset ? kFacetsetList : kFaceList,
                                  facetset ? kFacet : kFace),
                      facetset});
+                return true;
+            });
+        } else if (Sid == kEdgeSection) {
+            // An edge (FEBio 3.5+): named line segments, each [edge id, nodes,
+            // n1 .. n3], the carrier of edge variables.
+            rView.Chunks(A, B, [&](std::uint32_t Id, std::size_t C, std::size_t D) {
+                if (Id != kEdge)
+                    return true;
+                std::string name;
+                if (const auto hdr = rView.Child(C, D, kEdgeHdr))
+                    if (const auto named = rView.Child(hdr->first, hdr->second, kEdgeName))
+                        name = rView.String(named->first, named->second);
+                raw.mEdges.push_back({name, xplt_facets(rView, C, D, kEdgeList, kLine), false});
                 return true;
             });
         } else if (Sid == kNodesetSection || Sid == kElementsetSection) {
@@ -787,6 +803,41 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         if (!surf.mFacetSet)
             surface_cells.push_back(std::move(cells));
     }
+    // Edges: a block of line cells per segment type, a cell region each, and
+    // each segment's global cell for the edge's data.
+    std::vector<std::vector<std::int64_t>> edge_cells;  // per edge, per segment
+    std::vector<std::int64_t> block_edge(blocks_to_add.size(), 0);
+    for (std::size_t e = 0; e < raw.mEdges.size(); ++e) {
+        const XpltSurface& edge = raw.mEdges[e];
+        std::vector<std::string> order;
+        std::map<std::string, std::vector<std::size_t>> by_type;
+        for (std::size_t f = 0; f < edge.mFacets.size(); ++f) {
+            const auto& [nn, nodes] = edge.mFacets[f];
+            const char* type = nn == 2 ? "line" : nn == 3 ? "line3" : nullptr;
+            if (!type || nodes.size() != nn)
+                continue;
+            if (!by_type.count(type))
+                order.push_back(type);
+            by_type[type].push_back(f);
+        }
+        std::vector<std::int64_t> cells(edge.mFacets.size(), -1);
+        XpltGroupEntry& g = group(RegionKind::Cell, edge.mName, -1, 1);
+        g.mDim = std::max(g.mDim, 1);
+        for (const std::string& type : order) {
+            std::vector<std::int64_t> rows;
+            for (std::size_t f : by_type[type]) {
+                const auto& nodes = edge.mFacets[f].second;
+                rows.insert(rows.end(), nodes.begin(), nodes.end());
+                cells[f] = base;
+                g.mEntries.push_back(base);
+                ++base;
+            }
+            blocks_to_add.emplace_back(type, std::move(rows));
+            block_surface.push_back(0);
+            block_edge.push_back(static_cast<std::int64_t>(e + 1));
+        }
+        edge_cells.push_back(std::move(cells));
+    }
     const std::size_t n_domain_blocks = mesh.NumCellBlocks();
     for (const auto& [type, flat] : blocks_to_add) {
         const std::size_t k =
@@ -807,6 +858,18 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             ids.push_back(std::move(a));
         }
         mesh.AddCellData("xplt:surface", std::move(ids));
+    }
+    if (rOptions.WantsAnyData() && rOptions.WantsArray("xplt:edge") &&
+        std::any_of(block_edge.begin(), block_edge.end(), [](std::int64_t v) { return v > 0; })) {
+        std::vector<NDArray> ids;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+            const std::size_t n = mesh.Cells(b).NumCells();
+            NDArray a(DType::Int64, {n});
+            const std::int64_t v = b < n_domain_blocks ? 0 : block_edge[b - n_domain_blocks];
+            std::fill(a.As<std::int64_t>(), a.As<std::int64_t>() + n, v);
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData("xplt:edge", std::move(ids));
     }
     for (auto& [key, g] : groups) {
         const RegionKind kind = static_cast<RegionKind>(key.first);
@@ -883,10 +946,6 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             const XpltItem& item = items_it->second[static_cast<std::size_t>(var - 1)];
             if (!rOptions.WantsArray(item.mName))
                 return true;
-            if (grp == XpltGroup::Edge) {
-                skip(item.mName);
-                return true;
-            }
             const auto vd = view.Child(E, F, kStateVarData);
             if (!vd)
                 return true;
@@ -903,11 +962,14 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                 std::copy(pValues, pValues + Rows * width, a.As<double>());
                 return a;
             };
-            if (grp == XpltGroup::Surface) {
-                // Region k is data surface k: per facet (item), one value
-                // (region) -> its facet cells; per surface node (node, in
-                // first-seen order over its facets) or per facet node (mult)
-                // -> averaged at the points, as element-node values are.
+            if (grp == XpltGroup::Surface || grp == XpltGroup::Edge) {
+                // Region k is data surface (or edge) k: per facet or segment
+                // (item), one value (region) -> its cells; per node (node, in
+                // first-seen order over its facets or segments) or per facet
+                // node (mult) -> averaged at the points, as element-node
+                // values are.
+                const bool on_edge = grp == XpltGroup::Edge;
+                const auto& carrier_cells = on_edge ? edge_cells : surface_cells;
                 if (item.mFmt == 1 || item.mFmt == 3) {
                     std::vector<std::vector<double>> blocks;
                     for (std::size_t n : sizes)
@@ -916,9 +978,9 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     bool landed = false;
                     for (const auto& [rid, values] : regions) {
                         const std::size_t k = static_cast<std::size_t>(rid) - 1;
-                        if (rid < 1 || k >= surface_cells.size())
+                        if (rid < 1 || k >= carrier_cells.size())
                             continue;
-                        const auto& cells = surface_cells[k];
+                        const auto& cells = carrier_cells[k];
                         if (values.size() < (item.mFmt == 3 ? width : cells.size() * width))
                             continue;
                         for (std::size_t f = 0; f < cells.size(); ++f) {
@@ -934,7 +996,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                                     item.mFmt == 3 ? values[w] : values[f * width + w];
                         }
                     }
-                    // A variable on no surface of this mesh gives no array.
+                    // A variable on no surface (edge) of this mesh gives no array.
                     if (!landed)
                         return true;
                     std::vector<NDArray> arrays;
@@ -958,7 +1020,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     return it->second;
                 };
                 std::size_t data_surface = 0;
-                for (const XpltSurface& surf : raw.mSurfaces) {
+                for (const XpltSurface& surf : on_edge ? raw.mEdges : raw.mSurfaces) {
                     if (surf.mFacetSet)
                         continue;
                     ++data_surface;
@@ -1076,7 +1138,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         std::string list;
         for (const std::string& s : skipped)
             list += (list.empty() ? "" : ", ") + s;
-        log::warn("FEBio .xplt: edge and material-point variables are not read: {}", list);
+        log::warn("FEBio .xplt: material-point variables are not read: {}", list);
     }
     return mesh;
 }

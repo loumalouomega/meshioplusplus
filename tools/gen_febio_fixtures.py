@@ -411,13 +411,24 @@ def xplt_hex27():
     return "\n".join(lines) + "\n"
 
 
-def _bar_lines(title_vars, extra_mesh=(), boundary=(), loads=(), adaptor=()):
+def _bar_lines(
+    title_vars,
+    extra_mesh=(),
+    boundary=(),
+    loads=(),
+    adaptor=(),
+    edges=(),
+    constraints=(),
+):
     """Two hex8 in a row, x in [0, 2], fixed at x=0; the plot variables and
-    any surfaces, boundary conditions, loads or mesh adaptor are the caller's."""
+    any surfaces, edges (named polylines, their points added as nodes when
+    new), boundary conditions, loads, constraints or mesh adaptor are the
+    caller's."""
     nodes = Nodes()
     grid = {
         (i, j, k): nodes((i, j, k)) for k in (0, 1) for j in (0, 1) for i in (0, 1, 2)
     }
+    edge_ids = {name: [nodes(p) for p in points] for name, points in edges}
 
     def brick(i):
         c = [(i, 0, 0), (i + 1, 0, 0), (i + 1, 1, 0), (i, 1, 0)]
@@ -454,6 +465,11 @@ def _bar_lines(title_vars, extra_mesh=(), boundary=(), loads=(), adaptor=()):
             ids = ",".join(str(grid[p]) for p in face)
             lines.append(f'\t\t\t<quad4 id="{n}">{ids}</quad4>')
         lines.append("\t\t</Surface>")
+    for name, ids in edge_ids.items():
+        lines.append(f'\t\t<Edge name="{name}">')
+        for n in range(len(ids) - 1):
+            lines.append(f'\t\t\t<line2 id="{n + 1}">{ids[n]},{ids[n + 1]}</line2>')
+        lines.append("\t\t</Edge>")
     lines.append("\t</Mesh>")
     lines.append(
         '\t<MeshDomains>\n\t\t<SolidDomain name="bar" mat="m"/>\n\t</MeshDomains>'
@@ -465,6 +481,8 @@ def _bar_lines(title_vars, extra_mesh=(), boundary=(), loads=(), adaptor=()):
     lines.append("\t</Boundary>")
     if loads:
         lines += ["\t<Loads>", *loads, "\t</Loads>"]
+    if constraints:
+        lines += ["\t<Constraints>", *constraints, "\t</Constraints>"]
     lines += list(adaptor)
     lines.append("\t<Output>")
     lines.append('\t\t<plotfile type="febio">')
@@ -528,6 +546,30 @@ def xplt_remesh():
     )
 
 
+def xplt_edge():
+    """The bar bent up at x=2 (prescribed z displacement) under a two-segment
+    edge "ridge" of free nodes above its top surface; an edge-to-surface
+    sliding contact between them plots "edge contact gap", FEBio's one edge
+    variable (a value per edge node)."""
+    top = [
+        [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
+        [(1, 0, 1), (2, 0, 1), (2, 1, 1), (1, 1, 1)],
+    ]
+    return _bar_lines(
+        ['<var type="displacement"/>', '<var type="edge contact gap"/>'],
+        extra_mesh=[("top", top)],
+        edges=[("ridge", [(0.5, 0.5, 1.25), (1.0, 0.5, 1.25), (1.5, 0.5, 1.25)])],
+        boundary=[
+            '\t\t<bc type="prescribed displacement" node_set="pull">'
+            '<dof>z</dof><value lc="1">0.2</value></bc>'
+        ],
+        constraints=[
+            '\t\t<constraint type="edge-to-surface sliding contact" surface="top">'
+            "<edgelist>ridge</edgelist><penalty>1</penalty></constraint>"
+        ],
+    )
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     # FEBio models whose plot files are the .xplt fixtures. Run with FEBio
@@ -538,6 +580,7 @@ def main():
         ("xplt_hex27.feb", xplt_hex27()),
         ("xplt_surface.feb", xplt_surface()),
         ("xplt_remesh.feb", xplt_remesh()),
+        ("xplt_edge.feb", xplt_edge()),
     ):
         (OUT / "xplt").mkdir(exist_ok=True)
         with open(OUT / "xplt" / name, "w", newline="\n") as f:
