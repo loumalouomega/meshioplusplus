@@ -7,6 +7,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | Format name | Extensions | Read | Write | Extra dependencies |
 |-------------|-----------|------|-------|--------------------|
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — |
+| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | — | — |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — |
 | [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — |
@@ -31,6 +32,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — |
+| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` | ✓ | — | — |
 | [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — |
 | [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — |
 | [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` |
@@ -55,6 +57,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — |
 | [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — |
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — |
+| [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | — | — |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — |
 | [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |
@@ -77,6 +80,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
 | [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) |
 | [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — |
+| [`z88`](./formats/z88.md) | `z88i1.txt`, `z88structure.txt` (by file name), results `z88o2.txt`/`z88o3.txt` | ✓ | ✓ (structure file) | — |
 | [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) |
 
 **Note on directory formats:** [`elmer`](./formats/elmer.md), `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a write target with no extension needs an explicit `file_format=`, and none of the four can be read from or written to a buffer. **Reading sniffs a directory by the files it holds** (v16.2.0): a `mesh.header` (or a `partitioning.N` of `part.n.*` files) makes it `elmer`, and a `constant/polyMesh` or `polyMesh` with `owner` and `faces` (or a decomposed `processor0`, or a multi-region `constant/regionProperties`) makes it `openfoam`, so `read("case")` and `convert case out.vtu` need no format; a directory matching both, or neither, is not guessed. A glob over such a set — `read_sequence("out_*.pmsh")` — matches the suffixed ones, which an ordinary file glob would not; an extension-less Elmer directory has to be listed explicitly.
@@ -96,6 +100,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on the Patran and Femap neutral files (`patran`, `femap`)** (v16.5.0): two FEM interchange files, read and written by both engines. Patran's `.pat`/`.out` is a sequence of fixed-width `(I2,8I8)` packets: nodes, elements (shape in the header, linear or quadratic by node count, `hexahedron20`/`wedge15` with the vertical mid-edges before the top ring), and named components as point and cell regions; elements no component names are grouped by property. Femap's `.neu` is a sequence of `-1`-delimited, comma-separated blocks whose layouts change with the version, so every record is read by position and length (4.41 to 2020.1): nodes, elements in Femap's 20-slot degenerate-brick node layout, property titles, groups as regions, and output sets as steps (`time_step`) whose `451`/`1051` vectors become point or cell data. The Femap writer emits the 8.2 layout, mesh and groups only. Neither Patran nor Femap was available: the Patran fixtures are written from its documentation, the Femap ones are real Femap, EMSolution and MYSTRAN files, checked against FrontISTR's `neu2fstr` and femap_neutral_parser. See [Patran](./formats/patran.md) and [Femap](./formats/femap.md).
 
 **Note on MFEM meshes (`mfem`)** (v16.5.0): MFEM's own `.mesh` (v1.0–v1.3, conforming) and its `.gf` grid functions, read and written by both engines. `.mesh` stays Medit's extension; a file whose first line names an MFEM mesh is read as one, by the Python reader loop and by the native resolver alike. Attributes become `mfem:attribute` and `attribute_<n>`/`boundary_<n>` regions, v1.3 attribute sets named regions. Order-2 `H1` nodes give quadratic cells whose points are MFEM's degrees of freedom in MFEM's own numbering; higher orders keep the vertices, with a warning. Grid functions (`mfem.read(path, {name: gf})`, `mfem.write(..., grid_functions=True)`) become point or cell data. Checked against MFEM 4.10 (PyMFEM) both ways. See [MFEM](./formats/mfem.md).
+
+**Note on libMesh, Z88, Abaqus results and Radioss (`libmesh`, `z88`, `abaqus_fil`, `radioss`)** (v16.7.0): four FEM formats read by both engines. libMesh's `.xda`/`.xdr` (every version from 0.7.0 to 1.8.0, ASCII and XDR) gives the active cells of a refined mesh, subdomains, side sets (carried to refined children) and node sets. Z88's structure file is recognised by its fixed name (`z88i1.txt` before `.txt`'s xyz), read with its `z88o2.txt` displacements and `z88o3.txt` stresses, and written back in the Z88OS v15 layout; Z88R solved the written decks. The Abaqus `.fil` results file (binary in either byte order, or ASCII) gives the model, node and element sets, and one step per increment with nodal and element results; checked against pybaqus on real Abaqus 2023 output. The OpenRadioss starter deck (`*_0000.rad`) gives parts, subsets, groups and surfaces as regions, degenerate bricks as the solids they stand for, and follows `#include`; checked on OpenRadioss's 81 QA decks. See [libMesh](./formats/libmesh.md), [Z88](./formats/z88.md), [Abaqus `.fil`](./formats/abaqus_fil.md) and [Radioss](./formats/radioss.md).
 
 **Note on CalculiX results (`frd`)** (v15.3.0, binary layout and `.dat` print v15.5.0): the result file of `ccx`, **read-only** — it is what a solver writes, so there is nothing to write back. Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) ASCII layouts and the binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) are all read. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor, now backed by the shared [`tensor_invariants`](./tensor_invariants.md) operation. `meshioplusplus.frd.read_dat` separately parses the companion `.dat` tabular print (`*NODE PRINT`/`*EL PRINT`) into plain tables, Python-only. See [CalculiX results](./formats/frd.md).
 
@@ -224,6 +230,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
 | `xdmf` | XML `<!-- -->` | Anywhere in the document | — |
 | `xyz` | `#` prefix | Top of file, before the `# x y z ...` column header | Yes |
+| `z88` | None (text after the header line's integers is ignored: Z88's own tools write a comment there) | The end of `z88i1.txt`'s header line | Yes |
 | `zarr` | The root group's `meshioplusplus:provenance` attribute (plain JSON) | Store metadata; recovered without importing zarr | Yes |
 
 Two formats carry a related but **structurally distinct** record that this table does not count as "the tag": `med`'s `DES` mesh-description field defaults to `"Mesh created with meshio++"` (both engines agree; user-overridable, so it is data, not a fixed credit) and `unv`'s dataset-2414 field-header records always read `meshioplusplus` on five fixed ID lines (a label field the format requires, not a comment).
@@ -531,6 +538,10 @@ meshioplusplus.mfem.write(filename, mesh, grid_functions=False)
 ```
 
 `.mesh` defaults to Medit, so pass `file_format="mfem"` to `meshioplusplus.write`. `grid_functions=True` also writes each data array as `<stem>.<name>.gf`. Quadratic cells become an `H1_<d>D_P2` nodes space and named cell regions v1.3 attribute sets; see [`mfem.md`](./formats/mfem.md#writing).
+
+### Z88 (`z88i1.txt`)
+
+`meshioplusplus.z88.write(filename, mesh, stubs=False)` — the Z88OS v15 structure file. The format follows the file name `z88i1.txt`; any other name needs `file_format="z88"`. Element types come from `z88:type`, else from the cell type; regions and data arrays are dropped. `stubs=True` also writes empty `z88i2.txt` and `z88i5.txt`. See [`z88.md`](./formats/z88.md#writing).
 
 ### Abaqus (`.inp`)
 

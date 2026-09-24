@@ -47,7 +47,8 @@ def _collapse_solid(n):
     """(cell type, nodes in meshio++ order) of an 8-node LS-DYNA solid.
 
     LS-DYNA has no tetra, pyramid or wedge card: they are hexahedra with repeated
-    nodes. The patterns are checked most-degenerate first.
+    nodes. The patterns are checked most-degenerate first. The twin of
+    ``detail::collapse_brick``, which the Radioss reader shares.
     """
     if n[3] == n[4] == n[5] == n[6] == n[7]:
         return "tetra", [n[0], n[1], n[2], n[3]]
@@ -59,6 +60,18 @@ def _collapse_solid(n):
         return "wedge", [n[0], n[1], n[2], n[4], n[5], n[6]]
     if n[4] == n[5] and n[6] == n[7]:
         return "wedge", [n[0], n[4], n[1], n[3], n[6], n[2]]
+    # One side edge collapsed in both the bottom and the top face (Radioss
+    # writes 1 2 3 1 5 6 7 5): the wedge keeps the faces' cyclic order.
+    for i in range(4):
+        j, k, m = (i + 1) % 4, (i + 2) % 4, (i + 3) % 4
+        if (
+            n[i] == n[j]
+            and n[i + 4] == n[j + 4]
+            and n[j] != n[k]
+            and n[k] != n[m]
+            and n[m] != n[j]
+        ):
+            return "wedge", [n[j], n[k], n[m], n[j + 4], n[k + 4], n[m + 4]]
     return "hexahedron", list(n)
 
 

@@ -104,6 +104,7 @@ def _cases():
     from meshioplusplus.vtp import _vtp as py_vtp
     from meshioplusplus.vtu import _vtu as py_vtu
     from meshioplusplus.xyz import _xyz as py_xyz
+    from meshioplusplus.z88 import _z88 as py_z88
 
     cases = {
         "gltf": (TRI, ".glb", _core.gltf_write, py_gltf.write),
@@ -130,6 +131,8 @@ def _cases():
         "patran": (TRI, ".pat", _core.patran_write, py_patran.write),
         "femap": (TRI, ".neu", _core.femap_write, py_femap.write),
         "mfem": (TRI, ".mesh", _core.mfem_write, py_mfem.write),
+        # The tag ends the header line (Z88 reads its first five integers).
+        "z88": (TET, ".txt", _core.z88_write, py_z88.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
@@ -39,6 +40,9 @@
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
+#include "meshioplusplus/formats/libmesh.hpp"
+#include "meshioplusplus/formats/z88.hpp"
+#include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansys_rst.hpp"
@@ -102,10 +106,16 @@ namespace meshioplusplus {
 const std::map<std::string, ReadFn>& registry_readers() {
     static const std::map<std::string, ReadFn> m = {
         {"abaqus", meshioplusplus::read_abaqus},
+        {"abaqus_fil",
+         [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
         {"lsdyna", meshioplusplus::read_lsdyna},
         {"code_aster", meshioplusplus::read_code_aster},
         {"patran", meshioplusplus::read_patran},
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
+        {"libmesh", meshioplusplus::read_libmesh},
+        {"radioss", meshioplusplus::read_radioss},
+        // Fixed file names (z88i1.txt ...): resolve_format matches the basename.
+        {"z88", [](const std::string& path) { return meshioplusplus::read_z88(path); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
         {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
@@ -233,6 +243,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"code_aster", meshioplusplus::write_code_aster},
         {"patran", meshioplusplus::write_patran},
         {"femap", meshioplusplus::write_femap},
+        {"z88",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
         {"elmer", meshioplusplus::write_elmer},
         {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
@@ -456,6 +468,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
         {".inp", "abaqus"},
+        {".fil", "abaqus_fil"},
         {".cdb", "ansysinp"},
         {".frd", "frd"},
         {".k", "lsdyna"},
@@ -465,6 +478,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".pat", "patran"},
         {".out", "patran"},
         {".neu", "femap"},
+        {".xda", "libmesh"},
+        {".xdr", "libmesh"},
+        {".rad", "radioss"},
         {".feb", "febio"},
         {".xplt", "xplt"},
         {".rst", "ansys_rst"},
@@ -595,6 +611,9 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
         return rFormat;
     const auto& defaults = registry_extension_defaults();
     const std::string base = basename_of(rPath);
+    // Z88's files have fixed names; `.txt` alone is xyz's.
+    if (is_z88_filename(base))
+        return "z88";
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
         const std::string suffix = base.substr(pos);
@@ -636,15 +655,25 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // Tecplot honours mTimeStep -- selects one zone of a transient
         // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
         // first. IWYU pragma: keep
-        {"tecplot", [](const std::string& path,
-                       const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
+        {"tecplot",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_tecplot(path, opts);
+         }},
         // EnSight honours mTimeStep AND the narrowing options -- a .case
         // file's VARIABLE entries are only ever read here, never by the
         // plain overload. IWYU pragma: keep
-        {"ensight", [](const std::string& path,
-                       const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
+        {"ensight",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_ensight(path, opts);
+         }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // Abaqus .fil honours mTimeStep (its steps are the increments) and the
+        // narrowing options.
+        {"abaqus_fil",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_abaqus_fil(path, opts);
+         }},
         // Femap honours mTimeStep (its steps are the 450 output sets) and the
         // data narrowing options.
         {"femap", [](const std::string& path,
@@ -737,6 +766,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
         {"femap", meshioplusplus::read_femap_metadata},
+        {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"unv", meshioplusplus::read_unv_metadata},

@@ -215,11 +215,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // xplt joined in v16.2.0: its steps are the FEBio plot file's states.
     // ansys_rst joined in v16.3.0: its steps are the result sets.
     // femap joined in v16.5.0: its steps are the 450 output sets.
-    return rFormat == "frd" || rFormat == "unv" || rFormat == "nastran_h5" || rFormat == "xplt" ||
-           rFormat == "ansys_rst" || rFormat == "femap" || rFormat == "xdmf" ||
-           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
-           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
-           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
+    // abaqus_fil joined in v16.7.0: its steps are the increments (2000 ... 2001).
+    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "unv" ||
+           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
+           rFormat == "femap" || rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" ||
+           rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {

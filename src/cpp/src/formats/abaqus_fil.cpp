@@ -1,0 +1,798 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░
+//
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// System includes
+#include <algorithm>
+#include <bit>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <ios>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+#include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/abaqus_types.hpp"
+#include "meshioplusplus/detail/byteswap.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/fortran_records.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
+#include "meshioplusplus/region.hpp"
+
+namespace meshioplusplus {
+
+namespace {
+
+// --- words and records ---------------------------------------------------------------
+
+// One 8-byte word. ASCII items carry their tag ('I', 'D', 'A'); binary words
+// are raw ('B') and are read as whatever the record layout says they are.
+struct FilWord {
+    char mTag;
+    std::uint64_t mRaw;  // 'I': the int64; 'D': the double's bits; 'A'/'B': the bytes
+};
+
+struct FilRecord {
+    std::int64_t mKey = 0;
+    std::vector<FilWord> mWords;  // the attributes (after length and key)
+};
+
+struct FilData {
+    std::vector<FilRecord> mRecords;
+    bool mSwap = false;  // binary words in the other byte order
+};
+
+std::uint64_t fil_bytes_to_raw(const char* p) {
+    std::uint64_t v;
+    std::memcpy(&v, p, 8);
+    return v;
+}
+
+std::int64_t fil_word_int(const FilWord& rWord, bool Swap) {
+    switch (rWord.mTag) {
+        case 'I':
+            return static_cast<std::int64_t>(rWord.mRaw);
+        case 'D':
+            return static_cast<std::int64_t>(std::bit_cast<double>(rWord.mRaw));
+        case 'A': {
+            char s[9] = {};
+            std::memcpy(s, &rWord.mRaw, 8);
+            return std::atoll(s);
+        }
+        default: {
+            // An 8-byte integer, or a 4-byte one in the word's first bytes
+            // (Fortran EQUIVALENCE of an INTEGER array onto the REAL*8 one).
+            const std::uint64_t v = Swap ? detail::bswap64(rWord.mRaw) : rWord.mRaw;
+            const auto wide = static_cast<std::int64_t>(v);
+            if (wide >= -2147483648LL && wide <= 2147483647LL)
+                return wide;
+            std::uint32_t lo;
+            std::memcpy(&lo, &rWord.mRaw, 4);
+            if (Swap)
+                lo = detail::bswap32(lo);
+            return static_cast<std::int32_t>(lo);
+        }
+    }
+}
+
+double fil_word_real(const FilWord& rWord, bool Swap) {
+    switch (rWord.mTag) {
+        case 'I':
+            return static_cast<double>(static_cast<std::int64_t>(rWord.mRaw));
+        case 'D':
+            return std::bit_cast<double>(rWord.mRaw);
+        case 'A':
+            return std::numeric_limits<double>::quiet_NaN();
+        default:
+            return std::bit_cast<double>(Swap ? detail::bswap64(rWord.mRaw) : rWord.mRaw);
+    }
+}
+
+std::string fil_word_text(const FilWord& rWord, bool Swap) {
+    if (rWord.mTag == 'I' || rWord.mTag == 'D')
+        return std::to_string(fil_word_int(rWord, Swap));
+    char s[8];
+    std::memcpy(s, &rWord.mRaw, 8);
+    return std::string(s, 8);
+}
+
+std::string fil_trim(std::string s) {
+    const std::size_t b = s.find_first_not_of(" \t\0", 0, 3);
+    if (b == std::string::npos)
+        return {};
+    const std::size_t e = s.find_last_not_of(" \t\0", std::string::npos, 3);
+    return s.substr(b, e - b + 1);
+}
+
+// Binary: the 512-word blocks' payloads, joined, cut into records.
+void fil_parse_binary(const std::string& rText, FilData& rOut) {
+    std::string words;
+    if (const auto layout = detail::sniff_fortran_records(rText.data(), rText.size())) {
+        for (const auto& r :
+             detail::fortran_records(rText.data(), rText.size(), *layout, "Abaqus .fil"))
+            words.append(rText, r.mOffset, r.mSize);
+        rOut.mSwap = layout->mBigEndian != (std::endian::native == std::endian::big);
+    } else {
+        // Blocks written without record markers.
+        words = rText;
+    }
+    if (words.size() % 8 != 0)
+        throw ReadError("Abaqus .fil: binary payload is not a whole number of 8-byte words");
+    const std::size_t n = words.size() / 8;
+    std::size_t w = 0;
+    while (w < n) {
+        const FilWord len_word{'B', fil_bytes_to_raw(words.data() + 8 * w)};
+        const std::int64_t len = fil_word_int(len_word, rOut.mSwap);
+        if (len == 0) {
+            // Zero padding after the last record of a block.
+            ++w;
+            continue;
+        }
+        if (len < 2 || static_cast<std::uint64_t>(len) > n - w)
+            throw ReadError("Abaqus .fil: record at word " + std::to_string(w) +
+                            " has invalid length " + std::to_string(len));
+        FilRecord rec;
+        rec.mKey =
+            fil_word_int(FilWord{'B', fil_bytes_to_raw(words.data() + 8 * (w + 1))}, rOut.mSwap);
+        for (std::int64_t k = 2; k < len; ++k)
+            rec.mWords.push_back(
+                {'B', fil_bytes_to_raw(words.data() + 8 * (w + static_cast<std::size_t>(k)))});
+        rOut.mRecords.push_back(std::move(rec));
+        w += static_cast<std::size_t>(len);
+    }
+}
+
+// ASCII: line breaks dropped, then item by item from each `*`.
+void fil_parse_ascii(const std::string& rText, FilData& rOut) {
+    std::string s;
+    s.reserve(rText.size());
+    for (char c : rText)
+        if (c != '\n' && c != '\r')
+            s += c;
+    std::size_t pos = 0;
+    auto fail = [&](const std::string& rWhat) {
+        throw ReadError("Abaqus .fil: " + rWhat + " (character " + std::to_string(pos) + ")");
+    };
+    auto item = [&]() -> FilWord {
+        if (pos >= s.size())
+            fail("the file ends inside a record");
+        const char tag = s[pos];
+        if (tag == 'I') {
+            if (pos + 3 > s.size())
+                fail("truncated integer item");
+            const std::string width = s.substr(pos + 1, 2);
+            const std::size_t first = width.find_first_not_of(' ');
+            if (first == std::string::npos)
+                fail("bad integer width");
+            const long n = std::atol(width.c_str() + first);
+            if (n < 1 || pos + 3 + static_cast<std::size_t>(n) > s.size())
+                fail("bad integer width");
+            const std::string digits = s.substr(pos + 3, static_cast<std::size_t>(n));
+            for (std::size_t k = 0; k < digits.size(); ++k)
+                if (!(std::isdigit(static_cast<unsigned char>(digits[k])) ||
+                      (k == 0 && (digits[k] == '-' || digits[k] == ' '))))
+                    fail("bad integer '" + digits + "'");
+            pos += 3 + static_cast<std::size_t>(n);
+            return {'I', static_cast<std::uint64_t>(std::atoll(digits.c_str()))};
+        }
+        if (tag == 'D' || tag == 'E') {
+            if (pos + 23 > s.size())
+                fail("truncated real item");
+            std::string num = s.substr(pos + 1, 22);
+            for (char& c : num)
+                if (c == 'D' || c == 'd')
+                    c = 'E';
+            // D22.15 with a three-digit exponent drops the letter: 1.0+100.
+            if (num.find('E') == std::string::npos) {
+                const std::size_t sign = num.find_last_of("+-");
+                if (sign != std::string::npos && sign > 2)
+                    num.insert(sign, 1, 'E');
+            }
+            const char* end = nullptr;
+            const double v = detail::parse_double(num.c_str(), end);
+            if (end == num.c_str())
+                fail("bad real '" + num + "'");
+            pos += 23;
+            return {'D', std::bit_cast<std::uint64_t>(v)};
+        }
+        if (tag == 'A') {
+            if (pos + 9 > s.size())
+                fail("truncated text item");
+            char buf[8];
+            std::memcpy(buf, s.data() + pos + 1, 8);
+            pos += 9;
+            return {'A', fil_bytes_to_raw(buf)};
+        }
+        fail(std::string("unknown item tag '") + tag + "'");
+        return FilWord{'I', 0};
+    };
+    while (true) {
+        pos = s.find('*', pos);
+        if (pos == std::string::npos)
+            break;
+        ++pos;
+        const FilWord len_word = item();
+        if (len_word.mTag != 'I')
+            fail("a record starts with its length");
+        const auto len = static_cast<std::int64_t>(len_word.mRaw);
+        if (len < 2)
+            fail("record length " + std::to_string(len));
+        FilRecord rec;
+        rec.mKey = fil_word_int(item(), false);
+        for (std::int64_t k = 2; k < len; ++k)
+            rec.mWords.push_back(item());
+        rOut.mRecords.push_back(std::move(rec));
+    }
+}
+
+FilData fil_parse(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Abaqus .fil: cannot open " + rPath);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    FilData out;
+    const std::size_t first = text.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos && text[first] == '*')
+        fil_parse_ascii(text, out);
+    else
+        fil_parse_binary(text, out);
+    return out;
+}
+
+// --- names ------------------------------------------------------------------------
+
+const char* fil_nodal_name(std::int64_t Key) {
+    static const std::unordered_map<std::int64_t, const char*> m = {
+        {101, "U"},     {102, "V"},    {103, "A"},     {104, "RF"},   {105, "EPOT"}, {106, "CF"},
+        {107, "COORD"}, {108, "POR"},  {109, "RVF"},   {110, "RVT"},  {113, "TU"},   {114, "TV"},
+        {115, "TA"},    {119, "RCHG"}, {120, "CECHG"}, {136, "PCAV"}, {137, "CVOL"}, {145, "VF"},
+        {146, "TF"},    {151, "PABS"}, {201, "NT"},    {204, "RFL"},  {206, "CFL"},  {214, "RFLE"},
+        {221, "NNC"},   {320, "CFF"},
+    };
+    const auto it = m.find(Key);
+    return it == m.end() ? nullptr : it->second;
+}
+
+const char* fil_element_name(std::int64_t Key) {
+    static const std::unordered_map<std::int64_t, const char*> m = {
+        {2, "TEMP"},     {3, "LOADS"},  {4, "FLUXS"},  {5, "SDV"},     {6, "VOIDR"},  {7, "FOUND"},
+        {8, "COORD"},    {9, "FV"},     {10, "NFLUX"}, {11, "S"},      {12, "SINV"},  {13, "SF"},
+        {14, "ENER"},    {15, "NFORC"}, {17, "JK"},    {18, "POR"},    {19, "ELEN"},  {21, "E"},
+        {22, "PE"},      {23, "CE"},    {24, "IE"},    {25, "EE"},     {26, "CRACK"}, {27, "STH"},
+        {28, "HFL"},     {29, "SE"},    {30, "DG"},    {31, "CONF"},   {32, "SJP"},   {35, "SAT"},
+        {36, "SS"},      {38, "CONC"},  {39, "MFL"},   {42, "SPE"},    {45, "PEQC"},  {47, "SEPE"},
+        {48, "TSHR"},    {50, "EPG"},   {51, "EFLX"},  {61, "STATUS"}, {73, "PEEQ"},  {74, "PRESS"},
+        {75, "MISES"},   {76, "IVOL"},  {77, "SVOL"},  {78, "EVOL"},   {83, "SSAVG"}, {86, "ALPHA"},
+        {87, "UVARM"},   {88, "THE"},   {89, "LE"},    {90, "NE"},     {91, "ER"},    {401, "SP"},
+        {402, "ALPHAP"}, {403, "EP"},   {404, "NEP"},  {405, "LEP"},   {406, "ERP"},  {407, "DGP"},
+        {408, "EEP"},    {409, "IEP"},  {410, "THEP"}, {411, "PEP"},   {412, "CEP"},
+    };
+    const auto it = m.find(Key);
+    return it == m.end() ? nullptr : it->second;
+}
+
+// Symmetric-tensor element keys: S, E, PE, CE, IE, EE, SS, ALPHA, THE, LE, NE,
+// ER. Abaqus writes a solid's six components 11 22 33 12 13 23; meshio++'s
+// order is xx yy zz xy yz zx.
+bool fil_is_tensor_key(std::int64_t Key) {
+    switch (Key) {
+        case 11:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+        case 25:
+        case 36:
+        case 86:
+        case 88:
+        case 89:
+        case 90:
+        case 91:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Keys that are neither nodal nor element results of a step.
+bool fil_is_skipped_key(std::int64_t Key) {
+    return (Key >= 301 && Key <= 310) || Key >= 1000;
+}
+
+// --- the model --------------------------------------------------------------------
+
+struct FilIncrement {
+    std::size_t mBegin = 0, mEnd = 0;  // record range after the 2000 record
+    double mTotalTime = 0.0, mStepTime = 0.0;
+    std::int64_t mProcedure = 0, mStep = 0, mIncrement = 0;
+};
+
+std::vector<FilIncrement> fil_increments(const FilData& rData) {
+    std::vector<FilIncrement> out;
+    for (std::size_t r = 0; r < rData.mRecords.size(); ++r) {
+        const FilRecord& rec = rData.mRecords[r];
+        if (rec.mKey == 2000) {
+            FilIncrement inc;
+            inc.mBegin = r + 1;
+            const auto& w = rec.mWords;
+            const bool s = rData.mSwap;
+            if (w.size() > 0)
+                inc.mTotalTime = fil_word_real(w[0], s);
+            if (w.size() > 1)
+                inc.mStepTime = fil_word_real(w[1], s);
+            if (w.size() > 4)
+                inc.mProcedure = fil_word_int(w[4], s);
+            if (w.size() > 5)
+                inc.mStep = fil_word_int(w[5], s);
+            if (w.size() > 6)
+                inc.mIncrement = fil_word_int(w[6], s);
+            if (!out.empty() && out.back().mEnd == 0)
+                out.back().mEnd = r;
+            out.push_back(inc);
+        } else if (rec.mKey == 2001 && !out.empty() && out.back().mEnd == 0) {
+            out.back().mEnd = r;
+        }
+    }
+    if (!out.empty() && out.back().mEnd == 0)
+        out.back().mEnd = rData.mRecords.size();
+    return out;
+}
+
+NDArray fil_scalar(DType Type, double Value) {
+    NDArray a(Type, {});
+    if (Type == DType::Int64)
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(Value);
+    else
+        a.As<double>()[0] = Value;
+    return a;
+}
+
+NDArray fil_ids(const std::vector<std::int64_t>& rIds) {
+    NDArray a(DType::Int64, {rIds.size()});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+struct FilSet {
+    std::string mName;
+    bool mNodes;
+    std::vector<std::int64_t> mLabels;
+};
+
+// One element result: the values of every (element, point) the step lists.
+struct FilElementField {
+    std::string mName;
+    int mLocation;
+    std::unordered_map<std::int64_t, std::map<std::int64_t, std::vector<double>>> mValues;
+};
+
+}  // namespace
+
+Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
+    const FilData data = fil_parse(rPath);
+    const bool sw = data.mSwap;
+
+    // --- model records --------------------------------------------------------------
+    std::vector<std::int64_t> node_labels;
+    std::vector<double> coords;
+    struct FilElement {
+        std::int64_t mLabel;
+        std::string mType;
+        std::vector<std::int64_t> mNodes;
+    };
+    std::vector<FilElement> elements;
+    std::vector<FilSet> sets;
+    std::unordered_map<std::int64_t, std::string> labels;  // 1940
+    for (const FilRecord& rec : data.mRecords) {
+        const auto& w = rec.mWords;
+        switch (rec.mKey) {
+            case 1901: {
+                if (w.empty())
+                    break;
+                node_labels.push_back(fil_word_int(w[0], sw));
+                for (std::size_t d = 0; d < 3; ++d)
+                    coords.push_back(d + 1 < w.size() ? fil_word_real(w[d + 1], sw) : 0.0);
+                break;
+            }
+            case 1900: {
+                if (w.size() < 2)
+                    break;
+                FilElement el{fil_word_int(w[0], sw), fil_trim(fil_word_text(w[1], sw)), {}};
+                for (char& c : el.mType)
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                for (std::size_t k = 2; k < w.size(); ++k)
+                    el.mNodes.push_back(fil_word_int(w[k], sw));
+                elements.push_back(std::move(el));
+                break;
+            }
+            case 1990:
+                if (!elements.empty())
+                    for (const FilWord& x : w)
+                        elements.back().mNodes.push_back(fil_word_int(x, sw));
+                break;
+            case 1931:
+            case 1933: {
+                if (w.empty())
+                    break;
+                FilSet set{fil_trim(fil_word_text(w[0], sw)), rec.mKey == 1931, {}};
+                for (std::size_t k = 1; k < w.size(); ++k)
+                    set.mLabels.push_back(fil_word_int(w[k], sw));
+                sets.push_back(std::move(set));
+                break;
+            }
+            case 1932:
+            case 1934:
+                if (!sets.empty())
+                    for (const FilWord& x : w)
+                        sets.back().mLabels.push_back(fil_word_int(x, sw));
+                break;
+            case 1940: {
+                if (w.empty())
+                    break;
+                std::string label;
+                for (std::size_t k = 1; k < w.size(); ++k)
+                    label += fil_word_text(w[k], sw);
+                labels[fil_word_int(w[0], sw)] = fil_trim(label);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    Mesh mesh;
+    std::unordered_map<std::int64_t, std::size_t> node_index;
+    for (std::size_t p = 0; p < node_labels.size(); ++p)
+        if (!node_index.emplace(node_labels[p], p).second)
+            throw ReadError("Abaqus .fil: node " + std::to_string(node_labels[p]) +
+                            " is defined twice");
+    NDArray points(DType::Float64, {node_labels.size(), 3});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+    mesh.AddPointData("abaqus:id", fil_ids(node_labels));
+
+    // Cells: one block per meshio++ type, in order of first appearance.
+    std::vector<std::string> block_types;
+    std::map<std::string, std::vector<std::size_t>> by_type;
+    std::map<std::string, std::size_t> skipped_types;
+    std::vector<std::string> cell_type_of(elements.size());
+    for (std::size_t e = 0; e < elements.size(); ++e) {
+        const std::string t =
+            detail::abaqus_cell_type(elements[e].mType, elements[e].mNodes.size());
+        if (t.empty()) {
+            ++skipped_types[elements[e].mType];
+            continue;
+        }
+        auto [it, fresh] = by_type.emplace(t, std::vector<std::size_t>{});
+        if (fresh)
+            block_types.push_back(t);
+        it->second.push_back(e);
+        cell_type_of[e] = t;
+    }
+    for (const auto& [t, n] : skipped_types)
+        log::warn("Abaqus .fil: skipping {} element(s) of type {} (no meshio++ equivalent)", n, t);
+    std::unordered_map<std::int64_t, std::size_t> element_index;  // label -> global cell
+    std::vector<std::size_t> block_start{0};
+    std::vector<std::vector<std::int64_t>> cell_nodes;  // global cell -> node labels
+    std::vector<int> cell_dim;
+    std::vector<NDArray> id_blocks;
+    for (const std::string& t : block_types) {
+        const std::vector<std::size_t>& members = by_type[t];
+        const std::size_t k = static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(t)));
+        NDArray conn(DType::Int64, {members.size(), k});
+        std::vector<std::int64_t> ids;
+        for (std::size_t r = 0; r < members.size(); ++r) {
+            const FilElement& el = elements[members[r]];
+            for (std::size_t j = 0; j < k; ++j) {
+                const auto it = node_index.find(el.mNodes[j]);
+                if (it == node_index.end())
+                    throw ReadError("Abaqus .fil: element " + std::to_string(el.mLabel) +
+                                    " names undefined node " + std::to_string(el.mNodes[j]));
+                conn.As<std::int64_t>()[r * k + j] = static_cast<std::int64_t>(it->second);
+            }
+            if (!element_index.emplace(el.mLabel, cell_nodes.size()).second)
+                throw ReadError("Abaqus .fil: element " + std::to_string(el.mLabel) +
+                                " is defined twice");
+            cell_nodes.push_back(el.mNodes);
+            cell_dim.push_back(cell_type_dimension(cell_type_from_name(t)));
+            ids.push_back(el.mLabel);
+        }
+        mesh.AddCellBlock(t, std::move(conn));
+        id_blocks.push_back(fil_ids(ids));
+        block_start.push_back(cell_nodes.size());
+    }
+    if (!id_blocks.empty())
+        mesh.AddCellData("abaqus:id", std::move(id_blocks));
+
+    // Sets -> regions; a digits-only name is a 1940 cross-reference.
+    std::size_t missing = 0;
+    for (const FilSet& set : sets) {
+        std::string name = set.mName;
+        if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos) {
+            const auto it = labels.find(std::stoll(name));
+            if (it != labels.end())
+                name = it->second;
+        }
+        std::vector<std::int64_t> entries;
+        int dim = -1;
+        for (std::int64_t label : set.mLabels) {
+            if (set.mNodes) {
+                const auto it = node_index.find(label);
+                if (it == node_index.end())
+                    ++missing;
+                else
+                    entries.push_back(static_cast<std::int64_t>(it->second));
+            } else {
+                const auto it = element_index.find(label);
+                if (it == element_index.end()) {
+                    ++missing;
+                } else {
+                    entries.push_back(static_cast<std::int64_t>(it->second));
+                    dim = std::max(dim, cell_dim[it->second]);
+                }
+            }
+        }
+        mesh.AddRegion(Region(name, set.mNodes ? RegionKind::Point : RegionKind::Cell,
+                              set.mNodes ? -1 : dim, -1, fil_ids(entries)));
+    }
+    if (missing)
+        log::warn("Abaqus .fil: sets name {} node(s) or element(s) that are not in the mesh",
+                  missing);
+
+    // --- the selected increment ----------------------------------------------------
+    const std::vector<FilIncrement> increments = fil_increments(data);
+    if (increments.empty()) {
+        rOpts.ResolveTimeStep(0);
+        return mesh;
+    }
+    const FilIncrement& inc = increments[rOpts.ResolveTimeStep(increments.size())];
+    mesh.AddFieldData(kSequenceTimeKey, fil_scalar(DType::Float64, inc.mTotalTime));
+    mesh.AddFieldData("abaqus:step", fil_scalar(DType::Int64, static_cast<double>(inc.mStep)));
+    mesh.AddFieldData("abaqus:increment",
+                      fil_scalar(DType::Int64, static_cast<double>(inc.mIncrement)));
+    mesh.AddFieldData("abaqus:step_time", fil_scalar(DType::Float64, inc.mStepTime));
+    mesh.AddFieldData("abaqus:procedure",
+                      fil_scalar(DType::Int64, static_cast<double>(inc.mProcedure)));
+    if (!rOpts.WantsAnyData())
+        return mesh;
+
+    // Nodal fields: name -> node label -> values.
+    std::vector<std::string> nodal_order;
+    std::map<std::string, std::unordered_map<std::int64_t, std::vector<double>>> nodal;
+    // Element fields keyed by (name, location, section point).
+    std::vector<FilElementField> fields;
+    std::map<std::pair<std::string, int>, std::size_t> field_of;
+    std::set<std::int64_t> skipped_keys;
+    bool nodal_mode = false;
+    struct Header {
+        std::int64_t mElement, mPoint, mSection;
+        int mLocation;
+        bool mSolidTensor;  // NDI = NSHR = 3
+    };
+    std::optional<Header> header;
+    for (std::size_t r = inc.mBegin; r < inc.mEnd; ++r) {
+        const FilRecord& rec = data.mRecords[r];
+        const auto& w = rec.mWords;
+        if (rec.mKey == 1911) {
+            nodal_mode = !w.empty() && fil_word_int(w[0], sw) == 1;
+            header.reset();
+            continue;
+        }
+        if (rec.mKey == 1) {
+            if (w.size() < 4) {
+                header.reset();
+                continue;
+            }
+            header =
+                Header{fil_word_int(w[0], sw), fil_word_int(w[1], sw), fil_word_int(w[2], sw),
+                       static_cast<int>(fil_word_int(w[3], sw)),
+                       w.size() >= 7 && fil_word_int(w[5], sw) == 3 && fil_word_int(w[6], sw) == 3};
+            continue;
+        }
+        if ((rec.mKey >= 1900 && rec.mKey <= 2001) || fil_is_skipped_key(rec.mKey)) {
+            if (rec.mKey < 1900 || rec.mKey > 2001)
+                skipped_keys.insert(rec.mKey);
+            continue;
+        }
+        if (nodal_mode) {
+            if (w.empty())
+                continue;
+            const char* known = fil_nodal_name(rec.mKey);
+            const std::string name = known ? known : "key_" + std::to_string(rec.mKey);
+            if (!rOpts.WantsArray(name))
+                continue;
+            std::vector<double> v;
+            for (std::size_t k = 1; k < w.size(); ++k)
+                v.push_back(fil_word_real(w[k], sw));
+            auto [it, fresh] = nodal.emplace(name, decltype(nodal)::mapped_type{});
+            if (fresh)
+                nodal_order.push_back(name);
+            it->second[fil_word_int(w[0], sw)] = std::move(v);
+            continue;
+        }
+        if (!header || header->mLocation == 3) {  // no header, or rebar
+            skipped_keys.insert(rec.mKey);
+            continue;
+        }
+        const char* known = fil_element_name(rec.mKey);
+        std::string name = known ? known : "key_" + std::to_string(rec.mKey);
+        // Continuum elements write section point 0, shells and beams 1..n: the
+        // first one shares the plain name, the others are `@sp<k>`.
+        if (header->mSection > 1)
+            name += "@sp" + std::to_string(header->mSection);
+        if (!rOpts.WantsArray(name))
+            continue;
+        const auto key = std::make_pair(name, header->mLocation);
+        auto [fit, ffresh] = field_of.emplace(key, fields.size());
+        if (ffresh)
+            fields.push_back({name, header->mLocation, {}});
+        std::vector<double> v;
+        for (const FilWord& x : w)
+            v.push_back(fil_word_real(x, sw));
+        if (header->mSolidTensor && v.size() == 6 && fil_is_tensor_key(rec.mKey))
+            std::swap(v[4], v[5]);  // 13 23 -> yz zx
+        fields[fit->second].mValues[header->mElement][header->mPoint] = std::move(v);
+    }
+    if (!skipped_keys.empty())
+        log::warn(
+            "Abaqus .fil: {} record key(s) outside the nodal and element results skipped "
+            "(first: {})",
+            skipped_keys.size(), *skipped_keys.begin());
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::size_t npts = node_labels.size();
+    auto add_point_field =
+        [&](const std::string& rName,
+            const std::unordered_map<std::int64_t, std::vector<double>>& rValues) {
+            std::size_t width = 0;
+            for (const auto& [label, v] : rValues)
+                width = std::max(width, v.size());
+            if (!width)
+                return;
+            NDArray a(DType::Float64, width == 1 ? std::vector<std::size_t>{npts}
+                                                 : std::vector<std::size_t>{npts, width});
+            double* d = a.As<double>();
+            std::fill(d, d + npts * width, nan);
+            for (const auto& [label, v] : rValues) {
+                const auto it = node_index.find(label);
+                if (it != node_index.end())
+                    std::copy(v.begin(), v.end(), d + it->second * width);
+            }
+            std::string name = rName;
+            while (mesh.HasPointData(name))
+                name += "@avg";
+            mesh.AddPointData(name, std::move(a));
+        };
+    for (const std::string& name : nodal_order)
+        add_point_field(name, nodal[name]);
+
+    const std::size_t nblocks = block_types.size();
+    for (const FilElementField& f : fields) {
+        if (f.mLocation == 4) {  // averaged at the nodes: the header names the node
+            std::unordered_map<std::int64_t, std::vector<double>> per_node;
+            for (const auto& [label, points] : f.mValues)
+                if (!points.empty())
+                    per_node[label] = points.begin()->second;
+            add_point_field(f.mName, per_node);
+            continue;
+        }
+        if (!nblocks)
+            continue;
+        const bool per_point = f.mLocation == 0 || f.mLocation == 2;
+        std::vector<std::size_t> width(nblocks, 0), count(nblocks, 1);
+        if (f.mLocation == 2)
+            for (std::size_t b = 0; b < nblocks; ++b)
+                count[b] = mesh.Cells(b).NodesPerCell();
+        std::vector<std::vector<const std::map<std::int64_t, std::vector<double>>*>> rows(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            rows[b].assign(block_start[b + 1] - block_start[b], nullptr);
+        for (const auto& [label, points] : f.mValues) {
+            const auto it = element_index.find(label);
+            if (it == element_index.end())
+                continue;
+            const std::size_t c = it->second;
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(block_start.begin(), block_start.end(), c) - block_start.begin() -
+                1);
+            rows[b][c - block_start[b]] = &points;
+            for (const auto& [pt, v] : points) {
+                width[b] = std::max(width[b], v.size());
+                if (f.mLocation == 0)
+                    count[b] =
+                        std::max(count[b], static_cast<std::size_t>(std::max<std::int64_t>(pt, 1)));
+            }
+        }
+        std::size_t any_width = 0;
+        for (std::size_t w : width)
+            any_width = std::max(any_width, w);
+        if (!any_width)
+            continue;
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const std::size_t n = rows[b].size();
+            const std::size_t wdt = width[b] ? width[b] : any_width;
+            const std::size_t pts = per_point ? count[b] : 1;
+            std::vector<std::size_t> shape{n};
+            if (per_point)
+                shape.push_back(pts);
+            if (wdt > 1)
+                shape.push_back(wdt);
+            NDArray a(DType::Float64, shape);
+            double* d = a.As<double>();
+            std::fill(d, d + n * pts * wdt, nan);
+            for (std::size_t r = 0; r < n; ++r) {
+                if (!rows[b][r])
+                    continue;
+                const std::vector<std::int64_t>& cn = cell_nodes[block_start[b] + r];
+                for (const auto& [pt, v] : *rows[b][r]) {
+                    std::size_t slot = 0;
+                    if (f.mLocation == 0) {
+                        slot = static_cast<std::size_t>(std::max<std::int64_t>(pt, 1) - 1);
+                    } else if (f.mLocation == 2) {
+                        const auto at = std::find(cn.begin(), cn.end(), pt);
+                        if (at == cn.end())
+                            continue;
+                        slot = static_cast<std::size_t>(at - cn.begin());
+                    }
+                    if (slot >= pts)
+                        continue;
+                    std::copy(v.begin(),
+                              v.begin() + static_cast<std::ptrdiff_t>(std::min(v.size(), wdt)),
+                              d + (r * pts + slot) * wdt);
+                }
+            }
+            blocks.push_back(std::move(a));
+        }
+        std::string name = f.mName;
+        while (mesh.HasCellData(name))
+            name += f.mLocation == 0 ? "@ip" : "@el";
+        mesh.AddCellData(name, std::move(blocks));
+    }
+    return mesh;
+}
+
+std::vector<double> abaqus_fil_time_values(const std::string& rPath) {
+    const FilData data = fil_parse(rPath);
+    std::vector<double> out;
+    for (const FilIncrement& inc : fil_increments(data))
+        out.push_back(inc.mTotalTime);
+    return out;
+}
+
+MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOptions& /*rOpts*/) {
+    MeshMetadata meta = metadata_from_mesh(read_abaqus_fil(rPath, ReadOptions{}));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "abaqus_fil";
+    meta.mTimeValues = abaqus_fil_time_values(rPath);
+    return meta;
+}
+
+}  // namespace meshioplusplus

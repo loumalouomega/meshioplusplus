@@ -123,3 +123,19 @@ tests/python/meshes/mfem/*.npz binary
 # (MIT, see that directory's README.md), assembled by tools/gen_femap_fixtures.py: small
 # text kept out of LFS like the ones above.
 tests/python/meshes/femap/** -filter -diff -merge text
+# libMesh .xda/.xdr fixtures written by tools/gen_libmesh_fixtures.py: small, kept out
+# of LFS like the ones above; the .xdr twins are big-endian XDR bytes.
+tests/python/meshes/libmesh/** -filter -diff -merge text
+tests/python/meshes/libmesh/*.xdr binary
+# Z88 decks written by tools/gen_z88_fixtures.py and the Z88R V15 output for the
+# cantilever (see that directory's README.md): small text kept out of LFS.
+tests/python/meshes/z88/** -filter -diff -merge text
+# Abaqus .fil results: the ASCII fixtures (tools/gen_abaqus_fil_fixtures.py and
+# pybaqus's real Abaqus 2023 output, MIT, see README.md) as text, the binary twins as
+# bytes, all kept out of LFS.
+tests/python/meshes/abaqus_fil/** -filter -diff -merge text
+tests/python/meshes/abaqus_fil/model_le.fil binary
+tests/python/meshes/abaqus_fil/model_be.fil binary
+# OpenRadioss starter decks written by tools/gen_radioss_fixtures.py: small text kept
+# out of LFS like the ones above.
+tests/python/meshes/radioss/** -filter -diff -merge text

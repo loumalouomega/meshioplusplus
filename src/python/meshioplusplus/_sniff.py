@@ -13,6 +13,8 @@ import re
 import struct
 from pathlib import Path
 
+from ._files import is_z88_filename
+
 # Dataset numbers that open an I-DEAS universal file (see sniff.cpp's kUnvIds).
 _UNV_IDS = {
     "15",
@@ -110,6 +112,59 @@ def _is_patran(head: bytes) -> bool:
     return kc >= 1
 
 
+_FIL_KEYS = (1921, 1922, 1900, 1901, 2000)
+
+
+def _is_abaqus_fil_binary(head: bytes) -> bool:
+    """Abaqus results, binary: a 4096-byte Fortran record whose first words are a
+    record length and a key Abaqus writes first; see sniff.cpp."""
+    if len(head) < 20:
+        return False
+    for order in ("<", ">"):
+        if struct.unpack(order + "I", head[:4])[0] != 4096:
+            continue
+        for lo in (0, 4) if order == ">" else (0,):
+            length = struct.unpack(order + "I", head[4 + lo : 8 + lo])[0]
+            key = struct.unpack(order + "I", head[12 + lo : 16 + lo])[0]
+            if 2 <= length <= 512 and key in _FIL_KEYS:
+                return True
+    return False
+
+
+def _is_abaqus_fil_ascii(stripped: bytes) -> bool:
+    """Abaqus results, ASCII: ``*`` then the record length and key as ``I`` items
+    (``I`` + two-digit digit count + the digits); see sniff.cpp."""
+    if len(stripped) < 12 or stripped[:1] != b"*":
+        return False
+    pos = 1
+    items = []
+    for _ in range(2):
+        if stripped[pos : pos + 1] != b"I":
+            return False
+        width = stripped[pos + 1 : pos + 3].strip(b" ")
+        if not width.isdigit():
+            return False
+        n = int(width)
+        digits = stripped[pos + 3 : pos + 3 + n]
+        if not 1 <= n <= 18 or len(digits) != n or not digits.isdigit():
+            return False
+        items.append(int(digits))
+        pos += 3 + n
+    return items[0] >= 2 and items[1] in _FIL_KEYS
+
+
+def _is_radioss(stripped: bytes) -> bool:
+    """OpenRadioss starter: ``#RADIOSS STARTER``, or ``/BEGIN`` as the first line
+    that is not a ``#``/``$`` comment."""
+    for line in stripped.split(b"\n"):
+        if line.startswith(b"#RADIOSS STARTER"):
+            return True
+        if not line or line[:1] in (b"#", b"$", b"\r"):
+            continue
+        return line.startswith(b"/BEGIN")
+    return False
+
+
 def _has_polymesh(poly: Path) -> bool:
     return (poly / "owner").is_file() and (poly / "faces").is_file()
 
@@ -146,6 +201,9 @@ def _sniff_format_py(path) -> str:
     # The header of an Elmer mesh directory stands for the directory.
     if path.name == "mesh.header" and path.is_file():
         return "elmer"
+    # Z88's input and output files have fixed names.
+    if is_z88_filename(path) and path.is_file():
+        return "z88"
     try:
         with open(path, "rb") as f:
             head = f.read(512)
@@ -163,6 +221,11 @@ def _sniff_format_py(path) -> str:
     # 0x80000000) whose first value is the file number, 12.
     if head[:12] == b"d\x00\x00\x00\x00\x00\x00\x80\x0c\x00\x00\x00":
         return "ansys_rst"
+    # libMesh XDR mesh: the version string, a big-endian length then "libMesh-".
+    if head[:2] == b"\x00\x00" and head[4:12] == b"libMesh-":
+        return "libmesh"
+    if _is_abaqus_fil_binary(head):
+        return "abaqus_fil"
     # FEBio input: XML whose root is <febio_spec>.
     if b"<febio_spec" in head:
         return "febio"
@@ -239,6 +302,12 @@ def _sniff_format_py(path) -> str:
         (b"MFEM mesh v1.", b"MFEM NC mesh", b"MFEM NURBS mesh", b"MFEM INLINE mesh")
     ):
         return "mfem"
+    if stripped.startswith(b"libMesh-"):
+        return "libmesh"
+    if _is_abaqus_fil_ascii(stripped):
+        return "abaqus_fil"
+    if _is_radioss(stripped):
+        return "radioss"
     if _is_femap(head):
         return "femap"
     if _is_patran(head):

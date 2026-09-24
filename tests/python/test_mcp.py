@@ -1856,3 +1856,32 @@ def test_server_mirrors_the_train_start_and_predict_file_parameters():
     for name in ("train_start", "predict_file"):
         pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
         assert mirrored[name] == pure, name
+
+
+def test_libmesh_z88_fil_radioss_formats(tmp_path):
+    import pathlib
+
+    meshes = pathlib.Path(__file__).parent / "meshes"
+    out = _dump(_tools.tool_formats())
+    for fmt in ("libmesh", "z88", "abaqus_fil", "radioss"):
+        assert fmt in out["readable"], fmt
+    assert "z88" in out["writable"]
+    assert out["extensions"][".xda"] == ["libmesh"]
+    assert out["extensions"][".xdr"] == ["libmesh"]
+    assert out["extensions"][".fil"] == ["abaqus_fil"]
+    assert out["extensions"][".rad"] == ["radioss"]
+    fil = meshes / "abaqus_fil" / "model_le.fil"
+    assert _dump(_tools.tool_sniff(str(fil)))["format"] == "abaqus_fil"
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(fil), target, time_step=-1)
+    last = meshioplusplus.read(target)
+    assert float(np.asarray(last.field_data["meshio:time"]).ravel()[0]) == 1.0
+    # Z88's fixed file names are dispatched by basename, in and out.
+    z88 = str(meshes / "z88" / "cantilever" / "z88i1.txt")
+    assert _dump(_tools.tool_sniff(z88))["format"] == "z88"
+    (tmp_path / "out").mkdir()
+    back = str(tmp_path / "out" / "z88i1.txt")
+    _tools.tool_convert(str(meshes / "libmesh" / "one_hex.xdr"), back)
+    assert meshioplusplus.read(back).cells[0].type == "hexahedron"
+    rad = meshes / "radioss" / "old_0000.rad"
+    assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8

@@ -5007,6 +5007,56 @@ struct Mesh {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/abaqus_types.hpp =====
+/**
+ * @file detail/abaqus_types.hpp
+ * @brief Abaqus element type names and the meshio++ cells they map to, shared
+ *        by the `.inp` reader/writer and the `.fil` results reader.
+ *
+ * `abaqus_type_table` is the `.inp` table, in source order (the writer's
+ * meshio++ -> Abaqus inverse keeps the last entry per cell type). The Python
+ * twin is `abaqus_to_meshio_type` in `abaqus/_abaqus.py`.
+ *
+ * `abaqus_cell_type` also recognises element families the table does not list
+ * (`CPE8R`, `DC3D20`, `SC8R`, `M3D4`, ...): a results file names the exact
+ * element, so the `.fil` reader maps it by family and node count -- the node
+ * lists of solid, plane, axisymmetric, shell and membrane elements are in
+ * meshio++'s order for every shape it maps.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The `(Abaqus element type, meshio++ cell type)` rows of the `.inp` format.
+MESHIOPLUSPLUS_API const std::vector<std::pair<std::string, std::string>>& abaqus_type_table();
+
+/**
+ * @brief The meshio++ cell type of an Abaqus element with @p NodeCount nodes.
+ *
+ * Looks the name up in `abaqus_type_table`; otherwise classifies it by prefix
+ * (3-D continuum `C3D`/`DC3D`/`AC3D`/`COH3D`/`SC`, planar and axisymmetric
+ * continuum `CPE`/`CPS`/`CAX`/`CGAX`/`DC2D`/`DCAX`/`COH2D`, shell `S<digit>`/
+ * `STRI`, membrane and rigid `M3D`/`R3D`/`SFM3D`, line `T2D`/`T3D`/`B2`/`B3`/
+ * `PIPE`/`R2D`/`RB2D`/`RB3D`/`DC1D`) and picks the shape from @p NodeCount.
+ * @param Name The element type, upper case, blanks trimmed (`C3D8R`).
+ * @param NodeCount How many nodes the element lists.
+ * @return the cell type, or an empty string when the element has no meshio++
+ *         equivalent.
+ */
+MESHIOPLUSPLUS_API std::string abaqus_cell_type(std::string_view Name, std::size_t NodeCount);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/abaqus_types.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/abi_version_check.hpp =====
 /**
  * @file detail/abi_version_check.hpp
@@ -5960,6 +6010,168 @@ inline void bswap_inplace(char* pP, int n) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/byteswap.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/exceptions.hpp =====
+/**
+ * @file exceptions.hpp
+ * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
+ *
+ * These are the only exception types the C++ format readers/writers throw on
+ * I/O failure (malformed input, unsupported constructs, filesystem errors,
+ * etc.). The pybind11 binding layer catches them and re-raises the
+ * equivalent Python `meshioplusplus.ReadError` / `meshioplusplus.WriteError`
+ * classes, so callers on the Python side see identical behaviour whether a
+ * format is handled by the C++ core or by the pure-Python fallback. Because
+ * the shim pattern (`__init__.py`) catches *any* exception from the C++ path
+ * to decide whether to fall back to Python, throwing these (rather than
+ * e.g. asserting or returning error codes) is what makes that fallback work.
+ */
+
+// System includes
+#include <stdexcept>
+#include <string>
+
+namespace meshioplusplus {
+
+/**
+ * @brief Thrown by C++ readers when the input file/stream cannot be parsed.
+ *
+ * Covers malformed content, missing required sections, and unsupported
+ * constructs that a given format's C++ reader deliberately does not handle
+ * (in which case the format's Python shim catches this and falls back to the
+ * pure-Python reference reader). Maps 1:1 to Python's `meshioplusplus.ReadError`.
+ */
+struct ReadError : std::runtime_error {
+    ReadError() : std::runtime_error("") {}
+    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
+/**
+ * @brief Thrown by C++ writers when a mesh cannot be serialized to a format.
+ *
+ * Covers unsupported cell types, ragged/ill-formed mesh data the writer does
+ * not accept, and any other output-side constraint violation (in which case
+ * the format's Python shim catches this and falls back to the pure-Python
+ * reference writer). Maps 1:1 to Python's `meshioplusplus.WriteError`.
+ */
+struct WriteError : std::runtime_error {
+    WriteError() : std::runtime_error("") {}
+    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/exceptions.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/binary_stream.hpp =====
+/**
+ * @file detail/binary_stream.hpp
+ * @brief A bounds-checked cursor over a byte buffer in a chosen byte order.
+ *
+ * Binary readers that walk a file value by value (libMesh `.xdr`, Abaqus `.fil`)
+ * read through `ByteCursor`: every read checks the remaining length and throws a
+ * `ReadError` naming the format instead of running past the buffer, and the
+ * file's byte order is fixed once at construction. The cursor never owns the
+ * buffer.
+ */
+
+// System includes
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Sequential reads of fixed-width values from a buffer in one byte order.
+class ByteCursor {
+public:
+    /**
+     * @brief A cursor at the start of `[pData, pData + Size)`.
+     * @param pData The buffer (not owned; must outlive the cursor).
+     * @param Size Its length in bytes.
+     * @param BigEndian Whether the values are stored big-endian.
+     * @param rWhat The format name used in error messages.
+     */
+    ByteCursor(const char* pData, std::size_t Size, bool BigEndian, std::string rWhat)
+        : mpData(pData),
+          mSize(Size),
+          mSwap(BigEndian != (std::endian::native == std::endian::big)),
+          mWhat(std::move(rWhat)) {}
+
+    /// Bytes consumed so far.
+    std::size_t Offset() const { return mPos; }
+    /// Bytes left.
+    std::size_t Remaining() const { return mSize - mPos; }
+    /// Whether every byte has been consumed.
+    bool AtEnd() const { return mPos >= mSize; }
+    /// Move to absolute offset @p Pos (at most the buffer length).
+    void Seek(std::size_t Pos) {
+        if (Pos > mSize)
+            Fail(Pos - mPos);
+        mPos = Pos;
+    }
+    /// Skip @p N bytes.
+    void Skip(std::size_t N) {
+        Need(N);
+        mPos += N;
+    }
+
+    std::uint32_t U32() { return Read<std::uint32_t>(); }
+    std::int32_t I32() { return static_cast<std::int32_t>(Read<std::uint32_t>()); }
+    std::uint64_t U64() { return Read<std::uint64_t>(); }
+    std::int64_t I64() { return static_cast<std::int64_t>(Read<std::uint64_t>()); }
+    float F32() { return std::bit_cast<float>(Read<std::uint32_t>()); }
+    double F64() { return std::bit_cast<double>(Read<std::uint64_t>()); }
+
+    /// @p N raw bytes as a string.
+    std::string Bytes(std::size_t N) {
+        Need(N);
+        std::string s(mpData + mPos, N);
+        mPos += N;
+        return s;
+    }
+
+    /// Throw unless @p N more bytes are available.
+    void Need(std::size_t N) const {
+        if (N > mSize - mPos)
+            Fail(N);
+    }
+
+private:
+    template <class T>
+    T Read() {
+        Need(sizeof(T));
+        T v;
+        std::memcpy(&v, mpData + mPos, sizeof(T));
+        mPos += sizeof(T);
+        if (mSwap) {
+            if constexpr (sizeof(T) == 4)
+                v = bswap32(v);
+            else
+                v = bswap64(v);
+        }
+        return v;
+    }
+
+    [[noreturn]] void Fail(std::size_t N) const {
+        throw ReadError(mWhat + ": file is truncated (needs " + std::to_string(N) +
+                        " more bytes at offset " + std::to_string(mPos) + " of " +
+                        std::to_string(mSize) + ")");
+    }
+
+    const char* mpData;
+    std::size_t mSize;
+    std::size_t mPos = 0;
+    bool mSwap;
+    std::string mWhat;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/binary_stream.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/cell_adjacency.hpp =====
 /**
  * @file detail/cell_adjacency.hpp
@@ -7392,6 +7604,48 @@ MESHIOPLUSPLUS_API void decim_sorted_insert(std::vector<std::int64_t>& rVec, std
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/decimate_common.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/degenerate_solid.hpp =====
+/**
+ * @file detail/degenerate_solid.hpp
+ * @brief Collapse an 8-node brick with repeated nodes into the solid it is.
+ *
+ * Keyword decks that have only a brick card (LS-DYNA `*ELEMENT_SOLID`, Radioss
+ * `/BRICK`) write tetrahedra, pyramids and wedges as bricks whose trailing
+ * nodes repeat. `collapse_brick` recognises the patterns both solvers document,
+ * most degenerate first, and returns the cell in meshio++'s node order. The
+ * Python twin is `_collapse_solid` in `lsdyna/_lsdyna.py`.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A brick's cell after collapsing repeated nodes.
+struct CollapsedBrick {
+    const char* mType;                 ///< "tetra", "pyramid", "wedge" or "hexahedron"
+    std::vector<std::int64_t> mNodes;  ///< in meshio++ order
+};
+
+/**
+ * @brief The cell an 8-node brick with repeated nodes stands for.
+ *
+ * Patterns, checked in this order: `1 2 3 4 4 4 4 4` and `1 2 3 3 4 4 4 4`
+ * (tetra), `1 2 3 4 5 5 5 5` (pyramid), `1 2 3 3 4 5 6 6` and `1 2 3 4 5 5 6 6`
+ * (wedge), then any one side edge collapsed in both the bottom and the top face,
+ * such as Radioss's `1 2 3 1 5 6 7 5` (wedge). Anything else stays a hexahedron.
+ * @param rNodes The brick's eight node ids in file order.
+ */
+MESHIOPLUSPLUS_API CollapsedBrick collapse_brick(const std::array<std::int64_t, 8>& rNodes);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/degenerate_solid.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/projection.hpp =====
 /**
  * @file projection.hpp
@@ -8742,6 +8996,75 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/fortran_records.hpp =====
+/**
+ * @file detail/fortran_records.hpp
+ * @brief Split a Fortran sequential unformatted file into its records.
+ *
+ * A Fortran `WRITE` to a sequential unformatted unit frames each record with its
+ * byte length before and after it. The marker is 4 bytes with gfortran and
+ * Intel Fortran (8 with old g77 `-frecord-marker=8` builds) and is stored in the
+ * writing machine's byte order. `sniff_fortran_records` finds the layout from
+ * the first record -- a marker whose twin sits exactly after the payload -- and
+ * `fortran_records` returns every record's payload span, checking each twin.
+ * Abaqus `.fil` is the first user; OP2 and EnSight Fortran binary share the
+ * framing.
+ */
+
+// System includes
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The framing of a Fortran sequential unformatted file.
+struct FortranRecordLayout {
+    int mMarkerBytes = 4;     ///< 4 or 8
+    bool mBigEndian = false;  ///< the markers' byte order
+};
+
+/// One record's payload: `[mOffset, mOffset + mSize)` in the file buffer.
+struct FortranRecord {
+    std::size_t mOffset = 0;
+    std::size_t mSize = 0;
+};
+
+/**
+ * @brief The framing of the file that starts at @p pData, if its first record is
+ * a well-formed Fortran record.
+ *
+ * Tries 4-byte then 8-byte markers, each in both byte orders; a candidate is
+ * accepted when its length is positive, fits the buffer and the same value
+ * follows the payload.
+ * @param pData The start of the file.
+ * @param Size Bytes available.
+ * @return the layout, or nothing when no candidate frames the first record.
+ */
+MESHIOPLUSPLUS_API std::optional<FortranRecordLayout> sniff_fortran_records(const char* pData,
+                                                                            std::size_t Size);
+
+/**
+ * @brief Every record of a Fortran sequential unformatted file.
+ * @param pData The file buffer.
+ * @param Size Its length.
+ * @param rLayout The framing (see `sniff_fortran_records`).
+ * @param rWhat The format name used in error messages.
+ * @return the payload spans in file order.
+ * @throws ReadError when a record runs past the end or its trailing marker does
+ *         not match the leading one.
+ */
+MESHIOPLUSPLUS_API std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
+                                                              const FortranRecordLayout& rLayout,
+                                                              const std::string& rWhat);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/fortran_records.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/grid_lattice.hpp =====
 /**
  * @file detail/grid_lattice.hpp
@@ -13107,56 +13430,6 @@ MESHIOPLUSPLUS_API std::string zlib_inflate(std::string_view In, int WindowBits,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/zlib_inflate.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/exceptions.hpp =====
-/**
- * @file exceptions.hpp
- * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
- *
- * These are the only exception types the C++ format readers/writers throw on
- * I/O failure (malformed input, unsupported constructs, filesystem errors,
- * etc.). The pybind11 binding layer catches them and re-raises the
- * equivalent Python `meshioplusplus.ReadError` / `meshioplusplus.WriteError`
- * classes, so callers on the Python side see identical behaviour whether a
- * format is handled by the C++ core or by the pure-Python fallback. Because
- * the shim pattern (`__init__.py`) catches *any* exception from the C++ path
- * to decide whether to fall back to Python, throwing these (rather than
- * e.g. asserting or returning error codes) is what makes that fallback work.
- */
-
-// System includes
-#include <stdexcept>
-#include <string>
-
-namespace meshioplusplus {
-
-/**
- * @brief Thrown by C++ readers when the input file/stream cannot be parsed.
- *
- * Covers malformed content, missing required sections, and unsupported
- * constructs that a given format's C++ reader deliberately does not handle
- * (in which case the format's Python shim catches this and falls back to the
- * pure-Python reference reader). Maps 1:1 to Python's `meshioplusplus.ReadError`.
- */
-struct ReadError : std::runtime_error {
-    ReadError() : std::runtime_error("") {}
-    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
-};
-
-/**
- * @brief Thrown by C++ writers when a mesh cannot be serialized to a format.
- *
- * Covers unsupported cell types, ragged/ill-formed mesh data the writer does
- * not accept, and any other output-side constraint violation (in which case
- * the format's Python shim catches this and falls back to the pure-Python
- * reference writer). Maps 1:1 to Python's `meshioplusplus.WriteError`.
- */
-struct WriteError : std::runtime_error {
-    WriteError() : std::runtime_error("") {}
-    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
-};
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/exceptions.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/abaqus.hpp =====
 /**
  * @file abaqus.hpp
@@ -13232,6 +13505,80 @@ MESHIOPLUSPLUS_API Mesh read_abaqus(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/abaqus.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/abaqus_fil.hpp =====
+/**
+ * @file abaqus_fil.hpp
+ * @brief Abaqus results file (`.fil`) reader, binary and ASCII.
+ *
+ * The results file Abaqus writes on request (`*NODE FILE`, `*EL FILE`,
+ * `*FILE FORMAT`): the one route into Abaqus results that needs neither the ODB
+ * API nor an Abaqus install. It is a sequence of records `[length, key,
+ * attributes...]` of 8-byte words. Binary files hold them in 512-word blocks,
+ * each framed as a Fortran record (`detail/fortran_records.hpp`), in the
+ * writing machine's byte order; ASCII files (`*FILE FORMAT, ASCII`) start each
+ * record with `*` and tag each item `I` (two-digit width, then the digits), `D`
+ * (a 22-character real) or `A` (8 characters), on 80-column lines.
+ *
+ * The mesh comes from the model records: 1901 nodes (their labels kept as
+ * `point_data["abaqus:id"]`), 1900/1990 elements (labels as
+ * `cell_data["abaqus:id"]`; the type by `detail/abaqus_types.hpp`, element
+ * types with no meshio++ cell -- user elements, connectors -- are skipped with
+ * a warning), 1931/1932 node sets and 1933/1934 element sets as `Point` and
+ * `Cell` regions. A set label longer than 8 characters is an integer resolved
+ * through the 1940 cross-reference records; assembly labels keep Abaqus's
+ * `ASSEMBLY_INSTANCE_SET` spelling.
+ *
+ * Every increment (2000 ... 2001) is a step: `time_step` selects one (0 =
+ * first, negative from the end), its total time is `field_data["meshio:time"]`
+ * with `abaqus:step`, `abaqus:increment`, `abaqus:step_time` and
+ * `abaqus:procedure`. Its records become data named by the Abaqus identifier
+ * (`U`, `RF`, `S`, `E`, `SINV`, `PEEQ`, ...; `key_<n>` for keys without one):
+ *  - nodal records (after a 1911 nodal output request) -> `point_data`, NaN for
+ *    nodes without a value;
+ *  - element records follow a record-1 header (element, integration or node
+ *    point, section point, location): at integration points ->
+ *    `cell_data` of shape `(cells, points, components)`; at the centroid or for
+ *    the whole element -> `(cells, components)`; at the element nodes ->
+ *    `(cells, nodes, components)`; averaged at the nodes -> `point_data`. A
+ *    single component drops its axis. Section points above 1 (shell and beam
+ *    layers; continuum elements write 0) get `@sp<k>` appended to the name. Rebar, contact,
+ * modal-generalised, element matrix and substructure records are skipped.
+ *
+ * See doc/formats/abaqus_fil.md.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read an Abaqus results file.
+ * @param rPath filesystem path to read
+ * @param rOpts `mTimeStep` selects the increment; `mArrays`/`mPointsOnly`
+ *        narrow the data
+ * @return the mesh with the selected increment's results
+ * @throws ReadError if the file can't be read or is neither framing, a record
+ *         is truncated, or `mTimeStep` is out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief The total time of every increment, in file order.
+ */
+MESHIOPLUSPLUS_API std::vector<double> abaqus_fil_time_values(const std::string& rPath);
+
+/**
+ * @brief Metadata (counts, data names, `mTimeValues`) of an Abaqus results file.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_abaqus_fil_metadata(const std::string& rPath,
+                                                         const ReadOptions& rOpts);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/abaqus_fil.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/ansys.hpp =====
 /**
  * @file ansys.hpp
@@ -15614,6 +15961,68 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ip.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/libmesh.hpp =====
+/**
+ * @file libmesh.hpp
+ * @brief libMesh `.xda` (ASCII) / `.xdr` (XDR binary) mesh reader.
+ *
+ * libMesh's native mesh file (`XdrIO`), also what MOOSE's `--mesh-only` and
+ * checkpoint meshes use. Both encodings carry one value stream: a version
+ * string (`libMesh-0.7.0+` ... `libMesh-1.8.0`), the element and node counts,
+ * four "inline or not" flags (boundary conditions, subdomain, processor and
+ * p-level ids), per-field integer sizes (0.9.2+), subdomain names, one
+ * connectivity block per refinement level, the coordinates, then the side
+ * sets, node sets (0.9.2+) and edge and shell-face sets (1.1.0+). `.xdr` is
+ * big-endian XDR: 4-byte integers and lengths, 8-byte header integers from
+ * 1.3.0 on, strings padded to 4 bytes.
+ *
+ * The mesh:
+ *  - Only *active* elements (leaves of the refinement tree) become cells; with
+ *    refinement levels present, `libmesh:level` is kept as cell data.
+ *  - The subdomain id is the `libmesh:subdomain` cell data and a `Cell` region
+ *    per subdomain, named by the file's subdomain map (else
+ *    `subdomain_<id>`, tag = id). An inline p-level is `libmesh:p_level`.
+ *  - Side sets become `Side` regions (named by the sideset map, else
+ *    `boundary_<id>`). A side of a refined element is carried down to the
+ *    active descendants whose sides lie on it. Node sets become `Point`
+ *    regions (`nodeset_<id>` when unnamed). Edge and shell-face sets are
+ *    skipped with a warning.
+ *  - HEX20/HEX27/PRISM15/PRISM18 are reordered through the `"libmesh"` tables
+ *    of `detail/node_order.hpp`; the other shapes are already in meshio++'s
+ *    order. TET14, PRISM20/21 and PYRAMID18 keep the nodes meshio++ has a type
+ *    for (tetra10, wedge18, pyramid14), with a warning; shell and subdivision
+ *    variants read as their base shape, NODEELEM as a vertex. Infinite
+ *    elements are skipped with a warning.
+ *  - Node ids that no element uses (libMesh writes their coordinates as NaN)
+ *    are dropped; the original ids are then kept as `libmesh:id` point data.
+ *
+ * Legacy pre-`libMesh` files (`DEAL 003`, `LIBM 0`) are refused, as libMesh
+ * itself does. Compressed `.xda.gz`/`.xdr.bz2` files must be decompressed
+ * first. See doc/formats/libmesh.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read a libMesh `.xda` or `.xdr` mesh.
+ *
+ * The encoding comes from the content, not the extension: a file whose first
+ * four bytes are an XDR string length is read as XDR.
+ * @param rPath filesystem path to read
+ * @return the mesh, with subdomains, side sets and node sets as regions
+ * @throws ReadError if the file can't be read, is truncated, is a legacy
+ *         pre-`libMesh` file, names an unknown element type or node, or holds
+ *         polygon/polyhedron elements
+ */
+MESHIOPLUSPLUS_API Mesh read_libmesh(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/libmesh.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/lsdyna.hpp =====
 /**
  * @file lsdyna.hpp
@@ -17825,6 +18234,59 @@ MESHIOPLUSPLUS_API MeshMetadata read_pvtp_metadata(const std::string& rPath,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/pvtp.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/radioss.hpp =====
+/**
+ * @file radioss.hpp
+ * @brief OpenRadioss / Altair Radioss starter deck (`*_0000.rad`) reader.
+ *
+ * A Radioss starter deck ("block format"): `#RADIOSS STARTER`, `/BEGIN` (run
+ * name, input version `Invers`, units), then `/KEYWORD/option/id` blocks up to
+ * `/END`. Lines starting with `#` or `$` are comments; `#include file` inlines
+ * another file (relative to the including one, at most 8 deep). Fields are 10
+ * columns wide (integers) and 20 (reals) from format 51 on, 8 and 16 before; a
+ * line with a comma is split on commas.
+ *
+ * The mesh comes from `/NODE` and the element blocks `/BRICK`, `/PENTA6`,
+ * `/TETRA4`, `/TETRA10`, `/BRIC20`, `/SHELL`, `/SH3N`, `/QUAD`, `/TRIA`,
+ * `/BEAM`, `/TRUSS` and `/SPRING` (the part id is the keyword's last field).
+ * A `/BRICK` with repeated nodes is the tetrahedron, pyramid or wedge it
+ * stands for (`detail/degenerate_solid.hpp`); a `/SHELL` whose last two nodes
+ * coincide is a triangle; a `/BRIC20` with a zero mid-edge node keeps its
+ * corners. `/BRIC20` lists its vertical mid-edges before the top ring (the
+ * `"radioss"` table of `detail/node_order.hpp`); the other types are in
+ * meshio++'s order. Each cell's part, property and material are the
+ * `radioss:part`/`radioss:property`/`radioss:material` cell data.
+ *
+ * Regions: every `/PART` is a `Cell` region named by its title (tag = part
+ * id); `/SUBSET` a `Cell` region of the parts that name it or its children;
+ * `/GRNOD` a `Point` region and `/GRBRIC`, `/GRSHEL`, `/GRSH3N`, `/GRQUAD`,
+ * `/GRTRIA`, `/GRBEAM`, `/GRTRUS`, `/GRSPRI` `Cell` regions, from entity ids
+ * (a negative id removes one), part ids or other groups of the same keyword;
+ * `/SURF/SEG` a `Side` region (a shell segment is the shell's own face). Other
+ * group generators (`BOX`, `GENE`, ...) and every non-mesh keyword (materials,
+ * properties, loads, contacts) are skipped. Units are not applied; the input
+ * version is `field_data["radioss:version"]`. See doc/formats/radioss.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read an OpenRadioss / Radioss starter deck.
+ * @param rPath filesystem path to read
+ * @return the mesh, with parts, subsets, groups and surfaces as regions
+ * @throws ReadError if the file can't be read, is an engine deck, a field is
+ *         malformed, an element is cut short or names an undefined node, or a
+ *         node or element id is defined twice
+ */
+MESHIOPLUSPLUS_API Mesh read_radioss(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/radioss.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/stl.hpp =====
 /**
  * @file stl.hpp
@@ -20169,6 +20631,86 @@ MESHIOPLUSPLUS_API void write_xyz(const std::string& rPath, const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/xyz.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/z88.hpp =====
+/**
+ * @file z88.hpp
+ * @brief Z88 / Z88Aurora structure file (`z88i1.txt`) reader/writer, with the
+ *        `z88o2.txt` displacements and `z88o3.txt` stresses.
+ *
+ * Z88's files have fixed names, so dispatch is by basename (`is_z88_filename`),
+ * ahead of the `.txt` extension that belongs to the xyz reader.
+ *
+ * `z88i1.txt`: a header line whose first three integers are the dimension, the
+ * node and the element count (Z88OS v15 writes `ndim nnodes nelem ndof kflag`;
+ * Z88 <= V13 and Z88Aurora V1 add the material count and more flags, and put
+ * material lines after the elements, which are skipped); one line per node,
+ * `id ndof x y [z]`; two lines per element, `id type` then its node ids (the
+ * count is fixed by the type). `KFLAG = 1` means cylindrical coordinates
+ * (r, phi in degrees, z), converted to Cartesian.
+ *
+ * Element types: 1 hex8, 10 hex20, 16 tet10, 17 tet4, 7/8/20/23 quad8, 3/14/15/
+ * 18/24 tri6, 6 tri3, 2/4/5/9/13/25 two-node bars and beams. The cubic and
+ * layered types 11/12 (12-node quads), 19 (16-node plate), 21 (16-node shell)
+ * and 22 (12-node shell) keep their corners (quad, quad, hexahedron, wedge)
+ * with a warning. The Z88 type is kept as the `z88:type` cell data. Hexahedra
+ * list their faces top first (`"z88"` tables of `detail/node_order.hpp`), and
+ * tet10's last three mid-edge nodes run 2-4, 3-4, 1-4.
+ *
+ * Results next to the structure file are attached on read: `z88o2.txt` as
+ * `point_data["U"]` (2, 3 or 6 columns, the widest node's; NaN where a node has
+ * fewer), and the solid and plane-stress blocks of `z88o3.txt` as the
+ * element's mean stress: `cell_data["SIG"]` (XX YY ZZ XY YZ ZX in 3-D, XX YY XY
+ * in 2-D) and `cell_data["SIGV"]` when the file has the equivalent stress. Other
+ * element families' stress blocks (beams, plates, shells, tori) are skipped.
+ * See doc/formats/z88.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Whether @p rPath's basename is one of Z88's fixed file names
+ *        (`z88i1.txt`, `z88structure.txt`, `z88o2.txt`, `z88o3.txt`, any case).
+ */
+MESHIOPLUSPLUS_API bool is_z88_filename(const std::string& rPath);
+
+/**
+ * @brief Read a Z88 structure file, with its results when present.
+ *
+ * @param rPath the `z88i1.txt` (or `z88structure.txt`) to read; a `z88o2.txt`
+ *        or `z88o3.txt` path reads the structure file next to it
+ * @param Results whether to attach `z88o2.txt`/`z88o3.txt` from the same
+ *        directory
+ * @return the mesh
+ * @throws ReadError if the file can't be read, is truncated, a field is
+ *         malformed, an element names an undefined node or has an unknown type
+ */
+MESHIOPLUSPLUS_API Mesh read_z88(const std::string& rPath, bool Results = true);
+
+/**
+ * @brief Write `rMesh` as a Z88OS v15 structure file (`z88i1.txt`).
+ *
+ * The element type comes from the `z88:type` cell data when it is compatible
+ * with the cell, else from the cell type (hexahedron 1, hexahedron20 10,
+ * tetra 17, tetra10 16, triangle6 14, quad8 7, triangle 6 (2-D only), line 4 in
+ * 3-D and 9 in 2-D). Other cells, regions and data arrays are dropped with a
+ * warning and a provenance note. The dimension is 2 when every z coordinate is
+ * zero and no cell is 3-D.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @param Stubs also write empty `z88i2.txt` (no constraints) and `z88i5.txt`
+ *        (no surface loads) next to it, so the deck is complete
+ * @throws WriteError if nothing is left to write
+ */
+MESHIOPLUSPLUS_API void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs = false);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/z88.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/kratos_bridge.hpp =====
 /**
  * @file kratos_bridge.hpp
@@ -43746,6 +44288,174 @@ void MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION)() {}
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/abi_version_check.cpp =====
+// ===== begin src/cpp/src/detail/abaqus_types.cpp =====
+#include <cctype>
+#include <cstddef>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+// (abaqus type, meshio type) in source order; the meshio->abaqus inverse keeps
+// the last entry per meshio type (matching the Python dict comprehension).
+const std::vector<std::pair<std::string, std::string>>& abaqus_type_table() {
+    static const std::vector<std::pair<std::string, std::string>> t = {
+
+        {"T2D2", "line"},
+        {"T2D2H", "line"},
+        {"T2D3", "line3"},
+        {"T2D3H", "line3"},
+        {"T3D2", "line"},
+        {"T3D2H", "line"},
+        {"T3D3", "line3"},
+        {"T3D3H", "line3"},
+        {"B21", "line"},
+        {"B21H", "line"},
+        {"B22", "line3"},
+        {"B22H", "line3"},
+        {"B31", "line"},
+        {"B31H", "line"},
+        {"B32", "line3"},
+        {"B32H", "line3"},
+        {"B33", "line3"},
+        {"B33H", "line3"},
+        {"CPS4", "quad"},
+        {"CPS4R", "quad"},
+        {"S4", "quad"},
+        {"S4R", "quad"},
+        {"S4RS", "quad"},
+        {"S4RSW", "quad"},
+        {"S4R5", "quad"},
+        {"S8R", "quad8"},
+        {"S8R5", "quad8"},
+        {"S9R5", "quad9"},
+        {"CPS3", "triangle"},
+        {"STRI3", "triangle"},
+        {"S3", "triangle"},
+        {"S3R", "triangle"},
+        {"S3RS", "triangle"},
+        {"R3D3", "triangle"},
+        {"STRI65", "triangle6"},
+        {"C3D8", "hexahedron"},
+        {"C3D8H", "hexahedron"},
+        {"C3D8I", "hexahedron"},
+        {"C3D8IH", "hexahedron"},
+        {"C3D8R", "hexahedron"},
+        {"C3D8RH", "hexahedron"},
+        {"C3D20", "hexahedron20"},
+        {"C3D20H", "hexahedron20"},
+        {"C3D20R", "hexahedron20"},
+        {"C3D20RH", "hexahedron20"},
+        // C3D4H before C3D4: the writer's inverse keeps the last name per type.
+        {"C3D4H", "tetra"},
+        {"C3D4", "tetra"},
+        {"C3D10", "tetra10"},
+        {"C3D10H", "tetra10"},
+        {"C3D10I", "tetra10"},
+        {"C3D10M", "tetra10"},
+        {"C3D10MH", "tetra10"},
+        {"C3D6", "wedge"},
+        {"C3D15", "wedge15"},
+        {"CAX4P", "quad"},
+        {"CPE6", "triangle6"},
+    };
+    return t;
+}
+
+namespace {
+
+bool abq_starts_with(std::string_view Name, std::string_view Prefix) {
+    return Name.substr(0, Prefix.size()) == Prefix;
+}
+
+// "S" followed by a digit: S3, S4R, S8R5, S9R5 (not SAX1, SC8R, SPRINGA).
+bool abq_is_shell(std::string_view Name) {
+    return (Name.size() > 1 && Name[0] == 'S' &&
+            std::isdigit(static_cast<unsigned char>(Name[1]))) ||
+           abq_starts_with(Name, "STRI");
+}
+
+}  // namespace
+
+std::string abaqus_cell_type(std::string_view Name, std::size_t NodeCount) {
+    static const std::unordered_map<std::string, std::string> table = [] {
+        std::unordered_map<std::string, std::string> m;
+        for (const auto& [abq, type] : abaqus_type_table())
+            m.emplace(abq, type);
+        return m;
+    }();
+    const auto it = table.find(std::string(Name));
+    if (it != table.end() &&
+        cell_type_num_nodes(cell_type_from_name(it->second)) == static_cast<int>(NodeCount))
+        return it->second;
+
+    static const char* const solid[] = {"C3D", "DC3D", "AC3D", "COH3D", "SC", "CCL"};
+    static const char* const planar[] = {"CPE",   "CPS",   "CAX", "CGAX", "DC2D",  "DCAX",
+                                         "COH2D", "COHAX", "M3D", "R3D",  "SFM3D", "CPEG"};
+    static const char* const line[] = {"T2D",  "T3D",  "B2",   "B3",  "PIPE", "R2D",
+                                       "RB2D", "RB3D", "DC1D", "SAX", "FRAME"};
+    auto any_prefix = [&](const auto& rList) {
+        for (const char* p : rList)
+            if (abq_starts_with(Name, p))
+                return true;
+        return false;
+    };
+    if (any_prefix(solid)) {
+        switch (NodeCount) {
+            case 4:
+                return "tetra";
+            case 5:
+                return "pyramid";
+            case 6:
+                return "wedge";
+            case 8:
+                return "hexahedron";
+            case 10:
+                return "tetra10";
+            case 13:
+                return "pyramid13";
+            case 15:
+                return "wedge15";
+            case 20:
+                return "hexahedron20";
+            default:
+                return {};
+        }
+    }
+    if (any_prefix(planar) || abq_is_shell(Name)) {
+        switch (NodeCount) {
+            case 3:
+                return "triangle";
+            case 4:
+                return "quad";
+            case 6:
+                return "triangle6";
+            case 8:
+                return "quad8";
+            case 9:
+                return "quad9";
+            default:
+                return {};
+        }
+    }
+    if (any_prefix(line)) {
+        if (NodeCount == 2)
+            return "line";
+        if (NodeCount == 3)
+            return "line3";
+    }
+    return {};
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/abaqus_types.cpp =====
 // ===== begin src/cpp/src/detail/ansys_model.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -45182,6 +45892,42 @@ void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/decimate_common.cpp =====
+// ===== begin src/cpp/src/detail/degenerate_solid.cpp =====
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+CollapsedBrick collapse_brick(const std::array<std::int64_t, 8>& rNodes) {
+    const std::array<std::int64_t, 8>& n = rNodes;
+    if (n[3] == n[4] && n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
+        return {"tetra", {n[0], n[1], n[2], n[3]}};
+    if (n[2] == n[3] && n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
+        return {"tetra", {n[0], n[1], n[2], n[4]}};
+    if (n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
+        return {"pyramid", {n[0], n[1], n[2], n[3], n[4]}};
+    if (n[2] == n[3] && n[6] == n[7])
+        return {"wedge", {n[0], n[1], n[2], n[4], n[5], n[6]}};
+    if (n[4] == n[5] && n[6] == n[7])
+        return {"wedge", {n[0], n[4], n[1], n[3], n[6], n[2]}};
+    // One side edge collapsed in both the bottom and the top face (Radioss
+    // writes `1 2 3 1 5 6 7 5`): the wedge keeps the faces' cyclic order.
+    for (std::size_t i = 0; i < 4; ++i) {
+        const std::size_t j = (i + 1) % 4, k = (i + 2) % 4, l = (i + 3) % 4;
+        if (n[i] == n[j] && n[i + 4] == n[j + 4] && n[j] != n[k] && n[k] != n[l] && n[l] != n[j])
+            return {"wedge", {n[j], n[k], n[l], n[j + 4], n[k + 4], n[l + 4]}};
+    }
+    return {"hexahedron", std::vector<std::int64_t>(n.begin(), n.end())};
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/degenerate_solid.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -45756,6 +46502,75 @@ bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellT
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/facet_index.cpp =====
+// ===== begin src/cpp/src/detail/fortran_records.cpp =====
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// The marker at `Offset`, or -1 when it does not fit.
+std::int64_t fortran_marker(const char* pData, std::size_t Size, std::size_t Offset,
+                            const FortranRecordLayout& rLayout) {
+    const std::size_t w = static_cast<std::size_t>(rLayout.mMarkerBytes);
+    if (Offset > Size || Size - Offset < w)
+        return -1;
+    ByteCursor c(pData + Offset, w, rLayout.mBigEndian, "Fortran records");
+    const std::int64_t v = w == 4 ? static_cast<std::int64_t>(c.I32()) : c.I64();
+    return v;
+}
+
+}  // namespace
+
+std::optional<FortranRecordLayout> sniff_fortran_records(const char* pData, std::size_t Size) {
+    for (int bytes : {4, 8}) {
+        for (bool big : {false, true}) {
+            const FortranRecordLayout layout{bytes, big};
+            const std::int64_t n = fortran_marker(pData, Size, 0, layout);
+            if (n <= 0)
+                continue;
+            const std::size_t w = static_cast<std::size_t>(bytes);
+            const std::size_t len = static_cast<std::size_t>(n);
+            if (len > Size - w)
+                continue;
+            if (fortran_marker(pData, Size, w + len, layout) == n)
+                return layout;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
+                                           const FortranRecordLayout& rLayout,
+                                           const std::string& rWhat) {
+    std::vector<FortranRecord> out;
+    const std::size_t w = static_cast<std::size_t>(rLayout.mMarkerBytes);
+    std::size_t pos = 0;
+    while (pos < Size) {
+        const std::int64_t n = fortran_marker(pData, Size, pos, rLayout);
+        if (n < 0 || static_cast<std::uint64_t>(n) > Size - pos - w)
+            throw ReadError(rWhat + ": Fortran record at offset " + std::to_string(pos) +
+                            " runs past the end of the file");
+        const std::size_t len = static_cast<std::size_t>(n);
+        if (fortran_marker(pData, Size, pos + w + len, rLayout) != n)
+            throw ReadError(rWhat + ": Fortran record at offset " + std::to_string(pos) +
+                            " has mismatched length markers");
+        out.push_back({pos + w, len});
+        pos += 2 * w + len;
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/fortran_records.cpp =====
 // ===== begin src/cpp/src/detail/geometry.cpp =====
 
 namespace meshioplusplus {
@@ -48010,6 +48825,35 @@ const std::vector<NodeOrderSource>& node_order_sources() {
         {"patran", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
                                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
         {"patran", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        // libMesh `.xda`/`.xdr`: HEX20/HEX27 list the vertical mid-edges before
+        // the top ring (and HEX27 its face centres bottom, y-, x+, y+, x-, top),
+        // PRISM15/PRISM18 likewise; taken from libMesh's own VTK connectivity
+        // (cell_hex20.C, cell_hex27.C, cell_prism15.C, cell_prism18.C). Every
+        // other libMesh type is in meshio++'s order.
+        {"libmesh", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"libmesh", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                  9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                                  14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        {"libmesh", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"libmesh",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
+        // OpenRadioss `/BRIC20`: the bottom ring, the vertical mid-edges, then
+        // the top ring (gmsh's `getVertexRAD`, confirmed by OpenRadioss users in
+        // its discussion #2809). `/TETRA10` is in meshio++'s order.
+        {"radioss", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        // Z88 `z88i1.txt`: hexahedra list the face 1-2-3-4 the Z88 manual draws
+        // on top first (so read as-is their Jacobian is negative: checked on
+        // every hex of the Z88OS examples), and tet10's last three mid-edge
+        // nodes run 2-4, 3-4, 1-4 (checked against the mid-edge positions of
+        // Z88OS example b11). Every other Z88 type is in meshio++'s order.
+        {"z88", "hexahedron", D::ToMeshio, {4, 5, 6, 7, 0, 1, 2, 3}},
+        {"z88", "hexahedron20", D::ToMeshio, {4,  5,  6, 7, 0,  1,  2,  3,  12, 13,
+                                              14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
+        {"z88", "tetra10", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 9, 7, 8}},
         // Elmer mesh directory: the vertical mid-edge nodes of the 820/827
         // bricks come before the top ring, and the 827 mid-height face centres
         // run y-, x+, y+, x- (ElmerSolver's elements.def reference coordinates;
@@ -52442,74 +53286,10 @@ namespace meshioplusplus {
 
 namespace {
 
-// (abaqus type, meshio type) in source order; the meshio->abaqus inverse keeps
-// the last entry per meshio type (matching the Python dict comprehension).
-const std::vector<std::pair<std::string, std::string>>& type_table() {
-    static const std::vector<std::pair<std::string, std::string>> t = {
-        {"T2D2", "line"},
-        {"T2D2H", "line"},
-        {"T2D3", "line3"},
-        {"T2D3H", "line3"},
-        {"T3D2", "line"},
-        {"T3D2H", "line"},
-        {"T3D3", "line3"},
-        {"T3D3H", "line3"},
-        {"B21", "line"},
-        {"B21H", "line"},
-        {"B22", "line3"},
-        {"B22H", "line3"},
-        {"B31", "line"},
-        {"B31H", "line"},
-        {"B32", "line3"},
-        {"B32H", "line3"},
-        {"B33", "line3"},
-        {"B33H", "line3"},
-        {"CPS4", "quad"},
-        {"CPS4R", "quad"},
-        {"S4", "quad"},
-        {"S4R", "quad"},
-        {"S4RS", "quad"},
-        {"S4RSW", "quad"},
-        {"S4R5", "quad"},
-        {"S8R", "quad8"},
-        {"S8R5", "quad8"},
-        {"S9R5", "quad9"},
-        {"CPS3", "triangle"},
-        {"STRI3", "triangle"},
-        {"S3", "triangle"},
-        {"S3R", "triangle"},
-        {"S3RS", "triangle"},
-        {"R3D3", "triangle"},
-        {"STRI65", "triangle6"},
-        {"C3D8", "hexahedron"},
-        {"C3D8H", "hexahedron"},
-        {"C3D8I", "hexahedron"},
-        {"C3D8IH", "hexahedron"},
-        {"C3D8R", "hexahedron"},
-        {"C3D8RH", "hexahedron"},
-        {"C3D20", "hexahedron20"},
-        {"C3D20H", "hexahedron20"},
-        {"C3D20R", "hexahedron20"},
-        {"C3D20RH", "hexahedron20"},
-        {"C3D4", "tetra"},
-        {"C3D4H", "tetra4"},
-        {"C3D10", "tetra10"},
-        {"C3D10H", "tetra10"},
-        {"C3D10I", "tetra10"},
-        {"C3D10M", "tetra10"},
-        {"C3D10MH", "tetra10"},
-        {"C3D6", "wedge"},
-        {"C3D15", "wedge15"},
-        {"CAX4P", "quad"},
-        {"CPE6", "triangle6"},
-    };
-    return t;
-}
-
 const std::unordered_map<std::string, std::string>& abaqus_to_meshio() {
     static const std::unordered_map<std::string, std::string> m = [] {
         std::unordered_map<std::string, std::string> r;
-        for (const auto& kv : type_table())
+        for (const auto& kv : detail::abaqus_type_table())
             r[kv.first] = kv.second;
         return r;
     }();
@@ -52519,7 +53299,7 @@ const std::unordered_map<std::string, std::string>& abaqus_to_meshio() {
 const std::unordered_map<std::string, std::string>& meshio_to_abaqus() {
     static const std::unordered_map<std::string, std::string> m = [] {
         std::unordered_map<std::string, std::string> r;
-        for (const auto& kv : type_table())
+        for (const auto& kv : detail::abaqus_type_table())
             r[kv.second] = kv.first;  // last wins
         return r;
     }();
@@ -53092,6 +53872,778 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/abaqus.cpp =====
+// ===== begin src/cpp/src/formats/abaqus_fil.cpp =====
+#include <algorithm>
+#include <bit>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <ios>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// --- words and records ---------------------------------------------------------------
+
+// One 8-byte word. ASCII items carry their tag ('I', 'D', 'A'); binary words
+// are raw ('B') and are read as whatever the record layout says they are.
+struct FilWord {
+    char mTag;
+    std::uint64_t mRaw;  // 'I': the int64; 'D': the double's bits; 'A'/'B': the bytes
+};
+
+struct FilRecord {
+    std::int64_t mKey = 0;
+    std::vector<FilWord> mWords;  // the attributes (after length and key)
+};
+
+struct FilData {
+    std::vector<FilRecord> mRecords;
+    bool mSwap = false;  // binary words in the other byte order
+};
+
+std::uint64_t fil_bytes_to_raw(const char* p) {
+    std::uint64_t v;
+    std::memcpy(&v, p, 8);
+    return v;
+}
+
+std::int64_t fil_word_int(const FilWord& rWord, bool Swap) {
+    switch (rWord.mTag) {
+        case 'I':
+            return static_cast<std::int64_t>(rWord.mRaw);
+        case 'D':
+            return static_cast<std::int64_t>(std::bit_cast<double>(rWord.mRaw));
+        case 'A': {
+            char s[9] = {};
+            std::memcpy(s, &rWord.mRaw, 8);
+            return std::atoll(s);
+        }
+        default: {
+            // An 8-byte integer, or a 4-byte one in the word's first bytes
+            // (Fortran EQUIVALENCE of an INTEGER array onto the REAL*8 one).
+            const std::uint64_t v = Swap ? detail::bswap64(rWord.mRaw) : rWord.mRaw;
+            const auto wide = static_cast<std::int64_t>(v);
+            if (wide >= -2147483648LL && wide <= 2147483647LL)
+                return wide;
+            std::uint32_t lo;
+            std::memcpy(&lo, &rWord.mRaw, 4);
+            if (Swap)
+                lo = detail::bswap32(lo);
+            return static_cast<std::int32_t>(lo);
+        }
+    }
+}
+
+double fil_word_real(const FilWord& rWord, bool Swap) {
+    switch (rWord.mTag) {
+        case 'I':
+            return static_cast<double>(static_cast<std::int64_t>(rWord.mRaw));
+        case 'D':
+            return std::bit_cast<double>(rWord.mRaw);
+        case 'A':
+            return std::numeric_limits<double>::quiet_NaN();
+        default:
+            return std::bit_cast<double>(Swap ? detail::bswap64(rWord.mRaw) : rWord.mRaw);
+    }
+}
+
+std::string fil_word_text(const FilWord& rWord, bool Swap) {
+    if (rWord.mTag == 'I' || rWord.mTag == 'D')
+        return std::to_string(fil_word_int(rWord, Swap));
+    char s[8];
+    std::memcpy(s, &rWord.mRaw, 8);
+    return std::string(s, 8);
+}
+
+std::string fil_trim(std::string s) {
+    const std::size_t b = s.find_first_not_of(" \t\0", 0, 3);
+    if (b == std::string::npos)
+        return {};
+    const std::size_t e = s.find_last_not_of(" \t\0", std::string::npos, 3);
+    return s.substr(b, e - b + 1);
+}
+
+// Binary: the 512-word blocks' payloads, joined, cut into records.
+void fil_parse_binary(const std::string& rText, FilData& rOut) {
+    std::string words;
+    if (const auto layout = detail::sniff_fortran_records(rText.data(), rText.size())) {
+        for (const auto& r :
+             detail::fortran_records(rText.data(), rText.size(), *layout, "Abaqus .fil"))
+            words.append(rText, r.mOffset, r.mSize);
+        rOut.mSwap = layout->mBigEndian != (std::endian::native == std::endian::big);
+    } else {
+        // Blocks written without record markers.
+        words = rText;
+    }
+    if (words.size() % 8 != 0)
+        throw ReadError("Abaqus .fil: binary payload is not a whole number of 8-byte words");
+    const std::size_t n = words.size() / 8;
+    std::size_t w = 0;
+    while (w < n) {
+        const FilWord len_word{'B', fil_bytes_to_raw(words.data() + 8 * w)};
+        const std::int64_t len = fil_word_int(len_word, rOut.mSwap);
+        if (len == 0) {
+            // Zero padding after the last record of a block.
+            ++w;
+            continue;
+        }
+        if (len < 2 || static_cast<std::uint64_t>(len) > n - w)
+            throw ReadError("Abaqus .fil: record at word " + std::to_string(w) +
+                            " has invalid length " + std::to_string(len));
+        FilRecord rec;
+        rec.mKey =
+            fil_word_int(FilWord{'B', fil_bytes_to_raw(words.data() + 8 * (w + 1))}, rOut.mSwap);
+        for (std::int64_t k = 2; k < len; ++k)
+            rec.mWords.push_back(
+                {'B', fil_bytes_to_raw(words.data() + 8 * (w + static_cast<std::size_t>(k)))});
+        rOut.mRecords.push_back(std::move(rec));
+        w += static_cast<std::size_t>(len);
+    }
+}
+
+// ASCII: line breaks dropped, then item by item from each `*`.
+void fil_parse_ascii(const std::string& rText, FilData& rOut) {
+    std::string s;
+    s.reserve(rText.size());
+    for (char c : rText)
+        if (c != '\n' && c != '\r')
+            s += c;
+    std::size_t pos = 0;
+    auto fail = [&](const std::string& rWhat) {
+        throw ReadError("Abaqus .fil: " + rWhat + " (character " + std::to_string(pos) + ")");
+    };
+    auto item = [&]() -> FilWord {
+        if (pos >= s.size())
+            fail("the file ends inside a record");
+        const char tag = s[pos];
+        if (tag == 'I') {
+            if (pos + 3 > s.size())
+                fail("truncated integer item");
+            const std::string width = s.substr(pos + 1, 2);
+            const std::size_t first = width.find_first_not_of(' ');
+            if (first == std::string::npos)
+                fail("bad integer width");
+            const long n = std::atol(width.c_str() + first);
+            if (n < 1 || pos + 3 + static_cast<std::size_t>(n) > s.size())
+                fail("bad integer width");
+            const std::string digits = s.substr(pos + 3, static_cast<std::size_t>(n));
+            for (std::size_t k = 0; k < digits.size(); ++k)
+                if (!(std::isdigit(static_cast<unsigned char>(digits[k])) ||
+                      (k == 0 && (digits[k] == '-' || digits[k] == ' '))))
+                    fail("bad integer '" + digits + "'");
+            pos += 3 + static_cast<std::size_t>(n);
+            return {'I', static_cast<std::uint64_t>(std::atoll(digits.c_str()))};
+        }
+        if (tag == 'D' || tag == 'E') {
+            if (pos + 23 > s.size())
+                fail("truncated real item");
+            std::string num = s.substr(pos + 1, 22);
+            for (char& c : num)
+                if (c == 'D' || c == 'd')
+                    c = 'E';
+            // D22.15 with a three-digit exponent drops the letter: 1.0+100.
+            if (num.find('E') == std::string::npos) {
+                const std::size_t sign = num.find_last_of("+-");
+                if (sign != std::string::npos && sign > 2)
+                    num.insert(sign, 1, 'E');
+            }
+            const char* end = nullptr;
+            const double v = detail::parse_double(num.c_str(), end);
+            if (end == num.c_str())
+                fail("bad real '" + num + "'");
+            pos += 23;
+            return {'D', std::bit_cast<std::uint64_t>(v)};
+        }
+        if (tag == 'A') {
+            if (pos + 9 > s.size())
+                fail("truncated text item");
+            char buf[8];
+            std::memcpy(buf, s.data() + pos + 1, 8);
+            pos += 9;
+            return {'A', fil_bytes_to_raw(buf)};
+        }
+        fail(std::string("unknown item tag '") + tag + "'");
+        return FilWord{'I', 0};
+    };
+    while (true) {
+        pos = s.find('*', pos);
+        if (pos == std::string::npos)
+            break;
+        ++pos;
+        const FilWord len_word = item();
+        if (len_word.mTag != 'I')
+            fail("a record starts with its length");
+        const auto len = static_cast<std::int64_t>(len_word.mRaw);
+        if (len < 2)
+            fail("record length " + std::to_string(len));
+        FilRecord rec;
+        rec.mKey = fil_word_int(item(), false);
+        for (std::int64_t k = 2; k < len; ++k)
+            rec.mWords.push_back(item());
+        rOut.mRecords.push_back(std::move(rec));
+    }
+}
+
+FilData fil_parse(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Abaqus .fil: cannot open " + rPath);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    FilData out;
+    const std::size_t first = text.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos && text[first] == '*')
+        fil_parse_ascii(text, out);
+    else
+        fil_parse_binary(text, out);
+    return out;
+}
+
+// --- names ------------------------------------------------------------------------
+
+const char* fil_nodal_name(std::int64_t Key) {
+    static const std::unordered_map<std::int64_t, const char*> m = {
+        {101, "U"},     {102, "V"},    {103, "A"},     {104, "RF"},   {105, "EPOT"}, {106, "CF"},
+        {107, "COORD"}, {108, "POR"},  {109, "RVF"},   {110, "RVT"},  {113, "TU"},   {114, "TV"},
+        {115, "TA"},    {119, "RCHG"}, {120, "CECHG"}, {136, "PCAV"}, {137, "CVOL"}, {145, "VF"},
+        {146, "TF"},    {151, "PABS"}, {201, "NT"},    {204, "RFL"},  {206, "CFL"},  {214, "RFLE"},
+        {221, "NNC"},   {320, "CFF"},
+    };
+    const auto it = m.find(Key);
+    return it == m.end() ? nullptr : it->second;
+}
+
+const char* fil_element_name(std::int64_t Key) {
+    static const std::unordered_map<std::int64_t, const char*> m = {
+        {2, "TEMP"},     {3, "LOADS"},  {4, "FLUXS"},  {5, "SDV"},     {6, "VOIDR"},  {7, "FOUND"},
+        {8, "COORD"},    {9, "FV"},     {10, "NFLUX"}, {11, "S"},      {12, "SINV"},  {13, "SF"},
+        {14, "ENER"},    {15, "NFORC"}, {17, "JK"},    {18, "POR"},    {19, "ELEN"},  {21, "E"},
+        {22, "PE"},      {23, "CE"},    {24, "IE"},    {25, "EE"},     {26, "CRACK"}, {27, "STH"},
+        {28, "HFL"},     {29, "SE"},    {30, "DG"},    {31, "CONF"},   {32, "SJP"},   {35, "SAT"},
+        {36, "SS"},      {38, "CONC"},  {39, "MFL"},   {42, "SPE"},    {45, "PEQC"},  {47, "SEPE"},
+        {48, "TSHR"},    {50, "EPG"},   {51, "EFLX"},  {61, "STATUS"}, {73, "PEEQ"},  {74, "PRESS"},
+        {75, "MISES"},   {76, "IVOL"},  {77, "SVOL"},  {78, "EVOL"},   {83, "SSAVG"}, {86, "ALPHA"},
+        {87, "UVARM"},   {88, "THE"},   {89, "LE"},    {90, "NE"},     {91, "ER"},    {401, "SP"},
+        {402, "ALPHAP"}, {403, "EP"},   {404, "NEP"},  {405, "LEP"},   {406, "ERP"},  {407, "DGP"},
+        {408, "EEP"},    {409, "IEP"},  {410, "THEP"}, {411, "PEP"},   {412, "CEP"},
+    };
+    const auto it = m.find(Key);
+    return it == m.end() ? nullptr : it->second;
+}
+
+// Symmetric-tensor element keys: S, E, PE, CE, IE, EE, SS, ALPHA, THE, LE, NE,
+// ER. Abaqus writes a solid's six components 11 22 33 12 13 23; meshio++'s
+// order is xx yy zz xy yz zx.
+bool fil_is_tensor_key(std::int64_t Key) {
+    switch (Key) {
+        case 11:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+        case 25:
+        case 36:
+        case 86:
+        case 88:
+        case 89:
+        case 90:
+        case 91:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Keys that are neither nodal nor element results of a step.
+bool fil_is_skipped_key(std::int64_t Key) {
+    return (Key >= 301 && Key <= 310) || Key >= 1000;
+}
+
+// --- the model --------------------------------------------------------------------
+
+struct FilIncrement {
+    std::size_t mBegin = 0, mEnd = 0;  // record range after the 2000 record
+    double mTotalTime = 0.0, mStepTime = 0.0;
+    std::int64_t mProcedure = 0, mStep = 0, mIncrement = 0;
+};
+
+std::vector<FilIncrement> fil_increments(const FilData& rData) {
+    std::vector<FilIncrement> out;
+    for (std::size_t r = 0; r < rData.mRecords.size(); ++r) {
+        const FilRecord& rec = rData.mRecords[r];
+        if (rec.mKey == 2000) {
+            FilIncrement inc;
+            inc.mBegin = r + 1;
+            const auto& w = rec.mWords;
+            const bool s = rData.mSwap;
+            if (w.size() > 0)
+                inc.mTotalTime = fil_word_real(w[0], s);
+            if (w.size() > 1)
+                inc.mStepTime = fil_word_real(w[1], s);
+            if (w.size() > 4)
+                inc.mProcedure = fil_word_int(w[4], s);
+            if (w.size() > 5)
+                inc.mStep = fil_word_int(w[5], s);
+            if (w.size() > 6)
+                inc.mIncrement = fil_word_int(w[6], s);
+            if (!out.empty() && out.back().mEnd == 0)
+                out.back().mEnd = r;
+            out.push_back(inc);
+        } else if (rec.mKey == 2001 && !out.empty() && out.back().mEnd == 0) {
+            out.back().mEnd = r;
+        }
+    }
+    if (!out.empty() && out.back().mEnd == 0)
+        out.back().mEnd = rData.mRecords.size();
+    return out;
+}
+
+NDArray fil_scalar(DType Type, double Value) {
+    NDArray a(Type, {});
+    if (Type == DType::Int64)
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(Value);
+    else
+        a.As<double>()[0] = Value;
+    return a;
+}
+
+NDArray fil_ids(const std::vector<std::int64_t>& rIds) {
+    NDArray a(DType::Int64, {rIds.size()});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+struct FilSet {
+    std::string mName;
+    bool mNodes;
+    std::vector<std::int64_t> mLabels;
+};
+
+// One element result: the values of every (element, point) the step lists.
+struct FilElementField {
+    std::string mName;
+    int mLocation;
+    std::unordered_map<std::int64_t, std::map<std::int64_t, std::vector<double>>> mValues;
+};
+
+}  // namespace
+
+Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
+    const FilData data = fil_parse(rPath);
+    const bool sw = data.mSwap;
+
+    // --- model records --------------------------------------------------------------
+    std::vector<std::int64_t> node_labels;
+    std::vector<double> coords;
+    struct FilElement {
+        std::int64_t mLabel;
+        std::string mType;
+        std::vector<std::int64_t> mNodes;
+    };
+    std::vector<FilElement> elements;
+    std::vector<FilSet> sets;
+    std::unordered_map<std::int64_t, std::string> labels;  // 1940
+    for (const FilRecord& rec : data.mRecords) {
+        const auto& w = rec.mWords;
+        switch (rec.mKey) {
+            case 1901: {
+                if (w.empty())
+                    break;
+                node_labels.push_back(fil_word_int(w[0], sw));
+                for (std::size_t d = 0; d < 3; ++d)
+                    coords.push_back(d + 1 < w.size() ? fil_word_real(w[d + 1], sw) : 0.0);
+                break;
+            }
+            case 1900: {
+                if (w.size() < 2)
+                    break;
+                FilElement el{fil_word_int(w[0], sw), fil_trim(fil_word_text(w[1], sw)), {}};
+                for (char& c : el.mType)
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                for (std::size_t k = 2; k < w.size(); ++k)
+                    el.mNodes.push_back(fil_word_int(w[k], sw));
+                elements.push_back(std::move(el));
+                break;
+            }
+            case 1990:
+                if (!elements.empty())
+                    for (const FilWord& x : w)
+                        elements.back().mNodes.push_back(fil_word_int(x, sw));
+                break;
+            case 1931:
+            case 1933: {
+                if (w.empty())
+                    break;
+                FilSet set{fil_trim(fil_word_text(w[0], sw)), rec.mKey == 1931, {}};
+                for (std::size_t k = 1; k < w.size(); ++k)
+                    set.mLabels.push_back(fil_word_int(w[k], sw));
+                sets.push_back(std::move(set));
+                break;
+            }
+            case 1932:
+            case 1934:
+                if (!sets.empty())
+                    for (const FilWord& x : w)
+                        sets.back().mLabels.push_back(fil_word_int(x, sw));
+                break;
+            case 1940: {
+                if (w.empty())
+                    break;
+                std::string label;
+                for (std::size_t k = 1; k < w.size(); ++k)
+                    label += fil_word_text(w[k], sw);
+                labels[fil_word_int(w[0], sw)] = fil_trim(label);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    Mesh mesh;
+    std::unordered_map<std::int64_t, std::size_t> node_index;
+    for (std::size_t p = 0; p < node_labels.size(); ++p)
+        if (!node_index.emplace(node_labels[p], p).second)
+            throw ReadError("Abaqus .fil: node " + std::to_string(node_labels[p]) +
+                            " is defined twice");
+    NDArray points(DType::Float64, {node_labels.size(), 3});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+    mesh.AddPointData("abaqus:id", fil_ids(node_labels));
+
+    // Cells: one block per meshio++ type, in order of first appearance.
+    std::vector<std::string> block_types;
+    std::map<std::string, std::vector<std::size_t>> by_type;
+    std::map<std::string, std::size_t> skipped_types;
+    std::vector<std::string> cell_type_of(elements.size());
+    for (std::size_t e = 0; e < elements.size(); ++e) {
+        const std::string t =
+            detail::abaqus_cell_type(elements[e].mType, elements[e].mNodes.size());
+        if (t.empty()) {
+            ++skipped_types[elements[e].mType];
+            continue;
+        }
+        auto [it, fresh] = by_type.emplace(t, std::vector<std::size_t>{});
+        if (fresh)
+            block_types.push_back(t);
+        it->second.push_back(e);
+        cell_type_of[e] = t;
+    }
+    for (const auto& [t, n] : skipped_types)
+        log::warn("Abaqus .fil: skipping {} element(s) of type {} (no meshio++ equivalent)", n, t);
+    std::unordered_map<std::int64_t, std::size_t> element_index;  // label -> global cell
+    std::vector<std::size_t> block_start{0};
+    std::vector<std::vector<std::int64_t>> cell_nodes;  // global cell -> node labels
+    std::vector<int> cell_dim;
+    std::vector<NDArray> id_blocks;
+    for (const std::string& t : block_types) {
+        const std::vector<std::size_t>& members = by_type[t];
+        const std::size_t k = static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(t)));
+        NDArray conn(DType::Int64, {members.size(), k});
+        std::vector<std::int64_t> ids;
+        for (std::size_t r = 0; r < members.size(); ++r) {
+            const FilElement& el = elements[members[r]];
+            for (std::size_t j = 0; j < k; ++j) {
+                const auto it = node_index.find(el.mNodes[j]);
+                if (it == node_index.end())
+                    throw ReadError("Abaqus .fil: element " + std::to_string(el.mLabel) +
+                                    " names undefined node " + std::to_string(el.mNodes[j]));
+                conn.As<std::int64_t>()[r * k + j] = static_cast<std::int64_t>(it->second);
+            }
+            if (!element_index.emplace(el.mLabel, cell_nodes.size()).second)
+                throw ReadError("Abaqus .fil: element " + std::to_string(el.mLabel) +
+                                " is defined twice");
+            cell_nodes.push_back(el.mNodes);
+            cell_dim.push_back(cell_type_dimension(cell_type_from_name(t)));
+            ids.push_back(el.mLabel);
+        }
+        mesh.AddCellBlock(t, std::move(conn));
+        id_blocks.push_back(fil_ids(ids));
+        block_start.push_back(cell_nodes.size());
+    }
+    if (!id_blocks.empty())
+        mesh.AddCellData("abaqus:id", std::move(id_blocks));
+
+    // Sets -> regions; a digits-only name is a 1940 cross-reference.
+    std::size_t missing = 0;
+    for (const FilSet& set : sets) {
+        std::string name = set.mName;
+        if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos) {
+            const auto it = labels.find(std::stoll(name));
+            if (it != labels.end())
+                name = it->second;
+        }
+        std::vector<std::int64_t> entries;
+        int dim = -1;
+        for (std::int64_t label : set.mLabels) {
+            if (set.mNodes) {
+                const auto it = node_index.find(label);
+                if (it == node_index.end())
+                    ++missing;
+                else
+                    entries.push_back(static_cast<std::int64_t>(it->second));
+            } else {
+                const auto it = element_index.find(label);
+                if (it == element_index.end()) {
+                    ++missing;
+                } else {
+                    entries.push_back(static_cast<std::int64_t>(it->second));
+                    dim = std::max(dim, cell_dim[it->second]);
+                }
+            }
+        }
+        mesh.AddRegion(Region(name, set.mNodes ? RegionKind::Point : RegionKind::Cell,
+                              set.mNodes ? -1 : dim, -1, fil_ids(entries)));
+    }
+    if (missing)
+        log::warn("Abaqus .fil: sets name {} node(s) or element(s) that are not in the mesh",
+                  missing);
+
+    // --- the selected increment ----------------------------------------------------
+    const std::vector<FilIncrement> increments = fil_increments(data);
+    if (increments.empty()) {
+        rOpts.ResolveTimeStep(0);
+        return mesh;
+    }
+    const FilIncrement& inc = increments[rOpts.ResolveTimeStep(increments.size())];
+    mesh.AddFieldData(kSequenceTimeKey, fil_scalar(DType::Float64, inc.mTotalTime));
+    mesh.AddFieldData("abaqus:step", fil_scalar(DType::Int64, static_cast<double>(inc.mStep)));
+    mesh.AddFieldData("abaqus:increment",
+                      fil_scalar(DType::Int64, static_cast<double>(inc.mIncrement)));
+    mesh.AddFieldData("abaqus:step_time", fil_scalar(DType::Float64, inc.mStepTime));
+    mesh.AddFieldData("abaqus:procedure",
+                      fil_scalar(DType::Int64, static_cast<double>(inc.mProcedure)));
+    if (!rOpts.WantsAnyData())
+        return mesh;
+
+    // Nodal fields: name -> node label -> values.
+    std::vector<std::string> nodal_order;
+    std::map<std::string, std::unordered_map<std::int64_t, std::vector<double>>> nodal;
+    // Element fields keyed by (name, location, section point).
+    std::vector<FilElementField> fields;
+    std::map<std::pair<std::string, int>, std::size_t> field_of;
+    std::set<std::int64_t> skipped_keys;
+    bool nodal_mode = false;
+    struct Header {
+        std::int64_t mElement, mPoint, mSection;
+        int mLocation;
+        bool mSolidTensor;  // NDI = NSHR = 3
+    };
+    std::optional<Header> header;
+    for (std::size_t r = inc.mBegin; r < inc.mEnd; ++r) {
+        const FilRecord& rec = data.mRecords[r];
+        const auto& w = rec.mWords;
+        if (rec.mKey == 1911) {
+            nodal_mode = !w.empty() && fil_word_int(w[0], sw) == 1;
+            header.reset();
+            continue;
+        }
+        if (rec.mKey == 1) {
+            if (w.size() < 4) {
+                header.reset();
+                continue;
+            }
+            header =
+                Header{fil_word_int(w[0], sw), fil_word_int(w[1], sw), fil_word_int(w[2], sw),
+                       static_cast<int>(fil_word_int(w[3], sw)),
+                       w.size() >= 7 && fil_word_int(w[5], sw) == 3 && fil_word_int(w[6], sw) == 3};
+            continue;
+        }
+        if ((rec.mKey >= 1900 && rec.mKey <= 2001) || fil_is_skipped_key(rec.mKey)) {
+            if (rec.mKey < 1900 || rec.mKey > 2001)
+                skipped_keys.insert(rec.mKey);
+            continue;
+        }
+        if (nodal_mode) {
+            if (w.empty())
+                continue;
+            const char* known = fil_nodal_name(rec.mKey);
+            const std::string name = known ? known : "key_" + std::to_string(rec.mKey);
+            if (!rOpts.WantsArray(name))
+                continue;
+            std::vector<double> v;
+            for (std::size_t k = 1; k < w.size(); ++k)
+                v.push_back(fil_word_real(w[k], sw));
+            auto [it, fresh] = nodal.emplace(name, decltype(nodal)::mapped_type{});
+            if (fresh)
+                nodal_order.push_back(name);
+            it->second[fil_word_int(w[0], sw)] = std::move(v);
+            continue;
+        }
+        if (!header || header->mLocation == 3) {  // no header, or rebar
+            skipped_keys.insert(rec.mKey);
+            continue;
+        }
+        const char* known = fil_element_name(rec.mKey);
+        std::string name = known ? known : "key_" + std::to_string(rec.mKey);
+        // Continuum elements write section point 0, shells and beams 1..n: the
+        // first one shares the plain name, the others are `@sp<k>`.
+        if (header->mSection > 1)
+            name += "@sp" + std::to_string(header->mSection);
+        if (!rOpts.WantsArray(name))
+            continue;
+        const auto key = std::make_pair(name, header->mLocation);
+        auto [fit, ffresh] = field_of.emplace(key, fields.size());
+        if (ffresh)
+            fields.push_back({name, header->mLocation, {}});
+        std::vector<double> v;
+        for (const FilWord& x : w)
+            v.push_back(fil_word_real(x, sw));
+        if (header->mSolidTensor && v.size() == 6 && fil_is_tensor_key(rec.mKey))
+            std::swap(v[4], v[5]);  // 13 23 -> yz zx
+        fields[fit->second].mValues[header->mElement][header->mPoint] = std::move(v);
+    }
+    if (!skipped_keys.empty())
+        log::warn(
+            "Abaqus .fil: {} record key(s) outside the nodal and element results skipped "
+            "(first: {})",
+            skipped_keys.size(), *skipped_keys.begin());
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::size_t npts = node_labels.size();
+    auto add_point_field =
+        [&](const std::string& rName,
+            const std::unordered_map<std::int64_t, std::vector<double>>& rValues) {
+            std::size_t width = 0;
+            for (const auto& [label, v] : rValues)
+                width = std::max(width, v.size());
+            if (!width)
+                return;
+            NDArray a(DType::Float64, width == 1 ? std::vector<std::size_t>{npts}
+                                                 : std::vector<std::size_t>{npts, width});
+            double* d = a.As<double>();
+            std::fill(d, d + npts * width, nan);
+            for (const auto& [label, v] : rValues) {
+                const auto it = node_index.find(label);
+                if (it != node_index.end())
+                    std::copy(v.begin(), v.end(), d + it->second * width);
+            }
+            std::string name = rName;
+            while (mesh.HasPointData(name))
+                name += "@avg";
+            mesh.AddPointData(name, std::move(a));
+        };
+    for (const std::string& name : nodal_order)
+        add_point_field(name, nodal[name]);
+
+    const std::size_t nblocks = block_types.size();
+    for (const FilElementField& f : fields) {
+        if (f.mLocation == 4) {  // averaged at the nodes: the header names the node
+            std::unordered_map<std::int64_t, std::vector<double>> per_node;
+            for (const auto& [label, points] : f.mValues)
+                if (!points.empty())
+                    per_node[label] = points.begin()->second;
+            add_point_field(f.mName, per_node);
+            continue;
+        }
+        if (!nblocks)
+            continue;
+        const bool per_point = f.mLocation == 0 || f.mLocation == 2;
+        std::vector<std::size_t> width(nblocks, 0), count(nblocks, 1);
+        if (f.mLocation == 2)
+            for (std::size_t b = 0; b < nblocks; ++b)
+                count[b] = mesh.Cells(b).NodesPerCell();
+        std::vector<std::vector<const std::map<std::int64_t, std::vector<double>>*>> rows(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            rows[b].assign(block_start[b + 1] - block_start[b], nullptr);
+        for (const auto& [label, points] : f.mValues) {
+            const auto it = element_index.find(label);
+            if (it == element_index.end())
+                continue;
+            const std::size_t c = it->second;
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(block_start.begin(), block_start.end(), c) - block_start.begin() -
+                1);
+            rows[b][c - block_start[b]] = &points;
+            for (const auto& [pt, v] : points) {
+                width[b] = std::max(width[b], v.size());
+                if (f.mLocation == 0)
+                    count[b] =
+                        std::max(count[b], static_cast<std::size_t>(std::max<std::int64_t>(pt, 1)));
+            }
+        }
+        std::size_t any_width = 0;
+        for (std::size_t w : width)
+            any_width = std::max(any_width, w);
+        if (!any_width)
+            continue;
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const std::size_t n = rows[b].size();
+            const std::size_t wdt = width[b] ? width[b] : any_width;
+            const std::size_t pts = per_point ? count[b] : 1;
+            std::vector<std::size_t> shape{n};
+            if (per_point)
+                shape.push_back(pts);
+            if (wdt > 1)
+                shape.push_back(wdt);
+            NDArray a(DType::Float64, shape);
+            double* d = a.As<double>();
+            std::fill(d, d + n * pts * wdt, nan);
+            for (std::size_t r = 0; r < n; ++r) {
+                if (!rows[b][r])
+                    continue;
+                const std::vector<std::int64_t>& cn = cell_nodes[block_start[b] + r];
+                for (const auto& [pt, v] : *rows[b][r]) {
+                    std::size_t slot = 0;
+                    if (f.mLocation == 0) {
+                        slot = static_cast<std::size_t>(std::max<std::int64_t>(pt, 1) - 1);
+                    } else if (f.mLocation == 2) {
+                        const auto at = std::find(cn.begin(), cn.end(), pt);
+                        if (at == cn.end())
+                            continue;
+                        slot = static_cast<std::size_t>(at - cn.begin());
+                    }
+                    if (slot >= pts)
+                        continue;
+                    std::copy(v.begin(),
+                              v.begin() + static_cast<std::ptrdiff_t>(std::min(v.size(), wdt)),
+                              d + (r * pts + slot) * wdt);
+                }
+            }
+            blocks.push_back(std::move(a));
+        }
+        std::string name = f.mName;
+        while (mesh.HasCellData(name))
+            name += f.mLocation == 0 ? "@ip" : "@el";
+        mesh.AddCellData(name, std::move(blocks));
+    }
+    return mesh;
+}
+
+std::vector<double> abaqus_fil_time_values(const std::string& rPath) {
+    const FilData data = fil_parse(rPath);
+    std::vector<double> out;
+    for (const FilIncrement& inc : fil_increments(data))
+        out.push_back(inc.mTotalTime);
+    return out;
+}
+
+MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOptions& /*rOpts*/) {
+    MeshMetadata meta = metadata_from_mesh(read_abaqus_fil(rPath, ReadOptions{}));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "abaqus_fil";
+    meta.mTimeValues = abaqus_fil_time_values(rPath);
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/abaqus_fil.cpp =====
 // ===== begin src/cpp/src/formats/ansys.cpp =====
 #include <algorithm>
 #include <array>
@@ -73807,6 +75359,784 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/ip.cpp =====
+// ===== begin src/cpp/src/formats/libmesh.cpp =====
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <ios>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kLmWhat = "libMesh";
+
+// --- element types ----------------------------------------------------------------
+
+// libMesh's ElemType (include/enums/enum_elem_type.h): node count, the meshio++
+// type it reads as, how many of its nodes that type keeps, and its base shape
+// for the side tables.
+enum class LmShape { None, Point, Edge, Tri, Quad, Tet, Hex, Prism, Pyramid };
+
+struct LmType {
+    int mNodes;         // nodes in the file (0: not a readable type)
+    const char* mCell;  // meshio++ type, nullptr: skipped
+    int mKeep;          // leading file nodes the meshio++ type keeps
+    LmShape mShape;
+    const char* mName;  // libMesh's name, for messages
+};
+
+const LmType* lm_type(std::uint64_t Code) {
+    static const LmType types[] = {
+        {2, "line", 2, LmShape::Edge, "EDGE2"},                // 0
+        {3, "line3", 3, LmShape::Edge, "EDGE3"},               // 1
+        {4, "line4", 4, LmShape::Edge, "EDGE4"},               // 2
+        {3, "triangle", 3, LmShape::Tri, "TRI3"},              // 3
+        {6, "triangle6", 6, LmShape::Tri, "TRI6"},             // 4
+        {4, "quad", 4, LmShape::Quad, "QUAD4"},                // 5
+        {8, "quad8", 8, LmShape::Quad, "QUAD8"},               // 6
+        {9, "quad9", 9, LmShape::Quad, "QUAD9"},               // 7
+        {4, "tetra", 4, LmShape::Tet, "TET4"},                 // 8
+        {10, "tetra10", 10, LmShape::Tet, "TET10"},            // 9
+        {8, "hexahedron", 8, LmShape::Hex, "HEX8"},            // 10
+        {20, "hexahedron20", 20, LmShape::Hex, "HEX20"},       // 11
+        {27, "hexahedron27", 27, LmShape::Hex, "HEX27"},       // 12
+        {6, "wedge", 6, LmShape::Prism, "PRISM6"},             // 13
+        {15, "wedge15", 15, LmShape::Prism, "PRISM15"},        // 14
+        {18, "wedge18", 18, LmShape::Prism, "PRISM18"},        // 15
+        {5, "pyramid", 5, LmShape::Pyramid, "PYRAMID5"},       // 16
+        {13, "pyramid13", 13, LmShape::Pyramid, "PYRAMID13"},  // 17
+        {14, "pyramid14", 14, LmShape::Pyramid, "PYRAMID14"},  // 18
+        {2, nullptr, 0, LmShape::None, "INFEDGE2"},            // 19
+        {4, nullptr, 0, LmShape::None, "INFQUAD4"},            // 20
+        {6, nullptr, 0, LmShape::None, "INFQUAD6"},            // 21
+        {8, nullptr, 0, LmShape::None, "INFHEX8"},             // 22
+        {16, nullptr, 0, LmShape::None, "INFHEX16"},           // 23
+        {18, nullptr, 0, LmShape::None, "INFHEX18"},           // 24
+        {6, nullptr, 0, LmShape::None, "INFPRISM6"},           // 25
+        {12, nullptr, 0, LmShape::None, "INFPRISM12"},         // 26
+        {1, "vertex", 1, LmShape::Point, "NODEELEM"},          // 27
+        {0, nullptr, 0, LmShape::None, "REMOTEELEM"},          // 28
+        {3, "triangle", 3, LmShape::Tri, "TRI3SUBDIVISION"},   // 29
+        {3, "triangle", 3, LmShape::Tri, "TRISHELL3"},         // 30
+        {4, "quad", 4, LmShape::Quad, "QUADSHELL4"},           // 31
+        {8, "quad8", 8, LmShape::Quad, "QUADSHELL8"},          // 32
+        {7, "triangle7", 7, LmShape::Tri, "TRI7"},             // 33
+        {14, "tetra10", 10, LmShape::Tet, "TET14"},            // 34
+        {20, "wedge18", 18, LmShape::Prism, "PRISM20"},        // 35
+        {21, "wedge18", 18, LmShape::Prism, "PRISM21"},        // 36
+        {18, "pyramid14", 14, LmShape::Pyramid, "PYRAMID18"},  // 37
+        {9, "quad9", 9, LmShape::Quad, "QUADSHELL9"},          // 38
+        {0, nullptr, 0, LmShape::None, "C0POLYGON"},           // 39
+        {0, nullptr, 0, LmShape::None, "C0POLYHEDRON"},        // 40
+    };
+    return Code < std::size(types) ? &types[Code] : nullptr;
+}
+
+// Corner nodes of each side, libMesh's side numbering (Hex8::side_nodes_map ...).
+// Corners are in the same slots in libMesh and meshio++ for every shape.
+const std::vector<std::vector<int>>& lm_sides(LmShape Shape) {
+    static const std::vector<std::vector<int>> none;
+    static const std::vector<std::vector<int>> tri = {{0, 1}, {1, 2}, {2, 0}};
+    static const std::vector<std::vector<int>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    static const std::vector<std::vector<int>> tet = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    static const std::vector<std::vector<int>> hex = {{0, 3, 2, 1}, {0, 1, 5, 4}, {1, 2, 6, 5},
+                                                      {2, 3, 7, 6}, {3, 0, 4, 7}, {4, 5, 6, 7}};
+    static const std::vector<std::vector<int>> prism = {
+        {0, 2, 1}, {0, 1, 4, 3}, {1, 2, 5, 4}, {2, 0, 3, 5}, {3, 4, 5}};
+    static const std::vector<std::vector<int>> pyramid = {
+        {0, 1, 4}, {1, 2, 4}, {2, 3, 4}, {3, 0, 4}, {0, 3, 2, 1}};
+    switch (Shape) {
+        case LmShape::Tri:
+            return tri;
+        case LmShape::Quad:
+            return quad;
+        case LmShape::Tet:
+            return tet;
+        case LmShape::Hex:
+            return hex;
+        case LmShape::Prism:
+            return prism;
+        case LmShape::Pyramid:
+            return pyramid;
+        default:
+            return none;
+    }
+}
+
+// --- the value stream ---------------------------------------------------------------
+
+// libMesh's `Xdr` in READ (ASCII) or DECODE (XDR) mode. ASCII follows
+// xdr_cxx.C: a scalar is `>> value` and the rest of its line is dropped (the
+// `\t # comment`), a string is the rest of the current line up to the first tab,
+// a vector is a scalar length, its items, and the rest of that line, and a
+// stream is bare whitespace-separated values.
+class LmStream {
+public:
+    LmStream(const std::string& rText, bool Xdr)
+        : mText(rText), mXdr(Xdr), mBin(rText.data(), rText.size(), true, kLmWhat) {}
+
+    bool Xdr() const { return mXdr; }
+
+    std::string String() {
+        if (mXdr) {
+            const std::uint32_t n = mBin.U32();
+            std::string s = mBin.Bytes(n);
+            mBin.Skip((4 - n % 4) % 4);
+            const std::size_t nul = s.find('\0');
+            if (nul != std::string::npos)
+                s.resize(nul);
+            return s;
+        }
+        const std::size_t eol = LineEnd();
+        std::string s = mText.substr(mPos, eol - mPos);
+        mPos = eol < mText.size() ? eol + 1 : eol;
+        const std::size_t tab = s.find('\t');
+        if (tab != std::string::npos)
+            s.resize(tab);
+        if (!s.empty() && s.back() == '\r')
+            s.pop_back();
+        return s;
+    }
+
+    // A `data()` integer of `Width` bytes (4 or 8).
+    std::int64_t Scalar(int Width) {
+        if (mXdr)
+            return BinInt(Width);
+        const std::int64_t v = Int();
+        SkipLine();
+        return v;
+    }
+
+    // A `data_stream()` integer of `Width` bytes.
+    std::int64_t StreamInt(int Width) { return mXdr ? BinInt(Width) : Int(); }
+
+    double StreamReal() {
+        if (mXdr)
+            return mBin.F64();
+        const std::string_view t = Token();
+        const std::string tok(t);
+        const char* end = nullptr;
+        const double v = detail::parse_double(tok.c_str(), end);
+        if (end != tok.c_str() + tok.size()) {
+            std::string low;
+            for (char c : tok)
+                low += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (low.find("nan") != std::string::npos)
+                return std::numeric_limits<double>::quiet_NaN();
+            Fail("bad real '" + tok + "'");
+        }
+        return v;
+    }
+
+    // `data(std::vector<T>)`: a 4-byte length, then its items.
+    std::vector<std::int64_t> IntVector(int Width) {
+        const std::int64_t n = Scalar(4);
+        std::vector<std::int64_t> out;
+        for (std::int64_t k = 0; k < n; ++k)
+            out.push_back(StreamInt(Width));
+        if (!mXdr)
+            SkipLine();
+        return out;
+    }
+
+    std::vector<std::string> StringVector() {
+        const std::int64_t n = Scalar(4);
+        std::vector<std::string> out;
+        for (std::int64_t k = 0; k < n; ++k) {
+            if (mXdr) {
+                out.push_back(String());
+            } else {
+                out.emplace_back(Token());
+            }
+        }
+        if (!mXdr)
+            SkipLine();
+        return out;
+    }
+
+    [[noreturn]] void Fail(const std::string& rWhat) const {
+        throw ReadError(std::string("libMesh: ") + rWhat +
+                        (mXdr ? " (byte " + std::to_string(mBin.Offset()) + ")"
+                              : " (line " + std::to_string(LineNumber()) + ")"));
+    }
+
+private:
+    std::int64_t BinInt(int Width) {
+        return Width == 8 ? static_cast<std::int64_t>(mBin.U64())
+                          : static_cast<std::int64_t>(mBin.U32());
+    }
+
+    std::size_t LineEnd() const {
+        const std::size_t eol = mText.find('\n', mPos);
+        return eol == std::string::npos ? mText.size() : eol;
+    }
+
+    void SkipLine() {
+        const std::size_t eol = LineEnd();
+        mPos = eol < mText.size() ? eol + 1 : eol;
+    }
+
+    std::string_view Token() {
+        while (mPos < mText.size() && std::isspace(static_cast<unsigned char>(mText[mPos])))
+            ++mPos;
+        if (mPos >= mText.size())
+            Fail("file ends early");
+        const std::size_t b = mPos;
+        while (mPos < mText.size() && !std::isspace(static_cast<unsigned char>(mText[mPos])))
+            ++mPos;
+        return std::string_view(mText).substr(b, mPos - b);
+    }
+
+    std::int64_t Int() {
+        const std::string_view t = Token();
+        std::int64_t v = 0;
+        const auto [p, ec] = std::from_chars(t.data(), t.data() + t.size(), v);
+        if (ec != std::errc() || p != t.data() + t.size())
+            Fail("bad integer '" + std::string(t) + "'");
+        return v;
+    }
+
+    std::size_t LineNumber() const {
+        return 1 + static_cast<std::size_t>(std::count(
+                       mText.begin(),
+                       mText.begin() + static_cast<std::ptrdiff_t>(std::min(mPos, mText.size())),
+                       '\n'));
+    }
+
+    const std::string& mText;
+    bool mXdr;
+    std::size_t mPos = 0;
+    detail::ByteCursor mBin;
+};
+
+// libMesh's version_at_least_* tests: substring checks for the known versions.
+bool lm_has_any(const std::string& rVersion, std::initializer_list<const char*> Versions) {
+    for (const char* v : Versions)
+        if (rVersion.find(v) != std::string::npos)
+            return true;
+    return false;
+}
+
+struct LmElement {
+    const LmType* mType;
+    std::uint64_t mCode;
+    std::int64_t mParent;  // file index, -1 at level 0
+    std::int64_t mSubdomain;
+    std::int64_t mPLevel;
+    int mLevel;
+    std::vector<std::int64_t> mNodes;
+};
+
+struct LmBoundary {
+    std::int64_t mElem, mSide, mId;
+};
+
+struct LmFile {
+    std::vector<LmElement> mElements;
+    std::vector<double> mCoords;  // 3 per node id
+    std::map<std::int64_t, std::string> mSubdomainNames, mSidesetNames, mNodesetNames;
+    std::vector<LmBoundary> mSides;
+    std::vector<std::pair<std::int64_t, std::int64_t>> mNodesets;  // (node, id)
+    std::size_t mSkippedEdgeBcs = 0;
+    bool mInlinePLevel = false;
+};
+
+std::map<std::int64_t, std::string> lm_name_map(LmStream& rIo, int HeaderWidth) {
+    std::map<std::int64_t, std::string> out;
+    const std::int64_t n = rIo.Scalar(HeaderWidth);
+    if (n == 0)
+        return out;
+    const std::vector<std::int64_t> ids = rIo.IntVector(HeaderWidth);
+    const std::vector<std::string> names = rIo.StringVector();
+    for (std::size_t k = 0; k < ids.size() && k < names.size(); ++k)
+        out.emplace(ids[k], names[k]);
+    return out;
+}
+
+LmFile lm_parse(const std::string& rText, bool Xdr) {
+    LmStream io(rText, Xdr);
+    LmFile f;
+    const std::string version = io.String();
+    if (version.find("libMesh") == std::string::npos)
+        throw ReadError("libMesh: '" + version +
+                        "' is a legacy (pre-libMesh) mesh file, which libMesh itself no longer "
+                        "reads");
+    const bool v092 = lm_has_any(version, {"0.9.2", "0.9.6", "1.1.0", "1.3.0", "1.8.0"});
+    const bool v096 = lm_has_any(version, {"0.9.6", "1.1.0", "1.3.0", "1.8.0"});
+    const bool v110 = lm_has_any(version, {"1.1.0", "1.3.0", "1.8.0"});
+    const bool v130 = lm_has_any(version, {"1.3.0", "1.8.0"});
+    const bool v180 = lm_has_any(version, {"1.8.0"});
+    const int hw = v130 ? 8 : 4;  // header integers: uint64 from 1.3.0 on
+
+    const std::int64_t n_elem = io.Scalar(hw);
+    const std::int64_t n_nodes = io.Scalar(hw);
+    const std::string bc_file = io.String();
+    const std::string sid_file = io.String();
+    const std::string pid_file = io.String();
+    const std::string pl_file = io.String();
+    if (n_elem < 0 || n_nodes < 0)
+        io.Fail("negative element or node count");
+
+    std::int64_t sizes[8] = {8, 0, 0, 0, 0, 0, 0, 0};  // type uid pid sid p eid side bid
+    if (v092)
+        for (std::int64_t& s : sizes)
+            s = io.Scalar(hw);
+    const std::int64_t field_width = sizes[0];
+    // Pre-1.3.0 files were written with 32-bit connectivity whatever "type size"
+    // says (XdrIO::read); from 1.3.0 on "type size" is the width.
+    const int tw = (!v130 || field_width == 4) ? 4 : 8;
+    const bool read_uid = v092 && sizes[1] != 0;
+
+    std::size_t n_elem_ints = 0, n_node_ints = 0;
+    if (v180) {
+        io.Scalar(hw);  // extra integer size
+        n_node_ints = io.StringVector().size();
+        n_elem_ints = io.StringVector().size();
+        const std::vector<std::int64_t> codes = io.IntVector(tw);
+        for (std::size_t k = 0; k < codes.size(); ++k)
+            io.IntVector(tw);
+    }
+    if (v092)
+        f.mSubdomainNames = lm_name_map(io, hw);
+    if (n_elem == 0)
+        return f;
+
+    const bool read_pid = pid_file == ".";
+    const bool read_sid = sid_file == ".";
+    const bool read_p = pl_file == ".";
+    f.mInlinePLevel = read_p;
+    f.mElements.reserve(static_cast<std::size_t>(n_elem));
+    std::int64_t at_level = 0, done_at_level = 0;
+    int level = -1;
+    for (std::int64_t e = 0; e < n_elem; ++e, ++done_at_level) {
+        if (done_at_level == at_level) {
+            at_level = io.Scalar(tw);
+            done_at_level = 0;
+            ++level;
+        }
+        LmElement el{};
+        el.mCode = static_cast<std::uint64_t>(io.StreamInt(tw));
+        el.mType = lm_type(el.mCode);
+        if (!el.mType || el.mType->mNodes == 0)
+            io.Fail("element " + std::to_string(e) + " has unsupported type " +
+                    std::to_string(el.mCode) +
+                    (el.mType ? std::string(" (") + el.mType->mName + ")" : std::string()));
+        if (read_uid)
+            io.StreamInt(tw);
+        el.mParent = -1;
+        if (level > 0) {
+            el.mParent = io.StreamInt(tw);
+            if (el.mParent < 0 || el.mParent >= e)
+                io.Fail("element " + std::to_string(e) + " names parent " +
+                        std::to_string(el.mParent) + ", which is not an earlier element");
+        }
+        if (read_pid)
+            io.StreamInt(tw);
+        el.mSubdomain = read_sid ? io.StreamInt(tw) : 0;
+        el.mPLevel = read_p ? io.StreamInt(tw) : 0;
+        el.mLevel = level;
+        el.mNodes.resize(static_cast<std::size_t>(el.mType->mNodes));
+        for (std::int64_t& n : el.mNodes) {
+            n = io.StreamInt(tw);
+            if (n < 0 || n >= n_nodes)
+                io.Fail("element " + std::to_string(e) + " names node " + std::to_string(n) +
+                        " of " + std::to_string(n_nodes));
+        }
+        for (std::size_t k = 0; k < n_elem_ints; ++k)
+            io.StreamInt(tw);
+        f.mElements.push_back(std::move(el));
+    }
+
+    f.mCoords.resize(3 * static_cast<std::size_t>(n_nodes));
+    for (double& c : f.mCoords)
+        c = io.StreamReal();
+    if (v096 && io.Scalar(4) != 0)  // "presence of unique ids" (an unsigned short)
+        for (std::int64_t k = 0; k < n_nodes; ++k)
+            io.StreamInt(field_width == 8 ? 8 : 4);
+    for (std::size_t k = 0; k < n_node_ints * static_cast<std::size_t>(n_nodes); ++k)
+        io.StreamInt(tw);
+
+    if (bc_file == "n/a")
+        return f;
+    auto read_triples = [&](std::vector<LmBoundary>* pOut) {
+        std::map<std::int64_t, std::string> names;
+        if (v092)
+            names = lm_name_map(io, hw);
+        const std::int64_t n = io.Scalar(hw);
+        for (std::int64_t k = 0; k < n; ++k) {
+            LmBoundary b{};
+            b.mElem = io.StreamInt(tw);
+            b.mSide = io.StreamInt(tw);
+            b.mId = io.StreamInt(tw);
+            if (pOut)
+                pOut->push_back(b);
+        }
+        return std::make_pair(names, static_cast<std::size_t>(n));
+    };
+    f.mSidesetNames = read_triples(&f.mSides).first;
+    if (v092) {
+        f.mNodesetNames = lm_name_map(io, hw);
+        const std::int64_t n = io.Scalar(hw);
+        for (std::int64_t k = 0; k < n; ++k) {
+            const std::int64_t node = io.StreamInt(tw);
+            const std::int64_t id = io.StreamInt(tw);
+            f.mNodesets.emplace_back(node, id);
+        }
+    }
+    if (v110) {
+        f.mSkippedEdgeBcs += read_triples(nullptr).second;  // edge
+        f.mSkippedEdgeBcs += read_triples(nullptr).second;  // shell face
+    }
+    return f;
+}
+
+// --- geometry for carrying a side down to refined children ------------------------
+
+using LmPoint = std::array<double, 3>;
+
+LmPoint lm_sub(const LmPoint& a, const LmPoint& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+double lm_dot(const LmPoint& a, const LmPoint& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+LmPoint lm_cross(const LmPoint& a, const LmPoint& b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+// Whether `rQ` lies on the (flat) side whose corners are `rP`: on the segment
+// for two corners, else on the plane and inside the triangle or quad.
+bool lm_on_side(const std::vector<LmPoint>& rP, const LmPoint& rQ) {
+    double scale = 0.0;
+    for (std::size_t k = 0; k < rP.size(); ++k) {
+        const LmPoint d = lm_sub(rP[(k + 1) % rP.size()], rP[k]);
+        scale = std::max(scale, std::sqrt(lm_dot(d, d)));
+    }
+    const double tol = 1e-6 * (scale > 0 ? scale : 1.0);
+    if (rP.size() == 2) {
+        const LmPoint d = lm_sub(rP[1], rP[0]);
+        const LmPoint q = lm_sub(rQ, rP[0]);
+        const double len2 = lm_dot(d, d);
+        if (len2 == 0.0)
+            return false;
+        const double t = lm_dot(q, d) / len2;
+        const LmPoint off = lm_cross(q, d);
+        return t >= -1e-6 && t <= 1 + 1e-6 && std::sqrt(lm_dot(off, off) / len2) <= tol;
+    }
+    auto in_triangle = [&](const LmPoint& a, const LmPoint& b, const LmPoint& c) {
+        const LmPoint n = lm_cross(lm_sub(b, a), lm_sub(c, a));
+        const double n2 = lm_dot(n, n);
+        if (n2 == 0.0)
+            return false;
+        if (std::abs(lm_dot(lm_sub(rQ, a), n)) / std::sqrt(n2) > tol)
+            return false;
+        const double eps = -1e-6 * n2;
+        return lm_dot(lm_cross(lm_sub(b, a), lm_sub(rQ, a)), n) >= eps &&
+               lm_dot(lm_cross(lm_sub(c, b), lm_sub(rQ, b)), n) >= eps &&
+               lm_dot(lm_cross(lm_sub(a, c), lm_sub(rQ, c)), n) >= eps;
+    };
+    if (rP.size() == 3)
+        return in_triangle(rP[0], rP[1], rP[2]);
+    return in_triangle(rP[0], rP[1], rP[2]) || in_triangle(rP[0], rP[2], rP[3]);
+}
+
+NDArray lm_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
+    NDArray a(DType::Int64, Stride == 1 ? std::vector<std::size_t>{rIds.size()}
+                                        : std::vector<std::size_t>{rIds.size() / Stride, Stride});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+}  // namespace
+
+Mesh read_libmesh(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("libMesh: cannot open " + rPath);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    // XDR starts with the version string's 4-byte big-endian length; ASCII with
+    // the version text itself.
+    bool xdr = false;
+    if (text.size() >= 8 && text.compare(0, 7, "libMesh") != 0) {
+        const auto b = [&](std::size_t k) { return static_cast<unsigned char>(text[k]); };
+        const std::uint32_t len = (std::uint32_t(b(0)) << 24) | (std::uint32_t(b(1)) << 16) |
+                                  (std::uint32_t(b(2)) << 8) | std::uint32_t(b(3));
+        xdr = len > 0 && len < 256 && text.size() >= 4 + len && text.compare(4, 7, "libMesh") == 0;
+    }
+    const LmFile f = lm_parse(text, xdr);
+
+    // Active elements: the ones no element names as its parent.
+    const std::size_t ne = f.mElements.size();
+    std::vector<bool> active(ne, true);
+    std::vector<std::vector<std::size_t>> children(ne);
+    int max_level = 0;
+    for (std::size_t e = 0; e < ne; ++e) {
+        const LmElement& el = f.mElements[e];
+        max_level = std::max(max_level, el.mLevel);
+        if (el.mParent >= 0) {
+            active[static_cast<std::size_t>(el.mParent)] = false;
+            children[static_cast<std::size_t>(el.mParent)].push_back(e);
+        }
+    }
+
+    // Points: every node id an element uses; unused ids (NaN in the file) go.
+    const std::size_t nn = f.mCoords.size() / 3;
+    std::vector<std::int64_t> node_index(nn, -1);
+    for (const LmElement& el : f.mElements)
+        for (std::int64_t n : el.mNodes)
+            node_index[static_cast<std::size_t>(n)] = 0;
+    std::vector<std::int64_t> kept;
+    for (std::size_t n = 0; n < nn; ++n)
+        if (node_index[n] == 0) {
+            node_index[n] = static_cast<std::int64_t>(kept.size());
+            kept.push_back(static_cast<std::int64_t>(n));
+        }
+    Mesh mesh;
+    NDArray points(DType::Float64, {kept.size(), 3});
+    double* pts = points.As<double>();
+    for (std::size_t p = 0; p < kept.size(); ++p)
+        for (std::size_t d = 0; d < 3; ++d)
+            pts[3 * p + d] = f.mCoords[3 * static_cast<std::size_t>(kept[p]) + d];
+    mesh.AssignPoints(std::move(points));
+    if (kept.size() != nn)
+        mesh.AddPointData("libmesh:id", lm_ids(kept));
+
+    // Cells: active elements, one block per meshio++ type in order of first use.
+    std::vector<std::string> block_types;
+    std::map<std::string, std::vector<std::size_t>> by_type;
+    std::map<std::string, std::size_t> dropped_nodes, skipped;
+    for (std::size_t e = 0; e < ne; ++e) {
+        if (!active[e])
+            continue;
+        const LmType* t = f.mElements[e].mType;
+        if (!t->mCell) {
+            ++skipped[t->mName];
+            continue;
+        }
+        auto [it, fresh] = by_type.emplace(t->mCell, std::vector<std::size_t>{});
+        if (fresh)
+            block_types.push_back(t->mCell);
+        it->second.push_back(e);
+        if (t->mKeep < t->mNodes)
+            ++dropped_nodes[t->mName];
+    }
+    for (const auto& [name, count] : skipped)
+        log::warn("libMesh: skipping {} {} element(s) (no meshio++ equivalent)", count, name);
+    for (const auto& [name, count] : dropped_nodes) {
+        log::warn("libMesh: {} {} element(s) keep only the nodes of the nearest meshio++ type",
+                  count, name);
+        detail::provenance_note("high-order-dropped", std::to_string(count) + " " + name +
+                                                          " element(s) lost their extra nodes");
+    }
+
+    std::vector<std::int64_t> cell_of(ne, -1);  // file element -> global cell
+    std::vector<int> cell_dim;
+    std::vector<NDArray> sid_blocks, level_blocks, p_blocks;
+    std::int64_t next_cell = 0;
+    for (const std::string& type : block_types) {
+        const std::vector<std::size_t>& members = by_type[type];
+        const int k = cell_type_num_nodes(cell_type_from_name(type));
+        const int dim = cell_type_dimension(cell_type_from_name(type));
+        const detail::NodeOrder* order = detail::node_order("libmesh", type);
+        NDArray conn(DType::Int64, {members.size(), static_cast<std::size_t>(k)});
+        NDArray sid(DType::Int64, {members.size()});
+        NDArray lvl(DType::Int64, {members.size()});
+        NDArray pl(DType::Int64, {members.size()});
+        std::int64_t* c = conn.As<std::int64_t>();
+        for (std::size_t r = 0; r < members.size(); ++r) {
+            const LmElement& el = f.mElements[members[r]];
+            for (int j = 0; j < k; ++j) {
+                const int src = order ? order->mToMeshio[static_cast<std::size_t>(j)] : j;
+                c[r * static_cast<std::size_t>(k) + static_cast<std::size_t>(j)] =
+                    node_index[static_cast<std::size_t>(el.mNodes[static_cast<std::size_t>(src)])];
+            }
+            sid.As<std::int64_t>()[r] = el.mSubdomain;
+            lvl.As<std::int64_t>()[r] = el.mLevel;
+            pl.As<std::int64_t>()[r] = el.mPLevel;
+            cell_of[members[r]] = next_cell++;
+            cell_dim.push_back(dim);
+        }
+        mesh.AddCellBlock(type, std::move(conn));
+        sid_blocks.push_back(std::move(sid));
+        level_blocks.push_back(std::move(lvl));
+        p_blocks.push_back(std::move(pl));
+    }
+    if (block_types.empty())
+        return mesh;
+    mesh.AddCellData("libmesh:subdomain", std::move(sid_blocks));
+    if (max_level > 0)
+        mesh.AddCellData("libmesh:level", std::move(level_blocks));
+    if (f.mInlinePLevel)
+        mesh.AddCellData("libmesh:p_level", std::move(p_blocks));
+
+    // Subdomains -> cell regions.
+    std::map<std::int64_t, std::vector<std::int64_t>> by_sid;
+    std::map<std::int64_t, int> sid_dim;
+    for (std::size_t e = 0; e < ne; ++e) {
+        if (cell_of[e] < 0)
+            continue;
+        const std::int64_t sid = f.mElements[e].mSubdomain;
+        by_sid[sid].push_back(cell_of[e]);
+        int& d = sid_dim.emplace(sid, -1).first->second;
+        d = std::max(d, cell_dim[static_cast<std::size_t>(cell_of[e])]);
+    }
+    for (const auto& [sid, cells] : by_sid) {
+        const auto name = f.mSubdomainNames.find(sid);
+        mesh.AddRegion(Region(
+            name != f.mSubdomainNames.end() ? name->second : "subdomain_" + std::to_string(sid),
+            RegionKind::Cell, sid_dim[sid], sid, lm_ids(cells)));
+    }
+
+    // Side sets -> side regions, through the facet each side's corners name.
+    if (!f.mSides.empty()) {
+        const detail::FacetIndex facets(mesh);
+        auto corners_of = [&](std::size_t e, std::size_t s) {
+            const LmElement& el = f.mElements[e];
+            std::vector<std::int64_t> out;
+            for (int k : lm_sides(el.mType->mShape)[s])
+                out.push_back(
+                    node_index[static_cast<std::size_t>(el.mNodes[static_cast<std::size_t>(k)])]);
+            return out;
+        };
+        auto point_of = [&](std::int64_t file_node) {
+            const std::size_t n = static_cast<std::size_t>(file_node);
+            return LmPoint{f.mCoords[3 * n], f.mCoords[3 * n + 1], f.mCoords[3 * n + 2]};
+        };
+        std::map<std::int64_t, std::vector<std::int64_t>> by_id;
+        std::map<std::int64_t, int> id_dim;
+        std::size_t unmatched = 0, point_sides = 0;
+        auto add = [&](std::int64_t id, std::size_t e, std::size_t s) {
+            const std::vector<std::int64_t> corners = corners_of(e, s);
+            const detail::FacetHit* hit = facets.Find(corners.data(), corners.size());
+            const std::int64_t cell = cell_of[e];
+            const detail::FacetOwner* owner = nullptr;
+            if (hit && hit->mFirst.mCell == cell)
+                owner = &hit->mFirst;
+            else if (hit && hit->mSecond.mCell == cell)
+                owner = &hit->mSecond;
+            if (!owner) {
+                ++unmatched;
+                return;
+            }
+            std::vector<std::int64_t>& v = by_id[id];
+            v.push_back(owner->mCell);
+            v.push_back(owner->mFacet);
+            int& d = id_dim.emplace(id, -1).first->second;
+            d = std::max(d, cell_dim[static_cast<std::size_t>(cell)] - 1);
+        };
+        for (const LmBoundary& b : f.mSides) {
+            if (b.mElem < 0 || static_cast<std::size_t>(b.mElem) >= ne) {
+                ++unmatched;
+                continue;
+            }
+            const std::size_t e = static_cast<std::size_t>(b.mElem);
+            const LmElement& el = f.mElements[e];
+            const auto& sides = lm_sides(el.mType->mShape);
+            if (el.mType->mShape == LmShape::Edge) {
+                ++point_sides;
+                continue;
+            }
+            if (b.mSide < 0 || static_cast<std::size_t>(b.mSide) >= sides.size() ||
+                !el.mType->mCell) {
+                ++unmatched;
+                continue;
+            }
+            const std::size_t s = static_cast<std::size_t>(b.mSide);
+            if (active[e]) {
+                add(b.mId, e, s);
+                continue;
+            }
+            // A refined element: its active descendants' sides that lie on it.
+            std::vector<LmPoint> side_pts;
+            for (int k : sides[s])
+                side_pts.push_back(point_of(el.mNodes[static_cast<std::size_t>(k)]));
+            std::vector<std::size_t> stack = children[e];
+            while (!stack.empty()) {
+                const std::size_t c = stack.back();
+                stack.pop_back();
+                if (!active[c]) {
+                    stack.insert(stack.end(), children[c].begin(), children[c].end());
+                    continue;
+                }
+                const LmElement& ch = f.mElements[c];
+                if (!ch.mType->mCell)
+                    continue;
+                const auto& csides = lm_sides(ch.mType->mShape);
+                for (std::size_t cs = 0; cs < csides.size(); ++cs) {
+                    bool on = true;
+                    for (int k : csides[cs])
+                        if (!lm_on_side(side_pts,
+                                        point_of(ch.mNodes[static_cast<std::size_t>(k)]))) {
+                            on = false;
+                            break;
+                        }
+                    if (on)
+                        add(b.mId, c, cs);
+                }
+            }
+        }
+        if (unmatched)
+            log::warn("libMesh: {} boundary side(s) match no cell facet and are skipped",
+                      unmatched);
+        if (point_sides)
+            log::warn(
+                "libMesh: {} boundary side(s) of line elements (end points) have no side "
+                "region form and are skipped",
+                point_sides);
+        for (auto& [id, entries] : by_id) {
+            // Refined parents can list one child side twice (two set entries).
+            std::set<std::pair<std::int64_t, std::int64_t>> unique;
+            for (std::size_t k = 0; k + 1 < entries.size(); k += 2)
+                unique.emplace(entries[k], entries[k + 1]);
+            std::vector<std::int64_t> flat;
+            for (const auto& [c, s] : unique) {
+                flat.push_back(c);
+                flat.push_back(s);
+            }
+            const auto name = f.mSidesetNames.find(id);
+            mesh.AddRegion(Region(
+                name != f.mSidesetNames.end() ? name->second : "boundary_" + std::to_string(id),
+                RegionKind::Side, id_dim[id], id, lm_ids(flat, 2)));
+        }
+    }
+
+    // Node sets -> point regions.
+    std::map<std::int64_t, std::vector<std::int64_t>> by_nodeset;
+    for (const auto& [node, id] : f.mNodesets)
+        if (node >= 0 && static_cast<std::size_t>(node) < nn &&
+            node_index[static_cast<std::size_t>(node)] >= 0)
+            by_nodeset[id].push_back(node_index[static_cast<std::size_t>(node)]);
+    for (const auto& [id, pts_in] : by_nodeset) {
+        const auto name = f.mNodesetNames.find(id);
+        mesh.AddRegion(
+            Region(name != f.mNodesetNames.end() ? name->second : "nodeset_" + std::to_string(id),
+                   RegionKind::Point, -1, id, lm_ids(pts_in)));
+    }
+    if (f.mSkippedEdgeBcs)
+        log::warn("libMesh: {} edge/shell-face boundary condition(s) skipped", f.mSkippedEdgeBcs);
+    return mesh;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/libmesh.cpp =====
 // ===== begin src/cpp/src/formats/lsdyna.cpp =====
 #include <algorithm>
 #include <array>
@@ -73820,6 +76150,7 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <unordered_map>
@@ -73996,21 +76327,17 @@ const std::vector<CardField>& lsd_layout_segment() {
 // -- degenerate hexahedra -------------------------------------------------------
 
 // The cell type and meshio++-ordered nodes of an 8-node LS-DYNA solid. There is no
-// tetra, pyramid or wedge card: they are hexahedra with repeated nodes, checked
-// most-degenerate first. Twin of `_collapse_solid` in lsdyna/_lsdyna.py.
+// tetra, pyramid or wedge card: they are hexahedra with repeated nodes
+// (detail/degenerate_solid). Twin of `_collapse_solid` in lsdyna/_lsdyna.py.
 std::pair<LsdType, std::vector<std::int64_t>> lsd_collapse_solid(
     const std::array<std::int64_t, 8>& n) {
-    if (n[3] == n[4] && n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
-        return {LsdType::Tetra, {n[0], n[1], n[2], n[3]}};
-    if (n[2] == n[3] && n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
-        return {LsdType::Tetra, {n[0], n[1], n[2], n[4]}};
-    if (n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
-        return {LsdType::Pyramid, {n[0], n[1], n[2], n[3], n[4]}};
-    if (n[2] == n[3] && n[6] == n[7])
-        return {LsdType::Wedge, {n[0], n[1], n[2], n[4], n[5], n[6]}};
-    if (n[4] == n[5] && n[6] == n[7])
-        return {LsdType::Wedge, {n[0], n[4], n[1], n[3], n[6], n[2]}};
-    return {LsdType::Hexahedron, std::vector<std::int64_t>(n.begin(), n.end())};
+    detail::CollapsedBrick c = detail::collapse_brick(n);
+    const std::string_view type = c.mType;
+    const LsdType t = type == "tetra"     ? LsdType::Tetra
+                      : type == "pyramid" ? LsdType::Pyramid
+                      : type == "wedge"   ? LsdType::Wedge
+                                          : LsdType::Hexahedron;
+    return {t, std::move(c.mNodes)};
 }
 
 // The 8 LS-DYNA nodes of a meshio++ tetra, pyramid, wedge or hexahedron.
@@ -89497,6 +91824,780 @@ MeshMetadata read_pvtp_metadata(const std::string& rPath, const ReadOptions& rOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/pvtu.cpp =====
+// ===== begin src/cpp/src/formats/radioss.cpp =====
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <ios>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+constexpr int kRadMaxIncludeDepth = 8;
+
+struct RadLine {
+    std::string mText;
+    std::string mWhere;  // "file:line"
+};
+
+std::string rad_trim(std::string_view s) {
+    const std::size_t b = s.find_first_not_of(" \t\r");
+    if (b == std::string_view::npos)
+        return {};
+    const std::size_t e = s.find_last_not_of(" \t\r");
+    return std::string(s.substr(b, e - b + 1));
+}
+
+std::string rad_upper(std::string s) {
+    for (char& c : s)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// The deck's lines with `#include` files inlined and comments dropped, up to
+// `/END` (or `#enddata` in an include).
+void rad_collect(const fs::path& rPath, int Depth, std::vector<RadLine>& rOut, bool& rEnded) {
+    if (Depth > kRadMaxIncludeDepth)
+        throw ReadError("Radioss: #include nested deeper than " +
+                        std::to_string(kRadMaxIncludeDepth));
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Radioss: cannot open " + rPath.string());
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string label = rPath.filename().string();
+    std::size_t pos = 0, number = 0;
+    while (pos < text.size() && !rEnded) {
+        std::size_t eol = text.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = text.size();
+        std::string line = text.substr(pos, eol - pos);
+        pos = eol + 1;
+        ++number;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const std::string lower = rad_upper(line.substr(0, 9));
+        if (lower.rfind("#INCLUDE", 0) == 0) {
+            std::string name = rad_trim(std::string_view(line).substr(8));
+            if (name.size() >= 2 && (name.front() == '"' || name.front() == '\'') &&
+                name.back() == name.front())
+                name = name.substr(1, name.size() - 2);
+            std::replace(name.begin(), name.end(), '\\', '/');
+            const fs::path inc =
+                fs::path(name).is_absolute() ? fs::path(name) : rPath.parent_path() / name;
+            std::error_code ec;
+            if (!fs::is_regular_file(inc, ec)) {
+                log::warn("Radioss: include file '{}' not found; skipped", name);
+                continue;
+            }
+            bool sub_ended = false;
+            rad_collect(inc, Depth + 1, rOut, sub_ended);
+            continue;
+        }
+        if (Depth > 0 && rad_upper(rad_trim(line)).rfind("#ENDDATA", 0) == 0)
+            return;
+        // Blank lines stay: a blank /PART or group title is still its title line.
+        if (!line.empty() && (line[0] == '#' || line[0] == '$'))
+            continue;
+        if (rad_upper(rad_trim(line)) == "/END") {
+            if (Depth == 0)
+                rEnded = true;
+            if (Depth == 0)
+                return;
+            continue;
+        }
+        rOut.push_back({std::move(line), label + ":" + std::to_string(number)});
+    }
+}
+
+// Fixed fields of `Width` columns, or comma-separated values.
+std::vector<std::string> rad_fields(const std::string& rLine, int Width, std::size_t Count) {
+    std::vector<std::string> out;
+    if (rLine.find(',') != std::string::npos) {
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t k = rLine.find(',', start);
+            out.push_back(rad_trim(std::string_view(rLine).substr(
+                start, k == std::string::npos ? std::string::npos : k - start)));
+            if (k == std::string::npos)
+                break;
+            start = k + 1;
+        }
+        return out;
+    }
+    const std::size_t w = static_cast<std::size_t>(Width);
+    for (std::size_t f = 0; f < Count; ++f) {
+        const std::size_t at = f * w;
+        out.push_back(at < rLine.size() ? rad_trim(std::string_view(rLine).substr(at, w))
+                                        : std::string());
+    }
+    return out;
+}
+
+std::int64_t rad_int(const std::string& rText, const RadLine& rLine) {
+    return detail::card_to_int(rText, " (" + rLine.mWhere + ")", "Radioss");
+}
+
+double rad_real(const std::string& rText, const RadLine& rLine) {
+    return detail::card_to_real(rText, " (" + rLine.mWhere + ")", "Radioss");
+}
+
+// Element keywords: their group family, node count, lines per element and the
+// meshio++ type they read as (before degenerate-brick and triangle checks).
+struct RadElementKind {
+    const char* mKeyword;
+    const char* mFamily;  // the /GR<family> keyword and /GRxxx/<subtype> that list them
+    std::size_t mNodes;
+    const char* mType;
+};
+
+const RadElementKind* rad_element_kind(const std::string& rKeyword) {
+    static const RadElementKind kinds[] = {
+        {"BRICK", "BRIC", 8, "hexahedron"},     {"PENTA6", "BRIC", 6, "wedge"},
+        {"TETRA4", "BRIC", 4, "tetra"},         {"TETRA10", "BRIC", 10, "tetra10"},
+        {"BRIC20", "BRIC", 20, "hexahedron20"}, {"SHELL", "SHEL", 4, "quad"},
+        {"SH3N", "SH3N", 3, "triangle"},        {"QUAD", "QUAD", 4, "quad"},
+        {"TRIA", "TRIA", 3, "triangle"},        {"BEAM", "BEAM", 2, "line"},
+        {"TRUSS", "TRUS", 2, "line"},           {"SPRING", "SPRI", 2, "line"},
+    };
+    for (const RadElementKind& k : kinds)
+        if (rKeyword == k.mKeyword)
+            return &k;
+    return nullptr;
+}
+
+// The /GRxxx keyword -> its element family (GRNOD -> "NODE").
+const char* rad_group_family(const std::string& rKeyword) {
+    static const std::pair<const char*, const char*> groups[] = {
+        {"GRNOD", "NODE"},  {"GRBRIC", "BRIC"}, {"GRSHEL", "SHEL"},
+        {"GRSH3N", "SH3N"}, {"GRQUAD", "QUAD"}, {"GRTRIA", "TRIA"},
+        {"GRBEAM", "BEAM"}, {"GRTRUS", "TRUS"}, {"GRSPRI", "SPRI"},
+    };
+    for (const auto& [k, f] : groups)
+        if (rKeyword == k)
+            return f;
+    return nullptr;
+}
+
+struct RadElement {
+    std::string mFamily;
+    std::int64_t mId, mPart;
+    std::string mType;
+    std::vector<std::int64_t> mNodes;  // node ids, meshio++ order
+    std::string mWhere;
+    bool mTetra = false;  // a /TETRA4 or /TETRA10, reoriented when inverted
+};
+
+struct RadPart {
+    std::string mTitle;
+    std::int64_t mProperty = 0, mMaterial = 0, mSubset = 0;
+};
+
+struct RadGroup {
+    std::string mKeyword, mSubtype, mTitle;
+    std::int64_t mId;
+    std::vector<std::int64_t> mIds;
+};
+
+struct RadSurface {
+    std::int64_t mId;
+    std::string mTitle;
+    std::vector<std::array<std::int64_t, 4>> mSegments;
+};
+
+struct RadSubset {
+    std::string mTitle;
+    std::vector<std::int64_t> mChildren;
+};
+
+NDArray rad_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
+    NDArray a(DType::Int64, Stride == 1 ? std::vector<std::size_t>{rIds.size()}
+                                        : std::vector<std::size_t>{rIds.size() / Stride, Stride});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+}  // namespace
+
+Mesh read_radioss(const std::string& rPath) {
+    std::vector<RadLine> lines;
+    bool ended = false;
+    {
+        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+        if (!in)
+            throw ReadError("Radioss: cannot open " + rPath);
+        std::string head(512, '\0');
+        in.read(head.data(), static_cast<std::streamsize>(head.size()));
+        head.resize(static_cast<std::size_t>(in.gcount()));
+        if (rad_upper(head).find("#RADIOSS ENGINE") != std::string::npos)
+            throw ReadError("Radioss: " + rPath +
+                            " is an engine deck (_0001.rad); read the starter deck (_0000.rad)");
+    }
+    rad_collect(fs::path(rPath), 0, lines, ended);
+
+    int version = 2019;
+    int iw = 10, rw = 20;
+    std::vector<std::int64_t> node_ids;
+    std::vector<double> coords;
+    std::vector<RadElement> elements;
+    std::map<std::int64_t, RadPart> parts;
+    std::vector<std::int64_t> part_order;
+    std::vector<RadGroup> groups;
+    std::vector<RadSurface> surfaces;
+    std::map<std::int64_t, RadSubset> subsets;
+    std::set<std::string> skipped_keywords;
+    std::size_t zero_springs = 0, linear_bric20 = 0;
+
+    std::size_t i = 0;
+    const std::size_t n = lines.size();
+    auto block_end = [&](std::size_t From) {
+        std::size_t k = From;
+        while (k < n && (lines[k].mText.empty() || lines[k].mText[0] != '/'))
+            ++k;
+        return k;
+    };
+    while (i < n) {
+        const RadLine& head = lines[i];
+        if (head.mText.empty() || head.mText[0] != '/') {
+            ++i;
+            continue;
+        }
+        std::vector<std::string> path;
+        {
+            std::string kw = rad_trim(head.mText);
+            std::size_t start = 1;
+            while (start <= kw.size()) {
+                const std::size_t k = kw.find('/', start);
+                path.push_back(rad_upper(rad_trim(std::string_view(kw).substr(
+                    start, k == std::string::npos ? std::string::npos : k - start))));
+                if (k == std::string::npos)
+                    break;
+                start = k + 1;
+            }
+        }
+        const std::string& key = path.empty() ? std::string() : path[0];
+        const std::size_t body = i + 1;
+        const std::size_t end = block_end(body);
+        auto last_id = [&](const RadLine& rLine) -> std::int64_t {
+            return path.size() >= 2 ? rad_int(path.back(), rLine) : 0;
+        };
+
+        if (key == "BEGIN") {
+            // run name; Invers Irun; two unit lines.
+            if (body + 1 < end) {
+                const std::vector<std::string> f = rad_fields(lines[body + 1].mText, 10, 2);
+                if (!f.empty() && !f[0].empty())
+                    version = static_cast<int>(rad_int(f[0], lines[body + 1]));
+            }
+            iw = version >= 51 ? 10 : 8;
+            rw = version >= 51 ? 20 : 16;
+        } else if (key == "NODE") {
+            for (std::size_t k = body; k < end; ++k) {
+                const RadLine& ln = lines[k];
+                std::vector<std::string> f;
+                if (ln.mText.find(',') != std::string::npos) {
+                    f = rad_fields(ln.mText, iw, 4);
+                } else {
+                    f.push_back(rad_trim(ln.mText.substr(
+                        0, std::min<std::size_t>(ln.mText.size(), static_cast<std::size_t>(iw)))));
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        const std::size_t at =
+                            static_cast<std::size_t>(iw + rw * static_cast<int>(d));
+                        f.push_back(at < ln.mText.size()
+                                        ? rad_trim(std::string_view(ln.mText).substr(
+                                              at, static_cast<std::size_t>(rw)))
+                                        : std::string());
+                    }
+                }
+                if (f.empty() || f[0].empty())
+                    continue;
+                node_ids.push_back(rad_int(f[0], ln));
+                for (std::size_t d = 1; d <= 3; ++d)
+                    coords.push_back(d < f.size() && !f[d].empty() ? rad_real(f[d], ln) : 0.0);
+            }
+        } else if (const RadElementKind* kind = rad_element_kind(key)) {
+            const std::int64_t part = last_id(head);
+            // Every element's integers, gathered from its line(s).
+            const std::size_t per_record = key == "TETRA10" ? 11 : kind->mNodes + 1;
+            std::vector<std::int64_t> values;
+            std::string where;
+            auto flush = [&]() {
+                RadElement el{kind->mFamily, values[0], part, kind->mType, {}, where};
+                std::vector<std::int64_t> nodes(
+                    values.begin() + 1,
+                    values.begin() + 1 + static_cast<std::ptrdiff_t>(kind->mNodes));
+                if (key == "BRICK") {
+                    std::array<std::int64_t, 8> a;
+                    std::copy(nodes.begin(), nodes.end(), a.begin());
+                    detail::CollapsedBrick c = detail::collapse_brick(a);
+                    el.mType = c.mType;
+                    nodes = std::move(c.mNodes);
+                } else if (key == "SHELL" && (nodes[3] == nodes[2] || nodes[3] == 0)) {
+                    el.mType = "triangle";
+                    nodes.resize(3);
+                } else if (key == "BRIC20") {
+                    if (std::find(nodes.begin() + 8, nodes.end(), 0) != nodes.end()) {
+                        ++linear_bric20;
+                        el.mType = "hexahedron";
+                        nodes.resize(8);
+                    } else {
+                        const detail::NodeOrder* order =
+                            detail::node_order("radioss", "hexahedron20");
+                        std::vector<std::int64_t> ordered(20);
+                        for (std::size_t j = 0; j < 20; ++j)
+                            ordered[j] =
+                                nodes[order ? static_cast<std::size_t>(order->mToMeshio[j]) : j];
+                        nodes = std::move(ordered);
+                    }
+                } else if (key == "SPRING" && nodes[1] == 0) {
+                    ++zero_springs;
+                    values.clear();
+                    return;
+                }
+                el.mNodes = std::move(nodes);
+                el.mTetra = key == "TETRA4" || key == "TETRA10";
+                elements.push_back(std::move(el));
+                values.clear();
+            };
+            for (std::size_t k = body; k < end; ++k) {
+                const RadLine& ln = lines[k];
+                if (rad_trim(ln.mText).empty())
+                    continue;
+                // Integer fields of the line: BRIC20 and TETRA10 records span
+                // several lines; the others are one line each.
+                std::size_t take = 10;
+                if (key == "TETRA10")
+                    take = values.empty() ? 1 : 10;
+                else if (key == "BRIC20")
+                    take = values.empty() ? 9 : (values.size() == 9 ? 8 : 4);
+                else
+                    take = per_record;
+                const std::vector<std::string> f = rad_fields(ln.mText, iw, take);
+                if (values.empty())
+                    where = ln.mWhere;
+                for (std::size_t j = 0; j < take && values.size() < per_record; ++j)
+                    values.push_back(j < f.size() && !f[j].empty() ? rad_int(f[j], ln) : 0);
+                if (values.size() >= per_record || (key != "TETRA10" && key != "BRIC20"))
+                    flush();
+            }
+            if (!values.empty())
+                throw ReadError("Radioss: /" + key + " element " + std::to_string(values[0]) +
+                                " is cut short (" + where + ")");
+        } else if (key == "PART") {
+            const std::int64_t id = last_id(head);
+            RadPart part;
+            std::size_t k = body;
+            if (k < end)
+                part.mTitle = rad_trim(lines[k++].mText);
+            if (k < end) {
+                const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 3);
+                part.mProperty = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
+                part.mMaterial = f.size() > 1 && !f[1].empty() ? rad_int(f[1], lines[k]) : 0;
+                part.mSubset = f.size() > 2 && !f[2].empty() ? rad_int(f[2], lines[k]) : 0;
+            }
+            if (parts.emplace(id, part).second)
+                part_order.push_back(id);
+        } else if (rad_group_family(key) && path.size() >= 3) {
+            RadGroup g{key, path[1], {}, last_id(head), {}};
+            std::size_t k = body;
+            if (k < end)
+                g.mTitle = rad_trim(lines[k++].mText);
+            for (; k < end; ++k)
+                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                    if (!f.empty())
+                        g.mIds.push_back(rad_int(f, lines[k]));
+            groups.push_back(std::move(g));
+        } else if (key == "SURF" && path.size() >= 3 && path[1] == "SEG") {
+            RadSurface s{last_id(head), {}, {}};
+            std::size_t k = body;
+            if (k < end)
+                s.mTitle = rad_trim(lines[k++].mText);
+            for (; k < end; ++k) {
+                const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 5);
+                std::array<std::int64_t, 4> seg{0, 0, 0, 0};
+                for (std::size_t j = 0; j < 4; ++j)
+                    seg[j] =
+                        j + 1 < f.size() && !f[j + 1].empty() ? rad_int(f[j + 1], lines[k]) : 0;
+                if (seg[0] || seg[1] || seg[2])
+                    s.mSegments.push_back(seg);
+            }
+            surfaces.push_back(std::move(s));
+        } else if (key == "SURF") {
+            skipped_keywords.insert("/SURF/" + (path.size() > 1 ? path[1] : std::string()));
+        } else if (key == "SUBSET") {
+            RadSubset s;
+            std::size_t k = body;
+            if (k < end)
+                s.mTitle = rad_trim(lines[k++].mText);
+            for (; k < end; ++k)
+                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                    if (!f.empty())
+                        s.mChildren.push_back(rad_int(f, lines[k]));
+            subsets[last_id(head)] = std::move(s);
+        } else if (key.rfind("GR", 0) == 0 || key == "TSHELL" || key == "TSH3N" ||
+                   key == "SHEL16" || key == "SPHCEL" || key == "RIVET" || key == "XELEM") {
+            skipped_keywords.insert("/" + key);
+        }
+        i = end;
+    }
+    if (!skipped_keywords.empty()) {
+        std::string list;
+        for (const std::string& k : skipped_keywords)
+            list += (list.empty() ? "" : ", ") + k;
+        log::warn("Radioss: mesh keywords not read: {}", list);
+    }
+    if (zero_springs)
+        log::warn("Radioss: {} /SPRING element(s) with a single node skipped", zero_springs);
+    if (linear_bric20)
+        log::warn(
+            "Radioss: {} /BRIC20 element(s) with missing mid-edge nodes read as "
+            "hexahedra",
+            linear_bric20);
+
+    // --- points -------------------------------------------------------------------
+    Mesh mesh;
+    std::unordered_map<std::int64_t, std::int64_t> node_index;
+    node_index.reserve(node_ids.size());
+    for (std::size_t p = 0; p < node_ids.size(); ++p)
+        if (!node_index.emplace(node_ids[p], static_cast<std::int64_t>(p)).second)
+            throw ReadError("Radioss: node " + std::to_string(node_ids[p]) + " is defined twice");
+    NDArray points(DType::Float64, {node_ids.size(), 3});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+    mesh.AddFieldData("radioss:version", [&] {
+        NDArray a(DType::Int64, {});
+        a.As<std::int64_t>()[0] = version;
+        return a;
+    }());
+
+    // --- cells: one block per type, in order of first appearance --------------------
+    std::vector<std::string> block_types;
+    std::map<std::string, std::vector<std::size_t>> by_type;
+    for (std::size_t e = 0; e < elements.size(); ++e) {
+        auto [it, fresh] = by_type.emplace(elements[e].mType, std::vector<std::size_t>{});
+        if (fresh)
+            block_types.push_back(elements[e].mType);
+        it->second.push_back(e);
+    }
+    std::map<std::string, std::unordered_map<std::int64_t, std::int64_t>>
+        owner;  // family -> id -> cell
+    std::map<std::int64_t, std::vector<std::int64_t>> part_cells;
+    std::vector<std::int64_t> cell_part;
+    std::vector<int> cell_dim;
+    std::vector<NDArray> part_blocks, prop_blocks, mat_blocks;
+    // Tetrahedra come in either winding (every /TETRA4 of OpenRadioss's INT_25 QA
+    // deck is inverted, gmsh writes them positive): an inverted one is mirrored.
+    std::size_t reoriented = 0;
+    for (RadElement& el : elements) {
+        if (!el.mTetra)
+            continue;
+        std::array<std::array<double, 3>, 4> p{};
+        bool known = true;
+        for (std::size_t c = 0; c < 4 && known; ++c) {
+            const auto it = node_index.find(el.mNodes[c]);
+            known = it != node_index.end();
+            if (known)
+                for (std::size_t d = 0; d < 3; ++d)
+                    p[c][d] = coords[3 * static_cast<std::size_t>(it->second) + d];
+        }
+        if (!known)
+            continue;
+        double a[3], b[3], c[3];
+        for (std::size_t d = 0; d < 3; ++d) {
+            a[d] = p[1][d] - p[0][d];
+            b[d] = p[2][d] - p[0][d];
+            c[d] = p[3][d] - p[0][d];
+        }
+        const double det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) +
+                           a[2] * (b[0] * c[1] - b[1] * c[0]);
+        if (det >= 0.0)
+            continue;
+        std::swap(el.mNodes[1], el.mNodes[2]);
+        if (el.mNodes.size() == 10) {  // edges 0-1 <-> 0-2 and 1-3 <-> 2-3
+            std::swap(el.mNodes[4], el.mNodes[6]);
+            std::swap(el.mNodes[8], el.mNodes[9]);
+        }
+        ++reoriented;
+    }
+    if (reoriented)
+        log::warn("Radioss: {} inverted tetrahedra reoriented", reoriented);
+
+    for (const std::string& type : block_types) {
+        const std::vector<std::size_t>& members = by_type[type];
+        const std::size_t k =
+            static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(type)));
+        const int dim = cell_type_dimension(cell_type_from_name(type));
+        NDArray conn(DType::Int64, {members.size(), k});
+        NDArray pa(DType::Int64, {members.size()}), pr(DType::Int64, {members.size()}),
+            ma(DType::Int64, {members.size()});
+        for (std::size_t r = 0; r < members.size(); ++r) {
+            const RadElement& el = elements[members[r]];
+            for (std::size_t j = 0; j < k; ++j) {
+                const auto it = node_index.find(el.mNodes[j]);
+                if (it == node_index.end())
+                    throw ReadError("Radioss: element " + std::to_string(el.mId) +
+                                    " names undefined node " + std::to_string(el.mNodes[j]) + " (" +
+                                    el.mWhere + ")");
+                conn.As<std::int64_t>()[r * k + j] = it->second;
+            }
+            const std::int64_t cell = static_cast<std::int64_t>(cell_part.size());
+            if (!owner[el.mFamily].emplace(el.mId, cell).second)
+                throw ReadError("Radioss: element " + std::to_string(el.mId) +
+                                " is defined twice (" + el.mWhere + ")");
+            const auto p = parts.find(el.mPart);
+            pa.As<std::int64_t>()[r] = el.mPart;
+            pr.As<std::int64_t>()[r] = p == parts.end() ? 0 : p->second.mProperty;
+            ma.As<std::int64_t>()[r] = p == parts.end() ? 0 : p->second.mMaterial;
+            part_cells[el.mPart].push_back(cell);
+            cell_part.push_back(el.mPart);
+            cell_dim.push_back(dim);
+        }
+        mesh.AddCellBlock(type, std::move(conn));
+        part_blocks.push_back(std::move(pa));
+        prop_blocks.push_back(std::move(pr));
+        mat_blocks.push_back(std::move(ma));
+    }
+    if (!block_types.empty()) {
+        mesh.AddCellData("radioss:part", std::move(part_blocks));
+        mesh.AddCellData("radioss:property", std::move(prop_blocks));
+        mesh.AddCellData("radioss:material", std::move(mat_blocks));
+    }
+
+    // --- regions ------------------------------------------------------------------
+    std::set<std::tuple<int, std::string, std::int64_t>> seen;
+    auto add_region = [&](std::string name, RegionKind kind, std::int64_t tag,
+                          const std::string& rKeyword, std::vector<std::int64_t> entries) {
+        int dim = -1;
+        if (kind == RegionKind::Cell)
+            for (std::int64_t c : entries)
+                dim = std::max(dim, cell_dim[static_cast<std::size_t>(c)]);
+        else if (kind == RegionKind::Side)
+            for (std::size_t k = 0; k < entries.size(); k += 2)
+                dim = std::max(dim, cell_dim[static_cast<std::size_t>(entries[k])] - 1);
+        const int kid = static_cast<int>(kind);
+        if (seen.count({kid, name, tag}))
+            name += " [" + rKeyword + "]";
+        seen.emplace(kid, name, tag);
+        mesh.AddRegion(
+            Region(name, kind, dim, tag, rad_ids(entries, kind == RegionKind::Side ? 2 : 1)));
+    };
+    // Parts named in elements but never defined still get a region.
+    for (const auto& [pid, cells] : part_cells)
+        if (!parts.count(pid)) {
+            parts.emplace(pid, RadPart{});
+            part_order.push_back(pid);
+        }
+    for (std::int64_t pid : part_order) {
+        const RadPart& p = parts[pid];
+        const auto it = part_cells.find(pid);
+        add_region(p.mTitle.empty() ? "Part " + std::to_string(pid) : p.mTitle, RegionKind::Cell,
+                   pid, "PART", it == part_cells.end() ? std::vector<std::int64_t>{} : it->second);
+    }
+    // A subset and every subset under it.
+    auto subset_closure = [&](std::int64_t Root) {
+        std::set<std::int64_t> ids;
+        std::vector<std::int64_t> stack{Root};
+        while (!stack.empty()) {
+            const std::int64_t c = stack.back();
+            stack.pop_back();
+            if (!ids.insert(c).second)
+                continue;
+            const auto it = subsets.find(c);
+            if (it != subsets.end())
+                stack.insert(stack.end(), it->second.mChildren.begin(), it->second.mChildren.end());
+        }
+        return ids;
+    };
+    for (const auto& [sid, s] : subsets) {
+        const std::set<std::int64_t> ids = subset_closure(sid);
+        std::vector<std::int64_t> cells;
+        for (std::int64_t pid : part_order)
+            if (ids.count(parts[pid].mSubset)) {
+                const auto it = part_cells.find(pid);
+                if (it != part_cells.end())
+                    cells.insert(cells.end(), it->second.begin(), it->second.end());
+            }
+        add_region(s.mTitle.empty() ? "Subset " + std::to_string(sid) : s.mTitle, RegionKind::Cell,
+                   sid, "SUBSET", std::move(cells));
+    }
+
+    // Groups: resolved recursively (a group can list other groups).
+    std::map<std::pair<std::string, std::int64_t>, std::size_t> group_of;
+    for (std::size_t g = 0; g < groups.size(); ++g)
+        group_of[{groups[g].mKeyword, groups[g].mId}] = g;
+    std::set<std::string> skipped_subtypes;
+    std::size_t dropped = 0;
+    // A PART subtype stands for the parts' nodes in a GRNOD, and for the parts'
+    // cells of the group's own family in an element group.
+    std::vector<std::string> cell_family(cell_part.size());
+    for (const auto& [family, map] : owner)
+        for (const auto& [id, cell] : map)
+            cell_family[static_cast<std::size_t>(cell)] = family;
+    std::vector<std::vector<std::int64_t>> cell_conn;
+    for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+        const auto cb = mesh.Cells(b);
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        for (std::size_t r = 0; r < cb.NumCells(); ++r)
+            cell_conn.emplace_back(conn.As<std::int64_t>() + r * k,
+                                   conn.As<std::int64_t>() + (r + 1) * k);
+    }
+    std::function<std::set<std::int64_t>(std::size_t, std::set<std::size_t>&)> resolve;
+    resolve = [&](std::size_t g, std::set<std::size_t>& rVisiting) -> std::set<std::int64_t> {
+        std::set<std::int64_t> out;
+        if (!rVisiting.insert(g).second)
+            return out;
+        const RadGroup& grp = groups[g];
+        const std::string family = rad_group_family(grp.mKeyword);
+        const bool nodes = family == "NODE";
+        std::set<std::int64_t> removed;
+        for (std::int64_t raw : grp.mIds) {
+            const std::int64_t id = raw < 0 ? -raw : raw;
+            std::set<std::int64_t> hits;
+            if (grp.mSubtype == family) {
+                if (nodes) {
+                    const auto it = node_index.find(id);
+                    if (it != node_index.end())
+                        hits.insert(it->second);
+                    else
+                        ++dropped;
+                } else {
+                    const auto& map = owner[family];
+                    const auto it = map.find(id);
+                    if (it != map.end())
+                        hits.insert(it->second);
+                    else
+                        ++dropped;
+                }
+            } else if (grp.mSubtype == "PART" || grp.mSubtype == "SUBSET") {
+                // The parts' nodes for GRNOD, else their cells of the group's family.
+                std::vector<std::int64_t> pids{id};
+                if (grp.mSubtype == "SUBSET") {
+                    pids.clear();
+                    for (std::int64_t pid : part_order)
+                        if (subset_closure(id).count(parts[pid].mSubset))
+                            pids.push_back(pid);
+                }
+                for (std::int64_t pid : pids) {
+                    const auto it = part_cells.find(pid);
+                    if (it == part_cells.end())
+                        continue;
+                    for (std::int64_t c : it->second) {
+                        if (nodes)
+                            hits.insert(cell_conn[static_cast<std::size_t>(c)].begin(),
+                                        cell_conn[static_cast<std::size_t>(c)].end());
+                        else if (cell_family[static_cast<std::size_t>(c)] == family)
+                            hits.insert(c);
+                    }
+                }
+            } else if (nodes && grp.mSubtype == "SURF") {
+                for (const RadSurface& surf : surfaces)
+                    if (surf.mId == id)
+                        for (const auto& seg : surf.mSegments)
+                            for (std::int64_t v : seg) {
+                                const auto it = node_index.find(v);
+                                if (v && it != node_index.end())
+                                    hits.insert(it->second);
+                            }
+            } else if (nodes && rad_group_family(grp.mSubtype) &&
+                       std::string(rad_group_family(grp.mSubtype)) != "NODE") {
+                // A GRNOD of element groups: those elements' nodes.
+                const auto it = group_of.find({grp.mSubtype, id});
+                if (it != group_of.end())
+                    for (std::int64_t c : resolve(it->second, rVisiting))
+                        hits.insert(cell_conn[static_cast<std::size_t>(c)].begin(),
+                                    cell_conn[static_cast<std::size_t>(c)].end());
+            } else if (grp.mSubtype == grp.mKeyword) {
+                const auto it = group_of.find({grp.mKeyword, id});
+                if (it != group_of.end()) {
+                    const std::set<std::int64_t> sub = resolve(it->second, rVisiting);
+                    hits.insert(sub.begin(), sub.end());
+                }
+            } else {
+                skipped_subtypes.insert("/" + grp.mKeyword + "/" + grp.mSubtype);
+                break;
+            }
+            (raw < 0 ? removed : out).insert(hits.begin(), hits.end());
+        }
+        for (std::int64_t r : removed)
+            out.erase(r);
+        rVisiting.erase(g);
+        return out;
+    };
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        std::set<std::size_t> visiting;
+        const RadGroup& grp = groups[g];
+        const std::string family = rad_group_family(grp.mKeyword);
+        const std::set<std::int64_t> ids = resolve(g, visiting);
+        std::vector<std::int64_t> entries(ids.begin(), ids.end());
+        add_region(grp.mTitle.empty() ? grp.mKeyword + "_" + std::to_string(grp.mId) : grp.mTitle,
+                   family == "NODE" ? RegionKind::Point : RegionKind::Cell, grp.mId, grp.mKeyword,
+                   std::move(entries));
+    }
+    for (const std::string& t : skipped_subtypes)
+        log::warn(
+            "Radioss: {} groups are not resolved (only entity ids, parts and other groups "
+            "are); their regions are left empty or partial",
+            t);
+
+    // Surfaces -> side regions; a shell segment is the shell's own face.
+    if (!surfaces.empty()) {
+        detail::FacetIndexOptions options;
+        options.mSurfaceSelf = true;
+        const detail::FacetIndex facets(mesh, options);
+        for (const RadSurface& s : surfaces) {
+            std::vector<std::int64_t> entries;
+            for (const auto& seg : s.mSegments) {
+                std::array<std::int64_t, 4> idx{};
+                bool defined = true;
+                // 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
+                const std::size_t count =
+                    seg[2] == 0 ? 2 : ((seg[3] == 0 || seg[3] == seg[2]) ? 3 : 4);
+                for (std::size_t k = 0; k < count; ++k) {
+                    const auto it = node_index.find(seg[k]);
+                    defined = defined && it != node_index.end();
+                    idx[k] = defined ? it->second : -1;
+                }
+                const detail::FacetHit* hit = defined ? facets.Find(idx.data(), count) : nullptr;
+                if (!hit) {
+                    ++dropped;
+                    continue;
+                }
+                entries.push_back(hit->mFirst.mCell);
+                entries.push_back(hit->mFirst.mFacet);
+            }
+            add_region(s.mTitle.empty() ? "SURF_" + std::to_string(s.mId) : s.mTitle,
+                       RegionKind::Side, s.mId, "SURF", std::move(entries));
+        }
+    }
+    if (dropped)
+        log::warn(
+            "Radioss: {} group or surface entries name undefined ids or no cell facet and "
+            "were dropped",
+            dropped);
+    return mesh;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/radioss.cpp =====
 // ===== begin src/cpp/src/formats/stl.cpp =====
 #include <array>
 #include <cctype>
@@ -103791,6 +106892,665 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/xyz.cpp =====
+// ===== begin src/cpp/src/formats/z88.cpp =====
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <ios>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Z88 element type -> node count, the meshio++ type it reads as, how many of
+// its (leading) nodes that type keeps, and the degrees of freedom per node.
+struct Z88Type {
+    int mCode;
+    int mNodes;
+    const char* mCell;
+    int mKeep;
+    int mDof;
+};
+
+const Z88Type* z88_type(std::int64_t Code) {
+    static const Z88Type types[] = {
+        {1, 8, "hexahedron", 8, 3},   {2, 2, "line", 2, 6},
+        {3, 6, "triangle6", 6, 2},    {4, 2, "line", 2, 3},
+        {5, 2, "line", 2, 6},         {6, 3, "triangle", 3, 2},
+        {7, 8, "quad8", 8, 2},        {8, 8, "quad8", 8, 2},
+        {9, 2, "line", 2, 2},         {10, 20, "hexahedron20", 20, 3},
+        {11, 12, "quad", 4, 2},       {12, 12, "quad", 4, 2},
+        {13, 2, "line", 2, 3},        {14, 6, "triangle6", 6, 2},
+        {15, 6, "triangle6", 6, 2},   {16, 10, "tetra10", 10, 3},
+        {17, 4, "tetra", 4, 3},       {18, 6, "triangle6", 6, 3},
+        {19, 16, "quad", 4, 3},       {20, 8, "quad8", 8, 3},
+        {21, 16, "hexahedron", 8, 3}, {22, 12, "wedge", 6, 3},
+        {23, 8, "quad8", 8, 6},       {24, 6, "triangle6", 6, 6},
+        {25, 2, "line", 2, 6},
+    };
+    return Code >= 1 && Code <= 25 ? &types[Code - 1] : nullptr;
+}
+
+// Types 11/12/19 (cubic and Lagrange quads) and 21/22 (layered shells) keep
+// their corners: 11/12 list them first; 19 is a 4x4 lattice row by row (its
+// corners 1, 13, 16, 4 run counter-clockwise); 21/22
+// list the corners of one layer, then the other.
+std::vector<int> z88_corners(int Code) {
+    switch (Code) {
+        case 19:
+            return {0, 12, 15, 3};
+        case 21:
+            return {0, 1, 2, 3, 8, 9, 10, 11};
+        case 22:
+            return {0, 1, 2, 6, 7, 8};
+        default:
+            return {};
+    }
+}
+
+[[noreturn]] void z88_fail(const std::string& rWhat, std::size_t Line) {
+    throw ReadError("Z88: " + rWhat + " (line " + std::to_string(Line) + ")");
+}
+
+std::vector<std::string_view> z88_lines(const std::string& rText) {
+    std::vector<std::string_view> lines;
+    std::size_t pos = 0;
+    while (pos < rText.size()) {
+        std::size_t eol = rText.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = rText.size();
+        std::string_view line(rText.data() + pos, eol - pos);
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        lines.push_back(line);
+        pos = eol + 1;
+    }
+    return lines;
+}
+
+std::vector<std::string_view> z88_tokens(std::string_view Line) {
+    std::vector<std::string_view> out;
+    std::size_t k = 0;
+    while (k < Line.size()) {
+        while (k < Line.size() && std::isspace(static_cast<unsigned char>(Line[k])))
+            ++k;
+        const std::size_t b = k;
+        while (k < Line.size() && !std::isspace(static_cast<unsigned char>(Line[k])))
+            ++k;
+        if (k > b)
+            out.push_back(Line.substr(b, k - b));
+    }
+    return out;
+}
+
+bool z88_int(std::string_view Token, std::int64_t& rOut) {
+    if (!Token.empty() && Token.front() == '+')
+        Token.remove_prefix(1);
+    const auto [p, ec] = std::from_chars(Token.data(), Token.data() + Token.size(), rOut);
+    return ec == std::errc() && p == Token.data() + Token.size();
+}
+
+bool z88_real(std::string_view Token, double& rOut) {
+    const std::string t(Token);
+    const char* end = nullptr;
+    rOut = detail::parse_double(t.c_str(), end);
+    return end == t.c_str() + t.size() && !t.empty();
+}
+
+// The leading integers of a line (stopping at the first other token).
+std::vector<std::int64_t> z88_leading_ints(std::string_view Line) {
+    std::vector<std::int64_t> out;
+    for (std::string_view t : z88_tokens(Line)) {
+        std::int64_t v = 0;
+        if (!z88_int(t, v))
+            break;
+        out.push_back(v);
+    }
+    return out;
+}
+
+std::string z88_read_text(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Z88: cannot open " + rPath);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+std::string z88_lower(std::string s) {
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// The file named `rName` (any case) in `rDir`, or an empty path.
+std::filesystem::path z88_sibling(const std::filesystem::path& rDir, const std::string& rName) {
+    std::error_code ec;
+    for (auto it = std::filesystem::directory_iterator(rDir.empty() ? "." : rDir, ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec))
+        if (z88_lower(it->path().filename().string()) == rName && it->is_regular_file(ec))
+            return it->path();
+    return {};
+}
+
+struct Z88Element {
+    std::int64_t mId;
+    const Z88Type* mType;
+    std::vector<std::int64_t> mNodes;  // node ids, file order
+    std::size_t mLine;
+};
+
+// `z88o2.txt`: rows `node u1 u2 [u3 [u4 u5 u6]]`; every other line (the
+// language-dependent header) is skipped.
+void z88_attach_displacements(Mesh& rMesh, const std::string& rPath,
+                              const std::unordered_map<std::int64_t, std::size_t>& rNodeIndex) {
+    const std::string text = z88_read_text(rPath);
+    std::vector<std::pair<std::size_t, std::vector<double>>> rows;
+    std::size_t width = 0;
+    for (std::string_view line : z88_lines(text)) {
+        const std::vector<std::string_view> t = z88_tokens(line);
+        if (t.size() != 3 && t.size() != 4 && t.size() != 7)
+            continue;
+        std::int64_t id = 0;
+        if (!z88_int(t[0], id))
+            continue;
+        std::vector<double> u(t.size() - 1);
+        bool ok = true;
+        for (std::size_t k = 1; k < t.size() && ok; ++k)
+            ok = z88_real(t[k], u[k - 1]);
+        const auto it = rNodeIndex.find(id);
+        if (!ok || it == rNodeIndex.end())
+            continue;
+        width = std::max(width, u.size());
+        rows.emplace_back(it->second, std::move(u));
+    }
+    if (rows.empty()) {
+        log::warn("Z88: '{}' holds no displacement rows; ignored", rPath);
+        return;
+    }
+    const std::size_t n = rMesh.NumPoints();
+    NDArray u(DType::Float64, {n, width});
+    double* d = u.As<double>();
+    std::fill(d, d + n * width, std::numeric_limits<double>::quiet_NaN());
+    for (const auto& [p, values] : rows)
+        std::copy(values.begin(), values.end(), d + p * width);
+    rMesh.AddPointData("U", std::move(u));
+}
+
+// `z88o3.txt`: blocks opened by `element # = N` (or `#=`), then rows of reals.
+// Solid rows are `x y z` + 6 stresses [+ equivalent], plane-stress rows `x y` +
+// 3 stresses [+ equivalent]; the mean over an element's rows is kept.
+void z88_attach_stresses(Mesh& rMesh, const std::string& rPath,
+                         const std::unordered_map<std::int64_t, std::size_t>& rElementIndex,
+                         const std::vector<int>& rCellCode,
+                         const std::vector<std::size_t>& rBlockStart) {
+    const std::string text = z88_read_text(rPath);
+    const std::size_t ncells = rCellCode.size();
+    std::vector<std::vector<double>> sum(ncells);
+    std::vector<std::vector<double>> sumv(ncells);
+    std::vector<std::size_t> count(ncells, 0), countv(ncells, 0);
+    std::int64_t current = -1;
+    std::size_t skipped = 0;
+    int components = 0;
+    for (std::string_view line : z88_lines(text)) {
+        const std::size_t hash = line.find('#');
+        const std::string lower = z88_lower(std::string(line.substr(0, hash)));
+        if (hash != std::string_view::npos && lower.find("element") != std::string::npos) {
+            std::string_view rest = line.substr(hash + 1);
+            const std::size_t eq = rest.find('=');
+            current = -1;
+            if (eq != std::string_view::npos) {
+                const std::vector<std::int64_t> id = z88_leading_ints(rest.substr(eq + 1));
+                if (!id.empty()) {
+                    const auto it = rElementIndex.find(id[0]);
+                    if (it != rElementIndex.end())
+                        current = static_cast<std::int64_t>(it->second);
+                }
+            }
+            continue;
+        }
+        if (current < 0)
+            continue;
+        const std::vector<std::string_view> t = z88_tokens(line);
+        if (t.empty())
+            continue;
+        std::vector<double> v(t.size());
+        bool ok = true;
+        for (std::size_t k = 0; k < t.size() && ok; ++k)
+            ok = z88_real(t[k], v[k]);
+        if (!ok)
+            continue;
+        const std::size_t c = static_cast<std::size_t>(current);
+        const int code = rCellCode[c];
+        const bool solid = code == 1 || code == 10 || code == 16 || code == 17;
+        const bool plane = code == 3 || code == 7 || code == 11 || code == 14;
+        std::size_t first = 0, n = 0;
+        if (solid && (v.size() == 9 || v.size() == 10)) {
+            first = 3;
+            n = 6;
+        } else if (plane && (v.size() == 5 || v.size() == 6)) {
+            first = 2;
+            n = 3;
+        } else {
+            ++skipped;
+            continue;
+        }
+        if (components && components != static_cast<int>(n)) {
+            ++skipped;
+            continue;
+        }
+        components = static_cast<int>(n);
+        std::vector<double>& s = sum[c];
+        s.resize(n, 0.0);
+        for (std::size_t k = 0; k < n; ++k)
+            s[k] += v[first + k];
+        ++count[c];
+        if (v.size() == first + n + 1) {
+            sumv[c].resize(1, 0.0);
+            sumv[c][0] += v.back();
+            ++countv[c];
+        }
+    }
+    if (skipped)
+        log::warn(
+            "Z88: {} stress row(s) of elements other than solids and plane-stress "
+            "elements skipped",
+            skipped);
+    if (!components)
+        return;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::size_t w = static_cast<std::size_t>(components);
+    std::vector<NDArray> sig, sigv;
+    bool any_v = false;
+    for (std::size_t b = 0; b + 1 < rBlockStart.size(); ++b) {
+        const std::size_t n = rBlockStart[b + 1] - rBlockStart[b];
+        NDArray a(DType::Float64, {n, w});
+        NDArray av(DType::Float64, {n});
+        for (std::size_t r = 0; r < n; ++r) {
+            const std::size_t c = rBlockStart[b] + r;
+            for (std::size_t k = 0; k < w; ++k)
+                a.As<double>()[r * w + k] =
+                    count[c] ? sum[c][k] / static_cast<double>(count[c]) : nan;
+            av.As<double>()[r] = countv[c] ? sumv[c][0] / static_cast<double>(countv[c]) : nan;
+            any_v = any_v || countv[c] > 0;
+        }
+        sig.push_back(std::move(a));
+        sigv.push_back(std::move(av));
+    }
+    rMesh.AddCellData("SIG", std::move(sig));
+    if (any_v)
+        rMesh.AddCellData("SIGV", std::move(sigv));
+}
+
+}  // namespace
+
+bool is_z88_filename(const std::string& rPath) {
+    const std::string name = z88_lower(std::filesystem::path(rPath).filename().string());
+    return name == "z88i1.txt" || name == "z88structure.txt" || name == "z88o2.txt" ||
+           name == "z88o3.txt";
+}
+
+Mesh read_z88(const std::string& rPath, bool Results) {
+    namespace fs = std::filesystem;
+    fs::path structure(rPath);
+    const std::string base = z88_lower(structure.filename().string());
+    if (base == "z88o2.txt" || base == "z88o3.txt") {
+        structure = z88_sibling(structure.parent_path(), "z88i1.txt");
+        if (structure.empty())
+            structure = z88_sibling(fs::path(rPath).parent_path(), "z88structure.txt");
+        if (structure.empty())
+            throw ReadError("Z88: no z88i1.txt next to " + rPath);
+    }
+    const std::string text = z88_read_text(structure.string());
+    const std::vector<std::string_view> lines = z88_lines(text);
+    std::size_t i = 0;
+    while (i < lines.size() && z88_tokens(lines[i]).empty())
+        ++i;
+    if (i >= lines.size())
+        throw ReadError("Z88: " + rPath + " is empty");
+    const std::vector<std::int64_t> head = z88_leading_ints(lines[i]);
+    if (head.size() < 3 || head[0] < 1 || head[0] > 3 || head[1] < 0 || head[2] < 0)
+        z88_fail("the header needs the dimension, node and element counts", i + 1);
+    const int ndim = static_cast<int>(head[0]);
+    const std::size_t nnodes = static_cast<std::size_t>(head[1]);
+    const std::size_t nelem = static_cast<std::size_t>(head[2]);
+    // Z88OS v15: ndim nnodes nelem ndof kflag. Z88 <= V13 / Aurora V1: ndim nnodes
+    // nelem ndof nmat kflag ibflag ipflag [iqflag] [ihflag].
+    const bool legacy = head.size() >= 8;
+    const std::int64_t kflag = legacy ? head[5] : (head.size() >= 5 ? head[4] : 0);
+    ++i;
+
+    std::vector<double> coords;
+    coords.reserve(3 * nnodes);
+    std::unordered_map<std::int64_t, std::size_t> node_index;
+    node_index.reserve(nnodes);
+    for (std::size_t n = 0; n < nnodes; ++n, ++i) {
+        while (i < lines.size() && z88_tokens(lines[i]).empty())
+            ++i;
+        if (i >= lines.size())
+            z88_fail("the file ends before node " + std::to_string(n + 1) + " of " +
+                         std::to_string(nnodes),
+                     i);
+        const std::vector<std::string_view> t = z88_tokens(lines[i]);
+        std::int64_t id = 0;
+        if (t.size() < static_cast<std::size_t>(2 + ndim) || !z88_int(t[0], id))
+            z88_fail("a node line needs its id, degrees of freedom and " + std::to_string(ndim) +
+                         " coordinates",
+                     i + 1);
+        double x[3] = {0.0, 0.0, 0.0};
+        for (int d = 0; d < ndim; ++d)
+            if (!z88_real(t[2 + static_cast<std::size_t>(d)], x[d]))
+                z88_fail("bad coordinate '" + std::string(t[2 + static_cast<std::size_t>(d)]) + "'",
+                         i + 1);
+        if (kflag == 1) {
+            const double r = x[0], phi = x[1] * 3.14159265358979323846 / 180.0;
+            x[0] = r * std::cos(phi);
+            x[1] = r * std::sin(phi);
+        }
+        if (!node_index.emplace(id, n).second)
+            z88_fail("node " + std::to_string(id) + " is defined twice", i + 1);
+        coords.insert(coords.end(), x, x + 3);
+    }
+    if (kflag == 1)
+        log::warn("Z88: cylindrical input (KFLAG = 1) converted to Cartesian coordinates");
+
+    std::vector<Z88Element> elements;
+    elements.reserve(nelem);
+    for (std::size_t e = 0; e < nelem; ++e) {
+        while (i < lines.size() && z88_tokens(lines[i]).empty())
+            ++i;
+        if (i >= lines.size())
+            z88_fail("the file ends before element " + std::to_string(e + 1) + " of " +
+                         std::to_string(nelem),
+                     i);
+        const std::vector<std::int64_t> h = z88_leading_ints(lines[i]);
+        if (h.size() < 2)
+            z88_fail("an element starts with its id and type", i + 1);
+        const Z88Type* type = z88_type(h[1]);
+        if (!type)
+            z88_fail(
+                "element " + std::to_string(h[0]) + " has unknown type " + std::to_string(h[1]),
+                i + 1);
+        Z88Element el{h[0], type, {}, i + 1};
+        ++i;
+        while (el.mNodes.size() < static_cast<std::size_t>(type->mNodes)) {
+            if (i >= lines.size())
+                z88_fail("element " + std::to_string(el.mId) + " is cut short", el.mLine);
+            for (std::int64_t v : z88_leading_ints(lines[i]))
+                if (el.mNodes.size() < static_cast<std::size_t>(type->mNodes))
+                    el.mNodes.push_back(v);
+            ++i;
+        }
+        elements.push_back(std::move(el));
+    }
+
+    Mesh mesh;
+    NDArray points(DType::Float64, {nnodes, 3});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+
+    // One block per meshio++ type, in order of first appearance.
+    std::vector<std::string> block_types;
+    std::map<std::string, std::vector<std::size_t>> by_type;
+    std::set<int> reduced;
+    for (std::size_t e = 0; e < elements.size(); ++e) {
+        const Z88Type* t = elements[e].mType;
+        auto [it, fresh] = by_type.emplace(t->mCell, std::vector<std::size_t>{});
+        if (fresh)
+            block_types.push_back(t->mCell);
+        it->second.push_back(e);
+        if (t->mKeep < t->mNodes)
+            reduced.insert(t->mCode);
+    }
+    for (int code : reduced) {
+        log::warn("Z88: type {} elements keep only their corner nodes", code);
+        detail::provenance_note("high-order-dropped", "Z88 type " + std::to_string(code) +
+                                                          " elements keep only their corners");
+    }
+    std::unordered_map<std::int64_t, std::size_t> element_index;
+    std::vector<int> cell_code;
+    std::vector<std::size_t> block_start{0};
+    std::vector<NDArray> type_blocks;
+    for (const std::string& ctype : block_types) {
+        const std::vector<std::size_t>& members = by_type[ctype];
+        const std::size_t k =
+            static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(ctype)));
+        const detail::NodeOrder* order = detail::node_order("z88", ctype);
+        NDArray conn(DType::Int64, {members.size(), k});
+        NDArray codes(DType::Int64, {members.size()});
+        std::int64_t* c = conn.As<std::int64_t>();
+        for (std::size_t r = 0; r < members.size(); ++r) {
+            const Z88Element& el = elements[members[r]];
+            const std::vector<int> corners = z88_corners(el.mType->mCode);
+            for (std::size_t j = 0; j < k; ++j) {
+                std::size_t src = order ? static_cast<std::size_t>(order->mToMeshio[j]) : j;
+                if (!corners.empty())
+                    src = static_cast<std::size_t>(
+                        corners[order ? static_cast<std::size_t>(order->mToMeshio[j]) : j]);
+                const auto it = node_index.find(el.mNodes[src]);
+                if (it == node_index.end())
+                    z88_fail("element " + std::to_string(el.mId) + " names undefined node " +
+                                 std::to_string(el.mNodes[src]),
+                             el.mLine);
+                c[r * k + j] = static_cast<std::int64_t>(it->second);
+            }
+            codes.As<std::int64_t>()[r] = el.mType->mCode;
+            if (!element_index.emplace(el.mId, cell_code.size()).second)
+                z88_fail("element " + std::to_string(el.mId) + " is defined twice", el.mLine);
+            cell_code.push_back(el.mType->mCode);
+        }
+        mesh.AddCellBlock(ctype, std::move(conn));
+        type_blocks.push_back(std::move(codes));
+        block_start.push_back(cell_code.size());
+    }
+    if (!type_blocks.empty())
+        mesh.AddCellData("z88:type", std::move(type_blocks));
+
+    if (Results) {
+        const fs::path dir = structure.parent_path();
+        const fs::path o2 = z88_sibling(dir, "z88o2.txt");
+        if (!o2.empty())
+            z88_attach_displacements(mesh, o2.string(), node_index);
+        const fs::path o3 = z88_sibling(dir, "z88o3.txt");
+        if (!o3.empty() && !cell_code.empty())
+            z88_attach_stresses(mesh, o3.string(), element_index, cell_code, block_start);
+    }
+    return mesh;
+}
+
+// ===========================================================================
+// Writer (the Z88OS v15 layout)
+// ===========================================================================
+
+namespace {
+
+// The Z88 type a cell of `rCell` is written as, given the file dimension.
+int z88_default_code(std::string_view Cell, int Dim) {
+    if (Cell == "hexahedron")
+        return 1;
+    if (Cell == "hexahedron20")
+        return 10;
+    if (Cell == "tetra")
+        return 17;
+    if (Cell == "tetra10")
+        return 16;
+    if (Cell == "triangle6")
+        return Dim == 2 ? 14 : 24;
+    if (Cell == "quad8")
+        return Dim == 2 ? 7 : 23;
+    if (Cell == "line")
+        return Dim == 2 ? 9 : 4;
+    return 0;
+}
+
+}  // namespace
+
+void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
+    const std::size_t pdim = rMesh.PointDim();
+    const std::size_t npts = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    bool any_3d_cell = false;
+    for (const auto cb : rMesh.CellRange())
+        if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
+            any_3d_cell = true;
+    bool flat = pdim < 3;
+    if (!flat) {
+        flat = true;
+        for (std::size_t p = 0; p < npts && flat; ++p)
+            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+    }
+    const int ndim = (flat && !any_3d_cell) ? 2 : 3;
+
+    // The Z88 type of every block (0: dropped).
+    const bool has_type = rMesh.HasCellData("z88:type");
+    std::vector<std::vector<int>> codes(rMesh.NumCellBlocks());
+    std::set<std::string> dropped_types;
+    std::size_t nelem = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string cell(cb.Type());
+        const int fallback = cb.IsRagged() ? 0 : z88_default_code(cell, ndim);
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            int code = fallback;
+            if (has_type && !cb.IsRagged()) {
+                const std::int64_t want = detail::read_int(rMesh.CellData("z88:type", b), r);
+                const Z88Type* t = z88_type(want);
+                if (t && t->mKeep == t->mNodes && cell == t->mCell)
+                    code = static_cast<int>(want);
+            }
+            if (!code)
+                dropped_types.insert(cell);
+            else
+                ++nelem;
+            codes[b].push_back(code);
+        }
+    }
+    for (const std::string& t : dropped_types) {
+        log::warn("Z88 writer: '{}' cells have no Z88 element type here; dropped", t);
+        detail::provenance_note("cells-dropped", "Z88 has no element type for '" + t + "' cells");
+    }
+    if (rMesh.NumRegions()) {
+        log::warn("Z88 structure files hold no groups; {} region(s) dropped", rMesh.NumRegions());
+        detail::provenance_note("regions-dropped", "a Z88 structure file holds no groups");
+    }
+    const std::size_t other_data =
+        rMesh.NumPointData() + rMesh.NumFieldData() + rMesh.NumCellData() - (has_type ? 1 : 0);
+    if (other_data) {
+        log::warn("Z88 structure files hold no data arrays; point, cell and field data dropped");
+        detail::provenance_note("data-dropped", "a Z88 structure file holds no data arrays");
+    }
+    if (!nelem)
+        throw WriteError("Z88 writer: no cell has a Z88 element type");
+
+    // Degrees of freedom per node: the most any of its elements needs.
+    std::vector<int> dof(npts, ndim == 2 ? 2 : 3);
+    std::vector<bool> seen(npts, false);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged())
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            if (!codes[b][r])
+                continue;
+            const int d = z88_type(codes[b][r])->mDof;
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t p = static_cast<std::size_t>(detail::read_int(conn, r * k + j));
+                dof[p] = seen[p] ? std::max(dof[p], d) : d;
+                seen[p] = true;
+            }
+        }
+    }
+    long long total = 0;
+    for (int d : dof)
+        total += d;
+
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+    std::string out;
+    char buf[160];
+    detail::snprintf_c(buf, sizeof(buf), "%5d %9zu %9zu %11lld %5d   ", ndim, npts, nelem, total,
+                       0);
+    out += buf;
+    out += detail::provenance_lines(detail::SlotTier::SingleLine)[0];
+    out += '\n';
+    for (std::size_t p = 0; p < npts; ++p) {
+        detail::snprintf_c(buf, sizeof(buf), "%9zu %2d", p + 1, dof[p]);
+        out += buf;
+        for (int d = 0; d < ndim; ++d) {
+            const double v =
+                static_cast<std::size_t>(d) < pdim
+                    ? detail::read_double(points, p * pdim + static_cast<std::size_t>(d))
+                    : 0.0;
+            detail::snprintf_c(buf, sizeof(buf), " %+.16E", v);
+            out += buf;
+        }
+        out += '\n';
+        if (out.size() > (1u << 20)) {
+            f << out;
+            out.clear();
+        }
+    }
+    std::size_t id = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged())
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        const detail::NodeOrder* order = detail::node_order("z88", std::string(cb.Type()));
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            if (!codes[b][r])
+                continue;
+            detail::snprintf_c(buf, sizeof(buf), "%9zu %5d\n", ++id, codes[b][r]);
+            out += buf;
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
+                detail::snprintf_c(buf, sizeof(buf), "%s%lld", j ? " " : "",
+                                   static_cast<long long>(detail::read_int(conn, r * k + src) + 1));
+                out += buf;
+            }
+            out += '\n';
+            if (out.size() > (1u << 20)) {
+                f << out;
+                out.clear();
+            }
+        }
+    }
+    f << out;
+    if (!f)
+        throw WriteError("Z88 writer: failed writing " + rPath);
+    if (Stubs) {
+        const std::filesystem::path dir = std::filesystem::path(rPath).parent_path();
+        for (const char* name : {"z88i2.txt", "z88i5.txt"}) {
+            auto s = detail::make_classic_ofstream((dir / name).string(), std::ios::binary);
+            if (!s)
+                throw WriteError(std::string("Could not open file for writing: ") +
+                                 (dir / name).string());
+            s << "0\n";
+        }
+    }
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/z88.cpp =====
 // ===== begin src/cpp/src/mesh_backend_check.cpp =====
 /**
  * @file mesh_backend_check.cpp
@@ -123082,11 +126842,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // xplt joined in v16.2.0: its steps are the FEBio plot file's states.
     // ansys_rst joined in v16.3.0: its steps are the result sets.
     // femap joined in v16.5.0: its steps are the 450 output sets.
-    return rFormat == "frd" || rFormat == "unv" || rFormat == "nastran_h5" || rFormat == "xplt" ||
-           rFormat == "ansys_rst" || rFormat == "femap" || rFormat == "xdmf" ||
-           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
-           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
-           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
+    // abaqus_fil joined in v16.7.0: its steps are the increments (2000 ... 2001).
+    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "unv" ||
+           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
+           rFormat == "femap" || rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" ||
+           rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -125277,6 +129038,89 @@ bool sniff_is_patran(const std::string& rHead) {
     return kc >= 1;
 }
 
+// Abaqus results file, binary: a 4096-byte Fortran record (marker 4096 in
+// either byte order) whose first 8-byte word is a record length and whose second
+// is the key of a record Abaqus writes first (1921 release, 1922 heading, 1900
+// element, 1901 node, 2000 increment start).
+bool sniff_is_fil_key(std::int64_t Key) {
+    return Key == 1921 || Key == 1922 || Key == 1900 || Key == 1901 || Key == 2000;
+}
+
+bool sniff_is_abaqus_fil_binary(const std::string& rHead) {
+    if (rHead.size() < 20)
+        return false;
+    const auto u32 = [&](std::size_t k, bool big) {
+        std::uint32_t v = 0;
+        for (std::size_t b = 0; b < 4; ++b) {
+            const std::uint32_t byte = static_cast<unsigned char>(rHead[k + b]);
+            v |= big ? byte << (8 * (3 - b)) : byte << (8 * b);
+        }
+        return v;
+    };
+    for (const bool big : {false, true}) {
+        if (u32(0, big) != 4096)
+            continue;
+        // An integer fills the first four bytes of its word (Fortran
+        // EQUIVALENCE), or the low half of an 8-byte integer: the last four
+        // bytes when big-endian.
+        for (const std::size_t lo : {std::size_t{0}, std::size_t{4}}) {
+            if (lo == 4 && !big)
+                continue;
+            const std::uint32_t length = u32(4 + lo, big);
+            const std::uint32_t key = u32(12 + lo, big);
+            if (length >= 2 && length <= 512 && sniff_is_fil_key(key))
+                return true;
+        }
+    }
+    return false;
+}
+
+// Abaqus results file, ASCII: a `*` record start, then the record length and key
+// as `I` items (`I` + two-digit digit count + the digits).
+bool sniff_is_abaqus_fil_ascii(const std::string& rStripped) {
+    if (rStripped.size() < 12 || rStripped[0] != '*')
+        return false;
+    std::size_t pos = 1;
+    std::int64_t items[2] = {0, 0};
+    for (std::int64_t& item : items) {
+        if (pos + 3 > rStripped.size() || rStripped[pos] != 'I')
+            return false;
+        const std::string width = rStripped.substr(pos + 1, 2);
+        const std::size_t first = width.find_first_not_of(' ');
+        if (first == std::string::npos || width[1] < '0' || width[1] > '9')
+            return false;
+        const int n = std::stoi(width.substr(first));
+        if (n < 1 || n > 18 || pos + 3 + static_cast<std::size_t>(n) > rStripped.size())
+            return false;
+        const std::string digits = rStripped.substr(pos + 3, static_cast<std::size_t>(n));
+        for (char c : digits)
+            if (c < '0' || c > '9')
+                return false;
+        item = std::stoll(digits);
+        pos += 3 + static_cast<std::size_t>(n);
+    }
+    return items[0] >= 2 && sniff_is_fil_key(items[1]);
+}
+
+// OpenRadioss starter deck: `#RADIOSS STARTER`, or `/BEGIN` as the first line
+// that is not a `#`/`$` comment.
+bool sniff_is_radioss(const std::string& rStripped) {
+    std::size_t pos = 0;
+    while (pos < rStripped.size()) {
+        std::size_t eol = rStripped.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = rStripped.size();
+        const std::string line = rStripped.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (sniff_starts_with(line, "#RADIOSS STARTER"))
+            return true;
+        if (line.empty() || line[0] == '#' || line[0] == '$' || line[0] == '\r')
+            continue;
+        return sniff_starts_with(line, "/BEGIN");
+    }
+    return false;
+}
+
 std::string sniff_directory(const std::filesystem::path& rDir) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -125316,6 +129160,9 @@ std::string sniff_format(const std::string& rPath) {
         // The header of an Elmer mesh directory stands for the directory.
         if (path.filename() == "mesh.header" && fs::is_regular_file(path, ec))
             return "elmer";
+        // Z88's input and output files have fixed names.
+        if (is_z88_filename(rPath) && fs::is_regular_file(path, ec))
+            return "z88";
     }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -125339,6 +129186,12 @@ std::string sniff_format(const std::string& rPath) {
     if (head.size() >= 12 &&
         head.compare(0, 12, std::string("d\0\0\0\0\0\0\x80\x0c\0\0\0", 12)) == 0)
         return "ansys_rst";
+    // libMesh XDR mesh: the version string, a big-endian length then "libMesh-".
+    if (head.size() >= 12 && head.compare(0, 2, std::string("\0\0", 2)) == 0 &&
+        head.compare(4, 8, "libMesh-") == 0)
+        return "libmesh";
+    if (sniff_is_abaqus_fil_binary(head))
+        return "abaqus_fil";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";
@@ -125462,6 +129315,12 @@ std::string sniff_format(const std::string& rPath) {
         sniff_starts_with(stripped, "MFEM NURBS mesh") ||
         sniff_starts_with(stripped, "MFEM INLINE mesh"))
         return "mfem";
+    if (sniff_starts_with(stripped, "libMesh-"))
+        return "libmesh";
+    if (sniff_is_abaqus_fil_ascii(stripped))
+        return "abaqus_fil";
+    if (sniff_is_radioss(stripped))
+        return "radioss";
     if (sniff_is_femap(head))
         return "femap";
     if (sniff_is_patran(head))
@@ -128930,10 +132789,16 @@ namespace meshioplusplus {
 const std::map<std::string, ReadFn>& registry_readers() {
     static const std::map<std::string, ReadFn> m = {
         {"abaqus", meshioplusplus::read_abaqus},
+        {"abaqus_fil",
+         [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
         {"lsdyna", meshioplusplus::read_lsdyna},
         {"code_aster", meshioplusplus::read_code_aster},
         {"patran", meshioplusplus::read_patran},
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
+        {"libmesh", meshioplusplus::read_libmesh},
+        {"radioss", meshioplusplus::read_radioss},
+        // Fixed file names (z88i1.txt ...): resolve_format matches the basename.
+        {"z88", [](const std::string& path) { return meshioplusplus::read_z88(path); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
         {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
@@ -129061,6 +132926,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"code_aster", meshioplusplus::write_code_aster},
         {"patran", meshioplusplus::write_patran},
         {"femap", meshioplusplus::write_femap},
+        {"z88",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
         {"elmer", meshioplusplus::write_elmer},
         {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
@@ -129284,6 +133151,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
         {".inp", "abaqus"},
+        {".fil", "abaqus_fil"},
         {".cdb", "ansysinp"},
         {".frd", "frd"},
         {".k", "lsdyna"},
@@ -129293,6 +133161,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".pat", "patran"},
         {".out", "patran"},
         {".neu", "femap"},
+        {".xda", "libmesh"},
+        {".xdr", "libmesh"},
+        {".rad", "radioss"},
         {".feb", "febio"},
         {".xplt", "xplt"},
         {".rst", "ansys_rst"},
@@ -129423,6 +133294,9 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
         return rFormat;
     const auto& defaults = registry_extension_defaults();
     const std::string base = basename_of(rPath);
+    // Z88's files have fixed names; `.txt` alone is xyz's.
+    if (is_z88_filename(base))
+        return "z88";
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
         const std::string suffix = base.substr(pos);
@@ -129464,15 +133338,25 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // Tecplot honours mTimeStep -- selects one zone of a transient
         // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
         // first. IWYU pragma: keep
-        {"tecplot", [](const std::string& path,
-                       const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
+        {"tecplot",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_tecplot(path, opts);
+         }},
         // EnSight honours mTimeStep AND the narrowing options -- a .case
         // file's VARIABLE entries are only ever read here, never by the
         // plain overload. IWYU pragma: keep
-        {"ensight", [](const std::string& path,
-                       const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
+        {"ensight",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_ensight(path, opts);
+         }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // Abaqus .fil honours mTimeStep (its steps are the increments) and the
+        // narrowing options.
+        {"abaqus_fil",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_abaqus_fil(path, opts);
+         }},
         // Femap honours mTimeStep (its steps are the 450 output sets) and the
         // data narrowing options.
         {"femap", [](const std::string& path,
@@ -129565,6 +133449,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
         {"femap", meshioplusplus::read_femap_metadata},
+        {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"unv", meshioplusplus::read_unv_metadata},

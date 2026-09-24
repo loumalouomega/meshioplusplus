@@ -30,6 +30,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/detail/abaqus_types.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -44,74 +45,10 @@ namespace meshioplusplus {
 
 namespace {
 
-// (abaqus type, meshio type) in source order; the meshio->abaqus inverse keeps
-// the last entry per meshio type (matching the Python dict comprehension).
-const std::vector<std::pair<std::string, std::string>>& type_table() {
-    static const std::vector<std::pair<std::string, std::string>> t = {
-        {"T2D2", "line"},
-        {"T2D2H", "line"},
-        {"T2D3", "line3"},
-        {"T2D3H", "line3"},
-        {"T3D2", "line"},
-        {"T3D2H", "line"},
-        {"T3D3", "line3"},
-        {"T3D3H", "line3"},
-        {"B21", "line"},
-        {"B21H", "line"},
-        {"B22", "line3"},
-        {"B22H", "line3"},
-        {"B31", "line"},
-        {"B31H", "line"},
-        {"B32", "line3"},
-        {"B32H", "line3"},
-        {"B33", "line3"},
-        {"B33H", "line3"},
-        {"CPS4", "quad"},
-        {"CPS4R", "quad"},
-        {"S4", "quad"},
-        {"S4R", "quad"},
-        {"S4RS", "quad"},
-        {"S4RSW", "quad"},
-        {"S4R5", "quad"},
-        {"S8R", "quad8"},
-        {"S8R5", "quad8"},
-        {"S9R5", "quad9"},
-        {"CPS3", "triangle"},
-        {"STRI3", "triangle"},
-        {"S3", "triangle"},
-        {"S3R", "triangle"},
-        {"S3RS", "triangle"},
-        {"R3D3", "triangle"},
-        {"STRI65", "triangle6"},
-        {"C3D8", "hexahedron"},
-        {"C3D8H", "hexahedron"},
-        {"C3D8I", "hexahedron"},
-        {"C3D8IH", "hexahedron"},
-        {"C3D8R", "hexahedron"},
-        {"C3D8RH", "hexahedron"},
-        {"C3D20", "hexahedron20"},
-        {"C3D20H", "hexahedron20"},
-        {"C3D20R", "hexahedron20"},
-        {"C3D20RH", "hexahedron20"},
-        {"C3D4", "tetra"},
-        {"C3D4H", "tetra4"},
-        {"C3D10", "tetra10"},
-        {"C3D10H", "tetra10"},
-        {"C3D10I", "tetra10"},
-        {"C3D10M", "tetra10"},
-        {"C3D10MH", "tetra10"},
-        {"C3D6", "wedge"},
-        {"C3D15", "wedge15"},
-        {"CAX4P", "quad"},
-        {"CPE6", "triangle6"},
-    };
-    return t;
-}
-
 const std::unordered_map<std::string, std::string>& abaqus_to_meshio() {
     static const std::unordered_map<std::string, std::string> m = [] {
         std::unordered_map<std::string, std::string> r;
-        for (const auto& kv : type_table())
+        for (const auto& kv : detail::abaqus_type_table())
             r[kv.first] = kv.second;
         return r;
     }();
@@ -121,7 +58,7 @@ const std::unordered_map<std::string, std::string>& abaqus_to_meshio() {
 const std::unordered_map<std::string, std::string>& meshio_to_abaqus() {
     static const std::unordered_map<std::string, std::string> m = [] {
         std::unordered_map<std::string, std::string> r;
-        for (const auto& kv : type_table())
+        for (const auto& kv : detail::abaqus_type_table())
             r[kv.second] = kv.first;  // last wins
         return r;
     }();

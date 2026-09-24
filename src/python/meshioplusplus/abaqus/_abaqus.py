@@ -78,8 +78,9 @@ abaqus_to_meshio_type = {
     "C3D20RH": "hexahedron20",
     # "HEX27": "hexahedron27",
     #
+    # C3D4H before C3D4: the writer's inverse keeps the last name per cell type.
+    "C3D4H": "tetra",
     "C3D4": "tetra",
-    "C3D4H": "tetra4",
     # "TETRA8": "tetra8",
     "C3D10": "tetra10",
     "C3D10H": "tetra10",
