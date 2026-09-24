@@ -25,9 +25,11 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -169,11 +171,106 @@ TEST(Mfem, ErrorsNameTheCulprit) {
             EXPECT_NE(std::string(e.what()).find(rNeedle), std::string::npos) << e.what();
         }
     };
-    expect_error("MFEM NC mesh v1.0\n", "non-conforming");
+    expect_error("MFEM NC mesh v1.0\n", "no dimension");
+    expect_error("MFEM NC mesh v1.0\ndimension\n2\nelements\n0\nboundary\n0\n",
+                 "no top-level coordinates");
+    expect_error("MFEM NC mesh v1.0\ndimension\n2\nelements\n0\nnodes\n", "curved non-conforming");
     expect_error(
         "MFEM mesh v1.0\ndimension\n2\nelements\n1\n1 3 0 1 2 9\nboundary\n0\n"
         "vertices\n3\n2\n0 0\n1 0\n0 1\n",
         "out of range");
     expect_error("MFEM mesh v1.0\ndimension\n2\nelements\n1\n1 2 0 1\n", "ends");
     expect_error("not a mesh\n", "not an MFEM mesh");
+}
+
+namespace {
+
+// One triangle, (0,0) (2,0) (0,1), with order-3 Gauss-Lobatto nodes placed by
+// the affine map F(x, y) = (2x, y): edges in first-met order, each's two dofs
+// from its lower vertex, then the interior dof. `u` = x + 2y on the same dofs.
+std::string affine_p3_triangle(std::string& rGf) {
+    const double a = (1.0 - 1.0 / std::sqrt(5.0)) / 2.0;
+    const double t[2] = {a, 1.0 - a};
+    std::vector<std::array<double, 2>> ref = {{0, 0}, {1, 0}, {0, 1}};
+    for (double v : t)
+        ref.push_back({v, 0});  // edge (0,1)
+    for (double v : t)
+        ref.push_back({1 - v, v});  // edge (1,2)
+    for (double v : t)
+        ref.push_back({0, v});  // edge (0,2), from vertex 0
+    ref.push_back({1.0 / 3, 1.0 / 3});
+    std::ostringstream mesh, gf;
+    mesh.precision(17);
+    gf.precision(17);
+    mesh << "MFEM mesh v1.0\ndimension\n2\nelements\n1\n1 2 0 1 2\nboundary\n0\nvertices\n3\n\n"
+            "nodes\nFiniteElementSpace\nFiniteElementCollection: H1_2D_P3\nVDim: 2\n"
+            "Ordering: 1\n\n";
+    gf << "FiniteElementSpace\nFiniteElementCollection: H1_2D_P3\nVDim: 1\nOrdering: 0\n\n";
+    for (const auto& r : ref) {
+        mesh << 2 * r[0] << " " << r[1] << "\n";
+        gf << 2 * r[0] + 2 * r[1] << "\n";
+    }
+    rGf = gf.str();
+    return mesh.str();
+}
+
+}  // namespace
+
+TEST(Mfem, OrderThreeNodesBecomeVtkLagrangeCells) {
+    std::string gf_text;
+    const std::string path = write_file(affine_p3_triangle(gf_text));
+    const std::string gf = write_file(gf_text, ".gf");
+    const Mesh mesh = meshioplusplus::read_mfem(path, {{"u", gf}});
+    ASSERT_EQ(mesh.NumCellBlocks(), 1u);
+    EXPECT_EQ(mesh.Cells(0).Type(), "VTK_LAGRANGE_TRIANGLE");
+    ASSERT_EQ(mesh.Cells(0).NodesPerCell(), 10u);
+    // VTK's order: corners, edges 0-1, 1-2, 2-0, the interior; equispaced.
+    const double lattice[10][2] = {{0, 0},
+                                   {1, 0},
+                                   {0, 1},
+                                   {1.0 / 3, 0},
+                                   {2.0 / 3, 0},
+                                   {2.0 / 3, 1.0 / 3},
+                                   {1.0 / 3, 2.0 / 3},
+                                   {0, 2.0 / 3},
+                                   {0, 1.0 / 3},
+                                   {1.0 / 3, 1.0 / 3}};
+    const meshioplusplus::NDArray& conn = mesh.Cells(0).Conn();
+    const meshioplusplus::NDArray& u = mesh.PointData("u");
+    for (std::size_t k = 0; k < 10; ++k) {
+        const auto p = static_cast<std::size_t>(detail::read_int(conn, k));
+        EXPECT_NEAR(detail::read_double(mesh.Points(), 2 * p), 2 * lattice[k][0], 1e-14) << k;
+        EXPECT_NEAR(detail::read_double(mesh.Points(), 2 * p + 1), lattice[k][1], 1e-14) << k;
+        EXPECT_NEAR(detail::read_double(u, p), 2 * lattice[k][0] + 2 * lattice[k][1], 1e-14) << k;
+    }
+    // Written back as order-3 nodes, it reads the same.
+    const std::string out = mt::temp_path(".mesh");
+    meshioplusplus::write_mfem(out, mesh);
+    std::ifstream in(out);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("FiniteElementCollection: H1_2D_P3"), std::string::npos);
+    const Mesh back = meshioplusplus::read_mfem(out);
+    ASSERT_EQ(back.NumPoints(), mesh.NumPoints());
+    for (std::size_t k = 0; k < mesh.NumPoints() * 2; ++k)
+        EXPECT_NEAR(detail::read_double(back.Points(), k), detail::read_double(mesh.Points(), k),
+                    1e-14);
+}
+
+TEST(Mfem, NonConformingMeshReadsAsItsLeaves) {
+    // A square refined once: four leaves, the edge midpoints and the centre
+    // placed between their vertex parents.
+    const std::string path = write_file(
+        "MFEM NC mesh v1.0\ndimension\n2\nelements\n5\n0 1 3 3 1 2 3 4\n0 1 3 0 0 4 8 7\n"
+        "0 1 3 0 4 1 5 8\n0 1 3 0 8 5 2 6\n0 1 3 0 7 8 6 3\nboundary\n0\n"
+        "vertex_parents\n5\n4 0 1\n5 1 2\n6 2 3\n7 0 3\n8 0 2\n"
+        "coordinates\n4\n2\n0 0\n2 0\n2 2\n0 2\n");
+    const Mesh mesh = meshioplusplus::read_mfem(path);
+    ASSERT_EQ(mesh.NumCellBlocks(), 1u);
+    EXPECT_EQ(mesh.Cells(0).Type(), "quad");
+    EXPECT_EQ(mesh.Cells(0).NumCells(), 4u);
+    ASSERT_EQ(mesh.NumPoints(), 9u);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8), 1.0);  // the centre
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8 + 1), 1.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5), 2.0);  // midpoint of 1-2
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5 + 1), 1.0);
 }

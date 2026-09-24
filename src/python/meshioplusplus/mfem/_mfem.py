@@ -24,7 +24,7 @@ import pathlib
 
 import numpy as np
 
-from .. import _provenance
+from .. import _lagrange, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._facets import facet_nodes
@@ -113,7 +113,20 @@ _SLOTS = {
 _WRITABLE_EXTRA = ("quad8", "hexahedron20", "wedge15", "pyramid13", "pyramid14")
 
 
+_LAGRANGE_GEOMS = {
+    "VTK_LAGRANGE_CURVE": 1,
+    "VTK_LAGRANGE_TRIANGLE": 2,
+    "VTK_LAGRANGE_QUADRILATERAL": 3,
+    "VTK_LAGRANGE_TETRAHEDRON": 4,
+    "VTK_LAGRANGE_HEXAHEDRON": 5,
+    "VTK_LAGRANGE_WEDGE": 6,
+}
+
+
 def _geom_of_type(cell_type):
+    # VTK Lagrange cells of any order: written as order-p H1 nodes.
+    if cell_type in _LAGRANGE_GEOMS:
+        return _LAGRANGE_GEOMS[cell_type]
     # Serendipity and quadratic pyramids: written by completing them (or as
     # their corners); never read.
     extra = {
@@ -317,6 +330,9 @@ class _Space:
     def __init__(self, name):
         self.collection = name
         self.kind = "other"
+        # an H1 space's nodes: "gll" (the default), "uniform" (H1@U) or "cubic"
+        # (the legacy Cubic collection: equispaced, its own hex interior)
+        self.points = "gll"
         self.order = -1
         self.vdim = 1
         self.ordering = 0
@@ -330,11 +346,16 @@ class _Space:
             self.kind, self.order = "h1", 1
         elif name == "Quadratic":
             self.kind, self.order = "h1", 2
-        elif name in ("QuadraticPos", "Cubic"):
-            self.kind, self.order = "h1-other", 3 if name == "Cubic" else 2
+        elif name == "Cubic":
+            self.kind, self.order, self.points = "h1", 3, "cubic"
+        elif name == "QuadraticPos":
+            self.kind, self.order = "h1-other", 2
         elif name.startswith(("H1_", "H1@")):
             self.order = order_after_p()
-            self.kind = "h1" if 1 <= self.order <= 2 else "h1-other"
+            basis = name[3] if name[2] == "@" and len(name) > 3 else "G"
+            self.points = "uniform" if basis == "U" else "gll"
+            nodal = basis in "GU" or self.order <= 2
+            self.kind = "h1" if self.order >= 1 and nodal else "h1-other"
         elif name.startswith(("H1Pos_", "H1Ser_")):
             self.order = order_after_p()
             self.kind = "h1" if self.order == 1 else "h1-other"
@@ -420,12 +441,193 @@ def _read_sets(lex):
     return out
 
 
+def _parse_nc(lex, filename, scaled):
+    """An ``MFEM NC mesh`` (``mf_parse_nc``): the refinement tree read as its
+    leaves; top-level vertices from ``coordinates``, the rest between their
+    ``vertex_parents``; only the leaves of the file's own rank."""
+    f = {
+        "nc": True,
+        "dim": -1,
+        "elements": [],
+        "boundary": [],
+        "sets": [],
+        "bdr_sets": [],
+        "nv": 0,
+        "sdim": 0,
+        "coords": [],
+        "nodes_space": None,
+        "nodes": None,
+    }
+    elements = []  # (rank, attr, geom, ref_type, ids, line); geom None when unused
+    parents = {}
+    top = []
+    my_rank = 0
+    sdim = 0
+    have_coordinates = False
+    while not lex.at_end():
+        text, line, _ = lex.next("a section")
+        if text == "dimension":
+            d = lex.int("a dimension")
+            if d < 1 or d > 3:
+                lex.fail(f"dimension {d} (1, 2 or 3)", line)
+            f["dim"] = d
+        elif text == "rank":
+            my_rank = lex.int("a rank")
+        elif text == "sfc_version":
+            lex.int("an SFC version")
+        elif text == "elements":
+            n = lex.int("an element count")
+            if n < 0:
+                lex.fail("negative element count", line)
+            for _ in range(n):
+                row_line = lex.line()
+                rank = lex.int("a rank")
+                attr = lex.int("an attribute")
+                geom = lex.int("a geometry type")
+                if geom == -1:
+                    elements.append((rank, attr, None, 0, [], row_line))
+                    continue
+                if not 1 <= geom <= 7:
+                    lex.fail(f"unknown geometry type {geom}", row_line)
+                ref = lex.int("a refinement type")
+                ids = []
+                while not lex.at_end() and lex.line() == row_line:
+                    ids.append(lex.int("a node or child"))
+                if ref == 0 and len(ids) != _GEOMS[geom][3]:
+                    lex.fail(f"a leaf element lists {len(ids)} vertices", row_line)
+                elements.append((rank, attr, geom, ref, ids, row_line))
+        elif text == "boundary":
+            f["boundary"] = _read_elements(lex, "boundary element")
+        elif text == "vertex_parents":
+            for _ in range(lex.int("a vertex count")):
+                vid = lex.int("a vertex")
+                p1 = lex.int("a parent")
+                p2 = lex.int("a parent")
+                parents[vid] = (p1, p2, lex.real("a scale") if scaled else 0.5)
+        elif text == "root_state":
+            for _ in range(lex.int("a root count")):
+                lex.int("a root state")
+        elif text == "coordinates":
+            n = lex.int("a vertex count")
+            if n < 0:
+                lex.fail("negative vertex count", line)
+            if n > 0:
+                sdim = lex.int("a space dimension")
+                if not 1 <= sdim <= 3:
+                    lex.fail(f"space dimension {sdim} (1, 2 or 3)", line)
+                for _ in range(n):
+                    x = [lex.real("a coordinate") for _ in range(sdim)]
+                    top.append(x + [0.0] * (3 - sdim))
+            have_coordinates = True
+        elif text == "nodes":
+            lex.fail(
+                "curved non-conforming meshes (a 'nodes' section) are not supported",
+                line,
+            )
+        elif text in ("mfem_mesh_end", "mfem_serial_mesh_end"):
+            break
+        else:
+            lex.fail(f"unexpected '{text}'", line)
+    if f["dim"] < 0:
+        raise ReadError(f"MFEM mesh: no dimension section in {filename}")
+    if not have_coordinates:
+        raise ReadError(
+            f"MFEM mesh: the non-conforming mesh {filename} has no top-level coordinates"
+        )
+    is_child = [False] * len(elements)
+    for _, _, geom, ref, ids, row_line in elements:
+        if geom is not None and ref:
+            for c in ids:
+                if not 0 <= c < len(elements):
+                    raise ReadError(
+                        f"MFEM mesh: child element {c} out of range (line {row_line})"
+                    )
+                is_child[c] = True
+    leaves, ghosts = [], 0
+    stack = [
+        r
+        for r in range(len(elements) - 1, -1, -1)
+        if elements[r][2] and not is_child[r]
+    ]
+    seen = [False] * len(elements)
+    while stack:
+        e = stack.pop()
+        if seen[e]:
+            raise ReadError(
+                f"MFEM mesh: element {e} is reached twice in the refinement tree"
+            )
+        seen[e] = True
+        rank, _, _, ref, ids, _ = elements[e]
+        if ref == 0:
+            if rank == my_rank:
+                leaves.append(e)
+            else:
+                ghosts += 1
+            continue
+        stack.extend(reversed(ids))
+    if ghosts:
+        warn(
+            f"MFEM mesh: {ghosts} ghost element(s) of other ranks in {filename} dropped"
+        )
+    used = set()
+    for e in leaves:
+        used.update(elements[e][4])
+    for b in f["boundary"]:
+        used.update(b[2])
+    index = {vid: k for k, vid in enumerate(sorted(used))}
+    pos = {}
+
+    def position(vid, visiting=()):
+        if vid in pos:
+            return pos[vid]
+        par = parents.get(vid)
+        if par is None:
+            if not 0 <= vid < len(top):
+                raise ReadError(
+                    f"MFEM mesh: vertex {vid} has neither coordinates nor parents"
+                )
+            x = top[vid]
+        else:
+            if vid in visiting:
+                raise ReadError(f"MFEM mesh: cyclic vertex parents at vertex {vid}")
+            a = position(par[0], visiting + (vid,))
+            b = position(par[1], visiting + (vid,))
+            s = par[2]
+            x = [(1.0 - s) * a[c] + s * b[c] for c in range(3)]
+        pos[vid] = x
+        return x
+
+    f["sdim"] = sdim if sdim else f["dim"]
+    f["nv"] = len(index)
+    for vid in sorted(used):
+        f["coords"].extend(position(vid)[: f["sdim"]])
+    f["elements"] = [
+        (
+            elements[e][1],
+            elements[e][2],
+            [index[v] for v in elements[e][4]],
+            elements[e][5],
+        )
+        for e in leaves
+    ]
+    f["boundary"] = [
+        (a, g, [index[v] for v in verts], ln) for a, g, verts, ln in f["boundary"]
+    ]
+    warn(
+        f"MFEM mesh: the non-conforming mesh {filename} is read as its {len(leaves)} leaf "
+        "element(s); hanging nodes are left unconstrained"
+    )
+    return f
+
+
 def _parse(filename):
     lex = _Lexer("MFEM mesh", _read_text(filename))
     header = lex.header or ""
+    if header in ("MFEM NC mesh v1.0", "MFEM NC mesh v1.1"):
+        return _parse_nc(lex, filename, header == "MFEM NC mesh v1.1")
     if header.startswith("MFEM NC mesh"):
         lex.fail(
-            f"non-conforming meshes ('{header}') are not supported", lex.header_line
+            f"non-conforming mesh version '{header}' is not supported", lex.header_line
         )
     if header.startswith(("MFEM NURBS", "MFEM INLINE")):
         lex.fail(f"'{header}' meshes are not supported", lex.header_line)
@@ -437,6 +639,7 @@ def _parse(filename):
     ):
         lex.fail(f"not an MFEM mesh (the first line is '{header}')", lex.header_line)
     f = {
+        "nc": False,
         "dim": -1,
         "elements": [],
         "boundary": [],
@@ -495,9 +698,13 @@ def _parse(filename):
                 f["sdim"] = sd
                 f["coords"] = [lex.real("a coordinate") for _ in range(nv * sd)]
         elif text in ("vertex_parents", "coarse_elements"):
-            lex.fail(
-                f"non-conforming meshes (a '{text}' section) are not supported", line
-            )
+            # the legacy non-conforming layout: the leaf mesh, then how it
+            # refines; read as its leaves
+            f["nc"] = True
+            for _ in range(lex.int("a count")):
+                row_line = lex.line()
+                while not lex.at_end() and lex.line() == row_line:
+                    lex.next("a value")
         elif text == "mfem_serial_mesh_end":
             warn(
                 f"MFEM mesh: '{filename}' is one rank of a parallel mesh; reading its "
@@ -564,7 +771,8 @@ def read(filename, grid_functions=None):
             coords = "corners"
             warn(
                 f"MFEM mesh: nodes in '{nspace.collection}' (order {nspace.order}) are "
-                "read at the vertices only; meshio++ keeps curved cells up to order 2"
+                "read at the vertices only: only nodal H1 spaces (Gauss-Lobatto or "
+                "equispaced) are read as curved cells"
             )
         elif nspace.kind == "l2t1" and nspace.order == 1:
             coords = "dg"
@@ -584,6 +792,12 @@ def read(filename, grid_functions=None):
         gf_items = list(grid_functions.items())
     else:
         gf_items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
+    if f["nc"] and gf_items:
+        warn(
+            f"MFEM mesh: grid functions on the non-conforming mesh {filename} follow "
+            "MFEM's space-filling-curve numbering of its leaves, which is not read; skipped"
+        )
+        gf_items = []
     for name, path in gf_items:
         name, space, values = _parse_gf(str(name), str(path))
         h1 = space.kind == "h1"
@@ -594,10 +808,10 @@ def read(filename, grid_functions=None):
                 "supported; skipped"
             )
             continue
-        if h1 and space.order == 2 and (coords == "dg" or has_pyramid):
+        if h1 and space.order >= 2 and (coords == "dg" or has_pyramid):
             warn(
-                f"MFEM grid function '{path}': an order-2 field on this mesh is not "
-                "supported; skipped"
+                f"MFEM grid function '{path}': an order-{space.order} field on this "
+                "mesh is not supported; skipped"
             )
             continue
         gfs.append((name, space, values))
@@ -605,14 +819,26 @@ def read(filename, grid_functions=None):
     for _, space, _ in gfs:
         if space.kind == "h1":
             order = max(order, space.order)
-    if order == 2 and has_pyramid:
+    if order >= 2 and has_pyramid:
         warn(
             f"MFEM mesh: '{filename}' has pyramids, which meshio++ holds at order 1 "
             "only; reading the vertices"
         )
         order = 1
-        if coords == "h1" and mesh_order == 2:
+        if coords == "h1" and mesh_order >= 2:
             coords = "corners"
+    if order >= 3:
+        if coords == "vertices":
+            vxyz = np.array(f["coords"], dtype=np.float64).reshape(nv, sdim)
+        else:
+            vxyz = np.array(
+                [
+                    [_value(nodes, nspace, node_dofs, v, c) for c in range(sdim)]
+                    for v in range(nv)
+                ],
+                dtype=np.float64,
+            ).reshape(nv, sdim)
+        return _read_high_order(f, gfs, coords == "h1", vxyz, order, filename)
     if order == 2:
         for _, geom, _, line in elements:
             if geom == 0 or _GEOMS[geom][2] != dim:
@@ -837,8 +1063,15 @@ def read(filename, grid_functions=None):
                 out.append(a[:, 0].copy() if vdim == 1 else a.copy())
             mesh.cell_data[name] = out
 
+    mesh.regions = _regions(f, cell_attr, cell_is_boundary)
+    return mesh
+
+
+def _regions(f, cell_attr, cell_is_boundary):
+    """Cell regions from the element and boundary attributes and the sets."""
+    dim = f["dim"]
     by_attr = {}
-    for g in range(ncells):
+    for g in range(len(cell_attr)):
         by_attr.setdefault((cell_is_boundary[g], cell_attr[g]), []).append(g)
     regions = []
     for (bdr, a), ids in sorted(by_attr.items()):
@@ -865,7 +1098,461 @@ def read(filename, grid_functions=None):
                     -1,
                 )
             )
-    mesh.regions = regions
+    return regions
+
+
+# --- order 3 and up: VTK Lagrange cells ---------------------------------------------
+#
+# The Python twin of mf_read_high_order: every element's dofs are placed at
+# their reference positions (an edge's from its lower global vertex, a face's in
+# the frame of its first element's vertex order, the interior in the element's
+# own order) and matched by position to one canonical node set per (geometry,
+# space); one matrix per set interpolates to the VTK Lagrange nodes, which cells
+# share by their corner weights.
+
+_SHAPES = {1: "line", 2: "triangle", 3: "quad", 4: "tetra", 5: "hexahedron", 6: "wedge"}
+_LAGRANGE_TYPES = {
+    0: "vertex",
+    1: "VTK_LAGRANGE_CURVE",
+    2: "VTK_LAGRANGE_TRIANGLE",
+    3: "VTK_LAGRANGE_QUADRILATERAL",
+    4: "VTK_LAGRANGE_TETRAHEDRON",
+    5: "VTK_LAGRANGE_HEXAHEDRON",
+    6: "VTK_LAGRANGE_WEDGE",
+}
+_REF_VERTICES = {
+    1: [(0, 0, 0), (1, 0, 0)],
+    2: [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+    3: [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+    4: [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)],
+    5: [
+        (0, 0, 0),
+        (1, 0, 0),
+        (1, 1, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+        (1, 0, 1),
+        (1, 1, 1),
+        (0, 1, 1),
+    ],
+    6: [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (0, 1, 1)],
+}
+# LagrangeHexFiniteElement(3), the Cubic collection's hexahedron: its eight
+# interior nodes go round each layer like the corners do.
+_CUBIC_HEX_INTERIOR = [
+    (1, 1, 1),
+    (2, 1, 1),
+    (2, 2, 1),
+    (1, 2, 1),
+    (1, 1, 2),
+    (2, 1, 2),
+    (2, 2, 2),
+    (1, 2, 2),
+]
+
+
+def _mix(terms):
+    out = [0.0, 0.0, 0.0]
+    for w, p in terms:
+        for d in range(3):
+            out[d] += w * p[d]
+    return tuple(out)
+
+
+def _entities(elements, dim):
+    """Edges and (3-D) faces by first appearance, each face's vertices in its
+    first element's order."""
+    edges, faces, face_vertices = {}, {}, []
+    for _, geom, verts, _ in elements:
+        g = _GEOMS[geom]
+        if dim >= 2:
+            for a, b in g[4]:
+                edges.setdefault(tuple(sorted((verts[a], verts[b]))), len(edges))
+        if dim == 3:
+            for fv in g[5]:
+                v = [verts[k] for k in fv]
+                key = tuple(sorted(v))
+                if key not in faces:
+                    faces[key] = len(faces)
+                    face_vertices.append(v)
+    return edges, faces, face_vertices
+
+
+def _interior_count(geom, q):
+    return {
+        1: q - 1,
+        2: (q - 1) * (q - 2) // 2,
+        3: (q - 1) ** 2,
+        4: (q - 1) * (q - 2) * (q - 3) // 6 if q >= 3 else 0,
+        5: (q - 1) ** 3,
+        6: (q - 1) * (q - 2) // 2 * (q - 1),
+    }.get(geom, 0)
+
+
+class _Dofs:
+    """The dof layout of one nodal space over a mesh."""
+
+    def __init__(self, f, ent, q, points):
+        edges, _, face_vertices = ent
+        self.order, self.points = q, points
+        self.cp = (
+            _lagrange.gll_points(q) if points == "gll" else _lagrange.uniform_points(q)
+        )
+        nxt = f["nv"]
+        self.edge_base = nxt
+        nxt += len(edges) * (q - 1)
+        self.face_offset = []
+        for fv in face_vertices:
+            self.face_offset.append(nxt)
+            nxt += (q - 1) * (q - 2) // 2 if len(fv) == 3 else (q - 1) ** 2
+        self.interior_offset = []
+        for _, geom, _, _ in f["elements"]:
+            self.interior_offset.append(nxt)
+            if _GEOMS[geom][2] == f["dim"]:
+                nxt += _interior_count(geom, q)
+        self.size = nxt
+
+
+def _element_dofs(geom, verts, dim, ent, d, element):
+    """``(dof, reference position)`` of an element's dofs; ``ent`` None: the
+    reference element itself, numbered canonically."""
+    g = _GEOMS[geom]
+    q, cp = d.order, d.cp
+    rv = _REF_VERTICES[geom]
+    out = [(verts[j] if ent else j, rv[j]) for j in range(g[3])]
+    if q < 2:
+        return out
+    local = g[3]
+    if dim >= 2 and g[2] >= 2:
+        for a, b in g[4]:
+            lo, hi = (a, b) if verts[a] < verts[b] else (b, a)
+            base = 0
+            if ent:
+                base = d.edge_base + ent[0][tuple(sorted((verts[a], verts[b])))] * (
+                    q - 1
+                )
+            for k in range(1, q):
+                t = cp[k]
+                out.append(
+                    (
+                        base + k - 1 if ent else local,
+                        _mix([(1 - t, rv[lo]), (t, rv[hi])]),
+                    )
+                )
+                local += 0 if ent else 1
+    if dim == 3 and g[2] == 3:
+        for fv in g[5]:
+            v = [verts[k] for k in fv]
+            if ent:
+                idx = ent[1][tuple(sorted(v))]
+                base = d.face_offset[idx]
+                r = [rv[verts.index(gv)] for gv in ent[2][idx]]
+            else:
+                base = 0
+                r = [rv[k] for k in fv]
+            o = 0
+            if len(r) == 3:
+                for j in range(1, q):
+                    for i in range(1, q - j):
+                        w = cp[i] + cp[j] + cp[q - i - j]
+                        x, y = cp[i] / w, cp[j] / w
+                        pos = _mix([(1 - x - y, r[0]), (x, r[1]), (y, r[2])])
+                        out.append((base + o if ent else local, pos))
+                        o += 1
+                        local += 0 if ent else 1
+            else:
+                for j in range(1, q):
+                    for i in range(1, q):
+                        x, y = cp[i], cp[j]
+                        pos = _mix(
+                            [
+                                ((1 - x) * (1 - y), r[0]),
+                                (x * (1 - y), r[1]),
+                                (x * y, r[2]),
+                                ((1 - x) * y, r[3]),
+                            ]
+                        )
+                        out.append((base + o if ent else local, pos))
+                        o += 1
+                        local += 0 if ent else 1
+    if g[2] != dim:
+        return out
+    base = d.interior_offset[element] if ent else local
+    interior = []
+    if geom == 1:
+        interior = [(cp[i], 0.0, 0.0) for i in range(1, q)]
+    elif geom in (2, 6):
+        tri = []
+        for j in range(1, q):
+            for i in range(1, q - j):
+                w = cp[i] + cp[j] + cp[q - i - j]
+                tri.append((cp[i] / w, cp[j] / w))
+        if geom == 2:
+            interior = [(x, y, 0.0) for x, y in tri]
+        else:
+            interior = [(x, y, cp[k]) for k in range(1, q) for x, y in tri]
+    elif geom == 3:
+        interior = [(cp[i], cp[j], 0.0) for j in range(1, q) for i in range(1, q)]
+    elif geom == 4:
+        for k in range(1, q):
+            for j in range(1, q - k):
+                for i in range(1, q - j - k):
+                    w = cp[i] + cp[j] + cp[k] + cp[q - i - j - k]
+                    interior.append((cp[i] / w, cp[j] / w, cp[k] / w))
+    elif geom == 5:
+        if d.points == "cubic":
+            interior = [(cp[a], cp[b], cp[c]) for a, b, c in _CUBIC_HEX_INTERIOR]
+        else:
+            interior = [
+                (cp[i], cp[j], cp[k])
+                for k in range(1, q)
+                for j in range(1, q)
+                for i in range(1, q)
+            ]
+    for n, pos in enumerate(interior):
+        out.append((base + n, pos))
+    return out
+
+
+def _quantise(pos):
+    return tuple(int(round(x * 1e7)) for x in pos)
+
+
+def _find_node(index, pos):
+    key = _quantise(pos)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                k = index.get((key[0] + dx, key[1] + dy, key[2] + dz))
+                if k is not None:
+                    return k
+    return None
+
+
+def _cell_order(geom, num_nodes):
+    """The Lagrange order of a written cell by its node count: 1 for its
+    corners, 2 for the complete quadratic types, p for a VTK Lagrange cell;
+    -1 for a serendipity cell."""
+    if not 1 <= geom <= 6:
+        return 1
+    shape = _SHAPES[geom]
+    q = 1
+    while True:
+        n = _lagrange.num_nodes(shape, q)
+        if n == num_nodes:
+            return q
+        if n > num_nodes:
+            return -1
+        q += 1
+
+
+class _Interp:
+    """One (geometry, space) pair's canonical nodes and its matrix to the VTK
+    Lagrange nodes of the output order."""
+
+    def __init__(self, geom, dim, d, order):
+        nodes = _element_dofs(
+            geom, list(range(len(_REF_VERTICES[geom]))), dim, None, d, 0
+        )
+        pos = [None] * len(nodes)
+        self.index = {}
+        for k, p in nodes:
+            pos[k] = p
+            self.index[_quantise(p)] = k
+        self.nodes = len(nodes)
+        shape = _SHAPES[geom]
+        targets = [
+            (i / order, j / order, k / order)
+            for i, j, k in _lagrange.vtk_lattice(shape, order)
+        ]
+        self.matrix = _lagrange.interpolation_matrix(shape, d.order, pos, targets)
+
+    def find(self, pos):
+        return _find_node(self.index, pos)
+
+
+def _read_high_order(f, gfs, nodes_h1, vxyz, order, filename):
+    dim, nv, sdim = f["dim"], f["nv"], f["sdim"]
+    elements, boundary = f["elements"], f["boundary"]
+    for _, geom, _, line in elements:
+        if geom == 0 or _GEOMS[geom][2] != dim:
+            raise ReadError(
+                f"MFEM mesh: element of geometry {geom} in a {dim}-D mesh (line {line})"
+            )
+    ent = _entities(elements, dim)
+
+    # (dof layout, components, values accessor) of the coordinates and each H1 field
+    fields = []
+    if nodes_h1:
+        s = f["nodes_space"]
+        d = _Dofs(f, ent, s.order, s.points)
+        ndofs = len(f["nodes"]) // s.vdim
+        if ndofs != d.size:
+            raise ReadError(
+                f"MFEM mesh: the order-{s.order} nodes of {filename} have {ndofs} dofs; "
+                f"the mesh numbers {d.size}"
+            )
+        vals = np.asarray(f["nodes"], dtype=np.float64)
+        table = (
+            vals.reshape(sdim, ndofs).T
+            if s.ordering == 0
+            else vals.reshape(ndofs, s.vdim)
+        )
+        fields.append((d, table[:, :sdim]))
+    else:
+        fields.append((_Dofs(f, ent, 1, "gll"), vxyz))
+    point_gfs, cell_gfs = [], []
+    for name, space, values in gfs:
+        if space.kind != "h1":
+            cell_gfs.append((name, space, values))
+            continue
+        vdim = space.vdim
+        if len(values) % vdim:
+            raise ReadError(
+                f"MFEM grid function '{name}': {len(values)} values, not a multiple of "
+                f"VDim {vdim}"
+            )
+        d = _Dofs(f, ent, space.order, space.points)
+        ndofs = len(values) // vdim
+        if ndofs != d.size:
+            raise ReadError(
+                f"MFEM grid function '{name}' has {ndofs} dofs; the mesh has {d.size} at "
+                f"order {space.order}"
+            )
+        vals = np.asarray(values, dtype=np.float64)
+        table = (
+            vals.reshape(vdim, ndofs).T
+            if space.ordering == 0
+            else vals.reshape(ndofs, vdim)
+        )
+        fields.append((d, table))
+        point_gfs.append(name)
+
+    # output points: the vertices first, then every VTK node by its corner weights
+    p3 = order**3
+    node_of = {((v, p3),): v for v in range(nv)}
+
+    def cell_nodes(geom, verts):
+        if geom == 0:
+            return [verts[0]]
+        shape = _SHAPES[geom]
+        ids = []
+        for ijk in _lagrange.vtk_lattice(shape, order):
+            key = tuple(
+                sorted(
+                    (verts[c], w)
+                    for c, w in _lagrange.lattice_weights(shape, order, ijk)
+                )
+            )
+            ids.append(node_of.setdefault(key, len(node_of)))
+        return ids
+
+    element_nodes = [cell_nodes(geom, verts) for _, geom, verts, _ in elements]
+    boundary_nodes = [cell_nodes(geom, verts) for _, geom, verts, _ in boundary]
+    npoints = len(node_of)
+
+    values = [np.full((npoints, t.shape[1]), np.nan) for _, t in fields]
+    known = np.zeros(npoints, dtype=bool)
+    caches = [{} for _ in fields]
+    for e, (_, geom, verts, _) in enumerate(elements):
+        ids = element_nodes[e]
+        fresh = [t for t, i in enumerate(ids) if not known[i]]
+        if not fresh:
+            continue
+        for k, (d, table) in enumerate(fields):
+            interp = caches[k].get(geom)
+            if interp is None:
+                interp = caches[k][geom] = _Interp(geom, dim, d, order)
+            perm = [None] * interp.nodes
+            for dof, pos in _element_dofs(geom, verts, dim, ent, d, e):
+                c = interp.find(pos)
+                if c is None:
+                    raise ReadError(
+                        f"MFEM mesh: a degree of freedom of element {e} matches no node "
+                        "of its element"
+                    )
+                perm[c] = dof
+            u = table[perm]
+            rows = interp.matrix[fresh]
+            values[k][[ids[t] for t in fresh]] = rows @ u
+        known[ids] = True
+    for v in range(nv):
+        if not known[v]:
+            values[0][v] = vxyz[v]
+            known[v] = True
+    orphans = 0
+    for b, (_, geom, verts, _) in enumerate(boundary):
+        if geom == 0:
+            continue
+        shape = _SHAPES[geom]
+        for t, ijk in enumerate(_lagrange.vtk_lattice(shape, order)):
+            i = boundary_nodes[b][t]
+            if known[i]:
+                continue
+            orphans += 1
+            values[0][i] = sum(
+                w / p3 * vxyz[verts[c]]
+                for c, w in _lagrange.lattice_weights(shape, order, ijk)
+            )
+            known[i] = True
+    if orphans:
+        warn(
+            f"MFEM mesh: {orphans} boundary node(s) lie on no element face; placed "
+            "from their corners"
+        )
+
+    blocks = []  # (type, [(source, is_boundary)])
+
+    def add_group(items, is_boundary):
+        index = {}
+        for k, el in enumerate(items):
+            t = _LAGRANGE_TYPES[el[1]]
+            if t not in index:
+                index[t] = len(blocks)
+                blocks.append((t, []))
+            blocks[index[t]][1].append((k, is_boundary))
+
+    add_group(elements, False)
+    add_group(boundary, True)
+    cells, attr_blocks, cell_attr, cell_is_boundary = [], [], [], []
+    element_cell = [0] * len(elements)
+    for cell_type, members in blocks:
+        rows, attrs = [], []
+        for source, is_boundary in members:
+            attr = (boundary if is_boundary else elements)[source][0]
+            rows.append((boundary_nodes if is_boundary else element_nodes)[source])
+            attrs.append(attr)
+            cell_attr.append(attr)
+            cell_is_boundary.append(is_boundary)
+            if not is_boundary:
+                element_cell[source] = len(cell_attr) - 1
+        cells.append((cell_type, np.array(rows, dtype=np.int64)))
+        attr_blocks.append(np.array(attrs, dtype=np.int64))
+    mesh = Mesh(values[0], cells)
+    if attr_blocks:
+        mesh.cell_data["mfem:attribute"] = attr_blocks
+    for name, data in zip(point_gfs, values[1:]):
+        mesh.point_data[name] = data[:, 0].copy() if data.shape[1] == 1 else data
+    ncells = len(cell_attr)
+    for name, space, gvalues in cell_gfs:
+        vdim = space.vdim
+        ndofs = len(gvalues) // vdim
+        if ndofs != len(elements):
+            raise ReadError(
+                f"MFEM grid function '{name}' has {ndofs} dofs for {len(elements)} "
+                "elements"
+            )
+        per_cell = np.full((ncells, vdim), np.nan)
+        for e in range(len(elements)):
+            for c in range(vdim):
+                per_cell[element_cell[e], c] = _value(gvalues, space, ndofs, e, c)
+        out, start = [], 0
+        for _, members in blocks:
+            a = per_cell[start : start + len(members)]
+            start += len(members)
+            out.append(a[:, 0].copy() if vdim == 1 else a.copy())
+        mesh.cell_data[name] = out
+    mesh.regions = _regions(f, cell_attr, cell_is_boundary)
     return mesh
 
 
@@ -941,7 +1628,9 @@ def write(filename, mesh, grid_functions=False):
         ragged = not isinstance(block.data, np.ndarray)
         g = -1 if ragged else _geom_of_type(block.type)
         known = g >= 0 and (
-            block.type in (_GEOMS[g][0], _GEOMS[g][1]) or block.type in _WRITABLE_EXTRA
+            block.type in (_GEOMS[g][0], _GEOMS[g][1])
+            or block.type in _WRITABLE_EXTRA
+            or block.type in _LAGRANGE_GEOMS
         )
         block_geom.append(g if known else -1)
         if known and len(block.data):
@@ -1081,15 +1770,42 @@ def write(filename, mesh, grid_functions=False):
                 continue
             quadratic = quadratic or len(nodes) > _GEOMS[g][3]
             boundary.append((g, side[0], -1, list(nodes), ftype))
-    if quadratic and has_pyramid:
+    # VTK Lagrange cells: the whole mesh is written with order-p H1 nodes, p the
+    # highest order among its cells; linear and complete quadratic cells are
+    # evaluated at those nodes too, serendipity cells from their corners.
+    high = 0
+    for c in elements + boundary:
+        if c[4] in _LAGRANGE_GEOMS:
+            high = max(high, _cell_order(c[0], len(c[3])))
+    serendipity = 0
+    if high > 0:
+        for c in elements + boundary:
+            q = _cell_order(c[0], len(c[3]))
+            serendipity += q < 0
+            high = max(high, q)
+        quadratic = False
+    if (quadratic or high > 1) and has_pyramid:
         warn(
-            "MFEM mesh writer: MFEM order-2 meshes hold no pyramids; writing corners only"
+            f"MFEM mesh writer: MFEM order-{high if high > 1 else 2} meshes hold no "
+            "pyramids here; writing corners only"
         )
         _provenance.note(
             "high-order-dropped",
             "a mesh with pyramids is written with linear MFEM cells",
         )
         quadratic = False
+        high = 0
+    if high == 1:
+        high = 0  # order-1 Lagrange cells are their corners
+    if high > 0 and serendipity:
+        warn(
+            f"MFEM mesh writer: {serendipity} serendipity cell(s) in an order-{high} mesh "
+            "are placed from their corners"
+        )
+        _provenance.note(
+            "high-order-dropped",
+            "serendipity cells in a Lagrange mesh are written from corners",
+        )
     for t in sorted(dropped):
         warn(
             f"MFEM mesh writer: '{t}' cells are neither elements nor boundary; dropped"
@@ -1117,7 +1833,11 @@ def write(filename, mesh, grid_functions=False):
     npts = len(points)
     vertex_of = [-1] * npts
     vertex_point = []
-    if not quadratic and all(len(c[3]) <= _GEOMS[c[0]][3] for c in elements + boundary):
+    if (
+        not quadratic
+        and high == 0
+        and all(len(c[3]) <= _GEOMS[c[0]][3] for c in elements + boundary)
+    ):
         vertex_of = list(range(npts))
         vertex_point = list(range(npts))
     if not vertex_point:
@@ -1184,6 +1904,63 @@ def write(filename, mesh, grid_functions=False):
                 key = numbering.keys[d]
                 weights[d] = [(vertex_point[v], 1.0 / len(key)) for v in key]
 
+    # order-p H1 dofs (VTK Lagrange meshes): each element evaluated at its dofs'
+    # positions, a dof shared by several taking the first's value
+    hdofs = None
+    high_map = []
+    if high > 0:
+        numbered = [(c[1], c[0], mfem_vertices(c), 0) for c in elements]
+        hf = {"dim": dim, "nv": nv, "elements": numbered}
+        hent = _entities(numbered, dim)
+        hdofs = _Dofs(hf, hent, high, "gll")
+        canon, matrices = {}, {}
+        taken = [False] * hdofs.size
+        for e, c in enumerate(elements):
+            geom = c[0]
+            if geom not in canon:
+                nodes = _element_dofs(
+                    geom, list(range(_GEOMS[geom][3])), dim, None, hdofs, 0
+                )
+                pos = [None] * len(nodes)
+                index = {}
+                for k, p in nodes:
+                    pos[k] = p
+                    index[_quantise(p)] = k
+                canon[geom] = (pos, index)
+            pos, index = canon[geom]
+            q = max(1, _cell_order(geom, len(c[3])))
+            if (geom, q) not in matrices:
+                shape = _SHAPES[geom]
+                src = [
+                    (i / q, j / q, k / q) for i, j, k in _lagrange.vtk_lattice(shape, q)
+                ]
+                matrices[(geom, q)] = _lagrange.interpolation_matrix(shape, q, src, pos)
+            pairs = []
+            for dof, p in _element_dofs(geom, numbered[e][2], dim, hent, hdofs, e):
+                if taken[dof]:
+                    continue
+                k = _find_node(index, p)
+                if k is None:
+                    raise WriteError(
+                        f"MFEM mesh writer: a node of element {e} matches no degree of "
+                        "freedom"
+                    )
+                taken[dof] = True
+                pairs.append((dof, k))
+            high_map.append((matrices[(geom, q)], pairs, q))
+
+    def high_values(data, cols):
+        out_v = np.zeros((hdofs.size, cols))
+        for e, c in enumerate(elements):
+            matrix, pairs, q = high_map[e]
+            if not pairs:
+                continue
+            used = c[3] if q > 1 else c[3][: _GEOMS[c[0]][3]]
+            u = data[used]
+            dofs = [d for d, _ in pairs]
+            out_v[dofs] = matrix[[k for _, k in pairs]] @ u
+        return out_v
+
     data_arrays = (
         len(mesh.point_data)
         + len(mesh.cell_data)
@@ -1236,7 +2013,14 @@ def write(filename, mesh, grid_functions=False):
         append_sets(sets[1])
     out.append(f"\nvertices\n{nv}\n")
     flat = pts.ravel()
-    if not quadratic:
+    if high > 0:
+        out.append(
+            f"\nnodes\nFiniteElementSpace\nFiniteElementCollection: H1_{dim}D_P{high}\n"
+            f"VDim: {pdim}\nOrdering: 1\n\n"
+        )
+        for row in high_values(pts.reshape(-1, pdim), pdim):
+            out.append(" ".join(_fmt(v) for v in row) + "\n")
+    elif not quadratic:
         out.append(f"{pdim}\n")
         for v in range(nv):
             out.append(
@@ -1262,8 +2046,8 @@ def write(filename, mesh, grid_functions=False):
 
     path = pathlib.Path(filename)
     stem = os.path.join(os.path.dirname(str(filename)), path.stem)
-    order = 2 if quadratic else 1
-    ndofs = len(numbering) if quadratic else nv
+    order = high if high > 0 else (2 if quadratic else 1)
+    ndofs = hdofs.size if high > 0 else (len(numbering) if quadratic else nv)
     for name in sorted(mesh.point_data):
         a = np.asarray(mesh.point_data[name])
         cols = a.shape[1] if a.ndim > 1 else 1
@@ -1272,8 +2056,11 @@ def write(filename, mesh, grid_functions=False):
             f"FiniteElementSpace\nFiniteElementCollection: H1_{dim}D_P{order}\n"
             f"VDim: {cols}\nOrdering: 1\n\n"
         ]
+        hv = high_values(flat_a.reshape(-1, cols), cols) if high > 0 else None
         for d in range(ndofs):
-            if quadratic:
+            if high > 0:
+                vals = hv[d]
+            elif quadratic:
                 vals = [evaluate(weights[d], flat_a, cols, c) for c in range(cols)]
             else:
                 vals = [flat_a[vertex_point[d] * cols + c] for c in range(cols)]

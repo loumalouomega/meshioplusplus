@@ -1,6 +1,7 @@
 """MFEM mesh (``.mesh``) and grid functions (``.gf``): both engines, MFEM's own
 sample meshes and fields checked against MFEM's evaluation frozen by
-``tools/gen_mfem_fixtures.py``, round trips, and the ``.mesh`` clash with Medit."""
+``tools/gen_mfem_fixtures.py`` (order 2 and arbitrary order), non-conforming
+meshes, round trips, and the ``.mesh`` clash with Medit."""
 
 import pathlib
 
@@ -15,6 +16,7 @@ from .test_node_order import _is_valid
 
 MESHES = pathlib.Path(__file__).parent / "meshes" / "mfem"
 REFERENCE = np.load(MESHES / "reference.npz")
+LAGRANGE = np.load(MESHES / "reference_lagrange.npz")
 CONFORMING = [
     "star-q2",
     "escher-p2",
@@ -23,8 +25,28 @@ CONFORMING = [
     "compass",
     "tinyzoo-3d",
     "periodic-square",
-    "escher-p3",
 ]
+# Order 3 and up: VTK Lagrange cells (MFEM's samples, and warped curved meshes).
+HIGH_ORDER = [
+    "escher-p3",
+    "fichera-q3",
+    "toroid-wedge",
+    "rt-2d-p4-tri",
+    "curved-tet-p4",
+    "curved-hex-p3",
+    "curved-prism-p4",
+    "curved-tri-p5",
+    "curved-quad-p3u",
+    "curved-segment-p3",
+]
+_VTK_LAGRANGE = {
+    68: "VTK_LAGRANGE_CURVE",
+    69: "VTK_LAGRANGE_TRIANGLE",
+    70: "VTK_LAGRANGE_QUADRILATERAL",
+    71: "VTK_LAGRANGE_TETRAHEDRON",
+    72: "VTK_LAGRANGE_HEXAHEDRON",
+    73: "VTK_LAGRANGE_WEDGE",
+}
 GRID_FUNCTIONS = {
     "star-q2": ["u", "v"],
     "fichera-q2": ["w"],
@@ -213,15 +235,135 @@ def test_discontinuous_nodes_give_each_element_its_own_points(engine):
         assert a[0] * b[1] - a[1] * b[0] > 0
 
 
-def test_cubic_nodes_keep_the_vertices(engine, capfd):
-    mesh = engine.read(MESHES / "escher-p3.mesh")
-    assert "vertices only" in " ".join(capfd.readouterr().err.split())
-    assert {t for t, _ in _blocks(mesh)} == {"tetra", "triangle"}
+def _high_order_gfs(name):
+    gf = MESHES / f"{name}.u.gf"
+    return {"u": str(gf)} if gf.exists() else None
 
 
-def test_non_conforming_meshes_are_refused(engine):
-    with pytest.raises(meshioplusplus.ReadError, match="non-conforming"):
-        engine.read(MESHES / "amr-quad.mesh")
+@pytest.mark.parametrize("name", HIGH_ORDER)
+def test_arbitrary_order_matches_mfem(engine, name):
+    """Every node of every VTK Lagrange cell sits where MFEM's own high-order
+    output puts it, in VTK order, and u has MFEM's value there (frozen in
+    reference_lagrange.npz)."""
+    mesh = engine.read(MESHES / f"{name}.mesh", _high_order_gfs(name))
+    cells = {}
+    for block in mesh.cells:
+        if block.type.startswith("VTK_LAGRANGE"):
+            cells.setdefault(block.type, []).extend(np.asarray(block.data))
+    scale = max(1.0, np.abs(mesh.points).max())
+    codes = sorted(
+        {int(k.split(":")[1]) for k in LAGRANGE.files if k.startswith(name + ":")}
+    )
+    assert codes
+    for code in codes:
+        ref = LAGRANGE[f"{name}:{code}:points"]
+        ref_u = (
+            LAGRANGE[f"{name}:{code}:u"]
+            if f"{name}:{code}:u" in LAGRANGE.files
+            else None
+        )
+        mine = cells[_VTK_LAGRANGE[code]]
+        assert len(mine) == len(ref)
+        centres = np.array([mesh.points[row].mean(axis=0) for row in mine])
+        for k, want in enumerate(ref):
+            i = int(np.argmin(np.abs(centres - want.mean(axis=0)).max(axis=1)))
+            got = mesh.points[mine[i]]
+            if np.allclose(got, want, atol=1e-11 * scale):
+                if ref_u is not None:
+                    np.testing.assert_allclose(
+                        mesh.point_data["u"][mine[i]], ref_u[k], atol=1e-11
+                    )
+                continue
+            # MFEM re-marks triangles and tetrahedra on loading (reorders their
+            # vertices), so its cell can list the same nodes in another order.
+            assert code in (69, 71) and ref_u is None
+            np.testing.assert_allclose(
+                np.sort(got, axis=0), np.sort(want, axis=0), atol=1e-11 * scale
+            )
+
+
+@pytest.mark.parametrize("name", HIGH_ORDER)
+def test_arbitrary_order_engines_agree(name):
+    gfs = _high_order_gfs(name)
+    a = meshioplusplus.mfem.read(MESHES / f"{name}.mesh", gfs)
+    b = py_mfem.read(MESHES / f"{name}.mesh", gfs)
+    np.testing.assert_allclose(a.points, b.points, rtol=0, atol=1e-13)
+    assert [(t, x.tolist()) for t, x in _blocks(a)] == [
+        (t, x.tolist()) for t, x in _blocks(b)
+    ]
+    if gfs:
+        np.testing.assert_allclose(a.point_data["u"], b.point_data["u"], atol=1e-13)
+    assert _regions(a) == _regions(b)
+
+
+@pytest.mark.parametrize("writer", ["core", "python"])
+@pytest.mark.parametrize(
+    "name, order",
+    # the hexahedra carry an order-5 field, so they are read (and written) at 5
+    [
+        ("curved-tet-p4", 4),
+        ("curved-hex-p3", 5),
+        ("curved-prism-p4", 4),
+        ("fichera-q3", 3),
+    ],
+)
+def test_lagrange_cells_write_as_h1_nodes(writer, name, order, tmp_path):
+    """VTK Lagrange cells are written as order-p H1 (Gauss-Lobatto) nodes and
+    read back to the same nodes; so is the field."""
+    gfs = _high_order_gfs(name)
+    mesh = meshioplusplus.mfem.read(MESHES / f"{name}.mesh", gfs)
+    out = tmp_path / "out.mesh"
+    if writer == "core":
+        _core.mfem_write(str(out), mesh, True)
+    else:
+        py_mfem.write(out, mesh, grid_functions=True)
+    assert f"FiniteElementCollection: H1_3D_P{order}" in out.read_text()
+    back = meshioplusplus.mfem.read(
+        out, {"u": str(tmp_path / "out.u.gf")} if gfs else None
+    )
+    np.testing.assert_allclose(back.points, mesh.points, atol=1e-12)
+    for (t, x), (u, y) in zip(_blocks(mesh), _blocks(back)):
+        assert t == u
+        np.testing.assert_array_equal(x, y)
+    if gfs:
+        np.testing.assert_allclose(
+            back.point_data["u"], mesh.point_data["u"], atol=1e-12
+        )
+
+
+def test_non_conforming_mesh_reads_as_its_leaves(engine, capfd):
+    """An MFEM NC mesh: the leaves MFEM itself builds, with their attributes."""
+    mesh = engine.read(MESHES / "amr-quad.mesh")
+    assert "leaf element" in " ".join(capfd.readouterr().err.split())
+    attrs = np.concatenate(mesh.cell_data["mfem:attribute"])
+    got = {"elements": [], "boundary": []}
+    g = 0
+    for block in mesh.cells:
+        part = "elements" if block.type == "quad" else "boundary"
+        for row in np.asarray(block.data):
+            got[part].append(
+                (int(attrs[g]), sorted(map(tuple, mesh.points[row].tolist())))
+            )
+            g += 1
+    for part in ("elements", "boundary"):
+        want = [
+            (int(a), [tuple(p) for p in c])
+            for a, c in zip(
+                LAGRANGE[f"amr-quad:{part}:attributes"],
+                LAGRANGE[f"amr-quad:{part}:corners"].tolist(),
+            )
+        ]
+        assert sorted(got[part]) == sorted(want)
+
+
+def test_non_conforming_mesh_skips_grid_functions(engine, tmp_path, capfd):
+    gf = tmp_path / "e.gf"
+    gf.write_text(
+        "FiniteElementSpace\nFiniteElementCollection: L2_2D_P0\nVDim: 1\nOrdering: 0\n\n1\n"
+    )
+    mesh = engine.read(MESHES / "amr-quad.mesh", {"e": str(gf)})
+    assert "e" not in mesh.cell_data
+    assert "space-filling-curve" in " ".join(capfd.readouterr().err.split())
 
 
 @pytest.mark.parametrize("name", CONFORMING)
@@ -358,9 +500,14 @@ def test_mesh_extension_is_shared_with_medit(tmp_path):
         ("MFEM mesh v1.0\ndimension\n2\nelements\n1\n1 2 0 1\n", "ends"),
         ("MFEM mesh v7.0\n", "not an MFEM mesh"),
         (
-            "MFEM mesh v1.1\ndimension\n2\nelements\n0\nboundary\n0\nvertex_parents\n0\n",
-            "non-conforming",
+            "MFEM NC mesh v1.0\ndimension\n2\nelements\n0\nboundary\n0\n",
+            "no top-level coordinates",
         ),
+        (
+            "MFEM NC mesh v1.0\ndimension\n2\nelements\n0\nboundary\n0\nnodes\n",
+            "curved non-conforming",
+        ),
+        ("MFEM NC mesh v2.0\n", "not supported"),
         ("MFEM NURBS mesh v1.0\n", "not supported"),
         (
             "MFEM mesh v1.0\ndimension\n2\nelements\n0\nboundary\n0\nvertices\n0\n\nnodes\nFiniteElementSpace\nFiniteElementCollection: RT_2D_P1\nVDim: 2\nOrdering: 0\n",

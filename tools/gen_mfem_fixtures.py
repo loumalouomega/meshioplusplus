@@ -6,14 +6,16 @@ Needs PyMFEM (``pip install mfem``, BSD-3-Clause) and a checkout of MFEM's
 
     python tools/gen_mfem_fixtures.py /path/to/mfem/data
 
-It does three things, none of which uses meshio++:
+It does four things, none of which uses meshio++:
 
 1. Copies a few of MFEM's own sample meshes: ``star-q2`` (order-2 quads),
    ``escher-p2`` (order-2 tets), ``fichera-q2`` (order-2 hexes),
    ``fichera-mixed-p2`` (order-2 tets, hexes and prisms), ``compass`` (v1.3
    attribute sets), ``tinyzoo-3d`` (one cell of each 3-D geometry),
-   ``periodic-square`` (``L2_T1`` discontinuous nodes), ``escher-p3`` (cubic
-   nodes) and ``amr-quad`` (a non-conforming mesh, which must be refused).
+   ``periodic-square`` (``L2_T1`` discontinuous nodes), ``escher-p3`` and
+   ``fichera-q3`` (legacy ``Cubic`` tets and hexes), ``toroid-wedge`` (``H1``
+   order-3 prisms), ``rt-2d-p4-tri`` (order-4 triangles) and ``amr-quad`` (an
+   ``MFEM NC mesh``).
 2. Projects fields onto some of them with MFEM and saves the grid functions:
    ``star-q2.u.gf`` (H1 P2 scalar), ``star-q2.v.gf`` (H1 P2 2-vector, byNODES),
    ``fichera-q2.w.gf`` (H1 P2 3-vector, byVDIM), ``compass.t.gf`` (H1 P1),
@@ -24,6 +26,15 @@ It does three things, none of which uses meshio++:
    entity's reference centre, and the value of each grid function there. A test
    then needs no MFEM: the node of a meshio++ cell that sits between those
    vertices must be at that point and carry that value.
+4. For the arbitrary-order meshes -- the MFEM samples above of order 3 and 4,
+   and ``curved-*`` meshes it makes by curving MFEM's one-element reference
+   meshes to order 3-5 (Gauss-Lobatto, and equispaced ``H1@U`` for the quad)
+   and warping them with a smooth non-polynomial map -- it saves an order-3 to
+   5 ``H1`` field ``<name>.u.gf`` and freezes MFEM's own high-order output
+   (``ParaViewDataCollection`` with ``SetHighOrderOutput``, VTK Lagrange cells)
+   in ``reference_lagrange.npz``: per case and cell type, each cell's nodes in
+   VTK order and ``u`` at them. For ``amr-quad`` it stores the attribute and
+   sorted corner coordinates of every leaf and boundary element MFEM builds.
 """
 
 import pathlib
@@ -53,6 +64,9 @@ SAMPLES = [
     "tinyzoo-3d",
     "periodic-square",
     "escher-p3",
+    "fichera-q3",
+    "toroid-wedge",
+    "rt-2d-p4-tri",
     "amr-quad",
 ]
 # The meshes the reference covers (the conforming, continuous ones).
@@ -192,6 +206,162 @@ def reference(name, mesh, gfs):
     return arrays
 
 
+# --- arbitrary order --------------------------------------------------------------
+
+# (name, source mesh, curvature order or None, basis, uniform refinements,
+# order of the u field or None): MFEM's own order-3/4 samples as they are, and
+# MFEM's one-element reference meshes curved and warped. Loading a mesh of
+# triangles or tetrahedra re-marks them (reorders their vertices), so a field
+# saved against it only matches a mesh printed after that load: the escher-p3
+# and rt-2d-p4-tri samples stay MFEM's files and get no field.
+HIGH_ORDER = [
+    ("escher-p3", "escher-p3", None, None, 0, None),
+    ("fichera-q3", "fichera-q3", None, None, 0, 3),
+    ("toroid-wedge", "toroid-wedge", None, None, 0, 3),
+    ("rt-2d-p4-tri", "rt-2d-p4-tri", None, None, 0, None),
+    ("curved-tet-p4", "ref-tetrahedron", 4, "G", 1, 2),
+    ("curved-hex-p3", "ref-cube", 3, "G", 1, 5),
+    ("curved-prism-p4", "ref-prism", 4, "G", 1, 3),
+    ("curved-tri-p5", "ref-triangle", 5, "G", 1, 3),
+    ("curved-quad-p3u", "ref-square", 3, "U", 1, 3),
+    ("curved-segment-p3", "ref-segment", 3, "G", 2, 3),
+]
+
+
+def _warp(x):
+    """A smooth, non-polynomial map, so every order is exercised."""
+    y = np.array(x, dtype=float)
+    d = len(y)
+    y[0] = x[0] + 0.1 * np.sin(1.3 * (x[1] if d > 1 else x[0]))
+    if d > 1:
+        y[1] = x[1] + 0.07 * np.cos(0.9 * x[0])
+    if d > 2:
+        y[2] = x[2] + 0.05 * np.sin(x[0] + x[1])
+    return y
+
+
+def _field(x):
+    return float(np.sin(x[0]) + x[-1] ** 3 + 0.5 * np.cos(sum(x)))
+
+
+def _vtu_cells(path):
+    """(type code, node coordinates, u) of every cell of an ASCII VTU."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(path).getroot()
+    arrays = {}
+    for da in root.iter("DataArray"):
+        values = np.array(da.text.split(), dtype=float)
+        arrays[da.get("Name") or "Points"] = (
+            values,
+            int(da.get("NumberOfComponents") or 1),
+        )
+    pts = arrays["Points"][0].reshape(-1, 3)
+    conn = arrays["connectivity"][0].astype(int)
+    offsets = arrays["offsets"][0].astype(int)
+    types = arrays["types"][0].astype(int)
+    u = arrays["u"][0] if "u" in arrays else None
+    out, start = [], 0
+    for t, end in zip(types, offsets):
+        ids = conn[start:end]
+        out.append((int(t), pts[ids], None if u is None else u[ids]))
+        start = end
+    return out
+
+
+def high_order(data, name, source, curve, basis, refine, u_order, arrays):
+    import os
+    import tempfile
+
+    mesh = mfem.Mesh(str(data / f"{source}.mesh"), 1, 1)
+    if curve:
+        for _ in range(refine):
+            mesh.UniformRefinement()
+        btype = (
+            mfem.BasisType.ClosedUniform
+            if basis == "U"
+            else mfem.BasisType.GaussLobatto
+        )
+        fec = mfem.H1_FECollection(curve, mesh.Dimension(), btype)
+        fes = mfem.FiniteElementSpace(
+            mesh, fec, mesh.SpaceDimension(), mfem.Ordering.byVDIM
+        )
+        mesh.SetNodalFESpace(fes)
+
+        class Warp(mfem.VectorPyCoefficient):
+            def EvalValue(self, x):
+                return _warp(x)
+
+        mesh.GetNodes().ProjectCoefficient(Warp(mesh.SpaceDimension()))
+    path = OUT / f"{name}.mesh"
+    if curve:
+        mesh.Print(str(path), 17)
+        # Loading re-marks tetrahedra (reorders their vertices): save the mesh
+        # as it then stands, so the file and the field agree.
+        mesh = mfem.Mesh(str(path), 1, 1)
+        mesh.Print(str(path), 17)
+    else:
+        mesh = mfem.Mesh(str(path), 1, 1)
+
+    class Field(mfem.PyCoefficient):
+        def EvalValue(self, x):
+            return _field(x)
+
+    order = mesh.GetNodes().FESpace().GetMaxElementOrder()
+    fec_u = mfem.H1_FECollection(u_order or 1, mesh.Dimension())
+    fes_u = mfem.FiniteElementSpace(mesh, fec_u)
+    u = mfem.GridFunction(fes_u)
+    u.ProjectCoefficient(Field())
+    if u_order:
+        u.Save(str(OUT / f"{name}.u.gf"), 17)
+        order = max(order, u_order)
+    with tempfile.TemporaryDirectory() as tmp:
+        dc = mfem.ParaViewDataCollection(name, mesh)
+        dc.SetPrefixPath(tmp)
+        dc.SetLevelsOfDetail(order)
+        dc.SetHighOrderOutput(True)
+        dc.SetDataFormat(mfem.VTKFormat_ASCII)
+        dc.SetPrecision(17)
+        if u_order:
+            dc.RegisterField("u", u)
+        dc.Save()
+        vtu = next(
+            os.path.join(r, f)
+            for r, _, fs in os.walk(tmp)
+            for f in fs
+            if f.endswith(".vtu")
+        )
+        cells = _vtu_cells(vtu)
+    for code in sorted({c[0] for c in cells}):
+        group = [c for c in cells if c[0] == code]
+        dim = mesh.SpaceDimension()
+        arrays[f"{name}:{code}:points"] = np.array([c[1][:, :dim] for c in group])
+        if u_order:
+            arrays[f"{name}:{code}:u"] = np.array([c[2] for c in group])
+    print(name, mesh.GetNE(), "cells, VTK order", order)
+
+
+def non_conforming(name, arrays):
+    mesh = mfem.Mesh(str(OUT / f"{name}.mesh"), 1, 1)
+    sdim = mesh.SpaceDimension()
+
+    def cells(n, vertices, attribute):
+        corners, attrs = [], []
+        for i in range(n):
+            pts = sorted(tuple(mesh.GetVertexArray(v)[:sdim]) for v in vertices(i))
+            corners.append(pts)
+            attrs.append(attribute(i))
+        return np.array(corners), np.array(attrs)
+
+    for part, n, verts, attr in (
+        ("elements", mesh.GetNE(), mesh.GetElementVertices, mesh.GetAttribute),
+        ("boundary", mesh.GetNBE(), mesh.GetBdrElementVertices, mesh.GetBdrAttribute),
+    ):
+        corners, attrs = cells(n, verts, attr)
+        arrays[f"{name}:{part}:corners"] = corners
+        arrays[f"{name}:{part}:attributes"] = attrs
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -207,6 +377,11 @@ def main():
             gf.Save(str(OUT / f"{name}.{g}.gf"))
         arrays.update(reference(name, mesh, gfs))
     np.savez_compressed(OUT / "reference.npz", **arrays)
+    lagrange = {}
+    for case in HIGH_ORDER:
+        high_order(data, *case, lagrange)
+    non_conforming("amr-quad", lagrange)
+    np.savez_compressed(OUT / "reference_lagrange.npz", **lagrange)
 
 
 if __name__ == "__main__":
