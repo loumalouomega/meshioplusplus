@@ -29,7 +29,7 @@ Most tables are their own inverse, but not all. MED's `hexahedron27` is not, and
 | `mphtxt` (also `mphbin`) | `quad`, `pyramid`, `hexahedron`, `triangle6`, `quad9`, `tetra10`, `pyramid14`, `wedge18`, `hexahedron27` | COMSOL's "Mesh Element Numbering Conventions" (corners in tensor order, then the quadratic lattice in lexicographic order), real COMSOL files (deal.II, FEconv, Wolfram FEMAddOns), and AWS Palace's COMSOL-to-gmsh tables composed with the gmsh ones (v16.1.0) |
 | `unv` | `line3`, `triangle6`, `quad8`, `quad9`, `tetra10`, `pyramid13`, `wedge15`, `hexahedron20` | gmsh's `.unv`/`.msh` twins and Salome's SMESH driver |
 
-The gmsh, CGNS, GiD, Exodus and Kratos tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.8](./roadmap.md)).
+The gmsh, CGNS, GiD, Exodus and Kratos tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.3](./roadmap.md)).
 
 MSC Marc (v16.8.0) has no entry because it needs none: every Marc element type meshio++ reads, quadratic ones included, numbers its nodes in meshio++'s order (checked on real Marc Mentat decks: every cell positively oriented, every mid-edge node at its edge's midpoint). See [Marc](./formats/marc.md#element-types).
 
