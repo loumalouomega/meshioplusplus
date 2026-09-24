@@ -273,10 +273,12 @@ TEST(Mfem, NonConformingMeshReadsAsItsLeaves) {
     EXPECT_EQ(mesh.Cells(0).Type(), "quad");
     EXPECT_EQ(mesh.Cells(0).NumCells(), 4u);
     ASSERT_EQ(mesh.NumPoints(), 9u);
-    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8), 1.0);  // the centre
-    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8 + 1), 1.0);
-    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5), 2.0);  // midpoint of 1-2
+    // MFEM's vertex numbers: the top-level vertices 0-3, then the others as the
+    // leaves (in Hilbert order) meet them: 4, 8, 7 in the first leaf, 5, then 6.
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5), 1.0);  // the centre, node 8
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5 + 1), 1.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 7), 2.0);  // node 5, midpoint of 1-2
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 7 + 1), 1.0);
 }
 
 namespace {

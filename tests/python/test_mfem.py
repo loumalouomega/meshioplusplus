@@ -356,14 +356,35 @@ def test_non_conforming_mesh_reads_as_its_leaves(engine, capfd):
         assert sorted(got[part]) == sorted(want)
 
 
-def test_non_conforming_mesh_skips_grid_functions(engine, tmp_path, capfd):
-    gf = tmp_path / "e.gf"
-    gf.write_text(
-        "FiniteElementSpace\nFiniteElementCollection: L2_2D_P0\nVDim: 1\nOrdering: 0\n\n1\n"
+NC_REF = np.load(MESHES / "reference_nc.npz")
+
+
+@pytest.mark.parametrize(
+    "name, cell_type", [("amr-quad", "quad"), ("amr-hex", "hexahedron")]
+)
+def test_non_conforming_mesh_follows_mfem_numbering(engine, name, cell_type):
+    """The leaves come in MFEM's space-filling-curve order and the points in
+    MFEM's vertex order, so MFEM's grid functions on the mesh apply: an H1
+    field at every VTK Lagrange node and an L2 one per leaf (frozen in
+    reference_nc.npz)."""
+    gfs = {g: str(MESHES / f"{name}.{g}.gf") for g in ("u", "e")}
+    mesh = engine.read(MESHES / f"{name}.mesh", gfs)
+    order = int(NC_REF[f"{name}:order"])
+    want_type = {2: f"{cell_type}{9 if cell_type == 'quad' else 27}"}.get(
+        order, _VTK_LAGRANGE[70 if cell_type == "quad" else 72]
     )
-    mesh = engine.read(MESHES / "amr-quad.mesh", {"e": str(gf)})
-    assert "e" not in mesh.cell_data
-    assert "space-filling-curve" in " ".join(capfd.readouterr().err.split())
+    block = next(b for b in mesh.cells if b.type == want_type)
+    cells = np.asarray(block.data)
+    verts = NC_REF[f"{name}:element_vertices"]
+    np.testing.assert_array_equal(cells[:, : verts.shape[1]], verts)
+    np.testing.assert_array_equal(
+        mesh.points[: len(NC_REF[f"{name}:vertices"])], NC_REF[f"{name}:vertices"]
+    )
+    np.testing.assert_allclose(
+        mesh.point_data["u"][cells], NC_REF[f"{name}:u"], rtol=0, atol=1e-13
+    )
+    k = [b.type for b in mesh.cells].index(want_type)
+    np.testing.assert_allclose(mesh.cell_data["e"][k], NC_REF[f"{name}:e"], atol=1e-14)
 
 
 @pytest.mark.parametrize("name", CONFORMING)

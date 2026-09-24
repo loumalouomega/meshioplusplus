@@ -49,6 +49,10 @@ It does four things, none of which uses meshio++:
    space: those nodes copy the vertex and edge values of a Gauss-Lobatto
    projection (the same degrees of freedom) with small random bubbles, and
    their ``u`` is random.
+7. Saves an ``H1`` field ``u`` and an ``L2`` order-0 field ``e`` on the
+   non-conforming ``amr-quad`` and ``amr-hex`` (copied too), and freezes in
+   ``reference_nc.npz`` MFEM's vertex numbers of every leaf in MFEM's order,
+   its vertex coordinates, ``u`` at the VTK lattice of every leaf and ``e``.
 """
 
 import pathlib
@@ -509,9 +513,8 @@ def modal(data):
         fec = mfem.H1_FECollection(p, dim, bases[basis])
         rng = np.random.default_rng(len(name))
         if basis == "ser":
-            fesg = mfem.FiniteElementSpace(
-                mesh, mfem.H1_FECollection(p, dim), sdim, mfem.Ordering.byNODES
-            )
+            fecg = mfem.H1_FECollection(p, dim)  # referenced while in use
+            fesg = mfem.FiniteElementSpace(mesh, fecg, sdim, mfem.Ordering.byNODES)
             mesh.SetNodalFESpace(fesg)
             mesh.GetNodes().ProjectCoefficient(Warp(sdim))
             g = mesh.GetNodes().GetDataArray().copy()
@@ -538,9 +541,8 @@ def modal(data):
         # of the element frames it then prints
         mesh = mfem.Mesh(str(out / f"{name}.mesh"), 1, 1)
         mesh.Print(str(out / f"{name}.mesh"), 17)
-        fesu = mfem.FiniteElementSpace(
-            mesh, mfem.H1_FECollection(pu, dim, bases[basis])
-        )
+        fecu = mfem.H1_FECollection(pu, dim, bases[basis])
+        fesu = mfem.FiniteElementSpace(mesh, fecu)
         u = mfem.GridFunction(fesu)
         if basis == "ser":
             u.Assign(mfem.Vector(rng.standard_normal(fesu.GetNDofs())))
@@ -572,6 +574,55 @@ def modal(data):
     np.savez_compressed(out / "reference_modal.npz", **arrays)
 
 
+# Non-conforming meshes with fields: MFEM's own leaf order and vertex numbers
+# (space-filling curve) decide which value is whose.
+NC_FIELDS = [("amr-quad", 3), ("amr-hex", 2)]
+
+
+def nc_fields(data):
+    lattice = _lattice()
+    shapes = {3: "quad", 5: "hexahedron"}
+    arrays = {}
+    for name, p in NC_FIELDS:
+        if not (OUT / f"{name}.mesh").exists():
+            shutil.copyfile(data / f"{name}.mesh", OUT / f"{name}.mesh")
+        mesh = mfem.Mesh(str(OUT / f"{name}.mesh"), 1, 1)
+        dim, sdim = mesh.Dimension(), mesh.SpaceDimension()
+        # PyMFEM: keep every collection and space referenced while in use
+        fec, fec0 = mfem.H1_FECollection(p, dim), mfem.L2_FECollection(0, dim)
+        fes, fes0 = mfem.FiniteElementSpace(mesh, fec), mfem.FiniteElementSpace(
+            mesh, fec0
+        )
+        u = mfem.GridFunction(fes)
+        u.ProjectCoefficient(
+            Scalar(lambda x: 1.0 + np.sin(2 * x[0]) * np.cos(x[1]) + 0.5 * x[-1])
+        )
+        u.Save(str(OUT / f"{name}.u.gf"), 17)
+        e = mfem.GridFunction(fes0)
+        e.ProjectCoefficient(Scalar(lambda x: x[0] - 2.0 * x[1]))
+        e.Save(str(OUT / f"{name}.e.gf"), 17)
+        us, verts = [], []
+        for k in range(mesh.GetNE()):
+            tr = mesh.GetElementTransformation(k)
+            uk = []
+            for ijk in lattice(shapes[mesh.GetElementBaseGeometry(k)], p):
+                ip = mfem.IntegrationPoint()
+                ip.Set3(*(c / p for c in ijk))
+                tr.SetIntPoint(ip)
+                uk.append(u.GetValue(k, ip))
+            us.append(uk)
+            verts.append(list(mesh.GetElementVertices(k)))
+        arrays[f"{name}:order"] = np.array(p)
+        arrays[f"{name}:u"] = np.array(us)
+        arrays[f"{name}:e"] = np.array([e[k] for k in range(mesh.GetNE())])
+        arrays[f"{name}:element_vertices"] = np.array(verts)
+        arrays[f"{name}:vertices"] = np.array(
+            [mesh.GetVertexArray(v)[:sdim] for v in range(mesh.GetNV())]
+        )
+        print(name, mesh.GetNE(), "leaves, u of order", p)
+    np.savez_compressed(OUT / "reference_nc.npz", **arrays)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -594,6 +645,7 @@ def main():
     np.savez_compressed(OUT / "reference_lagrange.npz", **lagrange)
     nurbs(data)
     modal(data)
+    nc_fields(data)
 
 
 if __name__ == "__main__":

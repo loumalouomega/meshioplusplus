@@ -688,6 +688,34 @@ std::vector<MfAttributeSet> mf_read_sets(MfLexer& rLex) {
 // unused slot. Top-level vertices are the `coordinates`; every other vertex is
 // placed between its two `vertex_parents` (at the v1.1 scale, else halfway).
 // Only the leaves of the file's own rank are kept.
+// MFEM's Hilbert-curve child orders and states (mesh/ncmesh_tables.hpp).
+constexpr int kMfQuadHilbertOrder[8][4] = {{0, 1, 2, 3}, {0, 3, 2, 1}, {1, 2, 3, 0}, {1, 0, 3, 2},
+                                           {2, 3, 0, 1}, {2, 1, 0, 3}, {3, 0, 1, 2}, {3, 2, 1, 0}};
+constexpr int kMfQuadHilbertState[8][4] = {{1, 0, 0, 5}, {0, 1, 1, 4}, {3, 2, 2, 7}, {2, 3, 3, 6},
+                                           {5, 4, 4, 1}, {4, 5, 5, 0}, {7, 6, 6, 3}, {6, 7, 7, 2}};
+constexpr int kMfHexHilbertOrder[24][8] = {
+    {0, 1, 2, 3, 7, 6, 5, 4}, {0, 3, 7, 4, 5, 6, 2, 1}, {0, 4, 5, 1, 2, 6, 7, 3},
+    {1, 0, 3, 2, 6, 7, 4, 5}, {1, 2, 6, 5, 4, 7, 3, 0}, {1, 5, 4, 0, 3, 7, 6, 2},
+    {2, 1, 5, 6, 7, 4, 0, 3}, {2, 3, 0, 1, 5, 4, 7, 6}, {2, 6, 7, 3, 0, 4, 5, 1},
+    {3, 0, 4, 7, 6, 5, 1, 2}, {3, 2, 1, 0, 4, 5, 6, 7}, {3, 7, 6, 2, 1, 5, 4, 0},
+    {4, 0, 1, 5, 6, 2, 3, 7}, {4, 5, 6, 7, 3, 2, 1, 0}, {4, 7, 3, 0, 1, 2, 6, 5},
+    {5, 1, 0, 4, 7, 3, 2, 6}, {5, 4, 7, 6, 2, 3, 0, 1}, {5, 6, 2, 1, 0, 3, 7, 4},
+    {6, 2, 3, 7, 4, 0, 1, 5}, {6, 5, 1, 2, 3, 0, 4, 7}, {6, 7, 4, 5, 1, 0, 3, 2},
+    {7, 3, 2, 6, 5, 1, 0, 4}, {7, 4, 0, 3, 2, 1, 5, 6}, {7, 6, 5, 4, 0, 1, 2, 3}};
+constexpr int kMfHexHilbertState[24][8] = {
+    {1, 2, 2, 7, 7, 21, 21, 17},     {2, 0, 0, 22, 22, 16, 16, 8},
+    {0, 1, 1, 15, 15, 6, 6, 23},     {4, 5, 5, 10, 10, 18, 18, 14},
+    {5, 3, 3, 19, 19, 13, 13, 11},   {3, 4, 4, 12, 12, 9, 9, 20},
+    {8, 7, 7, 17, 17, 23, 23, 2},    {6, 8, 8, 0, 0, 15, 15, 22},
+    {7, 6, 6, 21, 21, 1, 1, 16},     {11, 10, 10, 14, 14, 20, 20, 5},
+    {9, 11, 11, 3, 3, 12, 12, 19},   {10, 9, 9, 18, 18, 4, 4, 13},
+    {13, 14, 14, 5, 5, 19, 19, 10},  {14, 12, 12, 20, 20, 11, 11, 4},
+    {12, 13, 13, 9, 9, 3, 3, 18},    {16, 17, 17, 2, 2, 22, 22, 7},
+    {17, 15, 15, 23, 23, 8, 8, 1},   {15, 16, 16, 6, 6, 0, 0, 21},
+    {20, 19, 19, 11, 11, 14, 14, 3}, {18, 20, 20, 4, 4, 10, 10, 12},
+    {19, 18, 18, 13, 13, 5, 5, 9},   {23, 22, 22, 8, 8, 17, 17, 0},
+    {21, 23, 23, 1, 1, 7, 7, 15},    {22, 21, 21, 16, 16, 2, 2, 6}};
+
 MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
     const auto& geoms = mf_geoms();
     MfFile f;
@@ -699,6 +727,7 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
         std::size_t mLine = 0;
     };
     std::vector<NcElement> elements;
+    std::vector<int> root_states;
     std::map<std::int64_t, std::pair<std::pair<std::int64_t, std::int64_t>, double>> parents;
     std::vector<double> top;  // top-level coordinates, 3 per node
     std::size_t top_count = 0;
@@ -755,7 +784,7 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
         } else if (t.mText == "root_state") {
             const std::int64_t n = rLex.Int("a root count");
             for (std::int64_t k = 0; k < n; ++k)
-                rLex.Int("a root state");
+                root_states.push_back(static_cast<int>(rLex.Int("a root state")));
         } else if (t.mText == "coordinates") {
             const std::int64_t n = rLex.Int("a vertex count");
             if (n < 0)
@@ -797,15 +826,23 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
                                     " out of range (line " + std::to_string(el.mLine) + ")");
                 is_child[static_cast<std::size_t>(c)] = true;
             }
-    std::vector<std::size_t> leaves;
-    std::size_t ghosts = 0;
-    std::vector<std::size_t> stack;
-    for (std::size_t r = elements.size(); r-- > 0;)
-        if (elements[r].mGeom > 0 && !is_child[r])
-            stack.push_back(r);
+    // MFEM's leaf order (NCMesh::CollectLeafElements): the roots in order,
+    // children along its Hilbert curve for quadrilaterals refined in both
+    // directions and hexahedra in all three, else in child order; a file's
+    // roots start in their root_state (0 by default).
+    std::vector<std::size_t> ordered;
+    std::vector<std::pair<std::size_t, int>> stack;
+    {
+        std::vector<std::size_t> roots;
+        for (std::size_t r = 0; r < elements.size(); ++r)
+            if (elements[r].mGeom > 0 && !is_child[r])
+                roots.push_back(r);
+        for (std::size_t k = roots.size(); k-- > 0;)
+            stack.push_back({roots[k], k < root_states.size() ? root_states[k] : 0});
+    }
     std::vector<bool> seen(elements.size(), false);
     while (!stack.empty()) {
-        const std::size_t e = stack.back();
+        const auto [e, state] = stack.back();
         stack.pop_back();
         if (seen[e])
             throw ReadError("MFEM mesh: element " + std::to_string(e) +
@@ -813,27 +850,67 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
         seen[e] = true;
         const NcElement& el = elements[e];
         if (el.mRefType == 0) {
-            if (el.mRank == my_rank)
-                leaves.push_back(e);
-            else
-                ++ghosts;
+            if (el.mRank >= 0)
+                ordered.push_back(e);
             continue;
         }
-        for (std::size_t k = el.mIds.size(); k-- > 0;)
-            stack.push_back(static_cast<std::size_t>(el.mIds[k]));
+        std::vector<std::pair<std::size_t, int>> kids;
+        const auto child = [&](std::size_t I) {
+            if (I >= el.mIds.size())
+                throw ReadError("MFEM mesh: element " + std::to_string(e) +
+                                " lacks a child (line " + std::to_string(el.mLine) + ")");
+            return static_cast<std::size_t>(el.mIds[I]);
+        };
+        if (el.mGeom == 3 && el.mRefType == 3 && state >= 0 && state < 8) {
+            for (std::size_t i = 0; i < 4; ++i)
+                kids.push_back({child(static_cast<std::size_t>(kMfQuadHilbertOrder[state][i])),
+                                kMfQuadHilbertState[state][i]});
+        } else if (el.mGeom == 5 && el.mRefType == 7 && state >= 0 && state < 24) {
+            for (std::size_t i = 0; i < 8; ++i)
+                kids.push_back({child(static_cast<std::size_t>(kMfHexHilbertOrder[state][i])),
+                                kMfHexHilbertState[state][i]});
+        } else {
+            for (std::int64_t c : el.mIds)
+                kids.push_back({static_cast<std::size_t>(c), state});
+        }
+        for (std::size_t k = kids.size(); k-- > 0;)
+            stack.push_back(kids[k]);
     }
+    std::vector<std::size_t> leaves;
+    for (std::size_t e : ordered)
+        if (elements[e].mRank == my_rank)
+            leaves.push_back(e);
+    const std::size_t ghosts = ordered.size() - leaves.size();
     if (ghosts)
         log::warn("MFEM mesh: {} ghost element(s) of other ranks in {} dropped", ghosts, rPath);
 
-    // Vertices: every node a leaf or boundary element uses, by node id.
-    std::set<std::int64_t> used;
+    // MFEM's vertex numbers (NCMesh::UpdateVertices): the top-level vertices of
+    // the rank's leaves by node id, then the others as the leaves (ghosts
+    // included) meet them.
+    std::map<std::int64_t, bool> local;  // node -> top-level
     for (std::size_t e : leaves)
-        used.insert(elements[e].mIds.begin(), elements[e].mIds.end());
-    for (const MfElement& b : f.mBoundary)
-        used.insert(b.mVertices.begin(), b.mVertices.end());
+        for (std::int64_t id : elements[e].mIds) {
+            const bool top_level = parents.find(id) == parents.end();
+            local[id] = local[id] || top_level;
+        }
+    std::vector<std::int64_t> order;
+    for (const auto& [id, top_level] : local)
+        if (top_level)
+            order.push_back(id);
     std::map<std::int64_t, std::int64_t> index;
-    for (std::int64_t id : used)
+    for (std::int64_t id : order)
         index.emplace(id, static_cast<std::int64_t>(index.size()));
+    const auto number = [&](std::int64_t Id) {
+        if (index.emplace(Id, static_cast<std::int64_t>(index.size())).second)
+            order.push_back(Id);
+    };
+    for (std::size_t e : ordered)
+        for (std::int64_t id : elements[e].mIds)
+            if (local.count(id))
+                number(id);
+    for (const MfElement& b : f.mBoundary)
+        for (std::int64_t id : b.mVertices)
+            number(id);
     std::map<std::int64_t, std::array<double, 3>> pos;
     std::set<std::int64_t> visiting;
     std::function<std::array<double, 3>(std::int64_t)> position = [&](std::int64_t Id) {
@@ -862,7 +939,7 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
     };
     f.mSpaceDim = sdim > 0 ? sdim : f.mDim;
     f.mNumVertices = index.size();
-    for (const auto& [id, k] : index) {
+    for (std::int64_t id : order) {
         const auto x = position(id);
         for (int c = 0; c < f.mSpaceDim; ++c)
             f.mCoords.push_back(x[static_cast<std::size_t>(c)]);
@@ -3458,14 +3535,7 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
 
     // --- grid functions -------------------------------------------------------------
     std::vector<MfGridData> gfs;
-    if (f.mNonConforming && !rGridFunctions.empty())
-        log::warn(
-            "MFEM mesh: grid functions on the non-conforming mesh {} follow MFEM's "
-            "space-filling-curve numbering of its leaves, which is not read; skipped",
-            rPath);
-    const std::vector<MfemGridFunction> no_gfs;
-    const std::vector<MfemGridFunction>& gf_list = f.mNonConforming ? no_gfs : rGridFunctions;
-    for (const MfemGridFunction& g : gf_list) {
+    for (const MfemGridFunction& g : rGridFunctions) {
         MfGridData data = mf_parse_gf(g);
         const MfSpace& s = data.mSpace;
         const bool h1 = s.mKind == MfSpace::H1;

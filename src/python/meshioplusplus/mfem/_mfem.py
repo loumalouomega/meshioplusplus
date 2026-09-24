@@ -504,6 +504,37 @@ def _read_groups(lex, f):
             lex.fail(f"unexpected '{text}' in the communication groups", tline)
 
 
+# MFEM's Hilbert-curve child orders and states (mesh/ncmesh_tables.hpp)
+_QUAD_HILBERT_ORDER = [
+    (0, 1, 2, 3), (0, 3, 2, 1), (1, 2, 3, 0), (1, 0, 3, 2),
+    (2, 3, 0, 1), (2, 1, 0, 3), (3, 0, 1, 2), (3, 2, 1, 0),
+]
+_QUAD_HILBERT_STATE = [
+    (1, 0, 0, 5), (0, 1, 1, 4), (3, 2, 2, 7), (2, 3, 3, 6),
+    (5, 4, 4, 1), (4, 5, 5, 0), (7, 6, 6, 3), (6, 7, 7, 2),
+]
+_HEX_HILBERT_ORDER = [
+    (0, 1, 2, 3, 7, 6, 5, 4), (0, 3, 7, 4, 5, 6, 2, 1), (0, 4, 5, 1, 2, 6, 7, 3),
+    (1, 0, 3, 2, 6, 7, 4, 5), (1, 2, 6, 5, 4, 7, 3, 0), (1, 5, 4, 0, 3, 7, 6, 2),
+    (2, 1, 5, 6, 7, 4, 0, 3), (2, 3, 0, 1, 5, 4, 7, 6), (2, 6, 7, 3, 0, 4, 5, 1),
+    (3, 0, 4, 7, 6, 5, 1, 2), (3, 2, 1, 0, 4, 5, 6, 7), (3, 7, 6, 2, 1, 5, 4, 0),
+    (4, 0, 1, 5, 6, 2, 3, 7), (4, 5, 6, 7, 3, 2, 1, 0), (4, 7, 3, 0, 1, 2, 6, 5),
+    (5, 1, 0, 4, 7, 3, 2, 6), (5, 4, 7, 6, 2, 3, 0, 1), (5, 6, 2, 1, 0, 3, 7, 4),
+    (6, 2, 3, 7, 4, 0, 1, 5), (6, 5, 1, 2, 3, 0, 4, 7), (6, 7, 4, 5, 1, 0, 3, 2),
+    (7, 3, 2, 6, 5, 1, 0, 4), (7, 4, 0, 3, 2, 1, 5, 6), (7, 6, 5, 4, 0, 1, 2, 3),
+]
+_HEX_HILBERT_STATE = [
+    (1, 2, 2, 7, 7, 21, 21, 17), (2, 0, 0, 22, 22, 16, 16, 8), (0, 1, 1, 15, 15, 6, 6, 23),
+    (4, 5, 5, 10, 10, 18, 18, 14), (5, 3, 3, 19, 19, 13, 13, 11), (3, 4, 4, 12, 12, 9, 9, 20),
+    (8, 7, 7, 17, 17, 23, 23, 2), (6, 8, 8, 0, 0, 15, 15, 22), (7, 6, 6, 21, 21, 1, 1, 16),
+    (11, 10, 10, 14, 14, 20, 20, 5), (9, 11, 11, 3, 3, 12, 12, 19), (10, 9, 9, 18, 18, 4, 4, 13),
+    (13, 14, 14, 5, 5, 19, 19, 10), (14, 12, 12, 20, 20, 11, 11, 4), (12, 13, 13, 9, 9, 3, 3, 18),
+    (16, 17, 17, 2, 2, 22, 22, 7), (17, 15, 15, 23, 23, 8, 8, 1), (15, 16, 16, 6, 6, 0, 0, 21),
+    (20, 19, 19, 11, 11, 14, 14, 3), (18, 20, 20, 4, 4, 10, 10, 12), (19, 18, 18, 13, 13, 5, 5, 9),
+    (23, 22, 22, 8, 8, 17, 17, 0), (21, 23, 23, 1, 1, 7, 7, 15), (22, 21, 21, 16, 16, 2, 2, 6),
+]
+
+
 def _parse_nc(lex, filename, scaled):
     """An ``MFEM NC mesh`` (``mf_parse_nc``): the refinement tree read as its
     leaves; top-level vertices from ``coordinates``, the rest between their
@@ -526,6 +557,7 @@ def _parse_nc(lex, filename, scaled):
         "nodes": None,
     }
     elements = []  # (rank, attr, geom, ref_type, ids, line); geom None when unused
+    root_states = []
     parents = {}
     top = []
     my_rank = 0
@@ -572,8 +604,7 @@ def _parse_nc(lex, filename, scaled):
                 p2 = lex.int("a parent")
                 parents[vid] = (p1, p2, lex.real("a scale") if scaled else 0.5)
         elif text == "root_state":
-            for _ in range(lex.int("a root count")):
-                lex.int("a root state")
+            root_states = [lex.int("a root state") for _ in range(lex.int("a root count"))]
         elif text == "coordinates":
             n = lex.int("a vertex count")
             if n < 0:
@@ -610,38 +641,62 @@ def _parse_nc(lex, filename, scaled):
                         f"MFEM mesh: child element {c} out of range (line {row_line})"
                     )
                 is_child[c] = True
-    leaves, ghosts = [], 0
+    # MFEM's leaf order (NCMesh::CollectLeafElements): the roots in order,
+    # children along its Hilbert curve for quadrilaterals refined in both
+    # directions and hexahedra in all three, else in child order; a file's
+    # roots start in their root_state (0 by default).
+    ordered, ghosts = [], 0
+    roots = [r for r in range(len(elements)) if elements[r][2] and not is_child[r]]
     stack = [
-        r
-        for r in range(len(elements) - 1, -1, -1)
-        if elements[r][2] and not is_child[r]
+        (r, root_states[k] if k < len(root_states) else 0)
+        for k, r in reversed(list(enumerate(roots)))
     ]
     seen = [False] * len(elements)
     while stack:
-        e = stack.pop()
+        e, state = stack.pop()
         if seen[e]:
             raise ReadError(
                 f"MFEM mesh: element {e} is reached twice in the refinement tree"
             )
         seen[e] = True
-        rank, _, _, ref, ids, _ = elements[e]
+        rank, _, geom, ref, ids, _ = elements[e]
         if ref == 0:
-            if rank == my_rank:
-                leaves.append(e)
-            else:
-                ghosts += 1
+            if rank >= 0:
+                ordered.append(e)
             continue
-        stack.extend(reversed(ids))
+        if geom == 3 and ref == 3 and 0 <= state < 8:
+            kids = [(ids[_QUAD_HILBERT_ORDER[state][i]], _QUAD_HILBERT_STATE[state][i]) for i in range(4)]
+        elif geom == 5 and ref == 7 and 0 <= state < 24:
+            kids = [(ids[_HEX_HILBERT_ORDER[state][i]], _HEX_HILBERT_STATE[state][i]) for i in range(8)]
+        else:
+            kids = [(c, state) for c in ids]
+        stack.extend(reversed(kids))
+    leaves = [e for e in ordered if elements[e][0] == my_rank]
+    ghosts = len(ordered) - len(leaves)
     if ghosts:
         warn(
             f"MFEM mesh: {ghosts} ghost element(s) of other ranks in {filename} dropped"
         )
-    used = set()
+    # MFEM's vertex numbers (NCMesh::UpdateVertices): the top-level vertices
+    # of the rank's leaves by node id, then the others as the leaves (ghosts
+    # included) meet them
+    local = {}
     for e in leaves:
-        used.update(elements[e][4])
+        for v in elements[e][4]:
+            local[v] = local.get(v, False) or v not in parents
+    order = sorted(v for v, top_level in local.items() if top_level)
+    numbered = set(order)
+    for e in ordered:
+        for v in elements[e][4]:
+            if v in local and v not in numbered:
+                numbered.add(v)
+                order.append(v)
     for b in f["boundary"]:
-        used.update(b[2])
-    index = {vid: k for k, vid in enumerate(sorted(used))}
+        for v in b[2]:
+            if v not in numbered:
+                numbered.add(v)
+                order.append(v)
+    index = {vid: k for k, vid in enumerate(order)}
     pos = {}
 
     def position(vid, visiting=()):
@@ -666,7 +721,7 @@ def _parse_nc(lex, filename, scaled):
 
     f["sdim"] = sdim if sdim else f["dim"]
     f["nv"] = len(index)
-    for vid in sorted(used):
+    for vid in order:
         f["coords"].extend(position(vid)[: f["sdim"]])
     f["elements"] = [
         (
@@ -911,12 +966,6 @@ def read(filename, grid_functions=None, piece=None):
         gf_items = list(grid_functions.items())
     else:
         gf_items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
-    if f["nc"] and gf_items:
-        warn(
-            f"MFEM mesh: grid functions on the non-conforming mesh {filename} follow "
-            "MFEM's space-filling-curve numbering of its leaves, which is not read; skipped"
-        )
-        gf_items = []
     for name, path in gf_items:
         name, space, values = _parse_gf(str(name), str(path))
         h1 = space.kind == "h1"

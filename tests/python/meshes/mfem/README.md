@@ -14,7 +14,7 @@
 | `periodic-square.mesh` | discontinuous `L2_T1_2D_P1` nodes (a periodic mesh) |
 | `escher-p3.mesh`, `fichera-q3.mesh` | legacy `Cubic` tetrahedra and hexahedra, read as order-3 VTK Lagrange cells |
 | `toroid-wedge.mesh`, `rt-2d-p4-tri.mesh` | `H1` order-3 prisms and order-4 triangles |
-| `amr-quad.mesh` | `MFEM NC mesh v1.0`, read as its leaf elements |
+| `amr-quad.mesh`, `amr-hex.mesh` | `MFEM NC mesh v1.0`, read as its leaf elements, with an `H1` field `u` (orders 3 and 2) and an `L2` field `e`; `reference_nc.npz` holds MFEM's leaf vertex numbers, vertex coordinates and both fields |
 | `curved-*.mesh` and their `.u.gf` | MFEM's one-element reference meshes refined, curved to order 3–5 (Gauss–Lobatto, and closed-uniform for `curved-quad-p3u`) and warped by MFEM, with an order-3–5 field |
 | `nurbs/` | six NURBS meshes (`ball-nurbs` order 4 in 3-D, `pipe-nurbs` without a boundary section, `square-disc-nurbs-patch` and `nurbs-segments2d-patches` in the per-patch form, `beam-quad-nurbs-sf` v1.1 with spacing formulas, `cube-nurbs` whose boundary MFEM turns), each with a NURBS field `<name>.u.gf`, and `reference_nurbs.npz`: MFEM's knot-span and boundary elements and its evaluation at a grid of reference points of every element |
 | `modal/` | small meshes of every shape curved by MFEM into Bernstein (`H1Pos`, orders 3–4) and serendipity (`H1Ser`, orders 3 and 5, quadrilaterals) spaces with a field `u` in the same kind of space (orders 2–5), and `reference_modal.npz`: MFEM's point and `u` at the VTK Lagrange lattice of every element. MFEM cannot project into a serendipity space, so those nodes copy a Gauss–Lobatto projection's vertex and edge values with small random bubbles, and `u` is random |
