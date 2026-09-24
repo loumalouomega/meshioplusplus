@@ -169,7 +169,7 @@ tests/python/meshes/abaqus_fil/model_le.fil binary
 tests/python/meshes/abaqus_fil/model_be.fil binary
 # Real Abaqus runs (MIT, see README.md): TenBarArea's binary .fil is small; the
 # buckling strip's (1 MB) is in LFS.
-tests/python/meshes/abaqus_fil/cjekel/*.fil binary
+tests/python/meshes/abaqus_fil/cjekel/* -text
 tests/python/meshes/abaqus_fil/extras_le.fil binary
 tests/python/meshes/abaqus_fil/bertoldi/*.fil filter=lfs diff=lfs merge=lfs -text
 # OpenRadioss starter decks written by tools/gen_radioss_fixtures.py: small text kept
