@@ -78,7 +78,7 @@ Materials, properties, loads, contacts, rigid bodies and every other keyword are
 
 ## Results
 
-The animation files Radioss writes (`<run>A001`, …) are read by [`radioss_anim`](./radioss_anim.md) (v16.11.0). The time history (`T01`) is not read; OpenRadioss's `th_to_csv` writes it as CSV.
+The animation files Radioss writes (`<run>A001`, …) are read by [`radioss_anim`](./radioss_anim.md) (v16.11.0). The time-history files (`<run>T01`, …) are read by [`radioss_th`](./radioss_th.md) (v16.12.0).
 
 ## Validation
 

@@ -175,6 +175,10 @@ tests/python/meshes/abaqus_fil/bertoldi/*.fil filter=lfs diff=lfs merge=lfs -tex
 # OpenRadioss starter decks written by tools/gen_radioss_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/radioss/** -filter -diff -merge text
+# A real OpenRadioss run of a meshio++ deck (see radioss_th/column/README.md): the
+# time-history and animation files as bytes, out of LFS.
+tests/python/meshes/radioss_th/column/columnT01 binary
+tests/python/meshes/radioss_th/column/columnA00* binary
 # MSC Marc decks and a formatted post file written by tools/gen_marc_fixtures.py:
 # small text kept out of LFS, like the other generated deck fixtures.
 tests/python/meshes/marc/** -filter -diff -merge text

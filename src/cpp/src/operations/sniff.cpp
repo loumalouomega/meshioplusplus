@@ -38,6 +38,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/formats/marc.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
@@ -374,6 +375,9 @@ std::string sniff_format(const std::string& rPath) {
     // OpenRadioss animation file: the big-endian magic 0x542C.
     if (head.size() >= 4 && head.compare(0, 4, std::string("\0\0T,", 4)) == 0)
         return "radioss_anim";
+    // OpenRadioss time history: an 84-byte big-endian title record.
+    if (is_radioss_th_head(head.data(), head.size()))
+        return "radioss_th";
     // FEBio plot file: the magic 0x00464542, in either byte order.
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))

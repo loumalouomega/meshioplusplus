@@ -78,3 +78,19 @@ def is_radioss_anim_filename(path) -> bool:
     while k > 0 and name[k - 1].isdigit():
         k -= 1
     return len(name) - k >= 3 and k >= 2 and name[k - 1] == "A"
+
+
+def is_radioss_th_filename(path) -> bool:
+    """Whether ``path``'s basename is an OpenRadioss time-history file's: a
+    stem, then ``T`` and two digits (``crashT01``), no extension."""
+    try:
+        name = os.path.basename(os.fspath(path))
+    except TypeError:
+        return False
+    return (
+        len(name) >= 4
+        and "." not in name
+        and name[-3] == "T"
+        and name[-2:].isdigit()
+        and name[-2:].isascii()
+    )

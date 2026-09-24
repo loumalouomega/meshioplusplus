@@ -170,6 +170,12 @@ def _is_op2(head):
     return False
 
 
+def _is_radioss_th(head):
+    from .radioss_th._th import is_radioss_th
+
+    return is_radioss_th(head)
+
+
 def _is_binout(head):
     from .lsdyna_binout._binout import is_binout
 
@@ -289,6 +295,9 @@ def _sniff_format_py(path) -> str:
     # OpenRadioss animation file: the big-endian magic 0x542C.
     if head[:4] == b"\x00\x00T,":
         return "radioss_anim"
+    # OpenRadioss time history: an 84-byte big-endian title record.
+    if _is_radioss_th(head):
+        return "radioss_th"
     # FEBio plot file: the magic 0x00464542, in either byte order.
     if head[:4] in (b"BEF\x00", b"\x00FEB"):
         return "xplt"

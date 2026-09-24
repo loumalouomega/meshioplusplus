@@ -209,6 +209,30 @@ def test_cells_data_and_regions(read):
     np.testing.assert_array_equal(regions[("wedges", 22)].entries, [5, 6])
 
 
+def test_real_openradioss_run(read):
+    """Animation files OpenRadioss wrote for a meshio++ deck (see
+    radioss_th/column/README.md): displacement is the move from the first
+    state, and the values are those anim_to_vtk prints."""
+    column = MESHES.parent / "radioss_th" / "column"
+    first = read(column / "columnA001")
+    second = read(column / "columnA002")
+    assert first.field_data["meshio:time"][0] == 0.0
+    assert second.field_data["meshio:time"][0] == pytest.approx(0.00205397, rel=1e-5)
+    assert [c.type for c in second.cells] == ["hexahedron"]
+    np.testing.assert_allclose(
+        second.point_data["Displacement"], second.points - first.points, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        second.cell_data["Von Mises"][0], [0.0110795, 0.0190114], rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        second.point_data["Velocity"][8],
+        [-0.0497561, -0.0497561, -0.0165583],
+        rtol=1e-5,
+    )
+    np.testing.assert_array_equal(second.cell_data["radioss:element_id"][0], [1, 2])
+
+
 def test_dispatch_sniffing_and_sequences(tmp_path):
     mesh = meshioplusplus.read(MESHES / "cubeA001")
     assert "radioss:alive" in mesh.cell_data

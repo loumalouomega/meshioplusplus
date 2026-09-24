@@ -1970,6 +1970,11 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     anim = str(meshes / "radioss_anim" / "cubeA002")
     assert _dump(_tools.tool_sniff(anim))["format"] == "radioss_anim"
     assert _dump(_tools.tool_info(anim))["num_points"] == 15
+    # ... and their time-history files (v16.12.0): read-only, no points.
+    assert "radioss_th" in out["readable"] and "radioss_th" not in out["writable"]
+    th = str(meshes / "radioss_th" / "column" / "columnT01")
+    assert _dump(_tools.tool_sniff(th))["format"] == "radioss_th"
+    assert _dump(_tools.tool_info(th))["num_points"] == 0
 
 
 def test_d3plot_and_op2_formats(tmp_path):

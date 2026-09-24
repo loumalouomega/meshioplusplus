@@ -42,6 +42,7 @@
 #include "meshioplusplus/formats/z88.hpp"
 #include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/formats/radioss_anim.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -2977,6 +2978,18 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
     });
     // OpenRadioss animation file (A001...) reader.
+    // OpenRadioss time-history (T01) reader.
+    m.def(
+        "radioss_th_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_th(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("radioss_th_time_values",
+          [](const std::string& path) { return meshioplusplus::radioss_th_time_values(path); });
+
     m.def("radioss_anim_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));
     });

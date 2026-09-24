@@ -15,6 +15,7 @@ from ._files import (
     is_d3plot_filename,
     is_d3plot_member,
     is_radioss_anim_filename,
+    is_radioss_th_filename,
     is_z88_filename,
 )
 from ._mesh import CellBlock, Mesh
@@ -132,6 +133,9 @@ def _filetypes_from_path(path: Path) -> list[str]:
     # OpenRadioss animation files: `<run>A001`..., no extension.
     if not out and is_radioss_anim_filename(path):
         out = ["radioss_anim"]
+    # ... and their time-history files: `<run>T01`..., no extension.
+    if not out and is_radioss_th_filename(path):
+        out = ["radioss_th"]
     if not out:
         raise ReadError(f"Could not deduce file format from path '{path}'.")
     return out
