@@ -153,6 +153,9 @@ def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_p
     with open(h5, "rb") as f:
         if f.read(24).startswith(b"version https://git-lfs"):
             pytest.skip("modes_elements.h5 is an unfetched Git-LFS pointer")
+    # Without HDF5 in the core the read falls back to the Python twin, on h5py.
+    if not getattr(meshioplusplus._core, "__has_hdf5__", False):
+        pytest.importorskip("h5py")
     target = str(tmp_path / "mode3.vtu")
     _tools.tool_convert(str(h5), target, time_step=-1)
     written = meshioplusplus.read(target)

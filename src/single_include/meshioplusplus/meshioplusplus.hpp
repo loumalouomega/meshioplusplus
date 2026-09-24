@@ -95235,7 +95235,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
             throw ReadError("time step " + std::to_string(rOpts.mTimeStep) +
                             " is out of range: the file has no steps");
         op2_warn_skipped(r);
-        return mesh;
+        return std::move(mesh);  // a reference into the local model
     }
     const std::size_t index = rOpts.ResolveTimeStep(n);
     const Op2Step& step = r.mSteps[index];
@@ -95247,7 +95247,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     mesh.AddFieldData("nastran:mode", op2_scalar(static_cast<double>(step.mMode), DType::Int64));
     op2_warn_skipped(r);
     if (rOpts.mPointsOnly)
-        return mesh;
+        return std::move(mesh);  // a reference into the local model
 
     const Op2Words& w = r.mStream.Words();
     const auto ws = static_cast<std::size_t>(w.mWs);
@@ -95489,7 +95489,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
         layout.As<std::int64_t>()[1] = 1;
         mesh.AddFieldData("nastran:layout:" + name, std::move(layout));
     }
-    return mesh;
+    return std::move(mesh);  // a reference into the local model
 }
 
 std::vector<double> nastran_op2_time_values(const std::string& rPath) {

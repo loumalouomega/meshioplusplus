@@ -215,6 +215,14 @@ def _core_vtu_read(path):
     "name", ["raw_bigendian", "raw_zlib", "base64_appended", "binary_bigendian"]
 )
 def test_appended_and_bigendian_framings(reader, name):
+    from meshioplusplus import _core
+
+    if (
+        reader is _core_vtu_read
+        and name == "raw_zlib"
+        and not getattr(_core, "__has_zlib__", False)
+    ):
+        pytest.skip("this build has no zlib")
     mesh = reader(_QUIRKS / f"{name}.vtu")
     assert [c.type for c in mesh.cells] == ["pyramid", "polyhedron8"]
     np.testing.assert_array_equal(mesh.cells[0].data, [[4, 5, 6, 7, 8]])

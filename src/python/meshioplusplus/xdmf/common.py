@@ -169,7 +169,5 @@ def attribute_type(data):
         return "Tensor"
     elif len(data.shape) == 2 and data.shape[1] == 6:
         return "Tensor6"
-
-    if len(data.shape) != 3:
-        raise ReadError()
+    # Any other width (and higher ranks) is a Matrix, as the C++ writer says.
     return "Matrix"
