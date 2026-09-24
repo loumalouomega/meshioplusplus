@@ -31,6 +31,11 @@ CARDS = {
     "CBAR": ("line", 2, None, 0, None),
     "CBEAM": ("line", 2, None, 0, None),
     "CBUSH": ("line", 2, None, 0, None),
+    # Springs and dampers between two points, or grounded (the second is 0).
+    "CDAMP1": ("vertex", 1, "line", 2, None),
+    "CDAMP2": ("vertex", 1, "line", 2, None),
+    "CELAS1": ("vertex", 1, "line", 2, None),
+    "CELAS2": ("vertex", 1, "line", 2, None),
     "CHEXA": ("hexahedron", 8, "hexahedron20", 20, _HEXA20),
     "CONM2": ("vertex", 1, None, 0, None),
     "CONROD": ("line", 2, None, 0, None),
@@ -93,7 +98,11 @@ def add_cells(cards, grid_index, scalar_points, ptype, who):
         partial = 0
         eid = [int(v) for v in eid]
         pid = [int(v) for v in pid]
+        # A spring or damper grounded at its first end: the other end leads.
+        grounded_first = lin_n == 1 and quad_n == 2 and width >= 2
         for i, row in enumerate(g.tolist()):
+            if grounded_first and row[0] == 0:
+                row = [row[1], 0]
             quad = False
             if quad_type is not None and width >= quad_n:
                 given = sum(1 for k in range(lin_n, quad_n) if row[k] != 0)

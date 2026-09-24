@@ -169,7 +169,9 @@ bool sniff_is_patran(const std::string& rHead) {
 
 // Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers, either
 // byte order) holding a one-word 3, a 3-word date, a one-word 7 and the 7-word
-// tape code, in 4- or 8-byte words.
+// tape code, in 4- or 8-byte words. With PARAM,POST,-2 there is no such header:
+// the first table's name follows at once, as a one-word 2, the 8-character name
+// (two words) and a one-word -1.
 bool sniff_is_op2(const std::string& rHead) {
     for (bool big : {false, true}) {
         const auto u32 = [&](std::size_t At) -> std::int64_t {
@@ -208,6 +210,16 @@ bool sniff_is_op2(const std::string& rHead) {
         if (word(0) == 3 && blocks[1].second == 3 * ws && blocks[2].second == ws && word(2) == 7 &&
             blocks[3].second == 7 * ws)
             return true;
+        if (word(0) == 2 && blocks[1].second == 2 * ws && blocks[2].second == ws && word(2) == -1) {
+            // An upper-case table name, blank- (or, in 8-byte words, space-) padded.
+            const char* name = rHead.data() + blocks[1].first;
+            bool ok = name[0] >= 'A' && name[0] <= 'Z';
+            for (std::int64_t k = 0; k < 8 && ok; ++k)
+                ok = (name[k] >= 'A' && name[k] <= 'Z') || (name[k] >= '0' && name[k] <= '9') ||
+                     name[k] == ' ' || name[k] == '_';
+            if (ok)
+                return true;
+        }
     }
     return false;
 }

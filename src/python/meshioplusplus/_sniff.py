@@ -118,7 +118,9 @@ _FIL_KEYS = (1921, 1922, 1900, 1901, 2000)
 def _is_op2(head):
     """Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers,
     either byte order) holding a one-word 3, a 3-word date, a one-word 7 and the
-    7-word tape code, in 4- or 8-byte words."""
+    7-word tape code, in 4- or 8-byte words. With PARAM,POST,-2 there is no such
+    header: the first table's name follows at once, as a one-word 2, the
+    8-character name (two words) and a one-word -1."""
     for order in ("<", ">"):
         blocks = []
         pos = 0
@@ -153,6 +155,18 @@ def _is_op2(head):
             and blocks[3][1] == 7 * ws
         ):
             return True
+        if (
+            word(0) == 2
+            and blocks[1][1] == 2 * ws
+            and blocks[2][1] == ws
+            and word(2) == -1
+        ):
+            # An upper-case table name, blank- (or, in 8-byte words, space-) padded.
+            name = head[blocks[1][0] : blocks[1][0] + 8]
+            if name[:1].isupper() and all(
+                c in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _" for c in name
+            ):
+                return True
     return False
 
 
