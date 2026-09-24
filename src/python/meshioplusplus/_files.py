@@ -32,12 +32,23 @@ def is_z88_filename(path) -> bool:
 
 
 def is_d3plot_filename(path) -> bool:
-    """Whether ``path``'s basename is ``d3plot``, LS-DYNA's state database."""
+    """Whether ``path``'s basename is ``d3plot`` or ``d3part``, LS-DYNA's state
+    databases."""
     try:
         name = os.path.basename(os.fspath(path))
     except TypeError:
         return False
-    return name.lower() == "d3plot"
+    return name.lower() in ("d3plot", "d3part")
+
+
+def is_binout_filename(path) -> bool:
+    """Whether ``path``'s basename is an LS-DYNA binout's: ``binout``, or an
+    MPP run's ``binout0000``..."""
+    try:
+        name = os.path.basename(os.fspath(path)).lower()
+    except TypeError:
+        return False
+    return name.startswith("binout") and (name[6:] == "" or name[6:].isdigit())
 
 
 def is_d3plot_member(path) -> bool:

@@ -170,6 +170,12 @@ def _is_op2(head):
     return False
 
 
+def _is_binout(head):
+    from .lsdyna_binout._binout import is_binout
+
+    return len(head) >= 16 and is_binout(head)
+
+
 def _is_d3plot(head):
     from .lsdyna_d3plot._d3plot import is_d3plot
 
@@ -302,6 +308,9 @@ def _sniff_format_py(path) -> str:
     # LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
     if _is_d3plot(head):
         return "lsdyna_d3plot"
+    # LS-DYNA binout: the LSDA header and its symbol-table offset command.
+    if _is_binout(head):
+        return "lsdyna_binout"
     # FEBio input: XML whose root is <febio_spec>.
     if b"<febio_spec" in head:
         return "febio"

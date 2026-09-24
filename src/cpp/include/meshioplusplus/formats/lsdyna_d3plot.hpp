@@ -65,9 +65,11 @@
  *    `part_internal_energy`, `part_kinetic_energy`, `part_velocity`,
  *    `part_mass`, `part_hourglass_energy`.
  *
- * Rigid-body, rigid-road, SPH and airbag data are skipped. Refused by name:
- * `d3part`/`intfor` files, femzip-compressed files, two-dimensional databases,
- * CFD/multi-solver data, adaptive remeshing and 20/27/21/15/40/64-node solids.
+ * Since v16.12.0 also: `d3part` files, 20/27-node hexahedra, SPH particles
+ * (vertices with their variables), airbag particles and rigid road segments
+ * (on points after the nodes), rigid-body motion (field data). Refused by
+ * name: `intfor` files, femzip-compressed files, two-dimensional databases,
+ * CFD/multi-solver data, adaptive remeshing and 21/15/20/40/64-node solids.
  *
  * See doc/formats/lsdyna_d3plot.md.
  */

@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/patran.hpp"
@@ -2933,6 +2934,18 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0);
     m.def("lsdyna_d3plot_time_values",
           [](const std::string& path) { return meshioplusplus::lsdyna_d3plot_time_values(path); });
+
+    // LS-DYNA binout (LSDA) reader.
+    m.def(
+        "lsdyna_binout_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_binout(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("lsdyna_binout_time_values",
+          [](const std::string& path) { return meshioplusplus::lsdyna_binout_time_values(path); });
 
     // libMesh .xda/.xdr reader.
     m.def("libmesh_read", [](const std::string& path) {

@@ -29,8 +29,8 @@ __all__ = ["read", "time_values", "family_files"]
 
 TIME_KEY = "meshio:time"
 _NAN = float("nan")
-_FILETYPES = {1: "d3plot", 11: "d3eigv"}
-_REFUSED_FILETYPES = {5: "d3part", 4: "intfor"}
+_FILETYPES = {1: "d3plot", 5: "d3part", 11: "d3eigv"}
+_REFUSED_FILETYPES = {4: "intfor"}
 _FEMZIP_NMMAT = 76_893_465
 _EOF_MARKER = -999999.0
 
@@ -214,7 +214,8 @@ class _Header:
         filetype = h["filetype"] - 1000 if h["filetype"] > 1000 else h["filetype"]
         if filetype in _REFUSED_FILETYPES:
             _fail(
-                f"a {_REFUSED_FILETYPES[filetype]} file is not read (only d3plot/d3eigv)"
+                f"a {_REFUSED_FILETYPES[filetype]} file is not read "
+                "(only d3plot, d3part, d3eigv)"
             )
         if filetype not in _FILETYPES:
             _fail(f"unknown file type {h['filetype']}")
@@ -302,9 +303,16 @@ class _Header:
         else:
             self.element_strain = False
 
-        for key in ("nel20", "nel27", "nel21p", "nel15t", "nel20t", "nel40p", "nel64"):
+        # 20- and 27-node hexahedra are read; the node order of the others
+        # (21-node wedges, 15-node tetrahedra, the cubic solids) is not
+        # documented in the manuals available.
+        for key in ("nel21p", "nel15t", "nel20t", "nel40p", "nel64"):
             if h[key] > 0:
                 _fail(f"higher-order solids ({key.upper()} = {h[key]}) are not read")
+        self.nsolids20 = h["nel20"]
+        self.nsolids27 = h["nel27"]
+        # QUADR > 0: a 27-node row lists all 27 nodes, else the 19 extra ones
+        self.quadratic_full = h["quadr"] > 0
 
     @property
     def solid_layers(self):
@@ -335,21 +343,33 @@ class _Geometry:
         if hdr.raw["ialemat"] > 0:
             pos += hdr.raw["ialemat"]
         self.nsph_vars = 0
+        self.sph_flags = None
         if hdr.nsph > 0:
-            flags = w.ints(pos, 11)
-            history = 0 if flags[0] == 10 else int(flags[10])
-            self.nsph_vars = (
-                int(flags[1:8].sum()) + abs(int(flags[8])) + int(flags[9]) + history + 1
-            )
-            pos += int(flags[0])
+            flags = [int(v) for v in w.ints(pos, 11)]
+            # ISPHFG(1) = 10 (newer releases) leaves ISPHFG(11) undefined
+            history = 0 if flags[0] == 10 else flags[10]
+            self.sph_flags = flags[:10] + [history]
+            self.nsph_vars = sum(flags[1:8]) + abs(flags[8]) + flags[9] + history + 1
+            pos += flags[0]
         self.airbag = None
+        self.airbag_types = []
+        self.airbag_names = []
         if hdr.nairbags:
             ngeom, nvar, npart, nstgeom = (int(v) for v in w.ints(pos, 4))
             pos += 4
             if hdr.airbag_subver == 4:
                 pos += 1
             nvars = ngeom + nvar + nstgeom
-            pos += nvars + 8 * nvars  # type codes, then 8-word names
+            # type codes (1 integer, 2 real), then 8-word names, one
+            # character per word: geometry, particle, then bag variables
+            self.airbag_types = [int(v) for v in w.ints(pos, nvars)]
+            pos += nvars
+            for k in range(nvars):
+                chars = w.ints(pos + 8 * k, 8)
+                self.airbag_names.append(
+                    "".join(chr(int(c) & 0xFF) for c in chars).strip(" \0")
+                )
+            pos += 8 * nvars
             self.airbag = (ngeom, nvar, npart, nstgeom)
 
         # Coordinates and connectivity.
@@ -410,11 +430,13 @@ class _Geometry:
                 self.part_ids = w.ints(pos, hdr.nparts)
             pos = start + narbs
 
-        # Rigid bodies (skipped: their motion is not read).
+        # Rigid bodies: per body its part (1-based), its nodes and active nodes.
+        self.rigid_body_parts = []
         if hdr.has_rigid_bodies:
             nrigid = w.int(pos)
             pos += 1
             for _ in range(nrigid):
+                self.rigid_body_parts.append(w.int(pos))
                 numnodr = w.int(pos + 1)
                 pos += 2 + numnodr
                 numnoda = w.int(pos)
@@ -422,18 +444,45 @@ class _Geometry:
             self.nrigid_bodies_motion = nrigid
         else:
             self.nrigid_bodies_motion = 0
+        # SPH particles: (node, material), 1-based.
+        self.sph = np.zeros((0, 2), dtype=np.int64)
         if hdr.nsph > 0:
+            self.sph = w.ints(pos, 2 * hdr.nsph).reshape(hdr.nsph, 2)
             pos += 2 * hdr.nsph
+        # Airbags: per bag first particle, particle count, id, gas mixtures
+        # (and chambers).
+        self.airbag_geom = np.zeros((0, 4), dtype=np.int64)
         if self.airbag is not None:
             ngeom = self.airbag[0]
+            self.airbag_geom = w.ints(pos, hdr.nairbags * ngeom).reshape(
+                hdr.nairbags, ngeom
+            )
             pos += hdr.nairbags * ngeom
+        # Rigid roads: their own nodes (ids, coordinates) and per surface its
+        # id and its 4-node segments (road node ids).
         self.nroads = 0
+        self.road_node_ids = np.zeros(0, dtype=np.int64)
+        self.road_coords = np.zeros((0, 3))
+        self.road_segments = np.zeros((0, 4), dtype=np.int64)
+        self.road_segment_road = np.zeros(0, dtype=np.int64)
         if hdr.has_rigid_road:
             nnode, nseg, nsurf = (int(v) for v in w.ints(pos, 3))
-            pos += 4 + nnode + 3 * nnode
+            pos += 4
+            self.road_node_ids = w.ints(pos, nnode)
+            pos += nnode
+            self.road_coords = w.floats(pos, 3 * nnode).reshape(nnode, 3)
+            pos += 3 * nnode
+            segments, owners = [], []
             for _ in range(nsurf):
+                road_id = w.int(pos)
                 surf_nseg = w.int(pos + 1)
-                pos += 2 + 4 * surf_nseg
+                pos += 2
+                segments.append(w.ints(pos, 4 * surf_nseg).reshape(surf_nseg, 4))
+                owners += [road_id] * surf_nseg
+                pos += 4 * surf_nseg
+            if segments:
+                self.road_segments = np.concatenate(segments)
+            self.road_segment_road = np.array(owners, dtype=np.int64)
             self.nroads = nsurf
 
         # Extra connectivity. The ten-node solids' two extra nodes follow the
@@ -450,6 +499,20 @@ class _Geometry:
         if hdr.nshells8 > 0:
             self.shell8 = w.ints(pos, 5 * hdr.nshells8).reshape(hdr.nshells8, 5)
             pos += 5 * hdr.nshells8
+        # 20-node hexahedra: the solid's index and its 12 edge nodes;
+        # 27-node ones: the index and nodes 9-27 (all 27 when QUADR > 0), in
+        # LS-DYNA's order, which is VTK's (keyword manual, *ELEMENT_SOLID).
+        self.solid20 = np.zeros((0, 13), dtype=np.int64)
+        if hdr.nsolids20 > 0:
+            self.solid20 = w.ints(pos, 13 * hdr.nsolids20).reshape(hdr.nsolids20, 13)
+            pos += 13 * hdr.nsolids20
+        width27 = 28 if hdr.quadratic_full else 20
+        self.solid27 = np.zeros((0, width27), dtype=np.int64)
+        if hdr.nsolids27 > 0:
+            self.solid27 = w.ints(pos, width27 * hdr.nsolids27).reshape(
+                hdr.nsolids27, width27
+            )
+            pos += width27 * hdr.nsolids27
 
         # Part titles (and the end-of-geometry marker in front of them).
         self.part_titles = {}
@@ -500,6 +563,12 @@ def _node_vars(hdr):
     if hdr.node_acceleration:
         out.append(("acceleration", 3))
     return out
+
+
+def _airbag_name(name):
+    """An airbag variable's name as an array name: lower case, words joined
+    by underscores ("Bag Vol" -> "bag_vol")."""
+    return "_".join(name.lower().split())
 
 
 def _state_words(hdr, geo):
@@ -591,6 +660,14 @@ class _File:
             _fail(f"state {index} is truncated")
         return np.frombuffer(data, self.words.ftype).astype(np.float64)
 
+    def state_ints(self, index):
+        """The words of state ``index`` read as integers."""
+        member, offset = self.states[index]
+        with open(member, "rb") as f:
+            f.seek(offset)
+            data = f.read(self.state_words * self.ws)
+        return np.frombuffer(data, self.words.itype).astype(np.int64)
+
     def times(self):
         out = []
         for member, offset in self.states:
@@ -632,7 +709,7 @@ def is_d3plot(head):
 # -- the mesh --------------------------------------------------------------------------
 
 # families in block order: (name, dimension)
-_SOLID, _TSHELL, _BEAM, _SHELL = range(4)
+_SOLID, _TSHELL, _BEAM, _SHELL, _SPH, _AIRBAG, _ROAD = range(7)
 
 
 def _build_cells(hdr, geo):
@@ -642,7 +719,7 @@ def _build_cells(hdr, geo):
     block the family, element indices and part indices.
     """
     blocks = []  # [type, rows, family, elems, parts]
-    where = [None] * 4
+    where = [None] * 7
 
     def add(family, elements, part_word, make):
         index = {}
@@ -660,8 +737,17 @@ def _build_cells(hdr, geo):
             b[4].append(int(row[part_word]) - 1)
         where[family] = pos
 
+    # 20- and 27-node hexahedra: the corners, then nodes 9.. in VTK's order
+    solid20 = {int(r[0]) - 1: [int(v) - 1 for v in r[1:]] for r in geo.solid20}
+    solid27 = {int(r[0]) - 1: [int(v) - 1 for v in r[1:]] for r in geo.solid27}
+
     def solid(e, row):
         nodes = [int(v) - 1 for v in row[:8]]
+        if e in solid20:
+            return "hexahedron20", nodes + solid20[e]
+        if e in solid27:
+            extra = solid27[e]
+            return "hexahedron27", extra if len(extra) == 27 else nodes + extra
         if (
             geo.tet_extra is not None
             and geo.tet_extra[e, 0] > 0
@@ -691,6 +777,24 @@ def _build_cells(hdr, geo):
     add(_TSHELL, geo.tshells, 8, solid)
     add(_BEAM, geo.beams, 5, beam)
     add(_SHELL, geo.shells, 4, shell)
+    # SPH particles: vertices on their nodes, the material as the part.
+    add(_SPH, geo.sph, 1, lambda e, row: ("vertex", [int(row[0]) - 1]))
+    # Airbag particles and rigid road nodes are points after the nodes.
+    nparticles = geo.airbag[2] if geo.airbag is not None else 0
+    if nparticles:
+        owner = np.zeros(nparticles, dtype=np.int64)
+        for k, (first, count) in enumerate(geo.airbag_geom[:, :2].tolist()):
+            owner[first - 1 : first - 1 + count] = k + 1
+        rows = [(hdr.nnodes + i, owner[i]) for i in range(nparticles)]
+        add(_AIRBAG, rows, 1, lambda e, row: ("vertex", [row[0]]))
+    if len(geo.road_segments):
+        base = hdr.nnodes + nparticles
+        index = {int(v): base + i for i, v in enumerate(geo.road_node_ids.tolist())}
+        rows = [
+            ([index[int(v)] for v in seg], road)
+            for seg, road in zip(geo.road_segments.tolist(), geo.road_segment_road)
+        ]
+        add(_ROAD, rows, 1, lambda e, row: ("quad", row[0]))
     return blocks, where
 
 
@@ -707,53 +811,87 @@ _FAMILY_DIM = {_SOLID: 3, _TSHELL: 3, _BEAM: 1, _SHELL: 2}
 
 
 def _dim(cell_type):
-    return {"line": 1, "triangle": 2, "quad": 2, "quad8": 2}.get(cell_type, 3)
+    return {"vertex": 0, "line": 1, "triangle": 2, "quad": 2, "quad8": 2}.get(
+        cell_type, 3
+    )
 
 
 def _build_mesh(f):
     hdr, geo = f.hdr, f.geo
     nnodes = hdr.nnodes
-    points = geo.coords.copy()
+    # the nodes, then the airbag particles (placed by each state) and the
+    # rigid road nodes
+    nparticles = geo.airbag[2] if geo.airbag is not None else 0
+    points = np.vstack(
+        [geo.coords, np.full((nparticles, 3), _NAN), geo.road_coords]
+    ).astype(np.float64)
     blocks, where = _build_cells(hdr, geo)
     for b in blocks:
         rows = np.array(b[1], dtype=np.int64).reshape(len(b[1]), -1)
-        if rows.size and (rows.min() < 0 or rows.max() >= nnodes):
+        if rows.size and (rows.min() < 0 or rows.max() >= len(points)):
             _fail("an element references a node outside the node table")
     cells = [CellBlock(b[0], np.array(b[1], dtype=np.int64)) for b in blocks]
     mesh = Mesh(points, cells)
-    mesh.point_data["lsdyna:nid"] = geo.node_ids.astype(np.int64)
+    nid = np.full(len(points), -1, dtype=np.int64)
+    nid[:nnodes] = geo.node_ids
+    mesh.point_data["lsdyna:nid"] = nid
     family_ids = {
         _SOLID: geo.solid_ids,
         _TSHELL: geo.tshell_ids,
         _BEAM: geo.beam_ids,
         _SHELL: geo.shell_ids,
+        # an SPH particle is named by its node, an airbag particle and a road
+        # segment by their number
+        _SPH: geo.node_ids[geo.sph[:, 0] - 1] if len(geo.sph) else np.zeros(0),
+        _AIRBAG: np.arange(1, nparticles + 1),
+        _ROAD: np.arange(1, len(geo.road_segments) + 1),
     }
     part_ids = _part_user_ids(hdr, geo)
+    if geo.rigid_body_parts:  # each rigid body's part (user id)
+        mesh.field_data["lsdyna:rigid_body_part"] = np.array(
+            [
+                part_ids[p - 1] if 0 < p <= len(part_ids) else p
+                for p in geo.rigid_body_parts
+            ],
+            dtype=np.int64,
+        )
+    bag_ids = [int(v) for v in geo.airbag_geom[:, 2]] if nparticles else []
     if blocks:
         mesh.cell_data["lsdyna:eid"] = [
             family_ids[b[2]][np.array(b[3], dtype=np.int64)].astype(np.int64)
             for b in blocks
         ]
 
-        def user_part(p):
+        def user_part(family, p):
+            # airbag particles: their bag's id; road segments: their road's
+            if family == _AIRBAG:
+                return bag_ids[p] if 0 <= p < len(bag_ids) else p + 1
+            if family == _ROAD:
+                return p + 1
             return part_ids[p] if 0 <= p < len(part_ids) else p + 1
 
         mesh.cell_data["lsdyna:part"] = [
-            np.array([user_part(p) for p in b[4]], dtype=np.int64) for b in blocks
+            np.array([user_part(b[2], p) for p in b[4]], dtype=np.int64) for b in blocks
         ]
         by_part = {}
         base = 0
         for b in blocks:
             d = _dim(b[0])
             for i, p in enumerate(b[4]):
-                entry = by_part.setdefault(user_part(p), [-1, []])
+                key = (b[2] if b[2] in (_AIRBAG, _ROAD) else None, user_part(b[2], p))
+                entry = by_part.setdefault(key, [-1, []])
                 entry[0] = max(entry[0], d)
                 entry[1].append(base + i)
             base += len(b[1])
         regions = []
-        for pid, (d, members) in by_part.items():
-            title = geo.part_titles.get(pid, "")
-            name = title if title else f"Part {pid}"
+        for (kind, pid), (d, members) in by_part.items():
+            if kind == _AIRBAG:
+                name = f"Airbag {pid}"
+            elif kind == _ROAD:
+                name = f"Rigid road {pid}"
+            else:
+                title = geo.part_titles.get(pid, "")
+                name = title if title else f"Part {pid}"
             regions.append(
                 Region(name, "cell", np.array(members, dtype=np.int64), dim=d, tag=pid)
             )
@@ -852,6 +990,17 @@ def _read_state(f, mesh, blocks, where, index, wanted):
                 mesh.field_data[name] = v.reshape(nparts, 3) if width == 3 else v.copy()
             g += width * nparts
 
+    npts = len(mesh.points)
+
+    def pad(v):
+        """A node array over every point: NaN at the airbag particles and road
+        nodes."""
+        if npts == nn:
+            return v
+        out = np.full((npts,) + v.shape[1:], _NAN)
+        out[:nn] = v
+        return out
+
     # nodes
     for name, comps in _node_vars(hdr):
         v = (
@@ -862,9 +1011,9 @@ def _read_state(f, mesh, blocks, where, index, wanted):
         k += comps * nn
         if name == "coordinates":
             if want("displacement"):
-                mesh.point_data["displacement"] = v - geo.coords
+                mesh.point_data["displacement"] = pad(v - geo.coords)
         elif want(name):
-            mesh.point_data[name] = v
+            mesh.point_data[name] = pad(v)
 
     cells = _CellArrays(blocks)
 
@@ -1029,28 +1178,36 @@ def _read_state(f, mesh, blocks, where, index, wanted):
             put("internal_energy", _SHELL, rest[:, j], 1, 1)
             j += 1
         if hdr.plastic_strain_tensor:
-            put(
-                "plastic_strain_tensor",
-                _SHELL,
-                rest[:, j : j + 6 * nl],
-                nl,
-                6,
-            )
-            j += 6 * nl
-        if hdr.thermal_strain_tensor:
+            # per layer; a file can hold it at fewer points than it has layers
+            # (a composite shell's 10 layers, 3 tensors): as many as fit
+            points = min(nl, (rest.shape[1] - j) // 6)
+            if points < nl:
+                warn(
+                    f"LS-DYNA d3plot: the shells' plastic strain tensor has "
+                    f"{points} of {nl} layers"
+                )
+            if points > 0:
+                put(
+                    "plastic_strain_tensor",
+                    _SHELL,
+                    rest[:, j : j + 6 * points],
+                    points,
+                    6,
+                )
+            j += 6 * points
+        if hdr.thermal_strain_tensor and rest.shape[1] - j >= 6:
             put("thermal_strain_tensor", _SHELL, rest[:, j : j + 6], 1, 6)
             j += 6
 
-    # SPH particles are skipped
-    k += hdr.nsph * geo.nsph_vars
-
-    # deletion
+    # deletion (before the SPH data)
+    alive = {}
     if hdr.node_deletion:
         if want("lsdyna:alive"):
-            mesh.point_data["lsdyna:alive"] = (s[k : k + nn] != 0).astype(np.int8)
+            flags = np.zeros(npts, dtype=np.int8)
+            flags[:nn] = s[k : k + nn] != 0
+            mesh.point_data["lsdyna:alive"] = flags
         k += nn
     elif hdr.element_deletion:
-        alive = {}
         for family, n in (
             (_SOLID, hdr.nsolids),
             (_TSHELL, hdr.ntshells),
@@ -1059,11 +1216,117 @@ def _read_state(f, mesh, blocks, where, index, wanted):
         ):
             alive[family] = s[k : k + n] != 0
             k += n
-        if want("lsdyna:alive") and blocks:
-            out = []
-            for b in blocks:
-                out.append(alive[b[2]][np.array(b[3], dtype=np.int64)].astype(np.int8))
-            mesh.cell_data["lsdyna:alive"] = out
+
+    # SPH particles: a material word (negative once deleted), then the
+    # variables ISPHFG(2..11) flag, each as many words as its flag says.
+    if hdr.nsph > 0 and geo.nsph_vars:
+        n, nv = hdr.nsph, geo.nsph_vars
+        data = s[k : k + n * nv].reshape(n, nv)
+        k += n * nv
+        alive[_SPH] = data[:, 0] >= 0
+        flags = geo.sph_flags
+        i = 1
+        strain = abs(flags[8])
+        for name, width in (
+            ("sph_radius", flags[1]),
+            ("sph_pressure", flags[2]),
+            ("stress", flags[3]),
+            ("effective_plastic_strain", flags[4]),
+            ("density", flags[5]),
+            ("internal_energy", flags[6]),
+            ("sph_neighbors", flags[7]),
+            ("strain", min(strain, 6)),
+            ("strain_rate", strain - min(strain, 6)),
+            ("mass", flags[9]),
+            ("history_variables", flags[10]),
+        ):
+            if width > 0:
+                put(name, _SPH, data[:, i : i + width], 1, width)
+            i += max(width, 0)
+
+    if want("lsdyna:alive") and blocks and alive:
+        out = []
+        for b in blocks:
+            flags = alive.get(b[2])
+            if flags is None:  # families without deletion data live
+                out.append(np.ones(len(b[3]), dtype=np.int8))
+            else:
+                out.append(flags[np.array(b[3], dtype=np.int64)].astype(np.int8))
+        mesh.cell_data["lsdyna:alive"] = out
+
+    # airbags: per bag its state variables, then per particle its variables,
+    # named in the geometry section (positions become the particles' points)
+    if geo.airbag is not None:
+        ngeom, nvar, npart, nstgeom = geo.airbag
+        nbags = hdr.nairbags
+        types, names = geo.airbag_types, geo.airbag_names
+        ints = f.state_ints(index)
+        bag = s[k : k + nbags * nstgeom].reshape(nbags, nstgeom)
+        bag_i = ints[k : k + nbags * nstgeom].reshape(nbags, nstgeom)
+        k += nbags * nstgeom
+        part = s[k : k + npart * nvar].reshape(npart, nvar)
+        part_i = ints[k : k + npart * nvar].reshape(npart, nvar)
+        k += npart * nvar
+
+        def column(values, as_ints, j, typ):
+            # type 1: an integer stored in the word
+            return (as_ints if typ == 1 else values)[:, j].astype(np.float64)
+
+        for j in range(nstgeom):
+            name = names[ngeom + nvar + j]
+            key = "lsdyna:airbag:" + _airbag_name(name)
+            if want(key):
+                mesh.field_data[key] = column(bag, bag_i, j, types[ngeom + nvar + j])
+        stripped = [names[ngeom + j].strip() for j in range(nvar)]
+        pos_cols = (
+            [stripped.index(c) for c in ("Pos x", "Pos y", "Pos z")]
+            if all(c in stripped for c in ("Pos x", "Pos y", "Pos z"))
+            else None
+        )
+        if pos_cols is not None:
+            mesh.points[nn : nn + npart] = part[:, pos_cols]
+        vel_cols = (
+            [stripped.index(c) for c in ("Vel x", "Vel y", "Vel z")]
+            if all(c in stripped for c in ("Vel x", "Vel y", "Vel z"))
+            else None
+        )
+        if vel_cols is not None:
+            put("velocity", _AIRBAG, part[:, vel_cols], 1, 3)
+        for j, name in enumerate(stripped):
+            if name.startswith(("Pos ", "Vel ")):
+                continue
+            v = column(part, part_i, j, types[ngeom + j])
+            put("airbag_" + _airbag_name(name), _AIRBAG, v, 1, 1)
+
+    # rigid roads: per road its displacement and velocity
+    if geo.nroads:
+        road = s[k : k + 6 * geo.nroads].reshape(geo.nroads, 2, 3)
+        k += 6 * geo.nroads
+        for name, j in (("lsdyna:road_displacement", 0), ("lsdyna:road_velocity", 1)):
+            if want(name):
+                mesh.field_data[name] = road[:, j, :].copy()
+
+    # rigid bodies: centre of mass, rotation matrix and (unless reduced)
+    # velocity, rotational velocity, acceleration, rotational acceleration
+    if hdr.has_rigid_bodies and geo.nrigid_bodies_motion:
+        nr = geo.nrigid_bodies_motion
+        nv = 12 if hdr.reduced_rigid_bodies else 24
+        data = s[k : k + nr * nv].reshape(nr, nv)
+        k += nr * nv
+        fields = [("coordinates", 3), ("rotation", 9)]
+        if not hdr.reduced_rigid_bodies:
+            fields += [
+                ("velocity", 3),
+                ("rotational_velocity", 3),
+                ("acceleration", 3),
+                ("rotational_acceleration", 3),
+            ]
+        i = 0
+        for name, width in fields:
+            key = "lsdyna:rigid_body_" + name
+            if want(key):
+                mesh.field_data[key] = data[:, i : i + width].copy()
+            i += width
 
     cells.emit(mesh, where)
     return time
@@ -1099,6 +1362,4 @@ def read(filename, points_only=False, arrays=None, time_step=0):
         return mesh
     wanted = None if arrays is None else set(arrays)
     _read_state(f, mesh, blocks, where, index, wanted)
-    if f.hdr.airbag_subver or f.hdr.nsph:
-        warn("LS-DYNA d3plot: airbag particle and SPH data are skipped")
     return mesh

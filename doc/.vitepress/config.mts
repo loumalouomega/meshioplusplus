@@ -276,6 +276,7 @@ export default defineConfig({
           { text: "ip", link: "/formats/ip" },
           { text: "libmesh", link: "/formats/libmesh" },
           { text: "lsdyna", link: "/formats/lsdyna" },
+          { text: "lsdyna_binout", link: "/formats/lsdyna_binout" },
           { text: "lsdyna_d3plot", link: "/formats/lsdyna_d3plot" },
           { text: "marc", link: "/formats/marc" },
           { text: "mdpa", link: "/formats/mdpa" },

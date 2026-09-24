@@ -39,6 +39,7 @@
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/patran.hpp"
@@ -121,6 +122,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // matches the basename, sniff_format the control block.
         {"lsdyna_d3plot",
          [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); }},
+        // LS-DYNA's binary output database: `binout`, found by name or header.
+        {"lsdyna_binout",
+         [](const std::string& path) { return meshioplusplus::read_lsdyna_binout(path); }},
         {"code_aster", meshioplusplus::read_code_aster},
         {"patran", meshioplusplus::read_patran},
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
@@ -676,6 +680,8 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
     // numbered members (`d3plot01`...) go to the reader, which names the base.
     if (is_d3plot_filename(base) || registry_is_d3plot_member(rPath))
         return "lsdyna_d3plot";
+    if (is_binout_filename(base))
+        return "lsdyna_binout";
     // OpenRadioss animation files: `<run>A001`..., no extension.
     if (base.find('.') == std::string::npos && is_radioss_anim_filename(base))
         return "radioss_anim";
@@ -753,6 +759,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"lsdyna_d3plot",
          [](const std::string& path, const ReadOptions& opts) {
              return meshioplusplus::read_lsdyna_d3plot(path, opts);
+         }},
+        // LS-DYNA binout honours mTimeStep (its steps are nodout's outputs)
+        // and the narrowing options.
+        {"lsdyna_binout",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_lsdyna_binout(path, opts);
          }},
         // Femap honours mTimeStep (its steps are the 450 output sets) and the
         // data narrowing options.
@@ -857,6 +869,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"femap", meshioplusplus::read_femap_metadata},
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
+        {"lsdyna_binout", meshioplusplus::read_lsdyna_binout_metadata},
         {"radioss_anim", meshioplusplus::read_radioss_anim_metadata},
         {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},

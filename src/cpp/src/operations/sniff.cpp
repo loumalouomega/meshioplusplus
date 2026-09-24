@@ -37,6 +37,7 @@
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/formats/marc.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
@@ -351,6 +352,8 @@ std::string sniff_format(const std::string& rPath) {
             return "z88";
         if (is_d3plot_filename(rPath) && fs::is_regular_file(path, ec))
             return "lsdyna_d3plot";
+        if (is_binout_filename(rPath) && fs::is_regular_file(path, ec))
+            return "lsdyna_binout";
     }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -393,6 +396,9 @@ std::string sniff_format(const std::string& rPath) {
     // LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
     if (is_d3plot_head(head.data(), head.size()))
         return "lsdyna_d3plot";
+    // LS-DYNA binout: the LSDA header and its symbol-table offset command.
+    if (head.size() >= 16 && is_binout_head(head.data(), head.size()))
+        return "lsdyna_binout";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";
