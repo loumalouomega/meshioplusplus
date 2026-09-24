@@ -14,7 +14,7 @@ nodes spelled out by position rather than taken from meshio++'s tables:
 * the plane elements (types 7 and 14): corners counter-clockwise, then the
   mid-edge nodes in the same order.
 
-Four decks, one directory each (Z88's file names are fixed):
+Eight decks, one directory each (Z88's file names are fixed):
 
 * ``cantilever/``: a 100 x 10 x 10 cantilever of five hex20 (type 10), clamped
   at x = 0 and loaded at x = 100, with the ``z88i2``/``z88i5``/``z88mat``/
@@ -26,6 +26,9 @@ Four decks, one directory each (Z88's file names are fixed):
   the Z88 <= V13 / Aurora V1 header (material count and flags on line 1) and
   its material line after the elements.
 * ``polar/``: two tri6 in cylindrical input (``KFLAG = 1``: r, phi in degrees).
+* ``frame/``, ``plate/``, ``shell/``, ``torus/``: 3-D beams and a truss, quad8
+  plates, tri6 shells and axisymmetric quad8, each with the inputs Z88R needs
+  and, committed as produced, Z88R's ``z88o2``/``z88o3``/``z88o4`` output.
 
     python tools/gen_z88_fixtures.py
 """
@@ -62,10 +65,12 @@ class Deck:
         return self.ndim, len(self.coords), len(self.elements), dof * len(self.coords)
 
     def body(self, dof):
+        """`dof` is one count for every node, or a list of per-node counts."""
         lines = []
         for k, c in enumerate(self.coords, start=1):
             xs = "".join(f"  {v:+.8E}" for v in c[: self.ndim])
-            lines.append(f"{k:6d}  {dof}{xs}\n")
+            d = dof[k - 1] if isinstance(dof, list) else dof
+            lines.append(f"{k:6d}  {d}{xs}\n")
         for k, (code, nodes) in enumerate(self.elements, start=1):
             lines.append(f"{k:6d}{code:6d}\n")
             lines.append("".join(f"{n:6d}" for n in nodes) + "\n")
@@ -165,8 +170,121 @@ def polar():
     )
 
 
+def _quad8(corners):
+    """Corners counter-clockwise, then the mid-edge nodes in the same order."""
+    mids = [
+        tuple((a + b) / 2 for a, b in zip(corners[k], corners[(k + 1) % 4]))
+        for k in range(4)
+    ]
+    return list(corners) + mids
+
+
+def _deck(name, d, dof, header_dof, rows, elp, integration, tail=""):
+    """Write `d` and the inputs Z88R needs: `rows` are `z88i2.txt` rows (node,
+    dof, flag, value), `elp` and `integration` one row each for all elements."""
+    ndim, nn, ne, _ = d.header(1)
+    head = (
+        f"{ndim:5d}{nn:6d}{ne:6d}{header_dof:7d}{0:6d}   meshio++ Z88 fixture{tail}\n"
+    )
+    out = OUT / name
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "z88i1.txt").write_text(head + d.body(dof))
+    lines = [f"{n:6d}  {k}  {flag}  {v:+.6E}\n" for n, k, flag, v in rows]
+    (out / "z88i2.txt").write_text(f"{len(lines)}\n" + "".join(lines))
+    (out / "z88i5.txt").write_text("0\n")
+    (out / "z88mat.txt").write_text(f"1\n1 {ne} 51.txt\n")
+    (out / "51.txt").write_text("210000 0.3\n")
+    (out / "z88elp.txt").write_text(f"1\n1 {ne} {elp}\n")
+    (out / "z88int.txt").write_text(f"1\n1 {ne} {integration}\n")
+
+
+def frame():
+    """A 3-D portal: two columns and a girder of beams (type 2, 6 dof) and a
+    diagonal truss (type 4); clamped feet, a sway load at the top."""
+    d = Deck(3)
+    a, b = (0.0, 0.0, 0.0), (100.0, 0.0, 0.0)
+    c, e = (0.0, 0.0, 100.0), (100.0, 0.0, 100.0)
+    for p, q in ((a, c), (b, e), (c, e)):
+        d.element(2, [p, q])
+    d.element(4, [a, e])
+    rows = [(d.ids[f], k, 2, 0.0) for f in (a, b) for k in range(1, 7)]
+    rows.append((d.ids[c], 1, 1, 1000.0))
+    # A 10 x 10 section: area, Iyy, e_y, Izz, e_z, It, Wt.
+    elp = "100 833.333 5 833.333 5 1406 208"
+    _deck("frame", d, 6, 6 * len(d.coords), rows, elp, "0 0")
+
+
+def plate():
+    """Four quad8 Reissner-Mindlin plates (type 20, 3 dof: w and two
+    rotations) on [0, 100]^2, clamped at x = 0, a point load at (100, 100)."""
+    d = Deck(2)
+    for i in range(2):
+        for j in range(2):
+            x0, y0 = 50.0 * i, 50.0 * j
+            q = [(x0, y0), (x0 + 50, y0), (x0 + 50, y0 + 50), (x0, y0 + 50)]
+            d.element(20, _quad8(q))
+    rows = [
+        (k, dof, 2, 0.0)
+        for k, c in enumerate(d.coords, start=1)
+        if c[0] == 0.0
+        for dof in (1, 2, 3)
+    ]
+    rows.append((d.ids[(100.0, 100.0)], 1, 1, -100.0))
+    _deck("plate", d, 3, 3 * len(d.coords), rows, "10 0 0 0 0 0 0", "3 3")
+
+
+def _tri6(corners):
+    """Corners counter-clockwise, then the mid-edge nodes of 1-2, 2-3, 3-1."""
+    mids = [
+        tuple((a + b) / 2 for a, b in zip(corners[k], corners[(k + 1) % 3]))
+        for k in range(3)
+    ]
+    return list(corners) + mids
+
+
+def shell():
+    """Four tri6 shells (type 24, 6 dof) flat in the plane z = 0 of a 3-D file,
+    clamped at x = 0 and pulled and bent at x = 200."""
+    d = Deck(3)
+    for i in range(2):
+        x0 = 100.0 * i
+        a, b = (x0, 0.0, 0.0), (x0 + 100, 0.0, 0.0)
+        c, e = (x0 + 100, 50.0, 0.0), (x0, 50.0, 0.0)
+        d.element(24, _tri6([a, b, c]))
+        d.element(24, _tri6([a, c, e]))
+    rows = [
+        (k, dof, 2, 0.0)
+        for k, c in enumerate(d.coords, start=1)
+        if c[0] == 0.0
+        for dof in range(1, 7)
+    ]
+    rows += [
+        (k, dof, 1, v)
+        for k, c in enumerate(d.coords, start=1)
+        if c[0] == 200.0
+        for dof, v in ((1, 1000.0), (3, -10.0))
+    ]
+    _deck("shell", d, 6, 6 * len(d.coords), rows, "5 0 0 0 0 0 0", "3 3")
+
+
+def torus():
+    """Two axisymmetric quad8 (type 8) in (r, z), 50 <= r <= 60: held axially
+    at z = 0 and pushed outwards at r = 50."""
+    d = Deck(2)
+    for j in range(2):
+        z0 = 10.0 * j
+        d.element(8, _quad8([(50.0, z0), (60.0, z0), (60.0, z0 + 10), (50.0, z0 + 10)]))
+    rows = [(k, 2, 2, 0.0) for k, c in enumerate(d.coords, start=1) if c[1] == 0.0]
+    rows += [(k, 1, 1, 100.0) for k, c in enumerate(d.coords, start=1) if c[0] == 50.0]
+    _deck("torus", d, 2, 2 * len(d.coords), rows, "0 0 0 0 0 0 0", "3 3")
+
+
 def main():
     cantilever()
+    frame()
+    plate()
+    shell()
+    torus()
     tets()
     plate_v13()
     polar()

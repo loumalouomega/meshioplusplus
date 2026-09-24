@@ -1,0 +1,18 @@
+output file Z88O3.TXT : stresses, computed by Z88R V15OS
+                        ********
+
+isoparametric elements: computing stresses in corner nodes
+
+element #=     1 type =3Dbeam   node      1             node      2
+    SIGXX       TAUXX       SIGZZ1      SIGYY1      SIGZZ2      SIGYY2
+ +2.086E-01  +0.000E+00  +0.000E+00  -1.030E+01  +0.000E+00  +6.743E+00
+
+element #=     2 type =3Dbeam   node      3             node      4
+    SIGXX       TAUXX       SIGZZ1      SIGYY1      SIGZZ2      SIGYY2
+ -9.689E+00  +0.000E+00  +0.000E+00  -8.361E+00  +0.000E+00  +5.772E+00
+
+element #=     3 type =3Dbeam   node      2             node      4
+    SIGXX       TAUXX       SIGZZ1      SIGYY1      SIGZZ2      SIGYY2
+ -9.716E+00  +0.000E+00  +0.000E+00  +6.743E+00  +0.000E+00  -5.772E+00
+
+element # =     4     type = truss in space     SIG =  +1.341E+01

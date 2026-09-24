@@ -1,0 +1,30 @@
+output file Z88O3.TXT : stresses, computed by Z88R V15OS
+                        ********
+
+isoparametric elements: computing stresses in Gauss points 3 points per axis/element
+computing von Mises' stresses for elements 3 + 6 and for Gauss points of
+ elements 1,7,8,10,11,12,14 to 24
+
+element # = 1     type = 6-n shell
+  XX         YY         ZZ         SIGXX       SIGYY       TAUXY       SIGV
+  +3.33E+01  +8.33E+00  +0.00E+00  +3.351E+01  +3.731E+00  +2.087E+00  +3.20E+01
+  +8.33E+01  +8.33E+00  +0.00E+00  +3.103E+01  +1.831E+00  +1.854E+00  +3.03E+01
+  +8.33E+01  +3.33E+01  +0.00E+00  +3.091E+01  +1.280E+00  +7.247E-01  +3.03E+01
+
+element # = 2     type = 6-n shell
+  XX         YY         ZZ         SIGXX       SIGYY       TAUXY       SIGV
+  +1.67E+01  +1.67E+01  +0.00E+00  +3.145E+01  +1.507E+01  -1.105E+01  +3.33E+01
+  +6.67E+01  +4.17E+01  +0.00E+00  +2.667E+01  +9.975E+00  -1.223E+01  +3.15E+01
+  +1.67E+01  +4.17E+01  +0.00E+00  +2.985E+01  +1.537E+01  -1.133E+01  +3.25E+01
+
+element # = 3     type = 6-n shell
+  XX         YY         ZZ         SIGXX       SIGYY       TAUXY       SIGV
+  +1.33E+02  +8.33E+00  +0.00E+00  +2.084E+01  +2.500E+00  +9.443E-02  +1.97E+01
+  +1.83E+02  +8.33E+00  +0.00E+00  +1.857E+01  -3.985E-01  -1.306E+00  +1.89E+01
+  +1.83E+02  +3.33E+01  +0.00E+00  +1.447E+01  -1.896E+00  +1.388E+00  +1.57E+01
+
+element # = 4     type = 6-n shell
+  XX         YY         ZZ         SIGXX       SIGYY       TAUXY       SIGV
+  +1.17E+02  +1.67E+01  +0.00E+00  +1.723E+01  +3.503E+00  -8.900E+00  +2.21E+01
+  +1.67E+02  +4.17E+01  +0.00E+00  +1.418E+01  +3.996E+00  -7.900E+00  +1.86E+01
+  +1.17E+02  +4.17E+01  +0.00E+00  +1.642E+01  +3.351E+00  -9.318E+00  +2.20E+01
