@@ -120,6 +120,9 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 # INDEX tables of its nodal and element results reference; the C++ metadata
 # reader reads the model and the first domain, and the Python twin attaches
 # `mesh.time_values` the same way.
+#
+# **`ansys_rst_cyclic` joined in v16.8.0.** The full-rotor reading of a static
+# cyclic `.rst`: the same result sets as `ansys_rst`, so the same steps.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -138,6 +141,7 @@ _TIME_CAPABLE_READERS = (
     "unv",
     "xplt",
     "ansys_rst",
+    "ansys_rst_cyclic",
     "femap",
     "abaqus_fil",
 )

@@ -121,6 +121,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
         {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
         {"ansys_rst", [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); }},
+        {"ansys_rst_cyclic",
+         [](const std::string& path) { return meshioplusplus::read_ansys_rst_cyclic(path); }},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -694,6 +696,8 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"xplt", meshioplusplus::read_xplt},
         // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
         {"ansys_rst", meshioplusplus::read_ansys_rst},
+        // Its full-rotor reading (a static cyclic model): no extension, by name only.
+        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic},
         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
         // narrowing options.
         {"unv", [](const std::string& path,
@@ -769,6 +773,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
+        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5

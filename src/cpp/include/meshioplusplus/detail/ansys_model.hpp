@@ -92,5 +92,23 @@ MESHIOPLUSPLUS_API Mesh
 ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view Label, AnsysInfo& rInfo,
                  std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex);
 
+/// Where one element of an AnsysModel landed: its block and row in the built
+/// mesh, and which element node became each of the cell's nodes (`mSlots[j]`
+/// for cell node `j`). `mBlock` is -1 for an element that has no cell.
+struct AnsysCellLocation {
+    std::int64_t mBlock = -1;
+    std::int64_t mRow = -1;
+    std::vector<int> mSlots;
+};
+
+/**
+ * @brief As above, also filling `rCells` (parallel to `rModel.mElements`) with
+ *        each element's cell, so element results can be placed on it.
+ */
+MESHIOPLUSPLUS_API Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient,
+                                         std::string_view Label, AnsysInfo& rInfo,
+                                         std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex,
+                                         std::vector<AnsysCellLocation>& rCells);
+
 }  // namespace detail
 }  // namespace meshioplusplus

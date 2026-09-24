@@ -2976,16 +2976,20 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus::read_xplt_metadata(path).mTimeValues;
     });
 
-    // Ansys MAPDL results (.rst/.rth) reader: one result set per read.
+    // Ansys MAPDL results (.rst/.rth) reader: one result set per read; `cyclic`
+    // expands a static cyclic-symmetry model to the full rotor.
     m.def(
         "ansys_rst_read",
         [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           bool lenient) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansys_rst(
-                path, core_read_options(points_only, arrays, time_step, py::none(), lenient)));
+           bool lenient, bool cyclic) {
+            const auto options =
+                core_read_options(points_only, arrays, time_step, py::none(), lenient);
+            return meshioplusplus_py::mesh_to_py(
+                cyclic ? meshioplusplus::read_ansys_rst_cyclic(path, options)
+                       : meshioplusplus::read_ansys_rst(path, options));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("lenient") = false);
+        py::arg("time_step") = 0, py::arg("lenient") = false, py::arg("cyclic") = false);
     m.def("ansys_rst_time_values", [](const std::string& path) {
         return meshioplusplus::read_ansys_rst_metadata(path).mTimeValues;
     });
