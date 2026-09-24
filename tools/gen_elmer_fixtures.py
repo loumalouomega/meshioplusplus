@@ -28,6 +28,11 @@ Four directories:
   ``ElmerGrid -partition ... -halo`` writes them: shared nodes listed by both
   parts, and part 2 holding a halo copy of element 1 as ``1/1``.
 
+Two more are not written by this script: ``tet10_two_bodies_bin`` and
+``quad8_2d_sbin`` are ElmerGrid's own binary output of the text fixtures
+(elmerfem ``a8a13b5``, ``ElmerGrid 2 2 <dir> -out <dir>_bin -bin`` and
+``-sbin``; ``entities.sif`` left out), the layout ElmerSolver reads.
+
     python tools/gen_elmer_fixtures.py
 """
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import struct
 
 import numpy as np
 
@@ -134,7 +135,79 @@ class _ElmMesh:
         self.has_parts = False
 
 
-def _read_nodes(path, mesh):
+class _Binary:
+    """A binary mesh file as ElmerGrid -bin writes it and ElmerSolver reads it
+    (fem/src/MeshIO.F90, stream access): 32-bit native-endian integers and 64-bit
+    (``.bin``) or 32-bit (``.sbin``, nodes only) reals. The byte order is taken
+    from the first record's id, which is small and positive."""
+
+    def __init__(self, path):
+        self.path = path
+        with open(path, "rb") as fh:
+            self.data = fh.read()
+        self.pos = 0
+        self.record = 0
+        order = "<"
+        if len(self.data) >= 4:
+            (le,) = struct.unpack("<I", self.data[:4])
+            (be,) = struct.unpack(">I", self.data[:4])
+            plausible = lambda v: 1 <= v < (1 << 30)  # noqa: E731
+            # the byte order giving the smaller positive id wins (a big-endian 1
+            # read little-endian is 2**24, still a possible id)
+            if plausible(be) and (not plausible(le) or be < le):
+                order = ">"
+        self.order = order
+
+    def at_end(self):
+        return self.pos >= len(self.data)
+
+    def _take(self, fmt, n):
+        if self.pos + n > len(self.data):
+            _fail(self.path, self.record + 1, "the binary file ends inside a record")
+        (v,) = struct.unpack(self.order + fmt, self.data[self.pos : self.pos + n])
+        self.pos += n
+        return v
+
+    def int(self):
+        return self._take("i", 4)
+
+    def real(self, single):
+        return self._take("f", 4) if single else self._take("d", 8)
+
+
+def _form(directory, stem, nodes):
+    """Which form of ``stem`` a mesh directory holds: text, bin or sbin."""
+    path = os.path.join(directory, stem)
+    if os.path.isfile(path):
+        return "text"
+    if os.path.isfile(path + ".bin"):
+        return "bin"
+    if nodes and os.path.isfile(path + ".sbin"):
+        return "sbin"
+    raise ReadError(f"Elmer mesh: missing {path}")
+
+
+def _read_nodes(directory, stem, mesh):
+    def add(ident, xyz):
+        # A shared node is listed by every part that uses it: keep the first.
+        if ident in mesh.node_index:
+            return
+        mesh.node_index[ident] = len(mesh.node_ids)
+        mesh.node_ids.append(ident)
+        mesh.coords.append(xyz)
+
+    form = _form(directory, stem, True)
+    if form != "text":
+        path = os.path.join(directory, stem + "." + form)
+        b = _Binary(path)
+        while not b.at_end():
+            ident = b.int()
+            if ident <= 0:
+                _fail(path, b.record + 1, f"bad node id {ident}")
+            add(ident, [b.real(form == "sbin") for _ in range(3)])
+            b.record += 1
+        return
+    path = os.path.join(directory, stem)
     for number, tok in _lines(path):
         if len(tok) < 5:
             _fail(path, number, "a node line needs `id part x y z`")
@@ -145,71 +218,123 @@ def _read_nodes(path, mesh):
             xyz = [float(t) for t in tok[2:5]]
         except ValueError:
             _fail(path, number, "bad coordinate")
-        if ident in mesh.node_index:
-            continue
-        mesh.node_index[ident] = len(mesh.node_ids)
-        mesh.node_ids.append(ident)
-        mesh.coords.append(xyz)
+        add(ident, xyz)
 
 
-def _read_elements(path, boundary, part, lenient, out, seen, seen_sides):
-    lead = 5 if boundary else 3
-    skipped = 0
-    for number, tok in _lines(path):
-        if len(tok) < lead:
-            _fail(
-                path,
-                number,
-                (
-                    "a boundary line needs `id boundary parent1 parent2 type nodes`"
-                    if boundary
-                    else "an element line needs `id body type nodes`"
-                ),
-            )
-        ident = _elm_id(tok[0])
-        tag = _int(tok[1])
-        code = _int(tok[lead - 1])
-        if ident is None or tag is None or code is None:
-            _fail(path, number, "malformed line")
-        count = code % 100
-        if len(tok) != lead + count:
-            _fail(path, number, f"type {code} needs {count} nodes")
+def _read_elements(directory, stem, boundary, part, lenient, out, seen, seen_sides):
+    """Text records ``id body type nodes`` / ``id boundary parent1 parent2 type
+    nodes``; their binary forms add the owning part after the id."""
+    state = {"skipped": 0}
+
+    def accept(path, number, elem_id, owner, tag, parent, code, nodes):
         if code not in _TYPES:
             if not lenient:
                 _fail(path, number, f"element type {code} has no meshio++ cell type")
-            skipped += 1
-            continue
-        nodes = []
-        for t in tok[lead:]:
-            n = _int(t)
-            if n is None:
-                _fail(path, number, f"bad node id '{t}'")
-            nodes.append(n)
-        elem_id, owner = ident
+            state["skipped"] += 1
+            return
         elem_part = owner - 1 if owner > 0 else part
         if part >= 0:
             if boundary:
                 key = (tag, tuple(sorted(nodes)))
                 if key in seen_sides:
-                    continue
+                    return
                 seen_sides.add(key)
             else:
                 if elem_id in seen:
                     if owner < 0:
                         out.parts[seen[elem_id]] = part
-                    continue
+                    return
                 seen[elem_id] = len(out.ids)
         out.ids.append(elem_id)
         out.tags.append(tag)
         out.codes.append(code)
         out.parts.append(elem_part)
-        out.parents.append((_int(tok[2]) or 0) if boundary else 0)
+        out.parents.append(parent if boundary else 0)
         out.nodes.append(nodes)
-    if skipped:
+
+    if _form(directory, stem, False) == "bin":
+        path = os.path.join(directory, stem + ".bin")
+        b = _Binary(path)
+        while not b.at_end():
+            number = b.record + 1
+            elem_id = b.int()
+            owner = b.int()
+            tag = b.int()
+            parent = b.int() if boundary else 0
+            if boundary:
+                b.int()  # the second parent
+            code = b.int()
+            if elem_id <= 0 or code <= 100:
+                _fail(path, number, "malformed record")
+            nodes = [b.int() for _ in range(code % 100)]
+            accept(
+                path,
+                number,
+                elem_id,
+                owner if owner > 0 else -1,
+                tag,
+                parent,
+                code,
+                nodes,
+            )
+            b.record += 1
+    else:
+        path = os.path.join(directory, stem)
+        lead = 5 if boundary else 3
+        for number, tok in _lines(path):
+            if len(tok) < lead:
+                _fail(
+                    path,
+                    number,
+                    (
+                        "a boundary line needs `id boundary parent1 parent2 type nodes`"
+                        if boundary
+                        else "an element line needs `id body type nodes`"
+                    ),
+                )
+            ident = _elm_id(tok[0])
+            tag = _int(tok[1])
+            code = _int(tok[lead - 1])
+            if ident is None or tag is None or code is None:
+                _fail(path, number, "malformed line")
+            count = code % 100
+            if len(tok) != lead + count:
+                _fail(path, number, f"type {code} needs {count} nodes")
+            if code not in _TYPES and not lenient:
+                _fail(path, number, f"element type {code} has no meshio++ cell type")
+            nodes = []
+            for t in tok[lead:]:
+                n = _int(t)
+                if n is None:
+                    _fail(path, number, f"bad node id '{t}'")
+                nodes.append(n)
+            parent = (_int(tok[2]) or 0) if boundary else 0
+            accept(path, number, ident[0], ident[1], tag, parent, code, nodes)
+    if state["skipped"]:
         warn(
-            f"Elmer mesh: {skipped} element(s) of types with no meshio++ cell type "
-            f"skipped in {path}"
+            f"Elmer mesh: {state['skipped']} element(s) of types with no meshio++ cell "
+            f"type skipped in {os.path.join(directory, stem)}"
         )
+
+
+def _element_ids(directory, stem):
+    """(id, owner) of every bulk element of ``stem``, text or binary."""
+    if _form(directory, stem, False) == "bin":
+        b = _Binary(os.path.join(directory, stem + ".bin"))
+        while not b.at_end():
+            elem_id = b.int()
+            owner = b.int()
+            b.int()  # body
+            code = b.int()
+            for _ in range(code % 100):
+                b.int()
+            yield elem_id, (owner if owner > 0 else -1)
+            b.record += 1
+        return
+    for _, tok in _lines(os.path.join(directory, stem)):
+        ident = _elm_id(tok[0])
+        if ident is not None:
+            yield ident
 
 
 def _read_names(path, mesh):
@@ -260,40 +385,14 @@ def _partition_dirs(directory):
     return out
 
 
-def _check_text(directory, stem):
-    path = os.path.join(directory, stem)
-    if os.path.isfile(path):
-        return
-    if os.path.isfile(path + ".bin"):
-        raise ReadError(
-            f"Elmer mesh: {path} is only present in ElmerGrid's binary form, which is "
-            "not supported; write the mesh without -bin"
-        )
-    raise ReadError(f"Elmer mesh: missing {path}")
-
-
 def _read_serial(directory, lenient, mesh):
-    for stem in ("mesh.nodes", "mesh.elements", "mesh.boundary"):
-        _check_text(directory, stem)
     seen, seen_sides = {}, set()
-    _read_nodes(os.path.join(directory, "mesh.nodes"), mesh)
+    _read_nodes(directory, "mesh.nodes", mesh)
     _read_elements(
-        os.path.join(directory, "mesh.elements"),
-        False,
-        -1,
-        lenient,
-        mesh.bulk,
-        seen,
-        seen_sides,
+        directory, "mesh.elements", False, -1, lenient, mesh.bulk, seen, seen_sides
     )
     _read_elements(
-        os.path.join(directory, "mesh.boundary"),
-        True,
-        -1,
-        lenient,
-        mesh.boundary,
-        seen,
-        seen_sides,
+        directory, "mesh.boundary", True, -1, lenient, mesh.boundary, seen, seen_sides
     )
     _read_names(os.path.join(directory, "mesh.names"), mesh)
 
@@ -302,11 +401,10 @@ def _read_parts(directory, first, last, lenient, mesh):
     seen, seen_sides = {}, set()
     for p in range(first, last + 1):
         stem = f"part.{p + 1}"
-        for ext in (".nodes", ".elements", ".boundary"):
-            _check_text(directory, stem + ext)
-        _read_nodes(os.path.join(directory, stem + ".nodes"), mesh)
+        _read_nodes(directory, stem + ".nodes", mesh)
         _read_elements(
-            os.path.join(directory, stem + ".elements"),
+            directory,
+            stem + ".elements",
             False,
             p,
             lenient,
@@ -315,7 +413,8 @@ def _read_parts(directory, first, last, lenient, mesh):
             seen_sides,
         )
         _read_elements(
-            os.path.join(directory, stem + ".boundary"),
+            directory,
+            stem + ".boundary",
             True,
             p,
             lenient,
@@ -332,14 +431,11 @@ def _read_parts(directory, first, last, lenient, mesh):
 def _label_serial(part_dir, mesh):
     part_of = {}
     for p in range(_count_parts(part_dir)):
-        path = os.path.join(part_dir, f"part.{p + 1}.elements")
-        if not os.path.isfile(path):
+        stem = f"part.{p + 1}.elements"
+        path = os.path.join(part_dir, stem)
+        if not os.path.isfile(path) and not os.path.isfile(path + ".bin"):
             return
-        for _, tok in _lines(path):
-            ident = _elm_id(tok[0])
-            if ident is None:
-                continue
-            elem_id, owner = ident
+        for elem_id, owner in _element_ids(part_dir, stem):
             if owner < 0 or elem_id not in part_of:
                 part_of[elem_id] = owner - 1 if owner > 0 else p
     labels = []
@@ -608,7 +704,9 @@ def write(filename, mesh):
             "regions-dropped",
             f"{point_regions} point region(s) have no Elmer equivalent",
         )
-    if mesh.point_data or mesh.cell_data or mesh.field_data:
+    partitioned = "partition:part" in mesh.cell_data
+    other_cell_data = [k for k in mesh.cell_data if k != "partition:part"]
+    if mesh.point_data or other_cell_data or mesh.field_data:
         warn(
             "Elmer mesh writer: an Elmer mesh holds no data arrays; point, cell and "
             "field data dropped"
@@ -658,7 +756,7 @@ def write(filename, mesh):
 
     directory.mkdir(parents=True, exist_ok=True)
     for entry in sorted(os.listdir(directory)):
-        if entry.startswith("partitioning."):
+        if entry.startswith("partitioning.") and not partitioned:
             warn(
                 f"Elmer mesh writer: {directory / entry} is left over from an earlier "
                 "mesh and no longer matches it"
@@ -675,6 +773,7 @@ def write(filename, mesh):
     type_counts = {}
     elements, boundary = [], []
     n_boundary = 0
+    bulk_rows, boundary_rows = [], []  # kept for the partitioned copy
     for b, block in enumerate(blocks):
         order = node_order("elmer", block.type)
         n_corners = _CORNERS[_family(block.type)]
@@ -688,12 +787,16 @@ def write(filename, mesh):
             nodes = " ".join(str(v + 1) for v in written)
             if is_body:
                 elements.append(f"{element_no[g]} {cell_id[g]} {codes[b]} {nodes}\n")
+                bulk_rows.append((g, cell_id[g], codes[b], [v + 1 for v in written]))
             else:
                 p1, p2 = parents_of(row[:n_corners], dims[b])
                 orphans += p1 == 0
                 n_boundary += 1
                 boundary.append(
                     f"{n_boundary} {cell_id[g]} {p1} {p2} {codes[b]} {nodes}\n"
+                )
+                boundary_rows.append(
+                    (cell_id[g], p1, p2, codes[b], [v + 1 for v in written])
                 )
             type_counts[codes[b]] = type_counts.get(codes[b], 0) + 1
     bad_facets = 0
@@ -712,6 +815,7 @@ def write(filename, mesh):
         written = [row[k] for k in order.from_meshio] if order is not None else row
         nodes = " ".join(str(v + 1) for v in written)
         boundary.append(f"{n_boundary} {ident} {p1} {p2} {code} {nodes}\n")
+        boundary_rows.append((ident, p1, p2, code, [v + 1 for v in written]))
         type_counts[code] = type_counts.get(code, 0) + 1
     if bad_facets:
         warn(
@@ -753,3 +857,90 @@ def write(filename, mesh):
                 name += "_boundary"
             names.append(f"$ {name} = {ident}\n")
     (directory / "mesh.names").write_bytes("".join(names).encode())
+
+    if partitioned:
+        _write_partitioning(
+            directory, mesh, bases, element_no, n_bulk, bulk_rows, boundary_rows, points
+        )
+
+
+def _write_partitioning(
+    directory, mesh, bases, element_no, n_bulk, bulk_rows, boundary_rows, points
+):
+    """ElmerGrid's partitioning.N without halos (``write_elmer`` in elmer.cpp):
+    ``partition:part`` (0-based) places each bulk element; a node belongs to
+    every part using it and is owned by the lowest; a boundary element goes to
+    each part holding one of its parents, the other parent set to 0."""
+    labels = mesh.cell_data["partition:part"]
+    part_of = [-1] * (n_bulk + 1)
+    n_parts = 0
+    for g, _, _, _ in bulk_rows:
+        b = int(np.searchsorted(bases, g, side="right")) - 1
+        label = int(labels[b][g - bases[b]])
+        if label < 0:
+            raise WriteError(
+                f"Elmer mesh writer: partition:part has a negative part for cell {g}"
+            )
+        part_of[element_no[g]] = label
+        n_parts = max(n_parts, label + 1)
+    users = {}
+    for g, _, _, nodes in bulk_rows:
+        part = part_of[element_no[g]]
+        for n in nodes:
+            users.setdefault(n, set()).add(part)
+    pdir = directory / f"partitioning.{n_parts}"
+    pdir.mkdir(parents=True, exist_ok=True)
+    pdim = points.shape[1] if points.ndim == 2 else 0
+    empty = 0
+    for part in range(n_parts):
+        stem = f"part.{part + 1}"
+        elems, sides, node_lines, shared = [], [], [], []
+        bulk_types, side_types = {}, {}
+        nodes = set()
+        for g, tag, code, row in bulk_rows:
+            no = int(element_no[g])
+            if part_of[no] != part:
+                continue
+            elems.append(f"{no} {tag} {code} " + " ".join(str(n) for n in row) + "\n")
+            nodes.update(row)
+            bulk_types[code] = bulk_types.get(code, 0) + 1
+        for side_no, (tag, p1, p2, code, row) in enumerate(boundary_rows, start=1):
+            in1 = p1 > 0 and part_of[p1] == part
+            in2 = p2 > 0 and part_of[p2] == part
+            if not (in1 or in2):
+                continue
+            sides.append(
+                f"{side_no} {tag} {p1 if in1 else 0} {p2 if in2 else 0} {code} "
+                + " ".join(str(n) for n in row)
+                + "\n"
+            )
+            side_types[code] = side_types.get(code, 0) + 1
+        for n in sorted(nodes):
+            row = points[n - 1].tolist()
+            xyz = [row[d] if d < pdim else 0.0 for d in range(3)]
+            node_lines.append(f"{n} -1 " + " ".join("%.17g" % v for v in xyz) + "\n")
+            parts = sorted(users[n])
+            if len(parts) > 1:
+                # `id count owner others`: every part using it but the owner
+                shared.append(
+                    f"{n} {len(parts)} " + " ".join(str(q + 1) for q in parts) + "\n"
+                )
+        empty += not elems
+        header = [
+            f"{_padded(len(nodes))} {_padded(len(elems))} {_padded(len(sides))}\n",
+            f"{_padded(len(bulk_types) + len(side_types))}\n",
+        ]
+        for types in (bulk_types, side_types):
+            for code in sorted(types):
+                header.append(f"{_padded(code)} {_padded(types[code])}\n")
+        header.append(f"{_padded(len(shared))} {_padded(0)}\n")
+        (pdir / f"{stem}.header").write_bytes("".join(header).encode())
+        (pdir / f"{stem}.nodes").write_bytes("".join(node_lines).encode())
+        (pdir / f"{stem}.elements").write_bytes("".join(elems).encode())
+        (pdir / f"{stem}.boundary").write_bytes("".join(sides).encode())
+        (pdir / f"{stem}.shared").write_bytes("".join(shared).encode())
+    if empty:
+        warn(
+            f"Elmer mesh writer: {empty} of the {n_parts} parts in partition:part hold "
+            "no element; ElmerSolver needs every part populated"
+        )

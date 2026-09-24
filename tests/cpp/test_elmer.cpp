@@ -20,7 +20,9 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -313,4 +315,91 @@ TEST(Elmer, WriterRejectsWhatElmerCannotHold) {
     polygon.AddCellBlock("polygon5", conn_from({{0, 1, 2, 3, 4}}));
     EXPECT_THROW(write_elmer(dir.string(), polygon), WriteError);
     fs::remove_all(dir);
+}
+
+TEST(Elmer, ReadsBinaryMeshesInEitherByteOrder) {
+    // Write the text mesh, then its binary twin the way ElmerGrid -bin does
+    // (fem/src/MeshIO.F90's stream layout), in both byte orders.
+    const fs::path dir = fresh_dir();
+    write_elmer((dir / "text").string(), two_tets());
+    const Mesh text = read_elmer((dir / "text").string());
+    for (bool big : {false, true}) {
+        const fs::path bin = dir / (big ? "big" : "little");
+        fs::create_directories(bin);
+        fs::copy_file(dir / "text" / "mesh.header", bin / "mesh.header");
+        fs::copy_file(dir / "text" / "mesh.names", bin / "mesh.names");
+        auto put_bytes = [&](std::string& rOut, const void* pV, std::size_t N) {
+            char b[8];
+            std::memcpy(b, pV, N);
+            if (big)
+                std::reverse(b, b + N);
+            rOut.append(b, N);
+        };
+        auto int32 = [&](std::string& rOut, std::int64_t V) {
+            const std::int32_t v = static_cast<std::int32_t>(V);
+            put_bytes(rOut, &v, 4);
+        };
+        std::string nodes, elements, boundary;
+        for (const std::string& line : lines(dir / "text" / "mesh.nodes")) {
+            std::istringstream in(line);
+            std::int64_t id, part;
+            double xyz[3];
+            in >> id >> part >> xyz[0] >> xyz[1] >> xyz[2];
+            int32(nodes, id);
+            for (double v : xyz)
+                put_bytes(nodes, &v, 8);
+        }
+        for (const auto& [file, out] : {std::make_pair("mesh.elements", &elements),
+                                        std::make_pair("mesh.boundary", &boundary)}) {
+            for (const std::string& line : lines(dir / "text" / file)) {
+                std::istringstream in(line);
+                std::vector<std::int64_t> v;
+                for (std::int64_t x; in >> x;)
+                    v.push_back(x);
+                int32(*out, v[0]);
+                int32(*out, -1);  // the owning part, -1 in a serial mesh
+                for (std::size_t k = 1; k < v.size(); ++k)
+                    int32(*out, v[k]);
+            }
+        }
+        put(bin / "mesh.nodes.bin", nodes);
+        put(bin / "mesh.elements.bin", elements);
+        put(bin / "mesh.boundary.bin", boundary);
+        const Mesh m = read_elmer(bin.string());
+        ASSERT_EQ(m.NumCellBlocks(), text.NumCellBlocks());
+        for (std::size_t k = 0; k < 15; ++k)
+            EXPECT_EQ(detail::read_double(m.Points(), k), detail::read_double(text.Points(), k));
+        EXPECT_EQ(m.NumRegions(), text.NumRegions());
+    }
+    fs::remove_all(dir);
+}
+
+TEST(Elmer, WritesPartitionsFromPartitionPart) {
+    Mesh m = two_tets();
+    auto labels = [](std::vector<std::int64_t> v) {
+        NDArray a(DType::Int64, {v.size()});
+        std::copy(v.begin(), v.end(), a.As<std::int64_t>());
+        return a;
+    };
+    m.AddCellData("partition:part", {labels({0, 1}), labels({0, 0})});
+    const fs::path dir = fresh_dir() / "mesh";
+    write_elmer(dir.string(), m);
+    const fs::path pdir = dir / "partitioning.2";
+    EXPECT_EQ(lines(pdir / "part.1.elements"), (std::vector<std::string>{"1 1 504 1 2 3 4"}));
+    EXPECT_EQ(lines(pdir / "part.2.elements"), (std::vector<std::string>{"2 2 504 2 4 3 5"}));
+    // Nodes 2, 3, 4 are shared; part 1 owns them.
+    EXPECT_EQ(lines(pdir / "part.2.shared"),
+              (std::vector<std::string>{"2 2 1 2", "3 2 1 2", "4 2 1 2"}));
+    // The interface keeps the parent of each side only.
+    EXPECT_EQ(lines(pdir / "part.1.boundary"),
+              (std::vector<std::string>{"1 7 1 0 303 1 2 4", "2 8 1 0 303 2 3 4"}));
+    EXPECT_EQ(lines(pdir / "part.2.boundary"), (std::vector<std::string>{"2 8 0 2 303 2 3 4"}));
+    EXPECT_EQ(lines(pdir / "part.2.header"),
+              (std::vector<std::string>{"4      1      1     ", "2     ", "504    1     ",
+                                        "303    1     ", "3      0     "}));
+    // Read back merged: the same cells and the labels.
+    const Mesh back = read_elmer(pdir.string());
+    ASSERT_TRUE(back.HasCellData("partition:part"));
+    EXPECT_EQ(detail::read_int(back.CellData("partition:part", 0), 1), 1);
+    fs::remove_all(dir.parent_path());
 }
