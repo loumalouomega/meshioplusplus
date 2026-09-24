@@ -363,6 +363,59 @@ std::vector<std::pair<std::string, std::vector<std::string>>> nh5_nodal_outputs(
     return out;
 }
 
+/** The CORD1R/C/S and CORD2R/C/S tables of /NASTRAN/INPUT/COORDINATE_SYSTEM. */
+std::vector<detail::NastranCoordCard> nh5_coord_cards(hid_t File) {
+    constexpr const char* kDir = "/NASTRAN/INPUT/COORDINATE_SYSTEM";
+    std::vector<detail::NastranCoordCard> out;
+    static const std::pair<const char*, int> kTables[] = {
+        {"CORD2R", 1}, {"CORD2C", 2}, {"CORD2S", 3}, {"CORD1R", 1}, {"CORD1C", 2}, {"CORD1S", 3}};
+    for (const auto& [name, type] : kTables) {
+        const std::string path = std::string(kDir) + "/" + name;
+        if (!nh5_is_dataset(File, path))
+            continue;
+        const auto members = h5::compound_members(File, path);
+        const std::size_t n = nh5_rows(File, path);
+        const bool by_grids = name[4] == '1';
+        const std::vector<const char*> needed =
+            by_grids ? std::vector<const char*>{"CID", "G1", "G2", "G3"}
+                     : std::vector<const char*>{"CID", "RID", "A1", "A2", "A3", "B1",
+                                                "B2",  "B3",  "C1", "C2", "C3"};
+        bool complete = true;
+        for (const char* m : needed)
+            complete = complete && nh5_has_member(members, m);
+        if (!complete) {
+            log::warn("MSC Nastran HDF5: {} lacks the expected columns; its systems are not read",
+                      path);
+            continue;
+        }
+        const auto cid = nh5_int_member(File, path, "CID", 0, n);
+        std::vector<std::vector<std::int64_t>> ints;
+        std::vector<std::vector<double>> reals;
+        for (std::size_t k = 1; k < needed.size(); ++k) {
+            if (by_grids || k == 1)
+                ints.push_back(nh5_int_member(File, path, needed[k], 0, n));
+            else
+                reals.push_back(nh5_float_member(File, path, needed[k], 0, n));
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            detail::NastranCoordCard c;
+            c.mCid = cid[i];
+            c.mType = type;
+            c.mByGrids = by_grids;
+            if (by_grids) {
+                for (int k = 0; k < 3; ++k)
+                    c.mGrids[k] = ints[static_cast<std::size_t>(k)][i];
+            } else {
+                c.mRid = ints[0][i];
+                for (std::size_t k = 0; k < 9; ++k)
+                    c.mAbc[k] = reals[k][i];
+            }
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
 std::string nh5_join(const std::vector<std::string>& rV) {
     std::string out;
     for (const std::string& s : rV)
@@ -379,6 +432,8 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
 
     // --- points ---------------------------------------------------------------
     const std::size_t npts = file.mGridIds.size();
+    detail::NastranCoordSystems systems;
+    std::vector<std::int64_t> cd;
     {
         const DType as = DType::Float64;
         NDArray x = h5::read_compound_member(f, kNh5Grid, "X", 0, npts, &as);
@@ -386,11 +441,16 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             nh5_fail("GRID X is not a 3-vector");
         mesh.AssignPoints(std::move(x));
         const auto members = h5::compound_members(f, kNh5Grid);
-        for (const char* frame : {"CP", "CD"})
-            if (nh5_has_member(members, frame))
-                detail::nastran_add_frame(mesh, frame, nh5_int_member(f, kNh5Grid, frame, 0, npts),
-                                          "MSC Nastran HDF5");
+        auto frame = [&](const char* pName) {
+            return nh5_has_member(members, pName) ? nh5_int_member(f, kNh5Grid, pName, 0, npts)
+                                                  : std::vector<std::int64_t>(npts, 0);
+        };
+        cd = frame("CD");
+        systems = detail::nastran_apply_frames(mesh, nh5_coord_cards(f), file.mGridIds, frame("CP"),
+                                               cd, "MSC Nastran HDF5");
     }
+    const NDArray basic_points = mesh.Points();
+    const double* basic = basic_points.As<double>();
 
     // --- cells and property regions ------------------------------------------------
     std::vector<detail::NastranCardRows> cards;
@@ -551,6 +611,13 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
                         if (target[r] != npos)
                             out[target[r] * nc + c] = v[r];
                 }
+                // Vector results are in each GRID's output system (CD).
+                if (nc == 3)
+                    for (std::size_t r = 0; r < count; ++r)
+                        if (target[r] != npos)
+                            detail::nastran_rotate_to_basic(systems, cd[target[r]],
+                                                            basic + 3 * target[r],
+                                                            out + 3 * target[r], 1);
                 used_point_names.push_back(name);
                 mesh.AddPointData(name, std::move(data));
             } else {

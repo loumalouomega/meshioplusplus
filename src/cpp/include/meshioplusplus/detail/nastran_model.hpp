@@ -28,7 +28,9 @@
  * when every mid-side node is given), `cell_data["nastran:eid"]` and
  * `["nastran:pid"]`, and one cell region per property id named
  * `<PTYPE>_<pid>` (`PID_<pid>` when the property card is unknown). An element
- * on a scalar point is dropped; one on an undefined GRID is an error.
+ * on a scalar point is dropped; one on an undefined GRID is an error. GRIDs
+ * given in local coordinate systems (CP) are moved to the basic system, and
+ * results in a GRID's output system (CD) can be rotated to basic.
  *
  * Python twin: `src/python/meshioplusplus/nastran/_model.py`.
  */
@@ -97,14 +99,75 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                                const std::map<std::int64_t, std::string>& rPtype,
                                const std::string& rWho);
 
+/** @brief One coordinate system card: CORD1R/C/S (three GRIDs) or CORD2R/C/S. */
+struct NastranCoordCard {
+    std::int64_t mCid = 0;
+    int mType = 1;          ///< 1 rectangular, 2 cylindrical, 3 spherical
+    bool mByGrids = false;  ///< CORD1*: `mGrids`; CORD2*: `mRid` and `mAbc`
+    std::int64_t mRid = 0;
+    double mAbc[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};  ///< A (origin), B (on +z), C (in the xz plane)
+    std::int64_t mGrids[3] = {0, 0, 0};            ///< origin, +z and xz-plane GRIDs
+};
+
 /**
- * @brief Keep a GRID output or definition frame as point data when any is set:
- *        `nastran:cp` (coordinates stay in the local system) or `nastran:cd`
- *        (results are in the local output system), with a warning.
- * @param rFrame "CP" or "CD"
+ * @brief Resolved coordinate systems: each an origin and axes in the basic
+ *        system, and its type.
+ *
+ * Local coordinates are rectangular (x, y, z), cylindrical (r, theta, z) or
+ * spherical (r, theta, phi), angles in degrees, theta of a spherical system
+ * measured from its z axis.
  */
-void nastran_add_frame(Mesh& rMesh, const std::string& rFrame,
-                       const std::vector<std::int64_t>& rValues, const std::string& rWho);
+class NastranCoordSystems {
+public:
+    struct System {
+        int mType = 1;
+        double mOrigin[3] = {0, 0, 0};
+        double mAxes[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  ///< rows: x, y, z axis in basic
+    };
+
+    NastranCoordSystems();
+    bool Has(std::int64_t Cid) const { return mSystems.count(Cid) != 0; }
+    /** @brief Local coordinates of system @p Cid (which must exist) to basic. */
+    void ToBasic(std::int64_t Cid, const double* pLocal, double* pBasic) const;
+    /**
+     * @brief A vector given in the components of system @p Cid at the point
+     *        @p pBasicPoint (the local basis of a cylindrical or spherical
+     *        system depends on it) to basic components, in place.
+     */
+    void VectorToBasic(std::int64_t Cid, const double* pBasicPoint, double* pVector) const;
+    void Add(std::int64_t Cid, const System& rSystem) { mSystems[Cid] = rSystem; }
+
+private:
+    std::map<std::int64_t, System> mSystems;
+};
+
+/**
+ * @brief Move GRID points to the basic system and keep their frames.
+ *
+ * Resolves @p rCards (in any order: a CORD2 through its reference system, a
+ * CORD1 through its GRIDs, which may themselves be in local systems), then
+ * turns every point with CP != 0 into basic coordinates. `nastran:cp` and
+ * `nastran:cd` are added as point data when any value is non-zero. A GRID
+ * whose system cannot be resolved (undefined, circular or degenerate) keeps
+ * its coordinates as written, with a warning.
+ *
+ * @param rMesh a mesh whose points are the GRIDs, as written, in @p rIds order
+ * @return the resolved systems, for the CD components of nodal results
+ */
+NastranCoordSystems nastran_apply_frames(Mesh& rMesh, const std::vector<NastranCoordCard>& rCards,
+                                         const std::vector<std::int64_t>& rIds,
+                                         const std::vector<std::int64_t>& rCp,
+                                         const std::vector<std::int64_t>& rCd,
+                                         const std::string& rWho);
+
+/**
+ * @brief Rotate a point's result vectors from its CD system to basic, in place.
+ *
+ * @param pValues `Count` consecutive triplets (e.g. translations then rotations)
+ * @return false (values untouched) when @p Cd is 0 or not a resolved system
+ */
+bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t Cd,
+                             const double* pBasicPoint, double* pValues, std::size_t Count);
 
 /**
  * @brief Read a bulk-data deck as `read_nastran` does, also returning the GRID

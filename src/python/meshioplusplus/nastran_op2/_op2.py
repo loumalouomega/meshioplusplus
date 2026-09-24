@@ -22,7 +22,14 @@ from .._common import warn
 from .._exceptions import ReadError
 from .._fortran_records import fortran_records, sniff_fortran_records
 from .._mesh import Mesh
-from ..nastran._model import CARDS, add_cells, frame_point_data
+from ..nastran._model import (
+    CARDS,
+    CoordCard,
+    CoordSystems,
+    add_cells,
+    apply_frames,
+    rotate_to_basic,
+)
 
 __all__ = ["read", "time_values"]
 
@@ -322,10 +329,54 @@ def _grid_rows(s, raw, k3):
     return None
 
 
+# CORD1C/R/S and CORD2C/R/S: key -> (type, defined by GRIDs)
+_CORDS = {
+    (1701, 17): (2, True),
+    (1801, 18): (1, True),
+    (1901, 19): (3, True),
+    (2001, 20): (2, False),
+    (2101, 21): (1, False),
+    (2201, 22): (3, False),
+}
+
+
+def _cord_rows(s, raw, ctype, by_grids, out):
+    """CORD1 entries ``cid, type, 1|2, g1, g2, g3`` (6 words); CORD2 entries
+    ``cid, type, 2, rid, a1..c3`` (13 words in the file's precision) or, in
+    32-bit files, 22 words with the coordinates as doubles (NX's GEOM1N)."""
+    body = raw[3 * s.ws :]
+    nwords = len(body) // s.ws
+    for size in [6] if by_grids else [13, 22]:
+        if (size == 22 and s.ws != 4) or nwords == 0 or nwords % size:
+            continue
+        n = nwords // size
+        i = s.order + ("i4" if s.ws == 4 else "i8")
+        if by_grids:
+            rows = (
+                np.frombuffer(body, np.dtype(i), n * 6).reshape(n, 6).astype(np.int64)
+            )
+            cards = [CoordCard(r[0], ctype, grids=r[3:6].tolist()) for r in rows]
+            # The two flag words vary (pyNastran has seen 1 or 2 for a CORD1C).
+            ok = all(r[0] > 0 and min(r[3:6]) > 0 for r in rows.tolist())
+        else:
+            f = s.order + (("f4" if s.ws == 4 else "f8") if size == 13 else "f8")
+            dt = np.dtype([("h", i, (4,)), ("abc", f, (9,))])
+            rows = np.frombuffer(body, dt, n)
+            head = rows["h"].astype(np.int64).tolist()
+            abc = rows["abc"].astype(np.float64).tolist()
+            cards = [CoordCard(h[0], ctype, rid=h[3], abc=a) for h, a in zip(head, abc)]
+            ok = all(h[0] > 0 and h[1] == ctype and h[3] >= 0 for h in head)
+        if ok:
+            out.extend(cards)
+            return True
+    return False
+
+
 def _read_grids(s, tables):
     """GRID ids, coordinates, CP and CD, and the SPOINT/EPOINT ids."""
     ids, xyz, cp, cd = [], [], [], []
     spoints = set()
+    cords = []
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("GEOM1",)):
         words = _ints(s, raw)[3:]
         if (k1, k2) == (4501, 45):
@@ -340,10 +391,17 @@ def _read_grids(s, tables):
             cp.extend(gcp)
             xyz.extend(gxyz)
             cd.extend(gcd)
+            continue
+        cord = _CORDS.get((k1, k2))
+        if cord is not None and not _cord_rows(s, raw, *cord, cords):
+            warn(
+                f"{WHO}: a coordinate system record ({k1}, {k2}) of {len(words)} words "
+                "matches no layout; skipped"
+            )
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("GEOM2", "GEOM1")):
         if (k1, k2) in ((5551, 49), (707, 7)):  # SPOINT, EPOINT
             spoints.update(_ints(s, raw)[3:].tolist())
-    return ids, xyz, cp, cd, spoints
+    return ids, xyz, cp, cd, spoints, cords
 
 
 def _read_elements(s, tables, grids):
@@ -649,7 +707,7 @@ class _File:
                             skip(f"{name} (thermal table code {table_code})")
                             continue
                         base = "TEMPERATURE"
-                    info = ("nodal", base)
+                    info = ("nodal", base, name.startswith("BOUG"))
                 else:
                     if table_code != 5:
                         skip(f"{name} (table code {table_code})")
@@ -719,7 +777,7 @@ def _mesh_from_deck(path):
 
 def _build_mesh(nf):
     s = nf.stream
-    ids, xyz, cp, cd, spoints = _read_grids(s, nf.tables)
+    ids, xyz, cp, cd, spoints, cords = _read_grids(s, nf.tables)
     if not ids:
         deck, tried = _sibling_deck(nf.path)
         if deck is None:
@@ -727,7 +785,7 @@ def _build_mesh(nf):
                 "the file has no GEOM1 GRID records (rerun with PARAM,POST,-1 or "
                 "provide the input deck beside it); looked for " + ", ".join(tried)
             )
-        return _mesh_from_deck(deck)
+        return _mesh_from_deck(deck) + (CoordSystems(), None)
     grid_index = {}
     for i, g in enumerate(ids):
         if g in grid_index:
@@ -735,20 +793,19 @@ def _build_mesh(nf):
         grid_index[g] = i
     points = np.asarray(xyz, dtype=np.float64).reshape(len(ids), 3)
     point_data = {}
-    frame_point_data(point_data, "CP", cp, WHO)
-    frame_point_data(point_data, "CD", cd, WHO)
+    systems = apply_frames(points, point_data, cords, ids, cp, cd, WHO)
     cards = _read_elements(s, nf.tables, set(ids))
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
         cards, grid_index, spoints, _read_properties(s, nf.tables), WHO
     )
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
     mesh.regions = regions
-    return mesh, grid_index, cell_index, offsets, sizes
+    return mesh, grid_index, cell_index, offsets, sizes, systems, cd
 
 
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
-    mesh, grid_index, cell_index, offsets, sizes = _build_mesh(nf)
+    mesh, grid_index, cell_index, offsets, sizes, systems, cd = _build_mesh(nf)
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)
     if n == 0:
@@ -807,7 +864,11 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                     values = point_arrays[name] = np.full((npts, nc), _NAN)
                 for r, p in targets:
                     if p is not None and np.isnan(values[p, 0]):
-                        values[p] = rows_f[r, c0 : c0 + nc]
+                        v = rows_f[r, c0 : c0 + nc].tolist()
+                        # Results are in the GRID's output system (CD) unless the table is BOUG*.
+                        if nc == 3 and not info[2] and cd is not None:
+                            rotate_to_basic(systems, cd[p], mesh.points[p].tolist(), v)
+                        values[p] = v
         else:
             _, group, layout, num_wide = info
             if len(ints) % num_wide:

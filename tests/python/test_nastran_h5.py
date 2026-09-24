@@ -533,7 +533,9 @@ class TestBuiltFiles:
             engine(path, time_step=1)
         assert _sequence.num_steps(path) == 1
 
-    def test_local_coordinates_are_kept_and_flagged(self, engine, tmp_path):
+    def test_an_undefined_system_keeps_coordinates_and_flags_them(
+        self, engine, tmp_path
+    ):
         path = write_msc(tmp_path / "cp.h5", UNIT_HEX, cp={2: 5})
         mesh = engine(path)
         np.testing.assert_array_equal(mesh.points[1], [1, 0, 0])
@@ -625,3 +627,64 @@ class TestRegistration:
 
     def test_core_has_the_function(self):
         assert hasattr(_core, "nastran_h5_read")
+
+
+# --- coordinate systems ---------------------------------------------------------------
+
+
+def _cord_probe(tmp_path):
+    """``static_elements.h5`` with the GRIDs and systems of ``cord_reference.npz``
+    (see tools/gen_nastran_cord_reference.py): a tilted CORD2C, a CORD2S defined
+    in it and a CORD1R through three GRIDs, one of them in the CORD2C."""
+    ref = np.load(FIXTURES / "cord_reference.npz")
+    path = tmp_path / "cord_probe.h5"
+    path.write_bytes(pathlib.Path(path_of("static_elements")).read_bytes())
+    with h5py.File(path, "r+") as f:
+        grid = f["NASTRAN/INPUT/NODE/GRID"][()]
+        grid["X"] = ref["x_local"]
+        grid["CP"] = ref["cp"]
+        grid["CD"] = ref["cd"]
+        del f["NASTRAN/INPUT/NODE/GRID"]
+        f["NASTRAN/INPUT/NODE/GRID"] = grid
+        cs = f["NASTRAN/INPUT/COORDINATE_SYSTEM"]
+        dtype = cs["CORD2R"].dtype
+        for name in list(cs):
+            del cs[name]
+        for row, ctype in zip(ref["cord2"], ref["cord2_type"]):
+            table = np.zeros(1, dtype)
+            table[0] = (int(row[0]), int(row[1]), *row[2:].tolist(), 1)
+            cs["CORD2" + "RCS"[int(ctype) - 1]] = table
+        c1 = np.zeros(
+            1,
+            [
+                ("CID", "<i8"),
+                ("G1", "<i8"),
+                ("G2", "<i8"),
+                ("G3", "<i8"),
+                ("DOMAIN_ID", "<i8"),
+            ],
+        )
+        c1[0] = (*ref["cord1r"][0].tolist(), 1)
+        cs["CORD1R"] = c1
+    return path, ref
+
+
+def test_coordinate_systems_match_pynastran(engine, tmp_path):
+    path, ref = _cord_probe(tmp_path)
+    mesh = engine(path)
+    np.testing.assert_allclose(mesh.points, ref["xyz_basic"], rtol=0, atol=1e-13)
+    np.testing.assert_array_equal(mesh.point_data["nastran:cp"], ref["cp"])
+    np.testing.assert_array_equal(mesh.point_data["nastran:cd"], ref["cd"])
+    disp = np.hstack(
+        [mesh.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT_ROT"]]
+    )
+    np.testing.assert_allclose(disp, ref["displacement_basic"], rtol=0, atol=1e-15)
+
+
+def test_coordinate_systems_engines_agree(tmp_path):
+    path, _ = _cord_probe(tmp_path)
+    a = _core.nastran_h5_read(str(path))
+    b = py_nh5.read(path)
+    np.testing.assert_array_equal(a.points, b.points)
+    for name in ("DISPLACEMENT", "DISPLACEMENT_ROT", "SPC_FORCE", "APPLIED_LOAD"):
+        np.testing.assert_array_equal(a.point_data[name], b.point_data[name])

@@ -15,6 +15,8 @@ from meshioplusplus.nastran_op2 import _op2 as py_op2
 
 MESHES = pathlib.Path(__file__).parent / "meshes" / "nastran_op2"
 FIXTURES = sorted(MESHES.glob("*.op2"))
+# The derived coordinate-system probe has its own reference (cord_reference.npz).
+REFERENCE_FIXTURES = [p for p in FIXTURES if not p.stem.endswith("_cord")]
 REFERENCE = MESHES / "pynastran_reference.npz"
 STATIC = MESHES / "static_solid_shell_bar.op2"
 
@@ -62,7 +64,9 @@ def _grid_ids(path):
     return read_deck(path.with_suffix(".bdf")).points_id.tolist()
 
 
-@pytest.mark.parametrize("path", FIXTURES, ids=[p.name for p in FIXTURES])
+@pytest.mark.parametrize(
+    "path", REFERENCE_FIXTURES, ids=[p.name for p in REFERENCE_FIXTURES]
+)
 def test_every_step_matches_pynastran(engine, path):
     """The done-when: displacements, eigenvectors, SPC/MPC forces, loads,
     temperatures and the centre stress and strain match pyNastran on every step
@@ -224,3 +228,21 @@ def test_truncated_file_is_refused(engine, tmp_path):
     path.write_bytes(STATIC.read_bytes()[:20000])
     with pytest.raises(meshioplusplus.ReadError):
         engine.read(path)
+
+
+def test_coordinate_systems_match_pynastran(engine):
+    """``static_solid_shell_bar_cord.op2`` puts every GRID of the file in its own
+    CORD2R/C/S systems (tools/gen_nastran_cord_reference.py)."""
+    ref = np.load(MESHES / "cord_reference.npz")
+    mesh = engine.read(MESHES / "static_solid_shell_bar_cord.op2")
+    np.testing.assert_allclose(mesh.points, ref["xyz_basic"], rtol=0, atol=1e-12)
+    assert np.count_nonzero(mesh.point_data["nastran:cp"]) > 0
+    rows = np.searchsorted(ref["nids"], ref["displacement_nids"])
+    disp = np.hstack(
+        [mesh.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT_ROT"]]
+    )
+    scale = np.abs(ref["displacement_basic"]).max()
+    # the file stores single precision
+    np.testing.assert_allclose(
+        disp[rows], ref["displacement_basic"], rtol=0, atol=1e-6 * scale
+    )

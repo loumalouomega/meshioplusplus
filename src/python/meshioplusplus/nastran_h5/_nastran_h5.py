@@ -14,7 +14,7 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError
 from .._mesh import Mesh
-from ..nastran._model import CARDS, add_cells, frame_point_data
+from ..nastran._model import CARDS, CoordCard, add_cells, apply_frames, rotate_to_basic
 
 __all__ = ["read", "time_values"]
 
@@ -312,6 +312,52 @@ def _resolve_step(time_step, count):
     return step
 
 
+_COORD_TABLES = (
+    ("CORD2R", 1),
+    ("CORD2C", 2),
+    ("CORD2S", 3),
+    ("CORD1R", 1),
+    ("CORD1C", 2),
+    ("CORD1S", 3),
+)
+
+
+def _coord_cards(f):
+    """The CORD1R/C/S and CORD2R/C/S tables of /NASTRAN/INPUT/COORDINATE_SYSTEM."""
+    import h5py
+
+    out = []
+    for name, ctype in _COORD_TABLES:
+        path = "/NASTRAN/INPUT/COORDINATE_SYSTEM/" + name
+        if not isinstance(f.get(path), h5py.Dataset):
+            continue
+        ds = f[path]
+        by_grids = name[4] == "1"
+        needed = (
+            ["CID", "G1", "G2", "G3"]
+            if by_grids
+            else ["CID", "RID", "A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"]
+        )
+        if not all(m in ds.dtype.names for m in needed):
+            warn(
+                f"MSC Nastran HDF5: {path} lacks the expected columns; its systems are not read"
+            )
+            continue
+        rows = ds[()]
+        for r in rows:
+            if by_grids:
+                out.append(
+                    CoordCard(r["CID"], ctype, grids=[r["G1"], r["G2"], r["G3"]])
+                )
+            else:
+                out.append(
+                    CoordCard(
+                        r["CID"], ctype, rid=r["RID"], abc=[r[m] for m in needed[2:]]
+                    )
+                )
+    return out
+
+
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
     try:
@@ -326,9 +372,15 @@ def _read(nf, points_only, arrays, time_step):
     npts = len(grid)
     points = np.asarray(grid["X"], dtype=np.float64).reshape(npts, 3)
     point_data = {}
-    for frame in ("CP", "CD"):
-        if frame in grid.dtype.names:
-            frame_point_data(point_data, frame, grid[frame], "MSC Nastran HDF5")
+    names = grid.dtype.names
+    zeros = np.zeros(npts, dtype=np.int64)
+    cp = np.asarray(grid["CP"], dtype=np.int64) if "CP" in names else zeros
+    cd = np.asarray(grid["CD"], dtype=np.int64) if "CD" in names else zeros
+    ids = np.asarray(grid["ID"], dtype=np.int64)
+    systems = apply_frames(
+        points, point_data, _coord_cards(f), ids, cp, cd, "MSC Nastran HDF5"
+    )
+    cdl = cd.tolist()
 
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
         _read_cards(nf),
@@ -405,6 +457,11 @@ def _read(nf, points_only, arrays, time_step):
                 data = np.full((npts, nc), _NAN)
                 for c, m in enumerate(members):
                     data[dst, c] = _first(rows[m])[src]
+                if nc == 3:  # vector results are in each GRID's output system (CD)
+                    for p in dst.tolist():
+                        v = data[p].tolist()
+                        if rotate_to_basic(systems, cdl[p], points[p].tolist(), v):
+                            data[p] = v
                 used_point_names.append(name)
                 mesh.point_data[name] = data[:, 0] if nc == 1 else data
             else:

@@ -393,7 +393,53 @@ struct Op2Grids {
     std::vector<std::int64_t> mIds, mCp, mCd;
     std::vector<double> mXyz;
     std::unordered_set<std::int64_t> mScalarPoints;
+    std::vector<detail::NastranCoordCard> mCords;
 };
+
+// CORD1R/C/S entries are `cid, type, 1|2, g1, g2, g3` (6 words); CORD2R/C/S
+// entries `cid, type, 2, rid, a1..c3` (13 words, the coordinates in the
+// file's precision) or, in 32-bit files, 22 words with the coordinates as
+// doubles (NX's GEOM1N). Returns false when no layout fits.
+bool op2_cord_rows(const Op2Words& rW, const std::string& rRaw, int Type, bool ByGrids,
+                   std::vector<detail::NastranCoordCard>& rOut) {
+    const auto ws = static_cast<std::size_t>(rW.mWs);
+    const char* body = rRaw.data() + 3 * ws;
+    const std::size_t nwords = (rRaw.size() - 3 * ws) / ws;
+    const std::vector<std::size_t> layouts =
+        ByGrids ? std::vector<std::size_t>{6} : std::vector<std::size_t>{13, 22};
+    for (std::size_t size : layouts) {
+        if ((size == 22 && ws != 4) || nwords == 0 || nwords % size)
+            continue;
+        std::vector<detail::NastranCoordCard> cards(nwords / size);
+        bool ok = true;
+        for (std::size_t i = 0; i < cards.size() && ok; ++i) {
+            const char* e = body + i * size * ws;
+            detail::NastranCoordCard& c = cards[i];
+            c.mCid = rW.Int(e);
+            c.mType = Type;
+            c.mByGrids = ByGrids;
+            ok = c.mCid > 0;
+            if (ByGrids) {
+                // The two flag words vary (pyNastran has seen 1 or 2 for a CORD1C).
+                for (int k = 0; k < 3; ++k) {
+                    c.mGrids[k] = rW.Int(e + (3 + k) * ws);
+                    ok = ok && c.mGrids[k] > 0;
+                }
+            } else {
+                ok = ok && rW.Int(e + ws) == Type;
+                c.mRid = rW.Int(e + 3 * ws);
+                for (std::size_t k = 0; k < 9; ++k)
+                    c.mAbc[k] = size == 13 ? rW.Float(e + (4 + k) * ws) : rW.Double(e + 16 + 8 * k);
+                ok = ok && c.mRid >= 0;
+            }
+        }
+        if (!ok)
+            continue;
+        rOut.insert(rOut.end(), cards.begin(), cards.end());
+        return true;
+    }
+    return false;
+}
 
 // Entries are `id, cp, x, y, z, cd, ps, seid`: 8 words, the coordinates in the
 // file's precision; or, in 32-bit files, 11 words with the coordinates as
@@ -442,7 +488,20 @@ Op2Grids op2_read_grids(const Op2Stream& rS, const std::vector<Op2Table>& rTable
             if (!op2_grid_rows(w, r.mRaw, r.mK3, g))
                 log::warn("{}: a GRID record of {} words matches no GRID layout; skipped", kOp2Who,
                           r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
+            continue;
         }
+        // CORD1C/R/S and CORD2C/R/S, keyed (1701, 17), (1801, 18), (1901, 19),
+        // (2001, 20), (2101, 21), (2201, 22).
+        static const std::map<std::pair<std::int64_t, std::int64_t>, std::pair<int, bool>> kCords =
+            {{{1701, 17}, {2, true}},  {{1801, 18}, {1, true}},  {{1901, 19}, {3, true}},
+             {{2001, 20}, {2, false}}, {{2101, 21}, {1, false}}, {{2201, 22}, {3, false}}};
+        const auto cord = kCords.find({r.mK1, r.mK2});
+        if (cord != kCords.end() &&
+            !op2_cord_rows(w, r.mRaw, cord->second.first, cord->second.second, g.mCords))
+            log::warn(
+                "{}: a coordinate system record ({}, {}) of {} words matches no layout; "
+                "skipped",
+                kOp2Who, r.mK1, r.mK2, r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
     }
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2", "GEOM1"}))
         if ((r.mK1 == 5551 && r.mK2 == 49) || (r.mK1 == 707 && r.mK2 == 7)) {
@@ -793,6 +852,7 @@ struct Op2Step {
 struct Op2Block {
     std::size_t mStep;
     bool mNodal;
+    bool mBasic = false;  // BOUG*: already in the basic system
     std::string mBase;  // nodal: point data name; element: STRESS/STRAIN
     Op2Layout mLayout;
     std::size_t mNumWide = 8;
@@ -880,7 +940,7 @@ private:
                     Skip(t.mName + " (SORT2)");
                     continue;
                 }
-                Op2Block block{0, nodal, {}, {}, 8, &rec};
+                Op2Block block{0, nodal, op2_starts(t.mName, {"BOUG"}), {}, {}, 8, &rec};
                 if (nodal) {
                     const char* base = op2_nodal_name(table_code);
                     // MPC forces share the SPC forces' table code; the name tells.
@@ -972,6 +1032,8 @@ std::pair<std::string, std::vector<std::string>> op2_sibling_deck(const std::str
 
 struct Op2Model {
     Mesh mMesh;
+    detail::NastranCoordSystems mSystems;
+    std::vector<std::int64_t> mCd;  // per point; empty for a deck-built model
     std::unordered_map<std::int64_t, std::size_t> mGridIndex;
     std::unordered_map<std::int64_t, std::size_t> mCellIndex;
     std::vector<std::size_t> mOffsets, mSizes;
@@ -1018,8 +1080,8 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
     NDArray points(DType::Float64, {g.mIds.size(), 3});
     std::copy(g.mXyz.begin(), g.mXyz.end(), points.As<double>());
     m.mMesh.AssignPoints(std::move(points));
-    detail::nastran_add_frame(m.mMesh, "CP", g.mCp, kOp2Who);
-    detail::nastran_add_frame(m.mMesh, "CD", g.mCd, kOp2Who);
+    m.mSystems = detail::nastran_apply_frames(m.mMesh, g.mCords, g.mIds, g.mCp, g.mCd, kOp2Who);
+    m.mCd = g.mCd;
     const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
     const auto cards = op2_read_elements(rR.mStream, rR.mTables, grids);
     const detail::NastranCells cells =
@@ -1075,6 +1137,8 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     // name -> (components, values)
     std::map<std::string, std::pair<std::size_t, std::vector<double>>> point_arrays;
     std::map<std::string, std::vector<double>> cell_arrays;
+    const NDArray basic_points = mesh.Points();
+    const double* basic = basic_points.As<double>();
     for (const Op2Block& b : r.mBlocks) {
         if (b.mStep != index)
             continue;
@@ -1105,8 +1169,13 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
                     const auto p = model.mGridIndex.find(w.Int(row) / 10);
                     if (p == model.mGridIndex.end() || !std::isnan(values[p->second * nc]))
                         continue;
+                    double* dst = values.data() + p->second * nc;
                     for (std::size_t c = 0; c < nc; ++c)
-                        values[p->second * nc + c] = w.Float(row + (c0 + c) * ws);
+                        dst[c] = w.Float(row + (c0 + c) * ws);
+                    // Results are in the GRID's output system (CD) unless the table is BOUG*.
+                    if (nc == 3 && !b.mBasic && !model.mCd.empty())
+                        detail::nastran_rotate_to_basic(model.mSystems, model.mCd[p->second],
+                                                        basic + 3 * p->second, dst, 1);
                 }
             }
         } else {
