@@ -35,6 +35,12 @@ It does four things, none of which uses meshio++:
    in ``reference_lagrange.npz``: per case and cell type, each cell's nodes in
    VTK order and ``u`` at them. For ``amr-quad`` it stores the attribute and
    sorted corner coordinates of every leaf and boundary element MFEM builds.
+5. Copies six NURBS meshes into ``nurbs/``, projects a field ``u`` onto each
+   mesh's own NURBS space (``<name>.u.gf``) and freezes MFEM's evaluation in
+   ``nurbs/reference_nurbs.npz``: per mesh the vertices of every knot-span
+   element and boundary element MFEM builds, and the point and ``u`` MFEM's
+   element transformation gives at a lexicographic (Q+1)^d grid of reference
+   points of every element, Q the highest knot-vector order.
 """
 
 import pathlib
@@ -362,6 +368,75 @@ def non_conforming(name, arrays):
         arrays[f"{name}:{part}:attributes"] = attrs
 
 
+# NURBS meshes: 3-D order 4 on seven patches; 3-D order 2 with no boundary
+# section (MFEM builds it) and the boundary orientation fix; the per-patch
+# control point form; 1-D patches of orders 1-3 (homogeneous control points);
+# v1.1 spacing formulas; one cube whose boundary MFEM turns.
+NURBS = [
+    "ball-nurbs",
+    "pipe-nurbs",
+    "square-disc-nurbs-patch",
+    "nurbs-segments2d-patches",
+    "beam-quad-nurbs-sf",
+    "cube-nurbs",
+]
+
+
+def _knot_order(path):
+    lines = [ln.split("#")[0].strip() for ln in open(path)]
+    lines = [ln for ln in lines if ln]
+    q = 1
+    for i, ln in enumerate(lines):
+        if ln == "knotvectors":
+            for k in range(int(lines[i + 1])):
+                q = max(q, int(lines[i + 2 + k].split()[0]))
+    return q
+
+
+def nurbs(data):
+    out = OUT / "nurbs"
+    out.mkdir(exist_ok=True)
+    arrays = {}
+    for name in NURBS:
+        shutil.copyfile(data / f"{name}.mesh", out / f"{name}.mesh")
+        mesh = mfem.Mesh(str(out / f"{name}.mesh"), 1, 1)
+        dim, sdim = mesh.Dimension(), mesh.SpaceDimension()
+        fes = mfem.FiniteElementSpace(mesh, mesh.GetNodes().FESpace().FEColl(), 1)
+        u = mfem.GridFunction(fes)
+        u.ProjectCoefficient(Scalar(lambda x: 1.0 + x[0] ** 2 + 0.5 * x[-1]))
+        u.Save(str(out / f"{name}.u.gf"), 17)
+        q = _knot_order(out / f"{name}.mesh")
+        t = np.linspace(0.0, 1.0, q + 1)
+        grid = [(a, 0.0, 0.0) for a in t]
+        if dim >= 2:
+            grid = [(a, b, 0.0) for b in t for a in t]
+        if dim == 3:
+            grid = [(a, b, c) for c in t for b in t for a in t]
+        xs, us = [], []
+        for e in range(mesh.GetNE()):
+            tr = mesh.GetElementTransformation(e)
+            xe, ue = [], []
+            for r in grid:
+                ip = mfem.IntegrationPoint()
+                ip.Set3(*r)
+                tr.SetIntPoint(ip)
+                xe.append(np.asarray(tr.Transform(ip))[:sdim])
+                ue.append(u.GetValue(e, ip))
+            xs.append(xe)
+            us.append(ue)
+        arrays[f"{name}:order"] = np.array(q)
+        arrays[f"{name}:x"] = np.array(xs)
+        arrays[f"{name}:u"] = np.array(us)
+        arrays[f"{name}:elements"] = np.array(
+            [list(mesh.GetElementVertices(e)) for e in range(mesh.GetNE())]
+        )
+        arrays[f"{name}:boundary"] = np.array(
+            [list(mesh.GetBdrElementVertices(b)) for b in range(mesh.GetNBE())]
+        )
+        print(name, mesh.GetNE(), "knot-span elements, order", q)
+    np.savez_compressed(out / "reference_nurbs.npz", **arrays)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -382,6 +457,7 @@ def main():
         high_order(data, *case, lagrange)
     non_conforming("amr-quad", lagrange)
     np.savez_compressed(OUT / "reference_lagrange.npz", **lagrange)
+    nurbs(data)
 
 
 if __name__ == "__main__":

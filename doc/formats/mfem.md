@@ -35,7 +35,8 @@ Both engines (the C++ core and the pure-Python reference) read the same meshes a
 | `MFEM mesh v1.3` | v1.2 plus `attribute_sets` and `bdr_attribute_sets` |
 | `MFEM mesh v1.1` | a conforming mesh; one with the legacy `vertex_parents` and `coarse_elements` sections is its leaf mesh, which is what it lists |
 | `MFEM NC mesh v1.0`, `v1.1` | its leaf elements (see [Non-conforming meshes](#non-conforming-meshes)) |
-| NURBS, INLINE | refused with a `ReadError` naming why |
+| `MFEM NURBS mesh v1.0`, `v1.1` | its knot-span elements, sampled from the patches (see [NURBS meshes](#nurbs-meshes)) |
+| `MFEM NURBS NC-patch mesh`, INLINE | refused with a `ReadError` naming why |
 
 - Elements and boundary elements are separate cell blocks, one per type, the elements first. Geometries 0–7 map to `vertex`, `line`, `triangle`, `quad`, `tetra`, `hexahedron`, `wedge` and `pyramid`. Every geometry, the prism included, is in meshio++'s node order.
 - The attribute is the `mfem:attribute` cell data and an `attribute_<n>` (element) or `boundary_<n>` (boundary) `cell` region tagged `n`. A v1.3 attribute set is a `cell` region of its own name, holding the cells of all its attributes.
@@ -57,6 +58,12 @@ The `nodes` grid function names its space by a finite element collection:
 An order-2 mesh's points are MFEM's degrees of freedom, **in MFEM's order**: the vertices, then the edges in order of first appearance (elements in file order, each element's edges in MFEM's local order), then the quadrilateral faces in 3-D (numbered over all faces the same way), then the element interiors. Each cell's nodes are placed by the vertices of the edge, face or cell they sit on, so edge and face orientation never matters at order 2. A mesh with pyramids is read at order 1, since meshio++ has no curved pyramid.
 
 **Arbitrary order** (v16.11.0). MFEM's order-p nodes sit on Gauss–Lobatto points (`H1@G`, the default), closed-uniform points (`H1@U`) or, for `Cubic`, the equispaced points of MFEM's legacy cubic elements. meshio++ numbers MFEM's degrees of freedom the way MFEM does (vertices, edges, faces, interiors; each edge and face in the orientation of the element that first holds it), places every one at its reference position, and evaluates each cell's nodal basis at the VTK Lagrange points by interpolation, so the curved geometry is kept exactly (an order-p polynomial through order-p points) rather than resampled. Nodes shared by neighbouring cells are shared points. The result is what MFEM's own high-order VTK output (`ParaViewDataCollection` with `SetHighOrderOutput`) holds, point for point. meshio++ has no fixed type for these cells: they are the ragged `VTK_LAGRANGE_*` types, which [VTU](./vtu.md) and [VTK](./vtk.md) write and read.
+
+## NURBS meshes
+
+An `MFEM NURBS mesh` (v16.12.0) is a topology of patches (segments, quadrilaterals or hexahedra) and their boundary, the knot vector of every edge, and the control points with their weights: either once for the whole mesh, in MFEM's global numbering (a `NURBS` grid function after the `weights`), or per patch (`patches`, homogeneous `x w, y w, w` or `controlpoints_cartesian`). meshio++ numbers everything the way MFEM's `NURBSExtension` does (vertices, then the interior control points of every edge, face and patch, each edge and face in its orientation), so it builds the same **knot-span elements** MFEM does, in MFEM's order, with MFEM's vertex numbers. Each becomes one cell of the highest knot-vector order in the mesh: `line`/`quad`/`hexahedron` at order 1, `line3`/`quad9`/`hexahedron27` at order 2, VTK Lagrange cells above. Its nodes are the rational patch geometry evaluated at the cell's lattice points, and nodes shared by neighbouring cells, across patches too, are one point. The boundary patches become boundary cells the same way; without a `boundary` section, the patch faces no other patch shares are the boundary, attribute 1, as MFEM builds them. v1.1's spacing formulas only matter for refinement and are skipped.
+
+A NURBS curve or surface is rational and a VTK Lagrange cell is polynomial, so between the lattice points the cells approximate the patches (at the nodes they are exact). A grid function on the mesh's own NURBS space (`NURBS<p>` or `NURBS`, in either header form MFEM writes) is evaluated the same way at every node; an `L2` order-0 one is cell data. Refused: `mesh_elements` (a subset of the knot spans), `periodic` meshes, files without an `edges` section (MFEM would derive them), and the non-conforming `NC-patch` variant.
 
 ## Non-conforming meshes
 
@@ -104,9 +111,9 @@ Reading and writing were checked against MFEM 4.10 itself through PyMFEM, with M
 - Arbitrary order (v16.11.0): on 14 meshes of orders 3–5 (MFEM's `fichera-q3`, `escher-p3`, `toroid-wedge` and `rt-2d-p4-tri`, and one-element reference meshes of every shape curved and warped by MFEM, Gauss–Lobatto and closed-uniform), every Lagrange node and field value equals MFEM's own high-order VTK output to `1.1e-13`, and MFEM reads the order-p files meshio++ writes to `1.4e-13`.
 - Non-conforming (v16.11.0): the leaf and boundary elements of `amr-quad` match the ones MFEM builds, attribute and corners.
 - Parallel (v16.11.0): meshes MFEM saved over 3 and 4 ranks with MPI, in both layouts, read to MFEM's own per-rank high-order output, with exactly the serial mesh's vertex count once merged.
+- NURBS (v16.12.0): all 19 conforming NURBS meshes in MFEM's `data/` (1-D to 3-D, orders 1–4, both control point forms, v1.1) and MFEM's own re-prints of them give MFEM's knot-span elements and boundary elements, vertex for vertex, and every node and value of a projected NURBS field equals MFEM's element transformation and `GetValue` to `3e-14`. Six of them are fixtures, with `nurbs/reference_nurbs.npz`.
 - `tools/gen_mfem_fixtures.py` and `tools/gen_mfem_parallel_fixtures.py` freeze MFEM's evaluation, so the tests check every node and field value without MFEM.
 
 ## Notes
 
 - **MFEM's own VTK export reverses prisms.** Its `PrismMap` exists because classic VTK winds the wedge the other way round from MFEM and meshio++. A prism read from a `.mesh` and one from an MFEM-written `.vtk` therefore differ in node order, not in shape.
-- **NURBS meshes** (`MFEM NURBS mesh`) are still refused: their geometry is a set of patches with global control points and knot vectors, which would have to be evaluated to Lagrange cells. That stays in the [roadmap](../roadmap.md).

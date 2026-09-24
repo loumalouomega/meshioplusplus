@@ -147,6 +147,7 @@ tests/python/meshes/patran/** -filter -diff -merge text
 # out of LFS like the ones above.
 tests/python/meshes/mfem/** -filter -diff -merge text
 tests/python/meshes/mfem/*.npz binary
+tests/python/meshes/mfem/nurbs/*.npz binary
 # Femap neutral files from FrontISTR, ems_file_format_converter and femap_neutral_parser
 # (MIT, see that directory's README.md), assembled by tools/gen_femap_fixtures.py: small
 # text kept out of LFS like the ones above.

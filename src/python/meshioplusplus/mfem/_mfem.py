@@ -31,6 +31,7 @@ from .._facets import facet_nodes
 from .._files import open_file
 from .._mesh import Mesh
 from .._regions import Region
+from . import _nurbs
 
 __all__ = ["read", "write"]
 
@@ -359,6 +360,12 @@ class _Space:
         elif name.startswith(("H1Pos_", "H1Ser_")):
             self.order = order_after_p()
             self.kind = "h1" if self.order == 1 else "h1-other"
+        elif name.startswith("NURBS"):
+            # NURBS<p>, or NURBS alone for the orders of the mesh's knot vectors
+            self.kind = "nurbs"
+            self.order = _parse_int(name[5:]) if len(name) > 5 else -1
+            if self.order is None:
+                self.kind = "other"
         elif name.startswith("L2_T1_"):
             self.order = order_after_p()
             self.kind = "l2t1"
@@ -683,6 +690,8 @@ def _parse(filename):
         lex.fail(
             f"non-conforming mesh version '{header}' is not supported", lex.header_line
         )
+    if header in ("MFEM NURBS mesh v1.0", "MFEM NURBS mesh v1.1"):
+        return {"nurbs": _nurbs.Nurbs(lex, filename, header), "parallel": False}
     if header.startswith(("MFEM NURBS", "MFEM INLINE")):
         lex.fail(f"'{header}' meshes are not supported", lex.header_line)
     if header not in (
@@ -782,14 +791,30 @@ def _parse(filename):
     return f
 
 
+def _read_space_end(lex):
+    """The ``End: MFEM FiniteElementSpace v1.0`` closing the versioned header
+    MFEM writes for NURBS spaces (its variable-order element lists are not
+    read)."""
+    text, line, _ = lex.next("'End:'")
+    if text != "End:":
+        lex.fail(f"'{text}' in a versioned FiniteElementSpace (not supported)", line)
+    for word in ("MFEM", "FiniteElementSpace", "v1.0"):
+        text, line, _ = lex.next(f"'{word}'")
+        if text != word:
+            lex.fail(f"expected '{word}', found '{text}'", line)
+
+
 def _parse_gf(name, path):
     lex = _Lexer("MFEM grid function", "\n" + _read_text(path))
-    if lex.header != "FiniteElementSpace":
+    versioned = lex.header == "MFEM FiniteElementSpace v1.0"
+    if lex.header != "FiniteElementSpace" and not versioned:
         raise ReadError(
             f"MFEM grid function: '{path}' does not start with FiniteElementSpace "
-            "(NURBS and variable-order spaces are not supported)"
+            "(variable-order spaces are not supported)"
         )
     space = _read_space_body(lex, 1)
+    if versioned and space is not None:
+        _read_space_end(lex)
     if space is None:
         raise ReadError(
             f"MFEM grid function: '{path}' names no FiniteElementCollection"
@@ -822,6 +847,12 @@ def _rank_siblings(path):
 
 def read(filename, grid_functions=None, piece=None):
     f = _parse(filename)
+    if f.get("nurbs") is not None:
+        if piece not in (None, 0):
+            raise ReadError(
+                f"MFEM mesh: {filename} is not parallel; its only piece is 0"
+            )
+        return _read_nurbs(f["nurbs"], grid_functions, filename)
     if f["parallel"] or _rank_siblings(filename):
         return _read_parallel(filename, f, grid_functions, piece)
     if piece not in (None, 0):
@@ -1480,7 +1511,9 @@ def _read_parts(parts, nvertices, order, labels, filename):
     first = parts[0]["f"]
     dim, sdim = first["dim"], first["sdim"]
     point_gfs = [
-        g for g, (_, space, _) in enumerate(parts[0]["gfs"]) if space.kind == "h1"
+        g
+        for g, (_, space, _) in enumerate(parts[0]["gfs"])
+        if space.kind in ("h1", "nurbs")
     ]
     ents, fields = [], []
     for part in parts:
@@ -1498,6 +1531,9 @@ def _read_parts(parts, nvertices, order, labels, filename):
         ent = _entities(f["elements"], dim)
         ents.append(ent)
         mine = []
+        if "eval" in part:  # values come from the part itself (NURBS)
+            fields.append([(None, np.empty((0, c))) for c in part["ncomp"]])
+            continue
         if part["nodes_h1"]:
             s = f["nodes_space"]
             d = _Dofs(f, ent, s.order, s.points)
@@ -1566,6 +1602,11 @@ def _read_parts(parts, nvertices, order, labels, filename):
             fresh = [t for t, i in enumerate(ids) if not known[i]]
             if not fresh:
                 continue
+            if "eval" in part:
+                for k, vals in enumerate(part["eval"](e)):
+                    values[k][[ids[t] for t in fresh]] = vals[fresh]
+                known[ids] = True
+                continue
             if geom == 7:  # a linear pyramid: its vertices
                 for k, (_, table) in enumerate(fields[q]):
                     values[k][ids] = table[verts]
@@ -1587,6 +1628,8 @@ def _read_parts(parts, nvertices, order, labels, filename):
                 values[k][[ids[t] for t in fresh]] = interp.matrix[fresh] @ table[perm]
             known[ids] = True
     for part in parts:
+        if "eval" in part:
+            continue
         for v, g in enumerate(part["global"]):
             if not known[g]:
                 values[0][g] = part["vxyz"][v]
@@ -1652,7 +1695,7 @@ def _read_parts(parts, nvertices, order, labels, filename):
         mesh.point_data[name] = data[:, 0].copy() if data.shape[1] == 1 else data
     ncells = len(cell_attr)
     for g, (name, space, _) in enumerate(parts[0]["gfs"]):
-        if space.kind == "h1":
+        if space.kind in ("h1", "nurbs"):
             continue
         vdim = space.vdim
         per_cell = np.full((ncells, vdim), np.nan)
@@ -1677,6 +1720,63 @@ def _read_parts(parts, nvertices, order, labels, filename):
         mesh.cell_data[name] = out
     mesh.regions = _regions(first, cell_attr, cell_is_boundary)
     return mesh
+
+
+def _read_nurbs(n, grid_functions, filename):
+    """A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear
+    and quadratic ones) of the highest knot-vector order, their nodes the
+    rational patch geometry at the cell's lattice; NURBS grid functions on
+    the mesh's own space the same way, element-wise ones as cell data."""
+    elements = n.elements()
+    boundary = n.boundary()
+    weights, xyz = n.control_points()
+    order = max([1] + [kv.order for row in n.compr for kv in row])
+    if isinstance(grid_functions, dict):
+        gf_items = list(grid_functions.items())
+    else:
+        gf_items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
+    gfs, tables = [], []
+    for name, path in gf_items:
+        name, space, values = _parse_gf(str(name), str(path))
+        if space.kind == "nurbs" and len(values) == n.num_dofs * space.vdim:
+            gfs.append((name, space, values))
+            tables.append(_field_table(values, space))
+        elif space.kind in ("l2", "l2t1") and space.order == 0:
+            gfs.append((name, space, values))
+        else:
+            warn(
+                f"MFEM grid function '{path}': the '{space.collection}' space is not "
+                f"the NURBS mesh's own nor element-wise; skipped"
+            )
+    f = {
+        "dim": n.dim,
+        "sdim": xyz.shape[1],
+        "elements": [el[:4] for el in elements],
+        "boundary": boundary,
+        "nv": n.num_vertices,
+        "rank": 0,
+        "sets": [],
+        "bdr_sets": [],
+    }
+    shape = _SHAPES[_nurbs.GEOM_OF_DIM[n.dim]]
+    refs = [
+        tuple(c / order for c in ijk[: n.dim])
+        for ijk in _lagrange.vtk_lattice(shape, order)
+    ]
+
+    def evaluate(e):
+        return [n.evaluate(weights, xyz, elements[e], refs)] + [
+            n.evaluate(weights, t, elements[e], refs) for t in tables
+        ]
+
+    part = {
+        "f": f,
+        "gfs": gfs,
+        "global": list(range(n.num_vertices)),
+        "eval": evaluate,
+        "ncomp": [xyz.shape[1]] + [t.shape[1] for t in tables],
+    }
+    return _read_parts([part], n.num_vertices, order, False, filename)
 
 
 def _read_high_order(f, gfs, nodes_h1, vxyz, order, filename):

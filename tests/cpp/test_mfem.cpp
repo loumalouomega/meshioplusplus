@@ -346,3 +346,49 @@ TEST(Mfem, ParallelRanksMergeIntoOneMesh) {
         EXPECT_THROW(meshioplusplus::read_mfem(path, {}, one), ReadError);
     }
 }
+
+// A quarter annulus, radii 1 and 2, as one order-2 x order-1 NURBS patch in
+// MFEM's global form: the four corners, then the one interior control point
+// of each curved edge (weight 1/sqrt 2) -- edges numbered as listed.
+TEST(Mfem, NurbsPatchSampledAtItsLattice) {
+    const std::string w = "0.70710678118654757";
+    const std::string mesh_path = write_file(
+        "MFEM NURBS mesh v1.0\n"
+        "dimension\n2\n"
+        "elements\n1\n5 3 0 1 2 3\n"
+        "boundary\n0\n"
+        "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\n"
+        "vertices\n4\n"
+        "knotvectors\n2\n2 3 0 0 0 1 1 1\n1 2 0 0 1 1\n"
+        "weights\n1\n1\n1\n1\n" +
+        w + "\n" + w +
+        "\n"
+        "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+        "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n");
+    // u = the control points' x, as a NURBS field on the same space
+    const std::string gf = write_file(
+        "MFEM FiniteElementSpace v1.0\nFiniteElementCollection: NURBS2\nVDim: 1\nOrdering: 0\n"
+        "End: MFEM FiniteElementSpace v1.0\n\n1\n0\n0\n2\n1\n2\n",
+        ".gf");
+    const Mesh mesh = meshioplusplus::read_mfem(mesh_path, {{"u", gf}});
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);
+    ASSERT_EQ(mesh.Cells(0).Type(), "quad9");
+    EXPECT_EQ(mesh.Cells(1).Type(), "line3");
+    EXPECT_EQ(mesh.Cells(1).NumCells(), 4u);  // the boundary MFEM builds
+    EXPECT_EQ(mesh.NumPoints(), 9u);
+    const auto& q = mesh.Cells(0).Conn();
+    // the mid-node of edge (0,1) lies on the unit circle at 45 degrees, the
+    // centre halfway out at 45 degrees; u is x there (the same rational map)
+    const auto n01 = detail::read_int(q, 4);
+    const auto centre = detail::read_int(q, 8);
+    const double s = std::sqrt(0.5);
+    EXPECT_NEAR(coord(mesh, n01, 0), s, 1e-15);
+    EXPECT_NEAR(coord(mesh, n01, 1), s, 1e-15);
+    EXPECT_NEAR(coord(mesh, centre, 0), 1.5 * s, 1e-15);
+    EXPECT_NEAR(coord(mesh, centre, 1), 1.5 * s, 1e-15);
+    EXPECT_NEAR(detail::read_double(mesh.PointData("u"), static_cast<std::size_t>(centre)), 1.5 * s,
+                1e-15);
+    EXPECT_EQ(detail::read_int(mesh.CellData("mfem:attribute", 0), 0), 5);
+    EXPECT_THROW(meshioplusplus::read_mfem(write_file("MFEM NURBS NC-patch mesh v1.0\n")),
+                 ReadError);
+}

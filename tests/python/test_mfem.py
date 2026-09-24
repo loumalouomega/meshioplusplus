@@ -508,7 +508,11 @@ def test_mesh_extension_is_shared_with_medit(tmp_path):
             "curved non-conforming",
         ),
         ("MFEM NC mesh v2.0\n", "not supported"),
-        ("MFEM NURBS mesh v1.0\n", "not supported"),
+        ("MFEM NURBS NC-patch mesh v1.0\n", "not supported"),
+        (
+            "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n0\nbogus\n",
+            "expected 'boundary'",
+        ),
         (
             "MFEM mesh v1.0\ndimension\n2\nelements\n0\nboundary\n0\nvertices\n0\n\nnodes\nFiniteElementSpace\nFiniteElementCollection: RT_2D_P1\nVDim: 2\nOrdering: 0\n",
             "not supported",
@@ -628,3 +632,89 @@ def test_parallel_grid_function_must_be_a_rank_file(engine, tmp_path):
     )
     with pytest.raises(meshioplusplus.ReadError, match="rank files"):
         engine.read(PARALLEL / "star-p2.mesh.000000", {"u": str(gf)})
+
+
+# --- NURBS meshes ----------------------------------------------------------------------------
+
+NURBS = [
+    "ball-nurbs",
+    "pipe-nurbs",
+    "square-disc-nurbs-patch",
+    "nurbs-segments2d-patches",
+    "beam-quad-nurbs-sf",
+    "cube-nurbs",
+]
+NURBS_REF = np.load(MESHES / "nurbs" / "reference_nurbs.npz")
+
+
+def _nurbs(engine, name):
+    path = MESHES / "nurbs" / f"{name}.mesh"
+    return engine.read(path, {"u": str(MESHES / "nurbs" / f"{name}.u.gf")})
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_nurbs_matches_mfem(engine, name):
+    """Every knot-span element is MFEM's, in MFEM's order; every node of its
+    cell sits where MFEM's element transformation puts it and u has MFEM's
+    value there (frozen in nurbs/reference_nurbs.npz)."""
+    mesh = _nurbs(engine, name)
+    q = int(NURBS_REF[f"{name}:order"])
+    want_x, want_u = NURBS_REF[f"{name}:x"], NURBS_REF[f"{name}:u"]
+    dim = {2: 1, 4: 2, 8: 3}[NURBS_REF[f"{name}:elements"].shape[1]]
+    block = mesh.cells[0]
+    cells = np.asarray(block.data)
+    assert len(cells) == len(want_x)
+    shape = {1: "line", 2: "quad", 3: "hexahedron"}[dim]
+    lex = [
+        i + (q + 1) * (j + (q + 1) * k)
+        for i, j, k in py_mfem._lagrange.vtk_lattice(shape, q)
+    ]
+    np.testing.assert_allclose(
+        mesh.points[cells], want_x[:, lex, :], rtol=0, atol=1e-13 * np.abs(want_x).max()
+    )
+    np.testing.assert_allclose(
+        mesh.point_data["u"][cells], want_u[:, lex], rtol=0, atol=1e-12
+    )
+    # MFEM's knot-span vertices are the cells' corners (the first nodes)
+    elements = NURBS_REF[f"{name}:elements"]
+    corners = cells[:, : elements.shape[1]]
+    ids = {}
+    for mine, theirs in zip(corners.ravel(), elements.ravel()):
+        assert ids.setdefault(int(theirs), int(mine)) == int(mine)
+    boundary = NURBS_REF[f"{name}:boundary"]
+    bdr = [b for b in mesh.cells[1:]]
+    got = np.concatenate([np.asarray(b.data)[:, : boundary.shape[1]] for b in bdr])
+    np.testing.assert_array_equal(got, np.vectorize(ids.get)(boundary))
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_nurbs_engines_agree(name):
+    _same(_nurbs(meshioplusplus.mfem, name), _nurbs(py_mfem, name))
+
+
+def test_nurbs_cells_and_attributes(engine):
+    mesh = _nurbs(engine, "pipe-nurbs")
+    # order-2 NURBS hexahedra sampled as complete quadratic cells; the boundary
+    # MFEM builds for a file without one, attribute 1
+    assert [(b.type, len(b.data)) for b in mesh.cells] == [
+        ("hexahedron27", 8),
+        ("quad9", 24),
+    ]
+    assert [r.name for r in mesh.regions] == [
+        f"attribute_{a}" for a in (1, 2, 3, 4)
+    ] + ["boundary_1"]
+    ball = _nurbs(engine, "ball-nurbs")
+    assert [b.type for b in ball.cells] == [
+        "VTK_LAGRANGE_HEXAHEDRON",
+        "VTK_LAGRANGE_QUADRILATERAL",
+    ]
+
+
+def test_nurbs_skips_other_grid_functions(engine, tmp_path, capfd):
+    gf = tmp_path / "p.gf"
+    gf.write_text(
+        "FiniteElementSpace\nFiniteElementCollection: H1_2D_P1\nVDim: 1\nOrdering: 0\n\n1\n"
+    )
+    mesh = engine.read(MESHES / "nurbs" / "cube-nurbs.mesh", {"p": str(gf)})
+    assert "p" not in mesh.point_data
+    assert "not the NURBS mesh's own" in capfd.readouterr().err

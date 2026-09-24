@@ -26,6 +26,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
@@ -470,7 +471,7 @@ std::string mf_read_text(const std::string& rPath, const char* pWhat) {
 
 // A finite element space, as a `FiniteElementSpace` header names it.
 struct MfSpace {
-    enum Kind { H1, H1Other, L2T1, L2, Other } mKind = Other;
+    enum Kind { H1, H1Other, L2T1, L2, Nurbs, Other } mKind = Other;
     // An H1 space's nodes: Gauss-Lobatto (the default), equispaced (`H1@U`), or
     // the legacy `Cubic` collection (equispaced, its own hexahedron interior).
     enum Points { Gll, Uniform, Cubic } mPoints = Gll;
@@ -515,6 +516,13 @@ MfSpace mf_classify(const std::string& rName) {
     } else if (rName.rfind("H1Pos_", 0) == 0 || rName.rfind("H1Ser_", 0) == 0) {
         s.mOrder = order_after_P();
         s.mKind = s.mOrder == 1 ? MfSpace::H1 : MfSpace::H1Other;
+    } else if (rName.rfind("NURBS", 0) == 0) {
+        // NURBS<p>, or NURBS alone for the orders of the mesh's knot vectors
+        std::int64_t v = -1;
+        if (rName.size() == 5 || MfLexer::ParseInt(rName.substr(5), v)) {
+            s.mKind = MfSpace::Nurbs;
+            s.mOrder = static_cast<int>(v);
+        }
     } else if (rName.rfind("L2_T1_", 0) == 0) {
         s.mOrder = order_after_P();
         s.mKind = MfSpace::L2T1;
@@ -525,12 +533,33 @@ MfSpace mf_classify(const std::string& rName) {
     return s;
 }
 
+// The collection, VDim and Ordering lines of a FiniteElementSpace header.
+MfSpace mf_read_space_body(MfLexer& rLex, std::size_t Line);
+
 MfSpace mf_read_space(MfLexer& rLex) {
     const MfToken& fes = rLex.Next("FiniteElementSpace");
     if (fes.mText != "FiniteElementSpace")
         rLex.Fail("expected FiniteElementSpace, found '" + fes.mText +
                       "' (NURBS and variable-order spaces are not supported)",
                   fes.mLine);
+    return mf_read_space_body(rLex, fes.mLine);
+}
+
+// The `End: MFEM FiniteElementSpace v1.0` closing the versioned header MFEM
+// writes for NURBS spaces (its variable-order element lists are not read).
+void mf_read_space_end(MfLexer& rLex) {
+    const MfToken& end = rLex.Next("'End:'");
+    if (end.mText != "End:")
+        rLex.Fail("'" + end.mText + "' in a versioned FiniteElementSpace (not supported)",
+                  end.mLine);
+    for (const char* word : {"MFEM", "FiniteElementSpace", "v1.0"}) {
+        const MfToken& t = rLex.Next(word);
+        if (t.mText != word)
+            rLex.Fail(std::string("expected '") + word + "', found '" + t.mText + "'", t.mLine);
+    }
+}
+
+MfSpace mf_read_space_body(MfLexer& rLex, std::size_t Line) {
     MfSpace s;
     bool have_fec = false;
     while (!rLex.AtEnd()) {
@@ -562,7 +591,7 @@ MfSpace mf_read_space(MfLexer& rLex) {
         }
     }
     if (!have_fec)
-        rLex.Fail("a FiniteElementSpace without a FiniteElementCollection", fes.mLine);
+        rLex.Fail("a FiniteElementSpace without a FiniteElementCollection", Line);
     return s;
 }
 
@@ -579,8 +608,11 @@ struct MfAttributeSet {
     std::vector<std::int64_t> mAttributes;
 };
 
+struct MfNurbs;
+
 struct MfFile {
-    bool mNonConforming = false;  // read from an `MFEM NC mesh`: its leaves
+    std::shared_ptr<const MfNurbs> mpNurbs;  // a NURBS mesh: everything is there
+    bool mNonConforming = false;             // read from an `MFEM NC mesh`: its leaves
     // One rank of a parallel mesh (ParMesh::Print): its rank (group 0's only
     // member), and per communication group its ranks and shared vertices
     // (local ids, in the order every rank of the group lists them).
@@ -905,6 +937,958 @@ void mf_read_groups(MfLexer& rLex, MfFile& rF) {
     }
 }
 
+// --- NURBS meshes ----------------------------------------------------------------
+//
+// `MFEM NURBS mesh v1.0`/`v1.1`: the patch topology, its knot vectors and
+// control points, numbered the way MFEM's NURBSExtension numbers them
+// (mesh/nurbs.cpp, BSD-3-Clause), so the knot-span elements, their vertices
+// and every patch's control points are MFEM's. The global form keeps every
+// control point once: the topological vertices, then the interior points of
+// every edge, face and patch; each patch reaches its own through
+// NURBSPatchMap (the patch's vertices, its edges and faces with their
+// orientations, its interior block). The `patches` form lists each patch's
+// control points itself, merged into the same numbering. Twin of _nurbs.py.
+
+constexpr int kMfQuadEdges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+constexpr int kMfHexEdges[12][2] = {{0, 1}, {1, 2}, {3, 2}, {0, 3}, {4, 5}, {5, 6},
+                                    {7, 6}, {4, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+constexpr int kMfHexFaces[6][4] = {{3, 2, 1, 0}, {0, 1, 5, 4}, {1, 2, 6, 5},
+                                   {2, 3, 7, 6}, {3, 0, 4, 7}, {4, 5, 6, 7}};
+
+int mf_nurbs_geom(int Dim) {
+    return Dim == 1 ? 1 : (Dim == 2 ? 3 : 5);
+}
+int mf_nurbs_bdr_geom(int Dim) {
+    return Dim == 1 ? 0 : (Dim == 2 ? 1 : 3);
+}
+std::int64_t mf_flip_sign(std::int64_t K) {
+    return -1 - K;
+}
+std::int64_t mf_unsign(std::int64_t K) {
+    return K >= 0 ? K : -1 - K;
+}
+
+struct MfKnotVector {
+    int mOrder = 0;
+    std::size_t mNumCp = 0;
+    std::vector<double> mKnots;
+    std::vector<std::size_t> mSpans;  // the knot spans of nonzero length: the elements
+
+    void Finish() {
+        mNumCp = mKnots.size() - static_cast<std::size_t>(mOrder) - 1;
+        mSpans.clear();
+        for (std::size_t s = static_cast<std::size_t>(mOrder); s < mNumCp; ++s)
+            if (mKnots[s + 1] > mKnots[s])
+                mSpans.push_back(s);
+    }
+    std::size_t NumElements() const { return mSpans.size(); }
+    MfKnotVector Flipped() const {
+        MfKnotVector k = *this;
+        const double apb = mKnots.front() + mKnots.back();
+        for (std::size_t i = 0; i < mKnots.size(); ++i)
+            k.mKnots[i] = apb - mKnots[mKnots.size() - 1 - i];
+        k.Finish();
+        return k;
+    }
+    // The order+1 B-spline values at reference R in [0, 1] of knot span Span
+    // (Cox-de Boor), for control points Span-order..Span.
+    void Basis(std::size_t Span, double R, std::vector<double>& rN) const {
+        const std::size_t p = static_cast<std::size_t>(mOrder);
+        const double u = mKnots[Span] + R * (mKnots[Span + 1] - mKnots[Span]);
+        rN.assign(p + 1, 0.0);
+        rN[0] = 1.0;
+        std::vector<double> left(p + 1, 0.0), right(p + 1, 0.0);
+        for (std::size_t j = 1; j <= p; ++j) {
+            left[j] = u - mKnots[Span + 1 - j];
+            right[j] = mKnots[Span + j] - u;
+            double saved = 0.0;
+            for (std::size_t q = 0; q < j; ++q) {
+                const double t = rN[q] / (right[q + 1] + left[j - q]);
+                rN[q] = saved + right[q + 1] * t;
+                saved = left[j - q] * t;
+            }
+            rN[j] = saved;
+        }
+    }
+};
+
+MfKnotVector mf_read_knot(MfLexer& rLex) {
+    const std::size_t line = rLex.Line();
+    MfKnotVector k;
+    const std::int64_t order = rLex.Int("a knot vector order");
+    const std::int64_t ncp = rLex.Int("a control point count");
+    if (order < 0 || ncp < order + 1)
+        rLex.Fail("knot vector of order " + std::to_string(order) + " with " + std::to_string(ncp) +
+                      " control points",
+                  line);
+    k.mOrder = static_cast<int>(order);
+    for (std::int64_t i = 0; i < ncp + order + 1; ++i)
+        k.mKnots.push_back(rLex.Real("a knot"));
+    for (std::size_t i = 1; i < k.mKnots.size(); ++i)
+        if (k.mKnots[i] < k.mKnots[i - 1])
+            rLex.Fail("knots out of order", line);
+    k.Finish();
+    return k;
+}
+
+// Mesh::GetQuadOrientation.
+int mf_quad_orientation(const std::int64_t* pBase, const std::int64_t* pTest) {
+    int i = 0;
+    while (i < 3 && pTest[i] != pBase[0])
+        ++i;
+    return pTest[(i + 1) % 4] == pBase[1] ? 2 * i : 2 * i + 1;
+}
+
+std::int64_t mf_or1d(std::int64_t N, std::int64_t BigN, int Or) {
+    return Or > 0 ? N : BigN - 1 - N;
+}
+
+std::int64_t mf_or2d(std::int64_t N1, std::int64_t N2, std::int64_t B1, std::int64_t B2, int Or) {
+    switch (Or) {
+        case 0:
+            return N1 + N2 * B1;
+        case 1:
+            return N2 + N1 * B2;
+        case 2:
+            return N2 + (B1 - 1 - N1) * B2;
+        case 3:
+            return (B1 - 1 - N1) + N2 * B1;
+        case 4:
+            return (B1 - 1 - N1) + (B2 - 1 - N2) * B1;
+        case 5:
+            return (B2 - 1 - N2) + (B1 - 1 - N1) * B2;
+        case 6:
+            return (B2 - 1 - N2) + N1 * B2;
+        default:
+            return N1 + (B2 - 1 - N2) * B1;
+    }
+}
+
+int mf_f(std::int64_t N, std::int64_t BigN) {
+    return N < 0 ? 0 : (N >= BigN ? 2 : 1);
+}
+
+// NURBSPatchMap: patch lattice index -> global number, of the mesh vertices or
+// of the control points.
+struct MfPatchMap {
+    std::vector<std::int64_t> mVerts, mEdges, mFaces;
+    std::vector<int> mOEdge, mOFace;
+    std::int64_t mPOffset = 0;
+    std::int64_t mN[3] = {0, 0, 0};  // interior counts per direction
+    int mOPatch = 0;
+
+    std::int64_t Ec(int E, std::int64_t N, std::int64_t BigN, int S = 1) const {
+        return mEdges[static_cast<std::size_t>(E)] +
+               mf_or1d(N, BigN, S * mOEdge[static_cast<std::size_t>(E)]);
+    }
+    std::int64_t Fc(int F, std::int64_t M, std::int64_t N, std::int64_t BigM,
+                    std::int64_t BigN) const {
+        return mFaces[static_cast<std::size_t>(F)] +
+               mf_or2d(M, N, BigM, BigN, mOFace[static_cast<std::size_t>(F)]);
+    }
+    std::int64_t operator()(std::int64_t I) const {
+        const std::int64_t i1 = I - 1;
+        switch (mf_f(i1, mN[0])) {
+            case 0:
+                return mVerts[0];
+            case 2:
+                return mVerts[1];
+            default:
+                return mPOffset + mf_or1d(i1, mN[0], mOPatch);
+        }
+    }
+    std::int64_t operator()(std::int64_t I, std::int64_t J) const {
+        const std::int64_t i1 = I - 1, j1 = J - 1, bi = mN[0], bj = mN[1];
+        switch (3 * mf_f(j1, bj) + mf_f(i1, bi)) {
+            case 0:
+                return mVerts[0];
+            case 1:
+                return Ec(0, i1, bi);
+            case 2:
+                return mVerts[1];
+            case 3:
+                return Ec(3, j1, bj, -1);
+            case 4:
+                return mPOffset + mf_or2d(i1, j1, bi, bj, mOPatch);
+            case 5:
+                return Ec(1, j1, bj);
+            case 6:
+                return mVerts[3];
+            case 7:
+                return Ec(2, i1, bi, -1);
+            default:
+                return mVerts[2];
+        }
+    }
+    std::int64_t operator()(std::int64_t I, std::int64_t J, std::int64_t K) const {
+        const std::int64_t i1 = I - 1, j1 = J - 1, k1 = K - 1;
+        const std::int64_t bi = mN[0], bj = mN[1], bk = mN[2];
+        switch (3 * (3 * mf_f(k1, bk) + mf_f(j1, bj)) + mf_f(i1, bi)) {
+            case 0:
+                return mVerts[0];
+            case 1:
+                return Ec(0, i1, bi);
+            case 2:
+                return mVerts[1];
+            case 3:
+                return Ec(3, j1, bj);
+            case 4:
+                return Fc(0, i1, bj - 1 - j1, bi, bj);
+            case 5:
+                return Ec(1, j1, bj);
+            case 6:
+                return mVerts[3];
+            case 7:
+                return Ec(2, i1, bi);
+            case 8:
+                return mVerts[2];
+            case 9:
+                return Ec(8, k1, bk);
+            case 10:
+                return Fc(1, i1, k1, bi, bk);
+            case 11:
+                return Ec(9, k1, bk);
+            case 12:
+                return Fc(4, bj - 1 - j1, k1, bj, bk);
+            case 13:
+                return mPOffset + bi * (bj * k1 + j1) + i1;
+            case 14:
+                return Fc(2, j1, k1, bj, bk);
+            case 15:
+                return Ec(11, k1, bk);
+            case 16:
+                return Fc(3, bi - 1 - i1, k1, bi, bk);
+            case 17:
+                return Ec(10, k1, bk);
+            case 18:
+                return mVerts[4];
+            case 19:
+                return Ec(4, i1, bi);
+            case 20:
+                return mVerts[5];
+            case 21:
+                return Ec(7, j1, bj);
+            case 22:
+                return Fc(5, i1, j1, bi, bj);
+            case 23:
+                return Ec(5, j1, bj);
+            case 24:
+                return mVerts[7];
+            case 25:
+                return Ec(6, i1, bi);
+            default:
+                return mVerts[6];
+        }
+    }
+    std::int64_t At(const std::int64_t* pIdx, int Dim) const {
+        return Dim == 1
+                   ? (*this)(pIdx[0])
+                   : (Dim == 2 ? (*this)(pIdx[0], pIdx[1]) : (*this)(pIdx[0], pIdx[1], pIdx[2]));
+    }
+};
+
+// A knot-span element: its patch and span indices.
+struct MfNurbsElement {
+    MfElement mElement;
+    std::size_t mPatch = 0;
+    std::int64_t mSpan[3] = {0, 0, 0};
+};
+
+struct MfNurbsPatchData {
+    std::vector<MfKnotVector> mKvs;
+    int mSpaceDim = 0;
+    std::vector<double> mCps;  // homogeneous, (SpaceDim + 1) per point
+};
+
+struct MfNurbs {
+    std::string mPath;
+    int mDim = -1;
+    std::vector<MfElement> mPatches, mBPatches;
+    std::vector<std::array<std::int64_t, 3>> mEdgeRows;  // (kv, v0, v1) as in the file
+    std::size_t mNumTopoVertices = 0;
+    std::vector<MfKnotVector> mKvs;
+    bool mPatchForm = false;
+    std::vector<MfNurbsPatchData> mPatchData;
+    std::vector<double> mWeights;
+    bool mHasNodes = false;
+    MfSpace mSpace;
+    std::vector<double> mNodes;
+
+    // topology
+    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> mEdgeOf;
+    std::vector<std::int64_t> mEdgeToUkv;
+    std::vector<std::vector<std::size_t>> mPEdges;
+    std::vector<std::vector<int>> mPEdgeOr;
+    std::vector<std::vector<std::size_t>> mPFaces;
+    std::vector<std::vector<int>> mPFaceOr;
+    std::vector<std::array<std::int64_t, 4>> mFaceVerts;
+    std::map<std::array<std::int64_t, 4>, std::size_t> mFaceIndex;
+    std::vector<std::vector<MfKnotVector>> mCompr;
+    // numbering: edge, face and patch offsets and the total, of the mesh
+    // vertices [0] and of the control points [1]
+    std::vector<std::int64_t> mEOff[2], mFOff[2], mPOff[2];
+    std::int64_t mTotal[2] = {0, 0};
+
+    std::int64_t NumVertices() const { return mTotal[0]; }
+    std::int64_t NumDofs() const { return mTotal[1]; }
+    [[noreturn]] void Fail(const std::string& rWhy) const {
+        throw ReadError("MFEM NURBS mesh: " + rWhy + " (" + mPath + ")");
+    }
+
+    const MfKnotVector& KvOfEdge(std::size_t E) const {
+        return mKvs[static_cast<std::size_t>(mf_unsign(mEdgeToUkv[E]))];
+    }
+    int KvSign(std::size_t E) const { return mEdgeToUkv[E] >= 0 ? 1 : -1; }
+    std::size_t EdgeOf(std::int64_t A, std::int64_t B) const {
+        const auto it = mEdgeOf.find({std::min(A, B), std::max(A, B)});
+        if (it == mEdgeOf.end())
+            Fail("the edge " + std::to_string(A) + "-" + std::to_string(B) +
+                 " is not in the edges section");
+        return it->second;
+    }
+    std::vector<std::size_t> DirEdges(std::size_t P) const {
+        if (mDim == 1)
+            return {P};
+        const auto& es = mPEdges[P];
+        if (mDim == 2)
+            return {es[0], es[1]};
+        return {es[0], es[3], es[8]};
+    }
+    // NURBSExtension::CheckKVDirection
+    std::vector<int> KvDir(std::size_t P) const {
+        if (mDim == 1)
+            return {KvSign(P)};
+        const auto& pv = mPatches[P].mVertices;
+        std::vector<std::pair<std::int64_t, std::int64_t>> pairs = {{pv[0], pv[1]}, {pv[0], pv[3]}};
+        if (mDim == 3)
+            pairs.push_back({pv[0], pv[4]});
+        std::vector<int> kvdir(static_cast<std::size_t>(mDim), 0);
+        for (std::size_t e : mPEdges[P]) {
+            const std::int64_t a = mEdgeRows[e][1], b = mEdgeRows[e][2];
+            const int ks = KvSign(e);
+            for (std::size_t d = 0; d < pairs.size(); ++d) {
+                if (a == pairs[d].first && b == pairs[d].second)
+                    kvdir[d] = ks;
+                else if (a == pairs[d].second && b == pairs[d].first)
+                    kvdir[d] = -ks;
+            }
+        }
+        return kvdir;
+    }
+
+    void Topology();
+    void BoundaryPatches();
+    void KnotVectors();
+    void Offsets();
+    MfPatchMap PatchMap(std::size_t P, bool Space) const;
+    MfPatchMap BdrPatchMap(std::size_t B, std::vector<int>& rOkv,
+                           std::vector<const MfKnotVector*>& rKvs) const;
+    std::vector<MfNurbsElement> Elements() const;
+    std::vector<MfElement> Boundary() const;
+    void ControlPoints(std::vector<double>& rWeights, std::vector<double>& rXyz,
+                       int& rSpaceDim) const;
+    void Evaluate(const std::vector<double>& rWeights, const std::vector<double>& rTable,
+                  std::size_t NumComp, const MfNurbsElement& rEl,
+                  const std::vector<std::array<double, 3>>& rRefs, std::vector<double>& rOut) const;
+};
+
+void MfNurbs::Topology() {
+    const std::size_t np = mPatches.size();
+    if (mDim == 1) {
+        if (mEdgeRows.size() != np)
+            Fail(std::to_string(mEdgeRows.size()) + " edges for " + std::to_string(np) +
+                 " patches");
+        for (const auto& r : mEdgeRows)
+            mEdgeToUkv.push_back(r[1] <= r[2] ? r[0] : mf_flip_sign(r[0]));
+    } else {
+        for (std::size_t e = 0; e < mEdgeRows.size(); ++e) {
+            const auto& r = mEdgeRows[e];
+            mEdgeOf[{std::min(r[1], r[2]), std::max(r[1], r[2])}] = e;
+            mEdgeToUkv.push_back(r[1] <= r[2] ? r[0] : mf_flip_sign(r[0]));
+        }
+    }
+    mPEdges.assign(np, {});
+    mPEdgeOr.assign(np, {});
+    if (mDim > 1) {
+        for (std::size_t p = 0; p < np; ++p) {
+            const auto& v = mPatches[p].mVertices;
+            const std::size_t ne = mDim == 2 ? 4 : 12;
+            for (std::size_t j = 0; j < ne; ++j) {
+                const int a = mDim == 2 ? kMfQuadEdges[j][0] : kMfHexEdges[j][0];
+                const int b = mDim == 2 ? kMfQuadEdges[j][1] : kMfHexEdges[j][1];
+                const std::int64_t va = v[static_cast<std::size_t>(a)];
+                const std::int64_t vb = v[static_cast<std::size_t>(b)];
+                mPEdges[p].push_back(EdgeOf(va, vb));
+                mPEdgeOr[p].push_back(va < vb ? 1 : -1);
+            }
+        }
+    }
+    mPFaces.assign(np, {});
+    mPFaceOr.assign(np, {});
+    if (mDim == 3) {
+        for (std::size_t p = 0; p < np; ++p) {
+            const auto& v = mPatches[p].mVertices;
+            for (const auto& fv : kMfHexFaces) {
+                std::array<std::int64_t, 4> verts;
+                for (std::size_t c = 0; c < 4; ++c)
+                    verts[c] = v[static_cast<std::size_t>(fv[c])];
+                std::array<std::int64_t, 4> key = verts;
+                std::sort(key.begin(), key.end());
+                const auto [it, fresh] = mFaceIndex.emplace(key, mFaceVerts.size());
+                if (fresh) {
+                    mFaceVerts.push_back(verts);
+                    mPFaceOr[p].push_back(0);
+                } else {
+                    mPFaceOr[p].push_back(
+                        mf_quad_orientation(mFaceVerts[it->second].data(), verts.data()));
+                }
+                mPFaces[p].push_back(it->second);
+            }
+        }
+    }
+    BoundaryPatches();
+    KnotVectors();
+}
+
+// FinalizeTopology and CheckBdrElementOrientation: without a boundary
+// section, the faces of one patch become the boundary (attribute 1); a
+// boundary patch is turned to run as the face does in the first patch holding
+// it.
+void MfNurbs::BoundaryPatches() {
+    using Face = std::vector<std::int64_t>;
+    std::map<Face, std::pair<Face, int>> stored;  // sorted -> (first patch's order, count)
+    std::vector<Face> order;
+    for (const MfElement& el : mPatches) {
+        const auto& v = el.mVertices;
+        std::vector<Face> faces;
+        if (mDim == 1) {
+            faces = {{v[0]}, {v[1]}};
+        } else if (mDim == 2) {
+            for (const auto& e : kMfQuadEdges)
+                faces.push_back(
+                    {v[static_cast<std::size_t>(e[0])], v[static_cast<std::size_t>(e[1])]});
+        } else {
+            for (const auto& fv : kMfHexFaces) {
+                Face f;
+                for (int c : fv)
+                    f.push_back(v[static_cast<std::size_t>(c)]);
+                faces.push_back(f);
+            }
+        }
+        for (const Face& f : faces) {
+            Face key = f;
+            std::sort(key.begin(), key.end());
+            const auto [it, fresh] = stored.emplace(key, std::make_pair(f, 0));
+            if (fresh)
+                order.push_back(key);
+            ++it->second.second;
+        }
+    }
+    if (mBPatches.empty()) {
+        if (mDim == 1)
+            std::sort(order.begin(), order.end());  // 1-D faces are the vertices
+        else if (mDim == 2)
+            std::sort(order.begin(), order.end(), [&](const Face& rA, const Face& rB) {
+                return EdgeOf(rA[0], rA[1]) < EdgeOf(rB[0], rB[1]);
+            });
+        for (const Face& k : order) {
+            const auto& [verts, count] = stored.at(k);
+            if (count != 1)
+                continue;
+            MfElement b;
+            b.mAttribute = 1;
+            b.mGeom = mf_nurbs_bdr_geom(mDim);
+            b.mVertices = verts;
+            b.mLine = 0;
+            mBPatches.push_back(std::move(b));
+        }
+        return;
+    }
+    for (MfElement& b : mBPatches) {
+        Face key = b.mVertices;
+        std::sort(key.begin(), key.end());
+        const auto it = stored.find(key);
+        if (it == stored.end() || it->second.second != 1)
+            continue;
+        const Face& fv = it->second.first;
+        auto& bv = b.mVertices;
+        if (mDim == 2 && bv[0] != fv[0])
+            std::swap(bv[0], bv[1]);
+        else if (mDim == 3 && mf_quad_orientation(fv.data(), bv.data()) % 2)
+            std::swap(bv[0], bv[2]);
+    }
+}
+
+void MfNurbs::KnotVectors() {
+    const std::size_t np = mPatches.size();
+    if (mPatchForm) {
+        std::int64_t nkv = 0;
+        for (std::int64_t k : mEdgeToUkv)
+            nkv = std::max(nkv, mf_unsign(k) + 1);
+        std::vector<bool> have(static_cast<std::size_t>(nkv), false);
+        mKvs.assign(static_cast<std::size_t>(nkv), MfKnotVector{});
+        for (std::size_t p = 0; p < np; ++p) {
+            const std::vector<int> kvdir = KvDir(p);
+            const std::vector<std::size_t> dirs = DirEdges(p);
+            for (std::size_t d = 0; d < dirs.size(); ++d) {
+                const auto k = static_cast<std::size_t>(mf_unsign(mEdgeToUkv[dirs[d]]));
+                if (have[k])
+                    continue;
+                const MfKnotVector& kv = mPatchData[p].mKvs[d];
+                mKvs[k] = kvdir[d] == -1 ? kv.Flipped() : kv;
+                have[k] = true;
+            }
+        }
+        for (bool h : have)
+            if (!h)
+                Fail("a knot vector no patch defines");
+    }
+    for (std::int64_t k : mEdgeToUkv)
+        if (static_cast<std::size_t>(mf_unsign(k)) >= mKvs.size())
+            Fail("knot vector " + std::to_string(mf_unsign(k)) + " is not defined");
+    mCompr.assign(np, {});
+    for (std::size_t p = 0; p < np; ++p) {
+        const std::vector<int> kvdir = KvDir(p);
+        const std::vector<std::size_t> dirs = DirEdges(p);
+        for (std::size_t d = 0; d < dirs.size(); ++d) {
+            const MfKnotVector& kv = KvOfEdge(dirs[d]);
+            mCompr[p].push_back(kvdir[d] == -1 ? kv.Flipped() : kv);
+        }
+    }
+}
+
+// NURBSExtension::GenerateOffsets
+void MfNurbs::Offsets() {
+    for (int kind = 0; kind < 2; ++kind) {
+        const auto count = [kind](const MfKnotVector& rKv) {
+            return kind == 0 ? static_cast<std::int64_t>(rKv.NumElements()) - 1
+                             : static_cast<std::int64_t>(rKv.mNumCp) - 2;
+        };
+        std::int64_t n = static_cast<std::int64_t>(mNumTopoVertices);
+        mEOff[kind].clear();
+        mFOff[kind].clear();
+        mPOff[kind].clear();
+        if (mDim > 1)
+            for (std::size_t e = 0; e < mEdgeRows.size(); ++e) {
+                mEOff[kind].push_back(n);
+                n += count(KvOfEdge(e));
+            }
+        for (const auto& fv : mFaceVerts) {
+            mFOff[kind].push_back(n);
+            n += count(KvOfEdge(EdgeOf(fv[0], fv[1]))) * count(KvOfEdge(EdgeOf(fv[1], fv[2])));
+        }
+        for (std::size_t p = 0; p < mPatches.size(); ++p) {
+            mPOff[kind].push_back(n);
+            std::int64_t size = 1;
+            for (std::size_t e : DirEdges(p))
+                size *= count(KvOfEdge(e));
+            n += size;
+        }
+        mTotal[kind] = n;
+    }
+}
+
+MfPatchMap MfNurbs::PatchMap(std::size_t P, bool Space) const {
+    const int kind = Space ? 1 : 0;
+    MfPatchMap m;
+    m.mVerts = mPatches[P].mVertices;
+    for (std::size_t d = 0; d < mCompr[P].size(); ++d) {
+        const MfKnotVector& kv = mCompr[P][d];
+        m.mN[d] = Space ? static_cast<std::int64_t>(kv.mNumCp) - 2
+                        : static_cast<std::int64_t>(kv.NumElements()) - 1;
+    }
+    if (mDim > 1) {
+        for (std::size_t e : mPEdges[P])
+            m.mEdges.push_back(mEOff[kind][e]);
+        m.mOEdge = mPEdgeOr[P];
+    }
+    if (mDim == 3) {
+        for (std::size_t f : mPFaces[P])
+            m.mFaces.push_back(mFOff[kind][f]);
+        m.mOFace = mPFaceOr[P];
+    }
+    m.mPOffset = mPOff[kind][P];
+    m.mOPatch = 0;
+    return m;
+}
+
+// SetBdrPatchVertexMap: the map, the knot-vector orientations and the knot
+// vectors of boundary patch B.
+MfPatchMap MfNurbs::BdrPatchMap(std::size_t B, std::vector<int>& rOkv,
+                                std::vector<const MfKnotVector*>& rKvs) const {
+    MfPatchMap m;
+    m.mVerts = mBPatches[B].mVertices;
+    rOkv.clear();
+    rKvs.clear();
+    if (mDim == 1) {
+        rOkv.push_back(1);
+        return m;
+    }
+    const auto& v = m.mVerts;
+    if (mDim == 2) {
+        const std::size_t e = EdgeOf(v[0], v[1]);
+        const int o = v[0] < v[1] ? 1 : -1;
+        rKvs.push_back(&KvOfEdge(e));
+        rOkv.push_back(mEdgeToUkv[e] >= 0 ? o : -o);
+        m.mPOffset = mEOff[0][e];
+        m.mN[0] = static_cast<std::int64_t>(KvOfEdge(e).NumElements()) - 1;
+        m.mOPatch = o;
+        return m;
+    }
+    std::vector<std::size_t> es;
+    for (const auto& ed : kMfQuadEdges) {
+        const std::int64_t a = v[static_cast<std::size_t>(ed[0])];
+        const std::int64_t c = v[static_cast<std::size_t>(ed[1])];
+        es.push_back(EdgeOf(a, c));
+        m.mOEdge.push_back(a < c ? 1 : -1);
+        m.mEdges.push_back(mEOff[0][es.back()]);
+    }
+    for (std::size_t d = 0; d < 2; ++d) {
+        rKvs.push_back(&KvOfEdge(es[d]));
+        rOkv.push_back(mEdgeToUkv[es[d]] >= 0 ? m.mOEdge[d] : -m.mOEdge[d]);
+        m.mN[d] = static_cast<std::int64_t>(rKvs.back()->NumElements()) - 1;
+    }
+    std::array<std::int64_t, 4> key = {v[0], v[1], v[2], v[3]};
+    std::sort(key.begin(), key.end());
+    const auto it = mFaceIndex.find(key);
+    if (it == mFaceIndex.end())
+        Fail("a boundary patch is not a face of the mesh");
+    m.mOPatch = mf_quad_orientation(mFaceVerts[it->second].data(), v.data());
+    m.mPOffset = mFOff[0][it->second];
+    return m;
+}
+
+std::vector<MfNurbsElement> MfNurbs::Elements() const {
+    std::vector<MfNurbsElement> out;
+    const int geom = mf_nurbs_geom(mDim);
+    for (std::size_t p = 0; p < mPatches.size(); ++p) {
+        const MfPatchMap m = PatchMap(p, false);
+        const auto& kvs = mCompr[p];
+        const std::int64_t nx = static_cast<std::int64_t>(kvs[0].NumElements());
+        const std::int64_t ny = mDim > 1 ? static_cast<std::int64_t>(kvs[1].NumElements()) : 1;
+        const std::int64_t nz = mDim > 2 ? static_cast<std::int64_t>(kvs[2].NumElements()) : 1;
+        for (std::int64_t k = 0; k < nz; ++k)
+            for (std::int64_t j = 0; j < ny; ++j)
+                for (std::int64_t i = 0; i < nx; ++i) {
+                    MfNurbsElement el;
+                    el.mPatch = p;
+                    el.mSpan[0] = i;
+                    el.mSpan[1] = j;
+                    el.mSpan[2] = k;
+                    el.mElement.mAttribute = mPatches[p].mAttribute;
+                    el.mElement.mGeom = geom;
+                    el.mElement.mLine = mPatches[p].mLine;
+                    auto& v = el.mElement.mVertices;
+                    if (mDim == 1) {
+                        v = {m(i), m(i + 1)};
+                    } else if (mDim == 2) {
+                        v = {m(i, j), m(i + 1, j), m(i + 1, j + 1), m(i, j + 1)};
+                    } else {
+                        v = {m(i, j, k),
+                             m(i + 1, j, k),
+                             m(i + 1, j + 1, k),
+                             m(i, j + 1, k),
+                             m(i, j, k + 1),
+                             m(i + 1, j, k + 1),
+                             m(i + 1, j + 1, k + 1),
+                             m(i, j + 1, k + 1)};
+                    }
+                    out.push_back(std::move(el));
+                }
+    }
+    return out;
+}
+
+std::vector<MfElement> MfNurbs::Boundary() const {
+    std::vector<MfElement> out;
+    const int geom = mf_nurbs_bdr_geom(mDim);
+    std::vector<int> okv;
+    std::vector<const MfKnotVector*> kvs;
+    for (std::size_t b = 0; b < mBPatches.size(); ++b) {
+        const MfPatchMap m = BdrPatchMap(b, okv, kvs);
+        MfElement el;
+        el.mAttribute = mBPatches[b].mAttribute;
+        el.mGeom = geom;
+        el.mLine = mBPatches[b].mLine;
+        if (mDim == 1) {
+            el.mVertices = {m(0)};
+            out.push_back(el);
+        } else if (mDim == 2) {
+            const std::int64_t nx = static_cast<std::int64_t>(kvs[0]->NumElements());
+            for (std::int64_t i = 0; i < nx; ++i) {
+                const std::int64_t i_ = okv[0] >= 0 ? i : nx - 1 - i;
+                el.mVertices = {m(i_), m(i_ + 1)};
+                out.push_back(el);
+            }
+        } else {
+            const std::int64_t nx = static_cast<std::int64_t>(kvs[0]->NumElements());
+            const std::int64_t ny = static_cast<std::int64_t>(kvs[1]->NumElements());
+            for (std::int64_t j = 0; j < ny; ++j) {
+                const std::int64_t j_ = okv[1] >= 0 ? j : ny - 1 - j;
+                for (std::int64_t i = 0; i < nx; ++i) {
+                    const std::int64_t i_ = okv[0] >= 0 ? i : nx - 1 - i;
+                    el.mVertices = {m(i_, j_), m(i_ + 1, j_), m(i_ + 1, j_ + 1), m(i_, j_ + 1)};
+                    out.push_back(el);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// The weights and Cartesian control points (NumDofs x SpaceDim) in MFEM's
+// global numbering.
+void MfNurbs::ControlPoints(std::vector<double>& rWeights, std::vector<double>& rXyz,
+                            int& rSpaceDim) const {
+    const auto ndofs = static_cast<std::size_t>(NumDofs());
+    if (mPatchForm) {
+        rSpaceDim = mPatchData[0].mSpaceDim;
+        const auto sd = static_cast<std::size_t>(rSpaceDim);
+        rWeights.assign(ndofs, std::numeric_limits<double>::quiet_NaN());
+        rXyz.assign(ndofs * sd, std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t p = 0; p < mPatchData.size(); ++p) {
+            const MfNurbsPatchData& pd = mPatchData[p];
+            if (pd.mSpaceDim != rSpaceDim)
+                Fail("patches of different dimensions");
+            std::int64_t n[3] = {1, 1, 1};
+            for (std::size_t d = 0; d < pd.mKvs.size(); ++d) {
+                if (pd.mKvs[d].mNumCp != mCompr[p][d].mNumCp)
+                    Fail("a patch disagrees with its knot vectors");
+                n[d] = static_cast<std::int64_t>(pd.mKvs[d].mNumCp);
+            }
+            const MfPatchMap m = PatchMap(p, true);
+            std::size_t t = 0;
+            for (std::int64_t k = 0; k < n[2]; ++k)
+                for (std::int64_t j = 0; j < n[1]; ++j)
+                    for (std::int64_t i = 0; i < n[0]; ++i, ++t) {
+                        const std::int64_t idx[3] = {i, j, k};
+                        const auto g = static_cast<std::size_t>(m.At(idx, mDim));
+                        const double* cp = pd.mCps.data() + t * (sd + 1);
+                        rWeights[g] = cp[sd];
+                        for (std::size_t c = 0; c < sd; ++c)
+                            rXyz[g * sd + c] = cp[c] / cp[sd];
+                    }
+        }
+        return;
+    }
+    if (!mHasNodes)
+        Fail("no control points");
+    const auto vdim = static_cast<std::size_t>(mSpace.mVDim);
+    if (mNodes.size() != ndofs * vdim)
+        Fail(std::to_string(mNodes.size()) + " node values for " + std::to_string(ndofs) +
+             " control points of dimension " + std::to_string(vdim));
+    rSpaceDim = mSpace.mVDim;
+    rXyz.resize(ndofs * vdim);
+    for (std::size_t g = 0; g < ndofs; ++g)
+        for (std::size_t c = 0; c < vdim; ++c)
+            rXyz[g * vdim + c] = mf_value(mNodes, mSpace, ndofs, g, c);
+    rWeights = mWeights.empty() ? std::vector<double>(ndofs, 1.0) : mWeights;
+}
+
+// rTable (NumDofs x NumComp) at the reference points of a knot-span element:
+// the rational (NURBS) interpolant, NumComp values per point into rOut.
+void MfNurbs::Evaluate(const std::vector<double>& rWeights, const std::vector<double>& rTable,
+                       std::size_t NumComp, const MfNurbsElement& rEl,
+                       const std::vector<std::array<double, 3>>& rRefs,
+                       std::vector<double>& rOut) const {
+    const auto& kvs = mCompr[rEl.mPatch];
+    const MfPatchMap m = PatchMap(rEl.mPatch, true);
+    const std::size_t dim = kvs.size();
+    rOut.assign(rRefs.size() * NumComp, 0.0);
+    std::vector<double> basis[3];
+    std::int64_t first[3] = {0, 0, 0};
+    std::int64_t n[3] = {1, 1, 1};
+    std::vector<double> num(NumComp);
+    for (std::size_t t = 0; t < rRefs.size(); ++t) {
+        for (std::size_t d = 0; d < dim; ++d) {
+            const std::size_t s = kvs[d].mSpans[static_cast<std::size_t>(rEl.mSpan[d])];
+            first[d] = static_cast<std::int64_t>(s) - kvs[d].mOrder;
+            n[d] = kvs[d].mOrder + 1;
+            kvs[d].Basis(s, rRefs[t][d], basis[d]);
+        }
+        std::fill(num.begin(), num.end(), 0.0);
+        double den = 0.0;
+        for (std::int64_t c = 0; c < n[2]; ++c)
+            for (std::int64_t b = 0; b < n[1]; ++b)
+                for (std::int64_t a = 0; a < n[0]; ++a) {
+                    const std::int64_t ab[3] = {a, b, c};
+                    double w = 1.0;
+                    std::int64_t cp[3] = {0, 0, 0};
+                    for (std::size_t d = 0; d < dim; ++d) {
+                        w *= basis[d][static_cast<std::size_t>(ab[d])];
+                        cp[d] = first[d] + ab[d];
+                    }
+                    const auto g = static_cast<std::size_t>(m.At(cp, static_cast<int>(dim)));
+                    const double nw = w * rWeights[g];
+                    for (std::size_t k = 0; k < NumComp; ++k)
+                        num[k] += nw * rTable[g * NumComp + k];
+                    den += nw;
+                }
+        for (std::size_t k = 0; k < NumComp; ++k)
+            rOut[t * NumComp + k] = num[k] / den;
+    }
+}
+
+// Skips v1.1's refinement and spacing sections after the knot vectors.
+void mf_nurbs_skip_spacing(MfLexer& rLex) {
+    if (!rLex.AtEnd() && rLex.Peek().mText == "refinements") {
+        rLex.Next("refinements");
+        rLex.Reals();
+    }
+    if (!rLex.AtEnd() && rLex.Peek().mText == "knotvector_refinements") {
+        rLex.Next("knotvector_refinements");
+        rLex.Reals();
+    }
+    if (rLex.AtEnd() || rLex.Peek().mText != "spacing")
+        return;
+    rLex.Next("spacing");
+    const std::int64_t n = rLex.Int("a spacing count");
+    for (std::int64_t k = 0; k < n; ++k) {
+        rLex.Int("a knot vector");
+        rLex.Int("a spacing type");
+        const std::int64_t ni = rLex.Int("a parameter count");
+        const std::int64_t nr = rLex.Int("a parameter count");
+        for (std::int64_t i = 0; i < ni; ++i)
+            rLex.Int("a parameter");
+        for (std::int64_t i = 0; i < nr; ++i)
+            rLex.Real("a parameter");
+    }
+}
+
+MfNurbs mf_parse_nurbs(MfLexer& rLex, const std::string& rPath, bool V11) {
+    MfNurbs n;
+    n.mPath = rPath;
+    const auto section = [&](const char* pName) {
+        const MfToken& t = rLex.Next(pName);
+        if (t.mText != pName)
+            rLex.Fail(std::string("expected '") + pName + "', found '" + t.mText + "'", t.mLine);
+    };
+    section("dimension");
+    const std::int64_t d = rLex.Int("a dimension");
+    if (d < 1 || d > 3)
+        rLex.Fail("dimension " + std::to_string(d) + " (1, 2 or 3)", rLex.Line());
+    n.mDim = static_cast<int>(d);
+    section("elements");
+    n.mPatches = mf_read_elements(rLex, "patch");
+    section("boundary");
+    n.mBPatches = mf_read_elements(rLex, "boundary patch");
+    for (const MfElement& el : n.mPatches)
+        if (el.mGeom != mf_nurbs_geom(n.mDim))
+            rLex.Fail("a patch of geometry " + std::to_string(el.mGeom) + " in a " +
+                          std::to_string(n.mDim) + "-D mesh",
+                      el.mLine);
+    for (const MfElement& el : n.mBPatches)
+        if (el.mGeom != mf_nurbs_bdr_geom(n.mDim))
+            rLex.Fail("a boundary patch of geometry " + std::to_string(el.mGeom), el.mLine);
+    section("edges");
+    const std::int64_t ne = rLex.Int("an edge count");
+    for (std::int64_t e = 0; e < ne; ++e) {
+        std::array<std::int64_t, 3> row;
+        row[0] = rLex.Int("a knot vector");
+        row[1] = rLex.Int("a vertex");
+        row[2] = rLex.Int("a vertex");
+        n.mEdgeRows.push_back(row);
+    }
+    section("vertices");
+    const std::int64_t nv = rLex.Int("a vertex count");
+    if (nv < 0)
+        rLex.Fail("negative vertex count", rLex.Line());
+    n.mNumTopoVertices = static_cast<std::size_t>(nv);
+    for (const auto* list : {&n.mPatches, &n.mBPatches})
+        for (const MfElement& el : *list)
+            for (std::int64_t v : el.mVertices)
+                if (v >= nv)
+                    rLex.Fail("vertex out of range (" + std::to_string(nv) + " vertices)",
+                              el.mLine);
+    for (const auto& r : n.mEdgeRows)
+        if (r[0] < 0 || r[1] < 0 || r[2] < 0 || r[1] >= nv || r[2] >= nv)
+            rLex.Fail("bad edge row", rLex.Line());
+    if (n.mEdgeRows.empty() && n.mDim > 1)
+        throw ReadError("MFEM NURBS mesh: " + rPath +
+                        " has no edges section (edges MFEM derives itself are not supported)");
+    const MfToken& t = rLex.Next("'knotvectors' or 'patches'");
+    if (t.mText == "knotvectors") {
+        const std::int64_t nk = rLex.Int("a count");
+        for (std::int64_t k = 0; k < nk; ++k)
+            n.mKvs.push_back(mf_read_knot(rLex));
+        if (V11)
+            mf_nurbs_skip_spacing(rLex);
+    } else if (t.mText == "patches") {
+        n.mPatchForm = true;
+        for (std::size_t p = 0; p < n.mPatches.size(); ++p) {
+            MfNurbsPatchData pd;
+            section("knotvectors");
+            const std::int64_t nk = rLex.Int("a count");
+            for (std::int64_t k = 0; k < nk; ++k)
+                pd.mKvs.push_back(mf_read_knot(rLex));
+            if (static_cast<int>(pd.mKvs.size()) != n.mDim)
+                rLex.Fail("a patch with " + std::to_string(pd.mKvs.size()) + " knot vectors",
+                          t.mLine);
+            section("dimension");
+            const std::int64_t sd = rLex.Int("a space dimension");
+            if (sd < 1 || sd > 3)
+                rLex.Fail("space dimension " + std::to_string(sd), rLex.Line());
+            pd.mSpaceDim = static_cast<int>(sd);
+            const MfToken& cpt = rLex.Next("control points");
+            if (cpt.mText != "controlpoints" && cpt.mText != "controlpoints_homogeneous" &&
+                cpt.mText != "controlpoints_cartesian")
+                rLex.Fail("expected control points, found '" + cpt.mText + "'", cpt.mLine);
+            const bool cartesian = cpt.mText == "controlpoints_cartesian";
+            std::size_t count = 1;
+            for (const MfKnotVector& kv : pd.mKvs)
+                count *= kv.mNumCp;
+            const auto w = static_cast<std::size_t>(sd) + 1;
+            pd.mCps.reserve(count * w);
+            for (std::size_t k = 0; k < count * w; ++k)
+                pd.mCps.push_back(rLex.Real("a coordinate"));
+            if (cartesian)
+                for (std::size_t k = 0; k < count; ++k)
+                    for (std::size_t c = 0; c + 1 < w; ++c)
+                        pd.mCps[k * w + c] *= pd.mCps[k * w + w - 1];
+            n.mPatchData.push_back(std::move(pd));
+        }
+    } else {
+        rLex.Fail("expected 'knotvectors' or 'patches', found '" + t.mText + "'", t.mLine);
+    }
+    n.Topology();
+    n.Offsets();
+    while (!rLex.AtEnd()) {
+        const MfToken& s = rLex.Next("a section");
+        if (s.mText == "mesh_elements" || s.mText == "periodic") {
+            throw ReadError("MFEM NURBS mesh: the '" + s.mText + "' section of " + rPath +
+                            " is not supported");
+        } else if (s.mText == "weights") {
+            if (n.mPatchForm)
+                rLex.Fail("weights in a mesh whose patches carry their own", s.mLine);
+            for (std::int64_t k = 0; k < n.NumDofs(); ++k)
+                n.mWeights.push_back(rLex.Real("a weight"));
+        } else if (s.mText == "unitweights" || s.mText == "autoweights") {
+            n.mWeights.assign(static_cast<std::size_t>(n.NumDofs()), 1.0);
+        } else if (s.mText == "FiniteElementSpace" || (s.mText == "MFEM" && !rLex.AtEnd() &&
+                                                       rLex.Peek().mText == "FiniteElementSpace")) {
+            const bool versioned = s.mText == "MFEM";
+            if (versioned) {
+                rLex.Next("FiniteElementSpace");
+                const MfToken& v = rLex.Next("a version");
+                if (v.mText != "v1.0")
+                    rLex.Fail("FiniteElementSpace version '" + v.mText + "'", v.mLine);
+            }
+            n.mSpace = mf_read_space_body(rLex, s.mLine);
+            if (n.mSpace.mKind != MfSpace::Nurbs)
+                rLex.Fail("NURBS mesh nodes outside a NURBS space", s.mLine);
+            if (versioned)
+                mf_read_space_end(rLex);
+            n.mNodes = rLex.Reals();
+            n.mHasNodes = true;
+        } else if (s.mText == "mfem_mesh_end") {
+            break;
+        } else {
+            rLex.Fail("unexpected '" + s.mText + "'", s.mLine);
+        }
+    }
+    return n;
+}
+
 MfFile mf_parse(const std::string& rPath) {
     const std::string what = "MFEM mesh";
     MfLexer lex(what, mf_read_text(rPath, "MFEM mesh"));
@@ -913,6 +1897,14 @@ MfFile mf_parse(const std::string& rPath) {
         return mf_parse_nc(lex, rPath, header == "MFEM NC mesh v1.1");
     if (header.rfind("MFEM NC mesh", 0) == 0)
         lex.Fail("non-conforming mesh version '" + header + "' is not supported", lex.HeaderLine());
+    if (header == "MFEM NURBS mesh v1.0" || header == "MFEM NURBS mesh v1.1") {
+        MfFile f;
+        auto nurbs =
+            std::make_shared<MfNurbs>(mf_parse_nurbs(lex, rPath, header == "MFEM NURBS mesh v1.1"));
+        f.mDim = nurbs->mDim;
+        f.mpNurbs = std::move(nurbs);
+        return f;
+    }
     if (header.rfind("MFEM NURBS", 0) == 0 || header.rfind("MFEM INLINE", 0) == 0)
         lex.Fail("'" + header + "' meshes are not supported", lex.HeaderLine());
     if (header != "MFEM mesh v1.0" && header != "MFEM mesh v1.1" && header != "MFEM mesh v1.2" &&
@@ -998,47 +1990,18 @@ struct MfGridData {
 MfGridData mf_parse_gf(const MfemGridFunction& rGf) {
     MfLexer lex("MFEM grid function", "\n" + mf_read_text(rGf.mPath, "MFEM grid function"));
     // The lexer took the first line as a header; a grid function has none, so
-    // it was prefixed with an empty line and the header is "FiniteElementSpace".
+    // it was prefixed with an empty line and the header is "FiniteElementSpace"
+    // (or the versioned form MFEM writes for NURBS spaces).
     MfGridData g;
     g.mName = rGf.mName;
-    if (lex.Header() != "FiniteElementSpace")
+    const bool versioned = lex.Header() == "MFEM FiniteElementSpace v1.0";
+    if (lex.Header() != "FiniteElementSpace" && !versioned)
         throw ReadError("MFEM grid function: '" + rGf.mPath +
-                        "' does not start with FiniteElementSpace (NURBS and variable-order "
-                        "spaces are not supported)");
-    // Re-parse the rest of the header from the token stream.
-    MfSpace s;
-    bool have_fec = false;
-    while (!lex.AtEnd()) {
-        const std::string& key = lex.Peek().mText;
-        if (key == "FiniteElementCollection:") {
-            lex.Next("a collection");
-            const std::string name = lex.Next("a collection name").mText;
-            const int vdim = s.mVDim, ordering = s.mOrdering;
-            s = mf_classify(name);
-            s.mVDim = vdim;
-            s.mOrdering = ordering;
-            have_fec = true;
-        } else if (key == "VDim:") {
-            lex.Next("VDim");
-            std::int64_t v = 0;
-            const MfToken& t = lex.Next("a VDim");
-            if (!MfLexer::ParseInt(t.mText, v) || v < 1)
-                lex.Fail("bad VDim '" + t.mText + "'", t.mLine);
-            s.mVDim = static_cast<int>(v);
-        } else if (key == "Ordering:") {
-            lex.Next("Ordering");
-            std::int64_t v = 0;
-            const MfToken& t = lex.Next("an Ordering");
-            if (!MfLexer::ParseInt(t.mText, v) || (v != 0 && v != 1))
-                lex.Fail("bad Ordering '" + t.mText + "'", t.mLine);
-            s.mOrdering = static_cast<int>(v);
-        } else {
-            break;
-        }
-    }
-    if (!have_fec)
-        throw ReadError("MFEM grid function: '" + rGf.mPath + "' names no FiniteElementCollection");
-    g.mSpace = s;
+                        "' does not start with FiniteElementSpace (variable-order spaces are "
+                        "not supported)");
+    g.mSpace = mf_read_space_body(lex, 1);
+    if (versioned)
+        mf_read_space_end(lex);
     g.mValues = lex.Reals();
     if (!lex.AtEnd())
         lex.Fail("unexpected '" + lex.Peek().mText + "'", lex.Line());
@@ -1482,6 +2445,10 @@ struct MfPart {
     bool mNodesH1 = false;                // coordinates from H1 nodes, else the vertices
     std::vector<double> mVertexXyz;       // local vertices, SpaceDim each
     std::vector<std::int64_t> mGlobal;    // local vertex -> output vertex
+    // A part whose values it computes itself (a NURBS mesh): per element, every
+    // field's values at the cell's lattice nodes (mEvalComponents each).
+    std::function<void(std::size_t, std::vector<std::vector<double>>&)> mEval;
+    std::vector<std::size_t> mEvalComponents;
 };
 
 // The output type of a cell: VTK Lagrange at order 3 and up, else the linear or
@@ -1513,7 +2480,8 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
     std::vector<std::vector<MfField>> fields(rParts.size());
     std::vector<std::size_t> point_gfs;  // indices into mGfs
     for (std::size_t g = 0; g < ngfs; ++g)
-        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1)
+        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1 ||
+            rParts[0].mGfs[g]->mSpace.mKind == MfSpace::Nurbs)
             point_gfs.push_back(g);
     for (std::size_t q = 0; q < rParts.size(); ++q) {
         const MfPart& part = rParts[q];
@@ -1527,6 +2495,14 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
                                 " in a " + std::to_string(dim) + "-D mesh of order " +
                                 std::to_string(Order) + " (line " + std::to_string(el.mLine) + ")");
         ents[q] = mf_entities(f.mElements, dim);
+        if (part.mEval) {  // values come from the part itself
+            for (std::size_t c : part.mEvalComponents) {
+                MfField fld;
+                fld.mComponents = c;
+                fields[q].push_back(std::move(fld));
+            }
+            continue;
+        }
         MfField xyz;
         xyz.mComponents = sdim;
         if (part.mNodesH1) {
@@ -1636,6 +2612,20 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
                 any = any || !known[id];
             if (!any)
                 continue;
+            if (rParts[q].mEval) {
+                std::vector<std::vector<double>> vals;
+                rParts[q].mEval(e, vals);
+                for (std::size_t k = 0; k < nfields; ++k) {
+                    const std::size_t nc = fields[q][k].mComponents;
+                    for (std::size_t t = 0; t < ids.size(); ++t)
+                        if (!known[ids[t]])
+                            for (std::size_t c = 0; c < nc; ++c)
+                                values[k][ids[t] * nc + c] = vals[k][t * nc + c];
+                }
+                for (std::size_t id : ids)
+                    known[id] = true;
+                continue;
+            }
             if (el.mGeom == 7) {  // a linear pyramid: its vertices
                 for (std::size_t k = 0; k < nfields; ++k) {
                     const MfField& fld = fields[q][k];
@@ -1684,7 +2674,7 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
     // Vertices no element holds keep their own coordinates; a boundary node on
     // no element face is placed from its corners.
     for (const MfPart& part : rParts)
-        for (std::size_t v = 0; v < part.mGlobal.size(); ++v) {
+        for (std::size_t v = 0; v < part.mGlobal.size() && !part.mEval; ++v) {
             const auto g = static_cast<std::size_t>(part.mGlobal[v]);
             if (known[g])
                 continue;
@@ -1695,7 +2685,7 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
     std::size_t orphans = 0;
     for (std::size_t q = 0; q < rParts.size(); ++q) {
         const MfPart& part = rParts[q];
-        for (std::size_t b = 0; b < part.mpF->mBoundary.size(); ++b) {
+        for (std::size_t b = 0; b < part.mpF->mBoundary.size() && !part.mEval; ++b) {
             const MfElement& el = part.mpF->mBoundary[b];
             if (el.mGeom == 0 || el.mGeom == 7)
                 continue;
@@ -1805,7 +2795,8 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
     }
     // Element-wise grid functions: each part's values on its elements.
     for (std::size_t g = 0; g < ngfs; ++g) {
-        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1)
+        if (rParts[0].mGfs[g]->mSpace.mKind == MfSpace::H1 ||
+            rParts[0].mGfs[g]->mSpace.mKind == MfSpace::Nurbs)
             continue;
         const std::size_t vdim = static_cast<std::size_t>(rParts[0].mGfs[g]->mSpace.mVDim);
         std::vector<double> per_cell(global * vdim, std::numeric_limits<double>::quiet_NaN());
@@ -1853,6 +2844,79 @@ Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, b
     for (std::size_t v = 0; v < rF.mNumVertices; ++v)
         part.mGlobal[v] = static_cast<std::int64_t>(v);
     return mf_read_parts({part}, rF.mNumVertices, Order, false, rPath);
+}
+
+// A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear and
+// quadratic ones) of the highest knot-vector order, their nodes the rational
+// patch geometry at the cell's lattice; NURBS grid functions on the mesh's own
+// space the same way, element-wise ones as cell data.
+Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
+                   const std::string& rPath) {
+    const std::vector<MfNurbsElement> elements = rN.Elements();
+    std::vector<double> weights, xyz;
+    int sdim = 0;
+    rN.ControlPoints(weights, xyz, sdim);
+    int order = 1;
+    for (const auto& row : rN.mCompr)
+        for (const MfKnotVector& kv : row)
+            order = std::max(order, kv.mOrder);
+    std::vector<MfGridData> gfs;
+    std::vector<std::vector<double>> tables;  // NURBS grid functions, dof-major
+    std::vector<std::size_t> components = {static_cast<std::size_t>(sdim)};
+    const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
+    for (const MfemGridFunction& gf : rGridFunctions) {
+        MfGridData g = mf_parse_gf(gf);
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        if (g.mSpace.mKind == MfSpace::Nurbs && g.mValues.size() == ndofs * vdim) {
+            std::vector<double> t(ndofs * vdim);
+            for (std::size_t d = 0; d < ndofs; ++d)
+                for (std::size_t c = 0; c < vdim; ++c)
+                    t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
+            tables.push_back(std::move(t));
+            components.push_back(vdim);
+            gfs.push_back(std::move(g));
+        } else if ((g.mSpace.mKind == MfSpace::L2 || g.mSpace.mKind == MfSpace::L2T1) &&
+                   g.mSpace.mOrder == 0) {
+            gfs.push_back(std::move(g));
+        } else {
+            log::warn(
+                "MFEM grid function '{}': the '{}' space is not the NURBS mesh's own nor "
+                "element-wise; skipped",
+                gf.mPath, g.mSpace.mCollection);
+        }
+    }
+    MfFile f;
+    f.mDim = rN.mDim;
+    f.mSpaceDim = sdim;
+    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
+    for (const MfNurbsElement& el : elements)
+        f.mElements.push_back(el.mElement);
+    f.mBoundary = rN.Boundary();
+
+    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
+    std::vector<std::array<double, 3>> refs;
+    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
+        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
+                        static_cast<double>(ijk[2]) / order});
+    std::vector<std::vector<double>> nurbs_tables;  // the coordinates, then each field
+    nurbs_tables.push_back(std::move(xyz));
+    for (auto& t : tables)
+        nurbs_tables.push_back(std::move(t));
+
+    MfPart part;
+    part.mpF = &f;
+    for (const MfGridData& g : gfs)
+        part.mGfs.push_back(&g);
+    part.mGlobal.resize(f.mNumVertices);
+    for (std::size_t v = 0; v < f.mNumVertices; ++v)
+        part.mGlobal[v] = static_cast<std::int64_t>(v);
+    part.mEvalComponents = components;
+    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
+        rOut.resize(nurbs_tables.size());
+        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
+            rN.Evaluate(weights, nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
+    };
+    return mf_read_parts({part}, f.mNumVertices, order, false, rPath);
 }
 
 // `<prefix>.NNNNNN`: the rank a parallel-mesh file name carries, or -1.
@@ -2162,6 +3226,11 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
 Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
                const ReadOptions& rOptions) {
     MfFile f = mf_parse(rPath);
+    if (f.mpNurbs) {
+        if (rOptions.mPieceSet && rOptions.mPiece != 0)
+            throw ReadError("MFEM mesh: " + rPath + " is not parallel; its only piece is 0");
+        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath);
+    }
     if (f.mParallel || mf_rank_siblings(rPath))
         return mf_read_parallel(rPath, std::move(f), rGridFunctions, rOptions);
     if (rOptions.mPieceSet && rOptions.mPiece != 0)
