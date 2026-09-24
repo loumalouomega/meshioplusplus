@@ -169,3 +169,26 @@ def test_sniff_and_dispatch(tmp_path):
     assert meshioplusplus.sniff_format(path) == "radioss"
     assert _core.sniff_format(str(path)) == "radioss"
     assert meshioplusplus.read(MESHES / "old_0000.rad").cells[0].type == "hexahedron"
+
+
+@pytest.mark.parametrize("name", ["gmsh_hex20", "gmsh_tet10"])
+def test_gmsh_written_decks_match_their_msh_twins(read, name):
+    """gmsh writes Radioss's own node order (``getVertexRAD``); read back, every
+    cell has the nodes, in meshio++'s order, of the same cell in gmsh's .msh."""
+    rad = read(MESHES / f"{name}_0000.rad")
+    msh = meshioplusplus.read(MESHES / f"{name}.msh")
+    (block,) = rad.cells
+    (twin,) = [c for c in msh.cells if c.type == block.type]
+    corners = 8 if block.type == "hexahedron20" else 4
+
+    def by_corners(mesh, rows):
+        pts = np.round(np.asarray(mesh.points), 4)  # .rad keeps 6 digits
+        return {tuple(sorted(map(tuple, pts[row[:corners]]))): pts[row] for row in rows}
+
+    ours = by_corners(rad, np.asarray(block.data))
+    theirs = by_corners(msh, np.asarray(twin.data))
+    assert len(ours) == len(theirs) == len(block.data)
+    for key, nodes in ours.items():
+        np.testing.assert_allclose(nodes, theirs[key], atol=1e-4)
+    for row in np.asarray(block.data):
+        assert _is_valid(np.asarray(rad.points)[row], block.type)

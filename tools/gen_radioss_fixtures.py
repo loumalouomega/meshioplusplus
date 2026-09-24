@@ -25,6 +25,11 @@ and text after ``/END`` that must not be read.
 ``old_0000.rad`` is a format-44 deck (8/16 columns): one brick, its part and a
 node group.
 
+``gmsh_hex20_0000.rad``/``gmsh_tet10_0000.rad`` are written by gmsh (its own
+Radioss exporter, ``getVertexRAD``) for a small box, with the same meshes as gmsh
+``.msh`` files beside them; they are regenerated only when the ``gmsh`` Python
+module is importable (``--gmsh``).
+
     python tools/gen_radioss_fixtures.py
 """
 
@@ -220,10 +225,38 @@ def old_deck():
     (OUT / "old_0000.rad").write_text("".join(lines))
 
 
+def gmsh_decks():
+    import gmsh
+
+    for name, hexes in (("gmsh_hex20", True), ("gmsh_tet10", False)):
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.occ.addBox(0, 0, 0, 2, 1, 1)
+        gmsh.model.occ.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 1.0)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 1.0)
+        if hexes:
+            # A structured 2 x 1 x 1 grid of serendipity hexahedra.
+            gmsh.model.mesh.setTransfiniteAutomatic()
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Recombine3DAll", 1)
+            gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
+        gmsh.model.mesh.generate(3)
+        gmsh.model.mesh.setOrder(2)
+        gmsh.model.addPhysicalGroup(3, [1], 7, "body")
+        gmsh.write(str(OUT / f"{name}_0000.rad"))
+        gmsh.write(str(OUT / f"{name}.msh"))
+        gmsh.finalize()
+
+
 def main():
+    import sys
+
     OUT.mkdir(parents=True, exist_ok=True)
     deck()
     old_deck()
+    if "--gmsh" in sys.argv:
+        gmsh_decks()
 
 
 if __name__ == "__main__":

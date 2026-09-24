@@ -65,4 +65,4 @@ Radioss writes animation files (`A001`, …) and time history (`T01`), which mes
 
 ## Validation
 
-The fixtures under `tests/python/meshes/radioss/` are written by `tools/gen_radioss_fixtures.py` from the card layouts of OpenRadioss's `hm_cfg_files`; OpenRadioss's own QA decks are CC BY-NC and are not copied. Outside the repository the reader was run on the 81 starter decks of OpenRadioss's `qa-tests/`: every one reads, both engines agree, and every cell has a positive volume.
+The fixtures under `tests/python/meshes/radioss/` are written by `tools/gen_radioss_fixtures.py` from the card layouts of OpenRadioss's `hm_cfg_files`, plus two decks gmsh wrote, which read to the same cells as gmsh's own `.msh` of the same mesh; OpenRadioss's own QA decks are CC BY-NC and are not copied. Outside the repository the reader was run on the 81 starter decks of OpenRadioss's `qa-tests/`: every one reads, both engines agree, and every cell has a positive volume.
