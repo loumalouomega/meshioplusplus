@@ -1,5 +1,6 @@
-"""Binary Tecplot (.plt) and ordered zones: both engines, checked against the
-ASCII twin of every TecIO-written fixture."""
+"""Binary Tecplot (.plt), ordered and face-based (FEPOLYGON/FEPOLYHEDRON)
+zones: both engines, checked against the ASCII twin of every TecIO-written
+fixture."""
 
 import pathlib
 import struct
@@ -13,7 +14,7 @@ from meshioplusplus.tecplot import _tecplot
 
 HERE = pathlib.Path(__file__).resolve().parent
 PLT = HERE / "meshes" / "tecplot" / "plt"
-NAMES = ["fe_mixed", "fe_2d", "ordered", "transient"]
+NAMES = ["fe_mixed", "fe_2d", "ordered", "transient", "poly_2d", "poly_3d"]
 
 try:
     from meshioplusplus import _core
@@ -35,7 +36,7 @@ def _same(a, b):
     np.testing.assert_array_equal(a.points, b.points)
     assert [c.type for c in a.cells] == [c.type for c in b.cells]
     for ca, cb in zip(a.cells, b.cells):
-        np.testing.assert_array_equal(ca.data, cb.data)
+        assert _cell_lists(ca) == _cell_lists(cb)
     assert set(a.point_data) == set(b.point_data)
     for k in a.point_data:
         np.testing.assert_array_equal(a.point_data[k], b.point_data[k])
@@ -45,6 +46,24 @@ def _same(a, b):
             np.testing.assert_array_equal(x, y)
     key = lambda r: (r.name, r.kind, r.tag, tuple(r.entries))  # noqa: E731
     assert sorted(map(key, a.regions)) == sorted(map(key, b.regions))
+
+
+def _cell_lists(block):
+    """A block's cells as nested lists, ragged or not."""
+    if block.type.startswith("polyhedron"):
+        return [[list(map(int, f)) for f in cell] for cell in block.data]
+    return [list(map(int, row)) for row in block.data]
+
+
+def _volume(points, faces):
+    """Signed volume of a polyhedron (positive when its faces are outward)."""
+    v = 0.0
+    for face in faces:
+        q = points[np.asarray(face)]
+        c = q.mean(axis=0)
+        for i in range(len(q)):
+            v += np.dot(c, np.cross(q[i], q[(i + 1) % len(q)])) / 6.0
+    return v
 
 
 def _steps(name):
@@ -189,14 +208,128 @@ def test_data_formats_and_byte_order(tmp_path, engine, bo, fmt):
 def test_refusals(tmp_path, engine):
     with pytest.raises(ReadError, match="BIT"):
         _read(engine, _write_plt(tmp_path / "bit.plt", [2, 2, 6]))
-    with pytest.raises(ReadError, match="polygonal"):
-        _read(engine, _write_plt(tmp_path / "poly.plt", [2, 2, 2], zone_type=6))
     with pytest.raises(ReadError, match="version"):
         _read(engine, _write_plt(tmp_path / "old.plt", [2, 2, 2], version=b"102"))
     good = _write_plt(tmp_path / "good.plt", [2, 2, 2]).read_bytes()
     (tmp_path / "cut.plt").write_bytes(good[:-10])
     with pytest.raises(ReadError, match="truncated"):
         _read(engine, tmp_path / "cut.plt")
+
+
+# --- face-based zones ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_polygon_zones(engine):
+    mesh = _read(engine, PLT / "poly_2d.plt")
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [("polygon", 3)] * 2
+    # every ring counter-clockwise, starting at its first edge in the file
+    assert _cell_lists(mesh.cells[0]) == [[0, 1, 4, 5], [4, 1, 2, 3, 6], [5, 4, 6, 7]]
+    # the second zone shares X/Y and the face map but owns U: its own points
+    assert _cell_lists(mesh.cells[1]) == [
+        [v + 8 for v in r] for r in _cell_lists(mesh.cells[0])
+    ]
+    np.testing.assert_array_equal(mesh.points[8:], mesh.points[:8])
+    assert [len(q) for q in mesh.cell_data["Q"]] == [3, 3]
+    assert [r.name for r in mesh.regions] == ["polygons", "polygons_again"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_polyhedron_zones(engine):
+    mesh = _read(engine, PLT / "poly_3d.plt")
+    # one block per node count, in first-seen order: the zone's cells are
+    # hex, tet, prism, hex -- so the second hex joins the first block
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [
+        ("polyhedron8", 2),
+        ("polyhedron4", 1),
+        ("polyhedron10", 1),
+        ("polyhedron8", 1),
+    ]
+    vols = [_volume(mesh.points, cell) for c in mesh.cells for cell in c.data]
+    np.testing.assert_allclose(vols, [1, 1, 1 / 6, 2.5 * np.sin(0.4 * np.pi), 1])
+    # cell-centred values follow their cells into the blocks
+    dat = _read(engine, PLT / "poly_3d.dat")
+    p = dat.cell_data["P"]
+    assert [x.tolist() for x in p] == [x.tolist() for x in mesh.cell_data["P"]]
+    zone_regions = {r.name: r.entries.tolist() for r in mesh.regions}
+    assert zone_regions == {"polyhedra": [0, 1, 2, 3], "below": [4]}
+    assert [x.tolist() for x in mesh.cell_data["tecplot:zone"]] == [
+        [0, 0],
+        [0],
+        [0],
+        [1],
+    ]
+
+
+@pytest.mark.skipif(not HAS_CORE, reason="needs the C++ core")
+def test_polyhedron_metadata():
+    meta = meshioplusplus.read_metadata(str(PLT / "poly_3d.plt"))
+    assert [(b["type"], b["num_cells"]) for b in meta["cell_blocks"]] == [
+        ("polyhedron8", 2),
+        ("polyhedron4", 1),
+        ("polyhedron10", 1),
+        ("polyhedron8", 1),
+    ]
+
+
+@pytest.mark.parametrize("writer", ENGINES)
+@pytest.mark.parametrize("reader", ENGINES)
+@pytest.mark.parametrize("name", ["poly_2d", "poly_3d"])
+def test_face_based_zones_round_trip(tmp_path, writer, reader, name):
+    mesh = _read("python", PLT / f"{name}.plt")
+    out = tmp_path / "out.dat"
+    if writer == "core":
+        _core.tecplot_write(str(out), mesh)
+    else:
+        _tecplot.write(str(out), mesh)
+    text = out.read_text()
+    assert ("FEPOLYHEDRON" if name == "poly_3d" else "FEPOLYGON") in text
+    back = _read(reader, out)
+    np.testing.assert_allclose(back.points, mesh.points)
+    assert [c.type for c in back.cells] == [c.type for c in mesh.cells]
+    for a, b in zip(back.cells, mesh.cells):
+        assert _cell_lists(a) == _cell_lists(b)
+    for a, b in zip(
+        back.cell_data["P" if name == "poly_3d" else "Q"],
+        mesh.cell_data["P" if name == "poly_3d" else "Q"],
+    ):
+        np.testing.assert_allclose(a, b)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_face_based_refusals(tmp_path, engine):
+    head = 'VARIABLES = "X" "Y"\n'
+    square = "0 1 1 0\n0 0 1 1\n"
+    # an open ring: three edges of a square
+    open_ring = (
+        head
+        + "ZONE ZONETYPE=FEPOLYGON, NODES=4, ELEMENTS=1, FACES=3\n"
+        + square
+        + "1 2\n2 3\n3 4\n1 1 1\n0 0 0\n"
+    )
+    (tmp_path / "open.dat").write_text(open_ring)
+    with pytest.raises(ReadError, match="closed polygon"):
+        _read(engine, tmp_path / "open.dat")
+    bad_node = (
+        head
+        + "ZONE ZONETYPE=FEPOLYGON, NODES=4, ELEMENTS=1, FACES=4\n"
+        + square
+        + "1 2\n2 3\n3 4\n4 9\n1 1 1 1\n0 0 0 0\n"
+    )
+    (tmp_path / "node.dat").write_text(bad_node)
+    with pytest.raises(ReadError, match="out of range"):
+        _read(engine, tmp_path / "node.dat")
+    no_faces = head + "ZONE ZONETYPE=FEPOLYHEDRON, NODES=4, ELEMENTS=1\n" + square
+    (tmp_path / "nofaces.dat").write_text(no_faces)
+    with pytest.raises(ReadError, match="FACES"):
+        _read(engine, tmp_path / "nofaces.dat")
+    point = (
+        head + "ZONE ZONETYPE=FEPOLYGON, NODES=4, ELEMENTS=1, FACES=4, "
+        "DATAPACKING=POINT\n0 0\n1 0\n1 1\n0 1\n1 2\n2 3\n3 4\n4 1\n1 1 1 1\n0 0 0 0\n"
+    )
+    (tmp_path / "point.dat").write_text(point)
+    with pytest.raises(ReadError, match="BLOCK"):
+        _read(engine, tmp_path / "point.dat")
 
 
 # --- ASCII ordered forms ------------------------------------------------------------------

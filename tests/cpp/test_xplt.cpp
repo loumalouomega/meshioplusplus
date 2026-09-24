@@ -315,3 +315,54 @@ TEST(Xplt, ReadsSurfaceBlocksAndRemeshedStates) {
     EXPECT_EQ(detail::read_double(second.Points(), 0), 10.0);
     EXPECT_EQ(read_xplt_metadata(path).mTimeValues, (std::vector<double>{0.5, 1.0}));
 }
+
+TEST(Xplt, EdgeVariablesRideOnLineBlocks) {
+    // The two tets plus an edge "rim" of two segments (nodes 0-1, 1-4), with a
+    // per-node edge variable (edge-local nodes first seen: 0, 1, 4) and a
+    // per-segment one.
+    const Plt p;
+    std::vector<std::string> chunks = plot_chunks(p, 0x35, false);
+    const std::string edge_dict = p.Chunk(0x01026000, p.Item(0, 0, "gap") + p.Item(0, 1, "len"));
+    // Splice the edge dictionary into the root chunk (header + dictionary).
+    {
+        const std::string root = chunks[0].substr(8);
+        const std::size_t dict_at = root.find(p.U32(0x01020000));
+        ASSERT_NE(dict_at, std::string::npos);
+        const std::string dict_body = root.substr(dict_at + 8) + edge_dict;
+        chunks[0] = p.Chunk(0x01000000, root.substr(0, dict_at) + p.Chunk(0x01020000, dict_body));
+    }
+    const std::string lines =
+        p.Chunk(0x01048201, p.U32(1) + p.U32(2) + p.U32(0) + p.U32(1) + p.U32(0)) +
+        p.Chunk(0x01048201, p.U32(1) + p.U32(2) + p.U32(1) + p.U32(4) + p.U32(0));
+    const std::string edges =
+        p.Chunk(0x01048000,
+                p.Chunk(0x01048100, p.Chunk(0x01048101, p.Chunk(0x01048102, p.U32(2)) +
+                                                            p.Chunk(0x01048104, p.U32(3) + "rim")) +
+                                        p.Chunk(0x01048200, lines)));
+    chunks[1] = p.Chunk(0x01040000, chunks[1].substr(8) + edges);
+    // A state holding only the edge data.
+    chunks.resize(2);
+    chunks.push_back(p.Chunk(
+        0x02000000,
+        p.Chunk(0x02010000, p.Chunk(0x02010002, p.F32(1.0F)) + p.Chunk(0x02010003, p.U32(0))) +
+            p.Chunk(0x02020000, p.Chunk(0x02020600, p.Var(1, 1, {0.1F, 0.2F, 0.3F}) +
+                                                        p.Var(2, 1, {5.0F, 6.0F})))));
+    const std::string path = write_plot(chunks, p, false);
+    const Mesh m = read_xplt(path);
+    ASSERT_EQ(m.NumCellBlocks(), 2u);
+    EXPECT_EQ(m.Cells(1).Type(), "line");
+    const std::int64_t* c = m.Cells(1).Conn().As<std::int64_t>();
+    EXPECT_EQ(std::vector<std::int64_t>(c, c + 4), (std::vector<std::int64_t>{0, 1, 1, 4}));
+    const NDArray& gap = m.PointData("gap");
+    EXPECT_FLOAT_EQ(static_cast<float>(detail::read_double(gap, 0)), 0.1F);
+    EXPECT_FLOAT_EQ(static_cast<float>(detail::read_double(gap, 4)), 0.3F);
+    EXPECT_TRUE(std::isnan(detail::read_double(gap, 2)));
+    EXPECT_EQ(detail::read_double(m.CellData("len", 1), 1), 6.0);
+    EXPECT_TRUE(std::isnan(detail::read_double(m.CellData("len", 0), 0)));
+    EXPECT_EQ(detail::read_int(m.CellData("xplt:edge", 1), 0), 1);
+    EXPECT_EQ(detail::read_int(m.CellData("xplt:edge", 0), 0), 0);
+    const std::size_t rim = m.FindRegion("rim", RegionKind::Cell);
+    ASSERT_NE(rim, Mesh::npos);
+    EXPECT_EQ(m.Region(rim).mDim, 1);
+    EXPECT_EQ(m.Region(rim).NumEntries(), 2u);
+}

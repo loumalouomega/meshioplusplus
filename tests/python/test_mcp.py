@@ -153,6 +153,9 @@ def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_p
     with open(h5, "rb") as f:
         if f.read(24).startswith(b"version https://git-lfs"):
             pytest.skip("modes_elements.h5 is an unfetched Git-LFS pointer")
+    # Without HDF5 in the core the read falls back to the Python twin, on h5py.
+    if not getattr(meshioplusplus._core, "__has_hdf5__", False):
+        pytest.importorskip("h5py")
     target = str(tmp_path / "mode3.vtu")
     _tools.tool_convert(str(h5), target, time_step=-1)
     written = meshioplusplus.read(target)
@@ -247,6 +250,39 @@ def test_elmer_directory_converts_both_ways(tmp_path):
     assert (back / "mesh.header").is_file()
     written = meshioplusplus.read(back)
     assert [b.type for b in written.cells] == ["tetra10", "triangle6", "vertex"]
+
+
+def test_mfem_parallel_convert(tmp_path):
+    # A parallel MFEM run (v16.11.0): merged by default, one rank with `piece`,
+    # its grid function named by a rank file either way.
+    import pathlib
+
+    par = pathlib.Path(__file__).parent / "meshes" / "mfem" / "parallel"
+    whole, rank = str(tmp_path / "whole.vtu"), str(tmp_path / "rank1.vtu")
+    gfs = {"u": str(par / "star-p2.u.000000")}
+    _tools.tool_convert(str(par / "star-p2.pmesh.000000"), whole, grid_functions=gfs)
+    _tools.tool_convert(
+        str(par / "star-p2.pmesh.000000"), rank, grid_functions=gfs, piece=1
+    )
+    merged, one = meshioplusplus.read(whole), meshioplusplus.read(rank)
+    parts = np.concatenate([np.ravel(a) for a in merged.cell_data["partition:part"]])
+    assert sorted(set(parts.tolist())) == [0, 1, 2, 3]
+    assert sum(len(c.data) for c in one.cells) == int((parts == 1).sum())
+    assert "u" in one.point_data
+
+
+def test_elmer_halo_convert(tmp_path):
+    import pathlib
+
+    src = pathlib.Path(__file__).parent / "meshes" / "elmer" / "partitioned"
+    out = tmp_path / "halo"
+    _tools.tool_convert(
+        str(src / "partitioning.2"), str(out), output_format="elmer", elmer_halo=True
+    )
+    elements = (out / "partitioning.2" / "part.2.elements").read_text()
+    assert "1/1 " in elements
+    with pytest.raises(ValueError, match="Elmer"):
+        _tools.tool_convert(str(src), str(tmp_path / "x.vtu"), elmer_halo=True)
 
 
 def test_febio_feb_is_readable_writable_and_converts(tmp_path):
@@ -1881,8 +1917,9 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     for fmt in ("libmesh", "z88", "abaqus_fil", "radioss"):
         assert fmt in out["readable"], fmt
     assert "z88" in out["writable"]
-    assert out["extensions"][".xda"] == ["libmesh"]
-    assert out["extensions"][".xdr"] == ["libmesh"]
+    assert "libmesh" in out["writable"]  # v16.11.0
+    for ext in (".xda", ".xdr", ".xda.gz", ".xdr.gz", ".xda.bz2", ".xdr.bz2"):
+        assert out["extensions"][ext] == ["libmesh"], ext
     assert out["extensions"][".fil"] == ["abaqus_fil"]
     assert out["extensions"][".rad"] == ["radioss"]
     fil = meshes / "abaqus_fil" / "model_le.fil"
@@ -1898,8 +1935,16 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     back = str(tmp_path / "out" / "z88i1.txt")
     _tools.tool_convert(str(meshes / "libmesh" / "one_hex.xdr"), back)
     assert meshioplusplus.read(back).cells[0].type == "hexahedron"
+    xdr = str(tmp_path / "back.xdr.gz")
+    _tools.tool_convert(str(meshes / "libmesh" / "one_hex.xdr"), xdr)
+    assert meshioplusplus.read(xdr).cells[0].type == "hexahedron"
     rad = meshes / "radioss" / "old_0000.rad"
     assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8
+    # OpenRadioss animation files (v16.11.0): read-only, found by name.
+    assert "radioss_anim" in out["readable"] and "radioss_anim" not in out["writable"]
+    anim = str(meshes / "radioss_anim" / "cubeA002")
+    assert _dump(_tools.tool_sniff(anim))["format"] == "radioss_anim"
+    assert _dump(_tools.tool_info(anim))["num_points"] == 15
 
 
 def test_d3plot_and_op2_formats(tmp_path):

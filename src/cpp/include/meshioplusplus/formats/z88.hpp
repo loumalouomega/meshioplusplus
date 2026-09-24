@@ -19,7 +19,7 @@
 /**
  * @file z88.hpp
  * @brief Z88 / Z88Aurora structure file (`z88i1.txt`) reader/writer, with the
- *        `z88o2.txt` displacements and `z88o3.txt` stresses.
+ *        rest of the deck and the `z88o2`/`z88o3`/`z88o4` results.
  *
  * Z88's files have fixed names, so dispatch is by basename (`is_z88_filename`),
  * ahead of the `.txt` extension that belongs to the xyz reader.
@@ -40,12 +40,19 @@
  * list their faces top first (`"z88"` tables of `detail/node_order.hpp`), and
  * tet10's last three mid-edge nodes run 2-4, 3-4, 1-4.
  *
- * Results next to the structure file are attached on read: `z88o2.txt` as
- * `point_data["U"]` (2, 3 or 6 columns, the widest node's; NaN where a node has
- * fewer), and the solid and plane-stress blocks of `z88o3.txt` as the
- * element's mean stress: `cell_data["SIG"]` (XX YY ZZ XY YZ ZX in 3-D, XX YY XY
- * in 2-D) and `cell_data["SIGV"]` when the file has the equivalent stress. Other
- * element families' stress blocks (beams, plates, shells, tori) are skipped.
+ * The rest of the deck next to it is attached on read: `z88i2.txt` constraints
+ * as `point_data["z88:bc:u"]` (prescribed displacements) and `["z88:bc:f"]`
+ * (nodal forces), NaN where a degree of freedom has none; `z88mat.txt` and its
+ * material files as `z88:material`, `z88:E`, `z88:nu`; `z88elp.txt` as
+ * `z88:elp` (12 columns, NaN for fields a row leaves out); `z88int.txt` as
+ * `z88:int`; Z88Aurora's `z88sets.txt` element and node sets as regions.
+ *
+ * With `Results`: `z88o2.txt` as `point_data["U"]` (2, 3 or 6 columns, the
+ * widest node's; NaN where a node has fewer), the nodal sums of `z88o4.txt` as
+ * `point_data["F"]`, and `z88o3.txt` as the element means of its labelled
+ * columns: `cell_data["SIG"]` (XX YY ZZ XY YZ ZX in 3-D, XX YY XY in 2-D) for
+ * solids and plane-stress elements, one scalar array per label for the other
+ * families (beams, shafts, trusses, tori, plates, shells) and `SIGV` for all.
  * See doc/formats/z88.md.
  */
 
@@ -69,8 +76,8 @@ MESHIOPLUSPLUS_API bool is_z88_filename(const std::string& rPath);
  *
  * @param rPath the `z88i1.txt` (or `z88structure.txt`) to read; a `z88o2.txt`
  *        or `z88o3.txt` path reads the structure file next to it
- * @param Results whether to attach `z88o2.txt`/`z88o3.txt` from the same
- *        directory
+ * @param Results whether to attach `z88o2.txt`/`z88o3.txt`/`z88o4.txt` from
+ *        the same directory (the input files are attached either way)
  * @return the mesh
  * @throws ReadError if the file can't be read, is truncated, a field is
  *         malformed, an element names an undefined node or has an unknown type
@@ -83,14 +90,17 @@ MESHIOPLUSPLUS_API Mesh read_z88(const std::string& rPath, bool Results = true);
  * The element type comes from the `z88:type` cell data when it is compatible
  * with the cell, else from the cell type (hexahedron 1, hexahedron20 10,
  * tetra 17, tetra10 16, triangle6 14, quad8 7, triangle 6 (2-D only), line 4 in
- * 3-D and 9 in 2-D). Other cells, regions and data arrays are dropped with a
- * warning and a provenance note. The dimension is 2 when every z coordinate is
- * zero and no cell is 3-D.
+ * 3-D and 9 in 2-D). The `z88:` constraint, material, element parameter and
+ * integration arrays are written back as `z88i2.txt`, `z88mat.txt` with one
+ * `<n>.txt` per material, `z88elp.txt` and `z88int.txt` next to it. Other
+ * cells, regions and data arrays are dropped with a warning and a provenance
+ * note. The dimension is 2 when every z coordinate is zero, no cell is 3-D and
+ * no kept `z88:type` exists only in 3-D files.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param Stubs also write empty `z88i2.txt` (no constraints) and `z88i5.txt`
- *        (no surface loads) next to it, so the deck is complete
+ * @param Stubs also write an empty `z88i5.txt` (no surface loads), and an
+ *        empty `z88i2.txt` when the mesh has no constraints
  * @throws WriteError if nothing is left to write
  */
 MESHIOPLUSPLUS_API void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs = false);

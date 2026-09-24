@@ -17,7 +17,7 @@ import numpy as np
 
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError
-from .._facets import FacetIndex
+from .._facets import FacetIndex, facet_nodes
 from .._mesh import Mesh, topological_dimension
 from .._node_order import node_order
 from .._regions import Region
@@ -56,6 +56,18 @@ _GROUPS = {
 }
 
 _UNREAD = ("TSHELL", "TSH3N", "SHEL16", "SPHCEL", "RIVET", "XELEM")
+
+_SURF_KINDS = (
+    "PART",
+    "SUBSET",
+    "MAT",
+    "PROP",
+    "GRBRIC",
+    "GRSHEL",
+    "GRSH3N",
+    "GRTRIA",
+    "SURF",
+)
 
 
 def _collect(path, depth, out):
@@ -139,6 +151,97 @@ def _real(text, where):
         raise ReadError(f"Radioss: bad real field '{text}' ({where})")
 
 
+_IMPERIAL = {"in": 0.0254, "ft": 0.3048, "yd": 0.9144, "mi": 1609.344}
+_SI_PREFIXES = {
+    "": 1.0,
+    "y": 1e-24,
+    "z": 1e-21,
+    "a": 1e-18,
+    "f": 1e-15,
+    "p": 1e-12,
+    "n": 1e-9,
+    "mu": 1e-6,
+    "m": 1e-3,
+    "c": 1e-2,
+    "d": 1e-1,
+    "da": 1e1,
+    "h": 1e2,
+    "k": 1e3,
+    "M": 1e6,
+    "G": 1e9,
+    "T": 1e12,
+    "P": 1e15,
+    "E": 1e18,
+    "Z": 1e21,
+    "Y": 1e24,
+}
+
+
+def _length_unit(unit):
+    """A /BEGIN length unit in metres (an SI prefix and "m", a few imperial
+    names, or a number); 0 when unknown."""
+    if not unit:
+        return 0.0
+    if unit in _IMPERIAL:
+        return _IMPERIAL[unit]
+    if unit.endswith("m") and unit[:-1] in _SI_PREFIXES:
+        return _SI_PREFIXES[unit[:-1]]
+    try:
+        return _real(unit, "")
+    except ReadError:
+        return 0.0
+
+
+def _slice(line, at, width, comma_field):
+    """A fixed-width slice of a line (the comma field when the line has commas)."""
+    if "," in line:
+        f = [x.strip(" \t\r") for x in line.split(",")]
+        return f[comma_field] if comma_field < len(f) else ""
+    return line[at : at + width].strip(" \t\r")
+
+
+def _in_box(boxes, ident, x, node_point, skewed, missing, depth=0):
+    """Whether point `x` is inside box `ident` (/BOX/BOX: its positive boxes,
+    minus its negative ones; a skewed box contains nothing)."""
+    b = boxes.get(ident)
+    if b is None or depth > 16:
+        missing.add(ident)
+        return False
+    kind = b["kind"]
+    if kind == "BOX":
+        inside = any(
+            _in_box(boxes, c, x, node_point, skewed, missing, depth + 1)
+            for c in b["children"]
+            if c > 0
+        )
+        if inside and any(
+            _in_box(boxes, -c, x, node_point, skewed, missing, depth + 1)
+            for c in b["children"]
+            if c < 0
+        ):
+            inside = False
+        return inside
+    if b["skew"]:
+        skewed.add(ident)
+        return False
+    p1 = node_point(b["n1"], b["p1"])
+    if kind == "SPHER":
+        return sum((x[d] - p1[d]) ** 2 for d in range(3)) <= 0.25 * b["diameter"] ** 2
+    p2 = node_point(b["n2"], b["p2"])
+    if kind == "RECTA":
+        return all(min(p1[d], p2[d]) <= x[d] <= max(p1[d], p2[d]) for d in range(3))
+    if kind == "CYLIN":
+        a = [p2[d] - p1[d] for d in range(3)]
+        q = [x[d] - p1[d] for d in range(3)]
+        aa = sum(v * v for v in a)
+        qa = sum(q[d] * a[d] for d in range(3))
+        if aa == 0.0 or qa < 0.0 or qa > aa:
+            return False
+        r2 = sum((q[d] - qa / aa * a[d]) ** 2 for d in range(3))
+        return r2 <= 0.25 * b["diameter"] ** 2
+    return False
+
+
 def read(filename):
     path = os.fspath(filename)
     try:
@@ -161,8 +264,12 @@ def read(filename):
     parts = {}
     part_order = []
     groups = []  # (keyword, subtype, title, id, ids)
-    surfaces = []  # (id, title, segments)
+    # {id, title, segs, kind (SEG, PART, SUBSET, MAT, PROP, GRBRIC, GRSHEL,
+    # GRSH3N, GRTRIA, SURF), mode (EXT, ALL, FREE or ""), ids}
+    surfaces = []
     subsets = {}
+    boxes = {}
+    length_scale = 1.0
     skipped_keywords = set()
     zero_springs = linear_bric20 = 0
 
@@ -180,7 +287,12 @@ def read(filename):
         while end < n and (not lines[end][0] or lines[end][0][0] != "/"):
             end += 1
 
+        # The keyword's id: its first integer field (`/BOX/RECTA/3/1` is box 3 in
+        # unit system 1; `/SURF/PART/EXT/12` is surface 12).
         def last_id():
+            for part in path_[1:]:
+                if part and all(ch in "+-0123456789" for ch in part):
+                    return _int(part, where)
             return _int(path_[-1], where) if len(path_) >= 2 else 0
 
         if key == "BEGIN":
@@ -189,6 +301,81 @@ def read(filename):
                 if f and f[0]:
                     version = _int(f[0], lines[body + 1][1])
             iw, rw = (10, 20) if version >= 51 else (8, 16)
+            # Input and work units (mass, length, time; 20 columns each): the
+            # solver works in the work units, so lengths are converted.
+            if body + 2 < end:
+                unit_in = _fields(lines[body + 2][0], 20, 3)
+                work = _fields(lines[body + 3][0], 20, 3) if body + 3 < end else []
+                li = unit_in[1] if len(unit_in) > 1 else ""
+                lw = work[1] if len(work) > 1 and work[1] else li
+                fi, fw = _length_unit(li), _length_unit(lw)
+                if li and (fi <= 0.0 or fw <= 0.0):
+                    warn(
+                        f"Radioss: unknown length unit '{li if fi <= 0.0 else lw}' in "
+                        "/BEGIN; lengths are read as written"
+                    )
+                elif li:
+                    length_scale = fi / fw
+        elif key == "BOX" and len(path_) >= 3:
+            kind = path_[1]
+            b = {
+                "kind": kind,
+                "skew": 0,
+                "n1": 0,
+                "n2": 0,
+                "p1": [0.0] * 3,
+                "p2": [0.0] * 3,
+                "diameter": 0.0,
+                "children": [],
+            }
+            k = body + 1  # past the title
+
+            def real3(line_no):
+                if line_no >= end:
+                    return [0.0] * 3
+                f = _fields(lines[line_no][0], rw, 3)
+                return [
+                    (
+                        _real(f[d], lines[line_no][1]) * length_scale
+                        if d < len(f) and f[d]
+                        else 0.0
+                    )
+                    for d in range(3)
+                ]
+
+            def int_at(line_no, field):
+                if line_no >= end:
+                    return 0
+                t = _slice(lines[line_no][0], field * iw, iw, field)
+                return _int(t, lines[line_no][1]) if t else 0
+
+            def diameter(line_no):
+                if line_no >= end:
+                    return 0.0
+                t = _slice(lines[line_no][0], 3 * iw, rw, 2 if kind == "SPHER" else 3)
+                return _real(t, lines[line_no][1]) * length_scale if t else 0.0
+
+            if kind == "RECTA":
+                b["n1"], b["n2"], b["skew"] = int_at(k, 0), int_at(k, 1), int_at(k, 2)
+                b["p1"], b["p2"] = real3(k + 1), real3(k + 2)
+            elif kind == "CYLIN":
+                b["n1"], b["n2"], b["diameter"] = (
+                    int_at(k, 0),
+                    int_at(k, 1),
+                    diameter(k),
+                )
+                b["p1"], b["p2"] = real3(k + 1), real3(k + 2)
+            elif kind == "SPHER":
+                b["n1"], b["diameter"] = int_at(k, 0), diameter(k)
+                b["p1"] = real3(k + 1)
+            elif kind == "BOX":
+                for kk in range(k, end):
+                    for f in _fields(lines[kk][0], iw, 10):
+                        if f:
+                            b["children"].append(_int(f, lines[kk][1]))
+            else:
+                skipped_keywords.add(f"/BOX/{kind}")
+            boxes[last_id()] = b
         elif key == "NODE":
             for k in range(body, end):
                 ln, w = lines[k]
@@ -306,7 +493,37 @@ def read(filename):
                 ]
                 if seg[0] or seg[1] or seg[2]:
                     segs.append(seg)
-            surfaces.append((last_id(), title, segs))
+            surfaces.append(
+                {
+                    "id": last_id(),
+                    "title": title,
+                    "segs": segs,
+                    "kind": "SEG",
+                    "mode": "",
+                    "ids": [],
+                }
+            )
+        elif key == "SURF" and len(path_) >= 3 and path_[1] in _SURF_KINDS:
+            k = body
+            title = ""
+            if k < end:
+                title = lines[k][0].strip(" \t\r")
+                k += 1
+            ids = []
+            for kk in range(k, end):
+                for f in _fields(lines[kk][0], iw, 10):
+                    if f:
+                        ids.append(_int(f, lines[kk][1]))
+            surfaces.append(
+                {
+                    "id": last_id(),
+                    "title": title,
+                    "segs": [],
+                    "kind": path_[1],
+                    "mode": path_[2] if len(path_) >= 4 else "",
+                    "ids": ids,
+                }
+            )
         elif key == "SURF":
             skipped_keywords.add("/SURF/" + (path_[1] if len(path_) > 1 else ""))
         elif key == "SUBSET":
@@ -339,7 +556,7 @@ def read(filename):
         if nid in node_index:
             raise ReadError(f"Radioss: node {nid} is defined twice")
         node_index[nid] = p
-    points = np.array(coords, dtype=np.float64).reshape(-1, 3)
+    points = np.array(coords, dtype=np.float64).reshape(-1, 3) * length_scale
 
     # Tetrahedra come in either winding (every /TETRA4 of OpenRadioss's INT_25 QA
     # deck is inverted, gmsh writes them positive): an inverted one is mirrored.
@@ -373,6 +590,7 @@ def read(filename):
     part_cells = {}
     cell_dim = []
     cell_family = []
+    cell_part = []
     cell_conn = []
     cells = []
     part_blocks, prop_blocks, mat_blocks = [], [], []
@@ -404,6 +622,7 @@ def read(filename):
             part_cells.setdefault(part, []).append(cell)
             cell_dim.append(topological_dimension[t])
             cell_family.append(family)
+            cell_part.append(part)
             cell_conn.append(conn[r].tolist())
         cells.append((t, conn))
         part_blocks.append(pa)
@@ -412,6 +631,8 @@ def read(filename):
 
     mesh = Mesh(points, cells)
     mesh.field_data["radioss:version"] = np.array(version, dtype=np.int64)
+    if length_scale != 1.0:
+        mesh.field_data["radioss:length_scale"] = np.array(length_scale)
     if cells:
         mesh.cell_data["radioss:part"] = part_blocks
         mesh.cell_data["radioss:property"] = prop_blocks
@@ -468,6 +689,11 @@ def read(filename):
     group_of = {(g[0], g[3]): k for k, g in enumerate(groups)}
     skipped_subtypes = set()
     dropped = 0
+    skewed_boxes, missing_boxes = set(), set()
+
+    def node_point(node, fallback):
+        p = node_index.get(node) if node else None
+        return fallback if p is None else points[p].tolist()
 
     def resolve(g, visiting):
         nonlocal dropped
@@ -478,6 +704,27 @@ def read(filename):
         keyword, subtype, _, _, ids = groups[g]
         family = _GROUPS[keyword]
         nodes = family == "NODE"
+        # GENE: `first last` id ranges; GEN_INCR: `first last step`.
+        if subtype in ("GENE", "GEN_INCR"):
+            w = 2 if subtype == "GENE" else 3
+            spans = [ids[k : k + w] for k in range(0, len(ids) - w + 1, w)]
+
+            def take(ident):
+                for span in spans:
+                    first, last = span[0], span[1]
+                    step = span[2] if w == 3 else 1
+                    if (
+                        first <= ident <= last
+                        and step > 0
+                        and (ident - first) % step == 0
+                    ):
+                        return True
+                return False
+
+            source = node_index if nodes else owner.get(family, {})
+            out = {entity for ident, entity in source.items() if take(ident)}
+            visiting.discard(g)
+            return out
         removed = set()
         for raw in ids:
             ident = abs(raw)
@@ -502,10 +749,24 @@ def read(filename):
                             hits.update(cell_conn[c])
                         elif cell_family[c] == family:
                             hits.add(c)
+            elif subtype in ("BOX", "BOX2"):
+                # Nodes inside; elements with all (BOX) or any (BOX2) node inside.
+                def inside(p):
+                    return _in_box(
+                        boxes, ident, points[p], node_point, skewed_boxes, missing_boxes
+                    )
+
+                if nodes:
+                    hits.update(p for p in range(len(points)) if inside(p))
+                else:
+                    for cell in owner.get(family, {}).values():
+                        flags = [inside(p) for p in cell_conn[cell]]
+                        if any(flags) if subtype == "BOX2" else all(flags):
+                            hits.add(cell)
             elif nodes and subtype == "SURF":
-                for sid, _, segs in surfaces:
-                    if sid == ident:
-                        for seg in segs:
+                for surf in surfaces:
+                    if surf["id"] == ident:
+                        for seg in surf["segs"]:
                             for v in seg:
                                 if v and v in node_index:
                                     hits.add(node_index[v])
@@ -544,21 +805,125 @@ def read(filename):
 
     if surfaces:
         facets = FacetIndex(mesh, surface_self=True)
-        for sid, title, segs in surfaces:
-            entries = []
-            for seg in segs:
-                # 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
-                if seg[2] == 0:
-                    count = 2
-                else:
-                    count = 3 if seg[3] == 0 or seg[3] == seg[2] else 4
-                idx = [node_index.get(v) for v in seg[:count]]
-                hit = facets.find(idx) if None not in idx else None
+        surface_of = {}
+        for k, surf in enumerate(surfaces):
+            surface_of.setdefault(surf["id"], k)
+        done = {}
+        model_faces = None
+
+        def solid_faces(cell):
+            out = []
+            f = 0
+            while True:
+                hit = facet_nodes(mesh, cell, f)
                 if hit is None:
-                    dropped += 1
-                    continue
-                entries.append(hit.first)
-            add_region(title or f"SURF_{sid}", "side", sid, "SURF", entries)
+                    return out
+                ftype, fnodes = hit
+                corners = 3 if ftype.startswith("triangle") else 4
+                out.append((f, tuple(sorted(fnodes[:corners]))))
+                f += 1
+
+        def side_set(index, depth):
+            nonlocal dropped, model_faces
+            if index in done:
+                return done[index]
+            surf = surfaces[index]
+            out = set()
+            kind = surf["kind"]
+            if kind == "SURF":
+                minus = set()
+                for raw in surf["ids"]:
+                    sub = surface_of.get(abs(raw))
+                    if sub is None or depth > 16:
+                        dropped += 1
+                        continue
+                    (minus if raw < 0 else out).update(side_set(sub, depth + 1))
+                out -= minus
+            elif kind == "SEG":
+                for seg in surf["segs"]:
+                    # 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
+                    if seg[2] == 0:
+                        count = 2
+                    else:
+                        count = 3 if seg[3] == 0 or seg[3] == seg[2] else 4
+                    idx = [node_index.get(v) for v in seg[:count]]
+                    hit = facets.find(idx) if None not in idx else None
+                    if hit is None:
+                        dropped += 1
+                        continue
+                    out.add(tuple(hit.first))
+            else:
+                # The cells the surface draws from.
+                cells = set()
+                if kind.startswith("GR"):
+                    for raw in surf["ids"]:
+                        sub = group_of.get((kind, abs(raw)))
+                        if sub is None:
+                            dropped += 1
+                            continue
+                        cells.update(resolve(sub, set()))
+                else:
+                    for raw in surf["ids"]:
+                        ident = abs(raw)
+                        closure = subset_closure(ident) if kind == "SUBSET" else set()
+                        for c, pid in enumerate(cell_part):
+                            part = parts[pid]
+                            if kind == "PART":
+                                pick = pid == ident
+                            elif kind == "SUBSET":
+                                pick = part[3] in closure
+                            elif kind == "MAT":
+                                pick = part[2] == ident
+                            else:
+                                pick = part[1] == ident
+                            if pick:
+                                cells.add(c)
+                # Shells: their own face. Solids: with EXT the faces no other
+                # chosen solid shares, with FREE those no solid of the model
+                # shares, with ALL every face (GRBRIC without a mode: EXT).
+                mode = "EXT" if kind == "GRBRIC" and not surf["mode"] else surf["mode"]
+                chosen = {}
+                solids = []
+                for c in sorted(cells):
+                    if cell_family[c] in ("SHEL", "SH3N", "TRIA"):
+                        out.add((c, 0))
+                    elif cell_dim[c] == 3 and mode:
+                        faces = solid_faces(c)
+                        solids.append((c, faces))
+                        for _, key in faces:
+                            chosen[key] = chosen.get(key, 0) + 1
+                if mode == "FREE" and model_faces is None:
+                    model_faces = {}
+                    for c in range(len(cell_dim)):
+                        if cell_dim[c] == 3:
+                            for _, key in solid_faces(c):
+                                model_faces[key] = model_faces.get(key, 0) + 1
+                for c, faces in solids:
+                    for f, key in faces:
+                        if mode == "FREE":
+                            shared = model_faces[key]
+                        elif mode == "EXT":
+                            shared = chosen[key]
+                        else:
+                            shared = 1
+                        if shared == 1:
+                            out.add((c, f))
+            done[index] = out
+            return out
+
+        for index, surf in enumerate(surfaces):
+            entries = sorted(side_set(index, 0))
+            add_region(
+                surf["title"] or f"SURF_{surf['id']}",
+                "side",
+                surf["id"],
+                "SURF",
+                entries,
+            )
+    for t in sorted(skewed_boxes):
+        warn(f"Radioss: skewed /BOX {t} is not supported; it contains nothing")
+    for t in sorted(missing_boxes):
+        warn(f"Radioss: /BOX {t} is not defined; it contains nothing")
     if dropped:
         warn(
             f"Radioss: {dropped} group or surface entries name undefined ids or no cell "

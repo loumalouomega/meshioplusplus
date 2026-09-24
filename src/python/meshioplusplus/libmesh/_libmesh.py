@@ -7,14 +7,19 @@ Both encodings carry one value stream (libMesh's ``XdrIO``): a version string,
 the element and node counts, four "inline or not" flags, per-field integer sizes
 (0.9.2+), subdomain names, one connectivity block per refinement level, the
 coordinates, then the side sets, node sets (0.9.2+) and edge and shell-face sets
-(1.1.0+). ``.xdr`` is big-endian XDR.
+(1.1.0+). ``.xdr`` is big-endian XDR, optionally gzip- or bzip2-compressed.
 
 Only active (leaf) elements become cells. The subdomain id is the
 ``libmesh:subdomain`` cell data and a cell region per subdomain; side sets
 become side regions (carried down to refined children), node sets point
-regions. HEX20/HEX27/PRISM15/PRISM18 use the ``"libmesh"`` node-order tables.
+regions, edge sets ``line``/``line3`` cells in a ``<name>:edge`` cell region and
+shell-face sets ``<name>:shellface<k>`` cell regions. HEX20/HEX27/PRISM15/PRISM18
+use the ``"libmesh"`` node-order tables. ``write`` is the reverse, in the
+libMesh-1.8.0 layout.
 """
 
+import bz2
+import gzip
 import math
 import struct
 
@@ -22,14 +27,14 @@ import numpy as np
 
 from .. import _provenance
 from .._common import warn
-from .._exceptions import ReadError
-from .._facets import FacetIndex
+from .._exceptions import ReadError, WriteError
+from .._facets import FacetIndex, facet_nodes
 from .._files import open_file
 from .._mesh import Mesh, topological_dimension
 from .._node_order import node_order
 from .._regions import Region
 
-__all__ = ["read"]
+__all__ = ["read", "write"]
 
 # libMesh ElemType -> (file nodes, meshio++ type or None, nodes kept, shape, name).
 _TYPES = [
@@ -92,6 +97,44 @@ _SIDES = {
     "prism": [(0, 2, 1), (0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5), (3, 4, 5)],
     "pyramid": [(0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4), (0, 3, 2, 1)],
 }
+
+# Corner nodes of each edge, libMesh's edge numbering (Hex8::edge_nodes_map ...).
+# A quadratic element's mid-edge node for edge k is node ``vertices + k``.
+_EDGES = {
+    "tri": [(0, 1), (1, 2), (2, 0)],
+    "quad": [(0, 1), (1, 2), (2, 3), (3, 0)],
+    "tet": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)],
+    "hex": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (0, 3),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (4, 7),
+    ],
+    "prism": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 4), (2, 5), (3, 4), (4, 5), (3, 5)],
+    "pyramid": [(0, 1), (1, 2), (2, 3), (0, 3), (0, 4), (1, 4), (2, 4), (3, 4)],
+}
+_VERTICES = {
+    "point": 1,
+    "edge": 2,
+    "tri": 3,
+    "quad": 4,
+    "tet": 4,
+    "pyramid": 5,
+    "prism": 6,
+    "hex": 8,
+}
+
+# Region-name suffixes for the sets that are not sides.
+_EDGE_SUFFIX = ":edge"
+_SHELLFACE_SUFFIX = ":shellface"
 
 
 class _Stream:
@@ -234,8 +277,9 @@ def _parse(data, xdr):
         "sideset_names": {},
         "nodeset_names": {},
         "sides": [],
+        "edges": [],
+        "shellfaces": [],
         "nodesets": [],
-        "skipped_edge_bcs": 0,
         "inline_p": False,
     }
     version = io.string()
@@ -327,21 +371,25 @@ def _parse(data, xdr):
     if bc_file == "n/a":
         return f
 
+    # Side, edge and shell-face sets share one id space, and each repeats the
+    # sideset name map.
     def triples():
-        names = _name_map(io, hw) if v092 else {}
+        if v092:
+            for k, v in _name_map(io, hw).items():
+                f["sideset_names"].setdefault(k, v)
         n = io.scalar(hw)
         values = io.stream_ints(tw, 3 * n)
-        return names, [tuple(values[k : k + 3]) for k in range(0, 3 * n, 3)]
+        return [tuple(values[k : k + 3]) for k in range(0, 3 * n, 3)]
 
-    f["sideset_names"], f["sides"] = triples()
+    f["sides"] = triples()
     if v092:
         f["nodeset_names"] = _name_map(io, hw)
         n = io.scalar(hw)
         values = io.stream_ints(tw, 2 * n)
         f["nodesets"] = [tuple(values[k : k + 2]) for k in range(0, 2 * n, 2)]
     if v110:
-        f["skipped_edge_bcs"] += len(triples()[1])  # edge
-        f["skipped_edge_bcs"] += len(triples()[1])  # shell face
+        f["edges"] = triples()
+        f["shellfaces"] = triples()
     return f
 
 
@@ -385,6 +433,11 @@ def read(filename):
         data = fh.read()
     if isinstance(data, str):
         data = data.encode("latin-1")
+    # libMesh writes `.xda.gz`/`.xdr.gz` through gzip and `.bz2` through bzip2.
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    elif data[:3] == b"BZh":
+        data = bz2.decompress(data)
     # XDR starts with the version string's 4-byte big-endian length.
     xdr = False
     if len(data) >= 8 and not data.startswith(b"libMesh"):
@@ -463,6 +516,52 @@ def read(filename):
         sid_blocks.append(np.array([elements[e][2] for e in members], dtype=np.int64))
         level_blocks.append(np.array([elements[e][4] for e in members], dtype=np.int64))
         p_blocks.append(np.array([elements[e][3] for e in members], dtype=np.int64))
+
+    # Edge sets -> line cells (the element's edge corners, plus its mid-edge
+    # node when it is quadratic), shared by every set naming that edge. They
+    # are not libMesh elements: their subdomain (and level, p-level) is -1.
+    by_edge_set = {}
+    if cells and f["edges"]:
+        seen = {}
+        rows = ([], [])  # line, line3
+        members = []
+        unmatched = 0
+        for elem, k, bid in f["edges"]:
+            if elem < 0 or elem >= ne:
+                unmatched += 1
+                continue
+            el = elements[elem]
+            table = _EDGES.get(el[0][3], [])
+            if k < 0 or k >= len(table):
+                unmatched += 1
+                continue
+            nv = _VERTICES[el[0][3]]
+            row = [int(node_index[el[5][c]]) for c in table[k]]
+            if len(el[5]) >= nv + len(table):
+                row.append(int(node_index[el[5][nv + k]]))
+            key = tuple(sorted(row))
+            kind = 1 if len(row) == 3 else 0
+            if key not in seen:
+                seen[key] = (kind, len(rows[kind]))
+                rows[kind].append(row)
+            members.append((bid, seen[key]))
+        first = [0, 0]
+        for kind in (0, 1):
+            if not rows[kind]:
+                continue
+            first[kind] = len(cell_dim)
+            n = len(rows[kind])
+            cells.append(("line3" if kind else "line", np.array(rows[kind], np.int64)))
+            for blocks in (sid_blocks, level_blocks, p_blocks):
+                blocks.append(np.full(n, -1, dtype=np.int64))
+            cell_dim.extend([1] * n)
+        for bid, (kind, row) in members:
+            by_edge_set.setdefault(bid, set()).add(first[kind] + row)
+        if unmatched:
+            warn(
+                f"libMesh: {unmatched} edge boundary condition(s) name no element edge "
+                "and are skipped"
+            )
 
     mesh = Mesh(coords[kept].astype(np.float64), cells)
     if len(kept) != nn:
@@ -558,6 +657,51 @@ def read(filename):
             entries = np.array(sorted(by_id[bid]), dtype=np.int64).reshape(-1, 2)
             regions.append(Region(name, "side", entries, id_dim[bid], bid))
 
+    def set_name(bid):
+        return f["sideset_names"].get(bid, f"boundary_{bid}")
+
+    for bid in sorted(by_edge_set):
+        entries = np.array(sorted(by_edge_set[bid]), dtype=np.int64)
+        regions.append(Region(set_name(bid) + _EDGE_SUFFIX, "cell", entries, 1, bid))
+
+    # Shell-face sets -> cell regions `<name>:shellface<k>` on the 2-D cells (a
+    # refined element's face is carried to all its active descendants).
+    if f["shellfaces"]:
+        by_face = {}
+        unmatched = 0
+        for elem, face, bid in f["shellfaces"]:
+            if elem < 0 or elem >= ne or face not in (0, 1):
+                unmatched += 1
+                continue
+            found = by_face.setdefault((bid, face), set())
+            stack = [elem]
+            while stack:
+                e = stack.pop()
+                if not active[e]:
+                    stack.extend(children[e])
+                    continue
+                if cell_of[e] >= 0 and cell_dim[cell_of[e]] == 2:
+                    found.add(cell_of[e])
+                else:
+                    unmatched += 1
+        if unmatched:
+            warn(
+                f"libMesh: {unmatched} shell-face boundary condition(s) name no 2-D "
+                "element and are skipped"
+            )
+        for bid, face in sorted(by_face):
+            found = by_face[(bid, face)]
+            if found:
+                regions.append(
+                    Region(
+                        f"{set_name(bid)}{_SHELLFACE_SUFFIX}{face}",
+                        "cell",
+                        np.array(sorted(found), dtype=np.int64),
+                        2,
+                        bid,
+                    )
+                )
+
     by_nodeset = {}
     for node, bid in f["nodesets"]:
         if 0 <= node < nn and node_index[node] >= 0:
@@ -567,10 +711,423 @@ def read(filename):
         regions.append(
             Region(name, "point", np.array(by_nodeset[bid], dtype=np.int64), -1, bid)
         )
-    if f["skipped_edge_bcs"]:
-        warn(
-            f"libMesh: {f['skipped_edge_bcs']} edge/shell-face boundary condition(s) "
-            "skipped"
-        )
     mesh.regions = regions
     return mesh
+
+
+# --- writing -------------------------------------------------------------------------
+
+# meshio++ type -> libMesh ElemType, for the types libMesh stores as they are.
+_CODES = {
+    "line": 0,
+    "line3": 1,
+    "line4": 2,
+    "triangle": 3,
+    "triangle6": 4,
+    "quad": 5,
+    "quad8": 6,
+    "quad9": 7,
+    "tetra": 8,
+    "tetra10": 9,
+    "hexahedron": 10,
+    "hexahedron20": 11,
+    "hexahedron27": 12,
+    "wedge": 13,
+    "wedge15": 14,
+    "wedge18": 15,
+    "pyramid": 16,
+    "pyramid13": 17,
+    "pyramid14": 18,
+    "vertex": 27,
+    "triangle7": 33,
+}
+
+
+class _Out:
+    """libMesh's ``Xdr`` in WRITE (ASCII) or ENCODE (XDR) mode, ``_Stream`` reversed."""
+
+    def __init__(self, xdr):
+        self.xdr = xdr
+        self.out = bytearray() if xdr else []
+
+    def _int(self, v, width):
+        self.out += struct.pack(">Q" if width == 8 else ">I", v % (1 << (8 * width)))
+
+    def _str(self, s):
+        b = s.encode()
+        self.out += struct.pack(">I", len(b)) + b + b"\0" * ((4 - len(b) % 4) % 4)
+
+    def _comment(self, comment):
+        self.out.append(f"\t {comment}\n" if comment else "\n")
+
+    def string(self, s, comment=""):
+        if self.xdr:
+            self._str(s)
+            return
+        self.out.append(s)
+        self._comment(comment)
+
+    def scalar(self, v, comment, width=8):
+        if self.xdr:
+            self._int(v, width)
+            return
+        self.out.append(str(v))
+        self._comment(comment)
+
+    def int_vector(self, values, comment=""):
+        if self.xdr:
+            self._int(len(values), 4)
+            for v in values:
+                self._int(v, 8)
+            return
+        self.scalar(len(values), "# vector length")
+        self.out.append("".join(f"{v}\t " for v in values))
+        self._comment(comment)
+
+    def string_vector(self, values, comment=""):
+        if self.xdr:
+            self._int(len(values), 4)
+            for v in values:
+                self._str(v)
+            return
+        self.scalar(len(values), "# vector length")
+        self.out.append("".join(f"{v}\t " for v in values))
+        self._comment(comment)
+
+    def ints(self, values):
+        if self.xdr:
+            for v in values:
+                self._int(v, 8)
+            return
+        self.out.append(" ".join(str(v) for v in values) + "\n")
+
+    def reals(self, values):
+        if self.xdr:
+            self.out += np.asarray(values, dtype=">f8").tobytes()
+            return
+        parts = [f"{v:.17e}" for v in values.tolist()]
+        for k in range(0, len(parts), 3):
+            self.out.append(" ".join(parts[k : k + 3]) + "\n")
+
+    def data(self):
+        return bytes(self.out) if self.xdr else "".join(self.out).encode()
+
+
+def _shellface(name):
+    """A shell-face region's ``(face, base name)``, else ``None``."""
+    for k in (0, 1):
+        suffix = f"{_SHELLFACE_SUFFIX}{k}"
+        if len(name) > len(suffix) and name.endswith(suffix):
+            return k, name[: -len(suffix)]
+    return None
+
+
+def write(filename, mesh):
+    """Write a libMesh ``.xda`` (ASCII) or ``.xdr`` (XDR) mesh, libMesh-1.8.0.
+
+    The encoding comes from the extension (a trailing ``.gz``/``.bz2``
+    compresses the result). See ``doc/formats/libmesh.md``.
+    """
+    name = str(filename).lower()
+    compress = None
+    for suffix, module in ((".gz", gzip), (".bz2", bz2)):
+        if name.endswith(suffix):
+            compress = module
+            name = name[: -len(suffix)]
+    xdr = name.endswith(".xdr")
+
+    blocks = list(mesh.cells)
+    starts = [0]
+    block_dim = []
+    for block in blocks:
+        starts.append(starts[-1] + len(block.data))
+        block_dim.append(topological_dimension.get(block.type, -1))
+    ncells = starts[-1]
+    cell_block = np.repeat(np.arange(len(blocks)), np.diff(starts)).astype(np.int64)
+
+    def dim_of(cell):
+        return block_dim[cell_block[cell]]
+
+    # Region roles: edge sets and shell faces (by name suffix), side sets, node
+    # sets, and the remaining cell regions as subdomains.
+    regions = sorted(getattr(mesh, "regions", []) or [], key=lambda r: r.key)
+    edge_sets, shell_sets, side_sets, node_sets, subdomains = [], [], [], [], []
+    placeholder = np.zeros(ncells, dtype=bool)
+    for reg in regions:
+        entries = np.asarray(reg.entries, dtype=np.int64)
+        if reg.kind == "side":
+            side_sets.append(reg)
+            continue
+        if reg.kind == "point":
+            node_sets.append(reg)
+            continue
+        cells = entries.ravel()
+        if not np.all((cells >= 0) & (cells < ncells)):
+            continue
+        dims = {dim_of(c) for c in cells}
+        if len(cells) and reg.name.endswith(_EDGE_SUFFIX) and dims == {1}:
+            if len(reg.name) > len(_EDGE_SUFFIX):
+                edge_sets.append(reg)
+                placeholder[cells] = True
+                continue
+        if len(cells) and _shellface(reg.name) and dims == {2}:
+            shell_sets.append(reg)
+            continue
+        subdomains.append(reg)
+
+    # Elements: every cell libMesh has a type for, in cell order.
+    elems = []  # (code, cell, nodes in libMesh order)
+    elem_of = np.full(ncells, -1, dtype=np.int64)
+    dropped = {}
+    for b, block in enumerate(blocks):
+        code = _CODES.get(block.type) if isinstance(block.data, np.ndarray) else None
+        if code is None:
+            if len(block.data):
+                dropped[block.type] = dropped.get(block.type, 0) + len(block.data)
+            continue
+        conn = np.asarray(block.data, dtype=np.int64)
+        order = node_order("libmesh", block.type)
+        if order is not None:
+            conn = conn[:, list(order.from_meshio)]
+        for r, row in enumerate(conn.tolist()):
+            g = starts[b] + r
+            if placeholder[g]:
+                continue
+            elem_of[g] = len(elems)
+            elems.append((code, g, row))
+    for t in sorted(dropped):
+        warn(
+            f"libMesh: {dropped[t]} '{t}' cell(s) have no libMesh element type and are "
+            "dropped"
+        )
+        _provenance.note(
+            "cells-dropped", f"{dropped[t]} '{t}' cell(s) have no libMesh element type"
+        )
+
+    # Node ids: `libmesh:id` when it is a valid numbering, else the point index.
+    points = np.asarray(mesh.points, dtype=np.float64)
+    if points.ndim == 1:
+        points = points.reshape(-1, 1)
+    npts = len(points)
+    node_id = np.arange(npts, dtype=np.int64)
+    max_node_id = npts
+    ids = mesh.point_data.get("libmesh:id")
+    if ids is not None:
+        ids = np.asarray(ids).ravel()
+        if (
+            len(ids) == npts
+            and np.all(ids >= 0)
+            and len(np.unique(ids)) == npts
+            and np.issubdtype(ids.dtype, np.integer)
+        ):
+            node_id = ids.astype(np.int64)
+            max_node_id = int(ids.max()) + 1 if npts else 0
+
+    # Subdomain ids: `libmesh:subdomain`, else the first cell region holding
+    # the cell (its tag, or a fresh id), else 0.
+    sid = np.zeros(ncells, dtype=np.int64)
+    subdomain_names = {}
+    if "libmesh:subdomain" in mesh.cell_data:
+        for b, arr in enumerate(mesh.cell_data["libmesh:subdomain"]):
+            sid[starts[b] : starts[b + 1]] = np.asarray(arr).ravel().astype(np.int64)
+        for reg in subdomains:
+            if reg.tag >= 0 and reg.name != f"subdomain_{reg.tag}":
+                subdomain_names.setdefault(reg.tag, reg.name)
+    else:
+        nxt = max([0] + [reg.tag + 1 for reg in subdomains])
+        assigned = np.zeros(ncells, dtype=bool)
+        for reg in subdomains:
+            if reg.tag >= 0:
+                sd = reg.tag
+            else:
+                sd = nxt
+                nxt += 1
+            for c in np.asarray(reg.entries, dtype=np.int64).ravel():
+                if not assigned[c]:
+                    assigned[c] = True
+                    sid[c] = sd
+            if reg.name != f"subdomain_{sd}":
+                subdomain_names.setdefault(sd, reg.name)
+    for _, cell, _ in elems:
+        if not 0 <= sid[cell] <= 65534:
+            raise WriteError(
+                f"libMesh: subdomain id {sid[cell]} is outside libMesh's 0..65534"
+            )
+    p_level = mesh.cell_data.get("libmesh:p_level")
+    write_p = p_level is not None
+
+    # Boundary ids: one id space for side, edge and shell-face sets.
+    next_bid = max([0] + [r.tag + 1 for r in side_sets + edge_sets + shell_sets])
+    bids = {}
+    sideset_names = {}
+
+    def boundary_id(reg, base):
+        nonlocal next_bid
+        if id(reg) in bids:
+            return bids[id(reg)]
+        if reg.tag >= 0:
+            bid = reg.tag
+        else:
+            bid = next_bid
+            next_bid += 1
+        bids[id(reg)] = bid
+        if base != f"boundary_{bid}":
+            sideset_names.setdefault(bid, base)
+        return bid
+
+    # Side sets: (element, libMesh side, id), matched by the facet's corners.
+    sides = set()
+    sides_lost = 0
+    for reg in side_sets:
+        bid = boundary_id(reg, reg.name)
+        for cell, facet in np.asarray(reg.entries, dtype=np.int64).reshape(-1, 2):
+            hit = None
+            if 0 <= cell < ncells and elem_of[cell] >= 0:
+                hit = facet_nodes(mesh, int(cell), int(facet))
+            if hit is None:
+                sides_lost += 1
+                continue
+            ftype, fnodes = hit
+            corners = (
+                2
+                if topological_dimension.get(ftype) == 1
+                else (3 if ftype.startswith("triangle") else 4)
+            )
+            key = sorted(fnodes[:corners])
+            e = int(elem_of[cell])
+            code, _, nodes = elems[e]
+            for s, local in enumerate(_SIDES.get(_TYPES[code][3], [])):
+                if sorted(nodes[k] for k in local) == key:
+                    sides.add((e, s, bid))
+                    break
+            else:
+                sides_lost += 1
+
+    # Edge sets: each line cell on the first element holding that edge.
+    edges = set()
+    edges_lost = 0
+    if edge_sets:
+        owner = {}
+        for e, (code, _, nodes) in enumerate(elems):
+            for k, (a, b) in enumerate(_EDGES.get(_TYPES[code][3], [])):
+                owner.setdefault(tuple(sorted((nodes[a], nodes[b]))), (e, k))
+        for reg in edge_sets:
+            bid = boundary_id(reg, reg.name[: -len(_EDGE_SUFFIX)])
+            for cell in np.asarray(reg.entries, dtype=np.int64).ravel():
+                b = cell_block[cell]
+                row = blocks[b].data[cell - starts[b]]
+                hit = owner.get(tuple(sorted((int(row[0]), int(row[1])))))
+                if hit is None:
+                    edges_lost += 1
+                    continue
+                edges.add((hit[0], hit[1], bid))
+
+    # Shell faces.
+    shellfaces = set()
+    for reg in shell_sets:
+        face, base = _shellface(reg.name)
+        bid = boundary_id(reg, base)
+        for cell in np.asarray(reg.entries, dtype=np.int64).ravel():
+            if elem_of[cell] >= 0:
+                shellfaces.add((int(elem_of[cell]), face, bid))
+    if sides_lost or edges_lost:
+        warn(
+            f"libMesh: {sides_lost} side and {edges_lost} edge set entries match no "
+            "written element and are dropped"
+        )
+        _provenance.note(
+            "regions-dropped",
+            f"{sides_lost + edges_lost} side/edge set entries match no libMesh element",
+        )
+
+    # Node sets.
+    next_nid = max([0] + [r.tag + 1 for r in node_sets])
+    nodesets = set()
+    nodeset_names = {}
+    for reg in node_sets:
+        if reg.tag >= 0:
+            nid = reg.tag
+        else:
+            nid = next_nid
+            next_nid += 1
+        if reg.name != f"nodeset_{nid}":
+            nodeset_names.setdefault(nid, reg.name)
+        for p in np.asarray(reg.entries, dtype=np.int64).ravel():
+            if 0 <= p < npts:
+                nodesets.add((int(node_id[p]), nid))
+    bcs = bool(sides or edges or shellfaces or nodesets)
+
+    # The stream, as XdrIO::write lays it out (libMesh-1.8.0, 8-byte ids).
+    io = _Out(xdr)
+    io.string("libMesh-1.8.0")
+    io.scalar(len(elems), "# number of elements")
+    io.scalar(max_node_id, "# number of nodes")
+    io.string("." if bcs else "n/a", "# boundary condition specification file")
+    io.string(".", "# subdomain id specification file")
+    io.string("n/a", "# processor id specification file")
+    io.string("." if write_p else "n/a", "# p-level specification file")
+    io.scalar(8, "# type size")
+    io.scalar(0, "# uid size")
+    io.scalar(0, "# pid size")
+    io.scalar(8, "# sid size")
+    io.scalar(8 if write_p else 0, "# p-level size")
+    for label in ("eid", "side", "bid"):
+        io.scalar(8 if bcs else 0, f"# {label} size")
+    io.scalar(0, "# extra integer size")
+    io.string_vector([], "# node integer names")
+    io.string_vector([], "# elem integer names")
+    io.int_vector([], "# elemset codes")
+
+    def name_map(names, comment):
+        io.scalar(len(names), comment)
+        if names:
+            io.int_vector(sorted(names))
+            io.string_vector([names[k] for k in sorted(names)])
+
+    name_map(subdomain_names, "# subdomain id to name map")
+    if elems:
+        legend = "p_level " if write_p else ""
+        io.scalar(
+            len(elems), f"# n_elem at level 0, [ type sid {legend}(n0 ... nN-1) ]"
+        )
+    p_flat = None
+    if write_p:
+        p_flat = np.concatenate(
+            [np.asarray(a).ravel().astype(np.int64) for a in p_level]
+        )
+    for code, cell, nodes in elems:
+        rec = [code, int(sid[cell])]
+        if write_p:
+            rec.append(int(p_flat[cell]))
+        rec += node_id[nodes].tolist()
+        io.ints(rec)
+
+    # Unused node ids: NaN in XDR, as libMesh writes them; 0 in ASCII, where
+    # libMesh's `>>` cannot read back the `nan` it writes (it only loads nodes
+    # elements use, so the value is never looked at).
+    coords = np.full((max_node_id, 3), math.nan if xdr else 0.0)
+    pd = min(points.shape[1], 3)
+    coords[node_id, :] = 0.0
+    coords[node_id, :pd] = points[:, :pd]
+    io.reals(coords.ravel())
+    io.scalar(0, "# presence of unique ids", width=4)
+
+    def triples(values, comment):
+        name_map(sideset_names, "# sideset id to name map")
+        io.scalar(len(values), comment)
+        for t in sorted(values):
+            io.ints(list(t))
+
+    triples(sides, "# number of side boundary conditions")
+    name_map(nodeset_names, "# nodeset id to name map")
+    io.scalar(len(nodesets), "# number of nodesets")
+    for t in sorted(nodesets):
+        io.ints(list(t))
+    triples(edges, "# number of edge boundary conditions")
+    triples(shellfaces, "# number of shellface boundary conditions")
+
+    data = io.data()
+    if compress is not None:
+        data = gzip.compress(data, mtime=0) if compress is gzip else bz2.compress(data)
+    with open_file(filename, "wb") as fh:
+        fh.write(data)

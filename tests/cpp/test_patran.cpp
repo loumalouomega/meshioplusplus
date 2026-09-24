@@ -252,3 +252,39 @@ TEST(Patran, WriterDropsCellTypesWithoutAShape) {
     ASSERT_EQ(back.NumCellBlocks(), 1u);
     EXPECT_EQ(back.Cells(0).Type(), "triangle");
 }
+
+TEST(Patran, Quad9AndTriangle7RoundTrip) {
+    // Patran's QUAD9 and TRI7 are corners, mid-edges, then the centre: the
+    // meshio++ order, so the slots pass through unchanged.
+    Mesh mesh;
+    NDArray pts(meshioplusplus::DType::Float64, {9, 3});
+    const double xy[9][2] = {{0, 0}, {2, 0}, {2, 2}, {0, 2}, {1, 0},
+                             {2, 1}, {1, 2}, {0, 1}, {1, 1}};
+    for (int k = 0; k < 9; ++k) {
+        pts.As<double>()[3 * k] = xy[k][0];
+        pts.As<double>()[3 * k + 1] = xy[k][1];
+        pts.As<double>()[3 * k + 2] = 0.0;
+    }
+    mesh.AssignPoints(std::move(pts));
+    NDArray q9(meshioplusplus::DType::Int64, {1, 9});
+    for (int k = 0; k < 9; ++k)
+        q9.As<std::int64_t>()[k] = k;
+    mesh.AddCellBlock("quad9", std::move(q9));
+    NDArray t7(meshioplusplus::DType::Int64, {1, 7});
+    const std::int64_t tri[7] = {0, 1, 2, 4, 5, 8, 7};  // slots only; geometry unchecked
+    std::copy(tri, tri + 7, t7.As<std::int64_t>());
+    mesh.AddCellBlock("triangle7", std::move(t7));
+    const std::string out = mt::temp_path(".pat");
+    meshioplusplus::write_patran(out, mesh);
+    const Mesh back = meshioplusplus::read_patran(out);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    EXPECT_EQ(back.Cells(0).Type(), "quad9");
+    EXPECT_EQ(back.Cells(1).Type(), "triangle7");
+    for (int k = 0; k < 9; ++k)
+        EXPECT_EQ(
+            meshioplusplus::detail::read_int(back.Cells(0).Conn(), static_cast<std::size_t>(k)), k);
+    for (int k = 0; k < 7; ++k)
+        EXPECT_EQ(
+            meshioplusplus::detail::read_int(back.Cells(1).Conn(), static_cast<std::size_t>(k)),
+            tri[k]);
+}

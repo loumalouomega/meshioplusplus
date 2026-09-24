@@ -43,7 +43,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`, `.uff`),
 > [ANSYS Fluent interpolation](https://github.com/victorsndvg/FEconv) (`.ip`),
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
-> [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, read-only; active cells of refined meshes, subdomains, side sets and node sets as named regions),
+> [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, also gzip/bzip2; active cells of refined meshes, subdomains, side, edge, shell-face and node sets as named regions, written back in the 1.8.0 layout),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
@@ -61,7 +61,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
-> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups and surfaces as named regions, `#include` followed),
+> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed) and animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence),
 > [MSC Marc](https://hexagon.com/products/marc) input deck and formatted post file (`.dat`, `.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
@@ -69,7 +69,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [PhysicsNeMo mesh](https://developer.nvidia.com/physicsnemo) (`.pmsh`, memory-mapped),
 > [PLY](<https://en.wikipedia.org/wiki/PLY_(file_format)>) (`.ply`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
-> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE and ordered zones),
+> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
 > [Triangle .node/.ele/.poly](https://www.cs.cmu.edu/~quake/triangle.html),
 > [SVG](https://www.w3.org/TR/SVG/) (output only; 2D direct, 3D via skin projection) (`.svg`),
@@ -1045,7 +1045,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.11.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

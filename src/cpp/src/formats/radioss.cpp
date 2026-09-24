@@ -39,6 +39,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
@@ -218,15 +219,68 @@ struct RadGroup {
 };
 
 struct RadSurface {
-    std::int64_t mId;
+    std::int64_t mId = 0;
     std::string mTitle;
     std::vector<std::array<std::int64_t, 4>> mSegments;
+    // `/SURF/<mKind>[/<mMode>]/id`: SEG (the segments above), PART, SUBSET, MAT,
+    // PROP, GRBRIC, GRSHEL, GRSH3N, GRTRIA or SURF, with EXT, ALL or FREE.
+    std::string mKind = "SEG", mMode;
+    std::vector<std::int64_t> mIds;
+};
+
+// `/BOX/RECTA`, `/CYLIN`, `/SPHER` (corners, axis ends or centre, from nodes or
+// coordinates) and `/BOX/BOX` (other boxes, a negative id subtracted).
+struct RadBox {
+    std::string mKind;
+    std::int64_t mSkew = 0;
+    std::int64_t mNode1 = 0, mNode2 = 0;
+    std::array<double, 3> mP1{}, mP2{};
+    double mDiameter = 0.0;
+    std::vector<std::int64_t> mChildren;
 };
 
 struct RadSubset {
     std::string mTitle;
     std::vector<std::int64_t> mChildren;
 };
+
+// A /BEGIN length unit in metres: an SI prefix and "m" ("mm", "mum", "km"), a
+// few imperial names, or a number; 0 when unknown.
+double rad_length_unit(const std::string& rUnit) {
+    if (rUnit.empty())
+        return 0.0;
+    static const std::pair<const char*, double> named[] = {
+        {"in", 0.0254}, {"ft", 0.3048}, {"yd", 0.9144}, {"mi", 1609.344}};
+    for (const auto& [name, metres] : named)
+        if (rUnit == name)
+            return metres;
+    if (rUnit.back() == 'm') {
+        static const std::pair<const char*, double> prefixes[] = {
+            {"", 1.0},   {"y", 1e-24}, {"z", 1e-21}, {"a", 1e-18}, {"f", 1e-15}, {"p", 1e-12},
+            {"n", 1e-9}, {"mu", 1e-6}, {"m", 1e-3},  {"c", 1e-2},  {"d", 1e-1},  {"da", 1e1},
+            {"h", 1e2},  {"k", 1e3},   {"M", 1e6},   {"G", 1e9},   {"T", 1e12},  {"P", 1e15},
+            {"E", 1e18}, {"Z", 1e21},  {"Y", 1e24}};
+        const std::string prefix = rUnit.substr(0, rUnit.size() - 1);
+        for (const auto& [name, factor] : prefixes)
+            if (prefix == name)
+                return factor;
+    }
+    try {
+        return detail::card_to_real(rUnit, "", "Radioss");
+    } catch (const ReadError&) {
+        return 0.0;
+    }
+}
+
+// A fixed-width slice of a line (the whole comma field when the line has commas).
+std::string rad_slice(const std::string& rLine, std::size_t At, std::size_t Width,
+                      std::size_t CommaField) {
+    if (rLine.find(',') != std::string::npos) {
+        const std::vector<std::string> f = rad_fields(rLine, 1, 0);
+        return CommaField < f.size() ? f[CommaField] : std::string();
+    }
+    return At < rLine.size() ? rad_trim(std::string_view(rLine).substr(At, Width)) : std::string();
+}
 
 NDArray rad_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
     NDArray a(DType::Int64, Stride == 1 ? std::vector<std::size_t>{rIds.size()}
@@ -263,6 +317,8 @@ Mesh read_radioss(const std::string& rPath) {
     std::vector<RadGroup> groups;
     std::vector<RadSurface> surfaces;
     std::map<std::int64_t, RadSubset> subsets;
+    std::map<std::int64_t, RadBox> boxes;
+    double length_scale = 1.0;
     std::set<std::string> skipped_keywords;
     std::size_t zero_springs = 0, linear_bric20 = 0;
 
@@ -296,7 +352,13 @@ Mesh read_radioss(const std::string& rPath) {
         const std::string& key = path.empty() ? std::string() : path[0];
         const std::size_t body = i + 1;
         const std::size_t end = block_end(body);
+        // The keyword's id: its first integer field (`/BOX/RECTA/3/1` is box 3 in
+        // unit system 1; `/SURF/PART/EXT/12` is surface 12).
         auto last_id = [&](const RadLine& rLine) -> std::int64_t {
+            for (std::size_t k = 1; k < path.size(); ++k)
+                if (!path[k].empty() &&
+                    path[k].find_first_not_of("+-0123456789") == std::string::npos)
+                    return rad_int(path[k], rLine);
             return path.size() >= 2 ? rad_int(path.back(), rLine) : 0;
         };
 
@@ -309,6 +371,80 @@ Mesh read_radioss(const std::string& rPath) {
             }
             iw = version >= 51 ? 10 : 8;
             rw = version >= 51 ? 20 : 16;
+            // Input and work units (mass, length, time; 20 columns each): the
+            // solver works in the work units, so lengths are converted.
+            if (body + 2 < end) {
+                const std::vector<std::string> in = rad_fields(lines[body + 2].mText, 20, 3);
+                const std::vector<std::string> work = body + 3 < end
+                                                          ? rad_fields(lines[body + 3].mText, 20, 3)
+                                                          : std::vector<std::string>{};
+                const std::string li = in.size() > 1 ? in[1] : std::string();
+                const std::string lw = work.size() > 1 && !work[1].empty() ? work[1] : li;
+                const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
+                if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
+                    log::warn(
+                        "Radioss: unknown length unit '{}' in /BEGIN; lengths are read "
+                        "as written",
+                        fi <= 0.0 ? li : lw);
+                else if (!li.empty())
+                    length_scale = fi / fw;
+            }
+        } else if (key == "BOX" && path.size() >= 3) {
+            RadBox b;
+            b.mKind = path[1];
+            std::size_t k = body + 1;  // past the title
+            auto real3 = [&](std::size_t Line) {
+                std::array<double, 3> p{};
+                if (Line >= end)
+                    return p;
+                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                for (std::size_t d = 0; d < 3; ++d)
+                    p[d] = d < f.size() && !f[d].empty()
+                               ? rad_real(f[d], lines[Line]) * length_scale
+                               : 0.0;
+                return p;
+            };
+            auto int_at = [&](std::size_t Line, std::size_t Field) -> std::int64_t {
+                if (Line >= end)
+                    return 0;
+                const std::string t =
+                    rad_slice(lines[Line].mText, Field * static_cast<std::size_t>(iw),
+                              static_cast<std::size_t>(iw), Field);
+                return t.empty() ? 0 : rad_int(t, lines[Line]);
+            };
+            auto diameter = [&](std::size_t Line) {
+                if (Line >= end)
+                    return 0.0;
+                const std::string t =
+                    rad_slice(lines[Line].mText, 3 * static_cast<std::size_t>(iw),
+                              static_cast<std::size_t>(rw), b.mKind == "SPHER" ? 2 : 3);
+                return t.empty() ? 0.0 : rad_real(t, lines[Line]) * length_scale;
+            };
+            if (b.mKind == "RECTA") {
+                b.mNode1 = int_at(k, 0);
+                b.mNode2 = int_at(k, 1);
+                b.mSkew = int_at(k, 2);
+                b.mP1 = real3(k + 1);
+                b.mP2 = real3(k + 2);
+            } else if (b.mKind == "CYLIN") {
+                b.mNode1 = int_at(k, 0);
+                b.mNode2 = int_at(k, 1);
+                b.mDiameter = diameter(k);
+                b.mP1 = real3(k + 1);
+                b.mP2 = real3(k + 2);
+            } else if (b.mKind == "SPHER") {
+                b.mNode1 = int_at(k, 0);
+                b.mDiameter = diameter(k);
+                b.mP1 = real3(k + 1);
+            } else if (b.mKind == "BOX") {
+                for (; k < end; ++k)
+                    for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                        if (!f.empty())
+                            b.mChildren.push_back(rad_int(f, lines[k]));
+            } else {
+                skipped_keywords.insert("/BOX/" + b.mKind);
+            }
+            boxes[last_id(head)] = std::move(b);
         } else if (key == "NODE") {
             for (std::size_t k = body; k < end; ++k) {
                 const RadLine& ln = lines[k];
@@ -426,7 +562,8 @@ Mesh read_radioss(const std::string& rPath) {
                         g.mIds.push_back(rad_int(f, lines[k]));
             groups.push_back(std::move(g));
         } else if (key == "SURF" && path.size() >= 3 && path[1] == "SEG") {
-            RadSurface s{last_id(head), {}, {}};
+            RadSurface s;
+            s.mId = last_id(head);
             std::size_t k = body;
             if (k < end)
                 s.mTitle = rad_trim(lines[k++].mText);
@@ -439,6 +576,23 @@ Mesh read_radioss(const std::string& rPath) {
                 if (seg[0] || seg[1] || seg[2])
                     s.mSegments.push_back(seg);
             }
+            surfaces.push_back(std::move(s));
+        } else if (key == "SURF" && path.size() >= 3 &&
+                   (path[1] == "PART" || path[1] == "SUBSET" || path[1] == "MAT" ||
+                    path[1] == "PROP" || path[1] == "GRBRIC" || path[1] == "GRSHEL" ||
+                    path[1] == "GRSH3N" || path[1] == "GRTRIA" || path[1] == "SURF")) {
+            RadSurface s;
+            s.mId = last_id(head);
+            s.mKind = path[1];
+            if (path.size() >= 4)
+                s.mMode = path[2];
+            std::size_t k = body;
+            if (k < end)
+                s.mTitle = rad_trim(lines[k++].mText);
+            for (; k < end; ++k)
+                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                    if (!f.empty())
+                        s.mIds.push_back(rad_int(f, lines[k]));
             surfaces.push_back(std::move(s));
         } else if (key == "SURF") {
             skipped_keywords.insert("/SURF/" + (path.size() > 1 ? path[1] : std::string()));
@@ -479,6 +633,9 @@ Mesh read_radioss(const std::string& rPath) {
     for (std::size_t p = 0; p < node_ids.size(); ++p)
         if (!node_index.emplace(node_ids[p], static_cast<std::int64_t>(p)).second)
             throw ReadError("Radioss: node " + std::to_string(node_ids[p]) + " is defined twice");
+    if (length_scale != 1.0)
+        for (double& c : coords)
+            c *= length_scale;
     NDArray points(DType::Float64, {node_ids.size(), 3});
     std::copy(coords.begin(), coords.end(), points.As<double>());
     mesh.AssignPoints(std::move(points));
@@ -487,6 +644,12 @@ Mesh read_radioss(const std::string& rPath) {
         a.As<std::int64_t>()[0] = version;
         return a;
     }());
+    if (length_scale != 1.0)
+        mesh.AddFieldData("radioss:length_scale", [&] {
+            NDArray a(DType::Float64, {});
+            a.As<double>()[0] = length_scale;
+            return a;
+        }());
 
     // --- cells: one block per type, in order of first appearance --------------------
     std::vector<std::string> block_types;
@@ -660,6 +823,70 @@ Mesh read_radioss(const std::string& rPath) {
             cell_conn.emplace_back(conn.As<std::int64_t>() + r * k,
                                    conn.As<std::int64_t>() + (r + 1) * k);
     }
+    // Box membership of a point (skewed boxes are not supported: empty).
+    auto point_of = [&](std::int64_t Node, const std::array<double, 3>& rFallback) {
+        const auto it = Node ? node_index.find(Node) : node_index.end();
+        if (it == node_index.end())
+            return rFallback;
+        const std::size_t p = static_cast<std::size_t>(it->second);
+        return std::array<double, 3>{coords[3 * p], coords[3 * p + 1], coords[3 * p + 2]};
+    };
+    std::set<std::int64_t> skewed_boxes, missing_boxes;
+    std::function<bool(std::int64_t, const double*, int)> in_box;
+    in_box = [&](std::int64_t Id, const double* pX, int Depth) -> bool {
+        const auto it = boxes.find(Id);
+        if (it == boxes.end() || Depth > 16) {
+            missing_boxes.insert(Id);
+            return false;
+        }
+        const RadBox& b = it->second;
+        if (b.mKind == "BOX") {
+            bool in = false;
+            for (std::int64_t c : b.mChildren)
+                if (c > 0 && in_box(c, pX, Depth + 1))
+                    in = true;
+            for (std::int64_t c : b.mChildren)
+                if (c < 0 && in_box(-c, pX, Depth + 1))
+                    in = false;
+            return in;
+        }
+        if (b.mSkew) {
+            skewed_boxes.insert(Id);
+            return false;
+        }
+        const std::array<double, 3> p1 = point_of(b.mNode1, b.mP1);
+        if (b.mKind == "SPHER") {
+            double d2 = 0.0;
+            for (std::size_t d = 0; d < 3; ++d)
+                d2 += (pX[d] - p1[d]) * (pX[d] - p1[d]);
+            return d2 <= 0.25 * b.mDiameter * b.mDiameter;
+        }
+        const std::array<double, 3> p2 = point_of(b.mNode2, b.mP2);
+        if (b.mKind == "RECTA") {
+            for (std::size_t d = 0; d < 3; ++d)
+                if (pX[d] < std::min(p1[d], p2[d]) || pX[d] > std::max(p1[d], p2[d]))
+                    return false;
+            return true;
+        }
+        if (b.mKind == "CYLIN") {
+            double a[3], q[3], aa = 0.0, qa = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                a[d] = p2[d] - p1[d];
+                q[d] = pX[d] - p1[d];
+                aa += a[d] * a[d];
+                qa += q[d] * a[d];
+            }
+            if (aa == 0.0 || qa < 0.0 || qa > aa)
+                return false;
+            double r2 = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double off = q[d] - qa / aa * a[d];
+                r2 += off * off;
+            }
+            return r2 <= 0.25 * b.mDiameter * b.mDiameter;
+        }
+        return false;
+    };
     std::function<std::set<std::int64_t>(std::size_t, std::set<std::size_t>&)> resolve;
     resolve = [&](std::size_t g, std::set<std::size_t>& rVisiting) -> std::set<std::int64_t> {
         std::set<std::int64_t> out;
@@ -668,6 +895,28 @@ Mesh read_radioss(const std::string& rPath) {
         const RadGroup& grp = groups[g];
         const std::string family = rad_group_family(grp.mKeyword);
         const bool nodes = family == "NODE";
+        // GENE: `first last` id ranges; GEN_INCR: `first last step`.
+        if (grp.mSubtype == "GENE" || grp.mSubtype == "GEN_INCR") {
+            const std::size_t w = grp.mSubtype == "GENE" ? 2 : 3;
+            auto take = [&](std::int64_t Id, std::int64_t Entity) {
+                for (std::size_t k = 0; k + w <= grp.mIds.size(); k += w) {
+                    const std::int64_t first = grp.mIds[k], last = grp.mIds[k + 1];
+                    const std::int64_t step = w == 3 ? grp.mIds[k + 2] : 1;
+                    if (Id >= first && Id <= last && step > 0 && (Id - first) % step == 0) {
+                        out.insert(Entity);
+                        return;
+                    }
+                }
+            };
+            if (nodes)
+                for (const auto& [id, p] : node_index)
+                    take(id, p);
+            else
+                for (const auto& [id, cell] : owner[family])
+                    take(id, cell);
+            rVisiting.erase(g);
+            return out;
+        }
         std::set<std::int64_t> removed;
         for (std::int64_t raw : grp.mIds) {
             const std::int64_t id = raw < 0 ? -raw : raw;
@@ -706,6 +955,24 @@ Mesh read_radioss(const std::string& rPath) {
                                         cell_conn[static_cast<std::size_t>(c)].end());
                         else if (cell_family[static_cast<std::size_t>(c)] == family)
                             hits.insert(c);
+                    }
+                }
+            } else if (grp.mSubtype == "BOX" || grp.mSubtype == "BOX2") {
+                // Nodes inside; elements with all (BOX) or any (BOX2) node inside.
+                const bool any = grp.mSubtype == "BOX2";
+                if (nodes) {
+                    for (std::size_t p = 0; p < node_ids.size(); ++p)
+                        if (in_box(id, &coords[3 * p], 0))
+                            hits.insert(static_cast<std::int64_t>(p));
+                } else {
+                    for (const auto& [eid, cell] : owner[family]) {
+                        const auto& conn = cell_conn[static_cast<std::size_t>(cell)];
+                        std::size_t inside = 0;
+                        for (std::int64_t p : conn)
+                            inside +=
+                                in_box(id, &coords[3 * static_cast<std::size_t>(p)], 0) ? 1 : 0;
+                        if (any ? inside > 0 : inside == conn.size())
+                            hits.insert(cell);
                     }
                 }
             } else if (nodes && grp.mSubtype == "SURF") {
@@ -763,31 +1030,148 @@ Mesh read_radioss(const std::string& rPath) {
         detail::FacetIndexOptions options;
         options.mSurfaceSelf = true;
         const detail::FacetIndex facets(mesh, options);
-        for (const RadSurface& s : surfaces) {
+        // Solid faces: (cell, face) with their sorted corners.
+        auto solid_faces = [&](std::int64_t Cell) {
+            std::vector<std::pair<std::int64_t, std::vector<std::int64_t>>> out;
+            CellType type{};
+            std::vector<std::int64_t> fnodes;
+            for (std::int64_t f = 0; detail::facet_nodes(mesh, Cell, f, type, fnodes); ++f) {
+                const std::size_t corners = cell_type_name(type).rfind("triangle", 0) == 0 ? 3 : 4;
+                fnodes.resize(std::min(corners, fnodes.size()));
+                std::sort(fnodes.begin(), fnodes.end());
+                out.emplace_back(f, fnodes);
+            }
+            return out;
+        };
+        std::map<std::vector<std::int64_t>, std::size_t> model_faces;  // for FREE
+        bool counted = false;
+        const std::map<std::string, std::string> group_keyword = {
+            {"GRBRIC", "GRBRIC"}, {"GRSHEL", "GRSHEL"}, {"GRSH3N", "GRSH3N"}, {"GRTRIA", "GRTRIA"}};
+        std::map<std::int64_t, std::size_t> surface_of;
+        for (std::size_t k = 0; k < surfaces.size(); ++k)
+            surface_of.emplace(surfaces[k].mId, k);
+        std::map<std::size_t, std::set<std::pair<std::int64_t, std::int64_t>>> done;
+        std::function<std::set<std::pair<std::int64_t, std::int64_t>>(std::size_t, int)> side_set;
+        side_set = [&](std::size_t Index, int Depth) {
+            const auto memo = done.find(Index);
+            if (memo != done.end())
+                return memo->second;
+            std::set<std::pair<std::int64_t, std::int64_t>> out;
+            const RadSurface& s = surfaces[Index];
+            if (s.mKind == "SURF") {
+                std::set<std::pair<std::int64_t, std::int64_t>> minus;
+                for (std::int64_t raw : s.mIds) {
+                    const auto it = surface_of.find(raw < 0 ? -raw : raw);
+                    if (it == surface_of.end() || Depth > 16) {
+                        ++dropped;
+                        continue;
+                    }
+                    const auto sub = side_set(it->second, Depth + 1);
+                    (raw < 0 ? minus : out).insert(sub.begin(), sub.end());
+                }
+                for (const auto& e : minus)
+                    out.erase(e);
+            } else if (s.mKind == "SEG") {
+                for (const auto& seg : s.mSegments) {
+                    std::array<std::int64_t, 4> idx{};
+                    bool defined = true;
+                    // 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
+                    const std::size_t count =
+                        seg[2] == 0 ? 2 : ((seg[3] == 0 || seg[3] == seg[2]) ? 3 : 4);
+                    for (std::size_t k = 0; k < count; ++k) {
+                        const auto it = node_index.find(seg[k]);
+                        defined = defined && it != node_index.end();
+                        idx[k] = defined ? it->second : -1;
+                    }
+                    const detail::FacetHit* hit =
+                        defined ? facets.Find(idx.data(), count) : nullptr;
+                    if (!hit) {
+                        ++dropped;
+                        continue;
+                    }
+                    out.emplace(hit->mFirst.mCell, hit->mFirst.mFacet);
+                }
+            } else {
+                // The cells the surface draws from.
+                std::set<std::int64_t> cells;
+                if (group_keyword.count(s.mKind)) {
+                    for (std::int64_t raw : s.mIds) {
+                        const auto it = group_of.find({s.mKind, raw < 0 ? -raw : raw});
+                        if (it == group_of.end()) {
+                            ++dropped;
+                            continue;
+                        }
+                        std::set<std::size_t> visiting;
+                        for (std::int64_t c : resolve(it->second, visiting))
+                            cells.insert(c);
+                    }
+                } else {
+                    for (std::int64_t raw : s.mIds) {
+                        const std::int64_t id = raw < 0 ? -raw : raw;
+                        const std::set<std::int64_t> sub =
+                            s.mKind == "SUBSET" ? subset_closure(id) : std::set<std::int64_t>{};
+                        for (std::size_t c = 0; c < cell_part.size(); ++c) {
+                            const RadPart& part = parts[cell_part[c]];
+                            const bool pick = s.mKind == "PART"     ? cell_part[c] == id
+                                              : s.mKind == "SUBSET" ? sub.count(part.mSubset) > 0
+                                              : s.mKind == "MAT"    ? part.mMaterial == id
+                                                                    : part.mProperty == id;
+                            if (pick)
+                                cells.insert(static_cast<std::int64_t>(c));
+                        }
+                    }
+                }
+                // Shells: their own face. Solids: with EXT the faces no other
+                // chosen solid shares, with FREE those no solid of the model
+                // shares, with ALL every face (GRBRIC without a mode: EXT).
+                const std::string mode = s.mKind == "GRBRIC" && s.mMode.empty() ? "EXT" : s.mMode;
+                std::map<std::vector<std::int64_t>, std::size_t> chosen;
+                std::vector<std::pair<
+                    std::int64_t, std::vector<std::pair<std::int64_t, std::vector<std::int64_t>>>>>
+                    solids;
+                for (std::int64_t c : cells) {
+                    const std::string& fam = cell_family[static_cast<std::size_t>(c)];
+                    if (fam == "SHEL" || fam == "SH3N" || fam == "TRIA")
+                        out.emplace(c, 0);
+                    else if (cell_dim[static_cast<std::size_t>(c)] == 3 && !mode.empty()) {
+                        solids.emplace_back(c, solid_faces(c));
+                        for (const auto& [f, key] : solids.back().second)
+                            ++chosen[key];
+                    }
+                }
+                if (mode == "FREE" && !counted) {
+                    for (std::size_t c = 0; c < cell_dim.size(); ++c)
+                        if (cell_dim[c] == 3)
+                            for (const auto& [f, key] : solid_faces(static_cast<std::int64_t>(c)))
+                                ++model_faces[key];
+                    counted = true;
+                }
+                for (const auto& [c, faces] : solids)
+                    for (const auto& [f, key] : faces) {
+                        const std::size_t shared =
+                            mode == "FREE" ? model_faces[key] : (mode == "EXT" ? chosen[key] : 1);
+                        if (shared == 1)
+                            out.emplace(c, f);
+                    }
+            }
+            done[Index] = out;
+            return out;
+        };
+        for (std::size_t index = 0; index < surfaces.size(); ++index) {
+            const RadSurface& s = surfaces[index];
             std::vector<std::int64_t> entries;
-            for (const auto& seg : s.mSegments) {
-                std::array<std::int64_t, 4> idx{};
-                bool defined = true;
-                // 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
-                const std::size_t count =
-                    seg[2] == 0 ? 2 : ((seg[3] == 0 || seg[3] == seg[2]) ? 3 : 4);
-                for (std::size_t k = 0; k < count; ++k) {
-                    const auto it = node_index.find(seg[k]);
-                    defined = defined && it != node_index.end();
-                    idx[k] = defined ? it->second : -1;
-                }
-                const detail::FacetHit* hit = defined ? facets.Find(idx.data(), count) : nullptr;
-                if (!hit) {
-                    ++dropped;
-                    continue;
-                }
-                entries.push_back(hit->mFirst.mCell);
-                entries.push_back(hit->mFirst.mFacet);
+            for (const auto& [c, f] : side_set(index, 0)) {
+                entries.push_back(c);
+                entries.push_back(f);
             }
             add_region(s.mTitle.empty() ? "SURF_" + std::to_string(s.mId) : s.mTitle,
                        RegionKind::Side, s.mId, "SURF", std::move(entries));
         }
     }
+    for (std::int64_t id : skewed_boxes)
+        log::warn("Radioss: skewed /BOX {} is not supported; it contains nothing", id);
+    for (std::int64_t id : missing_boxes)
+        log::warn("Radioss: /BOX {} is not defined; it contains nothing", id);
     if (dropped)
         log::warn(
             "Radioss: {} group or surface entries name undefined ids or no cell facet and "

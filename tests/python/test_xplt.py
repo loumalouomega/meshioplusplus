@@ -129,6 +129,41 @@ def test_surface_variables_ride_on_facet_blocks(engine):
     assert area[2][0] > 1.0  # the top was stretched
 
 
+def test_edge_variables_ride_on_line_blocks(engine):
+    # FEBio's one edge variable, "edge contact gap" (a value per edge node), on
+    # the edge of an edge-to-surface sliding contact: three free nodes above
+    # the bar, whose tip is bent up towards them.
+    path = XPLT / "xplt_edge.xplt"
+    gaps = []
+    for k in range(4):
+        mesh = engine.read(path, time_step=k)
+        # The bar, the contact surface "top", then the edge "ridge".
+        assert [(c.type, len(c.data)) for c in mesh.cells] == [
+            ("hexahedron", 2),
+            ("quad", 2),
+            ("line", 2),
+        ]
+        np.testing.assert_array_equal(mesh.cells[2].data, [[12, 13], [13, 14]])
+        assert [a.tolist() for a in mesh.cell_data["xplt:edge"]] == [
+            [0, 0],
+            [0, 0],
+            [1, 1],
+        ]
+        got = {(r.name, r.kind): r for r in mesh.regions}
+        assert got[("ridge", "cell")].entries.tolist() == [4, 5]
+        assert got[("ridge", "cell")].dim == 1
+        gap = mesh.point_data["edge contact gap"]
+        assert np.isnan(gap[:12]).all()
+        gaps.append(gap[12:])
+    # No gap before the first solve; then the free nodes stay 0.25 above the
+    # undeformed top face, the bar rising towards them, most at x=1.5.
+    np.testing.assert_array_equal(gaps[0], 0)
+    for g in gaps[1:]:
+        assert (g < 0).all() and (-g <= 0.25).all()
+        assert g[0] < g[1] < g[2]
+    assert (np.diff(np.array(gaps[1:]), axis=0) > 0).all()
+
+
 def test_remeshed_states_carry_their_own_mesh(engine):
     path = XPLT / "xplt_remesh.xplt"
     sizes = []

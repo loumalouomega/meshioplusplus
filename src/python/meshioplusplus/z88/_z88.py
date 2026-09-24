@@ -7,8 +7,12 @@ same meshes and write the same bytes.
 element counts (Z88OS v15: ``ndim nnodes nelem ndof kflag``; Z88 <= V13 and
 Z88Aurora V1 add more flags and material lines after the elements); one line per
 node, ``id ndof x y [z]``; two lines per element, ``id type`` then its nodes.
-``z88o2.txt`` (displacements) and ``z88o3.txt`` (stresses) next to it are
-attached as ``point_data["U"]`` and ``cell_data["SIG"]``/``["SIGV"]``.
+The rest of the deck next to it is attached: ``z88i2.txt`` constraints as
+``point_data["z88:bc:u"]``/``["z88:bc:f"]``, ``z88mat.txt`` materials, ``z88elp.txt``
+element parameters and ``z88int.txt`` integration orders as ``z88:`` cell data;
+with ``results``, ``z88o2.txt`` displacements as ``point_data["U"]``, ``z88o4.txt``
+nodal forces as ``point_data["F"]`` and ``z88o3.txt`` stresses as cell data.
+``write`` writes the same files back from those arrays.
 """
 
 import math
@@ -22,6 +26,7 @@ from .._exceptions import ReadError, WriteError
 from .._files import is_buffer, open_file
 from .._mesh import Mesh, topological_dimension
 from .._node_order import node_order
+from .._regions import Region
 
 __all__ = ["read", "write"]
 
@@ -64,6 +69,8 @@ _CORNERS = {
 }
 
 _SOLID = (1, 10, 16, 17)
+# Types that only exist in a 3-D structure file.
+_NEEDS_3D = (1, 2, 4, 5, 10, 16, 17, 21, 22, 23, 24, 25)
 _PLANE = (3, 7, 11, 14)
 
 
@@ -144,25 +151,44 @@ def _attach_displacements(mesh, path, node_index):
     mesh.point_data["U"] = u
 
 
+# z88o3.txt labels that are coordinates, not results.
+_COORDINATE_LABELS = {"XX", "YY", "ZZ", "RR", "PHI"}
+# The stress tensor the solids and plane-stress elements give, in `SIG` order.
+_SOLID_LABELS = ["SIGXX", "SIGYY", "SIGZZ", "TAUXY", "TAUYZ", "TAUZX"]
+_PLANE_LABELS = ["SIGXX", "SIGYY", "TAUXY"]
+
+
+def _o3_label(token):
+    return token.split("(", 1)[0]
+
+
 def _attach_stresses(mesh, path, element_index, cell_code, block_start):
+    """`z88o3.txt`: per element a header (`element # = N ...`), a line of column
+    labels and rows of reals (a truss prints `SIG = v` on its header line). Each
+    element keeps the mean of every label over its rows: solids and plane-stress
+    elements as the `SIG` tensor, every other label (beams, shafts, trusses,
+    tori, plates, shells) as a scalar array of that name; `SIGV` for all."""
     ncells = len(cell_code)
-    sums = [None] * ncells
-    sumv = [0.0] * ncells
-    count = [0] * ncells
-    countv = [0] * ncells
+    sums = [dict() for _ in range(ncells)]
     current = -1
-    skipped = 0
-    components = 0
+    labels = None
     for line in _lines(_read_text(path)):
         hash_at = line.find("#")
         if hash_at >= 0 and "element" in line[:hash_at].lower():
             current = -1
+            labels = None
             rest = line[hash_at + 1 :]
             eq = rest.find("=")
             if eq >= 0:
                 ident = _leading_ints(rest[eq + 1 :])
                 if ident and ident[0] in element_index:
                     current = element_index[ident[0]]
+            at = rest.find("SIG =")
+            if current >= 0 and at >= 0:
+                t = rest[at + 5 :].split()
+                v = _real(t[0]) if t else None
+                if v is not None:
+                    sums[current]["SIGXX"] = [v, 1]
             continue
         if current < 0:
             continue
@@ -170,51 +196,268 @@ def _attach_stresses(mesh, path, element_index, cell_code, block_start):
         if not t:
             continue
         v = [_real(x) for x in t]
-        if any(x is None for x in v):
+        if all(x is None for x in v):
+            labels = [_o3_label(x) for x in t]
             continue
-        code = cell_code[current]
-        if code in _SOLID and len(v) in (9, 10):
-            first, n = 3, 6
-        elif code in _PLANE and len(v) in (5, 6):
-            first, n = 2, 3
+        if any(x is None for x in v) or labels is None or len(v) != len(labels):
+            continue
+        for name, x in zip(labels, v):
+            if name in _COORDINATE_LABELS:
+                continue
+            acc = sums[current].setdefault(name, [0.0, 0])
+            acc[0] += x
+            acc[1] += 1
+
+    def mean(c, name):
+        acc = sums[c].get(name)
+        return acc[0] / acc[1] if acc else math.nan
+
+    tensor = [None] * ncells
+    scalars = set()
+    for c in range(ncells):
+        code = cell_code[c]
+        if code in _SOLID and all(n in sums[c] for n in _SOLID_LABELS):
+            tensor[c] = _SOLID_LABELS
+        elif code in _PLANE and all(n in sums[c] for n in _PLANE_LABELS):
+            tensor[c] = _PLANE_LABELS
+        scalars.update(n for n in sums[c] if n != "SIGV" and n not in (tensor[c] or []))
+    widths = {len(t) for t in tensor if t}
+    if len(widths) > 1:
+        # Plane and solid elements do not share a file; keep the solids.
+        tensor = [t if t is _SOLID_LABELS else None for t in tensor]
+        widths = {6}
+
+    def per_block(fill):
+        return [
+            np.array([fill(c) for c in range(block_start[b], block_start[b + 1])])
+            for b in range(len(block_start) - 1)
+        ]
+
+    if widths:
+        w = widths.pop()
+        mesh.cell_data["SIG"] = per_block(
+            lambda c: [mean(c, n) for n in tensor[c]] if tensor[c] else [math.nan] * w
+        )
+    if any("SIGV" in s for s in sums):
+        mesh.cell_data["SIGV"] = per_block(lambda c: mean(c, "SIGV"))
+    for name in sorted(scalars):
+        mesh.cell_data[name] = per_block(
+            lambda c: math.nan if tensor[c] and name in tensor[c] else mean(c, name)
+        )
+
+
+def _attach_forces(mesh, path, node_index, width):
+    """`z88o4.txt`: after the per-element blocks, the sums per node (`node F(1)
+    ... F(6)`, introduced by "nodal sums" / "aufsummierten")."""
+    rows = []
+    started = False
+    for line in _lines(_read_text(path)):
+        low = line.lower()
+        if "nodal sums" in low or "aufsummierten" in low:
+            started = True
+            continue
+        if not started:
+            continue
+        t = line.split()
+        if len(t) != 7:
+            continue
+        ident = _int(t[0])
+        values = [_real(x) for x in t[1:]]
+        if ident is None or ident not in node_index or any(x is None for x in values):
+            continue
+        rows.append((node_index[ident], values[:width]))
+    if not rows:
+        return
+    f = np.full((len(mesh.points), width), np.nan)
+    for p, values in rows:
+        f[p] = values
+    mesh.point_data["F"] = f
+
+
+def _count_rows(lines, path):
+    """A Z88 input file: a count on its first line, then that many rows."""
+    rows = []
+    head = _leading_ints(lines[0]) if lines else []
+    if not head or head[0] < 0:
+        warn(f"Z88: '{path}' does not start with a count; ignored")
+        return rows
+    for line in lines[1:]:
+        if len(rows) == head[0]:
+            break
+        if line.split():
+            rows.append(line.split())
+    if len(rows) < head[0]:
+        warn(f"Z88: '{path}' ends after {len(rows)} of {head[0]} rows")
+    return rows
+
+
+def _attach_constraints(mesh, path, node_index, width):
+    """`z88i2.txt`: `node dof flag value` rows; flag 1 adds a force, flag 2
+    prescribes a displacement."""
+    n = len(mesh.points)
+    u = np.full((n, width), np.nan)
+    f = np.full((n, width), np.nan)
+    skipped = 0
+    rows = _count_rows(_lines(_read_text(path)), path)
+    if not rows:
+        return
+    for t in rows:
+        vals = [_int(x) for x in t[:3]]
+        value = _real(t[3]) if len(t) > 3 else None
+        if None in vals or value is None or vals[0] not in node_index:
+            skipped += 1
+            continue
+        node, dof, flag = vals
+        if not 1 <= dof <= width or flag not in (1, 2):
+            skipped += 1
+            continue
+        p = node_index[node]
+        if flag == 2:
+            u[p, dof - 1] = value
+        else:
+            f[p, dof - 1] = (0.0 if np.isnan(f[p, dof - 1]) else f[p, dof - 1]) + value
+    if skipped:
+        warn(f"Z88: {skipped} constraint row(s) of '{path}' skipped")
+    mesh.point_data["z88:bc:u"] = u
+    mesh.point_data["z88:bc:f"] = f
+
+
+def _ranges(lines, path, element_index, ncells, parse):
+    """Rows `from to ...` over element ids: `parse(tokens)` gives the row's
+    values, assigned to every cell in the range."""
+    out = [None] * ncells
+    for t in _count_rows(lines, path):
+        ends = [_int(x) for x in t[:2]] if len(t) >= 2 else [None]
+        value = parse(t[2:]) if None not in ends else None
+        if value is None:
+            warn(f"Z88: a row of '{path}' is malformed; skipped")
+            continue
+        for ident in range(ends[0], ends[1] + 1):
+            c = element_index.get(ident)
+            if c is not None:
+                out[c] = value
+    return out
+
+
+def _attach_sets(mesh, path, node_index, element_index, cell_dim):
+    """Z88Aurora's `z88sets.txt`: after a count, each set is a header
+    `#KIND PURPOSE id count "name"` and then its ids. Element sets become cell
+    regions and node sets point regions (tag = set id); surface sets, whose
+    rows do not name the structure file's elements, are skipped."""
+    regions = list(getattr(mesh, "regions", []) or [])
+    skipped = 0
+    header = None
+    ids = []
+
+    def flush():
+        nonlocal skipped
+        if header is None:
+            return
+        kind, sid, name = header
+        if kind == "ELEMENTS":
+            cells = sorted({element_index[i] for i in ids if i in element_index})
+            dim = max((cell_dim[c] for c in cells), default=-1)
+            regions.append(
+                Region(name, "cell", np.array(cells, dtype=np.int64), dim, sid)
+            )
+        elif kind == "NODES":
+            pts = sorted({node_index[i] for i in ids if i in node_index})
+            regions.append(
+                Region(name, "point", np.array(pts, dtype=np.int64), -1, sid)
+            )
         else:
             skipped += 1
+
+    for line in _lines(_read_text(path)):
+        t = line.split()
+        if not t:
             continue
-        if components and components != n:
-            skipped += 1
+        if t[0].startswith("#"):
+            flush()
+            quote = line.find('"')
+            name = line[quote + 1 : line.rfind('"')] if quote >= 0 else ""
+            sid = _int(t[2]) if len(t) > 2 and _int(t[2]) is not None else -1
+            header = (t[0][1:].upper(), sid, name or f"set_{sid}")
+            ids = []
             continue
-        components = n
-        if sums[current] is None:
-            sums[current] = [0.0] * n
-        for k in range(n):
-            sums[current][k] += v[first + k]
-        count[current] += 1
-        if len(v) == first + n + 1:
-            sumv[current] += v[-1]
-            countv[current] += 1
+        if header is not None:
+            ids.extend(v for v in (_int(x) for x in t) if v is not None)
+    flush()
     if skipped:
-        warn(
-            f"Z88: {skipped} stress row(s) of elements other than solids and "
-            "plane-stress elements skipped"
+        warn(f"Z88: {skipped} surface set(s) of '{path}' skipped")
+    mesh.regions = regions
+
+
+def _attach_inputs(mesh, directory, element_index, block_start):
+    ncells = block_start[-1]
+
+    def split(values, fill, dtype, width=None):
+        blocks = []
+        for b in range(len(block_start) - 1):
+            rows = [
+                fill if v is None else v
+                for v in values[block_start[b] : block_start[b + 1]]
+            ]
+            a = np.array(rows, dtype=dtype)
+            if width:
+                a = a.reshape(-1, width)
+            blocks.append(a)
+        return blocks
+
+    mat = _sibling(directory, "z88mat.txt")
+    if mat:
+        k = [0]
+
+        def material(t):
+            k[0] += 1
+            if not t:
+                return None
+            stem = t[0].rsplit(".", 1)[0]
+            number = _int(stem) if _int(stem) is not None and _int(stem) > 0 else k[0]
+            found = _sibling(directory, t[0].lower())
+            props = None
+            if found:
+                first = _lines(_read_text(found))[0].split()
+                props = [_real(x) for x in first[:2]]
+            if not props or len(props) < 2 or None in props:
+                warn(f"Z88: material file '{t[0]}' is missing or malformed")
+                props = [math.nan, math.nan]
+            return (number, props[0], props[1])
+
+        values = _ranges(_lines(_read_text(mat)), mat, element_index, ncells, material)
+        if any(v is not None for v in values):
+            mesh.cell_data["z88:material"] = split(
+                [v and v[0] for v in values], 0, np.int64
+            )
+            mesh.cell_data["z88:E"] = split(
+                [v and v[1] for v in values], math.nan, float
+            )
+            mesh.cell_data["z88:nu"] = split(
+                [v and v[2] for v in values], math.nan, float
+            )
+    elp = _sibling(directory, "z88elp.txt")
+    if elp:
+
+        def params(t):
+            # Fields a row leaves out stay absent (NaN): Z88R leaves them untouched.
+            v = [_real(x) for x in t[:12]]
+            return None if None in v else v + [math.nan] * (12 - len(v))
+
+        values = _ranges(_lines(_read_text(elp)), elp, element_index, ncells, params)
+        if any(v is not None for v in values):
+            mesh.cell_data["z88:elp"] = split(values, [math.nan] * 12, float, 12)
+    integ = _sibling(directory, "z88int.txt")
+    if integ:
+
+        def orders(t):
+            v = [_int(x) for x in t[:2]]
+            return None if len(v) < 2 or None in v else v
+
+        values = _ranges(
+            _lines(_read_text(integ)), integ, element_index, ncells, orders
         )
-    if not components:
-        return
-    sig, sigv = [], []
-    for b in range(len(block_start) - 1):
-        n = block_start[b + 1] - block_start[b]
-        a = np.full((n, components), np.nan)
-        av = np.full(n, np.nan)
-        for r in range(n):
-            c = block_start[b] + r
-            if count[c]:
-                a[r] = np.array(sums[c]) / count[c]
-            if countv[c]:
-                av[r] = sumv[c] / countv[c]
-        sig.append(a)
-        sigv.append(av)
-    mesh.cell_data["SIG"] = sig
-    if any(countv):
-        mesh.cell_data["SIGV"] = sigv
+        if any(v is not None for v in values):
+            mesh.cell_data["z88:int"] = split(values, [-1, -1], np.int64, 2)
 
 
 def read(filename, results=True):
@@ -247,6 +490,7 @@ def read(filename, results=True):
 
     coords = np.zeros((nnodes, 3))
     node_index = {}
+    node_dof = 0
     for n in range(nnodes):
         while i < len(lines) and not lines[i].split():
             i += 1
@@ -273,6 +517,7 @@ def read(filename, results=True):
             _fail(f"node {ident} is defined twice", i + 1)
         node_index[ident] = n
         coords[n] = x
+        node_dof = max(node_dof, _int(t[1]) or 0)
         i += 1
     if kflag == 1:
         warn("Z88: cylindrical input (KFLAG = 1) converted to Cartesian coordinates")
@@ -350,10 +595,24 @@ def read(filename, results=True):
     mesh = Mesh(coords, cells)
     if type_blocks:
         mesh.cell_data["z88:type"] = type_blocks
+    width = node_dof if node_dof in (2, 3, 6) else (2 if ndim == 2 else 3)
+    if directory is not None:
+        i2 = _sibling(directory, "z88i2.txt")
+        if i2:
+            _attach_constraints(mesh, i2, node_index, width)
+        if cell_code:
+            _attach_inputs(mesh, directory, element_index, block_start)
+        sets = _sibling(directory, "z88sets.txt")
+        if sets:
+            cell_dim = [topological_dimension[t] for t, conn in cells for _ in conn]
+            _attach_sets(mesh, sets, node_index, element_index, cell_dim)
     if results and directory is not None:
         o2 = _sibling(directory, "z88o2.txt")
         if o2:
             _attach_displacements(mesh, o2, node_index)
+        o4 = _sibling(directory, "z88o4.txt")
+        if o4:
+            _attach_forces(mesh, o4, node_index, width)
         o3 = _sibling(directory, "z88o3.txt")
         if o3 and cell_code:
             _attach_stresses(mesh, o3, element_index, cell_code, block_start)
@@ -381,9 +640,24 @@ def write(filename, mesh, stubs=False):
         for b in mesh.cells
     )
     flat = pdim < 3 or bool(np.all(points[:, 2] == 0.0))
-    ndim = 2 if flat and not any_3d else 3
-
     has_type = "z88:type" in mesh.cell_data
+    # Types that only exist in a 3-D file (solids, 3-D beams, trusses and the
+    # shaft, shells) make it 3-D even when every z is 0.
+    needs_3d = False
+    for b, block in enumerate(mesh.cells):
+        if not has_type or isinstance(block.data, list):
+            continue
+        for w in np.asarray(mesh.cell_data["z88:type"][b]).ravel().tolist():
+            info = _TYPES.get(int(w))
+            if (
+                info
+                and info[2] == info[0]
+                and info[1] == block.type
+                and int(w) in _NEEDS_3D
+            ):
+                needs_3d = True
+    ndim = 2 if flat and not any_3d and not needs_3d else 3
+
     codes = []
     dropped = set()
     nelem = 0
@@ -412,18 +686,21 @@ def write(filename, mesh, stubs=False):
     if regions:
         warn(f"Z88 structure files hold no groups; {len(regions)} region(s) dropped")
         _provenance.note("regions-dropped", "a Z88 structure file holds no groups")
+    deck = [n for n in _DECK_POINT if n in mesh.point_data]
+    deck += [n for n in _DECK_CELL if n in mesh.cell_data]
     other = (
         len(mesh.point_data)
         + len(mesh.field_data)
         + len(mesh.cell_data)
         - (1 if has_type else 0)
+        - len(deck)
     )
     if other:
         warn(
-            "Z88 structure files hold no data arrays; point, cell and field data "
-            "dropped"
+            "Z88 decks hold no other data arrays; point, cell and field data other "
+            "than the z88: constraints, materials and element parameters dropped"
         )
-        _provenance.note("data-dropped", "a Z88 structure file holds no data arrays")
+        _provenance.note("data-dropped", "a Z88 deck holds no other data arrays")
     if not nelem:
         raise WriteError("Z88 writer: no cell has a Z88 element type")
 
@@ -473,8 +750,113 @@ def write(filename, mesh, stubs=False):
     # "\n" on every platform, as the C++ writer: the engines write the same bytes.
     with open_file(filename, "w", newline="\n") as f:
         f.write("".join(out))
-    if stubs and not is_buffer(filename, "w"):
-        directory = os.path.dirname(os.fspath(filename))
-        for name in ("z88i2.txt", "z88i5.txt"):
-            with open(os.path.join(directory, name), "w", newline="\n") as f:
-                f.write("0\n")
+    if is_buffer(filename, "w"):
+        return
+    directory = os.path.dirname(os.fspath(filename))
+    files = _deck_files(mesh, codes, dof)
+    if stubs:
+        files.setdefault("z88i2.txt", "0\n")
+        files.setdefault("z88i5.txt", "0\n")
+    for name, text in files.items():
+        with open(os.path.join(directory, name), "w", newline="\n") as f:
+            f.write(text)
+
+
+_DECK_POINT = ("z88:bc:u", "z88:bc:f")
+_DECK_CELL = ("z88:material", "z88:E", "z88:nu", "z88:elp", "z88:int")
+
+
+def _deck_files(mesh, codes, dof):
+    """The input files the `z88:` arrays describe: `z88i2.txt` from the
+    constraints, `z88mat.txt` and one `<n>.txt` per material, `z88elp.txt`,
+    `z88int.txt`; element ranges over the written element ids."""
+    files = {}
+    u = mesh.point_data.get("z88:bc:u")
+    f = mesh.point_data.get("z88:bc:f")
+    if u is not None or f is not None:
+        n = len(mesh.points)
+        kinds = [
+            (flag, np.asarray(a, dtype=float).reshape(n, -1))
+            for flag, a in ((2, u), (1, f))
+            if a is not None
+        ]
+        rows = []
+        for p in range(n):
+            for d in range(dof[p]):
+                for flag, a in kinds:
+                    if d < a.shape[1] and not np.isnan(a[p, d]):
+                        rows.append(
+                            "%9d %2d %2d %+.16E\n" % (p + 1, d + 1, flag, a[p, d])
+                        )
+        files["z88i2.txt"] = f"{len(rows)}\n" + "".join(rows)
+
+    def written(name, width=None):
+        """The array's rows of the written elements, in element order."""
+        out = []
+        for b, arr in enumerate(mesh.cell_data[name]):
+            arr = np.asarray(arr)
+            arr = arr.reshape(len(arr), -1) if width else arr.reshape(len(arr))
+            out += [arr[r].tolist() for r in range(len(codes[b])) if codes[b][r]]
+        return out
+
+    def ranges(values):
+        """Runs of equal values as (first id, last id, value); None skipped."""
+        runs = []
+        for k, v in enumerate(values, start=1):
+            if runs and runs[-1][2] == v and runs[-1][1] == k - 1:
+                runs[-1][1] = k
+            else:
+                runs.append([k, k, v])
+        return [r for r in runs if r[2] is not None]
+
+    if "z88:E" in mesh.cell_data and "z88:nu" in mesh.cell_data:
+        e = written("z88:E")
+        nu = written("z88:nu")
+        want = written("z88:material") if "z88:material" in mesh.cell_data else None
+        number = {}
+        for k in range(len(e)):
+            key = (e[k], nu[k])
+            if math.isnan(e[k]) or math.isnan(nu[k]) or key in number:
+                continue
+            w = int(want[k]) if want is not None else 0
+            if w <= 0 or w in number.values():
+                w = max([0] + list(number.values())) + 1
+            number[key] = w
+        values = [
+            None if (math.isnan(a) or math.isnan(b)) else number[(a, b)]
+            for a, b in zip(e, nu)
+        ]
+        runs = ranges(values)
+        if runs:
+            files["z88mat.txt"] = f"{len(runs)}\n" + "".join(
+                "%9d %9d %d.txt\n" % tuple(r) for r in runs
+            )
+            for (a, b), n in number.items():
+                files[f"{n}.txt"] = "%+.16E %+.16E\n" % (a, b)
+    if "z88:elp" in mesh.cell_data:
+        # The leading fields up to the first NaN, at least the seven section values.
+        rows = []
+        for v in written("z88:elp", 12):
+            n = next((k for k, x in enumerate(v) if math.isnan(x)), len(v))
+            rows.append(tuple(v[:n]) if n >= 7 else None)
+        runs = ranges(rows)
+        if runs:
+            files["z88elp.txt"] = f"{len(runs)}\n" + "".join(
+                "%9d %9d" % (a, b)
+                + "".join(
+                    (" %d" % int(x)) if k == 7 else (" %+.16E" % x)
+                    for k, x in enumerate(v)
+                )
+                + "\n"
+                for a, b, v in runs
+            )
+    if "z88:int" in mesh.cell_data:
+        rows = [
+            None if v[0] < 0 else (int(v[0]), int(v[1])) for v in written("z88:int", 2)
+        ]
+        runs = ranges(rows)
+        if runs:
+            files["z88int.txt"] = f"{len(runs)}\n" + "".join(
+                "%9d %9d %d %d\n" % (a, b, *v) for a, b, v in runs
+            )
+    return files

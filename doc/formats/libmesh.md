@@ -5,9 +5,9 @@ libMesh's native mesh file (`XdrIO`), also the mesh MOOSE writes with `--mesh-on
 | | |
 |---|---|
 | **Format name** | `libmesh` |
-| **Extensions** | `.xda`, `.xdr` (also recognised by content: the `libMesh-` version string, as text or as an XDR string) |
-| **Read / Write** | ✓ / — |
-| **Extra dependencies** | — |
+| **Extensions** | `.xda`, `.xdr`, and each with `.gz` or `.bz2` (also recognised by content: the `libMesh-` version string, as text or as an XDR string) |
+| **Read / Write** | ✓ / ✓ (writer v16.11.0) |
+| **Extra dependencies** | — (the native reader inflates gzip with zlib when built with it) |
 
 ## Reading
 
@@ -17,7 +17,7 @@ import meshioplusplus
 mesh = meshioplusplus.read("mesh.xdr")   # or meshioplusplus.libmesh.read(...)
 ```
 
-`read` takes no options. The encoding comes from the content, not the extension. Both engines (the C++ core and the pure-Python reference) read the same meshes.
+`read` takes no options. The encoding comes from the content, not the extension, and gzip or bzip2 compression (as libMesh writes `.xda.gz`/`.xdr.bz2`) is inflated. Both engines (the C++ core and the pure-Python reference) read the same meshes; the core inflates gzip through zlib and leaves bzip2 to the Python reader, so the native CLI and the C, Fortran, Julia, R and WASM bindings read gzip only.
 
 ## The stream
 
@@ -33,9 +33,9 @@ A version string (`libMesh-0.7.0+` to `libMesh-1.8.0`), the element and node cou
 | node unique ids | 0.9.6 | skipped |
 | side sets (with a name map from 0.9.2) | | `side` regions |
 | node sets | 0.9.2 | `point` regions |
-| edge and shell-face sets | 1.1.0 | skipped with a warning |
+| edge and shell-face sets | 1.1.0 | `line` cells and `cell` regions (see [Boundaries](#boundaries)) |
 
-Legacy pre-`libMesh` files (`DEAL 003`, `LIBM 0`) are refused, as libMesh itself refuses them. Compressed files (`.xda.gz`, `.xdr.bz2`) must be decompressed first.
+Legacy pre-`libMesh` files (`DEAL 003`, `LIBM 0`) are refused, as libMesh itself refuses them.
 
 ## Cells
 
@@ -54,9 +54,11 @@ Legacy pre-`libMesh` files (`DEAL 003`, `LIBM 0`) are refused, as libMesh itself
 | PYRAMID5 / PYRAMID13 / PYRAMID14 / PYRAMID18 | `pyramid` / `pyramid13` / `pyramid14` / `pyramid14` (extra nodes dropped) |
 | NODEELEM | `vertex` |
 | infinite elements (INF*) | skipped with a warning |
-| C0POLYGON, C0POLYHEDRON, REMOTEELEM | `ReadError` |
+| C0POLYGON, C0POLYHEDRON, REMOTEELEM | `ReadError` (see below) |
 
 Dropping extra nodes is logged and recorded as a provenance note; the dropped nodes stay as points.
+
+No `.xda`/`.xdr` file can hold a C0POLYGON or C0POLYHEDRON: `XdrIO` writes no node count per element and takes it from the element type, which for these two types has none, so libMesh cannot write them either (`XdrIO::pack_element` asserts the fixed count). They remain a `ReadError`.
 
 ## Node order
 
@@ -66,6 +68,28 @@ HEX20, HEX27, PRISM15 and PRISM18 list their vertical mid-edge nodes before the 
 
 A side set entry names an element and one of its sides in libMesh's numbering (`Hex8::side_nodes_map` …). It becomes a `side` region entry through the facet with the same corner nodes. libMesh keeps boundary conditions on the coarse elements, so a side of a refined element is carried down to every active descendant whose side lies on it. The sides of line elements (their end points) have no side-region form and are skipped with a warning.
 
+Edge sets and shell-face sets (libMesh 1.1.0 on) share the side sets' id space and name map:
+
+- An **edge set** entry names an element and one of its edges (`Hex8::edge_nodes_map` …). Each named edge becomes a `line` cell (a `line3` with the element's mid-edge node when the element is quadratic), shared by every entry naming it, in a `cell` region `<name>:edge` (tag = id). These cells are not libMesh elements: their `libmesh:subdomain` (and `libmesh:level`, `libmesh:p_level`) is −1. An edge of a refined element spans its coarse edge.
+- A **shell-face set** entry names a 2-D element and its face 0 or 1. It becomes a `cell` region `<name>:shellface0` or `<name>:shellface1` on the element (on every active descendant of a refined one). libMesh gives the two faces no geometric meaning, so the names keep its numbers.
+
+`<name>` is the side-set name map's entry for the id, else `boundary_<id>`.
+
+## Writing
+
+```python
+meshioplusplus.write("mesh.xdr", mesh)   # XDR; "mesh.xda" for ASCII
+meshioplusplus.write("mesh.xda.gz", mesh)  # compressed (Python only)
+```
+
+`write` takes no options and emits the `libMesh-1.8.0` layout that `XdrIO::write` produces: 8-byte ids, inline subdomain ids, no unique ids, no processor ids. The encoding comes from the extension (`.xdr` is XDR, anything else ASCII). A trailing `.gz` or `.bz2` compresses the file; the native writer does not compress, so the Python layer has the core write the plain stream and compresses it (gzip without a timestamp, so the bytes are reproducible). Both engines write the same bytes.
+
+- **Cells.** Every cell whose type is in the table above (the plain type, not the shell or subdivision variant) becomes a level-0 element; refinement trees are not written, so a refined mesh read from a file is written flat, as its active cells. `polygon`, `polyhedron`, Lagrange and other cells libMesh has no type for are dropped with a warning and a provenance note. The `"libmesh"` node-ordering tables are applied in reverse.
+- **Subdomains.** `libmesh:subdomain` when present, else the first `cell` region that holds the cell (its tag, or a fresh id past the largest tag), else 0. Ids must fit libMesh's `subdomain_id_type` (0 to 65534). Region names other than `subdomain_<id>` go into the subdomain name map.
+- **Boundaries.** `side` regions become side sets, each entry matched to the libMesh side with the same corner nodes. The `<name>:edge` and `<name>:shellface<k>` cell regions the reader makes become edge and shell-face sets again; their line cells are not written as elements. `point` regions become node sets. A region's tag is its id; untagged regions get fresh ids (one id space for side, edge and shell-face sets, another for node sets). Names other than `boundary_<id>`/`nodeset_<id>` go into the name maps. A side or edge that no written element has is dropped with a warning.
+- **Node ids.** Points are numbered in order, unless `libmesh:id` holds distinct non-negative ids (as the reader leaves it when the file had unused ids): then those ids are kept and the unused ones written as NaN in XDR, as libMesh writes them, and as 0 in ASCII, because libMesh's ASCII reader cannot parse the `nan` its own writer prints (it only loads the nodes elements use, so the value is never looked at).
+- **p-levels.** `libmesh:p_level` is written inline. `libmesh:level` and other data arrays are not written.
+
 ## Validation
 
-The fixtures under `tests/python/meshes/libmesh/` are written by `tools/gen_libmesh_fixtures.py` in libMesh's own layout, since libMesh (LGPL) is not a dependency. Outside the repository the reader was run on libMesh's `reference_elements/` and `tests/meshes/` samples (both encodings for every element type, and an AMR mesh with side sets): every cell has a positive volume and every higher-order node sits where meshio++'s tables put it. Three of libMesh's hand-written reference files (`one_pyramid13/14/18.xda`) announce inline subdomain ids they do not contain; libMesh itself cannot read them either, and meshio++ refuses them.
+The fixtures under `tests/python/meshes/libmesh/` are written by `tools/gen_libmesh_fixtures.py` in libMesh's own layout, since libMesh (LGPL) is not a dependency. For v16.11.0 libMesh 1.8.0 was built from source outside the repository: it reads every fixture and every file the writer produces (from these fixtures, from libMesh-written meshes with edge and shell-face sets, gzip and bzip2 files, and from Gmsh, Exodus and Abaqus meshes) with the same elements, subdomains, side, edge, shell-face and node sets and names, and the same measure; meshio++ reads libMesh's own files the same way. Outside the repository the reader was run on libMesh's `reference_elements/` and `tests/meshes/` samples (both encodings for every element type, and an AMR mesh with side sets): every cell has a positive volume and every higher-order node sits where meshio++'s tables put it. Three of libMesh's hand-written reference files (`one_pyramid13/14/18.xda`) announce inline subdomain ids they do not contain; libMesh itself cannot read them either, and meshio++ refuses them.

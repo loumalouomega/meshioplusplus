@@ -41,7 +41,9 @@
 
 namespace {
 
+using meshioplusplus::DType;
 using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 using meshioplusplus::ReadError;
 using meshioplusplus::ReadOptions;
 using meshioplusplus::RegionKind;
@@ -152,10 +154,23 @@ TEST(Femap, OutputSetsAreSteps) {
 }
 
 TEST(Femap, RoundTripsThroughItsOwnWriter) {
-    const Mesh mesh = meshioplusplus::read_femap(write_file(tet10_file()));
+    Mesh mesh = meshioplusplus::read_femap(write_file(tet10_file()));
+    // Results: a nodal scalar and an elemental 2-vector, written as an output set.
+    NDArray t(DType::Float64, {mesh.NumPoints()});
+    for (std::size_t p = 0; p < mesh.NumPoints(); ++p)
+        t.As<double>()[p] = 0.5 * static_cast<double>(p);
+    mesh.AddPointData("T", std::move(t));
+    NDArray s(DType::Float64, {mesh.Cells(0).NumCells(), 2});
+    for (std::size_t k = 0; k < s.Size(); ++k)
+        s.As<double>()[k] = 10.0 + static_cast<double>(k);
+    mesh.AddCellData("S", {std::move(s)});
     const std::string out = mt::temp_path(".neu");
     meshioplusplus::write_femap(out, mesh);
     const Mesh back = meshioplusplus::read_femap(out);
+    ASSERT_TRUE(back.HasPointData("T"));
+    EXPECT_DOUBLE_EQ(detail::read_double(back.PointData("T"), 3), 1.5);
+    ASSERT_TRUE(back.HasCellData("S_1"));
+    EXPECT_DOUBLE_EQ(detail::read_double(back.CellData("S_1", 0), 0), 11.0);
     ASSERT_EQ(back.NumPoints(), mesh.NumPoints());
     for (std::size_t k = 0; k < mesh.NumPoints() * 3; ++k)
         EXPECT_DOUBLE_EQ(detail::read_double(back.Points(), k),
@@ -191,4 +206,23 @@ TEST(Femap, ErrorsNameTheCulprit) {
         "   -1\n   403\n1,0,0,1,46,0,0,0,0,0,0,0.,0.,0.,0,\n   -1\n   -1\n   404\n"
         "7,124,1,1,0,1,0,0,\n1,2,0,0,0,0,0,0,0,0,\n   -1\n",
         "ends inside");
+}
+
+TEST(Femap, ReadsThe2401PropertyLayout) {
+    // Femap 2401 follows a property's values with as many integers, five to a
+    // line (function references); earlier versions go straight to the outline
+    // counts.
+    std::string body = tet10_file();
+    const std::string old402 =
+        "   402\n5,110,1,25,1,0,\nSOLID PART\n0,0,0,0,\n2,\n0,0,\n3,\n1.,2.,3.,\n0,\n0,\n";
+    const std::string new402 =
+        "   402\n5,110,1,25,1,0,\nSOLID PART\n0,0,0,0,\n2,\n0,0,\n7,\n1.,2.,3.,0.,0.,\n0.,0.,\n"
+        "7,\n0,0,0,0,0,\n0,0,\n0,\n0,\n";
+    const std::size_t at = body.find(old402);
+    ASSERT_NE(at, std::string::npos);
+    body.replace(at, old402.size(), new402);
+    body.replace(body.find("9.3,"), 4, "24.1,");
+    const Mesh mesh = meshioplusplus::read_femap(write_file(body));
+    EXPECT_NE(mesh.FindRegion("SOLID PART", RegionKind::Cell), Mesh::npos);
+    EXPECT_EQ(mesh.Cells(0).Type(), "tetra10");
 }

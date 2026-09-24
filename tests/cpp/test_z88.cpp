@@ -40,6 +40,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/z88.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
 
 namespace {
@@ -204,4 +205,94 @@ TEST(Z88, Errors) {
     fs::remove(dir / "z88i1.txt");
     write(dir / "z88o2.txt", "1 0 0 0\n");
     EXPECT_THROW(meshioplusplus::read_z88((dir / "z88o2.txt").string()), ReadError);
+}
+
+TEST(Z88, ReadsAndWritesTheWholeDeckWithBeamResults) {
+    // Two 3-D beams (type 2) and a truss (type 4) along x, clamped at node 1,
+    // with every input file and a hand-written z88o3/z88o4 in Z88R's layout.
+    const fs::path dir = deck_dir();
+    write(dir / "z88i1.txt",
+          "3 3 3 18 0\n1 6 0 0 0\n2 6 1 0 0\n3 6 2 0 0\n1 2\n1 2\n2 2\n2 3\n3 4\n1 3\n");
+    write(dir / "z88i2.txt", "7\n1 1 2 0\n1 2 2 0\n1 3 2 0\n1 4 2 0\n1 5 2 0\n1 6 2 0\n3 3 1 -5\n");
+    write(dir / "z88mat.txt", "2\n1 2 51.txt\n3 3 steel.txt\n");
+    write(dir / "51.txt", "210000 0.3\n");
+    write(dir / "steel.txt", "200000 0.29\n");
+    write(dir / "z88elp.txt", "1\n1 3 100 833 5 833 5 1406 208\n");
+    write(dir / "z88int.txt", "1\n1 3 0 0\n");
+    write(dir / "z88o3.txt",
+          "output file Z88O3.TXT : stresses\n\n"
+          "element #=     1 type =3Dbeam   node      1             node      2\n"
+          "    SIGXX       TAUXX       SIGZZ1      SIGYY1      SIGZZ2      SIGYY2\n"
+          " +1.000E+00  +2.000E+00  +3.000E+00  +4.000E+00  +5.000E+00  +6.000E+00\n\n"
+          "element #=     2 type =3Dbeam   node      2             node      3\n"
+          "    SIGXX       TAUXX       SIGZZ1      SIGYY1      SIGZZ2      SIGYY2\n"
+          " -1.000E+00  +0.000E+00  +0.000E+00  +0.000E+00  +0.000E+00  +0.000E+00\n\n"
+          "element # =     3     type = truss in space     SIG =  +7.500E+00\n");
+    write(dir / "z88o4.txt",
+          "output file Z88O4.TXT : nodal forces\n\nthe nodal sums for each node\n"
+          "----------------------------\n  node       F(1)  F(2)  F(3)  F(4)  F(5)  F(6)\n\n"
+          "    1 +0.0E+00 +0.0E+00 +5.0E+00 +0.0E+00 +1.0E+01 +0.0E+00\n"
+          "    2 +0.0E+00 +0.0E+00 +0.0E+00 +0.0E+00 +0.0E+00 +0.0E+00\n"
+          "    3 +0.0E+00 +0.0E+00 -5.0E+00 +0.0E+00 +0.0E+00 +0.0E+00\n");
+    const Mesh mesh = meshioplusplus::read_z88((dir / "z88i1.txt").string());
+    const auto& sigxx = mesh.CellData("SIGXX", 0);
+    EXPECT_EQ(detail::read_double(sigxx, 0), 1.0);
+    EXPECT_EQ(detail::read_double(sigxx, 2), 7.5);  // the truss's axial stress
+    EXPECT_TRUE(std::isnan(detail::read_double(mesh.CellData("TAUXX", 0), 2)));
+    EXPECT_FALSE(mesh.HasCellData("SIG"));
+    EXPECT_EQ(detail::read_int(mesh.CellData("z88:material", 0), 2), 2);  // "steel.txt": row 2
+    EXPECT_EQ(detail::read_double(mesh.CellData("z88:E", 0), 2), 200000.0);
+    const auto& elp = mesh.CellData("z88:elp", 0);
+    EXPECT_EQ(detail::read_double(elp, 12 + 5), 1406.0);
+    EXPECT_TRUE(std::isnan(detail::read_double(elp, 12 + 7)));
+    const auto& u = mesh.PointData("z88:bc:u");
+    const auto& f = mesh.PointData("z88:bc:f");
+    EXPECT_EQ(detail::read_double(u, 0), 0.0);
+    EXPECT_TRUE(std::isnan(detail::read_double(u, 6)));
+    EXPECT_EQ(detail::read_double(f, 2 * 6 + 2), -5.0);
+    EXPECT_EQ(detail::read_double(mesh.PointData("F"), 4), 10.0);
+
+    // Written back: the same inputs; the material files numbered 51 and 2.
+    const fs::path out = deck_dir();
+    meshioplusplus::write_z88((out / "z88i1.txt").string(), mesh);
+    for (const char* name :
+         {"z88i2.txt", "z88mat.txt", "51.txt", "2.txt", "z88elp.txt", "z88int.txt"})
+        EXPECT_TRUE(fs::exists(out / name)) << name;
+    const Mesh back = meshioplusplus::read_z88((out / "z88i1.txt").string());
+    for (const char* name : {"z88:material", "z88:E", "z88:nu", "z88:elp", "z88:int"})
+        for (std::size_t k = 0; k < mesh.CellData(name, 0).Size(); ++k) {
+            const double a = detail::read_double(mesh.CellData(name, 0), k);
+            const double b = detail::read_double(back.CellData(name, 0), k);
+            EXPECT_TRUE(a == b || (std::isnan(a) && std::isnan(b))) << name << " " << k;
+        }
+    for (const char* name : {"z88:bc:u", "z88:bc:f"})
+        for (std::size_t k = 0; k < mesh.PointData(name).Size(); ++k) {
+            const double a = detail::read_double(mesh.PointData(name), k);
+            const double b = detail::read_double(back.PointData(name), k);
+            EXPECT_TRUE(a == b || (std::isnan(a) && std::isnan(b))) << name << " " << k;
+        }
+    fs::remove_all(dir);
+    fs::remove_all(out);
+}
+
+TEST(Z88, AuroraSetsBecomeRegions) {
+    const fs::path dir = deck_dir();
+    write(dir / "z88structure.txt",
+          "3 4 1 12 0 #AURORA_V2\n1 3 0 0 0\n2 3 1 0 0\n3 3 0 1 0\n"
+          "4 3 0 0 1\n1 17\n1 2 3 4\n");
+    write(dir / "z88sets.txt",
+          "3\n#ELEMENTS MATERIAL 1 1 \"Steel part\"\n 1\n"
+          "#SURFACE CONSTRAINT 2 1 \"Set2\"\n 1 0 9 9 9 9\n"
+          "#NODES CONSTRAINT 7 2 \"FIX\"\n 1 4\n");
+    const Mesh mesh = meshioplusplus::read_z88((dir / "z88structure.txt").string());
+    ASSERT_EQ(mesh.NumRegions(), 2u);
+    const std::size_t cell = mesh.FindRegion("Steel part", meshioplusplus::RegionKind::Cell);
+    ASSERT_NE(cell, Mesh::npos);
+    EXPECT_EQ(mesh.Region(cell).mTag, 1);
+    const std::size_t fix = mesh.FindRegion("FIX", meshioplusplus::RegionKind::Point);
+    ASSERT_NE(fix, Mesh::npos);
+    EXPECT_EQ(mesh.Region(fix).mTag, 7);
+    EXPECT_EQ(mesh.Region(fix).NumEntries(), 2u);
+    EXPECT_EQ(mesh.Region(fix).Entries()[1], 3);
+    fs::remove_all(dir);
 }

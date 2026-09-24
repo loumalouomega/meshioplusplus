@@ -37,6 +37,13 @@ Fixtures:
   variables.
 * ``transient``: two strands over three solution times, later zones sharing
   the coordinates and connectivity of the first.
+* ``poly_2d``: an FEPOLYGON zone (a quadrilateral, a pentagon and a
+  quadrilateral over one shared edge set) with nodal and cell-centred
+  variables, and a second zone sharing its coordinates and face map.
+* ``poly_3d``: an FEPOLYHEDRON zone mixing two hexahedra (sharing a face), a
+  tetrahedron and a pentagonal prism, interleaved so the reader's per-node-
+  count blocks reorder its cells, plus a second polyhedral zone whose face
+  against the first is a boundary connection to it.
 """
 
 import argparse
@@ -59,6 +66,8 @@ ZONETYPE = {
     "FEQUADRILATERAL": 3,
     "FETETRAHEDRON": 4,
     "FEBRICK": 5,
+    "FEPOLYGON": 6,
+    "FEPOLYHEDRON": 7,
 }
 NODES_PER_CELL = {
     "FELINESEG": 2,
@@ -101,6 +110,8 @@ def _n_nodes(z):
 
 
 def _n_cells(z):
+    if "facemap" in z:
+        return z["ncells"]
     if z["type"] == "ORDERED":
         n = 1
         for d in (z["I"], z["J"], z["K"]):
@@ -287,11 +298,172 @@ def transient():
     return ds
 
 
+def _facemap(cells, polyhedral):
+    """The Tecplot face map of cells given by their outward faces (polyhedra)
+    or counter-clockwise rings (polygons), 1-based: a shared face is listed
+    once, as its first cell wound it (that cell is its left element, the
+    second its right)."""
+    faces, left, right, seen = [], [], [], {}
+    for c, cell in enumerate(cells, start=1):
+        items = (
+            cell
+            if polyhedral
+            else [[cell[j], cell[(j + 1) % len(cell)]] for j in range(len(cell))]
+        )
+        for face in items:
+            key = tuple(sorted(face))
+            if key in seen and right[seen[key]] == 0:
+                right[seen[key]] = c
+                continue
+            seen[key] = len(faces)
+            faces.append(list(face))
+            left.append(c)
+            right.append(0)
+    return {"faces": faces, "left": left, "right": right, "bconn": []}
+
+
+def _hex_faces(n):
+    """Outward faces of a hexahedron with VTK-ordered 1-based nodes ``n``."""
+    return [
+        [n[0], n[3], n[2], n[1]],
+        [n[4], n[5], n[6], n[7]],
+        [n[0], n[1], n[5], n[4]],
+        [n[1], n[2], n[6], n[5]],
+        [n[2], n[3], n[7], n[6]],
+        [n[3], n[0], n[4], n[7]],
+    ]
+
+
+def poly_2d():
+    variables = ["X", "Y", "U", "Q"]
+    xy = np.array(
+        [[0, 0], [1, 0], [2, 0], [2, 1], [1, 1], [0, 1], [1.5, 1.5], [0, 2]],
+        dtype=float,
+    )
+    rings = [[1, 2, 5, 6], [2, 3, 4, 7, 5], [6, 5, 7, 8]]
+    zone = _zone(
+        "polygons",
+        "FEPOLYGON",
+        4,
+        nodes=8,
+        ncells=3,
+        facemap=_facemap(rings, False),
+        loc=[1, 1, 1, 0],
+    )
+    zone["data"] = {0: xy[:, 0], 1: xy[:, 1]}
+    again = _zone(
+        "polygons_again",
+        "FEPOLYGON",
+        4,
+        nodes=8,
+        ncells=3,
+        facemap=zone["facemap"],
+        loc=[1, 1, 1, 0],
+        share=[1, 1, 0, 0],
+        connshare=1,
+    )
+    ds = {
+        "title": "Polygons",
+        "variables": variables,
+        "zones": [zone, again],
+        "double": True,
+        "foreign": False,
+        "extras": False,
+    }
+    _fill(ds, 5)
+    return ds
+
+
+def poly_3d():
+    variables = ["X", "Y", "Z", "T", "P"]
+    pts = [
+        # two unit cubes side by side: x in [0, 2]
+        *[[x, y, z] for z in (0.0, 1.0) for y in (0.0, 1.0) for x in (0.0, 1.0, 2.0)],
+        # a tetrahedron off to the side
+        [0.0, 3.0, 0.0],
+        [1.0, 3.0, 0.0],
+        [0.0, 4.0, 0.0],
+        [0.0, 3.0, 1.0],
+    ]
+    # a pentagonal prism
+    base = [
+        [3.0 + np.cos(a), np.sin(a), 0.0]
+        for a in np.linspace(0.0, 2 * np.pi, 5, endpoint=False)
+    ]
+    pts += base + [[x, y, 1.0] for x, y, _ in base]
+    pts = np.array(pts)
+
+    def node(x, y, z):  # the cube lattice, x fastest
+        return 1 + int(x) + 3 * int(y) + 6 * int(z)
+
+    def cube(x0):
+        return [
+            node(x0, 0, 0),
+            node(x0 + 1, 0, 0),
+            node(x0 + 1, 1, 0),
+            node(x0, 1, 0),
+            node(x0, 0, 1),
+            node(x0 + 1, 0, 1),
+            node(x0 + 1, 1, 1),
+            node(x0, 1, 1),
+        ]
+
+    tet_faces = [[13, 15, 14], [13, 14, 16], [14, 15, 16], [15, 13, 16]]
+    lo, hi = list(range(17, 22)), list(range(22, 27))
+    prism = [lo[::-1], hi] + [
+        [lo[k], lo[(k + 1) % 5], hi[(k + 1) % 5], hi[k]] for k in range(5)
+    ]
+    cells = [_hex_faces(cube(0)), tet_faces, prism, _hex_faces(cube(1))]
+    zone = _zone(
+        "polyhedra",
+        "FEPOLYHEDRON",
+        5,
+        nodes=len(pts),
+        ncells=len(cells),
+        facemap=_facemap(cells, True),
+        loc=[1, 1, 1, 1, 0],
+        aux=[("Material", "air")],
+    )
+    zone["data"] = {0: pts[:, 0], 1: pts[:, 1], 2: pts[:, 2]}
+
+    # A cube under the first one: its top face is the first cube's bottom
+    # face, a neighbour in zone 1 -- a boundary connection.
+    below = np.array(
+        [[x, y, z] for z in (-1.0, 0.0) for y in (0.0, 1.0) for x in (0.0, 1.0)]
+    )
+    fm = _facemap([_hex_faces([1, 2, 4, 3, 5, 6, 8, 7])], True)
+    top = fm["faces"].index([5, 6, 8, 7])
+    fm["right"][top] = -1  # the first boundary face
+    fm["bconn"] = [[(1, 1)]]  # its connections: element 1 of zone 1
+    under = _zone(
+        "below",
+        "FEPOLYHEDRON",
+        5,
+        nodes=8,
+        ncells=1,
+        facemap=fm,
+        loc=[1, 1, 1, 1, 0],
+    )
+    under["data"] = {0: below[:, 0], 1: below[:, 1], 2: below[:, 2]}
+    ds = {
+        "title": "Polyhedra",
+        "variables": variables,
+        "zones": [zone, under],
+        "double": True,
+        "foreign": False,
+        "extras": False,
+    }
+    _fill(ds, 6)
+    return ds
+
+
 DATASETS = {
     "fe_mixed": fe_mixed,
     "fe_2d": fe_2d,
     "ordered": ordered,
     "transient": transient,
+    "poly_2d": poly_2d,
+    "poly_3d": poly_3d,
 }
 
 
@@ -323,6 +495,15 @@ def write_ascii(ds, path):
         head = [f'ZONE T="{z["title"]}"']
         if z["type"] == "ORDERED":
             head.append(f'I={z["I"]}, J={z["J"]}, K={z["K"]}, ZONETYPE=ORDERED')
+        elif "facemap" in z:
+            fm = z["facemap"]
+            head.append(
+                f'NODES={z["nodes"]}, ELEMENTS={z["ncells"]}, FACES={len(fm["faces"])}, '
+                f'TOTALNUMFACENODES={sum(map(len, fm["faces"]))}, '
+                f'NUMCONNECTEDBOUNDARYFACES={len(fm["bconn"])}, '
+                f'TOTALNUMBOUNDARYCONNECTIONS={sum(map(len, fm["bconn"]))}, '
+                f'ZONETYPE={z["type"]}'
+            )
         else:
             head.append(
                 f'NODES={z["nodes"]}, ELEMENTS={_n_cells(z)}, ZONETYPE={z["type"]}'
@@ -358,7 +539,19 @@ def write_ascii(ds, path):
                 vals = z["data"][v]
                 for s in range(0, len(vals), 5):
                     out.append(" ".join(_fmt(x) for x in vals[s : s + 5]))
-        if z["type"] != "ORDERED" and not z["connshare"]:
+        if "facemap" in z and not z["connshare"]:
+            fm = z["facemap"]
+            if z["type"] == "FEPOLYHEDRON":
+                out.append(" ".join(str(len(f)) for f in fm["faces"]))
+            for f in fm["faces"]:
+                out.append(" ".join(str(n) for n in f))
+            out.append(" ".join(map(str, fm["left"])))
+            out.append(" ".join(map(str, fm["right"])))
+            if fm["bconn"]:
+                out.append(" ".join(str(len(b)) for b in fm["bconn"]))
+                out.append(" ".join(str(e) for b in fm["bconn"] for e, _ in b))
+                out.append(" ".join(str(zn) for b in fm["bconn"] for _, zn in b))
+        elif z["type"] != "ORDERED" and not z["connshare"]:
             for c in z["conn"]:
                 out.append(" ".join(str(n) for n in c))
             for f in z["faces"]:
@@ -396,8 +589,11 @@ def driver_source(ds, plt_name):
         src.append('    CHECK(TECAUXSTR142("Common.Author", "meshio++ fixture"));\n')
     for zi, z in enumerate(ds["zones"]):
         zt = ZONETYPE[z["type"]]
+        fm = z.get("facemap")
         if z["type"] == "ORDERED":
             imx, jmx, kmx = z["I"], z["J"], z["K"]
+        elif fm:
+            imx, jmx, kmx = z["nodes"], z["ncells"], len(fm["faces"])
         else:
             imx, jmx, kmx = z["nodes"], _n_cells(z), 0
         t = z["time"] if z["time"] is not None else 0.0
@@ -409,6 +605,13 @@ def driver_source(ds, plt_name):
             f"        INTEGER4 strand = {z['strand']}, parent = 0, connshare = {z['connshare']};\n"
         )
         src.append(f"        INTEGER4 nfc = {len(z['faces'])}, fnmode = 0;\n")
+        src.append(
+            "        INTEGER4 tfn = {}, nbf = {}, nbc = {};\n".format(
+                sum(map(len, fm["faces"])) if fm else 0,
+                len(fm["bconn"]) if fm else 0,
+                sum(map(len, fm["bconn"])) if fm else 0,
+            )
+        )
         src.append(f"        double t = {t!r};\n")
         src.append(
             "        INTEGER4 passive[] = {"
@@ -423,7 +626,7 @@ def driver_source(ds, plt_name):
         )
         src.append(
             f'        CHECK(TECZNE142("{z["title"]}", &zt, &imx, &jmx, &kmx, &zero, &zero, &zero, &t, '
-            "&strand, &parent, &one, &nfc, &fnmode, &zero, &zero, &zero, passive, loc, share, "
+            "&strand, &parent, &one, &nfc, &fnmode, &tfn, &nbf, &nbc, passive, loc, share, "
             "&connshare));\n"
         )
         for name, value in z["aux"]:
@@ -436,7 +639,31 @@ def driver_source(ds, plt_name):
             src.append(
                 f"        {{ INTEGER4 n = {len(vals)}; CHECK(TECDAT142(&n, d{zi}_{v}, &visDouble)); }}\n"
             )
-        if z["type"] != "ORDERED" and not z["connshare"]:
+        if fm and not z["connshare"]:
+            nf = len(fm["faces"])
+            counts = [len(f) for f in fm["faces"]]
+            flat = [n for f in fm["faces"] for n in f]
+            src.append("    " + _c_array("INTEGER4", f"fc{zi}", counts))
+            src.append("    " + _c_array("INTEGER4", f"fn{zi}", flat))
+            src.append("    " + _c_array("INTEGER4", f"fl{zi}", fm["left"]))
+            src.append("    " + _c_array("INTEGER4", f"fr{zi}", fm["right"]))
+            counts_arg = f"fc{zi}" if z["type"] == "FEPOLYHEDRON" else "nullptr"
+            src.append(
+                f"        {{ INTEGER4 nf = {nf}; CHECK(TECPOLYFACE142(&nf, {counts_arg}, fn{zi}, "
+                f"fl{zi}, fr{zi})); }}\n"
+            )
+            if fm["bconn"]:
+                bc = [len(b) for b in fm["bconn"]]
+                be = [e for b in fm["bconn"] for e, _ in b]
+                bz = [zn for b in fm["bconn"] for _, zn in b]
+                src.append("    " + _c_array("INTEGER4", f"bc{zi}", bc))
+                src.append("    " + _c_array("INTEGER4", f"be{zi}", be))
+                src.append("    " + _c_array("INTEGER4", f"bz{zi}", bz))
+                src.append(
+                    f"        {{ INTEGER4 nb = {len(bc)}; CHECK(TECPOLYBCONN142(&nb, bc{zi}, "
+                    f"be{zi}, bz{zi})); }}\n"
+                )
+        elif z["type"] != "ORDERED" and not z["connshare"]:
             flat = [n for c in z["conn"] for n in c]
             src.append("    " + _c_array("INTEGER4", f"c{zi}", flat))
             src.append(f"        CHECK(TECNOD142(c{zi}));\n")

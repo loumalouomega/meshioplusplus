@@ -54,3 +54,16 @@ def is_d3plot_member(path) -> bool:
     if not lower[6:].isascii():
         return False
     return os.path.isfile(os.path.join(os.path.dirname(text), name[:6]))
+
+
+def is_radioss_anim_filename(path) -> bool:
+    """Whether ``path``'s basename is an OpenRadioss animation file's: a stem,
+    then ``A`` and three or more digits (``crashA001``)."""
+    try:
+        name = os.path.basename(os.fspath(path))
+    except TypeError:
+        return False
+    k = len(name)
+    while k > 0 and name[k - 1].isdigit():
+        k -= 1
+    return len(name) - k >= 3 and k >= 2 and name[k - 1] == "A"

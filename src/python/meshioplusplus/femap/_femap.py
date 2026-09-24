@@ -244,12 +244,29 @@ def _read_properties(c, f):
         pid = c.int(head, 0, "property id")
         f.properties[pid] = _title(c.next("a property title"))
         c.next("property flags")
+        values = 0
         for per_line, what in ((8, "laminate count"), (5, "property value count")):
             count = c.int(c.fields(what), 0, what)
             if count < 0:
                 c.fail(f"negative {what}")
             for _ in range((count + per_line - 1) // per_line):
                 c.next(what)
+            values = count
+        # Femap 2401 follows the values with as many integers, five to a line
+        # (function references): a repeat of the value count before a line of
+        # several integers.
+        if c.remaining() >= 2 and values > 0:
+            fl = _fields(c.peek())
+            nxt = _fields(c.peek(1))
+            if (
+                len(fl) == 1
+                and _parse_int(fl[0]) == values
+                and len(nxt) > 1
+                and all(_parse_int(v) is not None for v in nxt)
+            ):
+                c.next("a function count")
+                for _ in range((values + 4) // 5):
+                    c.next("a function reference")
         while not c.at_end():
             fl = _fields(c.peek())
             count = _parse_int(fl[0]) if len(fl) == 1 else None
@@ -423,8 +440,8 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     f = _parse(filename)
     if not f.node_ids:
         raise ReadError(
-            f"Femap neutral: '{filename}' holds no nodes (block 403); a results-only file "
-            "needs its model"
+            f"Femap neutral: '{filename}' holds no nodes (block 403): a geometry-only or "
+            "results-only file has no mesh to read"
         )
     node_index = {}
     for p, nid in enumerate(f.node_ids):
@@ -641,17 +658,66 @@ def write(filename, mesh):
         _provenance.note(
             "regions-dropped", f"{side_regions} side region(s) have no Femap group"
         )
-    other = (
-        len(mesh.point_data)
-        + len(mesh.field_data)
-        + len(mesh.cell_data)
-        - (1 if pdata is not None else 0)
-        - (1 if tdata is not None else 0)
-    )
-    if other:
-        warn("Femap neutral writer: results are not written; data arrays dropped")
+    # results: one output set (450) of vectors (451), a point array per
+    # component as nodal vectors, a cell array per component as elemental ones
+    vectors = []  # (title, entity, [(id, value)])
+    unwritable = []
+    for name in sorted(mesh.point_data):
+        a = np.asarray(mesh.point_data[name])
+        if a.ndim not in (1, 2) or len(a) != npts or a.dtype.kind not in "biuf":
+            unwritable.append(name)
+            continue
+        a = a.reshape(npts, -1).astype(np.float64)
+        nc = a.shape[1]
+        for c in range(nc):
+            values = [
+                (p + 1, float(a[p, c])) for p in range(npts) if not np.isnan(a[p, c])
+            ]
+            vectors.append((name if nc == 1 else f"{name}_{c}", 7, values))
+    for name in sorted(mesh.cell_data):
+        if name.startswith("femap:"):
+            continue
+        arrays = [np.asarray(x) for x in mesh.cell_data[name]]
+        widths = {x.shape[1] if x.ndim == 2 else 1 for x in arrays}
+        ok = (
+            len(arrays) == len(mesh.cells)
+            and len(widths) == 1
+            and all(
+                x.ndim in (1, 2)
+                and len(x) == len(block.data)
+                and x.dtype.kind in "biuf"
+                for x, block in zip(arrays, mesh.cells)
+            )
+        )
+        if not ok:
+            unwritable.append(name)
+            continue
+        nc = widths.pop()
+        for c in range(nc):
+            values = []
+            for b, x in enumerate(arrays):
+                x = x.reshape(len(x), -1).astype(np.float64)
+                for r in range(len(x)):
+                    g = starts[b] + r
+                    if label[g] and not np.isnan(x[r, c]):
+                        values.append((label[g], float(x[r, c])))
+            vectors.append((name if nc == 1 else f"{name}_{c}", 8, values))
+    set_id, set_value = 1, 0.0
+    for name in sorted(mesh.field_data):
+        a = np.asarray(mesh.field_data[name]).ravel()
+        if name == "femap:set" and a.size == 1:
+            set_id = max(1, int(a[0]))
+        elif name == "meshio:time" and a.size == 1:
+            set_value = float(a[0])
+        else:
+            unwritable.append(name)
+    if unwritable:
+        listed = ", ".join(unwritable)
+        warn(
+            f"Femap neutral writer: arrays with no Femap output vector dropped: {listed}"
+        )
         _provenance.note(
-            "data-dropped", "the Femap neutral writer writes the mesh only"
+            "data-dropped", f"arrays with no Femap output vector: {listed}"
         )
 
     prop_cells = {}
@@ -774,6 +840,28 @@ def write(filename, mesh):
             if elements:
                 out.append("8,\n" + "".join(f"{v},\n" for v in elements) + "-1,\n")
             out.append("-1,\n")
+        block_close()
+
+    if vectors:
+        block_open(450)
+        out.append(f"{set_id},\nmeshio++\n0,1,\n{_fmt(set_value)},\n0,\n")
+        block_close()
+        block_open(451)
+        for k, (title, entity, values) in enumerate(vectors, start=1):
+            lo = hi = absmax = 0.0
+            id_lo = id_hi = 0
+            for j, (vid, x) in enumerate(values):
+                if j == 0 or x < lo:
+                    lo, id_lo = x, vid
+                if j == 0 or x > hi:
+                    hi, id_hi = x, vid
+                absmax = max(absmax, abs(x))
+            out.append(f"{set_id},{k},1,\n{_clean_title(title)}\n")
+            out.append(f"{_fmt(lo)},{_fmt(hi)},{_fmt(absmax)},\n")
+            out.append("0,0,0,0,0,0,0,0,0,0,\n" * 2)
+            out.append(f"{id_lo},{id_hi},0,{entity},\n0,0,1,\n")
+            out.append("".join(f"{vid},{_fmt(x)},\n" for vid, x in values))
+            out.append("-1,0.,\n")
         block_close()
 
     with open_file(filename, "w", newline="\n") as fh:

@@ -40,6 +40,7 @@
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 #include "meshioplusplus/formats/radioss.hpp"
+#include "meshioplusplus/formats/radioss_anim.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -2865,14 +2866,21 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "mfem_read",
         [](const std::string& path,
-           const std::vector<std::pair<std::string, std::string>>& grid_functions) {
+           const std::vector<std::pair<std::string, std::string>>& grid_functions,
+           py::object piece) {
             std::vector<meshioplusplus::MfemGridFunction> gfs;
             for (const auto& [name, gf] : grid_functions)
                 gfs.push_back({name, gf});
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfem(path, gfs));
+            meshioplusplus::ReadOptions opts;
+            if (!piece.is_none()) {
+                opts.mPiece = piece.cast<std::int64_t>();
+                opts.mPieceSet = true;
+            }
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfem(path, gfs, opts));
         },
         py::arg("path"),
-        py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{});
+        py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{},
+        py::arg("piece") = py::none());
 
     // Femap neutral file (.neu) reader / mesh writer.
     m.def(
@@ -2930,6 +2938,10 @@ PYBIND11_MODULE(_core, m) {
     m.def("libmesh_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_libmesh(path));
     });
+    m.def("libmesh_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_libmesh(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
 
     // OpenRadioss starter deck (.rad) reader.
     // MSC Marc input deck (.dat) and formatted post file (.t19) readers.
@@ -2950,6 +2962,10 @@ PYBIND11_MODULE(_core, m) {
 
     m.def("radioss_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
+    });
+    // OpenRadioss animation file (A001...) reader.
+    m.def("radioss_anim_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));
     });
 
     // Z88 structure file (z88i1.txt) reader / writer, with its results.
@@ -2977,10 +2993,13 @@ PYBIND11_MODULE(_core, m) {
     });
 
     // Elmer mesh directory writer / reader.
-    m.def("elmer_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_elmer(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
-    });
+    m.def(
+        "elmer_write",
+        [](const std::string& path, py::object pymesh, bool halo) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_elmer(path, meshioplusplus_py::py_to_mesh(pymesh, refs), halo);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("halo") = false);
     m.def(
         "elmer_read",
         [](const std::string& path, bool points_only, py::object arrays, py::object piece,
@@ -3064,10 +3083,14 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_su2(path));
     });
 
-    // Tecplot writer / reader (.dat/.tec).
+    // Tecplot writer / reader (.dat/.tec). allow_ragged: polygon and polyhedron
+    // blocks become FEPOLYGON / FEPOLYHEDRON zones.
     m.def("tecplot_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_tecplot(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+        meshioplusplus::write_tecplot(path,
+                                      meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                    /*lenient_field_data=*/false,
+                                                                    /*allow_ragged=*/true));
     });
     m.def(
         "tecplot_read",

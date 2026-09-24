@@ -58,11 +58,12 @@ struct PatShape {
 
 const std::vector<PatShape>& pat_shapes() {
     static const std::vector<PatShape> shapes = {
-        {2, 2, "line", 6},        {2, 3, "line3", 6},          {3, 3, "triangle", 7},
-        {3, 6, "triangle6", 7},   {4, 4, "quad", 8},           {4, 8, "quad8", 8},
-        {5, 4, "tetra", 9},       {5, 10, "tetra10", 9},       {6, 5, "pyramid", 10},
-        {6, 13, "pyramid13", 10}, {7, 6, "wedge", 11},         {7, 15, "wedge15", 11},
-        {8, 8, "hexahedron", 12}, {8, 20, "hexahedron20", 12},
+        {2, 2, "line", 6},           {2, 3, "line3", 6},     {3, 3, "triangle", 7},
+        {3, 6, "triangle6", 7},      {3, 7, "triangle7", 7}, {4, 4, "quad", 8},
+        {4, 8, "quad8", 8},          {4, 9, "quad9", 8},     {5, 4, "tetra", 9},
+        {5, 10, "tetra10", 9},       {6, 5, "pyramid", 10},  {6, 13, "pyramid13", 10},
+        {7, 6, "wedge", 11},         {7, 15, "wedge15", 11}, {8, 8, "hexahedron", 12},
+        {8, 20, "hexahedron20", 12},
     };
     return shapes;
 }

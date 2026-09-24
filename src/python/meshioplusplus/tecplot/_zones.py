@@ -41,6 +41,19 @@ class Zone:
         self.solution_time = 0.0
         self.has_strand = False
         self.strand = 0
+        # face-based (FEPOLYGON/FEPOLYHEDRON) zones: the face map's sizes
+        self.num_faces = 0
+        self.total_face_nodes = 0
+        self.num_boundary_faces = 0
+        self.num_boundary_conns = 0
+
+    @property
+    def is_poly(self):
+        return self.type_name in ("FEPOLYGON", "FEPOLYHEDRON")
+
+    @property
+    def is_polyhedron(self):
+        return self.type_name == "FEPOLYHEDRON"
 
     def finish(self):
         """Derives node/cell counts of an ordered zone from I/J/K."""
@@ -54,10 +67,10 @@ class Zone:
         if self.ordered:
             n = sum(d > 1 for d in self.ijk)
             return {0: "vertex", 1: "line", 2: "quad", 3: "hexahedron"}[n]
-        if self.type_name in ("FEPOLYGON", "FEPOLYHEDRON"):
-            raise ReadError(
-                f"Tecplot: {self.type_name} zones (polygonal/polyhedral) are not supported"
-            )
+        if self.type_name == "FEPOLYGON":
+            return "polygon"
+        if self.type_name == "FEPOLYHEDRON":
+            return "polyhedron"
         if self.type_name not in FE_TYPES:
             raise ReadError(f"Tecplot: unsupported zone type {self.type_name}")
         return FE_TYPES[self.type_name][0]
@@ -100,6 +113,122 @@ def ordered_connectivity(ijk):
         grid[:-1, 1:, 1:],
     ]
     return np.stack(corners, axis=-1).transpose(2, 1, 0, 3).reshape(-1, 8)
+
+
+def face_map(z, idx, counts, nodes, left, right, one_based):
+    """``tecplot_face_map``: a face-based zone's face map, 0-based, with -1 for
+    no neighbour in this zone (none at all, or a boundary connection to
+    another zone). ``counts`` is ``None`` for a polygonal zone."""
+    where = f"Tecplot: zone {idx + 1}"
+    base = 1 if one_based else 0
+    counts = (
+        np.full(z.num_faces, 2, dtype=np.int64)
+        if counts is None
+        else np.asarray(counts, dtype=np.int64)
+    )
+    bad = np.flatnonzero(counts < 2)
+    if len(bad):
+        raise ReadError(f"{where}: face {bad[0] + 1} has {counts[bad[0]]} nodes")
+    start = np.zeros(z.num_faces + 1, dtype=np.int64)
+    np.cumsum(counts, out=start[1:])
+    nodes = np.asarray(nodes, dtype=np.int64)
+    if start[-1] != len(nodes):
+        raise ReadError(
+            f"{where}: the face node counts add up to {start[-1]}, "
+            f"not TOTALNUMFACENODES {len(nodes)}"
+        )
+    nodes = nodes - base
+    bad = np.flatnonzero((nodes < 0) | (nodes >= z.num_nodes))
+    if len(bad):
+        raise ReadError(f"{where}: face node {nodes[bad[0]] + base} is out of range")
+    sides = []
+    for side in (left, right):
+        side = np.asarray(side, dtype=np.int64)
+        side = np.where(side < 0, -1, side - base)  # boundary connection: another zone
+        bad = np.flatnonzero(side >= z.num_cells)
+        if len(bad):
+            raise ReadError(
+                f"{where}: face neighbour {side[bad[0]] + base} is out of range"
+            )
+        sides.append(side)
+    return {"start": start, "nodes": nodes, "left": sides[0], "right": sides[1]}
+
+
+def polygon_ring(edges):
+    """``tecplot_polygon_ring``: a polygonal element's ring from its directed
+    edges (the element on their left), following the first edge and reversed
+    when most edges disagree; ``None`` when they do not close one loop."""
+    if len(edges) < 3:
+        return None
+    adj = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    if any(len(nb) != 2 for nb in adj.values()):
+        return None
+    directed = set(edges)
+    start = edges[0][0]
+    ring = [start, edges[0][1]]
+    while len(ring) < len(edges):
+        nb = adj[ring[-1]]
+        nxt = nb[0] if nb[0] != ring[-2] else nb[1]
+        if nxt == start:
+            return None
+        ring.append(nxt)
+    if start not in adj[ring[-1]]:
+        return None
+    agree = sum(
+        (ring[i], ring[(i + 1) % len(ring)]) in directed for i in range(len(ring))
+    )
+    if 2 * agree < len(ring):
+        ring = [ring[0]] + ring[:0:-1]
+    return ring
+
+
+def face_pieces(z, idx, fm):
+    """``tecplot_face_pieces``: a face-based zone's cell blocks, each
+    ``(type, data, cells)`` with ``cells`` the zone's cells it holds (``None``
+    = all, in order). A polyhedral face is outward for its left element (its
+    right-hand normal points at the right one) and reversed for the right."""
+    where = f"Tecplot: zone {idx + 1}"
+    start, nodes = fm["start"].tolist(), fm["nodes"].tolist()
+    left, right = fm["left"].tolist(), fm["right"].tolist()
+    ncells = z.num_cells
+    if not z.is_polyhedron:
+        edges = [[] for _ in range(ncells)]
+        for f in range(len(left)):
+            a, b = nodes[start[f]], nodes[start[f] + 1]
+            if left[f] >= 0:
+                edges[left[f]].append((a, b))
+            if right[f] >= 0:
+                edges[right[f]].append((b, a))
+        rows = []
+        for c in range(ncells):
+            ring = polygon_ring(edges[c])
+            if ring is None:
+                raise ReadError(f"{where}: element {c + 1} is not one closed polygon")
+            rows.append(ring)
+        return [("polygon", rows, None)]
+    faces = [[] for _ in range(ncells)]
+    for f in range(len(left)):
+        face = nodes[start[f] : start[f + 1]]
+        if left[f] >= 0:
+            faces[left[f]].append(face)
+        if right[f] >= 0:
+            faces[right[f]].append(face[::-1])
+    pieces, piece_of = [], {}
+    for c in range(ncells):
+        if len(faces[c]) < 4:
+            raise ReadError(f"{where}: element {c + 1} has {len(faces[c])} faces")
+        n = len(set().union(*faces[c]))
+        if n not in piece_of:
+            piece_of[n] = len(pieces)
+            pieces.append((f"polyhedron{n}", [], []))
+        pieces[piece_of[n]][1].append(faces[c])
+        pieces[piece_of[n]][2].append(c)
+    if len(pieces) == 1:
+        pieces = [(pieces[0][0], pieces[0][1], None)]
+    return pieces
 
 
 def timeline(zones):
@@ -185,6 +314,16 @@ class _Decoder:
                 raise ReadError(
                     f"Tecplot: zone {idx + 1} shares connectivity from bad zone {z.conn_share + 1}"
                 )
+            src = self.zones[z.conn_share]
+            if (
+                src.type_name != z.type_name
+                or src.num_cells != z.num_cells
+                or (z.is_poly and src.num_nodes != z.num_nodes)
+            ):
+                raise ReadError(
+                    f"Tecplot: zone {idx + 1} shares the connectivity of a different "
+                    "zone type or size"
+                )
             conn = self.zone(z.conn_share, depth + 1)["conn"]
         out = {
             "cols": cols,
@@ -193,6 +332,8 @@ class _Decoder:
             "conn": conn,
             "nodes": z.num_nodes,
             "cells": z.num_cells,
+            # a face-based zone's blocks; else one block from conn
+            "pieces": face_pieces(z, idx, conn) if z.is_poly else None,
         }
         self.cache[idx] = out
         return out
@@ -232,10 +373,41 @@ def build_step(step_zones, zones, variables, source):
         if zi >= 0:
             points[sl, 2] = d["cols"][zi]
 
-    cells = [
-        (d["type"], np.asarray(d["conn"], dtype=np.int64) + offset[k])
-        for k, d in enumerate(decoded)
-    ]
+    # The step's cell blocks: one per zone, or one per piece of a face-based
+    # zone, as (zone position, piece or None, cell count).
+    refs = []
+    for k, d in enumerate(decoded):
+        if d["pieces"] is None:
+            refs.append((k, None, d["cells"]))
+        else:
+            for piece in d["pieces"]:
+                refs.append(
+                    (k, piece, d["cells"] if piece[2] is None else len(piece[2]))
+                )
+
+    cells = []
+    for k, piece, _ in refs:
+        off = offset[k]
+        if piece is None:
+            cells.append(
+                (
+                    decoded[k]["type"],
+                    np.asarray(decoded[k]["conn"], dtype=np.int64) + off,
+                )
+            )
+        elif piece[0] == "polygon":
+            cells.append(("polygon", [[v + off for v in row] for row in piece[1]]))
+        else:  # a list of cells, each a list of faces (as the C++ engine returns)
+            data = [
+                [np.array(face, dtype=np.int64) + off for face in cell]
+                for cell in piece[1]
+            ]
+            cells.append((piece[0], data))
+
+    def gather(k, piece, col):
+        col = np.asarray(col, dtype=np.float64)
+        return col if piece is None or piece[2] is None else col[piece[2]]
+
     # A variable is cell data where a zone stores it cell-centred and point
     # data where it stores it at the nodes; a variable that is nodal in some
     # zones and cell-centred in others becomes both, NaN where absent.
@@ -247,11 +419,11 @@ def build_step(step_zones, zones, variables, source):
         if any(cc):
             cell_data[name] = [
                 (
-                    np.asarray(d["cols"][v], dtype=np.float64)
-                    if c
-                    else np.full(d["cells"], np.nan)
+                    gather(k, piece, decoded[k]["cols"][v])
+                    if cc[k]
+                    else np.full(n, np.nan)
                 )
-                for d, c in zip(decoded, cc)
+                for k, piece, n in refs
             ]
         if not all(cc):
             col = np.full(total, np.nan)
@@ -260,7 +432,7 @@ def build_step(step_zones, zones, variables, source):
                     col[offset[k] : offset[k] + d["nodes"]] = d["cols"][v]
             point_data[name] = col
     cell_data["tecplot:zone"] = [
-        np.full(d["cells"], idx, dtype=np.int64) for idx, d in zip(step_zones, decoded)
+        np.full(n, step_zones[k], dtype=np.int64) for k, _, n in refs
     ]
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
@@ -275,15 +447,22 @@ def build_step(step_zones, zones, variables, source):
             unique = f"{name}_{suffix}"
             suffix += 1
         used.append(unique)
-        entries = np.arange(bases[k], bases[k] + decoded[k]["cells"], dtype=np.int64)
+        entries = np.concatenate(
+            [
+                np.arange(bases[b], bases[b] + n, dtype=np.int64)
+                for b, (zk, _, n) in enumerate(refs)
+                if zk == k
+            ]
+        )
         regions.append(Region(unique, "cell", entries, dim=-1, tag=idx))
     mesh.regions = regions
     return mesh
 
 
-def metadata(zones, variables):
+def metadata(zones, variables, source=None):
     """``read_tecplot_metadata``: cell blocks and point count of the first
-    step, and the time values of a transient file."""
+    step, and the time values of a transient file (a polyhedral zone's blocks
+    need its cells decoded, from ``source``)."""
     steps = timeline(zones)
     xi, yi, zi = xyz_indices(variables)
     first = steps[0]
@@ -294,6 +473,11 @@ def metadata(zones, variables):
         origin = _points_origin(idx, zones, xi, yi, zi)
         if not (origin != idx and pos.get(origin, len(first)) < k):
             total += zones[idx].num_nodes
+        if zones[idx].is_polyhedron and source is not None:
+            d = _Decoder(source, zones, variables).zone(idx)
+            for ptype, _, pcells in d["pieces"]:
+                blocks.append((ptype, d["cells"] if pcells is None else len(pcells)))
+            continue
         blocks.append((zones[idx].meshio_type(), zones[idx].num_cells))
     times = (
         [zones[s[0]].solution_time for s in steps] if zones[0].has_solution_time else []

@@ -12,11 +12,16 @@
 | `compass.mesh` | `MFEM mesh v1.3` with `attribute_sets` and `bdr_attribute_sets` |
 | `tinyzoo-3d.mesh` | one hexahedron, prism, pyramid and tetrahedron |
 | `periodic-square.mesh` | discontinuous `L2_T1_2D_P1` nodes (a periodic mesh) |
-| `escher-p3.mesh` | legacy `Cubic` nodes, read at the vertices only |
-| `amr-quad.mesh` | `MFEM NC mesh v1.0`, which must be refused |
+| `escher-p3.mesh`, `fichera-q3.mesh` | legacy `Cubic` tetrahedra and hexahedra, read as order-3 VTK Lagrange cells |
+| `toroid-wedge.mesh`, `rt-2d-p4-tri.mesh` | `H1` order-3 prisms and order-4 triangles |
+| `amr-quad.mesh` | `MFEM NC mesh v1.0`, read as its leaf elements |
+| `curved-*.mesh` and their `.u.gf` | MFEM's one-element reference meshes refined, curved to order 3–5 (Gauss–Lobatto, and closed-uniform for `curved-quad-p3u`) and warped by MFEM, with an order-3–5 field |
+| `parallel/` | `star-p2` (order 2, 4 ranks) and `beam-tet` (linear, 3 ranks) saved by MFEM with MPI in both layouts (`.mesh.NNNNNN` from `ParMesh::Save`, `.pmesh.NNNNNN` from `ParPrint`) with a field `u.NNNNNN`, and `reference.npz` from MFEM's own per-rank output (`tools/gen_mfem_parallel_fixtures.py`) |
 | `star-q2.u.gf`, `star-q2.v.gf` | `H1` order-2 scalar and 2-vector (byNODES) fields |
 | `fichera-q2.w.gf` | an `H1` order-2 3-vector field stored byVDIM |
 | `compass.t.gf`, `compass.q.gf`, `compass.e.gf` | `H1` order 1, `H1` order 2 on a linear mesh, and `L2` order 0 |
+
+`reference_lagrange.npz` freezes MFEM's own high-order VTK output (`ParaViewDataCollection` with high-order output) of the order-3+ meshes: per cell type, every cell's nodes in VTK order and the field at them; and for `amr-quad` the attribute and corners of every leaf and boundary element MFEM builds.
 
 `reference.npz` freezes MFEM's own evaluation: for every vertex, edge, quadrilateral face and element of six of the meshes, keyed by its sorted global vertex ids, the point MFEM's element transformation gives at the entity's reference centre and the value of each grid function there. `test_mfem.py` checks every node of every meshio++ cell against it, so the test needs no MFEM.
 

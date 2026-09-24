@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v16.10.0** — 71 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 16).
+Status at time of writing: **v16.11.0** — 72 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 16).
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -34,30 +34,26 @@ Link legend: unmarked links were opened or returned by a search while this secti
 
 Python meshio covers none of §1.1–§1.5; these are greenfield. Cross-validation partners are named in each block.
 
-### 1.1 Tecplot, Elmer and FEBio, remaining halves — **S** each
+### 1.1 Tecplot against `preplot` — **S**
 
-v16.10.0 reads binary Tecplot `.plt` and ordered zones, writes partitioned Elmer meshes, and reads `.xplt` surface variables and remeshed runs ([Tecplot](./formats/tecplot.md), [Elmer](./formats/elmer.md), [FEBio plot files](./formats/xplt.md)). What was left out:
+v16.11.0 reads and writes polygonal and polyhedral zones ([Tecplot](./formats/tecplot.md)) and closed Elmer's halo layer and `.xplt` edge variables. What is left: every `.plt` fixture, the polyhedral ones included, is written by TecIO rather than by Tecplot's own `preplot` (no licence was available). Probe: a `preplot`-converted FE and polyhedral file reading identically to its ASCII source.
 
-- **Tecplot polygonal and polyhedral zones.** `FEPOLYGON`/`FEPOLYHEDRON` zones (ASCII and `.plt`) raise a `ReadError`; they would read into the ragged polygon and polyhedron blocks. The `.plt` fixtures are written by TecIO, not by `preplot` (no licence was available): probe, a `preplot`-converted FE file reading identically to its ASCII source.
-- **Elmer halo elements.** The partitioned writer leaves out the halo layer `ElmerGrid -halo` adds (needed by discontinuous Galerkin solvers); ElmerSolver runs without it.
-- **`.xplt` edge variables.** Edge sections and their variables are still skipped with a warning; they would become line blocks in the way surfaces became facet blocks.
+### 1.2 Femap and MFEM, remaining halves — **S–M**
 
-### 1.2 Patran, Femap and MFEM, remaining halves — **S–M**
+v16.11.0 writes Femap output sets, reads Femap 2401's property records, checks Patran against real P3/PATRAN and CUBIT exports, and reads MFEM meshes of any order, non-conforming meshes and parallel runs ([Patran](./formats/patran.md), [Femap](./formats/femap.md), [MFEM](./formats/mfem.md)). What was left out:
 
-v16.5.0 reads and writes all three ([Patran](./formats/patran.md), [Femap](./formats/femap.md), [MFEM](./formats/mfem.md)). What was left out:
+- **Femap, newer element and group records.** The Femap 2401 files found hold no elements, so element (404) and group (408) records from Femap 10 and from 12 on are still unverified; the 13-node pyramid (topology 19) has no documented slot layout; a written file has not been imported into Femap. Probe: a brick20 model exported by two Femap versions reading identically. **S**
+- **MFEM NURBS meshes.** `MFEM NURBS mesh` files are refused: each patch would be evaluated per knot span to VTK Lagrange cells of the NURBS order, with rational basis functions and the patches' global control points. Parallel non-conforming meshes, grid functions on non-conforming meshes (their space-filling-curve numbering) and Bernstein or serendipity high-order spaces (read at the vertices) are still out. **M**
+- **Patran, other exporters and the rest of the file.** No ANSA or HyperMesh export has been read; loads and boundary conditions (packets 06–08, 10) and the `.nod`/`.els`/`.dis` result files stay out until a consumer asks. **S**
 
-- **Patran against a real export.** The fixtures are written from the Patran 2 neutral file guide; no Cubit, Patran or ANSA file has been read. Probe: a Cubit-exported hex/tet `.pat` with named components reads with the components as regions (the original done-when). Loads and boundary conditions (packets 06–08, 10) and the `.nod`/`.els`/`.dis` result files stay out until a consumer asks. **S**
-- **Femap, newer layouts and results writing.** Element (404) and group (408) records from Femap 10 and from 12 on have not been seen, so the lines they may add are unverified; the 13-node pyramid (topology 19) has no documented slot layout; and the original done-when — a brick20 model reading identically from two Femap versions — needs two exports of one model. Output sets are read, not written. **S–M**
-- **MFEM arbitrary order.** Orders 3 and up (Gauss–Lobatto nodes) keep only the vertices: they need an arbitrary-order Lagrange cell type (or `VTK_LAGRANGE_*` emission) and Gauss–Lobatto → equispaced interpolation. Non-conforming (`MFEM NC mesh`) and NURBS meshes are refused, and a parallel mesh is read one rank file at a time. **M**
+### 1.3 Abaqus `.fil`, Radioss, Z88 and libMesh, remaining halves — **S**
 
-### 1.3 libMesh, Z88, Abaqus `.fil` and Radioss, remaining halves — **S–M**
+v16.11.0 writes libMesh and reads its compressed files and edge and shell-face sets, reads and writes the whole Z88 deck with every element family's results and Z88Aurora's sets, and applies Radioss units, resolves its boxes, generators and surfaces and reads its animation files ([Abaqus `.fil`](./formats/abaqus_fil.md), [Radioss](./formats/radioss.md), [Z88](./formats/z88.md), [libMesh](./formats/libmesh.md)). What was left out:
 
-v16.7.0 reads all four and writes Z88's structure file ([libMesh](./formats/libmesh.md), [Z88](./formats/z88.md), [Abaqus `.fil`](./formats/abaqus_fil.md), [Radioss](./formats/radioss.md)). What was left out:
-
-- **Abaqus `.fil` against a real run.** No Abaqus licence was available: the reader is checked against pybaqus on real Abaqus 2023 ASCII output and against synthetic binary files. The original done-when, a Standard static case whose `U` and von Mises from `S` match the `.dat` printout, needs a real run (binary, ideally with shells and C3D20R). Explicit-only records, contact (15xx), modal and element-matrix records stay out until a consumer asks. **S**
-- **libMesh writing and compressed files.** Read-only; `.xda.gz`/`.xdr.bz2` must be decompressed first, edge and shell-face boundary sets are skipped, and C0POLYGON/C0POLYHEDRON elements are refused. **S**
-- **Z88Aurora and the rest of the results.** No Z88Aurora file was available (`z88structure.txt` is read as a Z88OS structure file); the layered shells 21 and 22 have not been run through Z88; `z88o3.txt` stresses of beams, plates, shells and tori and the `z88o4.txt` nodal forces are not read; the writer writes no materials or boundary conditions. **S**
-- **Radioss units, generators and results.** `/BEGIN` units are not applied; `BOX`/`GENE` group generators and `/SURF` forms other than `SEG` are not resolved; old-format (41/44) decks from real tools have not been seen; engine files and the `A001` animation files are not read (OpenRadioss's `anim_to_vtk` is the route). **S–M**
+- **Abaqus `.fil` against a real binary run.** Eleven real ASCII files (pybaqus's tests and example) read, but no public binary `.fil` with a matching `.dat` printout exists. The original done-when, a Standard static case whose `U` and von Mises from `S` match the `.dat`, still needs one (ideally with shells and C3D20R). Explicit-only records, contact (15xx), modal and element-matrix records stay out until a consumer asks. **S**
+- **Radioss, old decks and the rest.** Decks in the 4.x fixed formats (input versions 41 and 44) from real tools have not been seen; boxes in a skew system, per-card unit systems (`/UNIT`), `/SURF/BOX`, `/PLANE` and `/ELLIPS`, the engine deck, the `T01` time history and animation files of older layouts (other magic numbers) are not read. **S**
+- **Z88, unrun element types.** The layered shells 21 and 22 have not been run through Z88R, and a flat deck of 8-node shells (type 23) fails Z88R's own Jacobian check for reasons not found; the 16-node plate (type 19, read as corner quads) cannot be written back; surface loads (`z88i5.txt`) are neither read nor written, and Z88Aurora's sets are not written. **S**
+- **libMesh, refinement trees and native compression.** The writer writes a refined mesh flat, as its active cells; bzip2 files and compressed output go through Python only (the native reader inflates gzip). **S**
 
 ### 1.4 Marc and Ansys `.rst`, remaining halves — **S** each
 
@@ -108,7 +104,7 @@ For these, the deliverable is a documented, tested route — a script that runs 
 
 ### 1.9 Suggested order
 
-1. **Next FEM wave:** §1.1, §1.2, §1.3, §1.4 and §1.5 as Tecplot, Elmer, FEBio, Patran, Femap, MFEM, libMesh, Z88, Abaqus, Radioss, Marc and Ansys users ask (the `.fil` check against a real Abaqus run first, and a real Marc run, as soon as one is in hand).
+1. **Next FEM wave:** §1.1, §1.2, §1.3, §1.4 and §1.5 as Tecplot, Femap, MFEM, Patran, Abaqus, Radioss, Z88, libMesh, Marc and Ansys users ask (the `.fil` check against a real binary Abaqus run first, and a real Marc run, as soon as one is in hand; MFEM NURBS when an isogeometric user asks).
 2. **Heavy binaries, on demand:** the rest of §1.5 when a d3plot or OP2 user brings a file.
 3. **Routes:** §1.7 scripts as users ask; §1.6 when a FEniCSx user asks.
 

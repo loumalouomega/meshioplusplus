@@ -33,7 +33,7 @@ meshioplusplus info run.xplt                       # blocks, regions, arrays, ti
 After a 4-byte magic (`0x00464542`), the file is a tree of chunks, each a `u32` id, a `u32` payload size and the payload. The layout follows FEBio's writer (`FEBioPlot/FEBioPlotFile.cpp`, `PltArchive.cpp`) and FEBio Studio's reader (`XPLTLib/xpltReader3.cpp`):
 
 - a root with the header (plot version, compression flag, software) and the **dictionary**: every plot variable's name, type (`float`, `vec3f`, `mat3fs`, `mat3fd`, `mat3f`, `tens4fs`, arrays) and storage format;
-- the **mesh**: nodes (from version 0x0033 with their ids), domains (element type, part, elements), surfaces, node sets, element sets, facet sets, parts;
+- the **mesh**: nodes (from version 0x0033 with their ids), domains (element type, part, elements), surfaces, edges, node sets, element sets, facet sets, parts;
 - one **state** per saved time: the time, a status, and each variable's values per region.
 
 When compression is on, every chunk after the first mesh (every state) is its own zlib stream. Plot versions `0x0030` and later are read, which covers FEBio 3 and 4 (FEBio 4.12 writes `0x0035`), in either byte order. FEBio 2's plot files are refused, naming the version.
@@ -47,6 +47,8 @@ When compression is on, every chunk after the first mesh (every state) is its ow
 | surface (a data surface: the plot variables' regions) | a block of facet cells per facet type (`triangle`, `quad`, `triangle6`, `quad8`, `quad9`...) after the domains, a `cell` region of the same name over them, and a `side` region when every facet is a face of a solid (since v16.10.0) |
 | facet set | a `side` region when every facet is a face of a solid, otherwise its own cell block and a `cell` region, as for [`.feb`](./febio.md#mapping) |
 | which data surface a cell is | `cell_data["xplt:surface"]`: its 1-based surface id, 0 on the domains |
+| edge (FEBio 3.5 and later: named line segments, the carrier of edge variables) | a `line` (or `line3`) block per segment type after the surfaces, and a `cell` region of dimension 1 of the same name over them (since v16.11.0) |
+| which edge a cell is | `cell_data["xplt:edge"]`: its 1-based edge id, 0 elsewhere |
 | the state's time, index, status | `field_data["meshio:time"]`, `"xplt:step"`, `"xplt:status"` |
 | nodal variables | point data |
 | domain variables stored per element (`FMT_ITEM`) | cell data, NaN on domains that do not carry the variable |
@@ -54,7 +56,8 @@ When compression is on, every chunk after the first mesh (every state) is its ow
 | domain variables stored per element node (`FMT_NODE`, `FMT_MULT`) | point data, averaged over the elements that share each node |
 | global variables | field data |
 | surface variables | on the facet cells, in the same way: per facet (`FMT_ITEM`) and once per surface (`FMT_REGION`) as cell data, NaN on the domains and other surfaces; per surface node (`FMT_NODE`) and per facet node (`FMT_MULT`) as point data, averaged at shared nodes. A variable with values on no surface of the mesh gives no array. |
-| edge and material-point variables | not read; one warning names them |
+| edge variables | on the line cells, exactly as surface variables are on facet cells: per segment and once per edge as cell data, per edge node (edge-local nodes numbered in first-seen order, as FEBio's `FEEdge` does) and per segment node as point data (since v16.11.0) |
+| material-point variables | not read; one warning names them |
 
 Values are FEBio's `float32`, widened to `float64`. Components keep FEBio's order. A symmetric tensor (`mat3fs`) has 6 components, `xx, yy, zz, xy, yz, xz`, which is also VTK's order. A diagonal tensor has 3 components, and a full one (`mat3f`) 9 in row-major order.
 
@@ -65,4 +68,4 @@ Values are FEBio's `float32`, widened to `float64`. Components keep FEBio's orde
 - **A state cut short** (FEBio killed mid-write) is dropped with a warning, and the earlier states are still read.
 - **A remeshed run** (FEBio's `<MeshAdaptor>`) writes a new mesh before the states that use it. Since v16.10.0 each state is read on its own mesh, so the points, cells and regions change from one step of a sequence to the next. `read_metadata` describes the first mesh.
 - FEBio 4.12 plots a variable on one surface only: asked for the same variable on two surfaces, it writes values for one of them, and the other is NaN. It also writes the traction record of a pressure-loaded surface empty.
-- **Validation**, made outside the repository with FEBio 4.12 built from source: the displacement read from FEBio's plot files equals FEBio's own `node_data` log to `float32` precision at every state, for three models. febio-python's reader (MIT) gives identical displacements, strains, stresses and fibre vectors for its `0x0031` samples. The test fixtures are plot files FEBio 4.12 wrote for the models `tools/gen_febio_fixtures.py` generates, one of them compressed. In the suite, the `facet area` a surface fixture plots equals the area of the deformed facets and `surface area` their sum, and the remeshed fixture's states have the node counts FEBio's log reports (12, 45, 78, 111) with the prescribed end displacement at each.
+- **Validation**, made outside the repository with FEBio 4.12 built from source: the displacement read from FEBio's plot files equals FEBio's own `node_data` log to `float32` precision at every state, for three models. febio-python's reader (MIT) gives identical displacements, strains, stresses and fibre vectors for its `0x0031` samples. The test fixtures are plot files FEBio 4.12 wrote for the models `tools/gen_febio_fixtures.py` generates, one of them compressed. FEBio 4.12 has one edge variable, `edge contact gap` on the edge of an edge-to-surface sliding contact; the `xplt_edge` fixture plots it for three free nodes above a bar bent towards them, and the gap read shrinks along the edge as the bar rises. In the suite, the `facet area` a surface fixture plots equals the area of the deformed facets and `surface area` their sum, and the remeshed fixture's states have the node counts FEBio's log reports (12, 45, 78, 111) with the prescribed end displacement at each.

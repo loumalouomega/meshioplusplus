@@ -287,6 +287,33 @@ def test_skipped_topologies_and_element_node_lists(engine, tmp_path, capfd):
     assert [(t, len(d)) for t, d in _blocks(mesh)] == [("line", 1)]
 
 
+def _property(pid, title, values, functions):
+    """A 402 record: flags, ten laminate slots, then `values` reals and, when
+    `functions`, the Femap 2401 list of as many integers five to a line."""
+    lines = [f"{pid},110,0,21,4,0,1,", title, "0,0,0,0,0,0,0,0,", "10,"]
+    lines += ["0,0,0,0,0,0,0,0,", "0,0,", f"{values},"]
+    lines += ["0.,0.,0.,0.,0.,"] * ((values + 4) // 5)
+    if functions:
+        lines += [f"{values},"] + ["0,0,0,0,0,"] * ((values + 4) // 5)
+    return lines + ["0,", "0,"]
+
+
+@pytest.mark.parametrize("version", ["11.1", "24.1"])
+def test_property_layouts(engine, tmp_path, version):
+    # Femap 2401 (a real, unlicensed export was checked outside the repository)
+    # adds a list of per-value function references to each 402 record.
+    functions = version == "24.1"
+    props = (
+        402,
+        _property(1, "Ribs", 110, functions) + _property(2, "Skin", 110, functions),
+    )
+    path = tmp_path / "m.neu"
+    path.write_text(_neu((100, ["<NULL>", f"{version},"]), props, _NODES, _bar()))
+    mesh = engine.read(path)
+    assert [(t, len(d)) for t, d in _blocks(mesh)] == [("line", 1)]
+    assert ("cell", "Ribs") in {(r.kind, r.name) for r in mesh.regions}
+
+
 def test_extension_and_sniffing(tmp_path):
     assert meshioplusplus._helpers._filetypes_from_path(pathlib.Path("x.neu")) == [
         "femap"
@@ -297,3 +324,33 @@ def test_extension_and_sniffing(tmp_path):
     path = tmp_path / "no_extension"
     path.write_bytes((MESHES / "mystran_results.neu").read_bytes())
     assert meshioplusplus.sniff_format(path) == "femap"
+
+
+def test_writer_writes_output_sets(engine, tmp_path):
+    """Point and cell data are written as one output set (450) of nodal and
+    elemental vectors (451), a vector per component, and read back; the set
+    takes femap:set and the step time."""
+    mesh = engine.read(MESHES / "v82_results.neu")
+    mesh.point_data["vec"] = np.column_stack(
+        [mesh.points[:, 0], mesh.points[:, 1], np.full(len(mesh.points), np.nan)]
+    )
+    mesh.field_data["meshio:time"] = np.array(2.5)
+    mesh.field_data["femap:set"] = np.array(7)
+    engine.write(tmp_path / "r.neu", mesh)
+    text = (tmp_path / "r.neu").read_text()
+    assert "\n   450\n" in text and "\n   451\n" in text
+    back = engine.read(tmp_path / "r.neu")
+    assert float(back.field_data["meshio:time"]) == 2.5
+    assert int(back.field_data["femap:set"]) == 7
+    for name, values in mesh.point_data.items():
+        if name == "vec":
+            continue
+        np.testing.assert_array_equal(back.point_data[name], values)
+    for name, blocks in mesh.cell_data.items():
+        if name.startswith("femap:"):
+            continue
+        for x, y in zip(blocks, back.cell_data[name]):
+            np.testing.assert_array_equal(x, y)
+    # a vector per component; a NaN is simply not written, and reads back NaN
+    np.testing.assert_array_equal(back.point_data["vec_0"], mesh.points[:, 0])
+    assert np.isnan(back.point_data["vec_2"]).all()

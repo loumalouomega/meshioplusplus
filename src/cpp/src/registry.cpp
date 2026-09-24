@@ -48,6 +48,7 @@
 #include "meshioplusplus/formats/libmesh.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 #include "meshioplusplus/formats/radioss.hpp"
+#include "meshioplusplus/formats/radioss_anim.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansys_rst.hpp"
@@ -125,6 +126,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
         {"libmesh", meshioplusplus::read_libmesh},
         {"radioss", meshioplusplus::read_radioss},
+        // Found by name (`<run>A001`...) or magic, never an extension.
+        {"radioss_anim", meshioplusplus::read_radioss_anim},
         // A .dat file is Tecplot's unless it opens as a Marc deck (resolve_format).
         {"marc", meshioplusplus::read_marc},
         {"marc_t19", [](const std::string& path) { return meshioplusplus::read_marc_t19(path); }},
@@ -261,9 +264,11 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"code_aster", meshioplusplus::write_code_aster},
         {"patran", meshioplusplus::write_patran},
         {"femap", meshioplusplus::write_femap},
+        {"libmesh", meshioplusplus::write_libmesh},
         {"z88",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
-        {"elmer", meshioplusplus::write_elmer},
+        {"elmer",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
@@ -498,6 +503,10 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".neu", "femap"},
         {".xda", "libmesh"},
         {".xdr", "libmesh"},
+        {".xda.gz", "libmesh"},
+        {".xdr.gz", "libmesh"},
+        {".xda.bz2", "libmesh"},
+        {".xdr.bz2", "libmesh"},
         {".rad", "radioss"},
         {".t19", "marc_t19"},
         {".feb", "febio"},
@@ -667,6 +676,9 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
     // numbered members (`d3plot01`...) go to the reader, which names the base.
     if (is_d3plot_filename(base) || registry_is_d3plot_member(rPath))
         return "lsdyna_d3plot";
+    // OpenRadioss animation files: `<run>A001`..., no extension.
+    if (base.find('.') == std::string::npos && is_radioss_anim_filename(base))
+        return "radioss_anim";
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
         const std::string suffix = base.substr(pos);
@@ -749,6 +761,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
         // mLenient (skip element types with no meshio++ cell type).
         {"elmer", meshioplusplus::read_elmer},
+        // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
+        {"mfem",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_mfem(path, {}, opts);
+         }},
         // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
         {"ansysinp",
          [](const std::string& path, const ReadOptions& opts) {
@@ -840,6 +857,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"femap", meshioplusplus::read_femap_metadata},
         {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
         {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
+        {"radioss_anim", meshioplusplus::read_radioss_anim_metadata},
         {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},

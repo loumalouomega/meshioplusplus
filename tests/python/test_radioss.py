@@ -192,3 +192,95 @@ def test_gmsh_written_decks_match_their_msh_twins(read, name):
         np.testing.assert_allclose(nodes, theirs[key], atol=1e-4)
     for row in np.asarray(block.data):
         assert _is_valid(np.asarray(rad.points)[row], block.type)
+
+
+def _features_deck():
+    """Two bricks (part 1) side by side on x, two shells (part 2) on their top,
+    in millimetres with metre work units, with every box, generator and surface
+    form the reader resolves."""
+    i10 = lambda *v: "".join(f"{x:10d}" for x in v)  # noqa: E731
+    r20 = lambda *v: "".join(f"{x:20.6f}" for x in v)  # noqa: E731
+    node = {}
+    lines = ["#RADIOSS STARTER", "/BEGIN", "features", i10(2022, 0)]
+    lines += [f"{'kg':>20}{'mm':>20}{'s':>20}", f"{'kg':>20}{'m':>20}{'s':>20}"]
+    lines.append("/NODE")
+    for k in range(2):
+        for j in range(2):
+            for i in range(3):
+                nid = 1 + i + 3 * j + 6 * k
+                node[(i, j, k)] = nid
+                lines.append(f"{nid:10d}" + r20(1000.0 * i, 1000.0 * j, 1000.0 * k))
+    lines.append("/BRICK/1")
+    for i in range(2):
+        corners = [(i, 0, 0), (i + 1, 0, 0), (i + 1, 1, 0), (i, 1, 0)]
+        ids = [node[c] for c in corners] + [node[(a, b, 1)] for a, b, _ in corners]
+        lines.append(i10(101 + i, *ids))
+    lines.append("/SHELL/2")
+    for i in range(2):
+        lines.append(
+            i10(201 + i, node[(i, 0, 1)], node[(i + 1, 0, 1)], node[(i + 1, 1, 1)])
+            + i10(node[(i, 1, 1)])
+        )
+    lines += ["/PART/1", "solid", i10(1, 5), "/PART/2", "skin", i10(2, 6)]
+    lines += ["/BOX/RECTA/1", "near half", i10(0, 0, 0)]
+    lines += [r20(-1.0, -1.0, -1.0), r20(1001.0, 1001.0, 1001.0)]
+    # A sphere round node 1 (its centre given as a node), 10 mm across.
+    lines += ["/BOX/SPHER/2", "corner", f"{1:10d}{'':20}" + r20(10.0), r20(0, 0, 0)]
+    lines += ["/BOX/CYLIN/3", "x axis", i10(0, 0) + f"{'':10}" + r20(10.0)]
+    lines += [r20(-1.0, 0.0, 0.0), r20(2001.0, 0.0, 0.0)]
+    lines += ["/BOX/BOX/4", "near half but the corner", i10(1, -2)]
+    lines += ["/GRNOD/BOX/10", "in box 1", i10(1)]
+    lines += ["/GRNOD/BOX/11", "in box 4", i10(4)]
+    lines += ["/GRNOD/BOX/12", "on the axis", i10(3)]
+    lines += ["/GRBRIC/BOX/13", "bricks inside", i10(1)]
+    lines += ["/GRBRIC/BOX2/14", "bricks touching", i10(1)]
+    lines += ["/GRNOD/GENE/15", "ranges", i10(1, 3, 7, 8)]
+    lines += ["/GRNOD/GEN_INCR/16", "every fifth", i10(1, 12, 5)]
+    lines += ["/GRSHEL/GENE/17", "second shell", i10(202, 202)]
+    lines += ["/GRNOD/NODE/18/1", "unit suffix", i10(5)]
+    lines += ["/SURF/PART/EXT/20", "solid outside", i10(1)]
+    lines += ["/SURF/PART/21", "skin shells", i10(2)]
+    lines += ["/SURF/PART/ALL/22", "solid all", i10(1)]
+    lines += ["/SURF/GRBRIC/EXT/23", "first brick outside", i10(13)]
+    lines += ["/SURF/GRBRIC/FREE/24", "first brick free", i10(13)]
+    lines += ["/SURF/SURF/25", "second brick free", i10(20, -24)]
+    lines += ["/SURF/MAT/26", "material 6", i10(6)]
+    lines.append("/END")
+    return "\n".join(lines) + "\n"
+
+
+def test_units_boxes_generators_and_surfaces(read, tmp_path):
+    deck = tmp_path / "features_0000.rad"
+    deck.write_text(_features_deck())
+    mesh = read(deck)
+    # Millimetres in, metres of work: lengths scaled by 1e-3.
+    assert float(mesh.field_data["radioss:length_scale"]) == pytest.approx(1e-3)
+    assert np.asarray(mesh.points).max() == pytest.approx(2.0)
+    points = np.asarray(mesh.points)
+
+    def ids_of(kind, name):
+        return np.asarray(_region(mesh, kind, name).entries)
+
+    assert len(ids_of("point", "in box 1")) == 8
+    near = ids_of("point", "in box 4")
+    assert len(near) == 7 and not np.any(np.all(points[near] == 0.0, axis=1))
+    np.testing.assert_allclose(points[ids_of("point", "on the axis")][:, 1:], 0.0)
+    assert len(ids_of("point", "on the axis")) == 3
+    assert len(ids_of("cell", "bricks inside")) == 1
+    assert len(ids_of("cell", "bricks touching")) == 2
+    assert len(ids_of("point", "ranges")) == 5
+    assert len(ids_of("point", "every fifth")) == 3
+    assert len(ids_of("cell", "second shell")) == 1
+    suffix = _region(mesh, "point", "unit suffix")
+    assert suffix.tag == 18 and len(suffix.entries) == 1
+
+    def faces(name):
+        return len(np.asarray(_region(mesh, "side", name).entries))
+
+    assert faces("solid outside") == 10  # 12 faces, the shared one twice
+    assert faces("skin shells") == 2
+    assert faces("solid all") == 12
+    assert faces("first brick outside") == 6  # external to the group
+    assert faces("first brick free") == 5  # the face shared with brick 102 is not
+    assert faces("second brick free") == 5
+    assert faces("material 6") == 2

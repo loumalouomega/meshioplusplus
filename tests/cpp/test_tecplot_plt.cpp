@@ -179,13 +179,9 @@ TEST(TecplotPlt, EveryDataFormatInBothByteOrders) {
 TEST(TecplotPlt, RefusesWhatItCannotRead) {
     const std::string bit = write_bytes(tri_plt(6, false));
     EXPECT_THROW(meshioplusplus::read_tecplot(bit), meshioplusplus::ReadError);
+    // An FEPOLYGON zone whose header announces a face map the file lacks.
     const std::string poly = write_bytes(tri_plt(2, false, 6));
-    try {
-        meshioplusplus::read_tecplot(poly);
-        ADD_FAILURE() << "an FEPOLYGON zone was read";
-    } catch (const meshioplusplus::ReadError& e) {
-        EXPECT_NE(std::string(e.what()).find("polygonal"), std::string::npos);
-    }
+    EXPECT_THROW(meshioplusplus::read_tecplot(poly), meshioplusplus::ReadError);
     const std::string old = write_bytes(tri_plt(2, false, 2, "102"));
     EXPECT_THROW(meshioplusplus::read_tecplot(old), meshioplusplus::ReadError);
     const std::string good = tri_plt(2, false);
@@ -297,5 +293,123 @@ TEST(TecplotPlt, AsciiOrderedFormsMatchTheirConnectivity) {
     EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(m.PointData("P"), 10), 11.0);
     ASSERT_EQ(m.NumRegions(), 3u);
     EXPECT_TRUE(m.HasRegion("ij2"));
+    remove_file(path);
+}
+
+namespace {
+
+std::vector<std::int64_t> face_of(const mt::Mesh& rMesh, std::size_t Block, std::size_t Cell,
+                                  std::size_t Face) {
+    const auto [ptr, size] = rMesh.Cells(Block).Face(Cell, Face);
+    return std::vector<std::int64_t>(ptr, ptr + size);
+}
+
+}  // namespace
+
+TEST(TecplotPoly, PolyhedralZoneSplitsByNodeCountWithOutwardFaces) {
+    // A unit cube and a pyramid on its top face: the shared face is wound
+    // outward for the cube (its left element), so the pyramid (the right
+    // element) gets it reversed.
+    const std::string path = mt::temp_path(".dat");
+    {
+        std::ofstream f(path);
+        f << "VARIABLES = \"X\" \"Y\" \"Z\" \"C\"\n"
+             "ZONE T=\"cells\", ZONETYPE=FEPOLYHEDRON, NODES=9, ELEMENTS=2, FACES=10,\n"
+             "TOTALNUMFACENODES=36, NUMCONNECTEDBOUNDARYFACES=0, TOTALNUMBOUNDARYCONNECTIONS=0,\n"
+             "VARLOCATION=([4]=CELLCENTERED)\n"
+             "0 1 1 0 0 1 1 0 0.5\n0 0 1 1 0 0 1 1 0.5\n0 0 0 0 1 1 1 1 2\n10 20\n"
+             "4 4 4 4 4 4 3 3 3 3\n"
+             "1 4 3 2\n5 6 7 8\n1 2 6 5\n2 3 7 6\n3 4 8 7\n4 1 5 8\n"
+             "5 6 9\n6 7 9\n7 8 9\n8 5 9\n"
+             "1 1 1 1 1 1 2 2 2 2\n"
+             "0 2 0 0 0 0 0 0 0 0\n";
+    }
+    const mt::Mesh m = meshioplusplus::read_tecplot(path);
+    ASSERT_EQ(m.NumCellBlocks(), 2u);
+    EXPECT_EQ(m.Cells(0).Type(), "polyhedron8");
+    EXPECT_EQ(m.Cells(1).Type(), "polyhedron5");
+    ASSERT_TRUE(m.Cells(1).IsPolyhedron());
+    EXPECT_EQ(m.Cells(0).NumFaces(0), 6u);
+    EXPECT_EQ(m.Cells(1).NumFaces(0), 5u);
+    EXPECT_EQ(face_of(m, 0, 0, 1), (std::vector<std::int64_t>{4, 5, 6, 7}));
+    EXPECT_EQ(face_of(m, 1, 0, 0), (std::vector<std::int64_t>{7, 6, 5, 4}));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(m.CellData("C", 1), 0), 20.0);
+    ASSERT_EQ(m.NumRegions(), 1u);
+    EXPECT_EQ(m.Region(0).NumEntries(), 2u);
+
+    // Written back as an FEPOLYHEDRON zone per block, it reads the same.
+    const std::string out = mt::temp_path(".dat");
+    meshioplusplus::write_tecplot(out, m);
+    const mt::Mesh back = meshioplusplus::read_tecplot(out);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    EXPECT_EQ(back.Cells(1).Type(), "polyhedron5");
+    for (std::size_t b = 0; b < 2; ++b)
+        for (std::size_t f = 0; f < m.Cells(b).NumFaces(0); ++f)
+            EXPECT_EQ(face_of(back, b, 0, f), face_of(m, b, 0, f)) << "block " << b;
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.CellData("C", 1), 0), 20.0);
+    remove_file(path);
+    remove_file(out);
+}
+
+TEST(TecplotPoly, BinaryPolygonZoneReadsZeroBasedFaceMaps) {
+    // A house: a square (0 1 2 4) and a roof triangle (4 2 3); the shared
+    // edge 2-4 has the square on its left and the roof on its right. Binary
+    // face maps are 0-based with -1 for "no neighbour".
+    PltWriter w(false);
+    w.Raw("#!TDV112");
+    w.I32(1);
+    w.I32(0);
+    w.Str("house");
+    w.I32(2);
+    w.Str("X");
+    w.Str("Y");
+    w.F32(299.0F);
+    w.Str("poly");
+    w.I32(-1);
+    w.I32(-1);
+    w.F64(0.0);
+    w.I32(-1);
+    w.I32(6);  // FEPOLYGON
+    w.I32(0);
+    w.I32(0);
+    w.I32(0);
+    w.I32(5);   // points
+    w.I32(6);   // faces
+    w.I32(12);  // face nodes
+    w.I32(0);   // boundary faces
+    w.I32(0);   // boundary connections
+    w.I32(2);   // elements
+    for (int k = 0; k < 3; ++k)
+        w.I32(0);
+    w.I32(0);  // no aux
+    w.F32(357.0F);
+    w.F32(299.0F);
+    w.I32(2);
+    w.I32(2);
+    w.I32(0);
+    w.I32(0);
+    w.I32(-1);
+    for (int k = 0; k < 4; ++k)
+        w.F64(0.0);
+    for (double x : {0.0, 1.0, 1.0, 0.5, 0.0})
+        w.F64(x);
+    for (double y : {0.0, 0.0, 1.0, 1.5, 1.0})
+        w.F64(y);
+    for (int v : {0, 1, 1, 2, 2, 4, 4, 0, 2, 3, 3, 4})
+        w.I32(v);
+    for (int v : {0, 0, 0, 0, 1, 1})
+        w.I32(v);
+    for (int v : {-1, -1, 1, -1, -1, -1})
+        w.I32(v);
+    const std::string path = write_bytes(w.Bytes());
+    const mt::Mesh m = meshioplusplus::read_tecplot(path);
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    const auto cb = m.Cells(0);
+    EXPECT_EQ(cb.Type(), "polygon");
+    ASSERT_EQ(cb.NumCells(), 2u);
+    EXPECT_EQ(std::vector<std::int64_t>(cb.Row(0), cb.Row(0) + cb.RowSize(0)),
+              (std::vector<std::int64_t>{0, 1, 2, 4}));
+    EXPECT_EQ(std::vector<std::int64_t>(cb.Row(1), cb.Row(1) + cb.RowSize(1)),
+              (std::vector<std::int64_t>{4, 2, 3}));
     remove_file(path);
 }

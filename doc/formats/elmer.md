@@ -21,6 +21,7 @@ meshioplusplus.write("out", mesh, file_format="elmer")  # a directory has no ext
 
 mesh.cell_data["partition:part"] = meshioplusplus.partition_labels(mesh, 4)
 meshioplusplus.write("out", mesh, file_format="elmer")  # also writes out/partitioning.4
+meshioplusplus.write("dg", mesh, file_format="elmer", halo=True)  # with ElmerGrid's -halo layer
 ```
 
 ```bash
@@ -79,7 +80,7 @@ This was checked outside the repository against ElmerGrid built from source: gms
 
 ## Partitioned meshes
 
-ElmerGrid's `-partition`/`-metis` options write `partitioning.N/part.n.{header,nodes,elements,boundary,shared}`, with shared nodes listed by every part that uses them and, with `-halo`, halo copies of elements written as `id/owner`.
+ElmerGrid's `-partition`/`-metis` options write `partitioning.N/part.n.{header,nodes,elements,boundary,shared}`, with shared nodes listed by every part that uses them and, with `-halo`, halo copies of elements written as `id/owner` (the writer can add them too; see [Partitioned write](#partitioned-write)).
 
 - **Reading merges the parts** into one mesh. Each shared node and each halo element is kept once, and each cell's 0-based part is in `cell_data["partition:part"]`, the key the [partition](../partition.md) operation uses.
 - The path may be the `partitioning.N` directory itself, or a mesh directory holding exactly one. A serial mesh next to exactly one `partitioning.N` is read serially and labelled from it. With several `partitioning.*` directories, the serial mesh is read without labels (with a warning) and `piece` is an error until you name one.
@@ -108,9 +109,20 @@ Since v16.10.0 a mesh carrying `cell_data["partition:part"]` (0-based parts, as 
 - A part's nodes are those its elements use. A node used by several parts is shared: it is listed by each of them, and `part.k.shared` gives `id count owner others…`, the owner being the lowest part (1-based in the file).
 - A boundary element goes to every part holding one of its parents, with the parent in another part written as 0.
 - `part.k.header` counts nodes, elements, boundary elements and the element types, then the shared nodes.
-- Halo elements (`ElmerGrid -halo`) are not written. A negative part is a `WriteError`, and an empty part is a warning, since ElmerSolver needs every part populated.
+- A negative part is a `WriteError`, and an empty part is a warning, since ElmerSolver needs every part populated.
 
-Reading the result merges back the input mesh with its labels. The layout was checked outside the repository against elmerfem (built from source at `a8a13b5`): a heat equation run with `mpirun -np 2 ElmerSolver_mpi` on a written two-part mesh gives the serial run's temperatures to 2e-14.
+`halo=True` (C++ `write_elmer(path, mesh, true)`, since v16.11.0) adds the halo layer `ElmerGrid -halo` writes, which discontinuous Galerkin solvers need:
+
+- A bulk element is copied into every other part in which one of its sides lies whole: every node of that side, mid-side nodes included, is used by that part's own elements. As in ElmerGrid, an element is only tested when enough of its nodes are shared between parts (four for a hexahedron, three for a wedge, pyramid or tetrahedron, two otherwise). Line elements have no sides to test and get no halo.
+- A halo copy is written as `id/owner` (the owning part, 1-based) among the part's own elements, in the order of the serial mesh, and counted in its header. Its nodes join the part's node list.
+- A node that a halo copy brings into a part is shared with that part too. It is listed after the parts whose own elements use it, so a halo part is never the node's owner. ElmerSolver leaves an owned node's degrees of freedom to its owner, and making a halo part the owner leaves them unsolved.
+- Boundary elements are unchanged.
+
+Reading the result merges back the input mesh with its labels, halo copies kept once. The layout was checked outside the repository against elmerfem (built from source at `a8a13b5`):
+
+- Without the halo, a heat equation run with `mpirun -np 2 ElmerSolver_mpi` on a written two-part mesh gives the serial run's temperatures to 2e-14.
+- With the halo, four-part writes of gmsh triangle, quadrilateral, hexahedron and quadratic tetrahedron meshes list the same halo elements, in the same order, with the same nodes, headers and boundaries as `ElmerGrid -partition 2 2 1 -halo` on the same partition. A four-part `ElmerSolver_mpi` heat run on the written hexahedron, quadratic tetrahedron and triangle meshes gives the serial temperatures to 1e-16.
+- The owner listed first in `part.k.shared` can differ from ElmerGrid's, which uses its own node partition rather than the lowest part.
 
 ## Notes
 

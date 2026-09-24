@@ -715,5 +715,5 @@ def write(filename, mesh):
     for name, ids in node_comps:
         component(name, "NODE", ids)
     out.append("FINISH\n")
-    with open_file(filename, "w") as f:
+    with open_file(filename, "w", newline="\n") as f:
         f.write("".join(out))

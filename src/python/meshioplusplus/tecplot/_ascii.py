@@ -8,7 +8,7 @@ import numpy as np
 
 from .._exceptions import ReadError
 from .._files import open_file
-from ._zones import Zone
+from ._zones import Zone, face_map
 
 _ET = {
     "LINESEG": "FELINESEG",
@@ -160,6 +160,15 @@ def _data_tokens(z, nvar):
     return sum(z.data_length(v) for v in range(nvar) if z.owns(v))
 
 
+def _face_map_tokens(z):
+    """How many integers a face-based zone's face map holds: node counts
+    (polyhedra), face nodes, left and right elements, boundary connections."""
+    n = (z.num_faces if z.is_polyhedron else 0) + z.total_face_nodes + 2 * z.num_faces
+    if z.num_boundary_faces > 0:
+        n += z.num_boundary_faces + 2 * z.num_boundary_conns
+    return n
+
+
 def _tokens(line):
     return line.split()
 
@@ -199,6 +208,26 @@ class AsciiSource:
                 if z.owns(v):
                     cols[v] = table[:, v].copy()
         conn = None
+        if not z.ordered and z.conn_share < 0 and z.is_poly:
+            want = _face_map_tokens(z)
+            ints = []
+            while len(ints) < want and li < len(self.lines):
+                ints.extend(int(t) for t in _tokens(self.lines[li]))
+                li += 1
+            if len(ints) < want:
+                raise ReadError(f"Tecplot: zone {idx + 1} face map is truncated")
+            pos = 0
+
+            def take(n):
+                nonlocal pos
+                pos += n
+                return ints[pos - n : pos]
+
+            counts = take(z.num_faces) if z.is_polyhedron else None
+            nodes = take(z.total_face_nodes)
+            left = take(z.num_faces)
+            right = take(z.num_faces)
+            return cols, face_map(z, idx, counts, nodes, left, right, True)
         if not z.ordered and z.conn_share < 0:
             npc = {
                 "FELINESEG": 2,
@@ -266,6 +295,10 @@ def load(filename):
                 "F",
                 "ET",
                 "NV",
+                "FACES",
+                "TOTALNUMFACENODES",
+                "NUMCONNECTEDBOUNDARYFACES",
+                "TOTALNUMBOUNDARYCONNECTIONS",
             ):
                 fields[key] = val
             elif key in ("I", "J", "K"):
@@ -306,13 +339,41 @@ def load(filename):
                 z.num_cells = int(fields.get("ELEMENTS", fields.get("E")))
             except (TypeError, ValueError):
                 raise ReadError("Tecplot: an FE zone needs NODES and ELEMENTS")
+        if z.is_poly:
+
+            def count(key, required, default):
+                if key not in fields:
+                    if required:
+                        raise ReadError(f"Tecplot: a {z.type_name} zone needs {key}")
+                    return default
+                try:
+                    return int(fields[key])
+                except ValueError:
+                    raise ReadError(f"Tecplot: bad {key}")
+
+            z.num_faces = count("FACES", True, 0)
+            z.total_face_nodes = count(
+                "TOTALNUMFACENODES", z.is_polyhedron, 2 * z.num_faces
+            )
+            z.num_boundary_faces = count("NUMCONNECTEDBOUNDARYFACES", False, 0)
+            z.num_boundary_conns = count("TOTALNUMBOUNDARYCONNECTIONS", False, 0)
+            if not z.block:
+                raise ReadError(
+                    f"Tecplot: a {z.type_name} zone must be DATAPACKING=BLOCK"
+                )
         want = _data_tokens(z, len(variables))
         li, got = z.data_start, 0
         while got < want and li < len(lines):
             got += len(_tokens(lines[li]))
             li += 1
         if not z.ordered and z.conn_share < 0:
-            li += z.num_cells
+            if z.is_poly:  # the face map is a token stream
+                want, seen = _face_map_tokens(z), 0
+                while seen < want and li < len(lines):
+                    seen += len(_tokens(lines[li]))
+                    li += 1
+            else:
+                li += z.num_cells
         zones.append(z)
         i = li
     if not variables:

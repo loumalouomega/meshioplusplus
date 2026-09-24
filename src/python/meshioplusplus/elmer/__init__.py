@@ -34,22 +34,27 @@ def read(filename, points_only=False, arrays=None, piece=None, lenient=False):
     )
 
 
-def write(filename, mesh):
+def write(filename, mesh, halo: bool = False):
     """Write a serial Elmer mesh directory, creating it if needed.
 
     The cells of the highest dimension are the bulk elements, every
     lower-dimensional cell (and every side region's facets) a boundary element
     with its parents regenerated; regions give the body and boundary ids and
     names. Point regions and data arrays are dropped with a warning.
+
+    A ``partition:part`` cell array also writes ElmerGrid's
+    ``partitioning.<N>`` directory; ``halo=True`` adds ElmerGrid's ``-halo``
+    layer to it (each bulk element with a whole side in another part copied
+    there as ``id/owner``), which discontinuous Galerkin solvers need.
     """
     if not is_buffer(filename, "w"):
         try:
-            _core.elmer_write(str(filename), mesh)
+            _core.elmer_write(str(filename), mesh, halo)
             return
         except Exception as exc:
             if not core_declined(exc, "elmer", "write", filename):
                 raise
-    return _py_write(filename, mesh)
+    return _py_write(filename, mesh, halo=halo)
 
 
 # A directory, not a file: no extension maps to it; sniff_format finds it.

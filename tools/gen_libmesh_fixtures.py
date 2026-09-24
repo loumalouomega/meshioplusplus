@@ -11,7 +11,7 @@ from libMesh's reference-element node positions spelled out below
 (``cell_hex27.C``, ``cell_tet14.C``, ``cell_prism18.C``, ``face_quad4.C``), so a
 test can check the read cells against meshio++'s own edge and face tables.
 
-Four meshes, each as ``.xda`` and ``.xdr``:
+Five meshes, each as ``.xda`` and ``.xdr``:
 
 * ``hex27`` (libMesh-1.3.0, 8-byte fields): two HEX27 side by side in
   subdomains 1 (named ``left``) and 2 (unnamed), with unique ids, a side set on
@@ -24,10 +24,16 @@ Four meshes, each as ``.xda`` and ``.xdr``:
   side set on the parent's bottom edge that must reach the two bottom children.
 * ``tet14_prism18`` (libMesh-1.3.0, 4-byte fields): a TET14 and a PRISM18
   (read as ``tetra10`` and ``wedge18``).
+* ``edges_shell`` (libMesh-1.8.0): a HEX20 with a QUAD8 shell on its top face,
+  two edge sets (one edge named twice) and both shell faces.
+
+Plus ``hex27.xda.gz`` and ``hex27.xdr.bz2``, compressed as libMesh writes them.
 
     python tools/gen_libmesh_fixtures.py
 """
 
+import bz2
+import gzip
 import math
 import pathlib
 import struct
@@ -265,12 +271,12 @@ def write_mesh(name, spec):
                 io.ints(t)
         if v110:
             triples(
-                [],
+                spec.get("edges", []),
                 spec.get("sideset_names", {}),
                 "# number of edge boundary conditions",
             )
             triples(
-                [],
+                spec.get("shellfaces", []),
                 spec.get("sideset_names", {}),
                 "# number of shellface boundary conditions",
             )
@@ -379,12 +385,48 @@ def tet14_prism18_mesh():
     }
 
 
+def hex20_reference():
+    return list(_C) + [_mid(_C, e) for e in _HEX_EDGES]
+
+
+def edges_shell_mesh():
+    # A HEX20 (subdomain 1) with a QUAD8 shell on its top face (subdomain 2).
+    # Edge sets: the hex's edge 0 (id 11, named) and its top edge 8, also named
+    # by the shell's edge 0 under the same id 12 (one line3 for both). Shell
+    # faces: face 0 id 20 (named), face 1 id 21. A side set on the hex bottom.
+    nodes = Nodes()
+    ref = hex20_reference()
+    hexa = [nodes(p) for p in ref]
+    top = [4, 5, 6, 7, 16, 17, 18, 19]  # the hex's top corners and edge mids
+    shell = [hexa[k] for k in top]
+    return {
+        "version": "libMesh-1.8.0",
+        "elements": [
+            {"type": 11, "level": 0, "sid": 1, "nodes": hexa},
+            {"type": 6, "level": 0, "sid": 2, "nodes": shell},
+        ],
+        "coords": nodes.coords,
+        "subdomain_names": {2: "skin"},
+        "sides": [(0, 0, 1)],
+        "sideset_names": {1: "bottom", 11: "axis", 20: "front"},
+        "edges": [(0, 0, 11), (0, 8, 12), (1, 0, 12)],
+        "shellfaces": [(1, 0, 20), (1, 1, 21)],
+    }
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     write_mesh("hex27", hex27_mesh())
     write_mesh("one_hex", one_hex_mesh())
     write_mesh("amr_quad", amr_quad_mesh())
     write_mesh("tet14_prism18", tet14_prism18_mesh())
+    write_mesh("edges_shell", edges_shell_mesh())
+    # Compressed copies, as libMesh writes them (gzip without a timestamp, so
+    # the bytes are reproducible).
+    (OUT / "hex27.xda.gz").write_bytes(
+        gzip.compress((OUT / "hex27.xda").read_bytes(), mtime=0)
+    )
+    (OUT / "hex27.xdr.bz2").write_bytes(bz2.compress((OUT / "hex27.xdr").read_bytes()))
 
 
 if __name__ == "__main__":

@@ -575,12 +575,14 @@ def tool_convert(
     ghosts="keep",
     grid_functions=None,
     write_grid_functions=False,
+    elmer_halo=False,
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
 
     ``grid_functions`` (``{name: path}``) reads MFEM ``.gf`` files onto an MFEM
     input mesh; ``write_grid_functions`` writes the data of an MFEM output as
-    ``.gf`` files beside it."""
+    ``.gf`` files beside it. ``elmer_halo`` adds ElmerGrid's ``-halo`` layer to
+    the partitioning an Elmer output writes from ``partition:part``."""
     if grid_functions:
         from .. import mfem as _mfem
 
@@ -590,6 +592,7 @@ def tool_convert(
                 str(name): str(_resolve(path, must_exist=True))
                 for name, path in grid_functions.items()
             },
+            piece=piece,
         )
     else:
         mesh = _load(
@@ -625,6 +628,10 @@ def tool_convert(
                 "meshio++: mcp: write_grid_functions needs MFEM (.mesh) output"
             )
         write_kwargs["grid_functions"] = True
+    if elmer_halo:
+        if out_fmt != "elmer":
+            raise ValueError("meshio++: mcp: elmer_halo needs Elmer output")
+        write_kwargs["halo"] = True
     resolved = _store(mesh, output_path, output_format, **write_kwargs)
     return _result(resolved, mesh, output_format=out_fmt)
 

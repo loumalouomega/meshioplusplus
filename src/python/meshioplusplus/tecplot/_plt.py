@@ -9,7 +9,7 @@ import numpy as np
 
 from .._exceptions import ReadError
 from .._files import open_file
-from ._zones import Zone
+from ._zones import Zone, face_map
 
 ZONE_MARKER = 299.0
 GEOMETRY_MARKER = 399.0
@@ -177,7 +177,16 @@ def _read_header(cur):
             else:
                 z.num_nodes = cur.i32()
                 if ztype in (6, 7):
-                    cur.array("i4", 4)
+                    # faces, face nodes, boundary faces (+1 when any), connections
+                    counts = [int(v) for v in cur.array("i4", 4)]
+                    if min(counts) < 0:
+                        raise ReadError("Tecplot .plt: negative face map size")
+                    (
+                        z.num_faces,
+                        z.total_face_nodes,
+                        z.num_boundary_faces,
+                        z.num_boundary_conns,
+                    ) = counts
                 z.num_cells = cur.i32()
                 cur.array("i4", 3)  # I/J/K cell dims, unused
             while cur.i32() == 1:  # auxiliary name/value pairs
@@ -293,9 +302,16 @@ def _scan_data(cur, variables, zones):
                 _skip_face_neighbors(cur, z)
             continue
         if z.type_code in (6, 7):
-            raise ReadError(
-                f"Tecplot: {z.type_name} zones (polygonal/polyhedral) are not supported"
-            )
+            if z.conn_share < 0:
+                # face node offsets (polyhedra), face nodes, left and right
+                # elements, then boundary offsets, elements and zones
+                z.conn_offset = cur.pos
+                n = (z.num_faces + 1 if z.is_polyhedron else 0) + z.total_face_nodes
+                n += 2 * z.num_faces
+                if z.num_boundary_faces:
+                    n += z.num_boundary_faces + 1 + 2 * z.num_boundary_conns
+                cur.array("i4", n)
+            continue
         if z.conn_share < 0:
             z.conn_offset = cur.pos
             cur.array("i4", NODES_PER_CELL[z.type_code] * z.num_cells)
@@ -322,6 +338,20 @@ class PltSource:
                 values = values.reshape(shape)[keep].ravel()
             cols[v] = values
         conn = None
+        if z.conn_offset is not None and z.is_poly:
+            cur.pos = z.conn_offset
+            counts = None
+            if z.is_polyhedron:
+                offsets = cur.array("i4", z.num_faces + 1).astype(np.int64)
+                if offsets[0] != 0:
+                    raise ReadError(
+                        f"Tecplot .plt: zone {idx + 1} face node offsets do not start at 0"
+                    )
+                counts = np.diff(offsets)
+            nodes = cur.array("i4", z.total_face_nodes)
+            left = cur.array("i4", z.num_faces)
+            right = cur.array("i4", z.num_faces)
+            return cols, face_map(z, idx, counts, nodes, left, right, False)
         if z.conn_offset is not None:
             cur.pos = z.conn_offset
             npc = NODES_PER_CELL[z.type_code]
