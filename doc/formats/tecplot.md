@@ -5,7 +5,7 @@ The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format: a `VARIA
 | | |
 |---|---|
 | **Format name** | `tecplot` |
-| **Extensions** | `.dat`, `.tec` |
+| **Extensions** | `.dat`, `.tec` (a `.dat` file that opens as an MSC Marc input deck is read as [`marc`](./marc.md#which-dat-is-marcs) instead, v16.8.0) |
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 

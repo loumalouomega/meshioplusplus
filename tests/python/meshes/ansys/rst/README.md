@@ -14,8 +14,13 @@ They come unmodified from the [pymapdl-reader](https://github.com/ansys/pymapdl-
 | `cyc_stress.rst` | `tests/testfiles/rst/cyc_stress.rst` | nodes with rotated coordinate systems |
 | `cyclic_v182.rst` | `tests/testfiles/cyclic_reader/cyclic_v182.rst` | a cyclic-symmetry model: the base sector with a warning |
 | `file.rth` | `tests/testfiles/file.rth` | a thermal result file: `TEMP` |
+| `beam_static_bc.rst` | `tests/testfiles/rst/beam_static_bc.rst` | a static SOLID186 beam with supports and loads: element stresses, strains and nodal forces, reactions |
+| `temp_v13.rst` | `tests/testfiles/temp_v13.rst` | a release 13 SOLID185 model: 11 stress items per node, thermal strains |
+| `shell281.rst` | `tests/testfiles/shell281.rst` | SOLID186 bricks with SHELL281 shells: element results of quadratic shells |
+| `cyc12.rst` | `tests/testfiles/cyc12.rst` | a static cyclic model of 18 sectors about a local coordinate system's axis, three result sets |
+| `dist_static/file0.rst` ... `file3.rst`, `dist_static/file.rst` | `tests/testfiles/dist_rst/static/` | a distributed solve's four partial files and the combined file MAPDL wrote |
 
-`pymapdl_reference.npz` freezes pymapdl-reader's reading of every fixture (its VTK grid, each set's time, node numbers and nodal DOF solution), and `test_ansys_rst.py` compares both meshio++ engines against it: the same cells as sets of node coordinates, bit-identical set times, and nodal solutions to 1e-12. `tools/gen_ansys_rst_reference.py` regenerates it. None of these files holds a result set that covers only some nodes, which pymapdl-reader misreads (it sizes a record's doubles by its length in 4-byte words); the synthetic file `test_ansys_rst.py` writes covers that case instead.
+`pymapdl_reference.npz` freezes pymapdl-reader's reading of every fixture (its VTK grid, each set's time, node numbers and nodal DOF solution; where the file has them its averaged stresses and elastic strains, its reactions, and for the static cyclic models its full rotor), and `test_ansys_rst.py` compares both meshio++ engines against it: the same cells as sets of node coordinates, bit-identical set times, and nodal solutions to 1e-12. `tools/gen_ansys_rst_reference.py` regenerates it. None of these files holds a result set that covers only some nodes, which pymapdl-reader misreads (it sizes a record's doubles by its length in 4-byte words); the synthetic file `test_ansys_rst.py` writes covers that case instead.
 
 ## pymapdl-reader licence
 

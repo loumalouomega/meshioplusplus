@@ -47,7 +47,7 @@ license: MIT
 # directory's README.md; mapdl_archive_reference.npz there is mapdl-archive's own reading
 # of them, frozen by tools/gen_ansys_cdb_reference.py. The `ansysInp` reader's element
 # categories and degenerate-shape rules follow mapdl-archive's; no code is copied.
-# tests/python/meshes/ansys/rst/*.rst and *.rth are MAPDL result files from the
+# tests/python/meshes/ansys/rst/*.rst, *.rth and dist_static/*.rst are MAPDL result files from the
 # pymapdl-reader repository (https://github.com/ansys/pymapdl-reader), Copyright (c)
 # 2021-2026 Synopsys, Inc. and ANSYS, Inc., redistributed unmodified under the MIT
 # licence, whose text sits beside them in that directory's README.md;
