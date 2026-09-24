@@ -25,10 +25,12 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -99,7 +101,13 @@ std::string deck(const fs::path& rDir) {
 }
 
 std::string write_deck(const std::string& rBody, fs::path* pDir = nullptr) {
-    const fs::path dir = fs::path(mt::temp_path("_rad"));
+    // A fresh directory per deck (its #include sits beside it); unique across
+    // ctest processes, whose `mt::temp_path` counters all start at 0.
+    static std::atomic<unsigned> counter{0};
+    const fs::path dir =
+        fs::temp_directory_path() /
+        ("meshio_rad_" + std::to_string(std::random_device{}()) + "_" + std::to_string(counter++));
+    fs::remove_all(dir);
     fs::create_directories(dir);
     std::string body = rBody.empty() ? deck(dir) : rBody;
     const fs::path path = dir / "deck_0000.rad";

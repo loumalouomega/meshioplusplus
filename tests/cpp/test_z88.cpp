@@ -26,10 +26,12 @@
 
 // System includes
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -47,8 +49,16 @@ using meshioplusplus::ReadError;
 namespace detail = meshioplusplus::detail;
 namespace fs = std::filesystem;
 
+// A fresh directory per call: Z88's file names are fixed, so two tests (or two
+// ctest processes, whose `mt::temp_path` counters both start at 0) must never
+// share one, or a sibling z88o2.txt left behind is read as this deck's results.
 fs::path deck_dir() {
-    const fs::path dir = fs::path(mt::temp_path("_z88"));
+    static std::atomic<unsigned> counter{0};
+    const std::string test = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+    const fs::path dir = fs::temp_directory_path() /
+                         ("meshio_z88_" + test + "_" + std::to_string(std::random_device{}()) +
+                          "_" + std::to_string(counter++));
+    fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
 }

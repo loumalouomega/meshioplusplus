@@ -50,13 +50,15 @@ Every increment is a step: `time_step` selects one (0 = first, negative counts f
 | Where | Becomes |
 |---|---|
 | nodal record | `point_data`, NaN for nodes without a value |
-| element record at the integration points (location 0) | `cell_data` of shape `(cells, points, components)` |
+| element record at the integration points (location 0) | `cell_data` of shape `(cells, points × components)`, point-major |
 | at the centroid (1) or for the whole element (5) | `cell_data` of shape `(cells, components)` |
-| at the element nodes (2) | `cell_data` of shape `(cells, nodes, components)`, in the cell's node order |
+| at the element nodes (2) | `cell_data` of shape `(cells, nodes × components)`, point-major in the cell's node order |
 | averaged at the nodes (4) | `point_data` |
 | rebar (3) | skipped |
 
-A single component drops its axis. Section points above 1 (shell and beam layers; continuum elements write 0) get `@sp<k>` appended to the name: `S` holds the first layer and the solids, `S@sp5` the fifth layer. A block with no value for a field holds NaN. A solid's six-component tensors (`S`, `E`, `PE`, `LE`, `EE`, … where the header says three direct and three shear components) are reordered from Abaqus's 11, 22, 33, 12, 13, 23 to meshio++'s `xx yy zz xy yz zx`; every other record keeps Abaqus's component order. Von Mises is `SINV`'s first component when the run wrote invariants; otherwise compute it from `S` with the [tensor-invariants operation](../tensor_invariants.md), after reducing the integration-point axis (for instance to the mean over the points, a `(cells, 6)` array).
+Every array is rectangular and has the same width in every cell block, so every writer can hold it (VTU, XDMF, …): the widest block sets the number of points and components, and the other blocks are padded with NaN. Per-point data is flattened point-major, column `point × components + component`; its `(points, components)` is `field_data["abaqus:layout:<name>"]`, so `a.reshape(len(a), *layout)` restores it. A single column drops its axis. Section points above 1 (shell and beam layers; continuum elements write 0) get `@sp<k>` appended to the name: `S` holds the first layer and the solids, `S@sp5` the fifth layer. A block with no value for a field holds NaN.
+
+Components keep the file's order, as every reader does ([mesh data model](../mesh_data_model.md)): a solid's `S` is 11, 22, 33, 12, **13, 23**, where meshio++'s six-component convention is `xx yy zz xy yz zx`. Von Mises does not depend on the order of the shear components; for principal values, swap the last two first. Von Mises is also `SINV`'s first component when the run wrote invariants; otherwise compute it from `S` with the [tensor-invariants operation](../tensor_invariants.md) on a `(cells, 6)` array, such as the mean over the points.
 
 ## Validation
 

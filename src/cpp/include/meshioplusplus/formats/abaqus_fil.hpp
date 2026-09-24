@@ -46,12 +46,14 @@
  *  - nodal records (after a 1911 nodal output request) -> `point_data`, NaN for
  *    nodes without a value;
  *  - element records follow a record-1 header (element, integration or node
- *    point, section point, location): at integration points ->
- *    `cell_data` of shape `(cells, points, components)`; at the centroid or for
- *    the whole element -> `(cells, components)`; at the element nodes ->
- *    `(cells, nodes, components)`; averaged at the nodes -> `point_data`. A
- *    single component drops its axis. Section points above 1 (shell and beam
- *    layers; continuum elements write 0) get `@sp<k>` appended to the name. Rebar, contact,
+ *    point, section point, location): at integration points or element nodes
+ *    -> `cell_data` of shape `(cells, points * components)`, point-major, the
+ *    same width in every block (NaN-padded) and its `(points, components)` in
+ *    `field_data["abaqus:layout:<name>"]`; at the centroid or for the whole
+ *    element -> `(cells, components)`; averaged at the nodes -> `point_data`.
+ *    A single column drops its axis. Components keep the file's order. Section
+ *    points above 1 (shell and beam layers; continuum elements write 0) get
+ *    `@sp<k>` appended to the name. Rebar, contact,
  * modal-generalised, element matrix and substructure records are skipped.
  *
  * See doc/formats/abaqus_fil.md.

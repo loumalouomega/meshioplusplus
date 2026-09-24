@@ -470,10 +470,11 @@ def write(filename, mesh, stubs=False):
             out.append("%9d %5d\n" % (ident, codes[b][r]))
             src = order.from_meshio if order else range(len(row))
             out.append(" ".join(str(row[s] + 1) for s in src) + "\n")
-    with open_file(filename, "w") as f:
+    # "\n" on every platform, as the C++ writer: the engines write the same bytes.
+    with open_file(filename, "w", newline="\n") as f:
         f.write("".join(out))
     if stubs and not is_buffer(filename, "w"):
         directory = os.path.dirname(os.fspath(filename))
         for name in ("z88i2.txt", "z88i5.txt"):
-            with open(os.path.join(directory, name), "w") as f:
+            with open(os.path.join(directory, name), "w", newline="\n") as f:
                 f.write("0\n")

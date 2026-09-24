@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,8 @@ using meshioplusplus::RegionKind;
 namespace detail = meshioplusplus::detail;
 
 std::string write_file(const std::string& rBody, const std::string& rSuffix) {
-    const std::string path = mt::temp_path(rSuffix);
+    // Tagged: every ctest process starts `mt::temp_path`'s counter at 0.
+    const std::string path = mt::temp_path("_" + std::to_string(std::random_device{}()) + rSuffix);
     std::ofstream(path, std::ios::binary) << rBody;
     return path;
 }

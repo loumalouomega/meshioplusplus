@@ -29,7 +29,6 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -297,29 +296,6 @@ const char* fil_element_name(std::int64_t Key) {
     };
     const auto it = m.find(Key);
     return it == m.end() ? nullptr : it->second;
-}
-
-// Symmetric-tensor element keys: S, E, PE, CE, IE, EE, SS, ALPHA, THE, LE, NE,
-// ER. Abaqus writes a solid's six components 11 22 33 12 13 23; meshio++'s
-// order is xx yy zz xy yz zx.
-bool fil_is_tensor_key(std::int64_t Key) {
-    switch (Key) {
-        case 11:
-        case 21:
-        case 22:
-        case 23:
-        case 24:
-        case 25:
-        case 36:
-        case 86:
-        case 88:
-        case 89:
-        case 90:
-        case 91:
-            return true;
-        default:
-            return false;
-    }
 }
 
 // Keys that are neither nodal nor element results of a step.
@@ -595,7 +571,6 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
     struct Header {
         std::int64_t mElement, mPoint, mSection;
         int mLocation;
-        bool mSolidTensor;  // NDI = NSHR = 3
     };
     std::optional<Header> header;
     for (std::size_t r = inc.mBegin; r < inc.mEnd; ++r) {
@@ -611,10 +586,8 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
                 header.reset();
                 continue;
             }
-            header =
-                Header{fil_word_int(w[0], sw), fil_word_int(w[1], sw), fil_word_int(w[2], sw),
-                       static_cast<int>(fil_word_int(w[3], sw)),
-                       w.size() >= 7 && fil_word_int(w[5], sw) == 3 && fil_word_int(w[6], sw) == 3};
+            header = Header{fil_word_int(w[0], sw), fil_word_int(w[1], sw), fil_word_int(w[2], sw),
+                            static_cast<int>(fil_word_int(w[3], sw))};
             continue;
         }
         if ((rec.mKey >= 1900 && rec.mKey <= 2001) || fil_is_skipped_key(rec.mKey)) {
@@ -657,8 +630,6 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         std::vector<double> v;
         for (const FilWord& x : w)
             v.push_back(fil_word_real(x, sw));
-        if (header->mSolidTensor && v.size() == 6 && fil_is_tensor_key(rec.mKey))
-            std::swap(v[4], v[5]);  // 13 23 -> yz zx
         fields[fit->second].mValues[header->mElement][header->mPoint] = std::move(v);
     }
     if (!skipped_keys.empty())
@@ -706,11 +677,15 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         }
         if (!nblocks)
             continue;
+        // One rectangular array with the same width in every block (what every
+        // writer can hold): per-point data is flattened point-major, column
+        // `point * W + component`, NaN where a block has fewer points or
+        // components.
         const bool per_point = f.mLocation == 0 || f.mLocation == 2;
-        std::vector<std::size_t> width(nblocks, 0), count(nblocks, 1);
+        std::size_t width = 0, count = 1;
         if (f.mLocation == 2)
             for (std::size_t b = 0; b < nblocks; ++b)
-                count[b] = mesh.Cells(b).NodesPerCell();
+                count = std::max(count, mesh.Cells(b).NodesPerCell());
         std::vector<std::vector<const std::map<std::int64_t, std::vector<double>>*>> rows(nblocks);
         for (std::size_t b = 0; b < nblocks; ++b)
             rows[b].assign(block_start[b + 1] - block_start[b], nullptr);
@@ -724,30 +699,23 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
                 1);
             rows[b][c - block_start[b]] = &points;
             for (const auto& [pt, v] : points) {
-                width[b] = std::max(width[b], v.size());
+                width = std::max(width, v.size());
                 if (f.mLocation == 0)
-                    count[b] =
-                        std::max(count[b], static_cast<std::size_t>(std::max<std::int64_t>(pt, 1)));
+                    count =
+                        std::max(count, static_cast<std::size_t>(std::max<std::int64_t>(pt, 1)));
             }
         }
-        std::size_t any_width = 0;
-        for (std::size_t w : width)
-            any_width = std::max(any_width, w);
-        if (!any_width)
+        if (!width)
             continue;
+        const std::size_t pts = per_point ? count : 1;
+        const std::size_t cols = pts * width;
         std::vector<NDArray> blocks;
         for (std::size_t b = 0; b < nblocks; ++b) {
             const std::size_t n = rows[b].size();
-            const std::size_t wdt = width[b] ? width[b] : any_width;
-            const std::size_t pts = per_point ? count[b] : 1;
-            std::vector<std::size_t> shape{n};
-            if (per_point)
-                shape.push_back(pts);
-            if (wdt > 1)
-                shape.push_back(wdt);
-            NDArray a(DType::Float64, shape);
+            NDArray a(DType::Float64,
+                      cols == 1 ? std::vector<std::size_t>{n} : std::vector<std::size_t>{n, cols});
             double* d = a.As<double>();
-            std::fill(d, d + n * pts * wdt, nan);
+            std::fill(d, d + n * cols, nan);
             for (std::size_t r = 0; r < n; ++r) {
                 if (!rows[b][r])
                     continue;
@@ -765,8 +733,8 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
                     if (slot >= pts)
                         continue;
                     std::copy(v.begin(),
-                              v.begin() + static_cast<std::ptrdiff_t>(std::min(v.size(), wdt)),
-                              d + (r * pts + slot) * wdt);
+                              v.begin() + static_cast<std::ptrdiff_t>(std::min(v.size(), width)),
+                              d + r * cols + slot * width);
                 }
             }
             blocks.push_back(std::move(a));
@@ -775,6 +743,13 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         while (mesh.HasCellData(name))
             name += f.mLocation == 0 ? "@ip" : "@el";
         mesh.AddCellData(name, std::move(blocks));
+        if (per_point) {
+            // How to unflatten it: (points, components).
+            NDArray layout(DType::Int64, {2});
+            layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(pts);
+            layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(width);
+            mesh.AddFieldData("abaqus:layout:" + name, std::move(layout));
+        }
     }
     return mesh;
 }

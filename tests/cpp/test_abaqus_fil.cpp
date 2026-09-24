@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <string>
 #include <variant>
 #include <vector>
@@ -156,7 +157,8 @@ std::string binary(bool Big) {
 }
 
 std::string write_file(const std::string& rBody) {
-    const std::string path = mt::temp_path(".fil");
+    // Tagged: every ctest process starts `mt::temp_path`'s counter at 0.
+    const std::string path = mt::temp_path("_" + std::to_string(std::random_device{}()) + ".fil");
     std::ofstream(path, std::ios::binary) << rBody;
     return path;
 }
@@ -170,12 +172,14 @@ void expect_model(const Mesh& rMesh, int Increment) {
     const auto& u = rMesh.PointData("U");
     EXPECT_DOUBLE_EQ(detail::read_double(u, 7 * 3), 0.008 + Increment);
     EXPECT_DOUBLE_EQ(detail::read_double(u, 7 * 3 + 2), -0.5 * Increment);
+    // (cells, points * components), in the file's component order.
     const auto& s = rMesh.CellData("S", 0);
-    ASSERT_EQ(s.Shape().size(), 3u);  // (cells, points, components)
-    EXPECT_EQ(s.Shape()[2], 6u);
-    // Abaqus's 13 and 23 are swapped into meshio++'s yz, zx.
-    EXPECT_DOUBLE_EQ(detail::read_double(s, 4), 100.0 * Increment + 5);
-    EXPECT_DOUBLE_EQ(detail::read_double(s, 5), 100.0 * Increment + 4);
+    ASSERT_EQ(s.Shape().size(), 2u);
+    EXPECT_EQ(s.Shape()[1], 6u);
+    EXPECT_DOUBLE_EQ(detail::read_double(s, 5), 100.0 * Increment + 5);
+    const auto& layout = rMesh.FieldData("abaqus:layout:S");
+    EXPECT_EQ(detail::read_int(layout, 0), 1);
+    EXPECT_EQ(detail::read_int(layout, 1), 6);
     const std::size_t set = rMesh.FindRegion("ASSEMBLY_BOTTOM_NODES", RegionKind::Point);
     ASSERT_NE(set, Mesh::npos);
     EXPECT_EQ(rMesh.Region(set).NumEntries(), 4u);

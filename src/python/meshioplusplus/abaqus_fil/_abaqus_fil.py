@@ -410,12 +410,6 @@ def _resolve_step(time_step, n):
     return k
 
 
-# Symmetric-tensor element keys: S, E, PE, CE, IE, EE, SS, ALPHA, THE, LE, NE,
-# ER. Abaqus writes a solid's six components 11 22 33 12 13 23; meshio++'s order
-# is xx yy zz xy yz zx.
-_TENSOR_KEYS = {11, 21, 22, 23, 24, 25, 36, 86, 88, 89, 90, 91}
-
-
 def _skipped_key(key):
     return 301 <= key <= 310 or key >= 1000
 
@@ -570,13 +564,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             continue
         if key == 1:
             header = (
-                (
-                    d.int(w[0]),
-                    d.int(w[1]),
-                    d.int(w[2]),
-                    d.int(w[3]),
-                    len(w) >= 7 and d.int(w[5]) == 3 and d.int(w[6]) == 3,
-                )
+                (d.int(w[0]), d.int(w[1]), d.int(w[2]), d.int(w[3]))
                 if len(w) >= 4
                 else None
             )
@@ -596,7 +584,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
         if header is None or header[3] == 3:
             skipped_keys.add(key)
             continue
-        elem, point, section, location, solid_tensor = header
+        elem, point, section, location = header
         name = _ELEMENT_NAMES.get(key, f"key_{key}")
         # Continuum elements write section point 0, shells and beams 1..n: the
         # first one shares the plain name, the others are "@sp<k>".
@@ -607,10 +595,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
         fkey = (name, location)
         if fkey not in fields:
             fields[fkey] = {}
-        values = [d.real(x) for x in w]
-        if solid_tensor and len(values) == 6 and key in _TENSOR_KEYS:
-            values[4], values[5] = values[5], values[4]  # 13 23 -> yz zx
-        fields[fkey].setdefault(elem, {})[point] = values
+        fields[fkey].setdefault(elem, {})[point] = [d.real(x) for x in w]
     if skipped_keys:
         warn(
             f"Abaqus .fil: {len(skipped_keys)} record key(s) outside the nodal and "
@@ -649,11 +634,14 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             continue
         if not nblocks:
             continue
+        # One rectangular array with the same width in every block (what every
+        # writer can hold): per-point data is flattened point-major, column
+        # point * W + component, NaN where a block has fewer points or components.
         per_point = location in (0, 2)
-        width = [0] * nblocks
-        count = [1] * nblocks
+        width = 0
+        count = 1
         if location == 2:
-            count = [num_nodes_per_cell[t] for t in order_of_types]
+            count = max(num_nodes_per_cell[t] for t in order_of_types)
         rows = [[None] * (block_start[b + 1] - block_start[b]) for b in range(nblocks)]
         for label, points_ in per_elem.items():
             c = element_index.get(label)
@@ -662,18 +650,16 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             b = int(np.searchsorted(block_start, c, side="right")) - 1
             rows[b][c - block_start[b]] = points_
             for pt, v in points_.items():
-                width[b] = max(width[b], len(v))
+                width = max(width, len(v))
                 if location == 0:
-                    count[b] = max(count[b], max(pt, 1))
-        any_width = max(width)
-        if not any_width:
+                    count = max(count, max(pt, 1))
+        if not width:
             continue
+        pts = count if per_point else 1
         blocks = []
         for b in range(nblocks):
             n = len(rows[b])
-            wdt = width[b] or any_width
-            pts = count[b] if per_point else 1
-            a = np.full((n, pts, wdt), np.nan)
+            a = np.full((n, pts, width), np.nan)
             for r in range(n):
                 if rows[b][r] is None:
                     continue
@@ -689,13 +675,17 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                         slot = 0
                     if slot >= pts:
                         continue
-                    a[r, slot, : min(len(v), wdt)] = v[:wdt]
-            if not per_point:
-                a = a[:, 0, :]
-            if wdt == 1:
-                a = a[..., 0]
+                    a[r, slot, : min(len(v), width)] = v[:width]
+            a = a.reshape(n, pts * width)
+            if pts * width == 1:
+                a = a[:, 0]
             blocks.append(np.ascontiguousarray(a))
         while name in mesh.cell_data:
             name += "@ip" if location == 0 else "@el"
         mesh.cell_data[name] = blocks
+        if per_point:
+            # How to unflatten it: (points, components).
+            mesh.field_data["abaqus:layout:" + name] = np.array(
+                [pts, width], dtype=np.int64
+            )
     return mesh

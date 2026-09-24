@@ -96,25 +96,34 @@ def test_model_and_increment_values(engine, name):
     clamped = labels <= 9
     np.testing.assert_array_equal(rf[clamped][:, 0], -(labels[clamped]) * 2.0)
     assert np.isnan(rf[~clamped]).all()
+    # Per-point data is one (cells, points * components) array in every block,
+    # point-major, with its (points, components) layout in field_data.
     s = mesh.cell_data["S"]
-    assert [a.shape for a in s] == [(1, 8, 6), (1, 1, 6), (1, 1, 3)]
+    assert [a.shape for a in s] == [(1, 48)] * 3
+    np.testing.assert_array_equal(mesh.field_data["abaqus:layout:S"], [8, 6])
     np.testing.assert_array_equal(
-        # Abaqus writes 11 22 33 12 13 23; meshio++ keeps xx yy zz xy yz zx.
-        s[0][0],
-        [[_s(1, p, 0, c, 2) for c in (0, 1, 2, 3, 5, 4)] for p in range(1, 9)],
+        s[0][0].reshape(8, 6),
+        [[_s(1, p, 0, c, 2) for c in range(6)] for p in range(1, 9)],
     )
-    np.testing.assert_array_equal(s[2][0, 0], [_s(3, 1, 1, c, 2) for c in range(3)])
-    np.testing.assert_array_equal(
-        mesh.cell_data["S@sp5"][2][0, 0], [_s(3, 1, 5, c, 2) for c in range(3)]
-    )
-    assert np.isnan(mesh.cell_data["S@sp5"][0]).all()
+    np.testing.assert_array_equal(s[1][0, :6], [_s(2, 1, 0, c, 2) for c in range(6)])
+    assert np.isnan(s[1][0, 6:]).all()
+    np.testing.assert_array_equal(s[2][0, :3], [_s(3, 1, 1, c, 2) for c in range(3)])
+    assert np.isnan(s[2][0, 3:]).all()
+    sp5 = mesh.cell_data["S@sp5"]
+    assert [a.shape for a in sp5] == [(1, 3)] * 3
+    np.testing.assert_array_equal(sp5[2][0], [_s(3, 1, 5, c, 2) for c in range(3)])
+    assert np.isnan(sp5[0]).all()
     sinv = mesh.cell_data["SINV"]
     assert sinv[1].shape == (1, 7)
     np.testing.assert_array_equal(sinv[1][0], [7.0 * c + 2 for c in range(7)])
+    assert "abaqus:layout:SINV" not in mesh.field_data
     nforc = mesh.cell_data["NFORC"][1]
-    assert nforc.shape == (1, 8, 3)
+    assert nforc.shape == (1, 60)  # the widest cell, the hexahedron20, has 20 nodes
+    np.testing.assert_array_equal(mesh.field_data["abaqus:layout:NFORC"], [20, 3])
     hex8 = np.asarray(mesh.cells[1].data)[0]
-    np.testing.assert_array_equal(nforc[0][:, 0], labels[hex8] * 0.5 + 20.0)
+    per_node = nforc[0].reshape(20, 3)
+    np.testing.assert_array_equal(per_node[:8, 0], labels[hex8] * 0.5 + 20.0)
+    assert np.isnan(per_node[8:]).all()
     peeq = mesh.point_data["PEEQ"]
     np.testing.assert_allclose(peeq[:2], [0.02, 0.04])
     assert np.isnan(peeq[2:]).all()
@@ -163,20 +172,21 @@ def test_real_abaqus_output_matches_pybaqus(engine):
         [0.005484804966181764, 0.01164481342587608, 2.904946755494933e-33],
     )
     np.testing.assert_array_equal(
-        mesh.cell_data["S"][0][0, 0],
+        mesh.cell_data["S"][0][0, :6],  # the first integration point
         [
             -1.781822547468652,
             6.695266022198746,
             3.419889858603343,
             23.52460259453869,
-            52.63709925322325,  # S23 (yz): Abaqus writes it last
-            3.390710085233756,  # S13 (zx)
+            3.390710085233756,
+            52.63709925322325,
         ],
     )
     names = {r.name for r in mesh.regions}
     assert "ASSEMBLY_TEST_INSTANCE_SET-TEST_PART" in names
     gaps = engine.read(MESHES / "pybaqus" / "discontinuous_numbering_2D.fil")
-    assert gaps.cell_data["S"][0].shape == (2, 4, 3)
+    assert gaps.cell_data["S"][0].shape == (2, 12)
+    np.testing.assert_array_equal(gaps.field_data["abaqus:layout:S"], [4, 3])
 
 
 def test_truncated_binary_is_refused(engine, tmp_path):
