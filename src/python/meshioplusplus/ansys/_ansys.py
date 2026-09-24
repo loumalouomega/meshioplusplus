@@ -12,8 +12,10 @@ from their faces: the right-hand normal of ``n0 .. nk`` points into ``c0`` (in
 cell carries its zone id in ``cell_data["ansys:zone"]``, and every zone is a
 cell region named from its ``(39 ...)``/``(45 ...)`` declaration.
 
-A cell section with a connectivity body is meshio's own (legacy) layout, the
-one :func:`write` produces; such a file reads as before, cells only.
+A cell section with a connectivity body is meshio's old (legacy) layout, which
+Fluent itself cannot read; such a file reads as before, cells only.
+:func:`write` writes faces: every face once, with ``c0``/``c1``, zone by zone
+(the ``ansys:zone`` values, else one per block), named from the regions.
 """
 
 import re
@@ -28,6 +30,7 @@ from .._face_cells import polygon_from_edges, reconstruct_cell
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
 from .._regions import Region
+from .._skin import _CELL_FACES
 
 # Cell element types (zone header field 4) with a fixed node count.
 _CELL_TYPES = {
@@ -379,77 +382,428 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
     return mesh
 
 
+def _element_type(cell_type):
+    """Fluent element type of a cell zone (12): 7 is a polyhedral (3-D) or
+    polygonal (2-D) cell, defined by its faces."""
+    for prefix, code in (
+        ("triangle", 1),
+        ("tetra", 2),
+        ("quad", 3),
+        ("hexahedron", 4),
+        ("pyramid", 5),
+        ("wedge", 6),
+    ):
+        if cell_type.startswith(prefix):
+            return code
+    return 7
+
+
+_LINEAR = {
+    "triangle",
+    "tetra",
+    "quad",
+    "hexahedron",
+    "pyramid",
+    "wedge",
+    "polygon",
+    "line",
+}
+
+
+def _is_linear(cell_type):
+    return (
+        cell_type in _LINEAR
+        or cell_type.startswith("polygon")
+        or cell_type.startswith("polyhedron")
+    )
+
+
+def _block_dim(block):
+    if block.type.startswith("polyhedron"):
+        return 3
+    if block.type.startswith("polygon"):
+        return 2
+    return block.dim
+
+
+def _ring(block, cell):
+    """The corner ring of a 2-D cell (a surface facet in 3-D, a cell in 2-D)."""
+    row = [int(v) for v in block.data[cell]]
+    t = block.type
+    if t.startswith("triangle"):
+        return row[:3]
+    if t.startswith("quad"):
+        return row[:4]
+    if t.startswith("line"):
+        return row[:2]
+    return row
+
+
+def _signed_volume(rings, points):
+    """Signed volume enclosed by ``rings`` (positive when they wind outward)."""
+    nodes = sorted({n for r in rings for n in r})
+    c = points[nodes].mean(axis=0)
+    vol = 0.0
+    for r in rings:
+        p = points[r] - c
+        f = p.mean(axis=0)
+        for i in range(len(r)):
+            a, b = p[i], p[(i + 1) % len(r)]
+            vol += float(np.dot(np.cross(a, b), f))
+    return vol / 6.0
+
+
+def _orient(rings, points):
+    """``orient_rings``: wind the rings of one cell consistently (a BFS over
+    shared edges from face 0), then all outward. Left as given when the rings
+    are not a closed, orientable surface."""
+    uses = defaultdict(list)
+    for f, r in enumerate(rings):
+        if len(r) < 3:
+            return rings
+        for i in range(len(r)):
+            a, b = r[i], r[(i + 1) % len(r)]
+            if a == b:
+                return rings
+            uses[(min(a, b), max(a, b))].append((f, a < b))
+    if any(len(u) != 2 for u in uses.values()):
+        return rings
+    flip = [-1] * len(rings)
+    flip[0] = 0
+    stack = [0]
+    visited = 0
+    while stack:
+        f = stack.pop()
+        visited += 1
+        r = rings[f]
+        for i in range(len(r)):
+            a, b = r[i], r[(i + 1) % len(r)]
+            u = uses[(min(a, b), max(a, b))]
+            mine = u[0] if u[0][0] == f and u[0][1] == (a < b) else u[1]
+            other = u[1] if mine is u[0] else u[0]
+            if other[0] == f:
+                return rings
+            mine_fwd = mine[1] != (flip[f] == 1)
+            want = 1 if other[1] == mine_fwd else 0
+            if flip[other[0]] == -1:
+                flip[other[0]] = want
+                stack.append(other[0])
+            elif flip[other[0]] != want:
+                return rings
+    if visited != len(rings):
+        return rings
+    out = [r[::-1] if flip[k] == 1 else r for k, r in enumerate(rings)]
+    if _signed_volume(out, points) < 0.0:
+        out = [r[::-1] for r in out]
+    return out
+
+
+def _cell_rings(block, cell):
+    """The outward (on the reference element) face rings of a volume cell."""
+    if block.type.startswith("polyhedron"):
+        return [[int(v) for v in face] for face in block.data[cell]]
+    row = block.data[cell]
+    return [
+        [int(row[i]) for i in local[:ncorner]]
+        for _, ncorner, local in _CELL_FACES[block.type]
+    ]
+
+
+def _name(name):
+    name = "".join("_" if c in ' \t()"' else c for c in name)
+    return name or "zone"
+
+
 def write(filename, mesh, binary=True):
+    """Write a Fluent mesh (``write_ansys`` in ansys.cpp, byte for byte).
+
+    The cells are the blocks of the mesh's highest dimension (2 or 3), written
+    as faces with ``c0``/``c1``; blocks one dimension lower name boundary zones;
+    anything else is dropped with a warning.
+    """
+    points = np.asarray(mesh.points, dtype=np.float64)
+    npoints, pdim = points.shape
+    if pdim not in (2, 3):
+        raise WriteError("Fluent: can only write points of dimension 2 or 3")
+    dims = [_block_dim(b) for b in mesh.cells]
+    dim = max(dims, default=0)
+    if dim < 2:
+        raise WriteError("Fluent: the mesh has no 2-D or 3-D cells")
+    if dim == 3 and pdim != 3:
+        raise WriteError("Fluent: 3-D cells need 3-D points")
+    bases = np.concatenate([[0], np.cumsum([len(b) for b in mesh.cells])]).astype(
+        np.int64
+    )
+    zones_data = mesh.cell_data.get("ansys:zone")
+
+    def zone_value(b, i):
+        if zones_data is None or i >= len(zones_data[b]):
+            return 0
+        return max(int(zones_data[b][i]), 0)
+
+    faces = []  # [nodes, c0, c1] with compact cell ids, -1 for none
+    cell_to_global = []
+    cell_block = []
+    surface_blocks = []
+    dropped = 0
+    if dim == 3:
+        seen = {}
+        for b, block in enumerate(mesh.cells):
+            volume = block.type.startswith("polyhedron") or block.type in _CELL_FACES
+            if not volume:
+                if dims[b] == 2:
+                    surface_blocks.append(b)
+                else:
+                    dropped += 1
+                continue
+            for i in range(len(block)):
+                c = len(cell_to_global)
+                cell_to_global.append(int(bases[b]) + i)
+                cell_block.append(b)
+                for ring in _orient(_cell_rings(block, i), points):
+                    key = tuple(sorted(ring))
+                    f = seen.get(key)
+                    if f is None:
+                        seen[key] = len(faces)
+                        # stored outward from the owner; Fluent's normal points into c0
+                        faces.append([ring[::-1], c, -1])
+                    elif faces[f][2] < 0:
+                        faces[f][2] = c
+    else:
+        edge_of = {}
+        for b, block in enumerate(mesh.cells):
+            if dims[b] != 2:
+                if dims[b] == 1:
+                    surface_blocks.append(b)
+                else:
+                    dropped += 1
+                continue
+            for i in range(len(block)):
+                ring = _ring(block, i)
+                area = 0.0
+                for k in range(len(ring)):
+                    p, q = ring[k], ring[(k + 1) % len(ring)]
+                    area += points[p, 0] * points[q, 1] - points[q, 0] * points[p, 1]
+                if area < 0.0:
+                    ring = ring[::-1]
+                c = len(cell_to_global)
+                cell_to_global.append(int(bases[b]) + i)
+                cell_block.append(b)
+                # counter-clockwise: an edge a -> b has the cell on its left (c0)
+                for k in range(len(ring)):
+                    a, e = ring[k], ring[(k + 1) % len(ring)]
+                    key = (min(a, e), max(a, e))
+                    f = edge_of.get(key)
+                    if f is None:
+                        edge_of[key] = len(faces)
+                        faces.append([[a, e], c, -1])
+                    elif faces[f][2] < 0:
+                        faces[f][2] = c
+    if not cell_to_global:
+        raise WriteError("Fluent: the mesh has no cells Fluent can hold")
+    if dropped:
+        warn(f"Fluent: {dropped} cell block(s) of other dimensions are not written")
+    quadratic = sum(
+        1 for b in sorted(set(cell_block)) if not _is_linear(mesh.cells[b].type)
+    )
+    if quadratic:
+        warn(
+            f"Fluent: cells are linear; the mid-side nodes of {quadratic} block(s) are not used"
+        )
+
+    # zones: ansys:zone values are kept; the rest get fresh ids
+    used = set()
+    cell_zone_id = []
+    for c, g in enumerate(cell_to_global):
+        z = zone_value(cell_block[c], g - int(bases[cell_block[c]]))
+        cell_zone_id.append(z)
+        if z:
+            used.add(z)
+    cell_ids_used = set(used)
+    surface_explicit = {}
+    for b in surface_blocks:
+        for i in range(len(mesh.cells[b])):
+            z = zone_value(b, i)
+            if z and z not in cell_ids_used:
+                surface_explicit[(b, i)] = z
+                used.add(z)
+    state = {"next": max(used) + 1 if used else 1}
+
+    def fresh():
+        while state["next"] in used:
+            state["next"] += 1
+        used.add(state["next"])
+        state["next"] += 1
+        return state["next"] - 1
+
+    block_zone = {}
+    for c in range(len(cell_to_global)):
+        if cell_zone_id[c] == 0:
+            if cell_block[c] not in block_zone:
+                block_zone[cell_block[c]] = fresh()
+            cell_zone_id[c] = block_zone[cell_block[c]]
+
+    cell_zones = []  # [id, type, global cells, dim, members]
+    pos = {}
+    for c, z in enumerate(cell_zone_id):
+        if z not in pos:
+            pos[z] = len(cell_zones)
+            cell_zones.append([z, "fluid", [], dim, []])
+        cell_zones[pos[z]][4].append(c)
+        cell_zones[pos[z]][2].append(cell_to_global[c])
+    fluent_cell = [0] * len(cell_to_global)
+    n = 1
+    for zone in cell_zones:
+        for c in zone[4]:
+            fluent_cell[c] = n
+            n += 1
+
+    face_zone = [0] * len(faces)
+    face_zones = [[fresh(), "interior", [], dim - 1, []]]
+    face_zone_pos = {}
+    by_key = {}
+    for f, face in enumerate(faces):
+        if face[2] < 0:
+            by_key.setdefault(tuple(sorted(face[0])), f)
+    unmatched = 0
+    for b in surface_blocks:
+        block_id = 0
+        for i in range(len(mesh.cells[b])):
+            f = by_key.get(tuple(sorted(_ring(mesh.cells[b], i))))
+            if f is None:
+                unmatched += 1
+                continue
+            if face_zone[f]:
+                continue
+            z = surface_explicit.get((b, i))
+            if z is None:
+                if not block_id:
+                    block_id = fresh()
+                z = block_id
+            face_zone[f] = z
+            if z not in face_zone_pos:
+                face_zone_pos[z] = len(face_zones)
+                face_zones.append([z, "wall", [], dim - 1, []])
+            face_zones[face_zone_pos[z]][2].append(int(bases[b]) + i)
+    if unmatched:
+        warn(
+            f"Fluent: {unmatched} facet cell(s) are not on the boundary of the cells "
+            "and are not written"
+        )
+    default_wall = 0
+    for f, face in enumerate(faces):
+        if face[2] >= 0:
+            face_zones[0][4].append(f)
+            continue
+        if not face_zone[f]:
+            if not default_wall:
+                default_wall = fresh()
+                face_zone_pos[default_wall] = len(face_zones)
+                face_zones.append([default_wall, "wall", [], dim - 1, []])
+            face_zone[f] = default_wall
+        face_zones[face_zone_pos[face_zone[f]]][4].append(f)
+    node_zone = fresh()
+
+    def zone_name(zone):
+        zid, ztype, members, zdim, _ = zone
+        for r in mesh.regions:
+            if r.kind == "cell" and r.tag == zid and r.dim == zdim:
+                return _name(r.name)
+        want = sorted(members)
+        if want:
+            for r in mesh.regions:
+                if r.kind == "cell" and len(r.entries) == len(want):
+                    if np.array_equal(np.asarray(r.entries), want):
+                        return _name(r.name)
+        return f"{ztype}_{zid}"
+
+    other_cell_data = [k for k in mesh.cell_data if k != "ansys:zone"]
+    if mesh.point_data or other_cell_data or mesh.field_data:
+        _provenance.note("data-dropped", "a Fluent mesh file holds no data arrays")
+
+    def hx(v):
+        return f"{v:x}"
+
     with open_file(filename, "wb") as fh:
-        # header
-        fh.write(
-            f'(1 "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}")\n'.encode()
+        out = []
+        out.append(f'(1 "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}")\n')
+        out.append(f"(2 {dim})\n")
+        out.append(f"(10 (0 1 {hx(npoints)} 0 {dim}))\n")
+        out.append(f"(13 (0 1 {hx(len(faces))} 0))\n")
+        out.append(f"(12 (0 1 {hx(len(cell_to_global))} 0))\n")
+        out.append(
+            f"({'3010' if binary else '10'} ({hx(node_zone)} 1 {hx(npoints)} 1 {dim})"
         )
-
-        # dimension
-        num_points, dim = mesh.points.shape
-        if dim not in [2, 3]:
-            raise WriteError(f"Can only write dimension 2, 3, got {dim}.")
-        fh.write((f"(2 {dim})\n").encode())
-
-        # total number of nodes
-        first_node_index = 1
-        fh.write((f"(10 (0 {first_node_index:x} {num_points:x} 0))\n").encode())
-
-        # total number of cells
-        total_num_cells = sum(len(c) for c in mesh.cells)
-        fh.write((f"(12 (0 1 {total_num_cells:x} 0))\n").encode())
-
-        # Write nodes
-        key = "3010" if binary else "10"
-        fh.write(
-            f"({key} (1 {first_node_index:x} {num_points:x} 1 {dim:x})(\n".encode()
-        )
+        fh.write("".join(out).encode())
         if binary:
-            mesh.points.tofile(fh)
-            fh.write(b"\n)")
-            fh.write(b"End of Binary Section 3010)\n")
+            fh.write(b"\n(")
+            fh.write(np.ascontiguousarray(points[:, :dim], dtype="<f8").tobytes())
+            fh.write(b")\nEnd of Binary Section 3010)\n")
         else:
-            np.savetxt(fh, mesh.points, fmt="%.16e")
+            fh.write(b"(\n")
+            fh.write(
+                "".join(
+                    " ".join(f"{v:.16e}" for v in p) + "\n" for p in points[:, :dim]
+                ).encode()
+            )
             fh.write(b"))\n")
 
-        # Write cells
-        meshio_to_ansys_type = {
-            # "mixed": 0,
-            "triangle": 1,
-            "tetra": 2,
-            "quad": 3,
-            "hexahedron": 4,
-            "pyramid": 5,
-            "wedge": 6,
-            # "polyhedral": 7,
-        }
-        first_index = 0
-        binary_dtypes = {
-            # np.int16 is not allowed
-            np.dtype("int32"): "2012",
-            np.dtype("int64"): "3012",
-        }
-        for cell_block in mesh.cells:
-            cell_type = cell_block.type
-            values = cell_block.data
-            key = binary_dtypes[values.dtype] if binary else "12"
-            last_index = first_index + len(values) - 1
-            try:
-                ansys_cell_type = meshio_to_ansys_type[cell_type]
-            except KeyError:
-                legal_keys = ", ".join(meshio_to_ansys_type.keys())
-                raise KeyError(
-                    f"Illegal ANSYS cell type '{cell_type}'. (legal: {legal_keys})"
-                )
-            fh.write(
-                f"({key} (1 {first_index:x} {last_index:x} 1 {ansys_cell_type})(\n".encode()
-            )
+        def write_ints(key, head, rows):
             if binary:
-                (values + first_node_index).tofile(fh)
-                fh.write(b"\n)")
-                fh.write((f"End of Binary Section {key})\n").encode())
+                fh.write(f"(20{key} ({head})\n(".encode())
+                flat = [v for row in rows for v in row]
+                if flat and max(flat) > np.iinfo(np.int32).max:
+                    raise WriteError(
+                        "Fluent: an id does not fit a binary 32-bit section"
+                    )
+                fh.write(np.asarray(flat, dtype="<i4").tobytes())
+                fh.write(f")\nEnd of Binary Section 20{key})\n".encode())
+                return
+            text = [f"({key} ({head})(\n"]
+            text.extend(" ".join(hx(v) for v in row) + "\n" for row in rows)
+            text.append("))\n")
+            fh.write("".join(text).encode())
+
+        first = 1
+        for zid, _, _, _, members in cell_zones:
+            types = [_element_type(mesh.cells[cell_block[c]].type) for c in members]
+            mixed = any(t != types[0] for t in types)
+            last = first + len(members) - 1
+            head = f"{hx(zid)} {hx(first)} {hx(last)} 1 {hx(0 if mixed else types[0])}"
+            if mixed:
+                write_ints("12", head, [[t] for t in types])
             else:
-                np.savetxt(fh, values + first_node_index, fmt="%x")
-                fh.write(b"))\n")
-            first_index = last_index + 1
+                fh.write(f"(12 ({head}))\n".encode())
+            first = last + 1
+
+        first = 1
+        for zid, ztype, _, _, members in face_zones:
+            if not members:
+                continue
+            sizes = [len(faces[f][0]) for f in members]
+            uniform = all(s == sizes[0] for s in sizes)
+            if uniform and 2 <= sizes[0] <= 4:
+                ftype = sizes[0]
+            else:
+                ftype = 5 if max(sizes) > 4 else 0
+            last = first + len(members) - 1
+            bc = "2" if ztype == "interior" else "3"
+            head = f"{hx(zid)} {hx(first)} {hx(last)} {bc} {hx(ftype)}"
+            rows = []
+            for f in members:
+                nodes, c0, c1 = faces[f]
+                row = [len(nodes)] if ftype in (0, 5) else []
+                row.extend(v + 1 for v in nodes)
+                row.append(fluent_cell[c0])
+                row.append(0 if c1 < 0 else fluent_cell[c1])
+                rows.append(row)
+            write_ints("13", head, rows)
+            first = last + 1
+
+        names = []
+        for zone in cell_zones:
+            names.append(f"(45 ({zone[0]} fluid {zone_name(zone)})())\n")
+        for zone in face_zones:
+            if zone[4]:
+                names.append(f"(45 ({zone[0]} {zone[1]} {zone_name(zone)})())\n")
+        fh.write("".join(names).encode())

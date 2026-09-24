@@ -8,27 +8,70 @@ from meshioplusplus.ansys import _ansys
 
 from . import helpers
 
+_ROUND_TRIP = [
+    helpers.tri_mesh,
+    helpers.tri_mesh_2d,
+    helpers.quad_mesh,
+    helpers.tri_quad_mesh,
+    helpers.tet_mesh,
+    helpers.hex_mesh,
+    helpers.pyramid_mesh,
+    helpers.wedge_mesh,
+]
 
-@pytest.mark.parametrize(
-    "mesh",
-    [
-        helpers.empty_mesh,
-        helpers.tri_mesh,
-        helpers.tri_mesh_2d,
-        helpers.quad_mesh,
-        helpers.tri_quad_mesh,
-        helpers.tet_mesh,
-        helpers.hex_mesh,
-        helpers.pyramid_mesh,
-        helpers.wedge_mesh,
-    ],
-)
+
+def _cell_set(mesh, dim):
+    """(type, sorted nodes) of every cell of dimension ``dim``, as points."""
+    out = []
+    for block in mesh.cells:
+        if block.dim != dim:
+            continue
+        for row in np.asarray(block.data):
+            out.append(
+                (block.type, tuple(sorted(map(tuple, mesh.points[row].tolist()))))
+            )
+    return sorted(out)
+
+
+@pytest.mark.parametrize("mesh", _ROUND_TRIP)
 @pytest.mark.parametrize("binary", [False, True])
-def test(mesh, binary, tmp_path):
-    def writer(*args, **kwargs):
-        return meshioplusplus.ansys.write(*args, binary=binary, **kwargs)
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test(mesh, binary, engine, tmp_path):
+    """A written file reads back as the same cells (rebuilt from their faces)
+    plus the boundary facets; a planar mesh as 2-D points."""
+    path = tmp_path / "out.msh"
+    if engine == "core":
+        meshioplusplus.ansys.write(path, mesh, binary=binary)
+    else:
+        _ansys.write(path, mesh, binary=binary)
+    out = meshioplusplus.ansys.read(path)
+    dim = max(b.dim for b in mesh.cells)
+    assert out.points.shape[1] == dim
+    points = np.asarray(mesh.points)[:, :dim]
+    np.testing.assert_allclose(out.points, points, rtol=0, atol=1e-15)
+    ref = meshioplusplus.Mesh(points, mesh.cells)
+    assert _cell_set(out, dim) == _cell_set(ref, dim)
+    # every boundary facet comes back as a (dim - 1) cell in a wall zone
+    assert any(b.dim == dim - 1 for b in out.cells)
+    assert "ansys:zone" in out.cell_data
 
-    helpers.write_read(tmp_path, writer, meshioplusplus.ansys.read, mesh, 1.0e-15)
+
+def test_engines_write_the_same_bytes(tmp_path):
+    for mesh in _ROUND_TRIP + [meshioplusplus.read(p) for p in sorted(_FLUENT_FILES())]:
+        for binary in (False, True):
+            a, b = tmp_path / "a.msh", tmp_path / "b.msh"
+            meshioplusplus.ansys.write(a, mesh, binary=binary)
+            _ansys.write(b, mesh, binary=binary)
+            assert a.read_bytes() == b.read_bytes()
+
+
+def test_an_empty_mesh_is_refused(tmp_path):
+    with pytest.raises(meshioplusplus.WriteError):
+        meshioplusplus.ansys.write(tmp_path / "e.msh", helpers.empty_mesh)
+
+
+def _FLUENT_FILES():
+    return (pathlib.Path(__file__).resolve().parent / "meshes" / "ansys").glob("*.msh")
 
 
 # --- malformed-input / error-path coverage ---
