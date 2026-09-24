@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
@@ -294,5 +295,71 @@ TEST(Z88, AuroraSetsBecomeRegions) {
     EXPECT_EQ(mesh.Region(fix).mTag, 7);
     EXPECT_EQ(mesh.Region(fix).NumEntries(), 2u);
     EXPECT_EQ(mesh.Region(fix).Entries()[1], 3);
+    fs::remove_all(dir);
+}
+
+TEST(Z88, Type19LagrangeQuadSurfaceLoadsAndSets) {
+    const fs::path dir = deck_dir();
+    // One 16-node plate on [0, 3]^2: Z88 node 4i + j + 1 at (i, j).
+    std::string s = "2 16 1 48 0\n";
+    for (int n = 0; n < 16; ++n)
+        s += std::to_string(n + 1) + " 3 " + std::to_string(n / 4) + " " + std::to_string(n % 4) +
+             "\n";
+    s += "1 19\n";
+    for (int n = 0; n < 16; ++n)
+        s += std::to_string(n + 1) + (n == 15 ? "\n" : " ");
+    write(dir / "z88i1.txt", s);
+    write(dir / "z88i5.txt", "2\n1 -2.5\n7 1.0\n");  // element 7 does not exist
+    Mesh mesh = meshioplusplus::read_z88((dir / "z88i1.txt").string());
+    ASSERT_EQ(mesh.NumCellBlocks(), 1u);
+    EXPECT_EQ(mesh.Cells(0).Type(), "VTK_LAGRANGE_QUADRILATERAL");
+    ASSERT_EQ(mesh.Cells(0).NodesPerCell(), 16u);
+    // VTK's order-3 Lagrange quad: corners, edges along r, s, r, s, interior.
+    const int lattice[16][2] = {{0, 0}, {3, 0}, {3, 3}, {0, 3}, {1, 0}, {2, 0}, {3, 1}, {3, 2},
+                                {1, 3}, {2, 3}, {0, 1}, {0, 2}, {1, 1}, {2, 1}, {1, 2}, {2, 2}};
+    const auto& conn = mesh.Cells(0).Conn();
+    const std::size_t dim = mesh.PointDim();
+    for (int k = 0; k < 16; ++k) {
+        const auto p =
+            static_cast<std::size_t>(detail::read_int(conn, static_cast<std::size_t>(k)));
+        EXPECT_EQ(detail::read_double(mesh.Points(), dim * p), lattice[k][0]) << k;
+        EXPECT_EQ(detail::read_double(mesh.Points(), dim * p + 1), lattice[k][1]) << k;
+    }
+    const auto& load = mesh.FieldData("z88:surface_load");
+    ASSERT_EQ(load.Shape(), (std::vector<std::size_t>{1, 3}));
+    EXPECT_EQ(detail::read_double(load, 0), -2.5);
+    EXPECT_TRUE(std::isnan(detail::read_double(load, 1)));
+    const auto& refs = mesh.FieldData("z88:surface_load:cells");
+    EXPECT_EQ(detail::read_int(refs, 0), 0);
+    EXPECT_EQ(detail::read_int(refs, 1), -1);
+
+    meshioplusplus::NDArray cells(meshioplusplus::DType::Int64, {1});
+    cells.As<std::int64_t>()[0] = 0;
+    mesh.AddRegion(
+        meshioplusplus::Region("plate", meshioplusplus::RegionKind::Cell, 2, 3, std::move(cells)));
+    meshioplusplus::NDArray fix(meshioplusplus::DType::Int64, {2});
+    fix.As<std::int64_t>()[0] = 0;
+    fix.As<std::int64_t>()[1] = 3;
+    mesh.AddRegion(
+        meshioplusplus::Region("fix", meshioplusplus::RegionKind::Point, -1, 3, std::move(fix)));
+    const fs::path out = dir / "out";
+    fs::create_directories(out);
+    meshioplusplus::write_z88((out / "z88i1.txt").string(), mesh);
+    std::ifstream i5(out / "z88i5.txt");
+    const std::string loads((std::istreambuf_iterator<char>(i5)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(loads, "1\n1 -2.5000000000000000E+00\n");
+    std::ifstream sets_in(out / "z88sets.txt");
+    const std::string sets((std::istreambuf_iterator<char>(sets_in)),
+                           std::istreambuf_iterator<char>());
+    // points first; the cell set, second to claim id 3, gets 1
+    EXPECT_EQ(sets,
+              "2\n#NODES CONSTRAINT 3 2 \"fix\"\n         1          4 \n"
+              "#ELEMENTS MATERIAL 1 1 \"plate\"\n         1 \n");
+    const Mesh back = meshioplusplus::read_z88((out / "z88i1.txt").string());
+    ASSERT_EQ(back.Cells(0).Type(), "VTK_LAGRANGE_QUADRILATERAL");
+    for (std::size_t k = 0; k < 16; ++k)
+        EXPECT_EQ(detail::read_int(back.Cells(0).Conn(), k), detail::read_int(conn, k));
+    EXPECT_EQ(back.NumRegions(), 2u);
+    EXPECT_EQ(detail::read_double(back.FieldData("z88:surface_load"), 0), -2.5);
     fs::remove_all(dir);
 }

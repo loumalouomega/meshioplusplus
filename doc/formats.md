@@ -555,7 +555,7 @@ meshioplusplus.mfem.write(filename, mesh, grid_functions=False)
 
 ### Z88 (`z88i1.txt`)
 
-`meshioplusplus.z88.write(filename, mesh, stubs=False)` — the Z88OS v15 structure file. The format follows the file name `z88i1.txt`; any other name needs `file_format="z88"`. Element types come from `z88:type`, else from the cell type; regions and data arrays are dropped. `stubs=True` also writes empty `z88i2.txt` and `z88i5.txt`. See [`z88.md`](./formats/z88.md#writing).
+`meshioplusplus.z88.write(filename, mesh, stubs=False)` — the Z88OS v15 structure file. The format follows the file name `z88i1.txt`; any other name needs `file_format="z88"`. Element types come from `z88:type`, else from the cell type; the `z88:` deck arrays (constraints, materials, element parameters, integration orders, surface loads) are written back beside it, and cell and point regions as Z88Aurora's `z88sets.txt`; other data arrays and side regions are dropped. `stubs=True` also writes empty `z88i2.txt` and `z88i5.txt` when there is nothing to put in them. See [`z88.md`](./formats/z88.md#writing).
 
 ### Abaqus (`.inp`)
 

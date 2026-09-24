@@ -50,7 +50,7 @@ _TYPES = {
     16: (10, "tetra10", 10, 3),
     17: (4, "tetra", 4, 3),
     18: (6, "triangle6", 6, 3),
-    19: (16, "quad", 4, 3),
+    19: (16, "VTK_LAGRANGE_QUADRILATERAL", 16, 3),
     20: (8, "quad8", 8, 3),
     21: (16, "hexahedron", 8, 3),
     22: (12, "wedge", 6, 3),
@@ -60,12 +60,17 @@ _TYPES = {
 }
 
 # Corner slots of the types that keep only their corners, when not the leading
-# nodes: 19 is a 4x4 lattice row by row (corners 1, 13, 16, 4 counter-clockwise),
-# 21/22 two quad8/tri6 layers.
+# nodes: 21/22 are two quad8/tri6 layers, the upper one first (the wedge takes
+# the lower triangle first, as meshio++'s wedge does; the hexahedron goes
+# through the Z88 hexahedron table). Type 19 is kept whole as a cubic
+# Lagrange quad: Z88 numbers its 4x4 lattice with r slow and s fast (node
+# 4i + j + 1 at the i-th r and the j-th s, as its shape functions place them;
+# corners 1, 13, 16, 4 counter-clockwise), listed here in VTK's order (corners,
+# the edges r, s, r, s, then the interior).
 _CORNERS = {
-    19: [0, 12, 15, 3],
+    19: [0, 12, 15, 3, 4, 8, 13, 14, 7, 11, 1, 2, 5, 9, 6, 10],
     21: [0, 1, 2, 3, 8, 9, 10, 11],
-    22: [0, 1, 2, 6, 7, 8],
+    22: [6, 7, 8, 0, 1, 2],
 }
 
 _SOLID = (1, 10, 16, 17)
@@ -388,6 +393,69 @@ def _attach_sets(mesh, path, node_index, element_index, cell_dim):
     mesh.regions = regions
 
 
+def _load_layout(code):
+    """What a `z88i5.txt` line holds for an element type, as Z88R reads it
+    (ri588i.c): the number of values (pressure, then the tangential shears in r
+    and s) and of nodes naming the loaded edge or face; (0, 0) for a type that
+    takes no surface load. Plates and flat shells take a pressure alone."""
+    if code in (7, 8, 14, 15):
+        return 2, 3
+    if code == 17:
+        return 1, 3
+    if code in (16, 22):
+        return 1, 6
+    if code in (10, 21):
+        return 3, 8
+    if code == 1:
+        return 3, 4
+    if code in (11, 12):
+        return 2, 4
+    if code in (18, 19, 20, 23, 24):
+        return 1, 0
+    return 0, 0
+
+
+def _attach_loads(mesh, path, node_index, element_index, cell_code):
+    """`z88i5.txt`: after a count, one surface load per line, `element values
+    nodes` as `_load_layout` says. Kept as field data: `z88:surface_load`
+    (loads x 3: pressure, shear r, shear s; NaN where the type has none) and
+    `z88:surface_load:cells` (loads x 9: the cell, then up to 8 points, -1 past
+    the loaded edge or face's nodes)."""
+    lines = [t for t in (line.split() for line in _lines(_read_text(path))) if t]
+    count = _int(lines[0][0]) if lines else None
+    if not count or count <= 0:
+        return
+    values, refs = [], []
+    skipped = 0
+    for t in lines[1 : 1 + count]:
+        cell = element_index.get(_int(t[0]))
+        if cell is None:
+            skipped += 1
+            continue
+        nv, nn = _load_layout(cell_code[cell])
+        if nv == 0 or len(t) < 1 + nv + nn:
+            skipped += 1
+            continue
+        v = [_real(x) for x in t[1 : 1 + nv]]
+        nodes = [node_index.get(_int(x)) for x in t[1 + nv : 1 + nv + nn]]
+        if any(x is None for x in v) or any(x is None for x in nodes):
+            skipped += 1
+            continue
+        values.append(v + [math.nan] * (3 - nv))
+        refs.append([cell] + nodes + [-1] * (8 - nn))
+    if skipped:
+        warn(
+            f"Z88: {skipped} surface load(s) of '{path}' name no element that takes "
+            "one, or are malformed; skipped"
+        )
+    mesh.field_data["z88:surface_load"] = np.array(values, dtype=np.float64).reshape(
+        -1, 3
+    )
+    mesh.field_data["z88:surface_load:cells"] = np.array(refs, dtype=np.int64).reshape(
+        -1, 9
+    )
+
+
 def _attach_inputs(mesh, directory, element_index, block_start):
     ncells = block_start[-1]
 
@@ -606,6 +674,9 @@ def read(filename, results=True):
         if sets:
             cell_dim = [topological_dimension[t] for t, conn in cells for _ in conn]
             _attach_sets(mesh, sets, node_index, element_index, cell_dim)
+        i5 = _sibling(directory, "z88i5.txt")
+        if i5 and cell_code:
+            _attach_loads(mesh, i5, node_index, element_index, cell_code)
     if results and directory is not None:
         o2 = _sibling(directory, "z88o2.txt")
         if o2:
@@ -653,6 +724,8 @@ def write(filename, mesh, stubs=False):
                 info
                 and info[2] == info[0]
                 and info[1] == block.type
+                and np.asarray(block.data).reshape(len(block.data), -1).shape[1]
+                == info[0]
                 and int(w) in _NEEDS_3D
             ):
                 needs_3d = True
@@ -663,7 +736,15 @@ def write(filename, mesh, stubs=False):
     nelem = 0
     for b, block in enumerate(mesh.cells):
         ragged = isinstance(block.data, list)
+        width = (
+            0
+            if ragged
+            else np.asarray(block.data).reshape(len(block.data), -1).shape[1]
+        )
         fallback = 0 if ragged else _default_code(block.type, ndim)
+        # A cubic Lagrange quad is a 16-node plate (type 19), in a 2-D file.
+        if block.type == "VTK_LAGRANGE_QUADRILATERAL":
+            fallback = 19 if width == 16 and ndim == 2 else 0
         want = mesh.cell_data["z88:type"][b] if has_type and not ragged else None
         row = []
         for r in range(len(block.data)):
@@ -671,7 +752,12 @@ def write(filename, mesh, stubs=False):
             if want is not None:
                 w = int(want[r])
                 info = _TYPES.get(w)
-                if info and info[2] == info[0] and info[1] == block.type:
+                if (
+                    info
+                    and info[2] == info[0]
+                    and info[1] == block.type
+                    and width == info[0]
+                ):
                     code = w
             if not code:
                 dropped.add(block.type)
@@ -682,12 +768,9 @@ def write(filename, mesh, stubs=False):
     for t in sorted(dropped):
         warn(f"Z88 writer: '{t}' cells have no Z88 element type here; dropped")
         _provenance.note("cells-dropped", f"Z88 has no element type for '{t}' cells")
-    regions = getattr(mesh, "regions", []) or []
-    if regions:
-        warn(f"Z88 structure files hold no groups; {len(regions)} region(s) dropped")
-        _provenance.note("regions-dropped", "a Z88 structure file holds no groups")
     deck = [n for n in _DECK_POINT if n in mesh.point_data]
     deck += [n for n in _DECK_CELL if n in mesh.cell_data]
+    deck += [n for n in _DECK_FIELD if n in mesh.field_data]
     other = (
         len(mesh.point_data)
         + len(mesh.field_data)
@@ -740,12 +823,19 @@ def write(filename, mesh, stubs=False):
         if isinstance(block.data, list):
             continue
         order = node_order("z88", block.type)
+        # Type 19's lattice slot j holds the cell's node lattice[j].
+        lattice = [0] * 16
+        for j, slot in enumerate(_CORNERS[19]):
+            lattice[slot] = j
         for r, row in enumerate(block.data.tolist()):
             if not codes[b][r]:
                 continue
             ident += 1
             out.append("%9d %5d\n" % (ident, codes[b][r]))
-            src = order.from_meshio if order else range(len(row))
+            if codes[b][r] == 19:
+                src = lattice
+            else:
+                src = order.from_meshio if order else range(len(row))
             out.append(" ".join(str(row[s] + 1) for s in src) + "\n")
     # "\n" on every platform, as the C++ writer: the engines write the same bytes.
     with open_file(filename, "w", newline="\n") as f:
@@ -764,6 +854,7 @@ def write(filename, mesh, stubs=False):
 
 _DECK_POINT = ("z88:bc:u", "z88:bc:f")
 _DECK_CELL = ("z88:material", "z88:E", "z88:nu", "z88:elp", "z88:int")
+_DECK_FIELD = ("z88:surface_load", "z88:surface_load:cells")
 
 
 def _deck_files(mesh, codes, dof):
@@ -859,4 +950,85 @@ def _deck_files(mesh, codes, dof):
             files["z88int.txt"] = f"{len(runs)}\n" + "".join(
                 "%9d %9d %d %d\n" % (a, b, *v) for a, b, v in runs
             )
+    # The written element id of every cell (0: dropped), block-major.
+    written_id, code_of = [], []
+    ident = 0
+    for block in codes:
+        for code in block:
+            ident += 1 if code else 0
+            written_id.append(ident if code else 0)
+            code_of.append(code)
+    values = mesh.field_data.get("z88:surface_load")
+    refs = mesh.field_data.get("z88:surface_load:cells")
+    if values is not None and refs is not None:
+        values = np.asarray(values, dtype=float).reshape(-1, 3)
+        refs = np.asarray(refs, dtype=np.int64).reshape(-1, 9)
+        rows, skipped = [], 0
+        for v, r in zip(values, refs):
+            cell = int(r[0])
+            code = code_of[cell] if 0 <= cell < len(code_of) else 0
+            nv, nn = _load_layout(code)
+            given = next((k for k in range(8) if r[1 + k] < 0), 8)
+            if not code or nv == 0 or given != nn:
+                skipped += 1
+                continue
+            rows.append(
+                str(written_id[cell])
+                + "".join(" %+.16E" % (0.0 if math.isnan(x) else x) for x in v[:nv])
+                + "".join(" %d" % (p + 1) for p in r[1 : 1 + nn])
+                + "\n"
+            )
+        if skipped:
+            warn(
+                f"Z88 writer: {skipped} surface load(s) name a cell that is not "
+                "written, or whose type takes no such load; dropped"
+            )
+        files["z88i5.txt"] = f"{len(rows)}\n" + "".join(rows)
+    # Z88Aurora's sets: element sets from cell regions, node sets from point
+    # regions (Aurora's purposes for them: MATERIAL and CONSTRAINT).
+    # In the core's region order: kind (point, cell, side), name, dim, tag.
+    rank = {"point": 0, "cell": 1, "side": 2}
+    regions = sorted(
+        getattr(mesh, "regions", []) or [],
+        key=lambda r: (rank.get(r.kind, 3), r.name, r.dim, r.tag),
+    )
+    used = {r.tag for r in regions if r.kind in ("cell", "point") and r.tag > 0}
+    claimed = set()
+    nxt = 1
+    sets, dropped = [], 0
+    for region in regions:
+        if region.kind not in ("cell", "point"):
+            dropped += 1
+            continue
+        entries = np.asarray(region.entries, dtype=np.int64).ravel().tolist()
+        if region.kind == "cell":
+            ids = [
+                written_id[k]
+                for k in entries
+                if 0 <= k < len(written_id) and written_id[k]
+            ]
+        else:
+            ids = [k + 1 for k in entries]
+        # The region's tag as the set id, unless another set took it first.
+        tag = int(region.tag)
+        if tag <= 0 or tag in claimed:
+            while nxt in used or nxt in claimed:
+                nxt += 1
+            tag = nxt
+            nxt += 1
+        claimed.add(tag)
+        head = "#ELEMENTS MATERIAL" if region.kind == "cell" else "#NODES CONSTRAINT"
+        lines = [f'{head} {tag} {len(ids)} "{region.name}"\n']
+        for k in range(0, len(ids), 10):
+            lines.append("".join("%10d " % i for i in ids[k : k + 10]) + "\n")
+        sets.append("".join(lines))
+    if dropped:
+        warn(
+            f"Z88 writer: {dropped} region(s) other than cell and point regions dropped"
+        )
+        _provenance.note(
+            "regions-dropped", "Z88Aurora sets hold elements and nodes only"
+        )
+    if sets:
+        files["z88sets.txt"] = f"{len(sets)}\n" + "".join(sets)
     return files

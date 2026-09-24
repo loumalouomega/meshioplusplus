@@ -62,35 +62,51 @@ struct Z88Type {
 
 const Z88Type* z88_type(std::int64_t Code) {
     static const Z88Type types[] = {
-        {1, 8, "hexahedron", 8, 3},   {2, 2, "line", 2, 6},
-        {3, 6, "triangle6", 6, 2},    {4, 2, "line", 2, 3},
-        {5, 2, "line", 2, 6},         {6, 3, "triangle", 3, 2},
-        {7, 8, "quad8", 8, 2},        {8, 8, "quad8", 8, 2},
-        {9, 2, "line", 2, 2},         {10, 20, "hexahedron20", 20, 3},
-        {11, 12, "quad", 4, 2},       {12, 12, "quad", 4, 2},
-        {13, 2, "line", 2, 3},        {14, 6, "triangle6", 6, 2},
-        {15, 6, "triangle6", 6, 2},   {16, 10, "tetra10", 10, 3},
-        {17, 4, "tetra", 4, 3},       {18, 6, "triangle6", 6, 3},
-        {19, 16, "quad", 4, 3},       {20, 8, "quad8", 8, 3},
-        {21, 16, "hexahedron", 8, 3}, {22, 12, "wedge", 6, 3},
-        {23, 8, "quad8", 8, 6},       {24, 6, "triangle6", 6, 6},
+        {1, 8, "hexahedron", 8, 3},
+        {2, 2, "line", 2, 6},
+        {3, 6, "triangle6", 6, 2},
+        {4, 2, "line", 2, 3},
+        {5, 2, "line", 2, 6},
+        {6, 3, "triangle", 3, 2},
+        {7, 8, "quad8", 8, 2},
+        {8, 8, "quad8", 8, 2},
+        {9, 2, "line", 2, 2},
+        {10, 20, "hexahedron20", 20, 3},
+        {11, 12, "quad", 4, 2},
+        {12, 12, "quad", 4, 2},
+        {13, 2, "line", 2, 3},
+        {14, 6, "triangle6", 6, 2},
+        {15, 6, "triangle6", 6, 2},
+        {16, 10, "tetra10", 10, 3},
+        {17, 4, "tetra", 4, 3},
+        {18, 6, "triangle6", 6, 3},
+        {19, 16, "VTK_LAGRANGE_QUADRILATERAL", 16, 3},
+        {20, 8, "quad8", 8, 3},
+        {21, 16, "hexahedron", 8, 3},
+        {22, 12, "wedge", 6, 3},
+        {23, 8, "quad8", 8, 6},
+        {24, 6, "triangle6", 6, 6},
         {25, 2, "line", 2, 6},
     };
     return Code >= 1 && Code <= 25 ? &types[Code - 1] : nullptr;
 }
 
-// Types 11/12/19 (cubic and Lagrange quads) and 21/22 (layered shells) keep
-// their corners: 11/12 list them first; 19 is a 4x4 lattice row by row (its
-// corners 1, 13, 16, 4 run counter-clockwise); 21/22
-// list the corners of one layer, then the other.
+// Types 11/12 (cubic quads) and 21/22 (layered shells) keep their corners:
+// 11/12 list them first; 21/22 list the corners of the upper layer, then the
+// lower one (the wedge takes the lower triangle first, as meshio++'s wedge
+// does; the hexahedron goes through the Z88 hexahedron table).
+// Type 19 is kept whole as a cubic Lagrange quad: Z88 numbers its 4x4 lattice
+// with r slow and s fast (node 4i + j + 1 at the i-th r and the j-th s, as its
+// shape functions place them; corners 1, 13, 16, 4 counter-clockwise), listed
+// here in VTK's order (corners, the edges r, s, r, s, then the interior).
 std::vector<int> z88_corners(int Code) {
     switch (Code) {
         case 19:
-            return {0, 12, 15, 3};
+            return {0, 12, 15, 3, 4, 8, 13, 14, 7, 11, 1, 2, 5, 9, 6, 10};
         case 21:
             return {0, 1, 2, 3, 8, 9, 10, 11};
         case 22:
-            return {0, 1, 2, 6, 7, 8};
+            return {6, 7, 8, 0, 1, 2};
         default:
             return {};
     }
@@ -591,6 +607,112 @@ void z88_attach_sets(Mesh& rMesh, const std::string& rPath,
         log::warn("Z88: {} surface set(s) of '{}' skipped", skipped, rPath);
 }
 
+// What a `z88i5.txt` line holds for an element type, as Z88R reads it
+// (ri588i.c): the number of values (pressure, then the tangential shears in r
+// and s) and of nodes naming the loaded edge or face; {0, 0} for a type that
+// takes no surface load. Plates and flat shells take a pressure alone.
+std::pair<int, int> z88_load_layout(int Code) {
+    switch (Code) {
+        case 7:
+        case 8:
+        case 14:
+        case 15:
+            return {2, 3};
+        case 17:
+            return {1, 3};
+        case 16:
+        case 22:
+            return {1, 6};
+        case 10:
+        case 21:
+            return {3, 8};
+        case 1:
+            return {3, 4};
+        case 11:
+        case 12:
+            return {2, 4};
+        case 18:
+        case 19:
+        case 20:
+        case 23:
+        case 24:
+            return {1, 0};
+        default:
+            return {0, 0};
+    }
+}
+
+// `z88i5.txt`: after a count, one surface load per line, `element values
+// nodes` as `z88_load_layout` says. Kept as field data: `z88:surface_load`
+// (loads x 3: pressure, shear r, shear s; NaN where the type has none) and
+// `z88:surface_load:cells` (loads x 9: the cell, then up to 8 points, -1 past
+// the loaded edge or face's nodes).
+void z88_attach_loads(Mesh& rMesh, const std::string& rPath,
+                      const std::unordered_map<std::int64_t, std::size_t>& rNodeIndex,
+                      const std::unordered_map<std::int64_t, std::size_t>& rElementIndex,
+                      const std::vector<int>& rCellCode) {
+    const std::string text = z88_read_text(rPath);
+    const std::vector<std::string_view> lines = z88_lines(text);
+    std::size_t i = 0;
+    while (i < lines.size() && z88_tokens(lines[i]).empty())
+        ++i;
+    std::int64_t count = 0;
+    if (i >= lines.size() || !z88_int(z88_tokens(lines[i])[0], count) || count <= 0)
+        return;
+    ++i;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> values;
+    std::vector<std::int64_t> refs;
+    std::size_t skipped = 0;
+    for (std::int64_t n = 0; n < count && i < lines.size(); ++i) {
+        const std::vector<std::string_view> t = z88_tokens(lines[i]);
+        if (t.empty())
+            continue;
+        ++n;
+        std::int64_t id = 0;
+        const auto it = z88_int(t[0], id) ? rElementIndex.find(id) : rElementIndex.end();
+        if (it == rElementIndex.end()) {
+            ++skipped;
+            continue;
+        }
+        const auto [nv, nn] = z88_load_layout(rCellCode[it->second]);
+        if (nv == 0 || t.size() < static_cast<std::size_t>(1 + nv + nn)) {
+            ++skipped;
+            continue;
+        }
+        double v[3] = {nan, nan, nan};
+        std::int64_t r[9] = {static_cast<std::int64_t>(it->second), -1, -1, -1, -1, -1, -1, -1, -1};
+        bool ok = true;
+        for (int k = 0; k < nv && ok; ++k)
+            ok = z88_real(t[1 + k], v[k]);
+        for (int k = 0; k < nn && ok; ++k) {
+            std::int64_t node = 0;
+            const auto p = z88_int(t[1 + nv + k], node) ? rNodeIndex.find(node) : rNodeIndex.end();
+            ok = p != rNodeIndex.end();
+            if (ok)
+                r[1 + k] = static_cast<std::int64_t>(p->second);
+        }
+        if (!ok) {
+            ++skipped;
+            continue;
+        }
+        values.insert(values.end(), v, v + 3);
+        refs.insert(refs.end(), r, r + 9);
+    }
+    if (skipped)
+        log::warn(
+            "Z88: {} surface load(s) of '{}' name no element that takes one, or are "
+            "malformed; skipped",
+            skipped, rPath);
+    const std::size_t n = values.size() / 3;
+    NDArray a(DType::Float64, {n, 3});
+    std::copy(values.begin(), values.end(), a.As<double>());
+    NDArray c(DType::Int64, {n, 9});
+    std::copy(refs.begin(), refs.end(), c.As<std::int64_t>());
+    rMesh.AddFieldData("z88:surface_load", std::move(a));
+    rMesh.AddFieldData("z88:surface_load:cells", std::move(c));
+}
+
 // `z88mat.txt` (with the material files it names), `z88elp.txt` and
 // `z88int.txt` as `z88:` cell data.
 void z88_attach_inputs(Mesh& rMesh, const std::filesystem::path& rDir,
@@ -833,8 +955,10 @@ Mesh read_z88(const std::string& rPath, bool Results) {
     std::vector<NDArray> type_blocks;
     for (const std::string& ctype : block_types) {
         const std::vector<std::size_t>& members = by_type[ctype];
-        const std::size_t k =
-            static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(ctype)));
+        const int fixed = cell_type_num_nodes(cell_type_from_name(ctype));
+        const std::size_t k = fixed > 0
+                                  ? static_cast<std::size_t>(fixed)
+                                  : static_cast<std::size_t>(elements[members[0]].mType->mKeep);
         const detail::NodeOrder* order = detail::node_order("z88", ctype);
         NDArray conn(DType::Int64, {members.size(), k});
         NDArray codes(DType::Int64, {members.size()});
@@ -884,6 +1008,9 @@ Mesh read_z88(const std::string& rPath, bool Results) {
                 cell_type_dimension(cell_type_from_name(std::string(mesh.Cells(b).Type()))));
         z88_attach_sets(mesh, sets.string(), node_index, element_index, cell_dim);
     }
+    const fs::path i5 = z88_sibling(dir, "z88i5.txt");
+    if (!i5.empty() && !cell_code.empty())
+        z88_attach_loads(mesh, i5.string(), node_index, element_index, cell_code);
     if (Results) {
         const fs::path o2 = z88_sibling(dir, "z88o2.txt");
         if (!o2.empty())
@@ -1107,6 +1234,110 @@ std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
             files["z88int.txt"] = body;
         }
     }
+    // The written_id element id of every cell (0: dropped), block-major.
+    std::vector<std::int64_t> written_id;
+    {
+        std::int64_t id = 0;
+        for (const auto& block : rCodes)
+            for (const int code : block)
+                written_id.push_back(code ? ++id : 0);
+    }
+    std::vector<int> code_of;
+    for (const auto& block : rCodes)
+        code_of.insert(code_of.end(), block.begin(), block.end());
+    if (rMesh.HasFieldData("z88:surface_load") && rMesh.HasFieldData("z88:surface_load:cells")) {
+        const NDArray& values = rMesh.FieldData("z88:surface_load");
+        const NDArray& refs = rMesh.FieldData("z88:surface_load:cells");
+        const std::size_t n = std::min(values.Size() / 3, refs.Size() / 9);
+        std::string body;
+        std::size_t rows = 0, skipped = 0;
+        for (std::size_t r = 0; r < n; ++r) {
+            const std::int64_t cell = detail::read_int(refs, 9 * r);
+            const int code = cell >= 0 && static_cast<std::size_t>(cell) < written_id.size()
+                                 ? code_of[static_cast<std::size_t>(cell)]
+                                 : 0;
+            const auto [nv, nn] = z88_load_layout(code);
+            int given = 0;
+            while (given < 8 && detail::read_int(refs, 9 * r + 1 + given) >= 0)
+                ++given;
+            if (!code || nv == 0 || given != nn) {
+                ++skipped;
+                continue;
+            }
+            body += std::to_string(written_id[static_cast<std::size_t>(cell)]);
+            for (int k = 0; k < nv; ++k) {
+                const double v = detail::read_double(values, 3 * r + k);
+                detail::snprintf_c(buf, sizeof(buf), " %+.16E", std::isnan(v) ? 0.0 : v);
+                body += buf;
+            }
+            for (int k = 0; k < nn; ++k)
+                body += " " + std::to_string(detail::read_int(refs, 9 * r + 1 + k) + 1);
+            body += '\n';
+            ++rows;
+        }
+        if (skipped)
+            log::warn(
+                "Z88 writer: {} surface load(s) name a cell that is not written_id, or "
+                "whose type takes no such load; dropped",
+                skipped);
+        files["z88i5.txt"] = std::to_string(rows) + "\n" + body;
+    }
+    // Z88Aurora's sets: element sets from cell regions, node sets from point
+    // regions (Aurora's purposes for them: MATERIAL and CONSTRAINT).
+    std::string sets;
+    std::size_t nsets = 0, dropped_regions = 0;
+    std::set<std::int64_t> used, claimed;
+    for (std::size_t g = 0; g < rMesh.NumRegions(); ++g) {
+        const auto& region = rMesh.Region(g);
+        if (region.mKind == RegionKind::Cell || region.mKind == RegionKind::Point)
+            if (region.mTag > 0)
+                used.insert(region.mTag);
+    }
+    std::int64_t next = 1;
+    for (std::size_t g = 0; g < rMesh.NumRegions(); ++g) {
+        const auto& region = rMesh.Region(g);
+        const bool cells = region.mKind == RegionKind::Cell;
+        if (!cells && region.mKind != RegionKind::Point) {
+            ++dropped_regions;
+            continue;
+        }
+        std::vector<std::int64_t> ids;
+        for (std::size_t e = 0; e < region.NumEntries(); ++e) {
+            const std::int64_t k = detail::read_int(region.mEntries, e);
+            if (cells) {
+                if (k >= 0 && static_cast<std::size_t>(k) < written_id.size() &&
+                    written_id[static_cast<std::size_t>(k)])
+                    ids.push_back(written_id[static_cast<std::size_t>(k)]);
+            } else {
+                ids.push_back(k + 1);
+            }
+        }
+        // The region's tag as the set id, unless another set took it first.
+        std::int64_t tag = region.mTag;
+        if (tag <= 0 || !claimed.insert(tag).second) {
+            while (used.count(next) || claimed.count(next))
+                ++next;
+            tag = next++;
+            claimed.insert(tag);
+        }
+        sets += std::string(cells ? "#ELEMENTS MATERIAL " : "#NODES CONSTRAINT ") +
+                std::to_string(tag) + " " + std::to_string(ids.size()) + " \"" + region.mName +
+                "\"\n";
+        for (std::size_t k = 0; k < ids.size(); ++k) {
+            detail::snprintf_c(buf, sizeof(buf), "%10lld ", static_cast<long long>(ids[k]));
+            sets += buf;
+            if (k % 10 == 9 || k + 1 == ids.size())
+                sets += '\n';
+        }
+        ++nsets;
+    }
+    if (dropped_regions) {
+        log::warn("Z88 writer: {} region(s) other than cell and point regions dropped",
+                  dropped_regions);
+        detail::provenance_note("regions-dropped", "Z88Aurora sets hold elements and nodes only");
+    }
+    if (nsets)
+        files["z88sets.txt"] = std::to_string(nsets) + "\n" + sets;
     return files;
 }
 
@@ -1138,6 +1369,7 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
             const std::int64_t want = detail::read_int(rMesh.CellData("z88:type", b), r);
             const Z88Type* t = z88_type(want);
             needs_3d = needs_3d || (t && t->mKeep == t->mNodes && cb.Type() == t->mCell &&
+                                    cb.NodesPerCell() == static_cast<std::size_t>(t->mNodes) &&
                                     z88_needs_3d(static_cast<int>(want)));
         }
     }
@@ -1150,13 +1382,18 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
         const std::string cell(cb.Type());
-        const int fallback = cb.IsRagged() ? 0 : z88_default_code(cell, ndim);
+        // A cubic Lagrange quad is a 16-node plate (type 19), in a 2-D file.
+        const int fallback = cb.IsRagged() ? 0
+                             : cell == "VTK_LAGRANGE_QUADRILATERAL"
+                                 ? (cb.NodesPerCell() == 16 && ndim == 2 ? 19 : 0)
+                                 : z88_default_code(cell, ndim);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             int code = fallback;
             if (has_type && !cb.IsRagged()) {
                 const std::int64_t want = detail::read_int(rMesh.CellData("z88:type", b), r);
                 const Z88Type* t = z88_type(want);
-                if (t && t->mKeep == t->mNodes && cell == t->mCell)
+                if (t && t->mKeep == t->mNodes && cell == t->mCell &&
+                    cb.NodesPerCell() == static_cast<std::size_t>(t->mNodes))
                     code = static_cast<int>(want);
             }
             if (!code)
@@ -1170,15 +1407,13 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         log::warn("Z88 writer: '{}' cells have no Z88 element type here; dropped", t);
         detail::provenance_note("cells-dropped", "Z88 has no element type for '" + t + "' cells");
     }
-    if (rMesh.NumRegions()) {
-        log::warn("Z88 structure files hold no groups; {} region(s) dropped", rMesh.NumRegions());
-        detail::provenance_note("regions-dropped", "a Z88 structure file holds no groups");
-    }
     std::size_t deck = 0;
     for (const char* name : {"z88:bc:u", "z88:bc:f"})
         deck += rMesh.HasPointData(name) ? 1 : 0;
     for (const char* name : {"z88:material", "z88:E", "z88:nu", "z88:elp", "z88:int"})
         deck += rMesh.HasCellData(name) ? 1 : 0;
+    for (const char* name : {"z88:surface_load", "z88:surface_load:cells"})
+        deck += rMesh.HasFieldData(name) ? 1 : 0;
     const std::size_t other_data = rMesh.NumPointData() + rMesh.NumFieldData() +
                                    rMesh.NumCellData() - (has_type ? 1 : 0) - deck;
     if (other_data) {
@@ -1249,13 +1484,20 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         const NDArray& conn = cb.Conn();
         const std::size_t k = cb.NodesPerCell();
         const detail::NodeOrder* order = detail::node_order("z88", std::string(cb.Type()));
+        // Type 19's lattice slot j holds the cell's node lattice[j].
+        std::vector<std::size_t> lattice(16);
+        const std::vector<int> vtk19 = z88_corners(19);
+        for (std::size_t j = 0; j < 16; ++j)
+            lattice[static_cast<std::size_t>(vtk19[j])] = j;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             if (!codes[b][r])
                 continue;
             detail::snprintf_c(buf, sizeof(buf), "%9zu %5d\n", ++id, codes[b][r]);
             out += buf;
             for (std::size_t j = 0; j < k; ++j) {
-                const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
+                const std::size_t src = codes[b][r] == 19 ? lattice[j]
+                                        : order ? static_cast<std::size_t>(order->mFromMeshio[j])
+                                                : j;
                 detail::snprintf_c(buf, sizeof(buf), "%s%lld", j ? " " : "",
                                    static_cast<long long>(detail::read_int(conn, r * k + src) + 1));
                 out += buf;

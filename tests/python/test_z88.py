@@ -97,7 +97,11 @@ def test_cylindrical_input_is_converted(engine):
     assert np.any(np.all(np.isclose(pts, [0.0, 2.0, 0.0]), axis=1))
 
 
-@pytest.mark.parametrize("deck", DECKS, ids=[d.name for d in DECKS])
+# The layered shells (types 21 and 22) keep only their corners: not written back.
+WRITABLE = [d for d in DECKS if d.name != "layered"]
+
+
+@pytest.mark.parametrize("deck", WRITABLE, ids=[d.name for d in WRITABLE])
 def test_writers_agree_and_round_trip(deck, tmp_path):
     mesh = meshioplusplus.z88.read(deck / "z88i1.txt", results=False)
     (tmp_path / "a").mkdir()
@@ -262,4 +266,121 @@ def test_aurora_sets_become_regions(engine, tmp_path):
         3,
     )
     np.testing.assert_array_equal(regions[("cell", "MatSet1")].entries, [0, 1])
+    np.testing.assert_array_equal(regions[("point", "FIX")].entries, [0, 1, 2])
+
+
+# VTK's order-3 Lagrange quad: corners, the two nodes of each edge (along r,
+# s, r, s), then the interior, r fastest; as lattice positions (i, j) / 3.
+_LAGRANGE16 = [
+    (0, 0), (3, 0), (3, 3), (0, 3),
+    (1, 0), (2, 0), (3, 1), (3, 2), (1, 3), (2, 3), (0, 1), (0, 2),
+    (1, 1), (2, 1), (1, 2), (2, 2),
+]  # fmt: skip
+
+
+def test_type19_is_a_cubic_lagrange_quad(engine, tmp_path):
+    """Type 19 (the 16-node Lagrange plate, solved by Z88R) reads whole, its
+    nodes where VTK's order-3 Lagrange quad puts them, and writes back."""
+    mesh = engine.read(MESHES / "plate19" / "z88i1.txt")
+    assert [(c.type, c.data.shape) for c in mesh.cells] == [
+        ("VTK_LAGRANGE_QUADRILATERAL", (4, 16))
+    ]
+    pts = np.asarray(mesh.points)
+    for row in mesh.cells[0].data:
+        x = pts[row]
+        origin, size = x[0], x[2] - x[0]
+        expected = [origin + size * np.array([i, j, 0]) / 3 for i, j in _LAGRANGE16]
+        np.testing.assert_allclose(x, expected, atol=1e-9)
+    # Z88R's plate results, and the pressure on element 4
+    assert np.isfinite(mesh.cell_data["MXX"][0]).all()
+    np.testing.assert_allclose(
+        mesh.field_data["z88:surface_load"], [[-0.01, np.nan, np.nan]]
+    )
+    np.testing.assert_array_equal(
+        mesh.field_data["z88:surface_load:cells"][0, :2], [3, -1]
+    )
+    engine.write(tmp_path / "z88i1.txt", mesh)
+    lines = (tmp_path / "z88i1.txt").read_text().splitlines()
+    assert lines[0].split()[0] == "2"
+    written = [ln for ln in lines if ln.split()[1:] == ["19"]]
+    assert len(written) == 4
+    back = engine.read(tmp_path / "z88i1.txt")
+    np.testing.assert_array_equal(back.cells[0].data, mesh.cells[0].data)
+    assert (tmp_path / "z88i5.txt").read_text().split() == [
+        "1",
+        "4",
+        "-1.0000000000000000E-02",
+    ]
+
+
+def test_surface_loads_and_layered_shells(engine):
+    """z88i5.txt of the layered deck (solved by Z88R): the hexahedral shell's
+    face load with its shears, the wedge's pressure; both shells keep their
+    corners with positive volumes."""
+    mesh = engine.read(MESHES / "layered" / "z88i1.txt")
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [
+        ("wedge", 2),
+        ("hexahedron", 1),
+    ]
+    _valid(mesh)
+    loads = mesh.field_data["z88:surface_load"]
+    np.testing.assert_allclose(loads, [[0.5, 0.1, 0.2], [0.5, np.nan, np.nan]])
+    cells = mesh.field_data["z88:surface_load:cells"]
+    assert cells.shape == (2, 9)
+    assert cells[0, 0] == 2 and (cells[0, 1:] >= 0).all()
+    assert cells[1, 0] == 0 and (cells[1, 7:] == -1).all()
+    pts = np.asarray(mesh.points)
+    # the loaded faces are the upper ones (z = 5)
+    np.testing.assert_array_equal(pts[cells[0, 1:], 2], 5.0)
+    np.testing.assert_array_equal(pts[cells[1, 1:7], 2], 5.0)
+    assert np.isfinite(mesh.cell_data["SIGV"][1]).all()
+
+
+def test_type23_corner_stresses(engine):
+    """Z88R stops computing type 23's Gauss-point stresses (a Jacobian error,
+    whatever the geometry); its corner stresses (INTOS = 0) read."""
+    mesh = engine.read(MESHES / "shell23" / "z88i1.txt")
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [("quad8", 2)]
+    for name in ("SIGXX", "SIGYY", "TAUXY"):
+        assert np.isfinite(mesh.cell_data[name][0]).all()
+    np.testing.assert_allclose(
+        mesh.field_data["z88:surface_load"], [[0.05, np.nan, np.nan]]
+    )
+
+
+def test_loads_round_trip_and_unfit_ones_are_dropped(engine, tmp_path):
+    mesh = engine.read(MESHES / "layered" / "z88i1.txt", results=False)
+    # the hexahedral shell writes back as a hexahedron (type 1), which takes
+    # three values and four nodes: its eight-node face load is dropped
+    engine.write(tmp_path / "z88i1.txt", mesh)
+    assert (tmp_path / "z88i5.txt").read_text() == "0\n"
+    plate = engine.read(MESHES / "plate19" / "z88i1.txt", results=False)
+    plate.field_data["z88:surface_load"] = np.array([[-0.5, np.nan, np.nan]] * 2)
+    plate.field_data["z88:surface_load:cells"] = np.array(
+        [[0] + [-1] * 8, [1, 0] + [-1] * 7]
+    )
+    engine.write(tmp_path / "z88i1.txt", plate)
+    assert (tmp_path / "z88i5.txt").read_text().split() == [
+        "1",
+        "1",
+        "-5.0000000000000000E-01",
+    ]
+
+
+def test_regions_are_written_as_aurora_sets(engine, tmp_path):
+    mesh = engine.read(MESHES / "tets" / "z88i1.txt")
+    mesh.regions = [
+        meshioplusplus.Region("solid", "cell", np.array([1]), 3, 5),
+        meshioplusplus.Region("FIX", "point", np.array([0, 1, 2]), -1, 5),
+        meshioplusplus.Region("face", "side", np.array([[0, 1]]), 2, 9),
+    ]
+    engine.write(tmp_path / "z88i1.txt", mesh)
+    text = (tmp_path / "z88sets.txt").read_text()
+    # sets in region order (points first); the second to claim id 5 gets 1
+    assert text.splitlines()[:2] == ["2", '#NODES CONSTRAINT 5 3 "FIX"']
+    assert '#ELEMENTS MATERIAL 1 1 "solid"' in text
+    back = engine.read(tmp_path / "z88i1.txt")
+    regions = {(r.kind, r.name): r for r in back.regions}
+    assert sorted(regions) == [("cell", "solid"), ("point", "FIX")]
+    np.testing.assert_array_equal(regions[("cell", "solid")].entries, [1])
     np.testing.assert_array_equal(regions[("point", "FIX")].entries, [0, 1, 2])

@@ -14,7 +14,7 @@ nodes spelled out by position rather than taken from meshio++'s tables:
 * the plane elements (types 7 and 14): corners counter-clockwise, then the
   mid-edge nodes in the same order.
 
-Eight decks, one directory each (Z88's file names are fixed):
+Eleven decks, one directory each (Z88's file names are fixed):
 
 * ``cantilever/``: a 100 x 10 x 10 cantilever of five hex20 (type 10), clamped
   at x = 0 and loaded at x = 100, with the ``z88i2``/``z88i5``/``z88mat``/
@@ -29,6 +29,9 @@ Eight decks, one directory each (Z88's file names are fixed):
 * ``frame/``, ``plate/``, ``shell/``, ``torus/``: 3-D beams and a truss, quad8
   plates, tri6 shells and axisymmetric quad8, each with the inputs Z88R needs
   and, committed as produced, Z88R's ``z88o2``/``z88o3``/``z88o4`` output.
+* ``plate19/``, ``layered/``, ``shell23/``: 16-node Lagrange plates, volume
+  shells 21 and 22, and flat 8-node shells, with surface loads in
+  ``z88i5.txt`` and, committed as produced, Z88R's output.
 
     python tools/gen_z88_fixtures.py
 """
@@ -179,9 +182,11 @@ def _quad8(corners):
     return list(corners) + mids
 
 
-def _deck(name, d, dof, header_dof, rows, elp, integration, tail=""):
+def _deck(name, d, dof, header_dof, rows, elp, integration, tail="", loads=()):
     """Write `d` and the inputs Z88R needs: `rows` are `z88i2.txt` rows (node,
-    dof, flag, value), `elp` and `integration` one row each for all elements."""
+    dof, flag, value), `elp` one row for all elements, `integration` one row for
+    all elements or a list of (first, last, row), and `loads` the `z88i5.txt`
+    lines."""
     ndim, nn, ne, _ = d.header(1)
     head = (
         f"{ndim:5d}{nn:6d}{ne:6d}{header_dof:7d}{0:6d}   meshio++ Z88 fixture{tail}\n"
@@ -191,11 +196,15 @@ def _deck(name, d, dof, header_dof, rows, elp, integration, tail=""):
     (out / "z88i1.txt").write_text(head + d.body(dof))
     lines = [f"{n:6d}  {k}  {flag}  {v:+.6E}\n" for n, k, flag, v in rows]
     (out / "z88i2.txt").write_text(f"{len(lines)}\n" + "".join(lines))
-    (out / "z88i5.txt").write_text("0\n")
+    (out / "z88i5.txt").write_text(f"{len(loads)}\n" + "".join(f"{x}\n" for x in loads))
     (out / "z88mat.txt").write_text(f"1\n1 {ne} 51.txt\n")
     (out / "51.txt").write_text("210000 0.3\n")
     (out / "z88elp.txt").write_text(f"1\n1 {ne} {elp}\n")
-    (out / "z88int.txt").write_text(f"1\n1 {ne} {integration}\n")
+    if isinstance(integration, str):
+        integration = [(1, ne, integration)]
+    (out / "z88int.txt").write_text(
+        f"{len(integration)}\n" + "".join(f"{a} {b} {r}\n" for a, b, r in integration)
+    )
 
 
 def frame():
@@ -267,6 +276,122 @@ def shell():
     _deck("shell", d, 6, 6 * len(d.coords), rows, "5 0 0 0 0 0 0", "3 3")
 
 
+def _lattice16(x0, x1, y0, y1):
+    """Type 19's 4 x 4 lattice: node 4 i + j + 1 at the i-th x and the j-th y
+    (the positions its shape functions put them at: corners 1, 13, 16, 4
+    counter-clockwise)."""
+    xs = [x0 + (x1 - x0) * k / 3 for k in range(4)]
+    ys = [y0 + (y1 - y0) * k / 3 for k in range(4)]
+    return [(x, y) for x in xs for y in ys]
+
+
+def plate19():
+    """The plate of `plate()` in four 16-node Lagrange plates (type 19):
+    clamped at x = 0, a point load at (100, 100) and a pressure on element 4."""
+    d = Deck(2)
+    for i in range(2):
+        for j in range(2):
+            d.element(19, _lattice16(50.0 * i, 50.0 * i + 50, 50.0 * j, 50.0 * j + 50))
+    rows = [
+        (k, dof, 2, 0.0)
+        for k, c in enumerate(d.coords, start=1)
+        if c[0] == 0.0
+        for dof in (1, 2, 3)
+    ]
+    rows.append((d.ids[(100.0, 100.0)], 1, 1, -100.0))
+    _deck(
+        "plate19",
+        d,
+        3,
+        3 * len(d.coords),
+        rows,
+        "10 0 0 0 0 0 0",
+        "4 4",
+        loads=["4 -0.01"],
+    )
+
+
+def _upper_lower(face, z_top, z_bottom):
+    """A volume shell's nodes: the face at z_top, then the same face at
+    z_bottom (Z88 numbers the upper plane first)."""
+    return [(x, y, z_top) for x, y in face] + [(x, y, z_bottom) for x, y in face]
+
+
+def layered():
+    """A 200 x 50 x 5 slab of volume shells: two 12-node wedges (type 22) on
+    [0, 100] and a 16-node hexahedral shell (type 21) on [100, 200]; clamped at
+    x = 0, pulled down at x = 200, with a pressure (and shears) on the upper
+    faces of the hexahedral shell and the first wedge."""
+    d = Deck(3)
+    a, b, c, e = (0.0, 0.0), (100.0, 0.0), (100.0, 50.0), (0.0, 50.0)
+    for tri in ((a, b, c), (a, c, e)):
+        d.element(22, _upper_lower(_tri6(list(tri)), 5.0, 0.0))
+    quad = [(100.0, 0.0), (200.0, 0.0), (200.0, 50.0), (100.0, 50.0)]
+    d.element(21, _upper_lower(_quad8(quad), 5.0, 0.0))
+    rows = [
+        (k, dof, 2, 0.0)
+        for k, p in enumerate(d.coords, start=1)
+        if p[0] == 0.0
+        for dof in (1, 2, 3)
+    ]
+    rows += [(k, 3, 1, -10.0) for k, p in enumerate(d.coords, start=1) if p[0] == 200.0]
+    top = d.elements[2][1][:8]
+    wedge = d.elements[0][1][:6]
+    loads = [
+        "3 0.5 0.1 0.2 " + " ".join(str(n) for n in top),
+        "1 0.5 " + " ".join(str(n) for n in wedge),
+    ]
+    _deck(
+        "layered",
+        d,
+        3,
+        3 * len(d.coords),
+        rows,
+        "0 0 0 0 0 0 0",
+        [(1, 2, "7 7"), (3, 3, "3 3")],
+        loads=loads,
+    )
+
+
+def shell23():
+    """Two 8-node shells (type 23) flat in z = 0 of a 3-D file, clamped at
+    x = 0, pulled and bent at x = 200, a pressure on element 2. Stresses at the
+    corners (INTOS = 0): Z88R stops with a Jacobian error computing type 23's
+    Gauss-point stresses, whatever the geometry."""
+    d = Deck(3)
+    for i in range(2):
+        x0 = 100.0 * i
+        q = [
+            (x0, 0.0, 0.0),
+            (x0 + 100, 0.0, 0.0),
+            (x0 + 100, 50.0, 0.0),
+            (x0, 50.0, 0.0),
+        ]
+        d.element(23, _quad8(q))
+    rows = [
+        (k, dof, 2, 0.0)
+        for k, c in enumerate(d.coords, start=1)
+        if c[0] == 0.0
+        for dof in range(1, 7)
+    ]
+    rows += [
+        (k, dof, 1, v)
+        for k, c in enumerate(d.coords, start=1)
+        if c[0] == 200.0
+        for dof, v in ((1, 1000.0), (3, -10.0))
+    ]
+    _deck(
+        "shell23",
+        d,
+        6,
+        6 * len(d.coords),
+        rows,
+        "5 0 0 0 0 0 0",
+        "3 0",
+        loads=["2 0.05"],
+    )
+
+
 def torus():
     """Two axisymmetric quad8 (type 8) in (r, z), 50 <= r <= 60: held axially
     at z = 0 and pushed outwards at r = 50."""
@@ -285,6 +410,9 @@ def main():
     plate()
     shell()
     torus()
+    plate19()
+    layered()
+    shell23()
     tets()
     plate_v13()
     polar()
