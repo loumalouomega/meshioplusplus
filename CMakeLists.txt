@@ -244,13 +244,27 @@ endif()
 # ADIOS2 (v16.13.0): DOLFINx's VTXWriter output, a `.bp` directory read as a
 # time sequence (the `vtx` format). OFF by default and bring-your-own like
 # cgnslib: ADIOS2 is a heavy dependency for one consumer, so it is never a
-# default and never in the release wheels. ADIOS2 ships its own CMake config
-# (target adios2::cxx11); point ADIOS2_DIR or CMAKE_PREFIX_PATH at an install.
-# A serial or an MPI build both work: the reader opens files with a serial
-# adios2::ADIOS.
+# default and never in the release wheels. ADIOS2 ships its own CMake config;
+# point ADIOS2_DIR or CMAKE_PREFIX_PATH at an install. A serial or an MPI build
+# both work: the reader opens files with a serial adios2::ADIOS.
+#
+# No language component is requested: ADIOS2 renamed its C++ component and
+# target in 2.9 (CXX11/adios2::cxx11 -> CXX/adios2::cxx, the old target kept
+# as a deprecated alias), and asking for either name fails on the other side
+# of that rename - fatally so for a consumer whose find_package(meshioplusplus)
+# is REQUIRED, since find_dependency forwards REQUIRED to the components. With
+# none named, ADIOS2's config defaults to the enabled languages, which include
+# CXX here; the target is then picked by what exists.
 option(MESHIOPLUSPLUS_WITH_ADIOS2 "Build the ADIOS2-backed DOLFINx VTX (.bp) reader" OFF)
 if(MESHIOPLUSPLUS_WITH_ADIOS2 AND NOT EMSCRIPTEN)
-  find_package(ADIOS2 CONFIG QUIET COMPONENTS CXX11)
+  find_package(ADIOS2 CONFIG QUIET)
+endif()
+if(TARGET adios2::cxx)
+  set(_mio_adios2_target adios2::cxx)
+  set(_mio_adios2_pc_lib adios2_cxx)
+elseif(TARGET adios2::cxx11)
+  set(_mio_adios2_target adios2::cxx11)
+  set(_mio_adios2_pc_lib adios2_cxx11)
 endif()
 
 # TecIO (v16.13.0): Tecplot's own library, the only reader of `.szplt` (SZL)
@@ -668,10 +682,10 @@ elseif(MESHIOPLUSPLUS_WITH_BZIP2)
   message(STATUS "meshio++: bzip2 requested but not found - .bz2 files fall back to Python")
 endif()
 
-if(MESHIOPLUSPLUS_WITH_ADIOS2 AND TARGET adios2::cxx11)
+if(MESHIOPLUSPLUS_WITH_ADIOS2 AND _mio_adios2_target)
   message(STATUS "meshio++: ADIOS2 enabled (DOLFINx VTX .bp, ADIOS2 ${ADIOS2_VERSION})")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ADIOS2)
-  list(APPEND _mio_core_libs adios2::cxx11)
+  list(APPEND _mio_core_libs ${_mio_adios2_target})
 elseif(MESHIOPLUSPLUS_WITH_ADIOS2)
   message(STATUS "meshio++: ADIOS2 requested but not found (set ADIOS2_DIR) - "
                  ".bp directories fall back to Python's adios2 package")
@@ -1216,7 +1230,7 @@ if(_mio_has_KAHIP)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
 endif()
 if(_mio_has_ADIOS2)
-  string(APPEND MIO_PC_LIBS_PRIVATE " -ladios2_cxx11 -ladios2_core")
+  string(APPEND MIO_PC_LIBS_PRIVATE " -l${_mio_adios2_pc_lib} -ladios2_core")
 endif()
 if(_mio_has_TECIO)
   string(APPEND MIO_PC_LIBS_PRIVATE " -ltecio")

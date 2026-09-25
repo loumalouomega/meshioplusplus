@@ -75,7 +75,11 @@ if(@MESHIOPLUSPLUS_INSTALL_CPP@)
     find_dependency(BZip2)
   endif()
   if(MESHIOPLUSPLUS_WITH_ADIOS2)
-    find_dependency(ADIOS2 COMPONENTS CXX11)
+    # No component named, as in the build (CMakeLists.txt): the C++ one is CXX11
+    # before ADIOS2 2.9 and CXX after, and find_dependency makes whichever is
+    # named REQUIRED for a REQUIRED consumer. The default (the consumer's
+    # enabled languages) brings the C++ target on either side of the rename.
+    find_dependency(ADIOS2)
   endif()
   if(MESHIOPLUSPLUS_WITH_TECIO)
     # TecIO has no CMake package: the library path is recorded as found at
