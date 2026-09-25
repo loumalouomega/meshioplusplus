@@ -43,6 +43,9 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
@@ -502,10 +505,9 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
                                                 std::string(cb.Type()) + "' is not triangles");
                 block_is_surface[bi] = 1;
                 const NDArray& conn = cb.Conn();
+                const detail::Int64View conn_v(conn);
                 for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                    tris.push_back({detail::read_int(conn, c * 3),
-                                    detail::read_int(conn, c * 3 + 1),
-                                    detail::read_int(conn, c * 3 + 2)});
+                    tris.push_back({conn_v[c * 3], conn_v[c * 3 + 1], conn_v[c * 3 + 2]});
             }
             ++bi;
         }
@@ -704,6 +706,7 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
     // the mean of their loop's rows (dtype preserved).
     for (const std::string& name : simp.PointDataNames()) {
         const NDArray& a = simp.PointData(name);
+        const detail::DoubleView a_v(a);
         if (detail::rows(a) != n || n == 0) {
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
@@ -729,7 +732,7 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
             for (std::size_t c = 0; c < ncomp; ++c) {
                 double sum = 0.0;
                 for (const std::int64_t v : loop)
-                    sum += detail::read_double(a, src_row(v) * ncomp + c);
+                    sum += a_v[src_row(v) * ncomp + c];
                 detail::write_double(b, (n + n_copies + h) * ncomp + c, sum * inv);
             }
         }
