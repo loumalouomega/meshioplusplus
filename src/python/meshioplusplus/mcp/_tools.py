@@ -9,9 +9,14 @@ typed wrapper around the functions below.
 
 Design rules (the contracts the tests pin):
 
-* **Stateless and file-path based.** Every tool takes input path(s), operates
-  through the public :mod:`meshioplusplus` API, writes output path(s), and
-  returns a JSON-safe ``dict`` report. No mesh ever lives between calls.
+* **File-path based, with a read cache.** Every tool takes input path(s),
+  operates through the public :mod:`meshioplusplus` API, writes output
+  path(s), and returns a JSON-safe ``dict`` report. The only state kept
+  between calls is a bounded cache of parsed inputs (:func:`_load`), keyed on
+  the file's identity -- path, device, inode, size, and modification and
+  change times in nanoseconds -- plus the format and read options, so a
+  changed file is always re-read; tools get a private copy, never the cached
+  mesh. Multi-file inputs are never cached.
 * **Strict JSON.** Every report survives ``json.dumps(..., allow_nan=False)``:
   :func:`_json_safe` converts numpy scalars/arrays, replaces non-finite
   values with ``None`` (counted in ``non_finite_replaced``), and truncates
@@ -27,10 +32,12 @@ Design rules (the contracts the tests pin):
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
 import re
+import threading
 from collections import OrderedDict
 
 import numpy as np
@@ -248,15 +255,167 @@ def _json_safe(obj, max_array=_MAX_ARRAY, preview=_PREVIEW):
 # --------------------------------------------------------------------------- #
 # Shared helpers                                                              #
 # --------------------------------------------------------------------------- #
-def _load(input_path, input_format=None, **read_kwargs):
-    return read(
-        _resolve(input_path, must_exist=True), file_format=input_format, **read_kwargs
+# --------------------------------------------------------------------------- #
+# Read cache                                                                  #
+# --------------------------------------------------------------------------- #
+# An agent typically asks several questions of one file in a row (stats,
+# quality, data_info, regions, ...); each used to parse it again. Parsed meshes
+# are kept here, bounded by bytes, keyed on the file's identity (see
+# _cache_key) so that a file changed by anyone -- this server or the agent's
+# own tools -- is re-read. Formats whose reader follows other files (companion
+# data, pieces, includes, directories) are never cached: the entry file's stat
+# cannot see a change to the rest.
+_CACHE_UNSAFE_FORMATS = frozenset(
+    {
+        # companion or piece files
+        "xdmf",
+        "pvtu",
+        "pvtp",
+        "pvd",
+        "vtm",
+        "ensight",
+        "gid",
+        "gltf",
+        "tetgen",
+        "triangle",
+        "dolfin",
+        "elmer",
+        "febio",
+        "libmesh",
+        "marc",
+        "mfem",
+        "z88",
+        "radioss",
+        "lsdyna_binout",
+        "lsdyna_d3plot",
+        "usd",
+        "physicsnemo",
+        # decks that follow include files
+        "abaqus",
+        "lsdyna",
+        "nastran",
+        # directory formats
+        "openfoam",
+        "pmsh",
+        "zarr",
+        "vtx",
+    }
+)
+# read()'s own defaults: an option passed at its default value (tool_stats
+# spells time_step=0 out, tool_data_info does not) is the same parse.
+_READ_DEFAULTS = {
+    name: param.default
+    for name, param in inspect.signature(read).parameters.items()
+    if param.default is not inspect.Parameter.empty
+}
+_CACHE_LOCK = threading.Lock()
+_CACHE = OrderedDict()  # key -> (mesh, nbytes), least recently used first
+_CACHE_BYTES = [0]
+
+
+def _cache_limit():
+    """The cache's byte budget: ``MESHIOPLUSPLUS_MCP_CACHE_MB`` (default 512;
+    ``0`` disables caching)."""
+    try:
+        return max(0, int(os.environ.get("MESHIOPLUSPLUS_MCP_CACHE_MB", "512"))) << 20
+    except ValueError:
+        return 512 << 20
+
+
+def _mesh_nbytes(mesh):
+    total = np.asarray(mesh.points).nbytes
+    for block in mesh.cells:
+        data = block.data
+        total += (
+            data.nbytes if isinstance(data, np.ndarray) else 8 * sum(map(len, data))
+        )
+    for arrays in list(mesh.point_data.values()) + list(mesh.field_data.values()):
+        total += getattr(arrays, "nbytes", 0)
+    for blocks in mesh.cell_data.values():
+        total += sum(getattr(a, "nbytes", 0) for a in blocks)
+    return total
+
+
+def _cache_key(resolved, input_format, read_kwargs):
+    """The identity of one parse, or ``None`` when it must not be cached."""
+    if not os.path.isfile(resolved):
+        return None  # a directory format, or something that vanished
+    if input_format is not None:
+        candidates = [input_format]
+    else:
+        try:
+            candidates = _filetypes_from_path(pathlib.Path(resolved))
+        except Exception:
+            return None  # unknown extension: let `read` report it
+    if any(fmt in _CACHE_UNSAFE_FORMATS for fmt in candidates):
+        return None
+    options = tuple(
+        sorted(
+            (name, value)
+            for name, value in read_kwargs.items()
+            if not (
+                name in _READ_DEFAULTS
+                and isinstance(value, (str, int, float, type(None)))
+                and type(value) is type(_READ_DEFAULTS[name])
+                and value == _READ_DEFAULTS[name]
+            )
+        )
     )
+    try:
+        hash(options)
+    except TypeError:
+        return None  # an unhashable option (a list of arrays, ...)
+    st = os.stat(resolved)
+    # mtime alone is coarse on some filesystems; ctime, inode and size make a
+    # same-tick rewrite or a rename-over visible too.
+    return (
+        resolved,
+        st.st_dev,
+        st.st_ino,
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ctime_ns,
+        input_format,
+        options,
+    )
+
+
+def _cache_invalidate(path=None):
+    """Drop the entries for one resolved path, or everything."""
+    with _CACHE_LOCK:
+        for key in [k for k in _CACHE if path is None or k[0] == path]:
+            _CACHE_BYTES[0] -= _CACHE.pop(key)[1]
+
+
+def _load(input_path, input_format=None, **read_kwargs):
+    resolved = _resolve(input_path, must_exist=True)
+    limit = _cache_limit()
+    key = _cache_key(resolved, input_format, read_kwargs) if limit else None
+    if key is not None:
+        with _CACHE_LOCK:
+            hit = _CACHE.get(key)
+            if hit is not None:
+                _CACHE.move_to_end(key)
+                # A private copy: tools (and the pipeline) mutate what they get.
+                return hit[0].copy()
+    mesh = read(resolved, file_format=input_format, **read_kwargs)
+    if key is not None:
+        nbytes = _mesh_nbytes(mesh)
+        if nbytes <= limit:
+            kept = mesh.copy()
+            with _CACHE_LOCK:
+                if key not in _CACHE:
+                    _CACHE[key] = (kept, nbytes)
+                    _CACHE_BYTES[0] += nbytes
+                while _CACHE_BYTES[0] > limit and _CACHE:
+                    _CACHE_BYTES[0] -= _CACHE.popitem(last=False)[1][1]
+    return mesh
 
 
 def _store(mesh, output_path, output_format=None, **write_kwargs):
     resolved = _resolve(output_path, for_write=True)
     write(resolved, mesh, file_format=output_format, **write_kwargs)
+    _cache_invalidate(resolved)
     return resolved
 
 
@@ -827,6 +986,7 @@ def tool_pipeline(settings_path, input_path=None, output_path=None):
     resolved_in = _resolve(raw_in, must_exist=True)
     resolved_out = _resolve(raw_out, for_write=True)
     report = run_pipeline(doc, input_path=resolved_in, output_path=resolved_out)
+    _cache_invalidate()  # the pipeline writes its own outputs, possibly several
     report["output_path"] = resolved_out
     return _json_safe(report)
 
@@ -2045,6 +2205,7 @@ def tool_split(
         name = name_template.format(stem=stem, key=_safe_key(key))
         path = _resolve(os.path.join(out_dir, name), for_write=True)
         write(path, piece)
+        _cache_invalidate(path)
         written[str(key)] = path
         summaries[str(key)] = _mesh_summary(piece)
     return _json_safe({"by": by, "pieces": written, "summaries": summaries})
@@ -2119,6 +2280,7 @@ def tool_partition(
         name = name_template.format(stem=stem, part=i)
         path = _resolve(os.path.join(out_dir, name), for_write=True)
         write(path, piece)
+        _cache_invalidate(path)
         written.append(path)
         summaries.append(_mesh_summary(piece))
     return _json_safe(
@@ -3176,6 +3338,7 @@ def tool_data_export(input_path, output_path, input_format=None, location="point
     mesh = _load(input_path, input_format)
     resolved = _resolve(output_path, for_write=True)
     _write_parquet_fn(mesh, resolved, location=location)
+    _cache_invalidate(resolved)
     return _json_safe(
         {"output_path": resolved, "location": location, **_mesh_summary(mesh)}
     )
@@ -3218,6 +3381,7 @@ def tool_export_dataset(
         mesh_id=mesh_id,
         file_format=input_format,
     )
+    _cache_invalidate()  # a dataset is a directory of files
     return _json_safe({"output_path": resolved_out, **manifest})
 
 

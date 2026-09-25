@@ -8,6 +8,12 @@
 # TBB not installed, is skipped with a note); THREADS to "1 2 4 8". The SEQ
 # backend runs once. Trees go to build/bench-ops-<backend>; set
 # CMAKE_BUILD_PARALLEL_LEVEL to cap the build.
+#
+# With `--hash` among the bench_ops args, every row carries a digest of its
+# result, and the script fails unless each (op, cells) row has the same digest
+# on every backend and thread count (roadmap §4: the determinism check). With
+# BASELINE=<earlier.csv> set, the digests must also equal that file's, which is
+# how a change that must not alter output proves it.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(dirname -- "$HERE")
@@ -43,3 +49,28 @@ done
 rm -f "$OUT.run"
 mv "$OUT.tmp" "$OUT"
 echo "wrote $OUT" >&2
+
+# The determinism check: one digest per (op, cells) across the whole sweep,
+# and, with BASELINE, the same digest as the earlier run. Rows without a
+# digest (no --hash) are not checked.
+status=0
+awk -F, -v base="${BASELINE:-}" '
+    FNR == 1 { next }
+    FILENAME == base { if ($7 != "") ref[$3 "," $4] = $7; next }
+    $7 == "" { next }
+    {
+        key = $3 "," $4
+        if (!(key in seen)) { seen[key] = $7; who[key] = $1 "/" $2 }
+        else if (seen[key] != $7) {
+            printf "DIGEST MISMATCH %s: %s at %s, %s at %s/%s\n", key, seen[key], who[key], $7, $1, $2
+            bad = 1
+        }
+        if (base != "" && (key in ref) && ref[key] != $7) {
+            printf "BASELINE MISMATCH %s: %s now at %s/%s, %s in %s\n", key, $7, $1, $2, ref[key], base
+            bad = 1
+        }
+    }
+    END { exit bad }
+' ${BASELINE:+"$BASELINE"} "$OUT" >&2 || status=1
+[ $status -eq 0 ] && grep -q ',[0-9a-f]\{16\}$' "$OUT" && echo "digests agree" >&2
+exit $status

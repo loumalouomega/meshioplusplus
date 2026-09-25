@@ -30,7 +30,6 @@
 #include <cstring>
 #include <limits>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -44,6 +43,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "smooth_odt.hpp"
 
 namespace meshioplusplus {
 
@@ -158,19 +158,6 @@ inline Tet optvol_orient_positive(const std::vector<double>& rXyz, Tet t) {
     return t;
 }
 
-// FNV-1a hash for small int64 arrays (face/edge keys).
-template <std::size_t K>
-struct OptvolArrHash {
-    std::size_t operator()(const std::array<std::int64_t, K>& a) const {
-        std::size_t h = 1469598103934665603ull;
-        for (std::size_t i = 0; i < K; ++i) {
-            h ^= static_cast<std::size_t>(a[i]);
-            h *= 1099511628211ull;
-        }
-        return h;
-    }
-};
-
 std::array<std::int64_t, 3> optvol_face_key(std::int64_t a, std::int64_t b, std::int64_t c) {
     std::array<std::int64_t, 3> f{a, b, c};
     std::sort(f.begin(), f.end());
@@ -201,22 +188,45 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
-    // face key -> up to two (tet index, apex node id)
-    std::unordered_map<std::array<std::int64_t, 3>, std::array<std::pair<std::size_t, std::int64_t>, 2>,
-                       OptvolArrHash<3>>
-        face_map;
-    std::unordered_map<std::array<std::int64_t, 3>, std::uint8_t, OptvolArrHash<3>> face_count;
-    face_map.reserve(nt * 4);
-    face_count.reserve(nt * 4);
+    // Every (face key, slot) of every tet, slot = 4 t + local face, sorted:
+    // equal faces form runs in slot order -- the order the former hash map
+    // saw them in -- so a run gives each face's count and its first two
+    // (tet, apex) occurrences, with no hashing. Counts are kept modulo 256
+    // and the two recorded occurrences are the last ones at each residue,
+    // exactly as the former `std::uint8_t` counter left them.
+    struct FaceRec {
+        std::array<std::int64_t, 3> mKey;
+        std::size_t mSlot;
+    };
+    struct FaceRun {
+        std::uint8_t mCount = 0;
+        std::array<std::pair<std::size_t, std::int64_t>, 2> mEntries{};
+    };
+    std::vector<FaceRec> recs(nt * 4);
     for (std::size_t t = 0; t < nt; ++t)
         for (int lf = 0; lf < 4; ++lf) {
             const auto fo = optvol_face_ordered(rTets[t], lf);
-            const auto key = optvol_face_key(fo[0], fo[1], fo[2]);
-            std::uint8_t& cnt = face_count[key];
-            if (cnt < 2)
-                face_map[key][cnt] = {t, rTets[t][lf]};
-            ++cnt;
+            recs[t * 4 + static_cast<std::size_t>(lf)] = {optvol_face_key(fo[0], fo[1], fo[2]),
+                                                          t * 4 + static_cast<std::size_t>(lf)};
         }
+    std::sort(recs.begin(), recs.end(), [](const FaceRec& a, const FaceRec& b) {
+        return a.mKey != b.mKey ? a.mKey < b.mKey : a.mSlot < b.mSlot;
+    });
+    std::vector<FaceRun> runs;
+    std::vector<std::uint32_t> run_of(nt * 4);
+    for (std::size_t i = 0; i < recs.size();) {
+        std::size_t j = i;
+        FaceRun run;
+        for (; j < recs.size() && recs[j].mKey == recs[i].mKey; ++j) {
+            const std::size_t slot = recs[j].mSlot;
+            if (run.mCount < 2)
+                run.mEntries[run.mCount] = {slot / 4, rTets[slot / 4][slot % 4]};
+            ++run.mCount;
+            run_of[slot] = static_cast<std::uint32_t>(runs.size());
+        }
+        runs.push_back(run);
+        i = j;
+    }
 
     std::vector<Tet> new_tets;
     std::int64_t applied = 0;
@@ -225,10 +235,10 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             continue;
         for (int lf = 0; lf < 4; ++lf) {
             const auto fo = optvol_face_ordered(rTets[t], lf);
-            const auto key = optvol_face_key(fo[0], fo[1], fo[2]);
-            if (face_count[key] != 2)
+            const FaceRun& run = runs[run_of[t * 4 + static_cast<std::size_t>(lf)]];
+            if (run.mCount != 2)
                 continue;  // boundary or non-manifold face
-            const auto& pair = face_map[key];
+            const auto& pair = run.mEntries;
             std::size_t u = pair[0].first == t ? pair[1].first : pair[0].first;
             std::int64_t e = pair[0].first == t ? pair[1].second : pair[0].second;
             if (u == t || u < t || !alive[u])
@@ -297,30 +307,36 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
-    std::unordered_map<std::array<std::int64_t, 2>, std::vector<std::size_t>, OptvolArrHash<2>>
-        edge_map;
-    edge_map.reserve(nt * 6);
+    // Every (edge key, tet) sorted: each run is one edge's tets in ascending
+    // tet order -- what the former hash map's per-edge vector held -- and the
+    // runs come in ascending key order, the order that map's keys were
+    // sorted into for a deterministic sweep.
     static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+    struct EdgeRec {
+        std::array<std::int64_t, 2> mKey;
+        std::size_t mTet;
+    };
+    std::vector<EdgeRec> recs;
+    recs.reserve(nt * 6);
     for (std::size_t t = 0; t < nt; ++t)
         for (auto& ev : kEdges)
-            edge_map[optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]])].push_back(t);
-
-    // deterministic iteration order over edge keys
-    std::vector<std::array<std::int64_t, 2>> keys;
-    keys.reserve(edge_map.size());
-    for (const auto& kv : edge_map)
-        keys.push_back(kv.first);
-    std::sort(keys.begin(), keys.end());
+            recs.push_back({optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]]), t});
+    std::sort(recs.begin(), recs.end(), [](const EdgeRec& a, const EdgeRec& b) {
+        return a.mKey != b.mKey ? a.mKey < b.mKey : a.mTet < b.mTet;
+    });
 
     std::vector<Tet> new_tets;
     std::int64_t applied = 0;
-    for (const auto& ek : keys) {
-        const std::int64_t uu = ek[0], vv = ek[1];
+    for (std::size_t r0 = 0, r1 = 0; r0 < recs.size(); r0 = r1) {
+        for (r1 = r0 + 1; r1 < recs.size() && recs[r1].mKey == recs[r0].mKey; ++r1) {
+        }
+        const std::int64_t uu = recs[r0].mKey[0], vv = recs[r0].mKey[1];
         // the alive tets on this edge
         std::array<std::size_t, 3> ring_tets{};
         int nr = 0;
         bool too_many = false;
-        for (std::size_t t : edge_map[ek]) {
+        for (std::size_t r = r0; r < r1; ++r) {
+            const std::size_t t = recs[r].mTet;
             if (!alive[t])
                 continue;
             if (nr >= 3) {
@@ -411,37 +427,38 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     return applied;
 }
 
-// --- ODT relocation half (delegates to smooth's SmoothMethod::Odt) -----------
-// Build a single-tetra-block Float64 mesh from the working buffers, run one ODT
-// relocation pass through `smooth` (reusing all of its boundary/feature/frozen
-// pinning and inversion guard), and read the moved points back into `rXyz`.
-// Float64 throughout so a Float32 input mesh does not accumulate one rounding
-// per sweep -- the single cast happens once, at final emission.
-void optvol_relocate(std::vector<double>& rXyz, const std::vector<Tet>& rTets,
-                     const OptimizeVolumeOptions& rOptions) {
-    const std::size_t n = rXyz.size() / 3;
-    Mesh tmp;
-    NDArray pts = NDArray::Uninit(DType::Float64, {n, 3});
-    std::memcpy(pts.Data(), rXyz.data(), rXyz.size() * sizeof(double));
-    tmp.AssignPoints(std::move(pts));
-    NDArray conn = NDArray::Uninit(DType::Int64, {rTets.size(), 4});
-    std::int64_t* cd = conn.As<std::int64_t>();
-    for (std::size_t t = 0; t < rTets.size(); ++t)
-        for (int k = 0; k < 4; ++k)
-            cd[t * 4 + k] = rTets[t][k];
-    tmp.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
-
+// --- ODT relocation half (smooth's SmoothMethod::Odt) -----------------------
+// The options of the one-iteration ODT pass each sweep runs: smooth's own
+// boundary/feature/frozen pinning and inversion guard.
+SmoothOptions optvol_odt_options(const OptimizeVolumeOptions& rOptions) {
     SmoothOptions so;
     so.mMethod = SmoothMethod::Odt;
     so.mIterations = 1;
     so.mFixBoundary = rOptions.mPreserveBoundary;
     so.mGuardInversion = true;
     so.mFrozen = rOptions.mFrozen;
-    SmoothResult sr = smooth(tmp, so);
+    return so;
+}
 
-    const NDArray& mp = sr.mMesh.Points();
-    for (std::size_t i = 0; i < n * 3; ++i)
-        rXyz[i] = detail::read_double(mp, i);
+// The nodes the relocation holds still, computed once per call: the caller's
+// frozen mask and (with mPreserveBoundary) the boundary. Neither flip changes
+// the boundary -- a 2-3 flip replaces two tets across an interior face and a
+// 3-2 flip three tets around a closed edge ring by tets with the same outer
+// faces -- so the per-sweep boundary rebuild smooth() used to do is hoisted
+// here. The mesh is the single-tetra-block Float64 one smooth() was given.
+std::vector<std::uint8_t> optvol_pin_mask(const std::vector<double>& rXyz,
+                                          const std::vector<Tet>& rTets,
+                                          const SmoothOptions& rOdt) {
+    const std::size_t n = rXyz.size() / 3;
+    Mesh tmp;
+    NDArray pts = NDArray::Uninit(DType::Float64, {n, 3});
+    std::memcpy(pts.Data(), rXyz.data(), rXyz.size() * sizeof(double));
+    tmp.AssignPoints(std::move(pts));
+    NDArray conn = NDArray::Uninit(DType::Int64, {rTets.size(), 4});
+    static_assert(sizeof(Tet) == 4 * sizeof(std::int64_t), "Tet rows are copied as a flat block");
+    std::memcpy(conn.Data(), rTets.data(), rTets.size() * sizeof(Tet));
+    tmp.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
+    return detail::smooth_odt_pin_mask(tmp, rOdt);
 }
 
 }  // namespace
@@ -505,11 +522,15 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     result.mMinQualityBefore = min_quality(tets);
 
     // --- the optimisation loop ------------------------------------------------
+    const SmoothOptions odt = optvol_odt_options(rOptions);
+    std::vector<std::uint8_t> pinned;
+    if (rOptions.mRelocate && rOptions.mMaxIterations > 0)
+        pinned = optvol_pin_mask(xyz, tets, odt);
     for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
         std::int64_t moved_before = 0;
         if (rOptions.mRelocate) {
             const std::vector<double> before = xyz;
-            optvol_relocate(xyz, tets, rOptions);
+            detail::smooth_odt_pass(xyz, tets, pinned, odt);
             for (std::size_t i = 0; i < n; ++i) {
                 const double dx = xyz[i * 3] - before[i * 3];
                 const double dy = xyz[i * 3 + 1] - before[i * 3 + 1];

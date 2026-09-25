@@ -21,10 +21,17 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <vector>
+
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 // Project includes
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
 namespace h5 {
@@ -166,6 +173,179 @@ DType dtype_from_h5(hid_t type_id) {
     throw ReadError("HDF5: unsupported datatype class");
 }
 
+namespace {
+
+// Direct chunk I/O (H5Dwrite_chunk / H5Dread_chunk) arrived in HDF5 1.10.2,
+// and gzip in parallel needs zlib itself.
+#if defined(MESHIOPLUSPLUS_HAS_ZLIB) && H5_VERSION_GE(1, 10, 2)
+#define MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE 1
+#endif
+
+/// Target bytes per chunk of a compressed dataset (the appendable datasets'
+/// policy below): large enough that the chunk index stays small, small
+/// enough that the chunks spread over the threads.
+constexpr std::size_t kH5uChunkBytes = std::size_t{1} << 20;
+
+/**
+ * @brief Rows per chunk for a gzip dataset of `rDims` holding `ElemBytes`-byte
+ * elements: every row whose `kH5uChunkBytes` allow, or all of them when the
+ * whole dataset fits (one chunk, as every dataset had before chunking).
+ */
+hsize_t h5u_chunk_rows(const std::vector<hsize_t>& rDims, std::size_t ElemBytes) {
+    std::size_t row_bytes = ElemBytes;
+    for (std::size_t i = 1; i < rDims.size(); ++i)
+        row_bytes *= static_cast<std::size_t>(rDims[i]);
+    const hsize_t rows = std::max<hsize_t>(1, kH5uChunkBytes / std::max<std::size_t>(1, row_bytes));
+    return std::min(rows, rDims[0]);
+}
+
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+/**
+ * @brief Write `rArr` into the chunked, deflate-filtered dataset `d` chunk by
+ * chunk: compress every chunk in parallel exactly as HDF5's deflate filter
+ * would (`compress2` at `Level`, the last chunk zero-padded to full size, as
+ * the library pads it with the default fill value), then write them in
+ * ascending order. Returns false, having written nothing, when the file type
+ * is not the memory layout byte for byte.
+ */
+bool h5u_write_deflate_chunks(hid_t d, const NDArray& rArr, const std::vector<hsize_t>& rDims,
+                              hsize_t ChunkRows, int Level) {
+    if (H5Tequal(file_type(rArr.Dtype()), native_type(rArr.Dtype())) <= 0)
+        return false;
+    const std::size_t row_bytes = rArr.Nbytes() / static_cast<std::size_t>(rDims[0]);
+    const std::size_t chunk_bytes = static_cast<std::size_t>(ChunkRows) * row_bytes;
+    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + ChunkRows - 1) / ChunkRows);
+    const auto* src = reinterpret_cast<const Bytef*>(rArr.Data());
+    std::vector<std::vector<Bytef>> packed(nchunks);
+    std::vector<int> status(nchunks, Z_OK);
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t first = c * chunk_bytes;
+            const std::size_t have = std::min(chunk_bytes, rArr.Nbytes() - first);
+            std::vector<Bytef> padded;
+            const Bytef* in = src + first;
+            if (have < chunk_bytes) {
+                padded.assign(chunk_bytes, 0);
+                std::memcpy(padded.data(), in, have);
+                in = padded.data();
+            }
+            uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
+            packed[c].resize(n);
+            status[c] = compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
+            packed[c].resize(n);
+        },
+        1);
+    std::vector<hsize_t> offset(rDims.size(), 0);
+    for (std::size_t c = 0; c < nchunks; ++c) {
+        if (status[c] != Z_OK)
+            throw WriteError("HDF5: zlib could not compress a chunk");
+        offset[0] = static_cast<hsize_t>(c) * ChunkRows;
+        if (H5Dwrite_chunk(d, H5P_DEFAULT, 0, offset.data(), packed[c].size(), packed[c].data()) <
+            0)
+            throw WriteError("HDF5: failed writing a chunk");
+        std::vector<Bytef>().swap(packed[c]);
+    }
+    return true;
+}
+
+/**
+ * @brief Read the gzip-compressed, row-chunked dataset `d` straight into
+ * `rOut` with the chunks inflated in parallel (the I/O stays serial: HDF5 is
+ * not thread-safe). Returns false, having read nothing, for any layout it does
+ * not cover -- not chunked, a filter pipeline other than deflate alone, chunks
+ * that split a row, one chunk only, a chunk never written, or a file type
+ * that is not the memory layout -- so the caller falls back to `H5Dread`.
+ */
+bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
+                             const std::vector<hsize_t>& rDims) {
+    if (rDims.empty() || rOut.Size() == 0 || H5Tequal(FileType, native_type(rOut.Dtype())) <= 0)
+        return false;
+    Hid dcpl(H5Dget_create_plist(d), H5Pclose);
+    if (!dcpl.Valid() || H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 1)
+        return false;
+    unsigned flags = 0;
+    std::size_t nelmts = 0;
+    unsigned filter_config = 0;
+    if (H5Pget_filter2(dcpl, 0, &flags, &nelmts, nullptr, 0, nullptr, &filter_config) !=
+        H5Z_FILTER_DEFLATE)
+        return false;
+    std::vector<hsize_t> chunk(rDims.size(), 0);
+    if (H5Pget_chunk(dcpl, static_cast<int>(chunk.size()), chunk.data()) !=
+        static_cast<int>(chunk.size()))
+        return false;
+    for (std::size_t i = 1; i < rDims.size(); ++i)
+        if (chunk[i] != rDims[i])
+            return false;  // chunks that split a row: not this path's shape
+    if (chunk[0] == 0 || chunk[0] >= rDims[0])
+        return false;  // one chunk: nothing to spread over threads
+
+    const std::size_t row_bytes = rOut.Nbytes() / static_cast<std::size_t>(rDims[0]);
+    const std::size_t chunk_bytes = static_cast<std::size_t>(chunk[0]) * row_bytes;
+    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + chunk[0] - 1) / chunk[0]);
+    std::vector<std::vector<Bytef>> packed(nchunks);
+    std::vector<std::uint32_t> masks(nchunks, 0);
+    std::vector<hsize_t> offset(rDims.size(), 0);
+    for (std::size_t c = 0; c < nchunks; ++c) {
+        offset[0] = static_cast<hsize_t>(c) * chunk[0];
+        hsize_t stored = 0;
+        if (H5Dget_chunk_storage_size(d, offset.data(), &stored) < 0 || stored == 0)
+            return false;  // unallocated: H5Dread supplies the fill value
+        packed[c].resize(static_cast<std::size_t>(stored));
+#if H5_VERSION_GE(2, 0, 0)
+        std::size_t got = packed[c].size();
+        const herr_t rc =
+            H5Dread_chunk2(d, H5P_DEFAULT, offset.data(), &masks[c], packed[c].data(), &got);
+        if (rc >= 0 && got != packed[c].size())
+            return false;
+#else
+        const herr_t rc = H5Dread_chunk(d, H5P_DEFAULT, offset.data(), &masks[c], packed[c].data());
+#endif
+        if (rc < 0)
+            return false;
+    }
+
+    auto* dst = reinterpret_cast<Bytef*>(rOut.Data());
+    std::vector<std::uint8_t> ok(nchunks, 0);
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t first = c * chunk_bytes;
+            const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
+            if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
+                if (packed[c].size() >= want) {
+                    std::memcpy(dst + first, packed[c].data(), want);
+                    ok[c] = 1;
+                }
+                return;
+            }
+            // The last chunk inflates to a whole chunk (HDF5 pads it); only
+            // its leading `want` bytes belong to the dataset.
+            std::vector<Bytef> tail;
+            Bytef* out = dst + first;
+            if (want < chunk_bytes) {
+                tail.resize(chunk_bytes);
+                out = tail.data();
+            }
+            uLongf n = static_cast<uLongf>(chunk_bytes);
+            const int rc =
+                uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
+            if (rc != Z_OK || n != chunk_bytes)
+                return;
+            if (!tail.empty())
+                std::memcpy(dst + first, tail.data(), want);
+            ok[c] = 1;
+        },
+        1);
+    for (std::uint8_t k : ok)
+        if (!k)
+            throw ReadError("HDF5: a compressed chunk does not inflate to its declared size");
+    return true;
+}
+#endif
+
+}  // namespace
+
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
@@ -195,7 +375,9 @@ NDArray read_dataset(hid_t loc, const std::string& rName) {
         mdt = dtype_from_h5(dt);
     }
 
-    NDArray out(mdt, shape);
+    // Uninitialized: H5Dread overwrites every element (or throws), so zero-
+    // filling first would be a wasted pass over the whole dataset.
+    NDArray out = NDArray::Uninit(mdt, shape);
     if (out.Size() > 0) {
         // For ARRAY-typed datasets the memory type must be the matching array
         // type; for scalar types the plain native type suffices.
@@ -207,8 +389,13 @@ NDArray read_dataset(hid_t loc, const std::string& rName) {
             Hid mem(H5Tarray_create2(native_type(mdt), arank, adims.data()), H5Tclose);
             if (H5Dread(d, mem, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
                 throw ReadError("HDF5: failed reading dataset '" + rName + "'");
-        } else if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0) {
-            throw ReadError("HDF5: failed reading dataset '" + rName + "'");
+        } else {
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+            if (h5u_read_deflate_chunks(d, dt, out, hdims))
+                return out;
+#endif
+            if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
+                throw ReadError("HDF5: failed reading dataset '" + rName + "'");
         }
     }
     return out;
@@ -221,8 +408,12 @@ void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int
     Hid space(H5Screate_simple(static_cast<int>(hdims.size()), hdims.data(), nullptr), H5Sclose);
 
     Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
-    if (gzip_level >= 0 && rArr.Size() > 0) {
-        H5Pset_chunk(dcpl, static_cast<int>(hdims.size()), hdims.data());
+    const bool compress = gzip_level >= 0 && rArr.Size() > 0;
+    hsize_t chunk_rows = 0;
+    if (compress) {
+        std::vector<hsize_t> chunk = hdims;
+        chunk_rows = chunk[0] = h5u_chunk_rows(hdims, dtype_size(rArr.Dtype()));
+        H5Pset_chunk(dcpl, static_cast<int>(chunk.size()), chunk.data());
         H5Pset_deflate(dcpl, static_cast<unsigned>(gzip_level));
     }
 
@@ -231,6 +422,11 @@ void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int
           H5Dclose);
     if (!d.Valid())
         throw WriteError("HDF5: could not create dataset '" + rName + "'");
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+    if (compress && chunk_rows < hdims[0] &&
+        h5u_write_deflate_chunks(d, rArr, hdims, chunk_rows, gzip_level))
+        return;
+#endif
     if (rArr.Size() > 0) {
         if (H5Dwrite(d, native_type(rArr.Dtype()), H5S_ALL, H5S_ALL, H5P_DEFAULT, rArr.Data()) < 0)
             throw WriteError("HDF5: failed writing dataset '" + rName + "'");
@@ -390,7 +586,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
     const DType mdt = dtype_from_h5(dt);
     std::vector<std::size_t> shape(dims.begin(), dims.end());
     shape[0] = Count;
-    NDArray out(mdt, shape);
+    NDArray out = NDArray::Uninit(mdt, shape);  // H5Dread fills it, or throws
     if (Count == 0 || out.Size() == 0)
         return out;
 

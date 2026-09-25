@@ -969,10 +969,10 @@ def roadmap_map():
         (
             "§4 performance",
             [
-                ("measured regressions", "S"),
-                ("text tokenizer · dtype switch", "M"),
-                ("VTU base64 · copy chain", "M"),
-                ("shared facet table · welds", "L"),
+                ("sort/scan primitives · facet table", "L"),
+                ("welds · distance kernel · kNN", "M"),
+                ("text tokenizer · VTU copy chain", "M"),
+                ("GIL release · lazy imports", "M"),
             ],
             [],
         ),

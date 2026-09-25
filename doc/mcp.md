@@ -9,7 +9,7 @@ claude mcp add meshioplusplus -- meshioplusplus-mcp
 
 Then ask the agent things like *"convert `bracket.msh` to VTU, report its quality, and slice it at z = 0.02"* — it drives `convert`, `quality` and `slice` itself.
 
-Every tool is **stateless and file-path based**: input path(s) in, output path(s) out, a strict-JSON report back. That mirrors the CLI, keeps arbitrarily large meshes out of the protocol, and lets the agent work in its own filesystem workspace. Nothing here is part of the C++ core, which stays dependency-free.
+Every tool is **file-path based**: input path(s) in, output path(s) out, a strict-JSON report back. That mirrors the CLI, keeps arbitrarily large meshes out of the protocol, and lets the agent work in its own filesystem workspace. The only state kept between calls is a [read cache](#read-cache). Nothing here is part of the C++ core, which stays dependency-free.
 
 ## Installation
 
@@ -71,6 +71,12 @@ Flags: `--host` (default `127.0.0.1`; binding elsewhere prints a warning), `--po
 ## Path sandbox
 
 By default paths are unrestricted — the server runs locally under your own account and MCP clients gate filesystem access themselves. Pass `--root DIR` (or set `MESHIOPLUSPLUS_MCP_ROOT`) to confine every input **and** output path: each path is realpath-resolved (symlinks included) and must stay inside the root; relative paths resolve against it. Violations come back as clean `{"error": ..., "error_type": "ValueError"}` payloads the agent can act on — no tool ever surfaces a raw traceback.
+
+## Read cache
+
+An agent usually asks several questions of one file in a row — `stats`, `quality`, `data_info`, `regions`, `bandwidth` — and each used to parse it again. The server keeps the meshes it has parsed, least recently used first, within a byte budget set by `MESHIOPLUSPLUS_MCP_CACHE_MB` (default 512; `0` turns the cache off). An entry is keyed on the file's identity — resolved path, device, inode, size, and modification and change times in nanoseconds — plus the format and read options (`time_step`, `piece`, `ghosts`), so a file rewritten by anyone, the agent's own tools included, is read again. Every tool gets a private copy, never the cached mesh, and writing a file through the server drops its entry.
+
+Formats whose reader follows other files are never cached, because the entry file's `stat` cannot see a change to the rest: XDMF with its HDF5 data, `.pvtu`/`.pvtp` pieces, `.pvd`, `.vtm`, EnSight, GiD with its results file, glTF with its buffers, TetGen and Triangle pairs, decks with include files (Abaqus, LS-DYNA, Nastran), directory formats (OpenFOAM, `pmsh`, Zarr, ADIOS2 `.bp`) and the other multi-file readers listed in `_CACHE_UNSAFE_FORMATS`.
 
 ## Tools
 

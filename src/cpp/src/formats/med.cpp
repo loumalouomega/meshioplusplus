@@ -124,7 +124,7 @@ NDArray flatten_f(const NDArray& rA, std::int64_t shift, const std::vector<int>*
     const std::size_t n = detail::rows(rA);
     const std::size_t k = detail::cols(rA);
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
-    NDArray out(rA.Dtype(), {n * k});
+    NDArray out = NDArray::Uninit(rA.Dtype(), {n * k});  // every element is written below
     detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
         T* dst = out.As<T>();
@@ -157,7 +157,7 @@ NDArray flatten_f(const NDArray& rA, std::int64_t shift, const std::vector<int>*
 NDArray unflatten_f(const NDArray& rFlat, std::size_t n, std::size_t k, std::int64_t shift,
                     const std::vector<int>* pPerm = nullptr) {
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
-    NDArray out(rFlat.Dtype(), {n, k});
+    NDArray out = NDArray::Uninit(rFlat.Dtype(), {n, k});  // every element is written below
     detail::dispatch_dtype(rFlat.Dtype(), [&]<class T>() {
         const T* src = rFlat.As<T>();
         T* dst = out.As<T>();
@@ -637,14 +637,22 @@ void med_attach_point_regions(Mesh& rMesh, const MedInfo& rInfo) {
     if (rInfo.mPointTags.empty() || !rMesh.HasPointData("point_tags"))
         return;
     const NDArray& fam = rMesh.PointData("point_tags");
+    // One pass over the points, bucketing each by its family, instead of one
+    // pass per family: O(points), not O(families x points). Each bucket is
+    // filled in ascending point order, exactly what the per-family scan gave.
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> matches_of;
+    matches_of.reserve(rInfo.mPointTags.size());
+    for (const auto& kv : rInfo.mPointTags)
+        matches_of.try_emplace(kv.first);
+    for (std::size_t i = 0; i < fam.Size(); ++i) {
+        auto it = matches_of.find(detail::read_int(fam, i));
+        if (it != matches_of.end())
+            it->second.push_back(static_cast<std::int64_t>(i));
+    }
     std::map<std::string, std::vector<std::int64_t>> by_name;
     for (const auto& kv : rInfo.mPointTags) {
-        const std::int64_t fid = kv.first;
         const std::vector<std::string>& names = kv.second;
-        std::vector<std::int64_t> matches;
-        for (std::size_t i = 0; i < fam.Size(); ++i)
-            if (detail::read_int(fam, i) == fid)
-                matches.push_back(static_cast<std::int64_t>(i));
+        const std::vector<std::int64_t>& matches = matches_of[kv.first];
         if (matches.empty())
             continue;  // a family matching no point contributes no region --
                        // even one already seen under this name.
@@ -671,23 +679,34 @@ void med_attach_cell_regions(Mesh& rMesh, const MedInfo& rInfo) {
     for (const auto& kv : rInfo.mCellTags)
         for (const auto& name : kv.second)
             by_name.try_emplace(name);
+    // One pass over the cells, bucketing each by its family (see the point
+    // version above); a bucket holds its cells in ascending (block, row)
+    // order, the order the former per-family scan appended them in.
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> matches_of;
+    matches_of.reserve(rInfo.mCellTags.size());
+    for (const auto& kv : rInfo.mCellTags)
+        if (!kv.second.empty())
+            matches_of.try_emplace(kv.first);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const NDArray& fam = rMesh.CellData("cell_tags", b);
+        for (std::size_t i = 0; i < fam.Size(); ++i) {
+            auto it = matches_of.find(detail::read_int(fam, i));
+            if (it == matches_of.end())
+                continue;
+            const std::int64_t g =
+                detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
+            if (g < 0 || g >= total)
+                continue;
+            it->second.push_back(g);
+        }
+    }
     for (const auto& kv : rInfo.mCellTags) {
-        const std::int64_t fid = kv.first;
-        const std::vector<std::string>& names = kv.second;
-        if (names.empty())
+        if (kv.second.empty())
             continue;
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const NDArray& fam = rMesh.CellData("cell_tags", b);
-            for (std::size_t i = 0; i < fam.Size(); ++i) {
-                if (detail::read_int(fam, i) != fid)
-                    continue;
-                const std::int64_t g =
-                    detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
-                if (g < 0 || g >= total)
-                    continue;
-                for (const auto& name : names)
-                    by_name[name].push_back(g);
-            }
+        const std::vector<std::int64_t>& matches = matches_of[kv.first];
+        for (const auto& name : kv.second) {
+            std::vector<std::int64_t>& dst = by_name[name];
+            dst.insert(dst.end(), matches.begin(), matches.end());
         }
     }
     for (auto& kv : by_name) {

@@ -9584,6 +9584,12 @@ MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
  * shape, rather than exposed as a compound/array-typed element.
  * A scalar (0-dimensional) dataset comes back with shape `{1}`.
  *
+ * A gzip-compressed dataset stored in several row chunks (what
+ * `write_dataset` writes for more than about 1 MiB, and what h5py writes)
+ * is read chunk by chunk and inflated in parallel, straight into the
+ * result; any other layout, filter pipeline or on-disk byte order goes
+ * through a plain `H5Dread`. Either way the result is the same.
+ *
  * @param loc Group or file handle the dataset lives under.
  * @param rName Name of the dataset to read.
  * @return A new owning `NDArray` holding the dataset's contents.
@@ -9595,9 +9601,12 @@ MESHIOPLUSPLUS_API NDArray read_dataset(hid_t loc, const std::string& rName);
  * @brief Writes a full dataset in one call, optionally gzip-compressed.
  *
  * When `gzip_level >= 0` and `arr` is non-empty, the dataset is created
- * chunked with a single chunk spanning the whole shape and gzip deflate
- * filtering enabled at that level; otherwise it is a plain contiguous
- * dataset. Uses `file_type(arr.Dtype())` for the on-disk type and
+ * chunked, with gzip deflate filtering at that level: one chunk spanning
+ * the whole shape up to about 1 MiB, and chunks of whole rows of about 1 MiB
+ * beyond that (HDF5 refuses a chunk of 4 GiB or more). The chunks are
+ * compressed in parallel and written in order, so the file is identical at
+ * every thread count. Otherwise the dataset is plain contiguous. Uses
+ * `file_type(arr.Dtype())` for the on-disk type and
  * `native_type(arr.Dtype())` for the in-memory transfer type.
  *
  * @param loc Group or file handle to create the dataset under.
@@ -11004,7 +11013,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 14
+#define MESHIOPLUSPLUS_VERSION_MINOR 15
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11014,7 +11023,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.14.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.15.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -11826,7 +11835,11 @@ MESHIOPLUSPLUS_API void warn_regions_dropped(const Mesh& rIn, const std::string&
  */
 
 // System includes
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <vector>
 
 namespace meshioplusplus {
 namespace detail {
@@ -11887,6 +11900,43 @@ inline std::uint64_t sfc_hilbert_key(const std::uint32_t q[3], int bits) {
         for (i = 0; i < n; ++i)
             d = (d << 1) | static_cast<std::uint64_t>((X[i] >> b) & 1u);
     return d;
+}
+
+/**
+ * @brief Stable argsort of curve keys: the indices `0 .. n-1` ordered by
+ * `rKeys[i]`, ties in ascending index -- exactly what `std::stable_sort` with
+ * an indirect `rKeys[a] < rKeys[b]` comparator returns, as a least-significant-
+ * digit radix sort (11-bit digits; a digit every key shares is skipped). It
+ * replaces that comparison sort in `reorder` and `partition` (roadmap §4):
+ * linear passes over two index buffers instead of O(n log n) indirect loads.
+ */
+inline std::vector<std::int64_t> sfc_stable_argsort(const std::vector<std::uint64_t>& rKeys) {
+    const std::size_t n = rKeys.size();
+    std::vector<std::int64_t> order(n);
+    std::iota(order.begin(), order.end(), std::int64_t{0});
+    if (n < 2)
+        return order;
+    constexpr int kDigitBits = 11;
+    constexpr std::size_t kBuckets = std::size_t{1} << kDigitBits;
+    std::vector<std::int64_t> next(n);
+    std::vector<std::size_t> count(kBuckets);
+    for (int shift = 0; shift < 64; shift += kDigitBits) {
+        std::fill(count.begin(), count.end(), 0);
+        for (std::uint64_t k : rKeys)
+            ++count[(k >> shift) & (kBuckets - 1)];
+        if (count[(rKeys[0] >> shift) & (kBuckets - 1)] == n)
+            continue;  // every key has this digit: the pass would not move anything
+        std::size_t sum = 0;
+        for (std::size_t& c : count) {
+            const std::size_t here = c;
+            c = sum;
+            sum += here;
+        }
+        for (std::int64_t idx : order)
+            next[count[(rKeys[static_cast<std::size_t>(idx)] >> shift) & (kBuckets - 1)]++] = idx;
+        order.swap(next);
+    }
+    return order;
 }
 
 }  // namespace detail
@@ -13343,11 +13393,13 @@ MESHIOPLUSPLUS_API std::string b64encode(const unsigned char* pData, std::size_t
 /**
  * @brief Base64-decodes `len` characters of `s`.
  *
- * Builds (and caches, in a function-local `static`) an inverse lookup table
- * from ASCII byte to 6-bit value on first call. Silently skips `'='`
- * padding and whitespace (`\n \r space \t`), and silently ignores any other
- * character outside the base64 alphabet, rather than treating either as an
- * error — VTU-embedded base64 can be split across lines.
+ * Silently skips `'='` padding and whitespace (`\n \r space \t`), and
+ * silently ignores any other character outside the base64 alphabet, rather
+ * than treating either as an error — VTU-embedded base64 can be split across
+ * lines. The valid characters form one bit stream: `m` of them decode to
+ * `floor(6m / 8)` bytes. Long inputs decode in parallel, in fixed-size chunks
+ * located by a pre-count of each chunk's valid characters; the result does
+ * not depend on the backend or the thread count.
  * @param pS Base64 text to decode (need not be NUL-terminated; length is explicit).
  * @param len Number of characters in `pS` to consider.
  * @return The decoded raw bytes.
@@ -25399,9 +25451,13 @@ MESHIOPLUSPLUS_API NormalsResult compute_normals(const Mesh& rMesh,
  *
  * ### Determinism
  *
- * Per-tet quality and the face/edge adjacency of each sweep are built in
- * `parallel_for` into disjoint slots; the flip-application loop is **serial**,
- * in ascending (cell, local face/edge) order, because a flip mutates shared
+ * The relocation half is a Jacobi pass, one `parallel_for` over the nodes
+ * writing disjoint slots (`smooth`'s ODT pass, run straight on the working
+ * buffer; the pin mask is computed once, since neither flip changes the
+ * boundary). Each flip sub-pass finds its candidates in a table built by
+ * sorting (face key, slot) or (edge key, tet) records -- a function of the
+ * connectivity alone -- and applies flips **serially**, in ascending
+ * (cell, local face) or edge-key order, because a flip mutates shared
  * incidence (`decimate_volume`'s greedy-loop reasoning). Output is
  * byte-identical across the three mesh backends and across thread counts.
  *
@@ -25550,7 +25606,7 @@ MESHIOPLUSPLUS_API OptimizeVolumeResult optimize_volume(const Mesh& rMesh,
  *
  * **Determinism.** The SFC path is byte-identical across mesh backends and
  * thread counts: keys are computed in `parallel_for` into disjoint slots, the
- * argsort is a serial `std::stable_sort` tie-broken by cell index, and the cut
+ * argsort is a serial stable radix sort tie-broken by cell index, and the cut
  * is a serial integer/prefix-sum rule. The KaHIP path is deterministic for a
  * fixed KaHIP build and seed, but its assignment may differ between KaHIP
  * versions — tests must assert balance and coverage, never exact labels.
@@ -32889,6 +32945,60 @@ inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
 }  // namespace xdmfdetail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/xdmf_doc.hpp =====
+// ===== begin src/cpp/src/operations/smooth_odt.hpp =====
+/**
+ * @file operations/smooth_odt.hpp
+ * @brief `smooth`'s ODT relocation pass, callable without building a mesh.
+ *
+ * An **operation-private** header (the `formats/gid_common.hpp` precedent):
+ * it lives beside the `.cpp` files, nothing outside `smooth.cpp` and
+ * `optimize_volume.cpp` includes it, and no installed header may name it, so
+ * it adds nothing to the API or the ABI.
+ *
+ * `optimize_volume` used to relocate by building a fresh `Mesh` and calling
+ * `smooth()` once per sweep, which rebuilt the node adjacency (unused by ODT),
+ * the boundary facet hash, the cell table and the incidence, and copied the
+ * points and connectivity in and out. The flips never change the boundary, so
+ * the pin mask is computed once; each sweep then rebuilds only the tet table
+ * and incidence (the flips change the tets) and runs the same Jacobi pass,
+ * with the same arithmetic in the same order, straight on the caller's
+ * coordinate buffer (roadmap §4).
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The nodes `smooth(rTetMesh, rOptions)` would hold still: the
+ * caller's `mFrozen`, the boundary when `mFixBoundary`, and feature nodes
+ * (a subset of the boundary) -- phase 2 of `smooth()`, with its warnings.
+ * @throws std::invalid_argument when `mFrozen` has the wrong length.
+ */
+std::vector<std::uint8_t> smooth_odt_pin_mask(const Mesh& rTetMesh, const SmoothOptions& rOptions);
+
+/**
+ * @brief One ODT pass (`smooth` with `SmoothMethod::Odt`, one iteration, the
+ * lambda from `rOptions`) over the tets `rTets`, moving `rXyz` (a flat `(n, 3)`
+ * buffer) in place, with `rPinned` held still and the inversion guard as
+ * `rOptions.mGuardInversion` says. Bit-identical to `smooth()` on the mesh of
+ * those points and tets.
+ * @return The node moves the inversion guard rejected.
+ */
+std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
+                             const std::vector<std::array<std::int64_t, 4>>& rTets,
+                             const std::vector<std::uint8_t>& rPinned,
+                             const SmoothOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/smooth_odt.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.cpp =====
 /**
  * pugixml parser - version 1.14
@@ -48918,6 +49028,12 @@ bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <vector>
+
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 // Project includes
 
@@ -49061,6 +49177,179 @@ DType dtype_from_h5(hid_t type_id) {
     throw ReadError("HDF5: unsupported datatype class");
 }
 
+namespace {
+
+// Direct chunk I/O (H5Dwrite_chunk / H5Dread_chunk) arrived in HDF5 1.10.2,
+// and gzip in parallel needs zlib itself.
+#if defined(MESHIOPLUSPLUS_HAS_ZLIB) && H5_VERSION_GE(1, 10, 2)
+#define MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE 1
+#endif
+
+/// Target bytes per chunk of a compressed dataset (the appendable datasets'
+/// policy below): large enough that the chunk index stays small, small
+/// enough that the chunks spread over the threads.
+constexpr std::size_t kH5uChunkBytes = std::size_t{1} << 20;
+
+/**
+ * @brief Rows per chunk for a gzip dataset of `rDims` holding `ElemBytes`-byte
+ * elements: every row whose `kH5uChunkBytes` allow, or all of them when the
+ * whole dataset fits (one chunk, as every dataset had before chunking).
+ */
+hsize_t h5u_chunk_rows(const std::vector<hsize_t>& rDims, std::size_t ElemBytes) {
+    std::size_t row_bytes = ElemBytes;
+    for (std::size_t i = 1; i < rDims.size(); ++i)
+        row_bytes *= static_cast<std::size_t>(rDims[i]);
+    const hsize_t rows = std::max<hsize_t>(1, kH5uChunkBytes / std::max<std::size_t>(1, row_bytes));
+    return std::min(rows, rDims[0]);
+}
+
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+/**
+ * @brief Write `rArr` into the chunked, deflate-filtered dataset `d` chunk by
+ * chunk: compress every chunk in parallel exactly as HDF5's deflate filter
+ * would (`compress2` at `Level`, the last chunk zero-padded to full size, as
+ * the library pads it with the default fill value), then write them in
+ * ascending order. Returns false, having written nothing, when the file type
+ * is not the memory layout byte for byte.
+ */
+bool h5u_write_deflate_chunks(hid_t d, const NDArray& rArr, const std::vector<hsize_t>& rDims,
+                              hsize_t ChunkRows, int Level) {
+    if (H5Tequal(file_type(rArr.Dtype()), native_type(rArr.Dtype())) <= 0)
+        return false;
+    const std::size_t row_bytes = rArr.Nbytes() / static_cast<std::size_t>(rDims[0]);
+    const std::size_t chunk_bytes = static_cast<std::size_t>(ChunkRows) * row_bytes;
+    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + ChunkRows - 1) / ChunkRows);
+    const auto* src = reinterpret_cast<const Bytef*>(rArr.Data());
+    std::vector<std::vector<Bytef>> packed(nchunks);
+    std::vector<int> status(nchunks, Z_OK);
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t first = c * chunk_bytes;
+            const std::size_t have = std::min(chunk_bytes, rArr.Nbytes() - first);
+            std::vector<Bytef> padded;
+            const Bytef* in = src + first;
+            if (have < chunk_bytes) {
+                padded.assign(chunk_bytes, 0);
+                std::memcpy(padded.data(), in, have);
+                in = padded.data();
+            }
+            uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
+            packed[c].resize(n);
+            status[c] = compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
+            packed[c].resize(n);
+        },
+        1);
+    std::vector<hsize_t> offset(rDims.size(), 0);
+    for (std::size_t c = 0; c < nchunks; ++c) {
+        if (status[c] != Z_OK)
+            throw WriteError("HDF5: zlib could not compress a chunk");
+        offset[0] = static_cast<hsize_t>(c) * ChunkRows;
+        if (H5Dwrite_chunk(d, H5P_DEFAULT, 0, offset.data(), packed[c].size(), packed[c].data()) <
+            0)
+            throw WriteError("HDF5: failed writing a chunk");
+        std::vector<Bytef>().swap(packed[c]);
+    }
+    return true;
+}
+
+/**
+ * @brief Read the gzip-compressed, row-chunked dataset `d` straight into
+ * `rOut` with the chunks inflated in parallel (the I/O stays serial: HDF5 is
+ * not thread-safe). Returns false, having read nothing, for any layout it does
+ * not cover -- not chunked, a filter pipeline other than deflate alone, chunks
+ * that split a row, one chunk only, a chunk never written, or a file type
+ * that is not the memory layout -- so the caller falls back to `H5Dread`.
+ */
+bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
+                             const std::vector<hsize_t>& rDims) {
+    if (rDims.empty() || rOut.Size() == 0 || H5Tequal(FileType, native_type(rOut.Dtype())) <= 0)
+        return false;
+    Hid dcpl(H5Dget_create_plist(d), H5Pclose);
+    if (!dcpl.Valid() || H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 1)
+        return false;
+    unsigned flags = 0;
+    std::size_t nelmts = 0;
+    unsigned filter_config = 0;
+    if (H5Pget_filter2(dcpl, 0, &flags, &nelmts, nullptr, 0, nullptr, &filter_config) !=
+        H5Z_FILTER_DEFLATE)
+        return false;
+    std::vector<hsize_t> chunk(rDims.size(), 0);
+    if (H5Pget_chunk(dcpl, static_cast<int>(chunk.size()), chunk.data()) !=
+        static_cast<int>(chunk.size()))
+        return false;
+    for (std::size_t i = 1; i < rDims.size(); ++i)
+        if (chunk[i] != rDims[i])
+            return false;  // chunks that split a row: not this path's shape
+    if (chunk[0] == 0 || chunk[0] >= rDims[0])
+        return false;  // one chunk: nothing to spread over threads
+
+    const std::size_t row_bytes = rOut.Nbytes() / static_cast<std::size_t>(rDims[0]);
+    const std::size_t chunk_bytes = static_cast<std::size_t>(chunk[0]) * row_bytes;
+    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + chunk[0] - 1) / chunk[0]);
+    std::vector<std::vector<Bytef>> packed(nchunks);
+    std::vector<std::uint32_t> masks(nchunks, 0);
+    std::vector<hsize_t> offset(rDims.size(), 0);
+    for (std::size_t c = 0; c < nchunks; ++c) {
+        offset[0] = static_cast<hsize_t>(c) * chunk[0];
+        hsize_t stored = 0;
+        if (H5Dget_chunk_storage_size(d, offset.data(), &stored) < 0 || stored == 0)
+            return false;  // unallocated: H5Dread supplies the fill value
+        packed[c].resize(static_cast<std::size_t>(stored));
+#if H5_VERSION_GE(2, 0, 0)
+        std::size_t got = packed[c].size();
+        const herr_t rc =
+            H5Dread_chunk2(d, H5P_DEFAULT, offset.data(), &masks[c], packed[c].data(), &got);
+        if (rc >= 0 && got != packed[c].size())
+            return false;
+#else
+        const herr_t rc = H5Dread_chunk(d, H5P_DEFAULT, offset.data(), &masks[c], packed[c].data());
+#endif
+        if (rc < 0)
+            return false;
+    }
+
+    auto* dst = reinterpret_cast<Bytef*>(rOut.Data());
+    std::vector<std::uint8_t> ok(nchunks, 0);
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t first = c * chunk_bytes;
+            const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
+            if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
+                if (packed[c].size() >= want) {
+                    std::memcpy(dst + first, packed[c].data(), want);
+                    ok[c] = 1;
+                }
+                return;
+            }
+            // The last chunk inflates to a whole chunk (HDF5 pads it); only
+            // its leading `want` bytes belong to the dataset.
+            std::vector<Bytef> tail;
+            Bytef* out = dst + first;
+            if (want < chunk_bytes) {
+                tail.resize(chunk_bytes);
+                out = tail.data();
+            }
+            uLongf n = static_cast<uLongf>(chunk_bytes);
+            const int rc =
+                uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
+            if (rc != Z_OK || n != chunk_bytes)
+                return;
+            if (!tail.empty())
+                std::memcpy(dst + first, tail.data(), want);
+            ok[c] = 1;
+        },
+        1);
+    for (std::uint8_t k : ok)
+        if (!k)
+            throw ReadError("HDF5: a compressed chunk does not inflate to its declared size");
+    return true;
+}
+#endif
+
+}  // namespace
+
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
@@ -49090,7 +49379,9 @@ NDArray read_dataset(hid_t loc, const std::string& rName) {
         mdt = dtype_from_h5(dt);
     }
 
-    NDArray out(mdt, shape);
+    // Uninitialized: H5Dread overwrites every element (or throws), so zero-
+    // filling first would be a wasted pass over the whole dataset.
+    NDArray out = NDArray::Uninit(mdt, shape);
     if (out.Size() > 0) {
         // For ARRAY-typed datasets the memory type must be the matching array
         // type; for scalar types the plain native type suffices.
@@ -49102,8 +49393,13 @@ NDArray read_dataset(hid_t loc, const std::string& rName) {
             Hid mem(H5Tarray_create2(native_type(mdt), arank, adims.data()), H5Tclose);
             if (H5Dread(d, mem, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
                 throw ReadError("HDF5: failed reading dataset '" + rName + "'");
-        } else if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0) {
-            throw ReadError("HDF5: failed reading dataset '" + rName + "'");
+        } else {
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+            if (h5u_read_deflate_chunks(d, dt, out, hdims))
+                return out;
+#endif
+            if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
+                throw ReadError("HDF5: failed reading dataset '" + rName + "'");
         }
     }
     return out;
@@ -49116,8 +49412,12 @@ void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int
     Hid space(H5Screate_simple(static_cast<int>(hdims.size()), hdims.data(), nullptr), H5Sclose);
 
     Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
-    if (gzip_level >= 0 && rArr.Size() > 0) {
-        H5Pset_chunk(dcpl, static_cast<int>(hdims.size()), hdims.data());
+    const bool compress = gzip_level >= 0 && rArr.Size() > 0;
+    hsize_t chunk_rows = 0;
+    if (compress) {
+        std::vector<hsize_t> chunk = hdims;
+        chunk_rows = chunk[0] = h5u_chunk_rows(hdims, dtype_size(rArr.Dtype()));
+        H5Pset_chunk(dcpl, static_cast<int>(chunk.size()), chunk.data());
         H5Pset_deflate(dcpl, static_cast<unsigned>(gzip_level));
     }
 
@@ -49126,6 +49426,11 @@ void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int
           H5Dclose);
     if (!d.Valid())
         throw WriteError("HDF5: could not create dataset '" + rName + "'");
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+    if (compress && chunk_rows < hdims[0] &&
+        h5u_write_deflate_chunks(d, rArr, hdims, chunk_rows, gzip_level))
+        return;
+#endif
     if (rArr.Size() > 0) {
         if (H5Dwrite(d, native_type(rArr.Dtype()), H5S_ALL, H5S_ALL, H5P_DEFAULT, rArr.Data()) < 0)
             throw WriteError("HDF5: failed writing dataset '" + rName + "'");
@@ -49285,7 +49590,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
     const DType mdt = dtype_from_h5(dt);
     std::vector<std::size_t> shape(dims.begin(), dims.end());
     shape[0] = Count;
-    NDArray out(mdt, shape);
+    NDArray out = NDArray::Uninit(mdt, shape);  // H5Dread fills it, or throws
     if (Count == 0 || out.Size() == 0)
         return out;
 
@@ -54679,7 +54984,10 @@ std::string b64encode(const unsigned char* pData, std::size_t len) {
     return out;
 }
 
-std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+namespace {
+
+/** @brief The inverse alphabet: a character's 6-bit value, or -1 when it is skipped. */
+const std::array<int8_t, 256>& vtub_b64_inverse() {
     // A magic static, initialised once and thread-safely ([stmt.dcl]/4): the
     // hand-rolled "static bool init" it replaces was a data race when two
     // threads decoded at once (C, Fortran, Julia or R callers).
@@ -54691,23 +54999,97 @@ std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
             t[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
         return t;
     }();
-    std::vector<unsigned char> out;
-    out.reserve(len / 4 * 3);
-    int buf = 0, bits = 0;
-    for (std::size_t i = 0; i < len; ++i) {
-        char ch = pS[i];
-        if (ch == '=' || ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t')
-            continue;
-        int v = inv[(unsigned char)ch];
-        if (v < 0)
-            continue;
-        buf = (buf << 6) | v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
+    return inv;
+}
+
+/// Text bytes per decode chunk: a constant, so the chunking never depends on
+/// the thread count (the output does not either -- each chunk writes its own
+/// byte range -- but a constant keeps the work split reproducible).
+constexpr std::size_t kVtubDecodeChunk = std::size_t(1) << 20;
+
+/**
+ * @brief Decode the 4-character groups whose first character is valid
+ * character number `first` .. `last - 1` (multiples of four apart), starting
+ * the scan at text offset `from`, which holds valid character `first`.
+ *
+ * A group whose characters run past the end of this chunk keeps scanning the
+ * text after it, so chunks need no seam handling. Writes 3 bytes per whole
+ * group and the 1 or 2 bytes of a trailing 2- or 3-character group, exactly
+ * as a serial bit accumulator would.
+ */
+void vtub_decode_groups(const std::array<int8_t, 256>& rInv, const char* pS, std::size_t len,
+                        std::size_t from, std::size_t first, std::size_t last,
+                        unsigned char* pOut) {
+    std::size_t at = from;
+    for (std::size_t k = first; k < last; k += 4) {
+        unsigned n = 0;
+        int got = 0;
+        while (got < 4 && at < len) {
+            const int v = rInv[(unsigned char)pS[at++]];
+            if (v < 0)
+                continue;
+            n = (n << 6) | static_cast<unsigned>(v);
+            ++got;
+        }
+        unsigned char* o = pOut + k / 4 * 3;
+        if (got == 4) {
+            o[0] = static_cast<unsigned char>(n >> 16);
+            o[1] = static_cast<unsigned char>(n >> 8);
+            o[2] = static_cast<unsigned char>(n);
+        } else if (got == 3) {  // 18 bits -> 2 bytes
+            o[0] = static_cast<unsigned char>(n >> 10);
+            o[1] = static_cast<unsigned char>(n >> 2);
+        } else if (got == 2) {  // 12 bits -> 1 byte
+            o[0] = static_cast<unsigned char>(n >> 4);
         }
     }
+}
+
+}  // namespace
+
+std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+    // Every character outside the alphabet -- '=' padding, whitespace, line
+    // breaks, anything else -- is skipped, and the valid characters form one
+    // bit stream: m of them decode to floor(6m / 8) bytes. Line-wrapped
+    // base64 relies on that. The text is cut into fixed chunks; a first pass
+    // counts each chunk's valid characters, and a prefix sum then tells every
+    // chunk which 4-character groups start inside it and where their bytes
+    // go, so the chunks decode independently (and in parallel) straight into
+    // the pre-sized output.
+    const std::array<int8_t, 256>& inv = vtub_b64_inverse();
+    const std::size_t nchunks = (len + kVtubDecodeChunk - 1) / kVtubDecodeChunk;
+    std::vector<std::size_t> valid(nchunks + 1, 0);
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t lo = c * kVtubDecodeChunk;
+            const std::size_t hi = std::min(len, lo + kVtubDecodeChunk);
+            std::size_t cnt = 0;
+            for (std::size_t i = lo; i < hi; ++i)
+                cnt += inv[(unsigned char)pS[i]] >= 0;
+            valid[c + 1] = cnt;
+        },
+        1);
+    for (std::size_t c = 0; c < nchunks; ++c)
+        valid[c + 1] += valid[c];
+    const std::size_t m = valid[nchunks];
+    std::vector<unsigned char> out(m / 4 * 3 + (m % 4 == 3 ? 2 : m % 4 == 2 ? 1 : 0));
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            // The first group starting in this chunk is the first multiple of
+            // four at or after its first valid character; skip the valid
+            // characters before it (they finish the previous chunk's group).
+            const std::size_t first = (valid[c] + 3) / 4 * 4;
+            const std::size_t last = std::min(m, valid[c + 1]);
+            if (first >= last)
+                return;
+            std::size_t at = c * kVtubDecodeChunk;
+            for (std::size_t skip = first - valid[c]; skip > 0; ++at)
+                skip -= inv[(unsigned char)pS[at]] >= 0;
+            vtub_decode_groups(inv, pS, len, at, first, last, out.data());
+        },
+        1);
     return out;
 }
 
@@ -55139,6 +55521,7 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 
 // Project includes
@@ -55238,7 +55621,7 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
         std::vector<std::size_t> bshape = rRaw.Shape();
         if (!bshape.empty())
             bshape[0] = bs;
-        NDArray b(rRaw.Dtype(), bshape);
+        NDArray b = NDArray::Uninit(rRaw.Dtype(), bshape);  // filled by the memcpy below
         std::size_t elems = bs * ncols;
         std::memcpy(b.Data(), rRaw.Data() + off * ncols * dtype_size(rRaw.Dtype()),
                     elems * dtype_size(rRaw.Dtype()));
@@ -55321,7 +55704,7 @@ NDArray pack_mixed_topology(const Mesh& rMesh, std::size_t& rTotalCells) {
         total_cells += nc;
         total_len += nc * (prefix + npc);
     }
-    NDArray cd(DType::Int64, {total_len});
+    NDArray cd = NDArray::Uninit(DType::Int64, {total_len});  // every slot is written below
     std::int64_t* cp = cd.As<std::int64_t>();
     std::size_t pos = 0;
     for (const auto cb : rMesh.CellRange()) {
@@ -55330,12 +55713,25 @@ NDArray pack_mixed_topology(const Mesh& rMesh, std::size_t& rTotalCells) {
         std::size_t npc = detail::cols(conn);
         int idx = meshio_to_xdmf_index(cb.Type());
         std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
-        for (std::size_t r = 0; r < nc; ++r) {
-            for (std::size_t pq = 0; pq < prefix; ++pq)
-                cp[pos++] = idx;
-            for (std::size_t j = 0; j < npc; ++j)
-                cp[pos++] = detail::read_int(conn, r * npc + j);
-        }
+        // Each row lands at a fixed offset, so the rows fill in parallel, and
+        // the dtype switch is taken once per block rather than per id.
+        std::int64_t* block = cp + pos;
+        const std::size_t stride = prefix + npc;
+        detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
+            const T* src = conn.As<T>();
+            parallel_for_bw(nc, [&](std::size_t r) {
+                std::int64_t* row = block + r * stride;
+                for (std::size_t pq = 0; pq < prefix; ++pq)
+                    row[pq] = idx;
+                for (std::size_t j = 0; j < npc; ++j) {
+                    if constexpr (std::is_floating_point_v<T>)
+                        row[prefix + j] = detail::read_int(conn, r * npc + j);
+                    else
+                        row[prefix + j] = static_cast<std::int64_t>(src[r * npc + j]);
+                }
+            });
+        });
+        pos += nc * stride;
     }
     rTotalCells = total_cells;
     return cd;
@@ -89018,7 +89414,7 @@ NDArray flatten_f(const NDArray& rA, std::int64_t shift, const std::vector<int>*
     const std::size_t n = detail::rows(rA);
     const std::size_t k = detail::cols(rA);
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
-    NDArray out(rA.Dtype(), {n * k});
+    NDArray out = NDArray::Uninit(rA.Dtype(), {n * k});  // every element is written below
     detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
         T* dst = out.As<T>();
@@ -89051,7 +89447,7 @@ NDArray flatten_f(const NDArray& rA, std::int64_t shift, const std::vector<int>*
 NDArray unflatten_f(const NDArray& rFlat, std::size_t n, std::size_t k, std::int64_t shift,
                     const std::vector<int>* pPerm = nullptr) {
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
-    NDArray out(rFlat.Dtype(), {n, k});
+    NDArray out = NDArray::Uninit(rFlat.Dtype(), {n, k});  // every element is written below
     detail::dispatch_dtype(rFlat.Dtype(), [&]<class T>() {
         const T* src = rFlat.As<T>();
         T* dst = out.As<T>();
@@ -89531,14 +89927,22 @@ void med_attach_point_regions(Mesh& rMesh, const MedInfo& rInfo) {
     if (rInfo.mPointTags.empty() || !rMesh.HasPointData("point_tags"))
         return;
     const NDArray& fam = rMesh.PointData("point_tags");
+    // One pass over the points, bucketing each by its family, instead of one
+    // pass per family: O(points), not O(families x points). Each bucket is
+    // filled in ascending point order, exactly what the per-family scan gave.
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> matches_of;
+    matches_of.reserve(rInfo.mPointTags.size());
+    for (const auto& kv : rInfo.mPointTags)
+        matches_of.try_emplace(kv.first);
+    for (std::size_t i = 0; i < fam.Size(); ++i) {
+        auto it = matches_of.find(detail::read_int(fam, i));
+        if (it != matches_of.end())
+            it->second.push_back(static_cast<std::int64_t>(i));
+    }
     std::map<std::string, std::vector<std::int64_t>> by_name;
     for (const auto& kv : rInfo.mPointTags) {
-        const std::int64_t fid = kv.first;
         const std::vector<std::string>& names = kv.second;
-        std::vector<std::int64_t> matches;
-        for (std::size_t i = 0; i < fam.Size(); ++i)
-            if (detail::read_int(fam, i) == fid)
-                matches.push_back(static_cast<std::int64_t>(i));
+        const std::vector<std::int64_t>& matches = matches_of[kv.first];
         if (matches.empty())
             continue;  // a family matching no point contributes no region --
                        // even one already seen under this name.
@@ -89565,23 +89969,34 @@ void med_attach_cell_regions(Mesh& rMesh, const MedInfo& rInfo) {
     for (const auto& kv : rInfo.mCellTags)
         for (const auto& name : kv.second)
             by_name.try_emplace(name);
+    // One pass over the cells, bucketing each by its family (see the point
+    // version above); a bucket holds its cells in ascending (block, row)
+    // order, the order the former per-family scan appended them in.
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> matches_of;
+    matches_of.reserve(rInfo.mCellTags.size());
+    for (const auto& kv : rInfo.mCellTags)
+        if (!kv.second.empty())
+            matches_of.try_emplace(kv.first);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const NDArray& fam = rMesh.CellData("cell_tags", b);
+        for (std::size_t i = 0; i < fam.Size(); ++i) {
+            auto it = matches_of.find(detail::read_int(fam, i));
+            if (it == matches_of.end())
+                continue;
+            const std::int64_t g =
+                detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
+            if (g < 0 || g >= total)
+                continue;
+            it->second.push_back(g);
+        }
+    }
     for (const auto& kv : rInfo.mCellTags) {
-        const std::int64_t fid = kv.first;
-        const std::vector<std::string>& names = kv.second;
-        if (names.empty())
+        if (kv.second.empty())
             continue;
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const NDArray& fam = rMesh.CellData("cell_tags", b);
-            for (std::size_t i = 0; i < fam.Size(); ++i) {
-                if (detail::read_int(fam, i) != fid)
-                    continue;
-                const std::int64_t g =
-                    detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
-                if (g < 0 || g >= total)
-                    continue;
-                for (const auto& name : names)
-                    by_name[name].push_back(g);
-            }
+        const std::vector<std::int64_t>& matches = matches_of[kv.first];
+        for (const auto& name : kv.second) {
+            std::vector<std::int64_t>& dst = by_name[name];
+            dst.insert(dst.end(), matches.begin(), matches.end());
         }
     }
     for (auto& kv : by_name) {
@@ -124433,6 +124848,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -124649,13 +125065,22 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         int xt = types[start];
         int nn = xdmf_idx_num_nodes(xt);
         std::size_t nrows = end - start;
-        NDArray data(DType::Int64, {nrows, static_cast<std::size_t>(nn)});
+        NDArray data = NDArray::Uninit(DType::Int64, {nrows, static_cast<std::size_t>(nn)});
         std::int64_t* dp = data.As<std::int64_t>();
-        for (std::size_t b = 0; b < nrows; ++b) {
-            std::size_t base = offsets[start + b] + ((xt == 1 || xt == 2) ? 2 : 1);
-            for (int j = 0; j < nn; ++j)
-                dp[b * nn + j] = detail::read_int(rFlat, base + j);
-        }
+        const std::size_t head = (xt == 1 || xt == 2) ? 2 : 1;
+        // Rows are independent: copy them in parallel, one dtype switch per run.
+        detail::dispatch_dtype(rFlat.Dtype(), [&]<class T>() {
+            const T* src = rFlat.As<T>();
+            parallel_for_bw(nrows, [&](std::size_t b) {
+                const std::size_t base = offsets[start + b] + head;
+                for (int j = 0; j < nn; ++j) {
+                    if constexpr (std::is_floating_point_v<T>)
+                        dp[b * nn + j] = detail::read_int(rFlat, base + j);
+                    else
+                        dp[b * nn + j] = static_cast<std::int64_t>(src[base + j]);
+                }
+            });
+        });
         rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }
@@ -138848,7 +139273,6 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
 #include <cstring>
 #include <limits>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -138967,19 +139391,6 @@ inline Tet optvol_orient_positive(const std::vector<double>& rXyz, Tet t) {
     return t;
 }
 
-// FNV-1a hash for small int64 arrays (face/edge keys).
-template <std::size_t K>
-struct OptvolArrHash {
-    std::size_t operator()(const std::array<std::int64_t, K>& a) const {
-        std::size_t h = 1469598103934665603ull;
-        for (std::size_t i = 0; i < K; ++i) {
-            h ^= static_cast<std::size_t>(a[i]);
-            h *= 1099511628211ull;
-        }
-        return h;
-    }
-};
-
 std::array<std::int64_t, 3> optvol_face_key(std::int64_t a, std::int64_t b, std::int64_t c) {
     std::array<std::int64_t, 3> f{a, b, c};
     std::sort(f.begin(), f.end());
@@ -139010,22 +139421,45 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
-    // face key -> up to two (tet index, apex node id)
-    std::unordered_map<std::array<std::int64_t, 3>, std::array<std::pair<std::size_t, std::int64_t>, 2>,
-                       OptvolArrHash<3>>
-        face_map;
-    std::unordered_map<std::array<std::int64_t, 3>, std::uint8_t, OptvolArrHash<3>> face_count;
-    face_map.reserve(nt * 4);
-    face_count.reserve(nt * 4);
+    // Every (face key, slot) of every tet, slot = 4 t + local face, sorted:
+    // equal faces form runs in slot order -- the order the former hash map
+    // saw them in -- so a run gives each face's count and its first two
+    // (tet, apex) occurrences, with no hashing. Counts are kept modulo 256
+    // and the two recorded occurrences are the last ones at each residue,
+    // exactly as the former `std::uint8_t` counter left them.
+    struct FaceRec {
+        std::array<std::int64_t, 3> mKey;
+        std::size_t mSlot;
+    };
+    struct FaceRun {
+        std::uint8_t mCount = 0;
+        std::array<std::pair<std::size_t, std::int64_t>, 2> mEntries{};
+    };
+    std::vector<FaceRec> recs(nt * 4);
     for (std::size_t t = 0; t < nt; ++t)
         for (int lf = 0; lf < 4; ++lf) {
             const auto fo = optvol_face_ordered(rTets[t], lf);
-            const auto key = optvol_face_key(fo[0], fo[1], fo[2]);
-            std::uint8_t& cnt = face_count[key];
-            if (cnt < 2)
-                face_map[key][cnt] = {t, rTets[t][lf]};
-            ++cnt;
+            recs[t * 4 + static_cast<std::size_t>(lf)] = {optvol_face_key(fo[0], fo[1], fo[2]),
+                                                          t * 4 + static_cast<std::size_t>(lf)};
         }
+    std::sort(recs.begin(), recs.end(), [](const FaceRec& a, const FaceRec& b) {
+        return a.mKey != b.mKey ? a.mKey < b.mKey : a.mSlot < b.mSlot;
+    });
+    std::vector<FaceRun> runs;
+    std::vector<std::uint32_t> run_of(nt * 4);
+    for (std::size_t i = 0; i < recs.size();) {
+        std::size_t j = i;
+        FaceRun run;
+        for (; j < recs.size() && recs[j].mKey == recs[i].mKey; ++j) {
+            const std::size_t slot = recs[j].mSlot;
+            if (run.mCount < 2)
+                run.mEntries[run.mCount] = {slot / 4, rTets[slot / 4][slot % 4]};
+            ++run.mCount;
+            run_of[slot] = static_cast<std::uint32_t>(runs.size());
+        }
+        runs.push_back(run);
+        i = j;
+    }
 
     std::vector<Tet> new_tets;
     std::int64_t applied = 0;
@@ -139034,10 +139468,10 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             continue;
         for (int lf = 0; lf < 4; ++lf) {
             const auto fo = optvol_face_ordered(rTets[t], lf);
-            const auto key = optvol_face_key(fo[0], fo[1], fo[2]);
-            if (face_count[key] != 2)
+            const FaceRun& run = runs[run_of[t * 4 + static_cast<std::size_t>(lf)]];
+            if (run.mCount != 2)
                 continue;  // boundary or non-manifold face
-            const auto& pair = face_map[key];
+            const auto& pair = run.mEntries;
             std::size_t u = pair[0].first == t ? pair[1].first : pair[0].first;
             std::int64_t e = pair[0].first == t ? pair[1].second : pair[0].second;
             if (u == t || u < t || !alive[u])
@@ -139106,30 +139540,36 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
-    std::unordered_map<std::array<std::int64_t, 2>, std::vector<std::size_t>, OptvolArrHash<2>>
-        edge_map;
-    edge_map.reserve(nt * 6);
+    // Every (edge key, tet) sorted: each run is one edge's tets in ascending
+    // tet order -- what the former hash map's per-edge vector held -- and the
+    // runs come in ascending key order, the order that map's keys were
+    // sorted into for a deterministic sweep.
     static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+    struct EdgeRec {
+        std::array<std::int64_t, 2> mKey;
+        std::size_t mTet;
+    };
+    std::vector<EdgeRec> recs;
+    recs.reserve(nt * 6);
     for (std::size_t t = 0; t < nt; ++t)
         for (auto& ev : kEdges)
-            edge_map[optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]])].push_back(t);
-
-    // deterministic iteration order over edge keys
-    std::vector<std::array<std::int64_t, 2>> keys;
-    keys.reserve(edge_map.size());
-    for (const auto& kv : edge_map)
-        keys.push_back(kv.first);
-    std::sort(keys.begin(), keys.end());
+            recs.push_back({optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]]), t});
+    std::sort(recs.begin(), recs.end(), [](const EdgeRec& a, const EdgeRec& b) {
+        return a.mKey != b.mKey ? a.mKey < b.mKey : a.mTet < b.mTet;
+    });
 
     std::vector<Tet> new_tets;
     std::int64_t applied = 0;
-    for (const auto& ek : keys) {
-        const std::int64_t uu = ek[0], vv = ek[1];
+    for (std::size_t r0 = 0, r1 = 0; r0 < recs.size(); r0 = r1) {
+        for (r1 = r0 + 1; r1 < recs.size() && recs[r1].mKey == recs[r0].mKey; ++r1) {
+        }
+        const std::int64_t uu = recs[r0].mKey[0], vv = recs[r0].mKey[1];
         // the alive tets on this edge
         std::array<std::size_t, 3> ring_tets{};
         int nr = 0;
         bool too_many = false;
-        for (std::size_t t : edge_map[ek]) {
+        for (std::size_t r = r0; r < r1; ++r) {
+            const std::size_t t = recs[r].mTet;
             if (!alive[t])
                 continue;
             if (nr >= 3) {
@@ -139220,37 +139660,38 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     return applied;
 }
 
-// --- ODT relocation half (delegates to smooth's SmoothMethod::Odt) -----------
-// Build a single-tetra-block Float64 mesh from the working buffers, run one ODT
-// relocation pass through `smooth` (reusing all of its boundary/feature/frozen
-// pinning and inversion guard), and read the moved points back into `rXyz`.
-// Float64 throughout so a Float32 input mesh does not accumulate one rounding
-// per sweep -- the single cast happens once, at final emission.
-void optvol_relocate(std::vector<double>& rXyz, const std::vector<Tet>& rTets,
-                     const OptimizeVolumeOptions& rOptions) {
-    const std::size_t n = rXyz.size() / 3;
-    Mesh tmp;
-    NDArray pts = NDArray::Uninit(DType::Float64, {n, 3});
-    std::memcpy(pts.Data(), rXyz.data(), rXyz.size() * sizeof(double));
-    tmp.AssignPoints(std::move(pts));
-    NDArray conn = NDArray::Uninit(DType::Int64, {rTets.size(), 4});
-    std::int64_t* cd = conn.As<std::int64_t>();
-    for (std::size_t t = 0; t < rTets.size(); ++t)
-        for (int k = 0; k < 4; ++k)
-            cd[t * 4 + k] = rTets[t][k];
-    tmp.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
-
+// --- ODT relocation half (smooth's SmoothMethod::Odt) -----------------------
+// The options of the one-iteration ODT pass each sweep runs: smooth's own
+// boundary/feature/frozen pinning and inversion guard.
+SmoothOptions optvol_odt_options(const OptimizeVolumeOptions& rOptions) {
     SmoothOptions so;
     so.mMethod = SmoothMethod::Odt;
     so.mIterations = 1;
     so.mFixBoundary = rOptions.mPreserveBoundary;
     so.mGuardInversion = true;
     so.mFrozen = rOptions.mFrozen;
-    SmoothResult sr = smooth(tmp, so);
+    return so;
+}
 
-    const NDArray& mp = sr.mMesh.Points();
-    for (std::size_t i = 0; i < n * 3; ++i)
-        rXyz[i] = detail::read_double(mp, i);
+// The nodes the relocation holds still, computed once per call: the caller's
+// frozen mask and (with mPreserveBoundary) the boundary. Neither flip changes
+// the boundary -- a 2-3 flip replaces two tets across an interior face and a
+// 3-2 flip three tets around a closed edge ring by tets with the same outer
+// faces -- so the per-sweep boundary rebuild smooth() used to do is hoisted
+// here. The mesh is the single-tetra-block Float64 one smooth() was given.
+std::vector<std::uint8_t> optvol_pin_mask(const std::vector<double>& rXyz,
+                                          const std::vector<Tet>& rTets,
+                                          const SmoothOptions& rOdt) {
+    const std::size_t n = rXyz.size() / 3;
+    Mesh tmp;
+    NDArray pts = NDArray::Uninit(DType::Float64, {n, 3});
+    std::memcpy(pts.Data(), rXyz.data(), rXyz.size() * sizeof(double));
+    tmp.AssignPoints(std::move(pts));
+    NDArray conn = NDArray::Uninit(DType::Int64, {rTets.size(), 4});
+    static_assert(sizeof(Tet) == 4 * sizeof(std::int64_t), "Tet rows are copied as a flat block");
+    std::memcpy(conn.Data(), rTets.data(), rTets.size() * sizeof(Tet));
+    tmp.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
+    return detail::smooth_odt_pin_mask(tmp, rOdt);
 }
 
 }  // namespace
@@ -139314,11 +139755,15 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     result.mMinQualityBefore = min_quality(tets);
 
     // --- the optimisation loop ------------------------------------------------
+    const SmoothOptions odt = optvol_odt_options(rOptions);
+    std::vector<std::uint8_t> pinned;
+    if (rOptions.mRelocate && rOptions.mMaxIterations > 0)
+        pinned = optvol_pin_mask(xyz, tets, odt);
     for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
         std::int64_t moved_before = 0;
         if (rOptions.mRelocate) {
             const std::vector<double> before = xyz;
-            optvol_relocate(xyz, tets, rOptions);
+            detail::smooth_odt_pass(xyz, tets, pinned, odt);
             for (std::size_t i = 0; i < n; ++i) {
                 const double dx = xyz[i * 3] - before[i * 3];
                 const double dy = xyz[i * 3 + 1] - before[i * 3 + 1];
@@ -139554,7 +139999,7 @@ std::vector<double> partition_weights(const Mesh& rMesh, const std::string& rKey
 
 // Hilbert-curve cut of the cell centroids. Deterministic by construction: the
 // keys are filled into disjoint slots in parallel, the argsort is a serial
-// stable sort (ties broken by cell index) and the cut is a serial integer /
+// stable radix sort (ties broken by cell index) and the cut is a serial integer /
 // prefix-sum rule, so the assignment is byte-identical across mesh backends
 // and thread counts.
 std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& rOptions,
@@ -139606,12 +140051,9 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
         keys[i] = detail::sfc_hilbert_key(q, bits);
     });
 
-    // Serial stable argsort along the curve (ties broken by cell index).
-    std::vector<std::int64_t> order(total);
-    std::iota(order.begin(), order.end(), std::int64_t{0});
-    std::stable_sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-        return keys[static_cast<std::size_t>(a)] < keys[static_cast<std::size_t>(b)];
-    });
+    // Serial stable argsort along the curve (ties broken by cell index): an
+    // LSD radix sort on the key, the order std::stable_sort gave.
+    const std::vector<std::int64_t> order = detail::sfc_stable_argsort(keys);
 
     // Serial cut into nparts contiguous ranges.
     if (rWeights.empty()) {
@@ -146028,6 +146470,7 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 // ===== end src/cpp/src/operations/remesh_volume.cpp =====
 // ===== begin src/cpp/src/operations/reorder.cpp =====
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -146036,6 +146479,7 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // Project includes
@@ -146205,19 +146649,36 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
     const int bits = REORDER_SFC_BITS;
 
-    double lo[3] = {std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity()};
-    double hi[3] = {-std::numeric_limits<double>::infinity(),
-                    -std::numeric_limits<double>::infinity(),
-                    -std::numeric_limits<double>::infinity()};
-    for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t d = 0; d < dim; ++d) {
-            const double c = detail::read_double(points, i * pdim + d);
-            lo[d] = std::min(lo[d], c);
-            hi[d] = std::max(hi[d], c);
+    // Bounding box as a chunked parallel reduction combined in chunk order.
+    // std::min/std::max skip a NaN coordinate (a comparison with NaN is
+    // false, so the running bound is kept) -- the serial scan's semantics,
+    // which detail::point_bbox (it propagates NaN) would change -- and are
+    // exact, so the chunking cannot show in the result.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    constexpr std::size_t kChunk = 4096;
+    const std::size_t nchunks = (n + kChunk - 1) / kChunk;
+    std::vector<std::array<double, 6>> part(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::array<double, 6> b = {kInf, kInf, kInf, -kInf, -kInf, -kInf};
+            const std::size_t stop = std::min(n, (ci + 1) * kChunk);
+            for (std::size_t i = ci * kChunk; i < stop; ++i)
+                for (std::size_t d = 0; d < dim; ++d) {
+                    const double c = detail::read_double(points, i * pdim + d);
+                    b[d] = std::min(b[d], c);
+                    b[3 + d] = std::max(b[3 + d], c);
+                }
+            part[ci] = b;
+        },
+        1);
+    double lo[3] = {kInf, kInf, kInf};
+    double hi[3] = {-kInf, -kInf, -kInf};
+    for (const auto& b : part)
+        for (std::size_t d = 0; d < 3; ++d) {
+            lo[d] = std::min(lo[d], b[d]);
+            hi[d] = std::max(hi[d], b[3 + d]);
         }
-    }
     double scale[3] = {0.0, 0.0, 0.0};
     const double qmax = static_cast<double>((std::int64_t(1) << bits) - 1);
     for (std::size_t d = 0; d < dim; ++d) {
@@ -146246,11 +146707,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
 
 // Stable argsort of the SFC keys -> node permutation (old index -> new index).
 std::vector<std::int64_t> reorder_sfc_perm(const std::vector<std::uint64_t>& rKeys, std::size_t n) {
-    std::vector<std::int64_t> order(n);
-    std::iota(order.begin(), order.end(), std::int64_t{0});
-    std::stable_sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-        return rKeys[static_cast<std::size_t>(a)] < rKeys[static_cast<std::size_t>(b)];
-    });
+    const std::vector<std::int64_t> order = detail::sfc_stable_argsort(rKeys);
     std::vector<std::int64_t> perm(n);
     for (std::size_t newidx = 0; newidx < n; ++newidx)
         perm[static_cast<std::size_t>(order[newidx])] = static_cast<std::int64_t>(newidx);
@@ -146310,16 +146767,51 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
 
         // Per-cell sort key = min new node index; stable argsort -> cell order.
         std::vector<std::int64_t> key(nc);
-        parallel_for_bw(nc, [&](std::size_t c) {
-            std::vector<std::int64_t> nodes;
-            detail::cell_node_ids(cb, c, n, nodes);
-            key[c] = reorder_cell_key(nodes, node_perm);
-        });
+        if (!cb.IsRagged()) {
+            // Rectangular block: the minimum straight off the connectivity,
+            // with no per-cell node vector (out-of-range ids skipped, as
+            // cell_node_ids does; a cell with none keys 0).
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
+                const T* ids = conn.As<T>();
+                parallel_for_bw(nc, [&](std::size_t c) {
+                    std::int64_t m = std::numeric_limits<std::int64_t>::max();
+                    bool any = false;
+                    for (std::size_t k = 0; k < npc; ++k) {
+                        std::int64_t id;
+                        if constexpr (std::is_floating_point_v<T>)
+                            id = detail::read_int(conn, c * npc + k);  // NaN-safe
+                        else
+                            id = static_cast<std::int64_t>(ids[c * npc + k]);
+                        if (id < 0 || static_cast<std::size_t>(id) >= n)
+                            continue;
+                        m = std::min(m, node_perm[static_cast<std::size_t>(id)]);
+                        any = true;
+                    }
+                    key[c] = any ? m : 0;
+                });
+            });
+        } else {
+            parallel_for_bw(nc, [&](std::size_t c) {
+                std::vector<std::int64_t> nodes;
+                detail::cell_node_ids(cb, c, n, nodes);
+                key[c] = reorder_cell_key(nodes, node_perm);
+            });
+        }
+        // Stable counting sort: every key is a new node index in [0, n), so
+        // one histogram pass replaces the comparison sort and keeps ties in
+        // ascending cell order, as the stable sort did.
         std::vector<std::int64_t> cellorder(nc);
-        std::iota(cellorder.begin(), cellorder.end(), std::int64_t{0});
-        std::stable_sort(cellorder.begin(), cellorder.end(), [&](std::int64_t a, std::int64_t b) {
-            return key[static_cast<std::size_t>(a)] < key[static_cast<std::size_t>(b)];
-        });
+        {
+            std::vector<std::size_t> start(n + 2, 0);
+            for (std::int64_t k : key)
+                ++start[static_cast<std::size_t>(k) + 1];
+            for (std::size_t b = 0; b + 1 < start.size(); ++b)
+                start[b + 1] += start[b];
+            for (std::size_t c = 0; c < nc; ++c)
+                cellorder[start[static_cast<std::size_t>(key[c])]++] = static_cast<std::int64_t>(c);
+        }
         std::vector<std::int64_t> cellperm(nc);  // old -> new
         for (std::size_t p = 0; p < nc; ++p)
             cellperm[static_cast<std::size_t>(cellorder[p])] = static_cast<std::int64_t>(p);
@@ -149736,33 +150228,37 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
                                 "' (expected 'laplacian', 'taubin' or 'odt')");
 }
 
-SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
-    const SmoothParams params = smooth_resolve_params(rOptions);
-    const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
+// The measurable-cell table smooth_build_cell_table builds for a mesh made of
+// one tetra block with these rows, without building the mesh: every tet with
+// in-range corners, in order, measured by its outward face fan.
+SmoothCellTable smooth_cell_table_from_tets(const std::vector<std::array<std::int64_t, 4>>& rTets,
+                                            std::size_t n) {
+    SmoothCellTable t;
+    t.mCornerOffset.reserve(rTets.size() + 1);
+    t.mCornerNodes.reserve(rTets.size() * 4);
+    t.mCornerOffset.push_back(0);
+    t.mFaceTables.push_back(&detail::cell_faces(CellType::Tetra));
+    for (const auto& tet : rTets) {
+        bool ok = true;
+        for (std::int64_t id : tet)
+            ok = ok && id >= 0 && static_cast<std::size_t>(id) < n;
+        if (!ok)
+            continue;
+        t.mCornerNodes.insert(t.mCornerNodes.end(), tet.begin(), tet.end());
+        t.mMeasure.push_back(SmoothMeasure::FaceFan);
+        t.mFaceTable.push_back(0);
+        t.mPolyStart.push_back(-1);
+        t.mPolyNumFaces.push_back(0);
+        t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
+    }
+    return t;
+}
 
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
-
-    const bool is_odt = params.mMethod == SmoothMethod::Odt;
-    if (is_odt)
-        smooth_check_odt_blocks(rMesh);
-    // Degenerate-tet / degenerate-circumsphere threshold, matching
-    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
-    constexpr double kOdtEps = 1e-14;
-
-    // --- phase 0: coordinates as a flat double buffer ---
-    const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
-    std::vector<double> prev = original;
-    std::vector<double> cur(prev.size(), 0.0);
-
-    // --- phase 1: edge adjacency ---
-    const detail::NodeAdjacency csr =
-        detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
-
-    // --- phase 2: the pin mask (boundary | feature | unknown | caller) ---
+// Phase 2 of smooth(): the pin mask (boundary | feature | unknown | caller),
+// shared with the ODT relocation context optimize_volume keeps across sweeps.
+// `rXyz` is the flat coordinate buffer (the feature pass needs facet normals).
+std::vector<std::uint8_t> smooth_pin_mask(const Mesh& rMesh, const SmoothOptions& rOptions,
+                                          std::size_t n, const std::vector<double>& rXyz) {
     std::vector<std::uint8_t> frozen(n, 0);
     if (!rOptions.mFrozen.empty())
         for (std::size_t i = 0; i < n; ++i)
@@ -149773,7 +150269,7 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         const bool face_mode = smooth_has_volume_cells(rMesh);
         std::vector<std::uint8_t> boundary(n, 0);
         std::vector<SmoothBoundaryFacet> facets;
-        smooth_mark_boundary(rMesh, n, face_mode, prev, boundary,
+        smooth_mark_boundary(rMesh, n, face_mode, rXyz, boundary,
                              rOptions.mPreserveFeatures ? &facets : nullptr);
         for (std::size_t i = 0; i < n; ++i)
             if (boundary[i])
@@ -149792,25 +150288,23 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             "are boundary nodes)");
     }
 
-    // --- phase 3: the inversion guard's tables ---
-    // Also built, unconditionally, when method == Odt: under Odt's tet-only
-    // scope this table is exactly the tet corner list, so its node -> cell
-    // incidence serves double duty -- ODT's own target computation (phase 4)
-    // AND the inversion guard, with no second CSR anywhere. This is the
-    // reason ODT was scoped tet-only rather than left general: a general
-    // vertex -> incident-cell structure already existed here for the guard,
-    // and restricting the scope is what let it be reused rather than
-    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
-    // node incidence, which this file has no other use for).
-    SmoothCellTable cells;
-    SmoothCsr incidence;
-    const bool guard = rOptions.mGuardInversion;
-    if (guard || is_odt) {
-        cells = smooth_build_cell_table(rMesh, n, dim == 2);
-        incidence = smooth_build_incidence(cells, n);
-    }
+    return frozen;
+}
 
-    // --- phase 4: the Jacobi iteration ---
+// Phase 4 of smooth(): `params.mNumPasses` Jacobi passes over the flat
+// buffer `rPrev` (the result is left in it), returning how many node moves
+// the inversion guard rejected. `pCsr` is the edge adjacency the
+// Laplacian/Taubin target needs; ODT reads `rIncidence` instead and passes
+// null. Shared with optimize_volume's per-sweep ODT pass.
+std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdjacency* pCsr,
+                               const std::vector<std::uint8_t>& frozen, bool guard,
+                               const SmoothCellTable& cells, const SmoothCsr& incidence,
+                               std::vector<double>& prev, std::size_t n) {
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    // Degenerate-tet / degenerate-circumsphere threshold, matching
+    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
+    constexpr double kOdtEps = 1e-14;
+    std::vector<double> cur(prev.size(), 0.0);
     std::vector<std::uint8_t> skipped(n, 0);
     std::int64_t num_skipped = 0;
     for (int pass = 0; pass < params.mNumPasses; ++pass) {
@@ -149869,8 +150363,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
                     target = {sum_wc[0] * inv, sum_wc[1] * inv, sum_wc[2] * inv};
                 }
             } else {
-                const std::int64_t b = csr.mXadj[i];
-                const std::int64_t e = csr.mXadj[i + 1];
+                const std::int64_t b = pCsr->mXadj[i];
+                const std::int64_t e = pCsr->mXadj[i + 1];
                 has_target = b != e;
                 if (has_target) {
                     // Summed in ascending neighbour id (the adjacency rows are
@@ -149879,7 +150373,7 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
                     Vec3 sum = {0.0, 0.0, 0.0};
                     for (std::int64_t k = b; k < e; ++k) {
                         const std::size_t p =
-                            static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                            static_cast<std::size_t>(pCsr->mAdj[static_cast<std::size_t>(k)]) * 3;
                         sum[0] += prev[p];
                         sum[1] += prev[p + 1];
                         sum[2] += prev[p + 2];
@@ -149938,6 +150432,58 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             "smooth: the inversion guard rejected {} node moves; those nodes held still to "
             "keep every incident cell correctly oriented",
             num_skipped);
+
+    return num_skipped;
+}
+
+SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
+    const SmoothParams params = smooth_resolve_params(rOptions);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    if (is_odt)
+        smooth_check_odt_blocks(rMesh);
+
+    // --- phase 0: coordinates as a flat double buffer ---
+    const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
+    std::vector<double> prev = original;
+
+    // --- phase 1: edge adjacency (the Laplacian/Taubin target; ODT's target
+    // comes from the incident tets, so it skips this) ---
+    detail::NodeAdjacency csr;
+    if (!is_odt)
+        csr = detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
+
+    // --- phase 2: the pin mask (boundary | feature | unknown | caller) ---
+    const std::vector<std::uint8_t> frozen = smooth_pin_mask(rMesh, rOptions, n, prev);
+
+    // --- phase 3: the inversion guard's tables ---
+    // Also built, unconditionally, when method == Odt: under Odt's tet-only
+    // scope this table is exactly the tet corner list, so its node -> cell
+    // incidence serves double duty -- ODT's own target computation (phase 4)
+    // AND the inversion guard, with no second CSR anywhere. This is the
+    // reason ODT was scoped tet-only rather than left general: a general
+    // vertex -> incident-cell structure already existed here for the guard,
+    // and restricting the scope is what let it be reused rather than
+    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
+    // node incidence, which this file has no other use for).
+    SmoothCellTable cells;
+    SmoothCsr incidence;
+    const bool guard = rOptions.mGuardInversion;
+    if (guard || is_odt) {
+        cells = smooth_build_cell_table(rMesh, n, dim == 2);
+        incidence = smooth_build_incidence(cells, n);
+    }
+
+    // --- phase 4: the Jacobi iteration ---
+    const std::int64_t num_skipped = smooth_run_passes(params, is_odt ? nullptr : &csr, frozen,
+                                                       guard, cells, incidence, prev, n);
 
     // --- phase 5: summary, measured against the input ---
     SmoothResult result;
@@ -150010,6 +150556,35 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
 
     return result;
 }
+
+namespace detail {
+
+std::vector<std::uint8_t> smooth_odt_pin_mask(const Mesh& rTetMesh, const SmoothOptions& rOptions) {
+    const std::size_t n = rTetMesh.NumPoints();
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+    return smooth_pin_mask(rTetMesh, rOptions, n,
+                           smooth_read_coords(rTetMesh, n, rTetMesh.PointDim()));
+}
+
+std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
+                             const std::vector<std::array<std::int64_t, 4>>& rTets,
+                             const std::vector<std::uint8_t>& rPinned,
+                             const SmoothOptions& rOptions) {
+    SmoothOptions one = rOptions;
+    one.mMethod = SmoothMethod::Odt;
+    one.mIterations = 1;
+    const SmoothParams params = smooth_resolve_params(one);
+    const std::size_t n = rXyz.size() / 3;
+    const SmoothCellTable cells = smooth_cell_table_from_tets(rTets, n);
+    const SmoothCsr incidence = smooth_build_incidence(cells, n);
+    return smooth_run_passes(params, nullptr, rPinned, rOptions.mGuardInversion, cells, incidence,
+                             rXyz, n);
+}
+
+}  // namespace detail
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/smooth.cpp =====

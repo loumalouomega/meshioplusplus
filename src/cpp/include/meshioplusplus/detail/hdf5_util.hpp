@@ -218,6 +218,12 @@ MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
  * shape, rather than exposed as a compound/array-typed element.
  * A scalar (0-dimensional) dataset comes back with shape `{1}`.
  *
+ * A gzip-compressed dataset stored in several row chunks (what
+ * `write_dataset` writes for more than about 1 MiB, and what h5py writes)
+ * is read chunk by chunk and inflated in parallel, straight into the
+ * result; any other layout, filter pipeline or on-disk byte order goes
+ * through a plain `H5Dread`. Either way the result is the same.
+ *
  * @param loc Group or file handle the dataset lives under.
  * @param rName Name of the dataset to read.
  * @return A new owning `NDArray` holding the dataset's contents.
@@ -229,9 +235,12 @@ MESHIOPLUSPLUS_API NDArray read_dataset(hid_t loc, const std::string& rName);
  * @brief Writes a full dataset in one call, optionally gzip-compressed.
  *
  * When `gzip_level >= 0` and `arr` is non-empty, the dataset is created
- * chunked with a single chunk spanning the whole shape and gzip deflate
- * filtering enabled at that level; otherwise it is a plain contiguous
- * dataset. Uses `file_type(arr.Dtype())` for the on-disk type and
+ * chunked, with gzip deflate filtering at that level: one chunk spanning
+ * the whole shape up to about 1 MiB, and chunks of whole rows of about 1 MiB
+ * beyond that (HDF5 refuses a chunk of 4 GiB or more). The chunks are
+ * compressed in parallel and written in order, so the file is identical at
+ * every thread count. Otherwise the dataset is plain contiguous. Uses
+ * `file_type(arr.Dtype())` for the on-disk type and
  * `native_type(arr.Dtype())` for the in-memory transfer type.
  *
  * @param loc Group or file handle to create the dataset under.

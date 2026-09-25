@@ -182,7 +182,7 @@ std::vector<double> partition_weights(const Mesh& rMesh, const std::string& rKey
 
 // Hilbert-curve cut of the cell centroids. Deterministic by construction: the
 // keys are filled into disjoint slots in parallel, the argsort is a serial
-// stable sort (ties broken by cell index) and the cut is a serial integer /
+// stable radix sort (ties broken by cell index) and the cut is a serial integer /
 // prefix-sum rule, so the assignment is byte-identical across mesh backends
 // and thread counts.
 std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& rOptions,
@@ -234,12 +234,9 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
         keys[i] = detail::sfc_hilbert_key(q, bits);
     });
 
-    // Serial stable argsort along the curve (ties broken by cell index).
-    std::vector<std::int64_t> order(total);
-    std::iota(order.begin(), order.end(), std::int64_t{0});
-    std::stable_sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-        return keys[static_cast<std::size_t>(a)] < keys[static_cast<std::size_t>(b)];
-    });
+    // Serial stable argsort along the curve (ties broken by cell index): an
+    // LSD radix sort on the key, the order std::stable_sort gave.
+    const std::vector<std::int64_t> order = detail::sfc_stable_argsort(keys);
 
     // Serial cut into nparts contiguous ranges.
     if (rWeights.empty()) {

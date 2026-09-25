@@ -21,6 +21,7 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // Project includes
@@ -204,19 +206,36 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
     const int bits = REORDER_SFC_BITS;
 
-    double lo[3] = {std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity()};
-    double hi[3] = {-std::numeric_limits<double>::infinity(),
-                    -std::numeric_limits<double>::infinity(),
-                    -std::numeric_limits<double>::infinity()};
-    for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t d = 0; d < dim; ++d) {
-            const double c = detail::read_double(points, i * pdim + d);
-            lo[d] = std::min(lo[d], c);
-            hi[d] = std::max(hi[d], c);
+    // Bounding box as a chunked parallel reduction combined in chunk order.
+    // std::min/std::max skip a NaN coordinate (a comparison with NaN is
+    // false, so the running bound is kept) -- the serial scan's semantics,
+    // which detail::point_bbox (it propagates NaN) would change -- and are
+    // exact, so the chunking cannot show in the result.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    constexpr std::size_t kChunk = 4096;
+    const std::size_t nchunks = (n + kChunk - 1) / kChunk;
+    std::vector<std::array<double, 6>> part(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::array<double, 6> b = {kInf, kInf, kInf, -kInf, -kInf, -kInf};
+            const std::size_t stop = std::min(n, (ci + 1) * kChunk);
+            for (std::size_t i = ci * kChunk; i < stop; ++i)
+                for (std::size_t d = 0; d < dim; ++d) {
+                    const double c = detail::read_double(points, i * pdim + d);
+                    b[d] = std::min(b[d], c);
+                    b[3 + d] = std::max(b[3 + d], c);
+                }
+            part[ci] = b;
+        },
+        1);
+    double lo[3] = {kInf, kInf, kInf};
+    double hi[3] = {-kInf, -kInf, -kInf};
+    for (const auto& b : part)
+        for (std::size_t d = 0; d < 3; ++d) {
+            lo[d] = std::min(lo[d], b[d]);
+            hi[d] = std::max(hi[d], b[3 + d]);
         }
-    }
     double scale[3] = {0.0, 0.0, 0.0};
     const double qmax = static_cast<double>((std::int64_t(1) << bits) - 1);
     for (std::size_t d = 0; d < dim; ++d) {
@@ -245,11 +264,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
 
 // Stable argsort of the SFC keys -> node permutation (old index -> new index).
 std::vector<std::int64_t> reorder_sfc_perm(const std::vector<std::uint64_t>& rKeys, std::size_t n) {
-    std::vector<std::int64_t> order(n);
-    std::iota(order.begin(), order.end(), std::int64_t{0});
-    std::stable_sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-        return rKeys[static_cast<std::size_t>(a)] < rKeys[static_cast<std::size_t>(b)];
-    });
+    const std::vector<std::int64_t> order = detail::sfc_stable_argsort(rKeys);
     std::vector<std::int64_t> perm(n);
     for (std::size_t newidx = 0; newidx < n; ++newidx)
         perm[static_cast<std::size_t>(order[newidx])] = static_cast<std::int64_t>(newidx);
@@ -309,16 +324,51 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
 
         // Per-cell sort key = min new node index; stable argsort -> cell order.
         std::vector<std::int64_t> key(nc);
-        parallel_for_bw(nc, [&](std::size_t c) {
-            std::vector<std::int64_t> nodes;
-            detail::cell_node_ids(cb, c, n, nodes);
-            key[c] = reorder_cell_key(nodes, node_perm);
-        });
+        if (!cb.IsRagged()) {
+            // Rectangular block: the minimum straight off the connectivity,
+            // with no per-cell node vector (out-of-range ids skipped, as
+            // cell_node_ids does; a cell with none keys 0).
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
+                const T* ids = conn.As<T>();
+                parallel_for_bw(nc, [&](std::size_t c) {
+                    std::int64_t m = std::numeric_limits<std::int64_t>::max();
+                    bool any = false;
+                    for (std::size_t k = 0; k < npc; ++k) {
+                        std::int64_t id;
+                        if constexpr (std::is_floating_point_v<T>)
+                            id = detail::read_int(conn, c * npc + k);  // NaN-safe
+                        else
+                            id = static_cast<std::int64_t>(ids[c * npc + k]);
+                        if (id < 0 || static_cast<std::size_t>(id) >= n)
+                            continue;
+                        m = std::min(m, node_perm[static_cast<std::size_t>(id)]);
+                        any = true;
+                    }
+                    key[c] = any ? m : 0;
+                });
+            });
+        } else {
+            parallel_for_bw(nc, [&](std::size_t c) {
+                std::vector<std::int64_t> nodes;
+                detail::cell_node_ids(cb, c, n, nodes);
+                key[c] = reorder_cell_key(nodes, node_perm);
+            });
+        }
+        // Stable counting sort: every key is a new node index in [0, n), so
+        // one histogram pass replaces the comparison sort and keeps ties in
+        // ascending cell order, as the stable sort did.
         std::vector<std::int64_t> cellorder(nc);
-        std::iota(cellorder.begin(), cellorder.end(), std::int64_t{0});
-        std::stable_sort(cellorder.begin(), cellorder.end(), [&](std::int64_t a, std::int64_t b) {
-            return key[static_cast<std::size_t>(a)] < key[static_cast<std::size_t>(b)];
-        });
+        {
+            std::vector<std::size_t> start(n + 2, 0);
+            for (std::int64_t k : key)
+                ++start[static_cast<std::size_t>(k) + 1];
+            for (std::size_t b = 0; b + 1 < start.size(); ++b)
+                start[b + 1] += start[b];
+            for (std::size_t c = 0; c < nc; ++c)
+                cellorder[start[static_cast<std::size_t>(key[c])]++] = static_cast<std::int64_t>(c);
+        }
         std::vector<std::int64_t> cellperm(nc);  // old -> new
         for (std::size_t p = 0; p < nc; ++p)
             cellperm[static_cast<std::size_t>(cellorder[p])] = static_cast<std::int64_t>(p);

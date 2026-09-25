@@ -53,7 +53,7 @@ features:
     link: /viewer
   - icon: 🤖
     title: Built for agents and ML
-    details: An MCP server exposing every operation as a stateless tool, zero-copy interop with PyVista, trimesh, Arrow and pandas, DLPack and CuPy handoff, graph and feature-matrix export, and a PhysicsNeMo adapter.
+    details: An MCP server exposing every operation as a file-path-based tool, zero-copy interop with PyVista, trimesh, Arrow and pandas, DLPack and CuPy handoff, graph and feature-matrix export, and a PhysicsNeMo adapter.
     link: /mcp
 ---
 

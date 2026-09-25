@@ -39,7 +39,7 @@ Two things tie the operations together. Chains of them are described declarative
 
 ## The tools built on them
 
-The Python [CLI](./cli.md) and the Python-free native CLI mirror each other verb for verb. The [MCP server](./mcp.md) exposes the whole Python surface to AI agents as stateless, file-path-based tools. The [browser viewer and dataset manager](./viewer.md) consume the published WebAssembly package, while the Polyscope viewer is a Python extra. The [Blender add-on](./blender.md) and [ParaView plugin](./paraview_plugin.md) bring meshio++'s formats into those applications, and the [interoperability](./interop.md), [GPU](./gpu.md), [machine-learning](./ml.md), [dataset](./datasets.md) and [PhysicsNeMo](./physicsnemo.md) layers hand meshes to the wider Python ecosystem without a file round-trip.
+The Python [CLI](./cli.md) and the Python-free native CLI mirror each other verb for verb. The [MCP server](./mcp.md) exposes the whole Python surface to AI agents as file-path-based tools, with a read cache between calls. The [browser viewer and dataset manager](./viewer.md) consume the published WebAssembly package, while the Polyscope viewer is a Python extra. The [Blender add-on](./blender.md) and [ParaView plugin](./paraview_plugin.md) bring meshio++'s formats into those applications, and the [interoperability](./interop.md), [GPU](./gpu.md), [machine-learning](./ml.md), [dataset](./datasets.md) and [PhysicsNeMo](./physicsnemo.md) layers hand meshes to the wider Python ecosystem without a file round-trip.
 
 ## Two patterns that recur
 

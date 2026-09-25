@@ -24,6 +24,7 @@
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 
 // Project includes
@@ -32,6 +33,7 @@
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
@@ -129,7 +131,7 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
         std::vector<std::size_t> bshape = rRaw.Shape();
         if (!bshape.empty())
             bshape[0] = bs;
-        NDArray b(rRaw.Dtype(), bshape);
+        NDArray b = NDArray::Uninit(rRaw.Dtype(), bshape);  // filled by the memcpy below
         std::size_t elems = bs * ncols;
         std::memcpy(b.Data(), rRaw.Data() + off * ncols * dtype_size(rRaw.Dtype()),
                     elems * dtype_size(rRaw.Dtype()));
@@ -212,7 +214,7 @@ NDArray pack_mixed_topology(const Mesh& rMesh, std::size_t& rTotalCells) {
         total_cells += nc;
         total_len += nc * (prefix + npc);
     }
-    NDArray cd(DType::Int64, {total_len});
+    NDArray cd = NDArray::Uninit(DType::Int64, {total_len});  // every slot is written below
     std::int64_t* cp = cd.As<std::int64_t>();
     std::size_t pos = 0;
     for (const auto cb : rMesh.CellRange()) {
@@ -221,12 +223,25 @@ NDArray pack_mixed_topology(const Mesh& rMesh, std::size_t& rTotalCells) {
         std::size_t npc = detail::cols(conn);
         int idx = meshio_to_xdmf_index(cb.Type());
         std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
-        for (std::size_t r = 0; r < nc; ++r) {
-            for (std::size_t pq = 0; pq < prefix; ++pq)
-                cp[pos++] = idx;
-            for (std::size_t j = 0; j < npc; ++j)
-                cp[pos++] = detail::read_int(conn, r * npc + j);
-        }
+        // Each row lands at a fixed offset, so the rows fill in parallel, and
+        // the dtype switch is taken once per block rather than per id.
+        std::int64_t* block = cp + pos;
+        const std::size_t stride = prefix + npc;
+        detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
+            const T* src = conn.As<T>();
+            parallel_for_bw(nc, [&](std::size_t r) {
+                std::int64_t* row = block + r * stride;
+                for (std::size_t pq = 0; pq < prefix; ++pq)
+                    row[pq] = idx;
+                for (std::size_t j = 0; j < npc; ++j) {
+                    if constexpr (std::is_floating_point_v<T>)
+                        row[prefix + j] = detail::read_int(conn, r * npc + j);
+                    else
+                        row[prefix + j] = static_cast<std::int64_t>(src[r * npc + j]);
+                }
+            });
+        });
+        pos += nc * stride;
     }
     rTotalCells = total_cells;
     return cd;

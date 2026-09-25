@@ -76,7 +76,9 @@ jobs:
         run: |
           args=""
           for t in ${{ github.event.inputs.tiers || 'S M L' }}; do args="$args --tier $t"; done
-          tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4" -- $args
+          # --hash: the sweep also fails if any row's output differs between
+          # backends or thread counts (roadmap §4's determinism check).
+          tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4" -- --hash $args
       - name: Job summary
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"

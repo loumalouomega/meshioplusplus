@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ET
-from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
@@ -57,8 +56,27 @@ GHOST_POLICIES = ("keep", "drop")
 
 
 def quote(value) -> str:
-    """An XML attribute value, quoted and escaped (``&``, ``<``, quotes)."""
-    return quoteattr(str(value))
+    """An XML attribute value, quoted and escaped (``&``, ``<``, quotes).
+
+    Byte-for-byte :func:`xml.sax.saxutils.quoteattr`, which is not imported
+    because :mod:`xml.sax.saxutils` pulls in ``urllib.request``,
+    ``http.client`` and ``ssl`` -- about 12 ms of every ``import
+    meshioplusplus`` for one string function.
+    """
+    data = (
+        str(value)
+        .replace("&", "&amp;")
+        .replace(">", "&gt;")
+        .replace("<", "&lt;")
+        .replace("\n", "&#10;")
+        .replace("\r", "&#13;")
+        .replace("\t", "&#9;")
+    )
+    if '"' in data:
+        if "'" in data:
+            return '"%s"' % data.replace('"', "&quot;")
+        return "'%s'" % data
+    return '"%s"' % data
 
 
 def check_ghosts(ghosts):

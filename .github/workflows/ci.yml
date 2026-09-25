@@ -272,6 +272,36 @@ jobs:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/sanitizers/lsan.supp
         run: ctest --test-dir build --output-on-failure
 
+  # --------------------------------------------------------------------------
+  # Byte-identical operation output across parallel backends and thread counts
+  # (roadmap §4). Every serial phase that §4 parallelises is a determinism pin;
+  # this is the check that proves a change kept it: tools/bench_ops.sh builds
+  # the operations benchmark per backend, runs every row on the small tier at
+  # 1 and 4 threads with --hash, and fails when one row's digest differs.
+  # Timings here are noise; the digests are the point.
+  # --------------------------------------------------------------------------
+  determinism:
+    name: Operation output across SEQ / OpenMP / TBB
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          submodules: recursive
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y libtbb-dev ninja-build
+      - name: Digests agree across backends and thread counts
+        run: tools/bench_ops.sh determinism.csv "SEQ OPENMP TBB" "1 4" -- --hash --tier S --runs 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: determinism
+          path: determinism.csv
+
   cpp-install:
     name: C++ API install (${{ matrix.name }})
     needs: [lint]
@@ -1013,9 +1043,12 @@ jobs:
           # `mcp<2` must match pyproject's [mcp] extra: this list installs the
           # SDK directly rather than through the extra, so the bound there does
           # NOT apply here and an unbounded `mcp` resolves 2.0.0, which removed
-          # mcp.server.fastmcp. Keep the two in step.
+          # mcp.server.fastmcp. Keep the two in step. `hypothesis` runs
+          # test_properties.py, which importorskips it everywhere else
+          # (roadmap §4: the determinism properties need one leg that runs them).
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
-            pyvista trimesh pyarrow pandas polars zarr usd-core "mcp<2" starlette uvicorn httpx foamlib
+            pyvista trimesh pyarrow pandas polars zarr usd-core "mcp<2" starlette uvicorn httpx foamlib \
+            hypothesis
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across

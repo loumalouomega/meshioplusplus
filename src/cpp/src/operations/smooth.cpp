@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "smooth_odt.hpp"
 
 namespace meshioplusplus {
 
@@ -916,33 +917,37 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
                                 "' (expected 'laplacian', 'taubin' or 'odt')");
 }
 
-SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
-    const SmoothParams params = smooth_resolve_params(rOptions);
-    const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
+// The measurable-cell table smooth_build_cell_table builds for a mesh made of
+// one tetra block with these rows, without building the mesh: every tet with
+// in-range corners, in order, measured by its outward face fan.
+SmoothCellTable smooth_cell_table_from_tets(const std::vector<std::array<std::int64_t, 4>>& rTets,
+                                            std::size_t n) {
+    SmoothCellTable t;
+    t.mCornerOffset.reserve(rTets.size() + 1);
+    t.mCornerNodes.reserve(rTets.size() * 4);
+    t.mCornerOffset.push_back(0);
+    t.mFaceTables.push_back(&detail::cell_faces(CellType::Tetra));
+    for (const auto& tet : rTets) {
+        bool ok = true;
+        for (std::int64_t id : tet)
+            ok = ok && id >= 0 && static_cast<std::size_t>(id) < n;
+        if (!ok)
+            continue;
+        t.mCornerNodes.insert(t.mCornerNodes.end(), tet.begin(), tet.end());
+        t.mMeasure.push_back(SmoothMeasure::FaceFan);
+        t.mFaceTable.push_back(0);
+        t.mPolyStart.push_back(-1);
+        t.mPolyNumFaces.push_back(0);
+        t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
+    }
+    return t;
+}
 
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
-
-    const bool is_odt = params.mMethod == SmoothMethod::Odt;
-    if (is_odt)
-        smooth_check_odt_blocks(rMesh);
-    // Degenerate-tet / degenerate-circumsphere threshold, matching
-    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
-    constexpr double kOdtEps = 1e-14;
-
-    // --- phase 0: coordinates as a flat double buffer ---
-    const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
-    std::vector<double> prev = original;
-    std::vector<double> cur(prev.size(), 0.0);
-
-    // --- phase 1: edge adjacency ---
-    const detail::NodeAdjacency csr =
-        detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
-
-    // --- phase 2: the pin mask (boundary | feature | unknown | caller) ---
+// Phase 2 of smooth(): the pin mask (boundary | feature | unknown | caller),
+// shared with the ODT relocation context optimize_volume keeps across sweeps.
+// `rXyz` is the flat coordinate buffer (the feature pass needs facet normals).
+std::vector<std::uint8_t> smooth_pin_mask(const Mesh& rMesh, const SmoothOptions& rOptions,
+                                          std::size_t n, const std::vector<double>& rXyz) {
     std::vector<std::uint8_t> frozen(n, 0);
     if (!rOptions.mFrozen.empty())
         for (std::size_t i = 0; i < n; ++i)
@@ -953,7 +958,7 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         const bool face_mode = smooth_has_volume_cells(rMesh);
         std::vector<std::uint8_t> boundary(n, 0);
         std::vector<SmoothBoundaryFacet> facets;
-        smooth_mark_boundary(rMesh, n, face_mode, prev, boundary,
+        smooth_mark_boundary(rMesh, n, face_mode, rXyz, boundary,
                              rOptions.mPreserveFeatures ? &facets : nullptr);
         for (std::size_t i = 0; i < n; ++i)
             if (boundary[i])
@@ -972,25 +977,23 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             "are boundary nodes)");
     }
 
-    // --- phase 3: the inversion guard's tables ---
-    // Also built, unconditionally, when method == Odt: under Odt's tet-only
-    // scope this table is exactly the tet corner list, so its node -> cell
-    // incidence serves double duty -- ODT's own target computation (phase 4)
-    // AND the inversion guard, with no second CSR anywhere. This is the
-    // reason ODT was scoped tet-only rather than left general: a general
-    // vertex -> incident-cell structure already existed here for the guard,
-    // and restricting the scope is what let it be reused rather than
-    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
-    // node incidence, which this file has no other use for).
-    SmoothCellTable cells;
-    SmoothCsr incidence;
-    const bool guard = rOptions.mGuardInversion;
-    if (guard || is_odt) {
-        cells = smooth_build_cell_table(rMesh, n, dim == 2);
-        incidence = smooth_build_incidence(cells, n);
-    }
+    return frozen;
+}
 
-    // --- phase 4: the Jacobi iteration ---
+// Phase 4 of smooth(): `params.mNumPasses` Jacobi passes over the flat
+// buffer `rPrev` (the result is left in it), returning how many node moves
+// the inversion guard rejected. `pCsr` is the edge adjacency the
+// Laplacian/Taubin target needs; ODT reads `rIncidence` instead and passes
+// null. Shared with optimize_volume's per-sweep ODT pass.
+std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdjacency* pCsr,
+                               const std::vector<std::uint8_t>& frozen, bool guard,
+                               const SmoothCellTable& cells, const SmoothCsr& incidence,
+                               std::vector<double>& prev, std::size_t n) {
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    // Degenerate-tet / degenerate-circumsphere threshold, matching
+    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
+    constexpr double kOdtEps = 1e-14;
+    std::vector<double> cur(prev.size(), 0.0);
     std::vector<std::uint8_t> skipped(n, 0);
     std::int64_t num_skipped = 0;
     for (int pass = 0; pass < params.mNumPasses; ++pass) {
@@ -1049,8 +1052,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
                     target = {sum_wc[0] * inv, sum_wc[1] * inv, sum_wc[2] * inv};
                 }
             } else {
-                const std::int64_t b = csr.mXadj[i];
-                const std::int64_t e = csr.mXadj[i + 1];
+                const std::int64_t b = pCsr->mXadj[i];
+                const std::int64_t e = pCsr->mXadj[i + 1];
                 has_target = b != e;
                 if (has_target) {
                     // Summed in ascending neighbour id (the adjacency rows are
@@ -1059,7 +1062,7 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
                     Vec3 sum = {0.0, 0.0, 0.0};
                     for (std::int64_t k = b; k < e; ++k) {
                         const std::size_t p =
-                            static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                            static_cast<std::size_t>(pCsr->mAdj[static_cast<std::size_t>(k)]) * 3;
                         sum[0] += prev[p];
                         sum[1] += prev[p + 1];
                         sum[2] += prev[p + 2];
@@ -1118,6 +1121,58 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             "smooth: the inversion guard rejected {} node moves; those nodes held still to "
             "keep every incident cell correctly oriented",
             num_skipped);
+
+    return num_skipped;
+}
+
+SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
+    const SmoothParams params = smooth_resolve_params(rOptions);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    if (is_odt)
+        smooth_check_odt_blocks(rMesh);
+
+    // --- phase 0: coordinates as a flat double buffer ---
+    const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
+    std::vector<double> prev = original;
+
+    // --- phase 1: edge adjacency (the Laplacian/Taubin target; ODT's target
+    // comes from the incident tets, so it skips this) ---
+    detail::NodeAdjacency csr;
+    if (!is_odt)
+        csr = detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
+
+    // --- phase 2: the pin mask (boundary | feature | unknown | caller) ---
+    const std::vector<std::uint8_t> frozen = smooth_pin_mask(rMesh, rOptions, n, prev);
+
+    // --- phase 3: the inversion guard's tables ---
+    // Also built, unconditionally, when method == Odt: under Odt's tet-only
+    // scope this table is exactly the tet corner list, so its node -> cell
+    // incidence serves double duty -- ODT's own target computation (phase 4)
+    // AND the inversion guard, with no second CSR anywhere. This is the
+    // reason ODT was scoped tet-only rather than left general: a general
+    // vertex -> incident-cell structure already existed here for the guard,
+    // and restricting the scope is what let it be reused rather than
+    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
+    // node incidence, which this file has no other use for).
+    SmoothCellTable cells;
+    SmoothCsr incidence;
+    const bool guard = rOptions.mGuardInversion;
+    if (guard || is_odt) {
+        cells = smooth_build_cell_table(rMesh, n, dim == 2);
+        incidence = smooth_build_incidence(cells, n);
+    }
+
+    // --- phase 4: the Jacobi iteration ---
+    const std::int64_t num_skipped = smooth_run_passes(params, is_odt ? nullptr : &csr, frozen,
+                                                       guard, cells, incidence, prev, n);
 
     // --- phase 5: summary, measured against the input ---
     SmoothResult result;
@@ -1190,5 +1245,34 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
 
     return result;
 }
+
+namespace detail {
+
+std::vector<std::uint8_t> smooth_odt_pin_mask(const Mesh& rTetMesh, const SmoothOptions& rOptions) {
+    const std::size_t n = rTetMesh.NumPoints();
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+    return smooth_pin_mask(rTetMesh, rOptions, n,
+                           smooth_read_coords(rTetMesh, n, rTetMesh.PointDim()));
+}
+
+std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
+                             const std::vector<std::array<std::int64_t, 4>>& rTets,
+                             const std::vector<std::uint8_t>& rPinned,
+                             const SmoothOptions& rOptions) {
+    SmoothOptions one = rOptions;
+    one.mMethod = SmoothMethod::Odt;
+    one.mIterations = 1;
+    const SmoothParams params = smooth_resolve_params(one);
+    const std::size_t n = rXyz.size() / 3;
+    const SmoothCellTable cells = smooth_cell_table_from_tets(rTets, n);
+    const SmoothCsr incidence = smooth_build_incidence(cells, n);
+    return smooth_run_passes(params, nullptr, rPinned, rOptions.mGuardInversion, cells, incidence,
+                             rXyz, n);
+}
+
+}  // namespace detail
 
 }  // namespace meshioplusplus
