@@ -1,0 +1,12 @@
+TITLE = "meshio++ fixture"
+VARIABLES = "X" "Y" "Z" "P" "Q"
+ZONE T="block", ZONETYPE=ORDERED, DATAPACKING=BLOCK, I=3, J=2, K=2, VARLOCATION=([5]=CELLCENTERED)
+0 0.5 1 0 0.5 1 0 0.5 1 0
+0.5 1 
+0 0 0 1 1 1 0 0 0 1
+1 1 
+0 0 0 0 0 0 2 2 2 2
+2 2 
+0 0 0 0 1 2 1 1 1 1
+2 3 
+7 8 

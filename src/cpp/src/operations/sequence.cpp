@@ -226,13 +226,15 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // taken from the file rather than from the number in its name.
     // lsdyna_binout joined in v16.12.0: its steps are nodout's outputs.
     // radioss_th joined in v16.12.0: its steps are the time-history outputs.
-    return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "lsdyna_d3plot" ||
-           rFormat == "lsdyna_binout" || rFormat == "radioss_th" || rFormat == "radioss_anim" ||
-           rFormat == "nastran_op2" || rFormat == "unv" || rFormat == "nastran_h5" ||
-           rFormat == "xplt" || rFormat == "ansys_rst" || rFormat == "ansys_rst_cyclic" ||
-           rFormat == "marc_t19" || rFormat == "femap" || rFormat == "xdmf" ||
-           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
-           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+    // vtx joined in v16.13.0: its steps are the ADIOS2 steps of the .bp.
+    // szplt joined in v16.13.0: its steps are tecplot's (solution times).
+    return rFormat == "vtx" || rFormat == "szplt" || rFormat == "frd" || rFormat == "abaqus_fil" ||
+           rFormat == "lsdyna_d3plot" || rFormat == "lsdyna_binout" || rFormat == "radioss_th" ||
+           rFormat == "radioss_anim" || rFormat == "nastran_op2" || rFormat == "unv" ||
+           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
+           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
+           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
            rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
@@ -356,6 +358,15 @@ bool seq_is_d3plot_member(const std::filesystem::path& rPath) {
         rPath.parent_path() / rPath.filename().string().substr(0, 6), ec);
 }
 
+bool seq_is_bp_directory(const std::string& rName) {
+    if (rName.size() < 3)
+        return false;
+    std::string ext = rName.substr(rName.size() - 3);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == ".bp";
+}
+
 std::vector<std::string> seq_glob(const std::string& rPattern) {
     std::string dir;
     std::string base;
@@ -368,9 +379,10 @@ std::vector<std::string> seq_glob(const std::string& rPattern) {
         throw ReadError("meshio++: sequence: cannot list directory '" + dir + "' for pattern '" +
                         rPattern + "': " + ec.message());
     for (const std::filesystem::directory_entry& entry : it) {
-        if (!entry.is_regular_file(ec))
-            continue;
         const std::string name = entry.path().filename().string();
+        // A `.bp` directory is one sample (a DOLFINx VTX file), like a file.
+        if (!entry.is_regular_file(ec) && !(entry.is_directory(ec) && seq_is_bp_directory(name)))
+            continue;
         // `d3plot01`, `d3plot02`... continue the `d3plot` beside them: one sample.
         if (seq_is_d3plot_member(entry.path()))
             continue;

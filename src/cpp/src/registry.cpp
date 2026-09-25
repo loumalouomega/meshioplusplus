@@ -104,6 +104,8 @@
 #include "meshioplusplus/formats/pvtp.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
+#include "meshioplusplus/formats/vtx.hpp"
+#include "meshioplusplus/formats/szplt.hpp"
 #include "meshioplusplus/formats/vtm.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -261,6 +263,12 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // the ExodusInfo form, and taking its address would be ambiguous. The
         // provenance strings are dropped here, as MedInfo's are below.
         {"exodus", [](const std::string& path) { return meshioplusplus::read_exodus(path); }},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        {"vtx", [](const std::string& path) { return meshioplusplus::read_vtx(path); }},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        {"szplt", [](const std::string& path) { return meshioplusplus::read_szplt(path); }},
 #endif
     };
     return m;
@@ -608,6 +616,8 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".hdf", "vtkhdf"},
         {".med", "med"},
         {".h5", "nastran_h5"},
+        {".bp", "vtx"},
+        {".szplt", "szplt"},
         {".e", "exodus"},
         {".exo", "exodus"},
         {".ex2", "exodus"},
@@ -723,6 +733,16 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"exodus", [](const std::string& path,
                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        // VTX honours mTimeStep, mPointsOnly, mDataArrays and mGhosts.
+        {"vtx", [](const std::string& path,
+                   const ReadOptions& opts) { return meshioplusplus::read_vtx(path, opts); }},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        // .szplt honours mTimeStep (the distinct solution times), as tecplot.
+        {"szplt", [](const std::string& path,
+                     const ReadOptions& opts) { return meshioplusplus::read_szplt(path, opts); }},
+#endif
         // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
         // ambiguous (the exodus/mdpa story again). The info is dropped here, so
         // the flat bindings see no `$Entities` bounding entities.
@@ -788,10 +808,8 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // mLenient (skip element types with no meshio++ cell type).
         {"elmer", meshioplusplus::read_elmer},
         // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
-        {"mfem",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_mfem(path, {}, opts);
-         }},
+        {"mfem", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_mfem(path, {}, opts); }},
         // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
         {"ansysinp",
          [](const std::string& path, const ReadOptions& opts) {
@@ -874,6 +892,12 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
     static const std::unordered_map<std::string, MetadataFn> m = {
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         {"exodus", meshioplusplus::read_exodus_metadata},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        {"vtx", meshioplusplus::read_vtx_metadata},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        {"szplt", meshioplusplus::read_szplt_metadata},
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
@@ -991,6 +1015,14 @@ const char* registry_compiled_out(const std::string& rFormat) {
 #ifndef MESHIOPLUSPLUS_HAS_NETCDF
     if (rFormat == "exodus")
         return "netCDF";
+#endif
+#ifndef MESHIOPLUSPLUS_HAS_ADIOS2
+    if (rFormat == "vtx")
+        return "ADIOS2";
+#endif
+#ifndef MESHIOPLUSPLUS_HAS_TECIO
+    if (rFormat == "szplt")
+        return "TecIO";
 #endif
     // Deliberately NOT an arm for cgns/cgnslib: the format is fully readable
     // and writable without it (the hand-rolled ADF-over-HDF5 path), so

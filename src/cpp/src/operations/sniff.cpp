@@ -322,6 +322,10 @@ std::string sniff_directory(const std::filesystem::path& rDir) {
         return rPath.filename().string().rfind("partitioning.", 0) == 0 &&
                is_file(rPath / "part.1.header");
     };
+    // An ADIOS2 BP4/BP5 directory (DOLFINx VTXWriter output): its index and
+    // first data file. Checked first -- neither Elmer nor OpenFOAM writes them.
+    if (is_file(rDir / "md.idx") && is_file(rDir / "data.0"))
+        return "vtx";
     bool elmer = is_file(rDir / "mesh.header") || is_partitioning(rDir);
     for (auto it = fs::directory_iterator(rDir, ec);
          !elmer && !ec && it != fs::directory_iterator(); it.increment(ec))
@@ -372,6 +376,9 @@ std::string sniff_format(const std::string& rPath) {
     // Tecplot binary (.plt): "#!TDV" and a three-character version.
     if (head.size() >= 5 && head.compare(0, 5, "#!TDV") == 0)
         return "tecplot";
+    // Tecplot SZL (.szplt): "#!SZPLT", read through TecIO.
+    if (head.size() >= 7 && head.compare(0, 7, "#!SZPLT") == 0)
+        return "szplt";
     // OpenRadioss animation file: the big-endian magic 0x542C.
     if (head.size() >= 4 && head.compare(0, 4, std::string("\0\0T,", 4)) == 0)
         return "radioss_anim";

@@ -64,6 +64,12 @@
         "zstd"
       ]
     },
+    "adios2": {
+      "description": "DOLFINx VTX output (ADIOS2 .bp directories) read natively as a time sequence",
+      "dependencies": [
+        "adios2"
+      ]
+    },
     "bzip2": {
       "description": "libMesh .xda.bz2/.xdr.bz2 meshes read and written natively",
       "dependencies": [

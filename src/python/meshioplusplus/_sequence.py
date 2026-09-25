@@ -142,6 +142,10 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 #
 # **`radioss_th` joined in v16.12.0.** Its steps are the outputs of an
 # OpenRadioss time-history file (`runT01`).
+#
+# **`vtx` joined in v16.13.0.** Its steps are the ADIOS2 steps of a DOLFINx
+# `.bp` directory. **`szplt` joined with it:** a Tecplot SZL file's steps are
+# `tecplot`'s (the distinct solution times).
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -169,16 +173,18 @@ _TIME_CAPABLE_READERS = (
     "radioss_anim",
     "lsdyna_binout",
     "radioss_th",
+    "vtx",
+    "szplt",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which
 # `os.path.isfile` alone would drop -- and it is a suffix test rather than a
 # registry lookup because the plan is built before any format is resolved.
 # Deliberately narrower than "every directory": an ordinary subdirectory that
-# happens to match a pattern is still skipped. The C++ `sequence_expand` has
-# no counterpart, which costs nothing there -- these two formats are
-# Python-only and unreadable from that surface anyway.
-DIRECTORY_FORMAT_SUFFIXES = (".pmsh", ".zarr")
+# happens to match a pattern is still skipped. The C++ glob keeps `.bp` only:
+# `pmsh` and `zarr` are Python-only and unreadable from that surface anyway,
+# while a DOLFINx VTX `.bp` (v16.13.0) is read by the core too.
+DIRECTORY_FORMAT_SUFFIXES = (".pmsh", ".zarr", ".bp")
 
 
 def is_sample_path(path) -> bool:

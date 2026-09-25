@@ -253,6 +253,9 @@ BANNER = """\
 //      MESHIOPLUSPLUS_HAS_ZLIB  (VTU zlib compression)       -> link z
 //      MESHIOPLUSPLUS_HAS_EIGEN (MED transpose fast path)    -> add Eigen to the include path
 //      MESHIOPLUSPLUS_HAS_KAHIP (partition kahip backend)    -> link kahip
+//      MESHIOPLUSPLUS_HAS_BZIP2 (libMesh .bz2 meshes)        -> link bz2
+//      MESHIOPLUSPLUS_HAS_ADIOS2 (DOLFINx VTX .bp)           -> link adios2_cxx11
+//      MESHIOPLUSPLUS_HAS_TECIO (Tecplot .szplt)             -> link tecio (+ pthread)
 """
 
 DEFAULTS = """\
