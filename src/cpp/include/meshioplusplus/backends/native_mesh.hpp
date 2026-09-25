@@ -64,6 +64,7 @@
 // Project includes
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/named_arrays.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -202,16 +203,21 @@ public:
         NativeCellBlock b;
         b.mType = cell_type_from_name(type);
         b.mTypeName = std::move(type);
-        std::size_t total = 0;
-        for (const auto& r_row : rows)
-            total += r_row.size();
-        b.mFlat.reserve(total);
-        b.mRowOffsets.reserve(rows.size() + 1);
-        b.mRowOffsets.push_back(0);
-        for (const auto& r_row : rows) {
-            b.mFlat.insert(b.mFlat.end(), r_row.begin(), r_row.end());
-            b.mRowOffsets.push_back(static_cast<std::int64_t>(b.mFlat.size()));
-        }
+        detail::csr_from_rows(rows, b.mFlat, b.mRowOffsets);
+        mBlocks.push_back(std::move(b));
+        mGlobalCsr.reset();
+    }
+    /** @brief Appends a 1-level ragged (polygon) block given as CSR (see `mesh_api.hpp`). */
+    void AddPolygonBlock(std::string type, std::vector<std::int64_t> flat,
+                         std::vector<std::int64_t> rowOffsets) {
+        if (rowOffsets.empty())
+            rowOffsets.push_back(0);
+        detail::check_csr(flat.size(), rowOffsets, "polygon row");
+        NativeCellBlock b;
+        b.mType = cell_type_from_name(type);
+        b.mTypeName = std::move(type);
+        b.mFlat = std::move(flat);
+        b.mRowOffsets = std::move(rowOffsets);
         mBlocks.push_back(std::move(b));
         mGlobalCsr.reset();
     }
@@ -221,20 +227,26 @@ public:
         NativeCellBlock b;
         b.mType = cell_type_from_name(type);
         b.mTypeName = std::move(type);
-        b.mFaceOffsets.reserve(cells.size() + 1);
-        b.mFaceOffsets.push_back(0);
-        std::size_t nrows = 0;
-        for (const auto& r_cell : cells)
-            nrows += r_cell.size();
-        b.mRowOffsets.reserve(nrows + 1);
-        b.mRowOffsets.push_back(0);
-        for (const auto& r_cell : cells) {
-            for (const auto& r_face : r_cell) {
-                b.mFlat.insert(b.mFlat.end(), r_face.begin(), r_face.end());
-                b.mRowOffsets.push_back(static_cast<std::int64_t>(b.mFlat.size()));
-            }
-            b.mFaceOffsets.push_back(static_cast<std::int64_t>(b.mRowOffsets.size() - 1));
-        }
+        detail::csr_from_cells(cells, b.mFlat, b.mRowOffsets, b.mFaceOffsets);
+        mBlocks.push_back(std::move(b));
+        mGlobalCsr.reset();
+    }
+    /** @brief Appends a 2-level ragged (polyhedron) block given as CSR (see `mesh_api.hpp`). */
+    void AddPolyhedronBlock(std::string type, std::vector<std::int64_t> flat,
+                            std::vector<std::int64_t> rowOffsets,
+                            std::vector<std::int64_t> faceOffsets) {
+        if (rowOffsets.empty())
+            rowOffsets.push_back(0);
+        if (faceOffsets.empty())
+            faceOffsets.push_back(0);
+        detail::check_csr(flat.size(), rowOffsets, "polyhedron face");
+        detail::check_csr(rowOffsets.size() - 1, faceOffsets, "polyhedron cell");
+        NativeCellBlock b;
+        b.mType = cell_type_from_name(type);
+        b.mTypeName = std::move(type);
+        b.mFlat = std::move(flat);
+        b.mRowOffsets = std::move(rowOffsets);
+        b.mFaceOffsets = std::move(faceOffsets);
         mBlocks.push_back(std::move(b));
         mGlobalCsr.reset();
     }

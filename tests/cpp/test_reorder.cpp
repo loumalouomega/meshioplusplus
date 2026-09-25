@@ -18,9 +18,11 @@
 // Runs under every mesh backend via the cpp-tests matrix.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -30,6 +32,7 @@
 #include <gtest/gtest.h>
 
 // Project includes
+#include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "mesh_fixtures.hpp"
@@ -222,4 +225,33 @@ TEST(Reorder, CellPermutationsPresent) {
     std::size_t b = 0;
     for (const auto cb : m.CellRange())
         EXPECT_EQ(res.mCellPermutations[b++].Size(), cb.NumCells());
+}
+
+// The radix argsort reorder and partition use in place of an indirect
+// std::stable_sort must give that sort's exact order, ties to the lower index
+// included, over full-width keys, heavy ties, and keys sharing digits.
+TEST(Reorder, SfcRadixArgsortMatchesStableSort) {
+    std::uint64_t state = 88172645463325252ull;
+    const auto next = [&] {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    };
+    for (const std::uint64_t mask :
+         {~0ull, 0x7fffffffffffffffull, 0xffull, 0x3ull, 0xff00000000000000ull, 0x0ull}) {
+        for (const std::size_t n :
+             {std::size_t{0}, std::size_t{1}, std::size_t{7}, std::size_t{50000}}) {
+            std::vector<std::uint64_t> keys(n);
+            for (auto& k : keys)
+                k = next() & mask;
+            std::vector<std::int64_t> expect(n);
+            std::iota(expect.begin(), expect.end(), std::int64_t{0});
+            std::stable_sort(expect.begin(), expect.end(), [&](std::int64_t a, std::int64_t b) {
+                return keys[static_cast<std::size_t>(a)] < keys[static_cast<std::size_t>(b)];
+            });
+            EXPECT_EQ(meshioplusplus::detail::sfc_stable_argsort(keys), expect)
+                << "mask " << mask << ", n " << n;
+        }
+    }
 }

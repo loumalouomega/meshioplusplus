@@ -3,7 +3,6 @@ from __future__ import annotations
 from xml.etree import ElementTree as ET
 
 import numpy as np
-from rich.console import Console
 
 # See <https://github.com/nschloe/meshio/wiki/Node-ordering-in-cells> for the node
 # ordering.
@@ -123,18 +122,26 @@ def _pick_first_int_data(data):
     return key, other
 
 
+def _stderr_console():
+    # Imported here, not at module level: `rich` costs ~17 ms, and these three
+    # messages are the only users of it outside the CLI (roadmap §4).
+    from rich.console import Console
+
+    return Console(stderr=True)
+
+
 def info(string, highlight: bool = True) -> None:
-    Console(stderr=True).print(f"[bold]Info:[/bold] {string}", highlight=highlight)
+    _stderr_console().print(f"[bold]Info:[/bold] {string}", highlight=highlight)
 
 
 def warn(string, highlight: bool = True) -> None:
-    Console(stderr=True).print(
+    _stderr_console().print(
         f"[yellow][bold]Warning:[/bold] {string}[/yellow]", highlight=highlight
     )
 
 
 def error(string, highlight: bool = True) -> None:
-    Console(stderr=True).print(
+    _stderr_console().print(
         f"[red][bold]Error:[/bold] {string}[/red]", highlight=highlight
     )
 

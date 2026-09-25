@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -286,4 +287,90 @@ TEST(Codecs, ReadingAFileNeedingAnAbsentCodecReportsTheOption) {
         codec_remove(path);
     }
     SUCCEED();
+}
+
+namespace {
+
+/// The serial bit-accumulator decoder `b64decode` replaced, kept as the
+/// oracle: the chunked parallel version must reproduce it byte for byte.
+std::vector<unsigned char> codecs_b64decode_reference(const std::string& rText) {
+    std::array<int, 256> inv;
+    inv.fill(-1);
+    const char* tbl = detail::b64_table();
+    for (int i = 0; i < 64; ++i)
+        inv[(unsigned char)tbl[i]] = i;
+    std::vector<unsigned char> out;
+    unsigned buf = 0;
+    int bits = 0;
+    for (char ch : rText) {
+        const int v = inv[(unsigned char)ch];
+        if (v < 0)
+            continue;
+        buf = ((buf << 6) | static_cast<unsigned>(v)) & 0xFFFFFFu;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(Codecs, Base64DecodeMatchesTheSerialDecoderAcrossChunkSeams) {
+    // Every short length (whole, 2- and 3-character trailing groups, and a
+    // lone character that decodes to nothing), with and without padding.
+    const std::string alphabet = detail::b64_table();
+    for (std::size_t n = 0; n <= 21; ++n) {
+        const std::string text = alphabet.substr(0, n);
+        EXPECT_EQ(detail::b64decode(text.data(), text.size()), codecs_b64decode_reference(text))
+            << n;
+        const std::string padded = text + "==\n";
+        EXPECT_EQ(detail::b64decode(padded.data(), padded.size()),
+                  codecs_b64decode_reference(padded))
+            << n;
+    }
+
+    // Several MiB of text -- more than one decode chunk -- with line breaks,
+    // spaces, stray '=' and characters outside the alphabet scattered so that
+    // groups straddle the chunk seams at every phase.
+    std::string payload(3u << 20, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<char>((i * 2654435761u) >> 13);
+    const std::string clean =
+        detail::b64encode(reinterpret_cast<const unsigned char*>(payload.data()), payload.size());
+    std::string noisy;
+    noisy.reserve(clean.size() + clean.size() / 8);
+    std::uint32_t state = 12345;
+    for (char ch : clean) {
+        state = state * 1664525u + 1013904223u;
+        switch (state >> 28) {
+            case 0:
+                noisy += '\n';
+                break;
+            case 1:
+                noisy += " \t";
+                break;
+            case 2:
+                noisy += '=';
+                break;
+            case 3:
+                noisy += "\r\n*";
+                break;
+            default:
+                break;
+        }
+        noisy += ch;
+    }
+    for (const std::string* pText : std::array<const std::string*, 2>{&clean, &noisy}) {
+        const std::vector<unsigned char> got = detail::b64decode(pText->data(), pText->size());
+        EXPECT_EQ(got, codecs_b64decode_reference(*pText));
+        EXPECT_EQ(got, std::vector<unsigned char>(payload.begin(), payload.end()));
+    }
+    // Prefixes ending at every phase of a group across a seam.
+    for (std::size_t cut = (1u << 20) - 5; cut <= (1u << 20) + 5; ++cut)
+        EXPECT_EQ(detail::b64decode(noisy.data(), cut),
+                  codecs_b64decode_reference(noisy.substr(0, cut)))
+            << cut;
 }

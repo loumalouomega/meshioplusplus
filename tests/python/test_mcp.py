@@ -37,8 +37,24 @@ from . import helpers
 
 @pytest.fixture(autouse=True)
 def _reset_root():
+    _tools._cache_invalidate()
     yield
     _tools.set_root(None)
+    _tools._cache_invalidate()
+
+
+@pytest.fixture()
+def count_parses(monkeypatch):
+    """Count the parses `_load` really performs (cache misses)."""
+    calls = []
+    real = _tools.read
+
+    def counting(*args, **kwargs):
+        calls.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_tools, "read", counting)
+    return calls
 
 
 def _mixed_mesh():
@@ -451,6 +467,67 @@ def test_data_info(mesh_file):
     out = _dump(_tools.tool_data_info(mesh_file))
     names = {(a["location"], a["name"]) for a in out["arrays"]}
     assert ("point_data", "t") in names and ("cell_data", "c") in names
+
+
+def test_repeated_tools_on_one_input_parse_it_once(mesh_file, count_parses):
+    _tools.tool_stats(mesh_file)
+    _tools.tool_data_info(mesh_file)
+    _tools.tool_bandwidth(mesh_file)
+    _tools.tool_regions(mesh_file)
+    assert count_parses == [os.path.realpath(mesh_file)]
+
+
+def test_cached_mesh_is_never_handed_out(mesh_file):
+    first = _tools._load(mesh_file)
+    first.points[:] = -7.0
+    first.point_data["t"][:] = -7.0
+    again = _tools._load(mesh_file)
+    assert not np.any(again.points == -7.0)
+    assert not np.any(again.point_data["t"] == -7.0)
+
+
+def test_a_changed_input_is_read_again(mesh_file, count_parses):
+    assert len(_tools._load(mesh_file).points) == 5
+    # Rewrite the file outside the server, as an agent's own tool would.
+    mesh = _mixed_mesh()
+    mesh.points = np.vstack([mesh.points, [[2.0, 2.0, 2.0]]])
+    mesh.point_data["t"] = np.linspace(0.0, 1.0, 6)
+    meshioplusplus.write(mesh_file, mesh)
+    assert len(_tools._load(mesh_file).points) == 6
+    assert len(count_parses) == 2
+
+
+def test_writing_an_input_invalidates_it(mesh_file, tmp_path, count_parses):
+    _tools.tool_stats(mesh_file)
+    _tools.tool_transform(mesh_file, mesh_file, translate=[1.0, 0.0, 0.0])
+    out = _tools._load(mesh_file)
+    assert out.points[0, 0] == 1.0
+    assert len(count_parses) == 2  # stats (transform hits the cache), the re-read
+
+
+def test_read_options_and_format_are_part_of_the_key(mesh_file, count_parses):
+    _tools._load(mesh_file)
+    _tools._load(mesh_file, "vtu")
+    _tools._load(mesh_file, "vtu")
+    assert len(count_parses) == 2
+
+
+def test_multi_file_formats_are_not_cached(tmp_path, count_parses):
+    # A .pvtu names its pieces in sibling files the entry file's stat cannot
+    # see (and needs no optional dependency, unlike XDMF's HDF5 without the
+    # native core).
+    path = str(tmp_path / "in.pvtu")
+    meshioplusplus.write(path, _mixed_mesh())
+    _tools._load(path)
+    _tools._load(path)
+    assert len(count_parses) == 2
+
+
+def test_cache_budget_zero_disables_it(mesh_file, count_parses, monkeypatch):
+    monkeypatch.setenv("MESHIOPLUSPLUS_MCP_CACHE_MB", "0")
+    _tools._load(mesh_file)
+    _tools._load(mesh_file)
+    assert len(count_parses) == 2
 
 
 def test_bandwidth(mesh_file):

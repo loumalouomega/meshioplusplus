@@ -22,6 +22,7 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -38,6 +39,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
@@ -247,13 +249,22 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         int xt = types[start];
         int nn = xdmf_idx_num_nodes(xt);
         std::size_t nrows = end - start;
-        NDArray data(DType::Int64, {nrows, static_cast<std::size_t>(nn)});
+        NDArray data = NDArray::Uninit(DType::Int64, {nrows, static_cast<std::size_t>(nn)});
         std::int64_t* dp = data.As<std::int64_t>();
-        for (std::size_t b = 0; b < nrows; ++b) {
-            std::size_t base = offsets[start + b] + ((xt == 1 || xt == 2) ? 2 : 1);
-            for (int j = 0; j < nn; ++j)
-                dp[b * nn + j] = detail::read_int(rFlat, base + j);
-        }
+        const std::size_t head = (xt == 1 || xt == 2) ? 2 : 1;
+        // Rows are independent: copy them in parallel, one dtype switch per run.
+        detail::dispatch_dtype(rFlat.Dtype(), [&]<class T>() {
+            const T* src = rFlat.As<T>();
+            parallel_for_bw(nrows, [&](std::size_t b) {
+                const std::size_t base = offsets[start + b] + head;
+                for (int j = 0; j < nn; ++j) {
+                    if constexpr (std::is_floating_point_v<T>)
+                        dp[b * nn + j] = detail::read_int(rFlat, base + j);
+                    else
+                        dp[b * nn + j] = static_cast<std::int64_t>(src[base + j]);
+                }
+            });
+        });
         rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }

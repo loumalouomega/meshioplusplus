@@ -723,3 +723,46 @@ def test_engines_record_the_same_notes(tmp_path, name):
     if cpp_notes is None or py_notes is None:
         pytest.skip(f"{name}: only one engine writes this mesh, nothing to compare")
     assert sorted(cpp_notes) == sorted(py_notes)
+
+
+# ---------------------------------------------------------------------------
+# v16.16.0: a slotless writer's notes do not leak, and XML comments stay XML.
+# ---------------------------------------------------------------------------
+
+
+def _side_region_tet():
+    return mp.Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        [("tetra", np.array([[0, 1, 2, 3]]))],
+        regions=[mp.Region("wall", "side", entries=np.array([[0, 0]]))],
+    )
+
+
+def test_a_slotless_writer_does_not_leak_its_notes(tmp_path):
+    """MED has nowhere to put a note (it drops a Side region here); the next
+    file written through a format writer called directly -- not a write entry
+    point, so it resets nothing -- must not carry it."""
+    import xml.etree.ElementTree as ET
+
+    mp.med.write(str(tmp_path / "a.med"), _side_region_tet())
+    out = tmp_path / "b.vtu"
+    mp.vtu.write(str(out), TRI, binary=False)
+    text = out.read_text()
+    ET.fromstring(text.split("?>", 1)[1])  # well-formed
+    assert "regions-dropped" not in text
+
+
+def test_an_xml_comment_never_holds_a_double_hyphen(tmp_path):
+    """A note may contain "--", which an XML comment may not: before v16.16.0
+    such a note made the whole VTK XML file unparseable."""
+    import xml.etree.ElementTree as ET
+
+    out = tmp_path / "c.vtu"
+    with _provenance.scope(_provenance.Mode.BEST_EFFORT):
+        _provenance.note("regions-dropped", "one dropped -- a facet is not a cell --")
+        mp.write(str(out), TRI, binary=False)
+    text = out.read_text()
+    comment = text[text.index("<!--") + 4 : text.index("-->")]
+    assert "--" not in comment
+    ET.fromstring(text.split("?>", 1)[1])
+    assert mp.read(str(out)).points.shape == TRI.points.shape

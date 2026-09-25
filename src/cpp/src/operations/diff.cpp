@@ -111,14 +111,10 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
 
     // Chunk over rows; grain 1 so even a handful of chunks dispatch in parallel.
     constexpr std::size_t kRowsPerChunk = 4096;
-    const std::size_t nchunks = (nrows + kRowsPerChunk - 1) / kRowsPerChunk;
-    std::vector<DiffAcc> partials(nchunks);
-    parallel_for(
-        nchunks,
-        [&](std::size_t chunk) {
+    const DiffAcc total = parallel_reduce(
+        nrows, kRowsPerChunk, DiffAcc{},
+        [&](std::size_t r0, std::size_t r1) {
             DiffAcc acc;
-            const std::size_t r0 = chunk * kRowsPerChunk;
-            const std::size_t r1 = std::min(r0 + kRowsPerChunk, nrows);
             for (std::size_t r = r0; r < r1; ++r) {
                 const std::size_t ar = pRowMapA ? static_cast<std::size_t>(pRowMapA[r]) : r;
                 for (std::size_t c = 0; c < ncols; ++c) {
@@ -128,13 +124,12 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
                                       rtol);
                 }
             }
-            partials[chunk] = acc;
+            return acc;
         },
-        1);
-
-    DiffAcc total;
-    for (const DiffAcc& p : partials)
-        diff_acc_combine(total, p);
+        [](DiffAcc acc, const DiffAcc& p) {
+            diff_acc_combine(acc, p);
+            return acc;
+        });
     out.mMaxAbsError = total.mMaxAbs;
     out.mMaxRelError = total.mMaxRel;
     out.mWorstIndex = total.mWorstIndex;

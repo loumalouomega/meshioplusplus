@@ -83,11 +83,13 @@ MESHIOPLUSPLUS_API std::string b64encode(const unsigned char* pData, std::size_t
 /**
  * @brief Base64-decodes `len` characters of `s`.
  *
- * Builds (and caches, in a function-local `static`) an inverse lookup table
- * from ASCII byte to 6-bit value on first call. Silently skips `'='`
- * padding and whitespace (`\n \r space \t`), and silently ignores any other
- * character outside the base64 alphabet, rather than treating either as an
- * error — VTU-embedded base64 can be split across lines.
+ * Silently skips `'='` padding and whitespace (`\n \r space \t`), and
+ * silently ignores any other character outside the base64 alphabet, rather
+ * than treating either as an error — VTU-embedded base64 can be split across
+ * lines. The valid characters form one bit stream: `m` of them decode to
+ * `floor(6m / 8)` bytes. Long inputs decode in parallel, in fixed-size chunks
+ * located by a pre-count of each chunk's valid characters; the result does
+ * not depend on the backend or the thread count.
  * @param pS Base64 text to decode (need not be NUL-terminated; length is explicit).
  * @param len Number of characters in `pS` to consider.
  * @return The decoded raw bytes.

@@ -28,6 +28,7 @@ Run from the repository root unless specified otherwise.
 | Python lint | `isort --check <files>`, `black --check <files>`, `flake8 <files>`; full hooks: `pre-commit run -a` |
 | Standalone C++ tests | `build/configure.sh --tests --build`, then `ctest --test-dir <configured-tree> --output-on-failure` |
 | Sanitizers / fuzzing | `CC=clang CXX=clang++ build/configure.sh --sanitize address,undefined --tests` (or `--fuzzers`); run `ctest` serially; see [doc/fuzzing.md](doc/fuzzing.md) |
+| Operation determinism | `CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh before.csv "SEQ OPENMP TBB" "1 4 8" -- --hash --tier S --tier M --runs 1`, then the same with `BASELINE=before.csv` after a change: digests must agree across backends, thread counts and the baseline; see [benchmarks](doc/benchmarks.md#determinism-check) |
 | Format conformance | `python tools/gen_conformance_table.py` regenerates `doc/conformance.md` and the formats-table column; `--observe <fmt>` prints a declaration to review |
 | Native CLI | `build/configure.sh --cli --build` |
 | C / Fortran libraries | `build/configure.sh --c-api` or `--fortran`, then build and install the configured tree |

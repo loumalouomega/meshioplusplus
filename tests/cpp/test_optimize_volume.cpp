@@ -39,6 +39,7 @@
 #include <gtest/gtest.h>
 
 // Project includes
+#include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -212,6 +213,87 @@ TEST(OptimizeVolume, NoOpWhenBothHalvesDisabled) {
     EXPECT_EQ(r.mNumVerticesMoved, 0);
     EXPECT_EQ(r.mNumTets, 2);
 }
+
+// A Kuhn-split cube of n^3 hexes (6 tets each) whose points are moved by up
+// to 0.35 of a lattice step -- boundary points within their face planes -- by
+// an integer LCG scaled by a power of two, so the input is bit-identical on
+// every platform (no libm). Enough of its tets are poor that both flip passes
+// and the relocation fire over several sweeps.
+Mesh jittered_cube_fixture(std::size_t n) {
+    const std::size_t np = n + 1;
+    std::vector<std::array<double, 3>> pts(np * np * np);
+    std::uint32_t state = 2463534242u;
+    for (std::size_t k = 0; k < np; ++k)
+        for (std::size_t j = 0; j < np; ++j)
+            for (std::size_t i = 0; i < np; ++i) {
+                const std::size_t ijk[3] = {i, j, k};
+                auto& p = pts[(k * np + j) * np + i];
+                for (int d = 0; d < 3; ++d) {
+                    state = state * 1664525u + 1013904223u;
+                    // (state >> 16) in [0, 65536): an offset in [-0.35, 0.35) steps.
+                    const double off = 0.35 * (static_cast<double>(state >> 16) / 32768.0 - 1.0);
+                    const bool on_face = ijk[d] == 0 || ijk[d] == n;
+                    p[d] = (static_cast<double>(ijk[d]) + (on_face ? 0.0 : off)) /
+                           static_cast<double>(n);
+                }
+            }
+    static const int tets[6][4][3] = {
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {1, 1, 1}}, {{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {1, 1, 1}},
+        {{0, 0, 0}, {0, 1, 0}, {1, 1, 0}, {1, 1, 1}}, {{0, 0, 0}, {0, 1, 0}, {0, 1, 1}, {1, 1, 1}},
+        {{0, 0, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}}, {{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {1, 1, 1}},
+    };
+    std::vector<std::vector<std::int64_t>> cells;
+    for (std::size_t k = 0; k < n; ++k)
+        for (std::size_t j = 0; j < n; ++j)
+            for (std::size_t i = 0; i < n; ++i)
+                for (const auto& t : tets) {
+                    std::vector<std::int64_t> c;
+                    for (const auto& v : t)
+                        c.push_back(static_cast<std::int64_t>(((k + v[2]) * np + (j + v[1])) * np +
+                                                              (i + v[0])));
+                    cells.push_back(std::move(c));
+                }
+    std::vector<std::vector<double>> coords;
+    for (const auto& p : pts)
+        coords.push_back({p[0], p[1], p[2]});
+    return mt::make_mesh(coords, "tetra", cells);
+}
+
+std::uint64_t optimize_volume_digest(const OptimizeVolumeResult& rR) {
+    meshioplusplus::bench::MeshDigest d;
+    d.Of(rR.mMesh);
+    d.U64(static_cast<std::uint64_t>(rR.mNum23Flips));
+    d.U64(static_cast<std::uint64_t>(rR.mNum32Flips));
+    d.U64(static_cast<std::uint64_t>(rR.mNumVerticesMoved));
+    return d.Value();
+}
+
+// Byte-identical results from repeated runs: the gate for the sweep's
+// relocation context and the sort-based flip tables (roadmap §4).
+TEST(OptimizeVolume, ResultIsStableAcrossRepeatedRuns) {
+    const Mesh in = jittered_cube_fixture(5);
+    const OptimizeVolumeResult first = optimize_volume(in);
+    ASSERT_GT(first.mNum23Flips, 0);
+    ASSERT_GT(first.mNum32Flips, 0);
+    ASSERT_GT(first.mNumVerticesMoved, 0);
+    const std::uint64_t digest = optimize_volume_digest(first);
+    for (int run = 0; run < 3; ++run)
+        EXPECT_EQ(optimize_volume_digest(optimize_volume(in)), digest) << "run " << run;
+}
+
+// The result the implementation produced before its rewrite, pinned: a change
+// to the sweep's data structures must not change a single byte. x86-64
+// GCC/Clang only -- elsewhere a compiler may contract a*b+c into an FMA, which
+// legitimately changes the last bits.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+TEST(OptimizeVolume, ResultMatchesTheGoldenDigest) {
+    const OptimizeVolumeResult r = optimize_volume(jittered_cube_fixture(5));
+    EXPECT_EQ(optimize_volume_digest(r), 0x6c0938c3f829d96bull);
+    EXPECT_EQ(r.mNum23Flips, 3);
+    EXPECT_EQ(r.mNum32Flips, 2);
+    EXPECT_EQ(r.mNumVerticesMoved, 62);
+}
+#endif
 
 TEST(OptimizeVolume, RejectsNonTetByName) {
     EXPECT_THROW(optimize_volume(mt::hex_mesh()), std::invalid_argument);

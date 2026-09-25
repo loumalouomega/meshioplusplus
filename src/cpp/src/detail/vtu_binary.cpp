@@ -76,7 +76,10 @@ std::string b64encode(const unsigned char* pData, std::size_t len) {
     return out;
 }
 
-std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+namespace {
+
+/** @brief The inverse alphabet: a character's 6-bit value, or -1 when it is skipped. */
+const std::array<int8_t, 256>& vtub_b64_inverse() {
     // A magic static, initialised once and thread-safely ([stmt.dcl]/4): the
     // hand-rolled "static bool init" it replaces was a data race when two
     // threads decoded at once (C, Fortran, Julia or R callers).
@@ -88,23 +91,97 @@ std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
             t[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
         return t;
     }();
-    std::vector<unsigned char> out;
-    out.reserve(len / 4 * 3);
-    int buf = 0, bits = 0;
-    for (std::size_t i = 0; i < len; ++i) {
-        char ch = pS[i];
-        if (ch == '=' || ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t')
-            continue;
-        int v = inv[(unsigned char)ch];
-        if (v < 0)
-            continue;
-        buf = (buf << 6) | v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
+    return inv;
+}
+
+/// Text bytes per decode chunk: a constant, so the chunking never depends on
+/// the thread count (the output does not either -- each chunk writes its own
+/// byte range -- but a constant keeps the work split reproducible).
+constexpr std::size_t kVtubDecodeChunk = std::size_t(1) << 20;
+
+/**
+ * @brief Decode the 4-character groups whose first character is valid
+ * character number `first` .. `last - 1` (multiples of four apart), starting
+ * the scan at text offset `from`, which holds valid character `first`.
+ *
+ * A group whose characters run past the end of this chunk keeps scanning the
+ * text after it, so chunks need no seam handling. Writes 3 bytes per whole
+ * group and the 1 or 2 bytes of a trailing 2- or 3-character group, exactly
+ * as a serial bit accumulator would.
+ */
+void vtub_decode_groups(const std::array<int8_t, 256>& rInv, const char* pS, std::size_t len,
+                        std::size_t from, std::size_t first, std::size_t last,
+                        unsigned char* pOut) {
+    std::size_t at = from;
+    for (std::size_t k = first; k < last; k += 4) {
+        unsigned n = 0;
+        int got = 0;
+        while (got < 4 && at < len) {
+            const int v = rInv[(unsigned char)pS[at++]];
+            if (v < 0)
+                continue;
+            n = (n << 6) | static_cast<unsigned>(v);
+            ++got;
+        }
+        unsigned char* o = pOut + k / 4 * 3;
+        if (got == 4) {
+            o[0] = static_cast<unsigned char>(n >> 16);
+            o[1] = static_cast<unsigned char>(n >> 8);
+            o[2] = static_cast<unsigned char>(n);
+        } else if (got == 3) {  // 18 bits -> 2 bytes
+            o[0] = static_cast<unsigned char>(n >> 10);
+            o[1] = static_cast<unsigned char>(n >> 2);
+        } else if (got == 2) {  // 12 bits -> 1 byte
+            o[0] = static_cast<unsigned char>(n >> 4);
         }
     }
+}
+
+}  // namespace
+
+std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+    // Every character outside the alphabet -- '=' padding, whitespace, line
+    // breaks, anything else -- is skipped, and the valid characters form one
+    // bit stream: m of them decode to floor(6m / 8) bytes. Line-wrapped
+    // base64 relies on that. The text is cut into fixed chunks; a first pass
+    // counts each chunk's valid characters, and a prefix sum then tells every
+    // chunk which 4-character groups start inside it and where their bytes
+    // go, so the chunks decode independently (and in parallel) straight into
+    // the pre-sized output.
+    const std::array<int8_t, 256>& inv = vtub_b64_inverse();
+    const std::size_t nchunks = (len + kVtubDecodeChunk - 1) / kVtubDecodeChunk;
+    std::vector<std::size_t> valid(nchunks + 1, 0);
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t lo = c * kVtubDecodeChunk;
+            const std::size_t hi = std::min(len, lo + kVtubDecodeChunk);
+            std::size_t cnt = 0;
+            for (std::size_t i = lo; i < hi; ++i)
+                cnt += inv[(unsigned char)pS[i]] >= 0;
+            valid[c + 1] = cnt;
+        },
+        1);
+    for (std::size_t c = 0; c < nchunks; ++c)
+        valid[c + 1] += valid[c];
+    const std::size_t m = valid[nchunks];
+    std::vector<unsigned char> out(m / 4 * 3 + (m % 4 == 3 ? 2 : m % 4 == 2 ? 1 : 0));
+    parallel_for(
+        nchunks,
+        [&](std::size_t c) {
+            // The first group starting in this chunk is the first multiple of
+            // four at or after its first valid character; skip the valid
+            // characters before it (they finish the previous chunk's group).
+            const std::size_t first = (valid[c] + 3) / 4 * 4;
+            const std::size_t last = std::min(m, valid[c + 1]);
+            if (first >= last)
+                return;
+            std::size_t at = c * kVtubDecodeChunk;
+            for (std::size_t skip = first - valid[c]; skip > 0; ++at)
+                skip -= inv[(unsigned char)pS[at]] >= 0;
+            vtub_decode_groups(inv, pS, len, at, first, last, out.data());
+        },
+        1);
     return out;
 }
 

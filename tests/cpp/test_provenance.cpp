@@ -77,6 +77,11 @@ TEST(Provenance, OffCarriesTheTag) {
 }
 
 TEST(Provenance, VtuCarriesTheTagAsAnXmlComment) {
+    // A direct format-writer call is not a write entry point, so it does not
+    // bound scope-less notes itself: begin the write as the registry and
+    // Python's write() do, or a note an earlier test's writer left (MED's
+    // "regions-dropped", say) turns the one-line comment into a block.
+    meshioplusplus::detail::provenance_begin_write();
     std::string path = mt::temp_path(".vtu");
     meshioplusplus::write_vtu(path, mt::tri_mesh(), /*binary=*/false, /*zlib=*/false);
     std::string bytes = slurp(path);

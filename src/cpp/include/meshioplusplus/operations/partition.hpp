@@ -51,7 +51,7 @@
  *
  * **Determinism.** The SFC path is byte-identical across mesh backends and
  * thread counts: keys are computed in `parallel_for` into disjoint slots, the
- * argsort is a serial `std::stable_sort` tie-broken by cell index, and the cut
+ * argsort is a serial stable radix sort tie-broken by cell index, and the cut
  * is a serial integer/prefix-sum rule. The KaHIP path is deterministic for a
  * fixed KaHIP build and seed, but its assignment may differ between KaHIP
  * versions — tests must assert balance and coverage, never exact labels.

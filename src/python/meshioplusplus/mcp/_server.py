@@ -22,7 +22,7 @@ from ..__about__ import __version__
 from . import _tools
 
 _INSTRUCTIONS = """\
-meshio++ mesh I/O and processing. All tools are stateless and file-path based:
+meshio++ mesh I/O and processing. All tools are file-path based:
 they read mesh files (40+ formats: VTK/VTU/VTP, Gmsh, Exodus, MED, Abaqus,
 STL, OBJ, PLY, XDMF, CGNS, ...), operate, and write output files, returning a
 JSON report. Start with `formats` to see supported formats, `info` for a fast
@@ -30,7 +30,9 @@ file summary, and `convert` to translate between formats. Inspection tools
 (`stats`, `quality`, `data_info`, `regions`, `diff`) return reports without
 writing anything. Mesh operations (clean, refine, decimate, smooth, slice,
 partition, ...) take input_path/output_path. Paths may be confined to a root
-directory by the server's --root option.
+directory by the server's --root option. Parsed inputs are cached between
+calls and re-read whenever the file changes, so asking several questions of
+one file is cheap.
 """
 
 

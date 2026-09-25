@@ -42,7 +42,6 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -56,6 +55,9 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -198,15 +200,6 @@ DecimFaces decim_build_faces(const Mesh& rSimp, std::size_t n) {
 
 using DecimEdgeKey = std::array<std::int64_t, 2>;
 
-struct DecimEdgeKeyHash {
-    std::size_t operator()(const DecimEdgeKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
-
 // Unique edges in first-seen (face-major) order, and the boundary vertex marks
 // from the once-used-edge test. Phase 1 fills the per-face-edge keys into
 // disjoint slots in parallel; phase 2 is the SERIAL first-seen dedup that pins
@@ -224,22 +217,29 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
         }
     });
 
-    std::vector<DecimEdgeKey> edges;
-    std::unordered_map<DecimEdgeKey, std::size_t, DecimEdgeKeyHash> edge_id;
-    edge_id.reserve(nf * 3 * 2);
-    std::vector<std::uint32_t> use_count;
-    for (const DecimEdgeKey& key : keys) {
-        if (key[0] == key[1])
-            continue;  // a degenerate face's self-edge is not an edge
-        auto it = edge_id.find(key);
-        if (it == edge_id.end()) {
-            edge_id.emplace(key, edges.size());
-            edges.push_back(key);
-            use_count.push_back(1);
-        } else {
-            ++use_count[it->second];
-        }
-    }
+    // A degenerate face's self-edge is not an edge: drop those slots, keeping
+    // the rest in slot order, then number edges in first-seen order and count
+    // their uses (detail/slot_runs.hpp) -- the ids and counts the former
+    // serial hash sweep gave.
+    keys.erase(std::remove_if(keys.begin(), keys.end(),
+                              [](const DecimEdgeKey& k) { return k[0] == k[1]; }),
+               keys.end());
+    const std::size_t nslots = keys.size();
+    const std::size_t npts = rBoundary.size();  // one flag per point
+    const detail::SlotRuns runs =
+        detail::group_slots(keys, npts + 1, [npts](const DecimEdgeKey& rK) {
+            return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
+                       ? static_cast<std::size_t>(rK[0])
+                       : npts;
+        });
+    const detail::FirstSeen seen = detail::number_first_seen(runs, nslots);
+    std::vector<DecimEdgeKey> edges(seen.NumIds());
+    std::vector<std::uint32_t> use_count(seen.NumIds());
+    parallel_for(seen.NumIds(), [&](std::size_t id) {
+        const std::size_t r = static_cast<std::size_t>(seen.mRunOfId[id]);
+        edges[id] = keys[runs.Head(r)];
+        use_count[id] = static_cast<std::uint32_t>(runs.Size(r));
+    });
     for (std::size_t e = 0; e < edges.size(); ++e)
         if (use_count[e] == 1) {
             rBoundary[static_cast<std::size_t>(edges[e][0])] = 1;

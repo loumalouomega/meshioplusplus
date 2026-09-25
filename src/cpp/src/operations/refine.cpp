@@ -32,10 +32,10 @@
 //
 // Determinism: the split set grows under a monotone idempotent closure operator
 // (detail/refine_templates.hpp), so its fixed point does not depend on the order
-// cells are visited in; and the new-node numbering comes from a serial dedup
-// pass over a parallel-filled disjoint-slot buffer -- surface.cpp's phase-split
-// idiom -- never from a concurrent hash insert. Output is therefore
-// byte-identical across backends and thread counts.
+// cells are visited in; and the new-node numbering is the first-seen order of
+// a parallel-filled disjoint-slot buffer, recovered by the sort-based table in
+// detail/slot_runs.hpp -- never from a concurrent hash insert. Output is
+// therefore byte-identical across backends and thread counts.
 
 // System includes
 #include <algorithm>
@@ -66,6 +66,9 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -354,28 +357,33 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         }
     }
 
-    // --- phase 2: dedup in stored order (SERIAL -> deterministic) ------------
-    // This pass is the determinism pin: entities are numbered by a single sweep
-    // over the slot buffer, whose order is a pure function of (block, cell,
-    // slot). It must never become a concurrent insert. Note it numbers
-    // ENTITIES, not points -- which of them earn a node is decided in phase 4,
-    // and the point ids are handed out in this same first-seen order there.
+    // --- phase 2: dedup in first-seen order (the determinism pin) -----------
+    // Entities are numbered in the order a single sweep over the slot buffer
+    // first meets them -- and that buffer's order is a pure function of
+    // (block, cell, slot). The sort-based table (detail/slot_runs.hpp)
+    // reproduces those ids exactly from a parallel sort of (key, slot) pairs;
+    // a concurrent hash insert never would. Note it numbers ENTITIES, not
+    // points -- which of them earn a node is decided in phase 4, and the point
+    // ids are handed out in this same first-seen order there.
     std::vector<RefineNodeKey> entities;
-    std::vector<std::int64_t> entity_of_slot(total_slots);
+    std::vector<std::int64_t> entity_of_slot;
     {
-        std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> entity_id;
-        entity_id.reserve(total_slots * 2);
-        for (std::size_t i = 0; i < total_slots; ++i) {
-            auto it = entity_id.find(keys[i]);
-            if (it == entity_id.end()) {
-                const std::int64_t id = static_cast<std::int64_t>(entities.size());
-                entity_id.emplace(keys[i], id);
-                entities.push_back(keys[i]);
-                entity_of_slot[i] = id;
-            } else {
-                entity_of_slot[i] = it->second;
-            }
-        }
+        // Bucketed by the entity's smallest node (an edge key is {-1, -1, a, b}
+        // with a < b, a quad-face key its four sorted ids); an id outside the
+        // mesh shares the last bucket.
+        const std::size_t npts = rMesh.NumPoints();
+        const detail::SlotRuns runs =
+            detail::group_slots(keys, npts + 1, [npts](const RefineNodeKey& rK) {
+                const std::int64_t first = rK[0] >= 0 ? rK[0] : rK[2];
+                return first >= 0 && static_cast<std::size_t>(first) < npts
+                           ? static_cast<std::size_t>(first)
+                           : npts;
+            });
+        detail::FirstSeen seen = detail::number_first_seen(runs, total_slots);
+        entities.resize(seen.NumIds());
+        parallel_for(seen.NumIds(),
+                     [&](std::size_t id) { entities[id] = keys[runs.Head(seen.mRunOfId[id])]; });
+        entity_of_slot = std::move(seen.mIdOfSlot);
     }
     keys.clear();
     keys.shrink_to_fit();  // nothing downstream needs the per-slot keys

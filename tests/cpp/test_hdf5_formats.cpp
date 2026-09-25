@@ -23,8 +23,10 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 #include <hdf5.h>
 
@@ -1285,6 +1287,84 @@ TEST(H5Util, CreationOrderGroupAndSoftLinkKeepChildOrder) {
     EXPECT_FALSE(h5::is_soft_link(root, "absent"));
     h5::SilenceErrors silence;
     EXPECT_THROW(h5::soft_link_target(root, "zeta"), meshioplusplus::ReadError);
+}
+
+// A gzip dataset larger than one ~1 MiB chunk is written as whole-row chunks
+// compressed in parallel (HDF5 refuses a single chunk of 4 GiB or more), and
+// read back through the parallel inflate path; a small one keeps its single
+// chunk. Rows that do not fill the last chunk, and a row larger than a chunk,
+// both round-trip.
+TEST(Hdf5Util, ChunkedGzipDatasetsRoundTrip) {
+    struct Case {
+        std::size_t mRows;
+        std::size_t mCols;
+        std::size_t mExpectChunkRows;  // 0: the whole dataset
+    };
+    const Case cases[] = {
+        {1000, 3, 0},                  // 24 KB: one chunk
+        {300001, 4, (1u << 20) / 32},  // ~9.6 MB of Int64 rows, ragged last chunk
+        {3, (1u << 20) / 8 + 5, 1},    // each row alone exceeds a chunk
+    };
+    for (const Case& c : cases) {
+        const std::string p = mt::temp_path(".h5");
+        meshioplusplus::NDArray a =
+            meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {c.mRows, c.mCols});
+        for (std::size_t i = 0; i < a.Size(); ++i)
+            a.As<std::int64_t>()[i] = static_cast<std::int64_t>((i * 2654435761u) % 1000003u) - 7;
+        {
+            h5::Hid f(H5Fcreate(p.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose);
+            h5::write_dataset(f, "a", a, 4);
+        }
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+        {
+            h5::Hid d(H5Dopen2(f, "a", H5P_DEFAULT), H5Dclose);
+            h5::Hid dcpl(H5Dget_create_plist(d), H5Pclose);
+            hsize_t chunk[2] = {0, 0};
+            ASSERT_EQ(H5Pget_chunk(dcpl, 2, chunk), 2);
+            EXPECT_EQ(chunk[0], c.mExpectChunkRows ? c.mExpectChunkRows : c.mRows) << c.mRows;
+            EXPECT_EQ(chunk[1], c.mCols);
+            // The chunks are readable by the library's own filter pipeline too.
+            meshioplusplus::NDArray via_h5 =
+                meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {c.mRows, c.mCols});
+            ASSERT_GE(H5Dread(d, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, via_h5.Data()),
+                      0);
+            EXPECT_EQ(std::memcmp(via_h5.Data(), a.Data(), a.Nbytes()), 0) << c.mRows;
+        }
+        const meshioplusplus::NDArray back = h5::read_dataset(f, "a");
+        ASSERT_EQ(back.Shape(), a.Shape());
+        EXPECT_EQ(std::memcmp(back.Data(), a.Data(), a.Nbytes()), 0) << c.mRows;
+    }
+}
+
+// A gzip dataset chunked by another writer (four chunks, written through the
+// library's filter pipeline) reads back identically through the parallel
+// inflate path; one with a shuffle filter in front takes the plain H5Dread.
+TEST(Hdf5Util, ReadsForeignChunkedGzipDatasets) {
+    for (const bool shuffle : {false, true}) {
+        const std::string p = mt::temp_path(".h5");
+        const hsize_t dims[2] = {100003, 3};
+        std::vector<double> vals(100003 * 3);
+        for (std::size_t i = 0; i < vals.size(); ++i)
+            vals[i] = 0.25 * static_cast<double>(i % 977) - 3.0;
+        {
+            h5::Hid f(H5Fcreate(p.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose);
+            h5::Hid space(H5Screate_simple(2, dims, nullptr), H5Sclose);
+            h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
+            const hsize_t chunk[2] = {25001, 3};
+            H5Pset_chunk(dcpl, 2, chunk);
+            if (shuffle)
+                H5Pset_shuffle(dcpl);
+            H5Pset_deflate(dcpl, 6);
+            h5::Hid d(H5Dcreate2(f, "x", H5T_IEEE_F64LE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
+                      H5Dclose);
+            ASSERT_GE(H5Dwrite(d, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, vals.data()),
+                      0);
+        }
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+        const meshioplusplus::NDArray back = h5::read_dataset(f, "x");
+        ASSERT_EQ(back.Size(), vals.size());
+        EXPECT_EQ(std::memcmp(back.Data(), vals.data(), back.Nbytes()), 0) << shuffle;
+    }
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

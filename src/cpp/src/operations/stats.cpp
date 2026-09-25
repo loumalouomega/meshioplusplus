@@ -98,46 +98,35 @@ StatsReport compute_stats(const Mesh& rMesh) {
     // --- bounding box / centroid (chunked parallel reduction) ---------------
     if (n > 0 && dim > 0) {
         const std::size_t ddim = std::min<std::size_t>(dim, 3);
-        const std::size_t grain = 4096;
-        const std::size_t nchunks = (n + grain - 1) / grain;
-        std::vector<std::array<double, 3>> pmin(nchunks), pmax(nchunks), psum(nchunks);
-        parallel_for(
-            nchunks,
-            [&](std::size_t ci) {
-                std::array<double, 3> lmin = {std::numeric_limits<double>::infinity(),
-                                              std::numeric_limits<double>::infinity(),
-                                              std::numeric_limits<double>::infinity()};
-                std::array<double, 3> lmax = {-std::numeric_limits<double>::infinity(),
-                                              -std::numeric_limits<double>::infinity(),
-                                              -std::numeric_limits<double>::infinity()};
-                std::array<double, 3> lsum = {0, 0, 0};
-                const std::size_t start = ci * grain;
-                const std::size_t stop = std::min(n, start + grain);
+        // Fixed 4096-point chunks folded in chunk order (parallel_reduce): the
+        // bounding box is exact under any chunking, and the centroid sum is
+        // the same on every backend and thread count.
+        constexpr double kInf = std::numeric_limits<double>::infinity();
+        using Acc = std::array<double, 9>;  // min[3], max[3], sum[3]
+        const Acc acc = parallel_reduce(
+            n, 4096, Acc{kInf, kInf, kInf, -kInf, -kInf, -kInf, 0.0, 0.0, 0.0},
+            [&](std::size_t start, std::size_t stop) {
+                Acc l{kInf, kInf, kInf, -kInf, -kInf, -kInf, 0.0, 0.0, 0.0};
                 for (std::size_t g = start; g < stop; ++g)
                     for (std::size_t d = 0; d < ddim; ++d) {
                         const double v = detail::read_double(points, g * dim + d);
-                        lmin[d] = std::min(lmin[d], v);
-                        lmax[d] = std::max(lmax[d], v);
-                        lsum[d] += v;
+                        l[d] = std::min(l[d], v);
+                        l[3 + d] = std::max(l[3 + d], v);
+                        l[6 + d] += v;
                     }
-                pmin[ci] = lmin;
-                pmax[ci] = lmax;
-                psum[ci] = lsum;
+                return l;
             },
-            1);
-        std::array<double, 3> gmin = {std::numeric_limits<double>::infinity(),
-                                      std::numeric_limits<double>::infinity(),
-                                      std::numeric_limits<double>::infinity()};
-        std::array<double, 3> gmax = {-std::numeric_limits<double>::infinity(),
-                                      -std::numeric_limits<double>::infinity(),
-                                      -std::numeric_limits<double>::infinity()};
-        std::array<double, 3> gsum = {0, 0, 0};
-        for (std::size_t ci = 0; ci < nchunks; ++ci)
-            for (std::size_t d = 0; d < 3; ++d) {
-                gmin[d] = std::min(gmin[d], pmin[ci][d]);
-                gmax[d] = std::max(gmax[d], pmax[ci][d]);
-                gsum[d] += psum[ci][d];
-            }
+            [](Acc g, const Acc& p) {
+                for (std::size_t d = 0; d < 3; ++d) {
+                    g[d] = std::min(g[d], p[d]);
+                    g[3 + d] = std::max(g[3 + d], p[3 + d]);
+                    g[6 + d] += p[6 + d];
+                }
+                return g;
+            });
+        const double* gmin = acc.data();
+        const double* gmax = acc.data() + 3;
+        const double* gsum = acc.data() + 6;
         for (std::size_t d = 0; d < ddim; ++d) {
             rep.mBBoxMin[d] = gmin[d];
             rep.mBBoxMax[d] = gmax[d];

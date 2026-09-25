@@ -47,6 +47,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/surface_normals.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -288,21 +289,8 @@ Mesh gltf_geometry_copy(const Mesh& rMesh) {
     Mesh out;
     out.AssignPoints(detail::data_owned_copy(rMesh.Points()));
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                cells[c].resize(cb.NumFaces(c));
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    const auto face = cb.Face(c, f);
-                    cells[c][f].assign(face.first, face.first + face.second);
-                }
-            }
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
-        } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        if (cb.IsRagged()) {
+            detail::append_ragged_copy(cb, out);
         } else {
             out.AddCellBlock(std::string(cb.Type()), detail::data_owned_copy(cb.Conn()));
         }

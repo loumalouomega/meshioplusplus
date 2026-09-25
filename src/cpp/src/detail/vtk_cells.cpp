@@ -17,8 +17,10 @@
 
 // System includes
 #include <algorithm>
-#include <map>
 #include <cstring>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/vtk_cells.hpp"
@@ -215,61 +217,91 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                     "'faces'/'faceoffsets' arrays");
             // Decode this run of polyhedra, then bucket by unique node count
             // into polyhedron<N> -- the convention the OpenFOAM, EnSight, MED
-            // and CGNS readers all use.
-            std::vector<std::vector<std::vector<std::int64_t>>> cells;
-            std::vector<std::size_t> node_counts;
-            for (std::size_t c = start; c < end; ++c) {
-                const std::int64_t begin_at = last_face_end;
-                const std::int64_t end_at = rFaceOffsets[c];
-                if (end_at < 0 || begin_at > end_at ||
-                    static_cast<std::size_t>(end_at) > pFaces->size())
+            // and CGNS readers all use. faceoffsets are END offsets, so every
+            // cell's slice of the face stream is known up front: the slices
+            // are checked, measured and counted in parallel, and each bucket
+            // is written straight into the CSR arrays the mesh stores.
+            const std::size_t nrun = end - start;
+            std::vector<std::int64_t> begin_at(nrun), end_at(nrun);
+            for (std::size_t i = 0; i < nrun; ++i) {
+                begin_at[i] = last_face_end;
+                end_at[i] = rFaceOffsets[start + i];
+                if (end_at[i] < 0 || begin_at[i] > end_at[i] ||
+                    static_cast<std::size_t>(end_at[i]) > pFaces->size())
                     throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
-                last_face_end = end_at;
-                std::size_t at = static_cast<std::size_t>(begin_at);
-                const auto stop = static_cast<std::size_t>(end_at);
+                last_face_end = end_at[i];
+            }
+            std::vector<std::int64_t> nfaces(nrun), nnodes(nrun);
+            std::vector<std::size_t> node_counts(nrun);
+            parallel_for(nrun, [&](std::size_t i) {
+                std::size_t at = static_cast<std::size_t>(begin_at[i]);
+                const auto stop = static_cast<std::size_t>(end_at[i]);
                 // Every read stays inside this cell's slice of the stream.
                 const auto take = [&]() {
                     if (at >= stop)
                         throw ReadError("VTU: a polyhedron's face stream overruns its entry");
                     return (*pFaces)[at++];
                 };
-                const std::int64_t nfaces = take();
-                std::vector<std::vector<std::int64_t>> faces;
-                std::vector<std::int64_t> uniq;
-                for (std::int64_t f = 0; f < nfaces; ++f) {
+                const std::int64_t nf = take();
+                static thread_local std::vector<std::int64_t> uniq;
+                uniq.clear();
+                for (std::int64_t f = 0; f < nf; ++f) {
                     const std::int64_t nn = take();
                     if (nn < 0 || static_cast<std::uint64_t>(nn) > stop - at)
                         throw ReadError("VTU: a polyhedron's face stream overruns its entry");
-                    std::vector<std::int64_t> ring;
-                    ring.reserve(static_cast<std::size_t>(nn));
                     for (std::int64_t k = 0; k < nn; ++k)
-                        ring.push_back(take());
-                    uniq.insert(uniq.end(), ring.begin(), ring.end());
-                    faces.push_back(std::move(ring));
+                        uniq.push_back(take());
                 }
+                nfaces[i] = nf < 0 ? 0 : nf;
+                nnodes[i] = static_cast<std::int64_t>(uniq.size());
                 std::sort(uniq.begin(), uniq.end());
-                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-                node_counts.push_back(uniq.size());
-                cells.push_back(std::move(faces));
-            }
+                node_counts[i] =
+                    static_cast<std::size_t>(std::unique(uniq.begin(), uniq.end()) - uniq.begin());
+            });
+            // Buckets in order of first appearance; members in file order.
             std::vector<std::size_t> order;
-            std::map<std::size_t, std::vector<std::size_t>> groups;
-            for (std::size_t i = 0; i < cells.size(); ++i) {
-                if (groups.find(node_counts[i]) == groups.end())
+            std::unordered_map<std::size_t, std::size_t> bucket_of_count;
+            std::vector<std::size_t> bucket(nrun);
+            for (std::size_t i = 0; i < nrun; ++i) {
+                auto [it, fresh] = bucket_of_count.emplace(node_counts[i], order.size());
+                if (fresh)
                     order.push_back(node_counts[i]);
-                groups[node_counts[i]].push_back(i);
+                bucket[i] = it->second;
             }
-            for (std::size_t n : order) {
-                std::vector<std::vector<std::vector<std::int64_t>>> group;
+            std::vector<std::vector<std::size_t>> members(order.size());
+            for (std::size_t i = 0; i < nrun; ++i)
+                members[bucket[i]].push_back(i);
+            for (std::size_t g = 0; g < order.size(); ++g) {
+                const std::vector<std::size_t>& cells = members[g];
+                // Face and node prefix sums over this bucket's cells.
+                std::vector<std::int64_t> cell_face(cells.size() + 1, 0),
+                    cell_node(cells.size() + 1, 0);
+                for (std::size_t k = 0; k < cells.size(); ++k) {
+                    cell_face[k + 1] = cell_face[k] + nfaces[cells[k]];
+                    cell_node[k + 1] = cell_node[k] + nnodes[cells[k]];
+                }
+                std::vector<std::int64_t> flat(static_cast<std::size_t>(cell_node.back()));
+                std::vector<std::int64_t> row_offsets(static_cast<std::size_t>(cell_face.back()) +
+                                                      1);
+                row_offsets[0] = 0;
+                parallel_for(cells.size(), [&](std::size_t k) {
+                    std::size_t at = static_cast<std::size_t>(begin_at[cells[k]]) + 1;
+                    std::int64_t node = cell_node[k];
+                    for (std::int64_t f = cell_face[k]; f < cell_face[k + 1]; ++f) {
+                        const std::int64_t nn = (*pFaces)[at++];
+                        for (std::int64_t j = 0; j < nn; ++j)
+                            flat[static_cast<std::size_t>(node++)] = (*pFaces)[at++];
+                        row_offsets[static_cast<std::size_t>(f) + 1] = node;
+                    }
+                });
                 // The bucket's members sit at these FILE rows, which are not contiguous
                 // when the run mixes node counts: slicing [at_row, at_row + m) would hand
                 // each block another block's cell_data.
-                std::vector<std::size_t> file_rows;
-                for (std::size_t i : groups[n]) {
-                    group.push_back(std::move(cells[i]));
-                    file_rows.push_back(start + i);
-                }
-                rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
+                std::vector<std::size_t> file_rows(cells.size());
+                for (std::size_t k = 0; k < cells.size(); ++k)
+                    file_rows[k] = start + cells[k];
+                rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(order[g]), std::move(flat),
+                                         std::move(row_offsets), std::move(cell_face));
                 for (const auto& kv : rCellDataRaw)
                     rMesh.AppendCellData(kv.first, vtkcells_gather_rows(kv.second, file_rows));
             }

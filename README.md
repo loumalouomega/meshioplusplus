@@ -920,7 +920,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 84 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 84 tools itself. Tools are file-path based (optionally sandboxed with `--root DIR`), parsed inputs are cached between calls and re-read when a file changes, and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 </details>
 
@@ -1049,7 +1049,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.14.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.16.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

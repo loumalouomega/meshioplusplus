@@ -1252,6 +1252,9 @@ Mesh read_libmesh(const std::string& rPath) {
 }
 
 void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
+    // No provenance slot in this format: drop the notes this write raises on
+    // the way out rather than let them reach the next file written.
+    const detail::ProvenanceSlotlessWrite slotless;
     std::string lower;
     for (char c : rPath)
         lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

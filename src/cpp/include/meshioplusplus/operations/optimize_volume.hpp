@@ -95,9 +95,13 @@
  *
  * ### Determinism
  *
- * Per-tet quality and the face/edge adjacency of each sweep are built in
- * `parallel_for` into disjoint slots; the flip-application loop is **serial**,
- * in ascending (cell, local face/edge) order, because a flip mutates shared
+ * The relocation half is a Jacobi pass, one `parallel_for` over the nodes
+ * writing disjoint slots (`smooth`'s ODT pass, run straight on the working
+ * buffer; the pin mask is computed once, since neither flip changes the
+ * boundary). Each flip sub-pass finds its candidates in a table built by
+ * sorting (face key, slot) or (edge key, tet) records -- a function of the
+ * connectivity alone -- and applies flips **serially**, in ascending
+ * (cell, local face) or edge-key order, because a flip mutates shared
  * incidence (`decimate_volume`'s greedy-loop reasoning). Output is
  * byte-identical across the three mesh backends and across thread counts.
  *

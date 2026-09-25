@@ -1587,6 +1587,9 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster, int
 
 void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo, bool code_aster,
                int node_dataset) {
+    // No provenance slot in this format: drop the notes this write raises on
+    // the way out rather than let them reach the next file written.
+    const detail::ProvenanceSlotlessWrite slotless;
     auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);

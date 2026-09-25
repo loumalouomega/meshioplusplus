@@ -32,7 +32,11 @@
  */
 
 // System includes
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <vector>
 
 namespace meshioplusplus {
 namespace detail {
@@ -93,6 +97,43 @@ inline std::uint64_t sfc_hilbert_key(const std::uint32_t q[3], int bits) {
         for (i = 0; i < n; ++i)
             d = (d << 1) | static_cast<std::uint64_t>((X[i] >> b) & 1u);
     return d;
+}
+
+/**
+ * @brief Stable argsort of curve keys: the indices `0 .. n-1` ordered by
+ * `rKeys[i]`, ties in ascending index -- exactly what `std::stable_sort` with
+ * an indirect `rKeys[a] < rKeys[b]` comparator returns, as a least-significant-
+ * digit radix sort (11-bit digits; a digit every key shares is skipped). It
+ * replaces that comparison sort in `reorder` and `partition` (roadmap §4):
+ * linear passes over two index buffers instead of O(n log n) indirect loads.
+ */
+inline std::vector<std::int64_t> sfc_stable_argsort(const std::vector<std::uint64_t>& rKeys) {
+    const std::size_t n = rKeys.size();
+    std::vector<std::int64_t> order(n);
+    std::iota(order.begin(), order.end(), std::int64_t{0});
+    if (n < 2)
+        return order;
+    constexpr int kDigitBits = 11;
+    constexpr std::size_t kBuckets = std::size_t{1} << kDigitBits;
+    std::vector<std::int64_t> next(n);
+    std::vector<std::size_t> count(kBuckets);
+    for (int shift = 0; shift < 64; shift += kDigitBits) {
+        std::fill(count.begin(), count.end(), 0);
+        for (std::uint64_t k : rKeys)
+            ++count[(k >> shift) & (kBuckets - 1)];
+        if (count[(rKeys[0] >> shift) & (kBuckets - 1)] == n)
+            continue;  // every key has this digit: the pass would not move anything
+        std::size_t sum = 0;
+        for (std::size_t& c : count) {
+            const std::size_t here = c;
+            c = sum;
+            sum += here;
+        }
+        for (std::int64_t idx : order)
+            next[count[(rKeys[static_cast<std::size_t>(idx)] >> shift) & (kBuckets - 1)]++] = idx;
+        order.swap(next);
+    }
+    return order;
 }
 
 }  // namespace detail

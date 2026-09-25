@@ -386,8 +386,13 @@ CgnsPolySection cgns_read_poly_section(h5::Hid& rSect, const std::string& rName,
             "(expected {})",
             rName, n, off.Size(), n + 1));
     out.mOffsets.resize(off.Size());
-    for (std::size_t i = 0; i < off.Size(); ++i)
+    for (std::size_t i = 0; i < off.Size(); ++i) {
         out.mOffsets[i] = detail::read_int(off, i);
+        if (out.mOffsets[i] < 0 || (i > 0 && out.mOffsets[i] < out.mOffsets[i - 1]))
+            throw ReadError(detail::format_compat(
+                "CGNS: section '{}' has an ElementStartOffset that is negative or decreasing",
+                rName));
+    }
 
     h5::Hid cg = h5::open_group(rSect, "ElementConnectivity");
     NDArray conn = h5::read_dataset(cg, " data");
@@ -597,6 +602,9 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
 }  // namespace
 
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
+    // No provenance slot in this format: drop the notes this write raises on
+    // the way out rather than let them reach the next file written.
+    const detail::ProvenanceSlotlessWrite slotless;
     h5::SilenceErrors silence;
 
     const std::size_t point_dim = rMesh.PointDim();
@@ -1249,76 +1257,122 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                     if (referenced)
                         continue;
 
-                    std::vector<std::vector<std::int64_t>> rows(nc);
-                    for (std::size_t i = 0; i < nc; ++i) {
-                        const std::size_t lo = static_cast<std::size_t>(ps.mOffsets[i]);
-                        const std::size_t hi = static_cast<std::size_t>(ps.mOffsets[i + 1]);
-                        rows[i].reserve(hi - lo);
-                        for (std::size_t j = lo; j < hi; ++j)
-                            rows[i].push_back(ps.mData[j] - 1 + point_offset);
-                    }
-                    // Grouped by node count, the convention the OpenFOAM and
-                    // EnSight readers already use.
-                    std::map<std::size_t, std::vector<std::vector<std::int64_t>>> by_n;
-                    for (auto& r : rows)
-                        by_n[r.size()].push_back(std::move(r));
+                    // Grouped by node count (ascending), the convention the
+                    // OpenFOAM and EnSight readers already use; each group
+                    // is written straight into the CSR the mesh stores.
+                    std::map<std::size_t, std::vector<std::size_t>> by_n;
+                    for (std::size_t i = 0; i < nc; ++i)
+                        by_n[static_cast<std::size_t>(ps.mOffsets[i + 1] - ps.mOffsets[i])]
+                            .push_back(i);
                     for (auto& kv : by_n) {
-                        const std::size_t cnt = kv.second.size();
-                        mesh.AddPolygonBlock("polygon" + std::to_string(kv.first),
-                                             std::move(kv.second));
+                        const std::vector<std::size_t>& members = kv.second;
+                        const std::size_t cnt = members.size();
+                        std::vector<std::int64_t> flat(cnt * kv.first);
+                        std::vector<std::int64_t> row_offsets(cnt + 1);
+                        for (std::size_t r = 0; r <= cnt; ++r)
+                            row_offsets[r] = static_cast<std::int64_t>(r * kv.first);
+                        parallel_for(cnt, [&](std::size_t r) {
+                            const std::size_t lo =
+                                static_cast<std::size_t>(ps.mOffsets[members[r]]);
+                            for (std::size_t j = 0; j < kv.first; ++j)
+                                flat[r * kv.first + j] = ps.mData[lo + j] - 1 + point_offset;
+                        });
+                        mesh.AddPolygonBlock("polygon" + std::to_string(kv.first), std::move(flat),
+                                             std::move(row_offsets));
                         zone_block_cells.push_back(cnt);
                     }
                     continue;
                 }
 
                 // NFACE_n: dereference each signed face id into its node ring,
-                // reversing where the sign says so.
-                std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
-                for (std::size_t i = 0; i < nc; ++i) {
-                    const std::size_t lo = static_cast<std::size_t>(ps.mOffsets[i]);
-                    const std::size_t hi = static_cast<std::size_t>(ps.mOffsets[i + 1]);
-                    for (std::size_t j = lo; j < hi; ++j) {
-                        const std::int64_t sid = ps.mData[j];
-                        const std::int64_t fid = sid < 0 ? -sid : sid;
-                        // Locate the NGON section holding element id `fid`.
-                        const CgnsPolySection* src = nullptr;
-                        for (const auto& kv : poly) {
-                            if (kv.second.mCode == kCgnsNgon && fid >= kv.second.mFirst &&
-                                fid <= kv.second.mLast) {
-                                src = &kv.second;
-                                break;
-                            }
+                // reversing where the sign says so. First resolve every face
+                // reference (serially, so the first bad one is the one
+                // reported), then measure the cells in parallel and write each
+                // node-count group straight into the CSR the mesh stores.
+                const std::size_t nrefs = static_cast<std::size_t>(ps.mOffsets[nc]);
+                std::vector<const CgnsPolySection*> ref_src(nrefs);
+                std::vector<std::size_t> ref_face(nrefs);
+                for (auto j = static_cast<std::size_t>(ps.mOffsets[0]); j < nrefs; ++j) {
+                    const std::int64_t sid = ps.mData[j];
+                    const std::int64_t fid = sid < 0 ? -sid : sid;
+                    // Locate the NGON section holding element id `fid`.
+                    const CgnsPolySection* src = nullptr;
+                    for (const auto& kv : poly) {
+                        if (kv.second.mCode == kCgnsNgon && fid >= kv.second.mFirst &&
+                            fid <= kv.second.mLast) {
+                            src = &kv.second;
+                            break;
                         }
-                        if (!src)
-                            throw ReadError(detail::format_compat(
-                                "CGNS: section '{}' references face element {}, which no NGON_n "
-                                "section defines",
-                                sec.mName, fid));
-                        const std::size_t fi = static_cast<std::size_t>(fid - src->mFirst);
-                        const std::size_t flo = static_cast<std::size_t>(src->mOffsets[fi]);
-                        const std::size_t fhi = static_cast<std::size_t>(src->mOffsets[fi + 1]);
-                        std::vector<std::int64_t> ring;
-                        ring.reserve(fhi - flo);
-                        for (std::size_t k = flo; k < fhi; ++k)
-                            ring.push_back(src->mData[k] - 1 + point_offset);
-                        if (sid < 0)
-                            std::reverse(ring.begin(), ring.end());
-                        cells[i].push_back(std::move(ring));
                     }
+                    if (!src)
+                        throw ReadError(detail::format_compat(
+                            "CGNS: section '{}' references face element {}, which no NGON_n "
+                            "section defines",
+                            sec.mName, fid));
+                    ref_src[j] = src;
+                    ref_face[j] = static_cast<std::size_t>(fid - src->mFirst);
                 }
-                // Grouped by DISTINCT node count -> polyhedron<N>, matching the
-                // OpenFOAM/EnSight/cgnslib readers.
-                std::map<std::size_t, std::vector<std::vector<std::vector<std::int64_t>>>> by_n;
-                for (auto& c : cells) {
-                    std::set<std::int64_t> uniq;
-                    for (const auto& f : c)
-                        uniq.insert(f.begin(), f.end());
-                    by_n[uniq.size()].push_back(std::move(c));
-                }
+                const auto face_size = [&](std::size_t j) {
+                    const CgnsPolySection& src = *ref_src[j];
+                    return static_cast<std::size_t>(src.mOffsets[ref_face[j] + 1] -
+                                                    src.mOffsets[ref_face[j]]);
+                };
+                std::vector<std::size_t> cell_nodes(nc), cell_distinct(nc);
+                parallel_for(nc, [&](std::size_t i) {
+                    static thread_local std::vector<std::int64_t> ids;
+                    ids.clear();
+                    for (auto j = static_cast<std::size_t>(ps.mOffsets[i]);
+                         j < static_cast<std::size_t>(ps.mOffsets[i + 1]); ++j) {
+                        const CgnsPolySection& src = *ref_src[j];
+                        const auto flo = static_cast<std::size_t>(src.mOffsets[ref_face[j]]);
+                        ids.insert(
+                            ids.end(), src.mData.begin() + static_cast<std::ptrdiff_t>(flo),
+                            src.mData.begin() + static_cast<std::ptrdiff_t>(flo + face_size(j)));
+                    }
+                    cell_nodes[i] = ids.size();
+                    std::sort(ids.begin(), ids.end());
+                    cell_distinct[i] =
+                        static_cast<std::size_t>(std::unique(ids.begin(), ids.end()) - ids.begin());
+                });
+                // Grouped by DISTINCT node count (ascending) -> polyhedron<N>,
+                // matching the OpenFOAM/EnSight/cgnslib readers.
+                std::map<std::size_t, std::vector<std::size_t>> by_n;
+                for (std::size_t i = 0; i < nc; ++i)
+                    by_n[cell_distinct[i]].push_back(i);
                 for (auto& kv : by_n) {
-                    const std::size_t cnt = kv.second.size();
+                    const std::vector<std::size_t>& members = kv.second;
+                    const std::size_t cnt = members.size();
+                    std::vector<std::int64_t> face_offsets(cnt + 1, 0), node_at(cnt + 1, 0);
+                    for (std::size_t k = 0; k < cnt; ++k) {
+                        const std::size_t i = members[k];
+                        face_offsets[k + 1] =
+                            face_offsets[k] + (ps.mOffsets[i + 1] - ps.mOffsets[i]);
+                        node_at[k + 1] = node_at[k] + static_cast<std::int64_t>(cell_nodes[i]);
+                    }
+                    std::vector<std::int64_t> flat(static_cast<std::size_t>(node_at[cnt]));
+                    std::vector<std::int64_t> row_offsets(
+                        static_cast<std::size_t>(face_offsets[cnt]) + 1, 0);
+                    parallel_for(cnt, [&](std::size_t k) {
+                        const std::size_t i = members[k];
+                        std::int64_t node = node_at[k];
+                        std::int64_t row = face_offsets[k];
+                        for (auto j = static_cast<std::size_t>(ps.mOffsets[i]);
+                             j < static_cast<std::size_t>(ps.mOffsets[i + 1]); ++j) {
+                            const CgnsPolySection& src = *ref_src[j];
+                            const auto flo = static_cast<std::size_t>(src.mOffsets[ref_face[j]]);
+                            const std::size_t n = face_size(j);
+                            std::int64_t* out = flat.data() + node;
+                            for (std::size_t q = 0; q < n; ++q)
+                                out[q] = src.mData[flo + q] - 1 + point_offset;
+                            if (ps.mData[j] < 0)
+                                std::reverse(out, out + n);
+                            node += static_cast<std::int64_t>(n);
+                            row_offsets[static_cast<std::size_t>(++row)] = node;
+                        }
+                    });
                     mesh.AddPolyhedronBlock("polyhedron" + std::to_string(kv.first),
-                                            std::move(kv.second));
+                                            std::move(flat), std::move(row_offsets),
+                                            std::move(face_offsets));
                     zone_block_cells.push_back(cnt);
                 }
                 continue;

@@ -3,8 +3,10 @@
 Serves the whole library surface — reading/writing 40+ mesh formats, format
 conversion, and every mesh and data operation — over the Model Context
 Protocol so agent clients (Claude Code, Claude Desktop, any MCP client) can
-drive it. Tools are **stateless and file-path based**: input path(s) in,
-output path(s) out, a strict-JSON report back; no mesh lives between calls.
+drive it. Tools are **file-path based**: input path(s) in, output path(s)
+out, a strict-JSON report back. The one thing kept between calls is a bounded
+cache of parsed inputs, keyed on each file's identity so a changed file is
+re-read (``MESHIOPLUSPLUS_MCP_CACHE_MB``, default 512, ``0`` disables it).
 
 Nothing here is part of the C++ core. Split exactly like
 :mod:`meshioplusplus._interop` and for the same reason: the entire behaviour

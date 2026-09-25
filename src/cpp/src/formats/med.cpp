@@ -124,7 +124,7 @@ NDArray flatten_f(const NDArray& rA, std::int64_t shift, const std::vector<int>*
     const std::size_t n = detail::rows(rA);
     const std::size_t k = detail::cols(rA);
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
-    NDArray out(rA.Dtype(), {n * k});
+    NDArray out = NDArray::Uninit(rA.Dtype(), {n * k});  // every element is written below
     detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
         T* dst = out.As<T>();
@@ -157,7 +157,7 @@ NDArray flatten_f(const NDArray& rA, std::int64_t shift, const std::vector<int>*
 NDArray unflatten_f(const NDArray& rFlat, std::size_t n, std::size_t k, std::int64_t shift,
                     const std::vector<int>* pPerm = nullptr) {
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
-    NDArray out(rFlat.Dtype(), {n, k});
+    NDArray out = NDArray::Uninit(rFlat.Dtype(), {n, k});  // every element is written below
     detail::dispatch_dtype(rFlat.Dtype(), [&]<class T>() {
         const T* src = rFlat.As<T>();
         T* dst = out.As<T>();
@@ -637,14 +637,22 @@ void med_attach_point_regions(Mesh& rMesh, const MedInfo& rInfo) {
     if (rInfo.mPointTags.empty() || !rMesh.HasPointData("point_tags"))
         return;
     const NDArray& fam = rMesh.PointData("point_tags");
+    // One pass over the points, bucketing each by its family, instead of one
+    // pass per family: O(points), not O(families x points). Each bucket is
+    // filled in ascending point order, exactly what the per-family scan gave.
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> matches_of;
+    matches_of.reserve(rInfo.mPointTags.size());
+    for (const auto& kv : rInfo.mPointTags)
+        matches_of.try_emplace(kv.first);
+    for (std::size_t i = 0; i < fam.Size(); ++i) {
+        auto it = matches_of.find(detail::read_int(fam, i));
+        if (it != matches_of.end())
+            it->second.push_back(static_cast<std::int64_t>(i));
+    }
     std::map<std::string, std::vector<std::int64_t>> by_name;
     for (const auto& kv : rInfo.mPointTags) {
-        const std::int64_t fid = kv.first;
         const std::vector<std::string>& names = kv.second;
-        std::vector<std::int64_t> matches;
-        for (std::size_t i = 0; i < fam.Size(); ++i)
-            if (detail::read_int(fam, i) == fid)
-                matches.push_back(static_cast<std::int64_t>(i));
+        const std::vector<std::int64_t>& matches = matches_of[kv.first];
         if (matches.empty())
             continue;  // a family matching no point contributes no region --
                        // even one already seen under this name.
@@ -671,23 +679,34 @@ void med_attach_cell_regions(Mesh& rMesh, const MedInfo& rInfo) {
     for (const auto& kv : rInfo.mCellTags)
         for (const auto& name : kv.second)
             by_name.try_emplace(name);
+    // One pass over the cells, bucketing each by its family (see the point
+    // version above); a bucket holds its cells in ascending (block, row)
+    // order, the order the former per-family scan appended them in.
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> matches_of;
+    matches_of.reserve(rInfo.mCellTags.size());
+    for (const auto& kv : rInfo.mCellTags)
+        if (!kv.second.empty())
+            matches_of.try_emplace(kv.first);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const NDArray& fam = rMesh.CellData("cell_tags", b);
+        for (std::size_t i = 0; i < fam.Size(); ++i) {
+            auto it = matches_of.find(detail::read_int(fam, i));
+            if (it == matches_of.end())
+                continue;
+            const std::int64_t g =
+                detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
+            if (g < 0 || g >= total)
+                continue;
+            it->second.push_back(g);
+        }
+    }
     for (const auto& kv : rInfo.mCellTags) {
-        const std::int64_t fid = kv.first;
-        const std::vector<std::string>& names = kv.second;
-        if (names.empty())
+        if (kv.second.empty())
             continue;
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const NDArray& fam = rMesh.CellData("cell_tags", b);
-            for (std::size_t i = 0; i < fam.Size(); ++i) {
-                if (detail::read_int(fam, i) != fid)
-                    continue;
-                const std::int64_t g =
-                    detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
-                if (g < 0 || g >= total)
-                    continue;
-                for (const auto& name : names)
-                    by_name[name].push_back(g);
-            }
+        const std::vector<std::int64_t>& matches = matches_of[kv.first];
+        for (const auto& name : kv.second) {
+            std::vector<std::int64_t>& dst = by_name[name];
+            dst.insert(dst.end(), matches.begin(), matches.end());
         }
     }
     for (auto& kv : by_name) {
@@ -1217,40 +1236,79 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             NDArray inn = h5::read_dataset(g, "INN");
             NDArray ind = h5::read_dataset(g, "IND");
             const std::size_t ncells = ind.Size() > 0 ? ind.Size() - 1 : 0;
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(ncells);
+            // 1-based IND (cell -> faces), INN (face -> nodes), NOD. Every
+            // range is checked, then each cell is measured in parallel and
+            // each node-count group written straight into the CSR the mesh
+            // stores -- no vector per cell or per face.
+            const auto bad = [] {
+                return ReadError("MED: a polyhedron's IND/INN offsets are out of range");
+            };
+            std::vector<std::int64_t> nfaces(ncells), nnodes(ncells);
             std::vector<std::size_t> node_counts(ncells, 0);
-            for (std::size_t c = 0; c < ncells; ++c) {
+            parallel_for(ncells, [&](std::size_t c) {
                 const std::int64_t f0 = detail::read_int(ind, c) - 1;
                 const std::int64_t f1 = detail::read_int(ind, c + 1) - 1;
-                std::vector<std::int64_t> uniq;
+                if (f0 < 0 || f1 < f0 || static_cast<std::uint64_t>(f1) + 1 > inn.Size())
+                    throw bad();
+                static thread_local std::vector<std::int64_t> uniq;
+                uniq.clear();
                 for (std::int64_t f = f0; f < f1; ++f) {
-                    const std::int64_t a = detail::read_int(inn, static_cast<std::size_t>(f)) - 1;
-                    const std::int64_t b =
+                    const std::int64_t na = detail::read_int(inn, static_cast<std::size_t>(f)) - 1;
+                    const std::int64_t nb =
                         detail::read_int(inn, static_cast<std::size_t>(f) + 1) - 1;
-                    std::vector<std::int64_t> face;
-                    for (std::int64_t j = a; j < b; ++j)
-                        face.push_back(detail::read_int(nod, static_cast<std::size_t>(j)) - 1);
-                    uniq.insert(uniq.end(), face.begin(), face.end());
-                    cells[c].push_back(std::move(face));
+                    if (na < 0 || nb < na || static_cast<std::uint64_t>(nb) > nod.Size())
+                        throw bad();
+                    for (std::int64_t j = na; j < nb; ++j)
+                        uniq.push_back(detail::read_int(nod, static_cast<std::size_t>(j)) - 1);
                 }
+                nfaces[c] = f1 - f0;
+                nnodes[c] = static_cast<std::int64_t>(uniq.size());
                 std::sort(uniq.begin(), uniq.end());
-                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-                node_counts[c] = uniq.size();
-            }
+                node_counts[c] =
+                    static_cast<std::size_t>(std::unique(uniq.begin(), uniq.end()) - uniq.begin());
+            });
+            // Blocks in order of first appearance, members in file order.
             std::vector<std::size_t> order;
-            std::map<std::size_t, std::vector<std::size_t>> groups;
+            std::unordered_map<std::size_t, std::size_t> group_of;
+            std::vector<std::vector<std::size_t>> groups;
             for (std::size_t c = 0; c < ncells; ++c) {
-                if (groups.find(node_counts[c]) == groups.end())
+                auto [it_g, fresh] = group_of.emplace(node_counts[c], groups.size());
+                if (fresh) {
                     order.push_back(node_counts[c]);
-                groups[node_counts[c]].push_back(c);
+                    groups.emplace_back();
+                }
+                groups[it_g->second].push_back(c);
             }
-            for (std::size_t n : order) {
-                std::vector<std::vector<std::vector<std::int64_t>>> group;
-                group.reserve(groups[n].size());
-                for (std::size_t c : groups[n])
-                    group.push_back(std::move(cells[c]));
-                const std::string tname = "polyhedron" + std::to_string(n);
-                mesh.AddPolyhedronBlock(tname, std::move(group));
+            for (std::size_t gi = 0; gi < order.size(); ++gi) {
+                const std::vector<std::size_t>& members = groups[gi];
+                const std::size_t cnt = members.size();
+                std::vector<std::int64_t> face_offsets(cnt + 1, 0), node_at(cnt + 1, 0);
+                for (std::size_t k = 0; k < cnt; ++k) {
+                    face_offsets[k + 1] = face_offsets[k] + nfaces[members[k]];
+                    node_at[k + 1] = node_at[k] + nnodes[members[k]];
+                }
+                std::vector<std::int64_t> flat(static_cast<std::size_t>(node_at[cnt]));
+                std::vector<std::int64_t> row_offsets(
+                    static_cast<std::size_t>(face_offsets[cnt]) + 1, 0);
+                parallel_for(cnt, [&](std::size_t k) {
+                    const std::size_t c = members[k];
+                    const std::int64_t f0 = detail::read_int(ind, c) - 1;
+                    std::int64_t node = node_at[k];
+                    std::int64_t row = face_offsets[k];
+                    for (std::int64_t f = f0; f < f0 + nfaces[c]; ++f) {
+                        const std::int64_t na =
+                            detail::read_int(inn, static_cast<std::size_t>(f)) - 1;
+                        const std::int64_t nb =
+                            detail::read_int(inn, static_cast<std::size_t>(f) + 1) - 1;
+                        for (std::int64_t j = na; j < nb; ++j)
+                            flat[static_cast<std::size_t>(node++)] =
+                                detail::read_int(nod, static_cast<std::size_t>(j)) - 1;
+                        row_offsets[static_cast<std::size_t>(++row)] = node;
+                    }
+                });
+                const std::string tname = "polyhedron" + std::to_string(order[gi]);
+                mesh.AddPolyhedronBlock(tname, std::move(flat), std::move(row_offsets),
+                                        std::move(face_offsets));
                 cell_types.push_back(tname);
             }
         } else if (med_type == "POG" || med_type == "POG2") {
@@ -1258,16 +1316,24 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             NDArray nod = h5::read_dataset(g, "NOD");
             NDArray inn = h5::read_dataset(g, "INN");
             std::size_t npoly = inn.Size() > 0 ? inn.Size() - 1 : 0;
-            std::vector<std::vector<std::int64_t>> rows;
+            // Straight into the CSR the mesh stores: row i is NOD[INN[i] ..
+            // INN[i+1]), both 1-based.
+            std::vector<std::int64_t> row_offsets(npoly + 1, 0);
             for (std::size_t i = 0; i < npoly; ++i) {
-                std::int64_t a = detail::read_int(inn, i) - 1;
-                std::int64_t b = detail::read_int(inn, i + 1) - 1;
-                std::vector<std::int64_t> row;
-                for (std::int64_t j = a; j < b; ++j)
-                    row.push_back(detail::read_int(nod, static_cast<std::size_t>(j)) - 1);
-                rows.push_back(std::move(row));
+                const std::int64_t na = detail::read_int(inn, i) - 1;
+                const std::int64_t nb = detail::read_int(inn, i + 1) - 1;
+                if (na < 0 || nb < na || static_cast<std::uint64_t>(nb) > nod.Size())
+                    throw ReadError("MED: a polygon's INN offsets are out of range");
+                row_offsets[i + 1] = row_offsets[i] + (nb - na);
             }
-            mesh.AddPolygonBlock(it->second, std::move(rows));
+            std::vector<std::int64_t> flat(static_cast<std::size_t>(row_offsets[npoly]));
+            parallel_for(npoly, [&](std::size_t i) {
+                const std::int64_t na = detail::read_int(inn, i) - 1;
+                std::int64_t* out = flat.data() + row_offsets[i];
+                for (std::int64_t j = 0; j < row_offsets[i + 1] - row_offsets[i]; ++j)
+                    out[j] = detail::read_int(nod, static_cast<std::size_t>(na + j)) - 1;
+            });
+            mesh.AddPolygonBlock(it->second, std::move(flat), std::move(row_offsets));
             cell_types.push_back(it->second);
         } else {
             h5::Hid nod_ds(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
@@ -1487,6 +1553,9 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
 
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion) {
+    // No provenance slot in this format: drop the notes this write raises on
+    // the way out rather than let them reach the next file written.
+    const detail::ProvenanceSlotlessWrite slotless;
     h5::SilenceErrors silence;
 
     // Fields (CHA): the single-timestep, no-profile, no-units common case is
