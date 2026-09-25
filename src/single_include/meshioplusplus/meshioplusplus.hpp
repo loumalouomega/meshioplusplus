@@ -11215,7 +11215,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 16
+#define MESHIOPLUSPLUS_VERSION_MINOR 17
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11225,7 +11225,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.16.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.17.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12941,6 +12941,11 @@ MESHIOPLUSPLUS_API SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup)
 
 /// The four edge defect counts of a soup, and the resulting verdict.
 MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
+
+/// `soup_quality` over an edge map the caller already built for @p rSoup with
+/// `build_surface_edges` (v16.17.0), so it is not built twice.
+MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
+                                               const SurfaceEdgeMap& rEdges);
 
 /**
  * @brief A soup prepared for querying: the accelerator plus the normal tables.
@@ -25505,6 +25510,75 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/neighbors.hpp =====
+/**
+ * @file operations/neighbors.hpp
+ * @brief Exact radius and k-nearest neighbour search over a point cloud.
+ *
+ * The search behind `meshioplusplus.proximity_graph` (roadmap §4): the Python
+ * layer keeps the input handling and the graph assembly (sorting,
+ * symmetrising, deduplicating -- the Non-goals keep graph construction in
+ * Python) and hands the core the pair search, which dominated it (200k points
+ * took 6.4 s for a radius graph and 23 s for k = 16 in numpy on one core).
+ *
+ * The answer is exactly numpy's: a pair's squared distance is `dx*dx + dy*dy
+ * + dz*dz` in that order, a radius is inclusive, k-nearest ties go to the
+ * lower neighbour index, and a periodic displacement is reduced to its
+ * minimum image with round-half-to-even (`np.round`). The lattice is only an
+ * accelerator: any cell size gives the same pairs.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which neighbours `neighbor_pairs` returns.
+enum class NeighborMethod : std::uint8_t {
+    Radius,    ///< every pair within `mRadius` (inclusive), once, as (i, j) with i < j
+    KNearest,  ///< every point's `mK` nearest, as directed (point, neighbour) pairs
+};
+
+/// Options for `neighbor_pairs`.
+struct NeighborOptions {
+    NeighborMethod mMethod = NeighborMethod::Radius;
+    /// The cutoff for `Radius`; must be positive.
+    double mRadius = 0.0;
+    /// The neighbour count for `KNearest`; clamped to `N - 1`.
+    std::int64_t mK = 0;
+    /// The periodic box, one side per coordinate, or empty for none. The
+    /// points must already lie in `[0, side)` on every axis (the caller wraps
+    /// them), and a radius may not exceed half the smallest side.
+    std::vector<double> mBox;
+    /// The lattice cell side, or 0 for the automatic choice. It changes how
+    /// many candidates are examined, never the answer.
+    double mCellSize = 0.0;
+};
+
+/// The pairs `neighbor_pairs` found, as two Int64 arrays of equal length.
+struct NeighborPairs {
+    NDArray mSource;
+    NDArray mTarget;
+};
+
+/**
+ * @brief The radius or k-nearest neighbour pairs of a point cloud.
+ * @param rPoints Float64 `(N, d)` coordinates, `d` in 1..3, all finite.
+ * @param rOptions The method and its parameter.
+ * @return For `Radius`, each pair once with `source < target`; for
+ *         `KNearest`, `k` pairs per point in ascending (distance, index)
+ *         order. Pairs come grouped by source, ascending.
+ * @throws std::invalid_argument on a bad shape, a non-finite coordinate, a
+ *         non-positive radius, a bad box, or a radius over half the box.
+ */
+MESHIOPLUSPLUS_API NeighborPairs neighbor_pairs(const NDArray& rPoints,
+                                                const NeighborOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/neighbors.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/normals.hpp =====
 /**
  * @file operations/normals.hpp
@@ -30438,6 +30512,169 @@ inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/slot_runs.hpp =====
+// ===== begin src/cpp/src/detail/weld.hpp =====
+/**
+ * @file detail/weld.hpp
+ * @brief Keep-first point welding, shared by `clean` and `merge`.
+ *
+ * A **core-private** header (the `formats/gid_common.hpp` precedent): no
+ * installed header names it.
+ *
+ * The rule both operations have always used: points are visited in index
+ * order; a point within `atol` of an existing *representative* in its own or
+ * one of the 26 neighbouring grid cells (cell size `atol`, cells visited in
+ * ascending dz -> dy -> dx order, representatives in creation order) joins the
+ * first such representative, otherwise it becomes a new one. The result is
+ * order-dependent by design (chains A~B, B~C, A!~C), so the decision loop
+ * stays serial; what this moves out of it (roadmap §4, "Welding") is
+ * everything else: the cell keys and each cell's non-empty neighbour cells are
+ * computed in parallel up front (cell ids come from one serial pass through a
+ * flat open-addressing table), and the serial loop walks per-cell
+ * representative lists by index -- no node-based hash map, no dtype switch --
+ * with exactly the old visiting order, so the welded ids are unchanged.
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// What `weld_keep_first` returns.
+struct WeldMap {
+    std::vector<std::int64_t> mRepOf;      ///< per point: its representative's id
+    std::vector<std::int64_t> mRepSource;  ///< per representative: the point that created it
+};
+
+/**
+ * @brief Weld @p N points keep-first within @p Atol.
+ * @param rXyz Coordinates, 3 per point (z-padded for 1-D and 2-D points).
+ * @param Ddim How many leading coordinates the distance uses (1..3).
+ */
+inline WeldMap weld_keep_first(const std::vector<double>& rXyz, std::size_t N, std::size_t Ddim,
+                               double Atol) {
+    WeldMap out;
+    out.mRepOf.assign(N, -1);
+    if (N == 0)
+        return out;
+    const double atol2 = Atol * Atol;
+
+    // Cell key per point (parallel), then dense cell ids in first-seen order
+    // through a flat open-addressing table (serial, O(N) -- no allocation per
+    // entry, unlike an unordered_map), and each cell's non-empty neighbour
+    // cells, in the dz -> dy -> dx order the grid scan used, by read-only
+    // lookups in that table (parallel).
+    std::vector<GridKey> keys(N);
+    parallel_for(N, [&](std::size_t g) {
+        keys[g] = GridKey{grid_quantize(rXyz[g * 3], Atol), grid_quantize(rXyz[g * 3 + 1], Atol),
+                          grid_quantize(rXyz[g * 3 + 2], Atol)};
+    });
+    std::size_t cap = 16;
+    while (cap < 2 * N)
+        cap <<= 1;
+    const std::size_t mask = cap - 1;
+    const auto slot_of = [mask](const GridKey& rK) {
+        std::uint64_t h = static_cast<std::uint64_t>(rK.x) * 0x9E3779B97F4A7C15ull;
+        h ^= static_cast<std::uint64_t>(rK.y) * 0xC2B2AE3D27D4EB4Full + (h >> 29);
+        h ^= static_cast<std::uint64_t>(rK.z) * 0x165667B19E3779F9ull + (h >> 31);
+        h ^= h >> 33;
+        return static_cast<std::size_t>(h) & mask;
+    };
+    std::vector<std::int64_t> table(cap, -1);  // slot -> cell id
+    std::vector<GridKey> cell_key;
+    std::vector<std::int64_t> cell_of(N);
+    for (std::size_t g = 0; g < N; ++g) {
+        std::size_t s = slot_of(keys[g]);
+        while (table[s] >= 0 && !(cell_key[static_cast<std::size_t>(table[s])] == keys[g]))
+            s = (s + 1) & mask;
+        if (table[s] < 0) {
+            table[s] = static_cast<std::int64_t>(cell_key.size());
+            cell_key.push_back(keys[g]);
+        }
+        cell_of[g] = table[s];
+    }
+    const std::size_t ncells = cell_key.size();
+    const auto find_cell = [&](const GridKey& rK) -> std::int64_t {
+        for (std::size_t s = slot_of(rK);; s = (s + 1) & mask) {
+            const std::int64_t c = table[s];
+            if (c < 0)
+                return -1;
+            if (cell_key[static_cast<std::size_t>(c)] == rK)
+                return c;
+        }
+    };
+    const auto for_neighbours = [&](std::size_t c, auto&& fn) {
+        const GridKey k = cell_key[c];
+        for (std::int64_t dz = -1; dz <= 1; ++dz)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dx = -1; dx <= 1; ++dx) {
+                    const std::int64_t nb = find_cell(GridKey{k.x + dx, k.y + dy, k.z + dz});
+                    if (nb >= 0)
+                        fn(nb);
+                }
+    };
+    std::vector<std::int64_t> nbr_start(ncells + 1, 0);
+    parallel_for(ncells, [&](std::size_t c) {
+        std::int64_t count = 0;
+        for_neighbours(c, [&](std::int64_t) { ++count; });
+        nbr_start[c + 1] = count;
+    });
+    for (std::size_t c = 0; c < ncells; ++c)
+        nbr_start[c + 1] += nbr_start[c];
+    std::vector<std::int64_t> nbrs(static_cast<std::size_t>(nbr_start.back()));
+    parallel_for(ncells, [&](std::size_t c) {
+        std::int64_t at = nbr_start[c];
+        for_neighbours(c, [&](std::int64_t nb) { nbrs[static_cast<std::size_t>(at++)] = nb; });
+    });
+
+    // The keep-first decisions, serial in point order. A cell's representatives
+    // form a list linked in creation order.
+    std::vector<std::int64_t> head(ncells, -1), tail(ncells, -1), next;
+    for (std::size_t g = 0; g < N; ++g) {
+        const std::size_t c = static_cast<std::size_t>(cell_of[g]);
+        std::int64_t found = -1;
+        for (std::int64_t j = nbr_start[c]; j < nbr_start[c + 1] && found < 0; ++j) {
+            for (std::int64_t r = head[static_cast<std::size_t>(nbrs[static_cast<std::size_t>(j)])];
+                 r >= 0; r = next[static_cast<std::size_t>(r)]) {
+                const std::size_t h =
+                    static_cast<std::size_t>(out.mRepSource[static_cast<std::size_t>(r)]);
+                double d2 = 0.0;
+                for (std::size_t d = 0; d < Ddim; ++d) {
+                    const double delta = rXyz[g * 3 + d] - rXyz[h * 3 + d];
+                    d2 += delta * delta;
+                }
+                if (d2 <= atol2) {
+                    found = r;
+                    break;
+                }
+            }
+        }
+        if (found >= 0) {
+            out.mRepOf[g] = found;
+            continue;
+        }
+        const std::int64_t r = static_cast<std::int64_t>(out.mRepSource.size());
+        out.mRepOf[g] = r;
+        out.mRepSource.push_back(static_cast<std::int64_t>(g));
+        next.push_back(-1);
+        if (head[c] < 0)
+            head[c] = r;
+        else
+            next[static_cast<std::size_t>(tail[c])] = r;
+        tail[c] = r;
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/weld.hpp =====
 // ===== begin src/cpp/src/formats/abaqus_face.hpp =====
 /**
  * @file formats/abaqus_face.hpp
@@ -54322,13 +54559,24 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
     TriangleSoup soup;
     const std::size_t dim = rSurface.PointDim();
     const NDArray& points = rSurface.Points();
-    soup.mPoints.resize(rSurface.NumPoints());
-    for (std::size_t p = 0; p < rSurface.NumPoints(); ++p)
+    const std::size_t npts = rSurface.NumPoints();
+    soup.mPoints.resize(npts);
+    parallel_for_bw(npts, [&](std::size_t p) {
         soup.mPoints[p] = read_point(points, dim, static_cast<std::int64_t>(p));
+    });
 
     const std::vector<char> mask = sd_region_mask(rSurface, rRegion);
     const std::vector<std::int64_t> bases = block_bases(rSurface);
 
+    // Pass 1 (serial over blocks, parallel over cells): validate each block --
+    // in block order, so the first bad block is the one reported -- and count
+    // each cell's fan triangles.
+    struct Blk {
+        Mesh::CellView mCells;
+        std::int64_t mBase;
+        std::vector<std::int64_t> mFirstTri;  // ncells + 1 prefix
+    };
+    std::vector<Blk> blocks;
     std::size_t bi = 0;
     for (const auto cb : rSurface.CellRange()) {
         const std::int64_t base = bases[bi++];
@@ -54351,40 +54599,60 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
                                         "' is not a linear surface cell (linearize the mesh "
                                         "first, then run extract_surface if needed)");
         }
-
         const std::size_t ncells = cb.NumCells();
-        for (std::size_t c = 0; c < ncells; ++c) {
+        std::vector<std::int64_t> ntri(ncells + 1, 0);
+        parallel_for(ncells, [&](std::size_t c) {
             const std::int64_t global = base + static_cast<std::int64_t>(c);
             if (!mask.empty() && !mask[static_cast<std::size_t>(global)])
-                continue;
+                return;
+            const std::size_t n = cb.IsRagged() ? cb.RowSize(c) : cb.NodesPerCell();
+            ntri[c + 1] = n < 3 ? 0 : static_cast<std::int64_t>(n - 2);
+        });
+        for (std::size_t c = 0; c < ncells; ++c)
+            ntri[c + 1] += ntri[c];
+        blocks.push_back(Blk{cb, base, std::move(ntri)});
+    }
 
-            // Gather this cell's corners, ragged or not.
-            std::vector<std::int64_t> ids;
-            if (cb.IsRagged()) {
-                const std::size_t n = cb.RowSize(c);
-                const std::int64_t* row = cb.Row(c);
-                ids.assign(row, row + n);
-            } else {
-                const NDArray& conn = cb.Conn();
-                const std::size_t npc = cb.NodesPerCell();
-                ids.resize(npc);
-                for (std::size_t i = 0; i < npc; ++i)
-                    ids[i] = read_int(conn, c * npc + i);
-            }
-            if (ids.size() < 3)
-                continue;
-
+    // Pass 2: every cell writes its fan at its own offset -- the triangles
+    // come out in (block, cell, fan) order, as the serial append gave them.
+    std::size_t total = 0;
+    std::vector<std::size_t> block_first(blocks.size());
+    for (std::size_t k = 0; k < blocks.size(); ++k) {
+        block_first[k] = total;
+        total += static_cast<std::size_t>(blocks[k].mFirstTri.back());
+    }
+    soup.mVertices.resize(total);
+    soup.mSourceCell.resize(total);
+    soup.mCorners.resize(total * 3);
+    for (std::size_t k = 0; k < blocks.size(); ++k) {
+        const Blk& b = blocks[k];
+        const auto& cb = b.mCells;
+        parallel_for(cb.NumCells(), [&](std::size_t c) {
+            const std::size_t first = block_first[k] + static_cast<std::size_t>(b.mFirstTri[c]);
+            const std::size_t count = static_cast<std::size_t>(b.mFirstTri[c + 1] - b.mFirstTri[c]);
+            if (count == 0)
+                return;
             // The same fan convert_cells(Simplexify) uses: corner 0 to every
             // non-adjacent edge. Transcribing a different fan here would make
             // the two disagree about which diagonal a quad is split on.
-            for (std::size_t k = 1; k + 1 < ids.size(); ++k) {
-                const std::array<std::int64_t, 3> tri{ids[0], ids[k], ids[k + 1]};
-                soup.mVertices.push_back(tri);
-                soup.mSourceCell.push_back(global);
+            const auto id = [&](std::size_t i) -> std::int64_t {
+                const std::int64_t v =
+                    cb.IsRagged() ? cb.Row(c)[i] : read_int(cb.Conn(), c * cb.NodesPerCell() + i);
+                if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                    throw std::invalid_argument(std::string(kSdPrefix) +
+                                                "a cell references a point the mesh does not have");
+                return v;
+            };
+            const std::int64_t a = id(0);
+            for (std::size_t j = 0; j < count; ++j) {
+                const std::array<std::int64_t, 3> tri{a, id(j + 1), id(j + 2)};
+                const std::size_t t = first + j;
+                soup.mVertices[t] = tri;
+                soup.mSourceCell[t] = b.mBase + static_cast<std::int64_t>(c);
                 for (std::size_t i = 0; i < 3; ++i)
-                    soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(tri[i])]);
+                    soup.mCorners[t * 3 + i] = soup.mPoints[static_cast<std::size_t>(tri[i])];
             }
-        }
+        });
     }
     return soup;
 }
@@ -54429,6 +54697,10 @@ SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
 }
 
 SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
+    return soup_quality(rSoup, build_surface_edges(rSoup));
+}
+
+SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEdges) {
     SurfaceQuality q;
     const std::size_t ntri = rSoup.NumTriangles();
 
@@ -54440,8 +54712,7 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
             ++q.mDegenerateTriangles;
     }
 
-    const SurfaceEdgeMap edges = build_surface_edges(rSoup);
-    for (const auto& kv : edges) {
+    for (const auto& kv : rEdges) {
         const std::int64_t used = kv.second.mUsed;
         const std::int64_t forward = kv.second.mForward;
         if (used == 1)
@@ -54944,19 +55215,39 @@ std::vector<Vec3> soup_face_normals(const TriangleSoup& rSoup) {
 std::vector<Vec3> accumulate_vertex_normals(const TriangleSoup& rSoup,
                                             const std::vector<Vec3>& rFaceNormal,
                                             SdfPseudonormalWeight Weight) {
-    std::vector<Vec3> sums(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
-    for (std::size_t t = 0; t < rSoup.NumTriangles(); ++t) {
-        const Vec3& n = rFaceNormal[t];
-        const double len = vec3_norm(n);
-        if (!(len > 0.0))
-            continue;  // degenerate: no direction to contribute
-        const Vec3 unit = vec3_scale(n, 1.0 / len);
-        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        for (std::size_t i = 0; i < 3; ++i) {
-            Vec3& acc = sums[static_cast<std::size_t>(v[i])];
-            acc = vec3_add(acc, vec3_scale(unit, sn_corner_weight(rSoup, t, i, len, Weight)));
-        }
+    // Gather form: each vertex sums its own corners, in ascending (triangle,
+    // corner) order -- the order the serial scatter added them in, so the bits
+    // are the same -- found through a counting sort of the corners by vertex.
+    const std::size_t npts = rSoup.mPoints.size();
+    const std::size_t ncorner = rSoup.NumTriangles() * 3;
+    std::vector<std::int64_t> start(npts + 1, 0);
+    for (std::size_t c = 0; c < ncorner; ++c)
+        ++start[static_cast<std::size_t>(rSoup.mVertices[c / 3][c % 3]) + 1];
+    for (std::size_t p = 0; p < npts; ++p)
+        start[p + 1] += start[p];
+    std::vector<std::int64_t> corners(ncorner);
+    {
+        std::vector<std::int64_t> cursor(start.begin(), start.end() - 1);
+        for (std::size_t c = 0; c < ncorner; ++c)
+            corners[static_cast<std::size_t>(
+                cursor[static_cast<std::size_t>(rSoup.mVertices[c / 3][c % 3])]++)] =
+                static_cast<std::int64_t>(c);
     }
+    std::vector<Vec3> sums(npts, Vec3{0.0, 0.0, 0.0});
+    parallel_for(npts, [&](std::size_t p) {
+        Vec3 acc{0.0, 0.0, 0.0};
+        for (std::int64_t k = start[p]; k < start[p + 1]; ++k) {
+            const std::size_t c = static_cast<std::size_t>(corners[static_cast<std::size_t>(k)]);
+            const std::size_t t = c / 3;
+            const Vec3& n = rFaceNormal[t];
+            const double len = vec3_norm(n);
+            if (!(len > 0.0))
+                continue;  // degenerate: no direction to contribute
+            const Vec3 unit = vec3_scale(n, 1.0 / len);
+            acc = vec3_add(acc, vec3_scale(unit, sn_corner_weight(rSoup, t, c % 3, len, Weight)));
+        }
+        sums[p] = acc;
+    });
     return sums;
 }
 
@@ -130151,9 +130442,23 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
     const NDArray& points = rMesh.Points();
     const std::size_t pdim = rMesh.PointDim();
 
+    // Every face's area, once and in parallel: the grow loop below used to
+    // recompute one each time a face was pushed.
+    std::vector<double> face_area(gf.NumFaces());
+    parallel_for(gf.NumFaces(),
+                 [&](std::size_t f) { face_area[f] = agg_face_area(gf, f, points, pdim); });
+
     // --- greedy seed-and-grow over the face dual --------------------------
     std::vector<std::int64_t> group_of(n_compact, -1);
     std::vector<std::vector<std::int64_t>> groups;
+
+    // A candidate's accumulated shared area, as dense per-cell arrays reset
+    // through the ids a seed touched -- no hash map allocated per seed. Same
+    // sums, in the same order.
+    std::vector<double> pending(n_compact, 0.0);
+    std::vector<std::uint8_t> is_pending(n_compact, 0);
+    std::vector<std::int64_t> touched;
+    std::set<FrontierKey> frontier;
 
     for (std::size_t seed = 0; seed < n_compact; ++seed) {
         if (group_of[seed] != -1)
@@ -130161,9 +130466,10 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
         const auto gid = static_cast<std::int64_t>(groups.size());
         std::vector<std::int64_t> members{static_cast<std::int64_t>(seed)};
         group_of[seed] = gid;
-
-        std::unordered_map<std::int64_t, double> pending;
-        std::set<FrontierKey> frontier;
+        for (std::int64_t t : touched)
+            is_pending[static_cast<std::size_t>(t)] = 0;
+        touched.clear();
+        frontier.clear();
 
         auto push_neighbours = [&](std::int64_t c) {
             const std::size_t nf = gf.NumCellFaces(static_cast<std::size_t>(c));
@@ -130178,15 +130484,17 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
                     continue;  // mesh boundary
                 if (group_of[static_cast<std::size_t>(other)] != -1)
                     continue;  // already claimed (by this group or would be a bug otherwise)
-                const double a = agg_face_area(gf, f, points, pdim);
-                auto it = pending.find(other);
-                if (it != pending.end()) {
-                    frontier.erase(FrontierKey{-it->second, other});
-                    it->second += a;
+                const double a = face_area[f];
+                double& acc = pending[static_cast<std::size_t>(other)];
+                if (is_pending[static_cast<std::size_t>(other)]) {
+                    frontier.erase(FrontierKey{-acc, other});
+                    acc += a;
                 } else {
-                    it = pending.emplace(other, a).first;
+                    acc = a;
+                    is_pending[static_cast<std::size_t>(other)] = 1;
+                    touched.push_back(other);
                 }
-                frontier.insert(FrontierKey{-it->second, other});
+                frontier.insert(FrontierKey{-acc, other});
             }
         };
 
@@ -130196,7 +130504,7 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
             const auto fit = frontier.begin();
             const std::int64_t c = fit->mId;
             frontier.erase(fit);
-            pending.erase(c);
+            is_pending[static_cast<std::size_t>(c)] = 0;
             if (group_of[static_cast<std::size_t>(c)] != -1)
                 continue;  // defensive; unreachable given the push-time check above
             group_of[static_cast<std::size_t>(c)] = gid;
@@ -130380,11 +130688,12 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
 #include <cstdint>
 #include <cstring>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -130415,72 +130724,24 @@ NDArray clean_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& 
     return out;
 }
 
-std::int64_t clean_quantize(double v, double atol) {
-    return static_cast<std::int64_t>(std::floor(v / atol));
-}
-
-struct CleanKey {
-    std::int64_t x, y, z;
-    bool operator==(const CleanKey& r) const { return x == r.x && y == r.y && z == r.z; }
-};
-
-struct CleanKeyHash {
-    std::size_t operator()(const CleanKey& k) const {
-        std::uint64_t h = 1469598103934665603ULL;
-        for (std::int64_t v : {k.x, k.y, k.z}) {
-            h ^= static_cast<std::uint64_t>(v);
-            h *= 1099511628211ULL;
-        }
-        return static_cast<std::size_t>(h);
-    }
-};
-
-// Spatial-hash weld (keep-first, deterministic). Fills rWeldRep[g] in [0, W) and
-// rRepSource[r] = the first global point that created representative r; returns W.
+// Keep-first weld (deterministic; detail/weld.hpp). Fills rWeldRep[g] in
+// [0, W) and rRepSource[r] = the first global point that created
+// representative r; returns W.
 std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_t dim, double atol,
                                   std::vector<std::int64_t>& rWeldRep,
                                   std::vector<std::int64_t>& rRepSource) {
-    rWeldRep.assign(n, 0);
-    rRepSource.clear();
     const std::size_t ddim = std::min<std::size_t>(dim, 3);
-    const double atol2 = atol * atol;
-    std::unordered_map<CleanKey, std::vector<std::int64_t>, CleanKeyHash> grid;
-    for (std::size_t g = 0; g < n; ++g) {
-        double p[3] = {0, 0, 0};
-        for (std::size_t d = 0; d < ddim; ++d)
-            p[d] = detail::read_double(rPts, g * dim + d);
-        const CleanKey k{clean_quantize(p[0], atol), clean_quantize(p[1], atol),
-                         clean_quantize(p[2], atol)};
-        std::int64_t found = -1;
-        for (std::int64_t dz = -1; dz <= 1 && found < 0; ++dz)
-            for (std::int64_t dy = -1; dy <= 1 && found < 0; ++dy)
-                for (std::int64_t dx = -1; dx <= 1 && found < 0; ++dx) {
-                    auto it = grid.find({k.x + dx, k.y + dy, k.z + dz});
-                    if (it == grid.end())
-                        continue;
-                    for (std::int64_t rep : it->second) {
-                        double q[3] = {0, 0, 0};
-                        const std::size_t rg = static_cast<std::size_t>(rRepSource[rep]);
-                        for (std::size_t d = 0; d < ddim; ++d)
-                            q[d] = detail::read_double(rPts, rg * dim + d);
-                        double d2 = 0;
-                        for (std::size_t d = 0; d < ddim; ++d)
-                            d2 += (p[d] - q[d]) * (p[d] - q[d]);
-                        if (d2 <= atol2) {
-                            found = rep;
-                            break;
-                        }
-                    }
-                }
-        if (found >= 0) {
-            rWeldRep[g] = found;
-        } else {
-            const std::int64_t r = static_cast<std::int64_t>(rRepSource.size());
-            rWeldRep[g] = r;
-            rRepSource.push_back(static_cast<std::int64_t>(g));
-            grid[k].push_back(r);
-        }
-    }
+    std::vector<double> xyz(n * 3, 0.0);
+    detail::dispatch_dtype(rPts.Dtype(), [&]<class T>() {
+        const T* src = rPts.As<T>();
+        parallel_for_bw(n, [&](std::size_t g) {
+            for (std::size_t d = 0; d < ddim; ++d)
+                xyz[g * 3 + d] = static_cast<double>(src[g * dim + d]);
+        });
+    });
+    detail::WeldMap weld = detail::weld_keep_first(xyz, n, ddim, atol);
+    rWeldRep = std::move(weld.mRepOf);
+    rRepSource = std::move(weld.mRepSource);
     return static_cast<std::int64_t>(rRepSource.size());
 }
 
@@ -130673,55 +130934,95 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
             bo.npc = npc;
             const int corner_count = detail::cell_corner_count(ct);
             const int cdim = cell_type_dimension(ct);
-            std::unordered_set<std::string> seen;
-            std::vector<std::int64_t> row(npc);
-            for (std::size_t c = 0; c < nc; ++c) {
+
+            // Phase A (parallel): welded rows and the degenerate test, per cell.
+            std::vector<std::int64_t> rows(nc * npc);
+            std::vector<std::uint8_t> degenerate(nc, 0);
+            parallel_for(nc, [&](std::size_t c) {
+                std::int64_t* row = rows.data() + c * npc;
                 for (std::size_t k = 0; k < npc; ++k)
                     row[k] =
                         weld_rep[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))];
-
+                if (!rOpts.drop_degenerate)
+                    return;
                 // degenerate: repeated corner node, or near-zero measure.
-                bool degenerate = false;
-                if (rOpts.drop_degenerate) {
-                    const int cc = corner_count > 0 ? corner_count : static_cast<int>(npc);
-                    for (int i = 0; i < cc && !degenerate; ++i)
-                        for (int j = i + 1; j < cc; ++j)
-                            if (row[i] == row[j]) {
-                                degenerate = true;
-                                break;
-                            }
-                    if (!degenerate && corner_count > 0) {
-                        std::vector<Vec3> coords(corner_count);
-                        for (int i = 0; i < corner_count; ++i)
-                            coords[i] = detail::read_point(
-                                points, dim, rep_source[static_cast<std::size_t>(row[i])]);
-                        double measure = std::nan("");
-                        if (cdim == 2)
-                            measure = detail::polygon_area(coords.data(),
-                                                           static_cast<std::size_t>(corner_count));
-                        else if (cdim == 3)
-                            measure = std::abs(detail::cell_volume_from_corners(coords.data(), ct));
-                        if (!std::isnan(measure) && measure < eps)
-                            degenerate = true;
-                    }
+                const int cc = corner_count > 0 ? corner_count : static_cast<int>(npc);
+                for (int i = 0; i < cc; ++i)
+                    for (int j = i + 1; j < cc; ++j)
+                        if (row[i] == row[j]) {
+                            degenerate[c] = 1;
+                            return;
+                        }
+                if (corner_count > 0) {
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(static_cast<std::size_t>(corner_count));
+                    for (int i = 0; i < corner_count; ++i)
+                        coords[static_cast<std::size_t>(i)] = detail::read_point(
+                            points, dim, rep_source[static_cast<std::size_t>(row[i])]);
+                    double measure = std::nan("");
+                    if (cdim == 2)
+                        measure = detail::polygon_area(coords.data(),
+                                                       static_cast<std::size_t>(corner_count));
+                    else if (cdim == 3)
+                        measure = std::abs(detail::cell_volume_from_corners(coords.data(), ct));
+                    if (!std::isnan(measure) && measure < eps)
+                        degenerate[c] = 1;
                 }
-                if (degenerate) {
+            });
+
+            // Phase B: exact duplicates, keep-first. A kept cell is a
+            // duplicate when an earlier non-degenerate cell has the same
+            // sorted connectivity: group those cells' sorted rows
+            // (detail/slot_runs.hpp) and drop every member of a run but its
+            // first.
+            std::vector<std::uint8_t> duplicate(nc, 0);
+            if (rOpts.drop_duplicate_cells && npc > 0) {
+                std::vector<std::uint64_t> live;
+                live.reserve(nc);
+                for (std::size_t c = 0; c < nc; ++c)
+                    if (!degenerate[c])
+                        live.push_back(c);
+                std::vector<std::int64_t> sorted(live.size() * npc);
+                parallel_for(live.size(), [&](std::size_t j) {
+                    const std::int64_t* row = rows.data() + live[j] * npc;
+                    std::int64_t* out = sorted.data() + j * npc;
+                    std::copy(row, row + npc, out);
+                    std::sort(out, out + npc);
+                });
+                std::vector<std::uint64_t> slots(live.size());
+                for (std::size_t j = 0; j < live.size(); ++j)
+                    slots[j] = j;
+                const std::size_t nreps = rep_source.size();
+                const detail::SlotRuns runs = detail::group_slots(
+                    slots, nreps + 1,
+                    [&](std::uint64_t j) {
+                        const std::int64_t lo = sorted[j * npc];
+                        return lo >= 0 && static_cast<std::size_t>(lo) < nreps
+                                   ? static_cast<std::size_t>(lo)
+                                   : nreps;
+                    },
+                    [&](std::uint64_t x, std::uint64_t y) {
+                        return std::lexicographical_compare(
+                            sorted.data() + x * npc, sorted.data() + (x + 1) * npc,
+                            sorted.data() + y * npc, sorted.data() + (y + 1) * npc);
+                    });
+                parallel_for(runs.NumRuns(), [&](std::size_t r) {
+                    for (const std::uint64_t* q = runs.Begin(r) + 1; q < runs.End(r); ++q)
+                        duplicate[live[*q]] = 1;
+                });
+            }
+
+            // Phase C (serial, stored order): counts and the kept rows.
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (degenerate[c]) {
                     ++res.mCellsDroppedDegenerate;
                     continue;
                 }
-
-                // exact duplicate: identical sorted connectivity, keep-first.
-                if (rOpts.drop_duplicate_cells) {
-                    std::vector<std::int64_t> sorted(row);
-                    std::sort(sorted.begin(), sorted.end());
-                    std::string key(reinterpret_cast<const char*>(sorted.data()),
-                                    sorted.size() * sizeof(std::int64_t));
-                    if (!seen.insert(std::move(key)).second) {
-                        ++res.mCellsDroppedDuplicate;
-                        continue;
-                    }
+                if (duplicate[c]) {
+                    ++res.mCellsDroppedDuplicate;
+                    continue;
                 }
-
+                const std::int64_t* row = rows.data() + c * npc;
                 for (std::size_t k = 0; k < npc; ++k) {
                     bo.rect_conn.push_back(row[k]);
                     rep_used[static_cast<std::size_t>(row[k])] = 1;
@@ -132905,7 +133206,7 @@ CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOp
     const detail::SurfaceEdgeMap edges = detail::build_surface_edges(soup);
 
     CurvatureResult out;
-    out.mQuality = detail::soup_quality(soup);
+    out.mQuality = detail::soup_quality(soup, edges);  // the one edge map, built once
     out.mMesh = detail::clone_mesh(
         rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
 
@@ -139255,6 +139556,8 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -139331,11 +139634,10 @@ void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::
     });
 }
 
-// --- spatial hash (weld) ----------------------------------------------------
-// The bucket grid itself lives in detail/spatial_hash.hpp (hoisted from here
-// in v7.13.0, shared with operations/interpolate.cpp); cell size = atol, so
-// points within atol of each other fall in the same or an adjacent cell (the
-// 3x3x3 neighbourhood searched during dedup).
+// --- weld ---------------------------------------------------------------------
+// Grid cells of size atol, so points within atol of each other fall in the
+// same or an adjacent cell (the 3x3x3 neighbourhood searched during dedup);
+// the keep-first loop is detail/weld.hpp's, shared with clean.
 
 // Build the weld remap over the (Float64, global-order) `rPoints`: fills
 // `rRemap` (global point index -> output point index) and returns, per output
@@ -139344,57 +139646,19 @@ void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::
 std::vector<std::int64_t> merge_build_weld_map(const NDArray& rPoints, std::size_t total,
                                                std::size_t dim, double atol,
                                                std::vector<std::int64_t>& rRemap) {
+    // Keep-first weld (detail/weld.hpp): a point within atol of an existing
+    // representative in the 3x3x3 cell neighbourhood welds onto the first one
+    // found; otherwise it becomes one. Same visiting order, same ids.
     const double* pts = rPoints.As<double>();
     const std::size_t ddim = std::min<std::size_t>(dim, 3);
-
-    // Phase 1 (parallel): quantized bucket key per point.
-    std::vector<detail::GridKey> keys(total);
-    parallel_for(total, [&](std::size_t g) {
-        double c[3] = {0.0, 0.0, 0.0};
+    std::vector<double> xyz(total * 3, 0.0);
+    parallel_for_bw(total, [&](std::size_t g) {
         for (std::size_t d = 0; d < ddim; ++d)
-            c[d] = pts[g * dim + d];
-        keys[g] =
-            detail::GridKey{detail::grid_quantize(c[0], atol), detail::grid_quantize(c[1], atol),
-                            detail::grid_quantize(c[2], atol)};
+            xyz[g * 3 + d] = pts[g * dim + d];
     });
-
-    // Phase 2 (serial, deterministic): first occurrence in a bucket wins; a
-    // later point within atol of an existing representative welds onto it.
-    rRemap.assign(total, -1);
-    std::vector<std::int64_t> rep_global;
-    rep_global.reserve(total);
-    detail::SpatialGrid grid(atol);
-    const double atol2 = atol * atol;
-
-    for (std::size_t g = 0; g < total; ++g) {
-        const detail::GridKey k = keys[g];
-        std::int64_t found = -1;
-        grid.ForEachIn27(k, [&](const std::vector<std::int64_t>& rReps) {
-            for (std::int64_t rep : rReps) {
-                const std::int64_t rg = rep_global[static_cast<std::size_t>(rep)];
-                double d2 = 0.0;
-                for (std::size_t d = 0; d < ddim; ++d) {
-                    const double delta =
-                        pts[g * dim + d] - pts[static_cast<std::size_t>(rg) * dim + d];
-                    d2 += delta * delta;
-                }
-                if (d2 <= atol2) {
-                    found = rep;
-                    return false;
-                }
-            }
-            return true;
-        });
-        if (found >= 0) {
-            rRemap[g] = found;
-        } else {
-            const std::int64_t nidx = static_cast<std::int64_t>(rep_global.size());
-            rRemap[g] = nidx;
-            rep_global.push_back(static_cast<std::int64_t>(g));
-            grid.Insert(k, nidx);
-        }
-    }
-    return rep_global;
+    detail::WeldMap weld = detail::weld_keep_first(xyz, total, ddim, atol);
+    rRemap = std::move(weld.mRepOf);
+    return std::move(weld.mRepSource);
 }
 
 // Gather `new_count` rows from `rSrc` by `rRepGlobal[n]` -> output row n (a
@@ -139944,6 +140208,334 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/merge.cpp =====
+// ===== begin src/cpp/src/operations/neighbors.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kNbPrefix = "meshio++: neighbor_pairs: ";
+
+/// The points bucketed onto a lattice, sorted by cell.
+struct NbLattice {
+    std::size_t mDim = 0;
+    bool mPeriodic = false;
+    std::array<std::int64_t, 3> mCells{1, 1, 1};  // per-axis cell count
+    double mMinSide = 0.0;
+    std::vector<std::array<std::int64_t, 3>> mCellOf;  // per point
+    std::vector<std::array<std::int64_t, 3>> mKeys;    // occupied cells, ascending
+    std::vector<std::int64_t> mStart;                  // mKeys.size() + 1 slots into mOrder
+    std::vector<std::int64_t> mOrder;                  // point ids grouped by cell
+
+    /// The slice of mOrder holding cell @p rKey, or an empty one.
+    std::pair<const std::int64_t*, const std::int64_t*> Find(
+        const std::array<std::int64_t, 3>& rKey) const {
+        const auto it = std::lower_bound(mKeys.begin(), mKeys.end(), rKey);
+        if (it == mKeys.end() || *it != rKey)
+            return {nullptr, nullptr};
+        const std::size_t c = static_cast<std::size_t>(it - mKeys.begin());
+        return {mOrder.data() + mStart[c], mOrder.data() + mStart[c + 1]};
+    }
+};
+
+NbLattice nb_build_lattice(const std::vector<double>& rXyz, std::size_t n, std::size_t dim,
+                           double cell, const std::vector<double>& rBox) {
+    NbLattice lat;
+    lat.mDim = dim;
+    lat.mPeriodic = !rBox.empty();
+    std::array<double, 3> lo{0.0, 0.0, 0.0}, side{1.0, 1.0, 1.0};
+    if (lat.mPeriodic) {
+        // A whole number of cells per periodic axis, each at least `cell`
+        // wide, so no short cell sits at the seam.
+        for (std::size_t a = 0; a < dim; ++a) {
+            lat.mCells[a] =
+                std::max<std::int64_t>(1, static_cast<std::int64_t>(std::floor(rBox[a] / cell)));
+            side[a] = rBox[a] / static_cast<double>(lat.mCells[a]);
+        }
+    } else {
+        for (std::size_t a = 0; a < dim; ++a) {
+            double m = rXyz[a];
+            for (std::size_t i = 1; i < n; ++i)
+                m = std::min(m, rXyz[i * 3 + a]);
+            lo[a] = m;
+            side[a] = cell;
+        }
+    }
+    lat.mMinSide = side[0];
+    for (std::size_t a = 1; a < dim; ++a)
+        lat.mMinSide = std::min(lat.mMinSide, side[a]);
+    lat.mCellOf.resize(n);
+    parallel_for(n, [&](std::size_t i) {
+        std::array<std::int64_t, 3> k{0, 0, 0};
+        for (std::size_t a = 0; a < dim; ++a) {
+            std::int64_t c =
+                static_cast<std::int64_t>(std::floor((rXyz[i * 3 + a] - lo[a]) / side[a]));
+            if (lat.mPeriodic)
+                c = ((c % lat.mCells[a]) + lat.mCells[a]) % lat.mCells[a];
+            k[a] = c;
+        }
+        lat.mCellOf[i] = k;
+    });
+    if (!lat.mPeriodic)
+        for (std::size_t a = 0; a < dim; ++a) {
+            std::int64_t m = 0;
+            for (std::size_t i = 0; i < n; ++i)
+                m = std::max(m, lat.mCellOf[i][a]);
+            lat.mCells[a] = m + 1;
+        }
+    lat.mOrder.resize(n);
+    for (std::size_t i = 0; i < n; ++i)
+        lat.mOrder[i] = static_cast<std::int64_t>(i);
+    parallel_sort(lat.mOrder.begin(), lat.mOrder.end(), [&](std::int64_t x, std::int64_t y) {
+        const auto& kx = lat.mCellOf[static_cast<std::size_t>(x)];
+        const auto& ky = lat.mCellOf[static_cast<std::size_t>(y)];
+        return kx != ky ? kx < ky : x < y;
+    });
+    lat.mStart.push_back(0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& k = lat.mCellOf[static_cast<std::size_t>(lat.mOrder[i])];
+        if (lat.mKeys.empty() || lat.mKeys.back() != k) {
+            if (!lat.mKeys.empty())
+                lat.mStart.push_back(static_cast<std::int64_t>(i));
+            lat.mKeys.push_back(k);
+        }
+    }
+    lat.mStart.push_back(static_cast<std::int64_t>(n));
+    return lat;
+}
+
+/// numpy's squared distance: dx*dx + dy*dy + dz*dz in axis order, each
+/// displacement reduced to its minimum image (np.round: half to even).
+inline double nb_d2(const std::vector<double>& rXyz, std::size_t i, std::size_t j, std::size_t dim,
+                    const std::vector<double>& rBox) {
+    double s = 0.0;
+    for (std::size_t a = 0; a < dim; ++a) {
+        double disp = rXyz[i * 3 + a] - rXyz[j * 3 + a];
+        if (!rBox.empty())
+            disp = disp - rBox[a] * std::nearbyint(disp / rBox[a]);
+        const double sq = disp * disp;
+        s = a == 0 ? sq : s + sq;
+    }
+    return s;
+}
+
+/// Visits the lattice cells at Chebyshev distance exactly @p R from @p rCenter
+/// (wrapped on a periodic lattice), each at most once per call sequence the
+/// caller tracks through @p rSeen.
+template <class F>
+void nb_ring(const NbLattice& rLat, const std::array<std::int64_t, 3>& rCenter, std::int64_t R,
+             std::vector<std::array<std::int64_t, 3>>& rSeen, F&& fn) {
+    const std::size_t dim = rLat.mDim;
+    const std::int64_t rz = dim > 2 ? R : 0, ry = dim > 1 ? R : 0;
+    for (std::int64_t dz = -rz; dz <= rz; ++dz)
+        for (std::int64_t dy = -ry; dy <= ry; ++dy)
+            for (std::int64_t dx = -R; dx <= R; ++dx) {
+                if (std::max({std::abs(dx), std::abs(dy), std::abs(dz)}) != R)
+                    continue;
+                std::array<std::int64_t, 3> k{rCenter[0] + dx, rCenter[1] + dy, rCenter[2] + dz};
+                bool inside = true;
+                for (std::size_t a = 0; a < dim; ++a) {
+                    if (rLat.mPeriodic)
+                        k[a] = ((k[a] % rLat.mCells[a]) + rLat.mCells[a]) % rLat.mCells[a];
+                    else if (k[a] < 0 || k[a] >= rLat.mCells[a])
+                        inside = false;
+                }
+                if (!inside)
+                    continue;
+                if (rLat.mPeriodic) {
+                    // A small lattice wraps a ring onto cells already visited.
+                    if (std::find(rSeen.begin(), rSeen.end(), k) != rSeen.end())
+                        continue;
+                    rSeen.push_back(k);
+                }
+                const auto cell = rLat.Find(k);
+                if (cell.first)
+                    fn(cell.first, cell.second);
+            }
+}
+
+}  // namespace
+
+NeighborPairs neighbor_pairs(const NDArray& rPoints, const NeighborOptions& rOptions) {
+    if (rPoints.Ndim() != 2 || rPoints.Shape()[1] < 1 || rPoints.Shape()[1] > 3)
+        throw std::invalid_argument(std::string(kNbPrefix) +
+                                    "points must be an (N, d) array with d in 1..3");
+    const std::size_t n = rPoints.Shape()[0];
+    const std::size_t dim = rPoints.Shape()[1];
+    std::vector<double> xyz(n * 3, 0.0);
+    detail::dispatch_dtype(rPoints.Dtype(), [&]<class T>() {
+        const T* src = rPoints.As<T>();
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t a = 0; a < dim; ++a)
+                xyz[i * 3 + a] = static_cast<double>(src[i * dim + a]);
+        });
+    });
+    for (double v : xyz)
+        if (!std::isfinite(v))
+            throw std::invalid_argument(std::string(kNbPrefix) +
+                                        "the positions contain a non-finite coordinate");
+    const std::vector<double>& box = rOptions.mBox;
+    if (!box.empty()) {
+        if (box.size() != dim)
+            throw std::invalid_argument(std::string(kNbPrefix) +
+                                        "the box needs one side per coordinate");
+        for (double b : box)
+            if (!(b > 0.0) || !std::isfinite(b))
+                throw std::invalid_argument(std::string(kNbPrefix) +
+                                            "box sides must be positive and finite");
+    }
+
+    NeighborPairs out;
+    const auto finish = [&](std::vector<std::int64_t>& rA, std::vector<std::int64_t>& rB) {
+        out.mSource = NDArray::Uninit(DType::Int64, {rA.size()});
+        out.mTarget = NDArray::Uninit(DType::Int64, {rB.size()});
+        std::copy(rA.begin(), rA.end(), out.mSource.As<std::int64_t>());
+        std::copy(rB.begin(), rB.end(), out.mTarget.As<std::int64_t>());
+    };
+    std::vector<std::int64_t> src, dst;
+
+    if (rOptions.mMethod == NeighborMethod::Radius) {
+        const double r = rOptions.mRadius;
+        if (!(r > 0.0) || !std::isfinite(r))
+            throw std::invalid_argument(std::string(kNbPrefix) + "the radius must be positive");
+        if (!box.empty() && r > 0.5 * *std::min_element(box.begin(), box.end()))
+            throw std::invalid_argument(std::string(kNbPrefix) +
+                                        "the radius exceeds half the smallest box side");
+        if (n == 0) {
+            finish(src, dst);
+            return out;
+        }
+        // Cells a hair wider than the radius, so rounding in the cell
+        // assignment cannot put a pair within the radius two cells apart.
+        const double cell = std::max(rOptions.mCellSize, r) * (1.0 + 1e-6);
+        const NbLattice lat = nb_build_lattice(xyz, n, dim, cell, box);
+        const double r2 = r * r;
+        std::vector<std::int64_t> count(n + 1, 0);
+        const auto visit = [&](std::size_t i, auto&& emit) {
+            std::vector<std::array<std::int64_t, 3>> seen;
+            for (std::int64_t R = 0; R <= 1; ++R)
+                nb_ring(lat, lat.mCellOf[i], R, seen,
+                        [&](const std::int64_t* first, const std::int64_t* last) {
+                            for (const std::int64_t* p = first; p != last; ++p) {
+                                const std::size_t j = static_cast<std::size_t>(*p);
+                                if (j > i && nb_d2(xyz, i, j, dim, box) <= r2)
+                                    emit(j);
+                            }
+                        });
+        };
+        parallel_for(n, [&](std::size_t i) {
+            std::int64_t c = 0;
+            visit(i, [&](std::size_t) { ++c; });
+            count[i + 1] = c;
+        });
+        for (std::size_t i = 0; i < n; ++i)
+            count[i + 1] += count[i];
+        src.resize(static_cast<std::size_t>(count[n]));
+        dst.resize(src.size());
+        parallel_for(n, [&](std::size_t i) {
+            std::size_t at = static_cast<std::size_t>(count[i]);
+            visit(i, [&](std::size_t j) {
+                src[at] = static_cast<std::int64_t>(i);
+                dst[at++] = static_cast<std::int64_t>(j);
+            });
+        });
+        finish(src, dst);
+        return out;
+    }
+
+    // k nearest: grow a Chebyshev ring of cells around each point until its
+    // k-th candidate is strictly closer than anything outside the rings can be.
+    const std::int64_t k =
+        std::min<std::int64_t>(rOptions.mK, n > 0 ? static_cast<std::int64_t>(n) - 1 : 0);
+    if (k <= 0) {
+        finish(src, dst);
+        return out;
+    }
+    double cell = rOptions.mCellSize;
+    if (!(cell > 0.0)) {
+        // About k/2 points per cell (proximity_graph's own sizing rule).
+        std::array<double, 3> lo{0, 0, 0}, hi{0, 0, 0};
+        for (std::size_t a = 0; a < dim; ++a) {
+            lo[a] = hi[a] = xyz[a];
+            for (std::size_t i = 1; i < n; ++i) {
+                lo[a] = std::min(lo[a], xyz[i * 3 + a]);
+                hi[a] = std::max(hi[a], xyz[i * 3 + a]);
+            }
+        }
+        double measure = 1.0, extent = 0.0;
+        int live = 0;
+        for (std::size_t a = 0; a < dim; ++a)
+            if (hi[a] > lo[a]) {
+                measure *= hi[a] - lo[a];
+                extent = std::max(extent, hi[a] - lo[a]);
+                ++live;
+            }
+        cell =
+            live == 0
+                ? 1.0
+                : std::max(std::pow(measure / static_cast<double>(n) * static_cast<double>(k) * 0.5,
+                                    1.0 / live),
+                           extent * 1e-9);
+    }
+    const NbLattice lat = nb_build_lattice(xyz, n, dim, cell, box);
+    std::int64_t max_ring = 0;
+    for (std::size_t a = 0; a < dim; ++a)
+        max_ring = std::max(max_ring, lat.mCells[a]);
+    const std::size_t kk = static_cast<std::size_t>(k);
+    src.resize(n * kk);
+    dst.resize(n * kk);
+    parallel_for(n, [&](std::size_t q) {
+        static thread_local std::vector<std::pair<double, std::int64_t>> cand;
+        cand.clear();
+        std::vector<std::array<std::int64_t, 3>> seen;
+        const auto less = [](const std::pair<double, std::int64_t>& x,
+                             const std::pair<double, std::int64_t>& y) {
+            return x.first != y.first ? x.first < y.first : x.second < y.second;
+        };
+        for (std::int64_t R = 0;; ++R) {
+            nb_ring(lat, lat.mCellOf[q], R, seen,
+                    [&](const std::int64_t* first, const std::int64_t* last) {
+                        for (const std::int64_t* p = first; p != last; ++p)
+                            if (static_cast<std::size_t>(*p) != q)
+                                cand.emplace_back(
+                                    nb_d2(xyz, q, static_cast<std::size_t>(*p), dim, box), *p);
+                    });
+            if (R >= max_ring)
+                break;  // every cell has been visited: exact by exhaustion
+            if (cand.size() >= kk) {
+                std::nth_element(cand.begin(), cand.begin() + (k - 1), cand.end(), less);
+                // Anything outside rings 0..R is at least R cells' width away;
+                // the margin covers rounding in the cell assignment.
+                const double covered = static_cast<double>(R) * lat.mMinSide * (1.0 - 1e-6);
+                if (cand[kk - 1].first < covered * covered)
+                    break;
+            }
+        }
+        std::partial_sort(cand.begin(), cand.begin() + k, cand.end(), less);
+        for (std::size_t t = 0; t < kk; ++t) {
+            src[q * kk + t] = static_cast<std::int64_t>(q);
+            dst[q * kk + t] = cand[t].second;
+        }
+    });
+    finish(src, dst);
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/neighbors.cpp =====
 // ===== begin src/cpp/src/operations/normals.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -154597,7 +155189,7 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 #include <cstring>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -154709,10 +155301,12 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
         for (std::size_t i = 0; i < total_coarse; ++i)
             coarse_ids[i] = static_cast<std::int64_t>(i);
     }
-    std::unordered_map<std::int64_t, std::int64_t> id_to_coarse_row;
-    id_to_coarse_row.reserve(coarse_ids.size());
-    for (std::size_t i = 0; i < coarse_ids.size(); ++i)
-        id_to_coarse_row[coarse_ids[i]] = static_cast<std::int64_t>(i);
+    // (id, row) pairs sorted -- a total order -- searched by binary search.
+    std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
+    parallel_for(coarse_ids.size(), [&](std::size_t i) {
+        id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
+    });
+    parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
 
     const std::vector<std::int64_t> coarse_level =
         ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
@@ -154721,9 +155315,15 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     };
 
     // --- group fine cells by parent_id --------------------------------------
-    std::unordered_map<std::int64_t, std::vector<std::int64_t>> groups_by_parent;
-    for (std::size_t g = 0; g < total_fine; ++g)
-        groups_by_parent[fine_parent[g]].push_back(static_cast<std::int64_t>(g));
+    // Sorted (parent_id, cell) pairs: each run is one sibling group, its cells
+    // ascending, and the groups come in ascending parent_id -- the same on
+    // every platform, where a hash map's iteration order was not (it decided
+    // which of several malformed groups was reported).
+    std::vector<std::pair<std::int64_t, std::int64_t>> by_parent(total_fine);
+    parallel_for(total_fine, [&](std::size_t g) {
+        by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
+    });
+    parallel_sort(by_parent.begin(), by_parent.end());
 
     // --- classify every global fine cell's role; for green groups, resolve
     // the substitution source once ------------------------------------------
@@ -154733,10 +155333,12 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     std::vector<std::int64_t> group_size;        // indexed by green group id
     std::int64_t next_group_id = 0;
 
-    for (auto& entry : groups_by_parent) {
-        const std::int64_t parent_id = entry.first;
-        std::vector<std::int64_t>& members = entry.second;
-        std::sort(members.begin(), members.end());
+    std::vector<std::int64_t> members;
+    for (std::size_t r0 = 0, r1 = 0; r0 < by_parent.size(); r0 = r1) {
+        const std::int64_t parent_id = by_parent[r0].first;
+        members.clear();
+        for (r1 = r0; r1 < by_parent.size() && by_parent[r1].first == parent_id; ++r1)
+            members.push_back(by_parent[r1].second);
 
         if (members.size() == 1) {
             const std::int64_t g = members.front();
@@ -154749,8 +155351,15 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
             continue;  // untouched: role stays Keep
         }
 
-        const auto it = id_to_coarse_row.find(parent_id);
-        if (it == id_to_coarse_row.end())
+        // The last row with this id, as the former map's overwrite kept it.
+        auto it =
+            std::upper_bound(id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
+                             [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
+                                 return v < rE.first;
+                             });
+        if (it != id_to_coarse_row.begin())
+            --it;
+        if (it == id_to_coarse_row.end() || it->first != parent_id)
             throw std::invalid_argument(
                 std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
                 " does not resolve in the coarse mesh's id space -- these two meshes are not "

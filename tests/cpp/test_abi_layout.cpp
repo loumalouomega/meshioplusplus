@@ -81,6 +81,7 @@
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
@@ -364,6 +365,13 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::FacetIndex, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 232, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::TriangleSoup, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceSlotlessWrite, 1, 1);
+
+// `neighbor_pairs` (v16.17.0) is a pure addition, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::NeighborOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::NeighborPairs, 144, 8);
+static_assert(sizeof(meshioplusplus::NeighborMethod) == 1,
+              "meshio++ ABI: NeighborMethod's underlying type changed (Tier A, doc/abi.md)");
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;

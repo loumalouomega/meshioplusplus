@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## v16.17.0 (2026-09-25)
+## v16.17.0 (2026-09-26)
 
 **Roadmap §4 (performance), third part:** the operation items -- welding, the distance kernel's construction, a core neighbour search for `proximity_graph`, and two operations that had no parallel phase. Every operation's output is byte-identical to v16.16.0's (the `bench_ops --hash` digests, and a new golden-digest test taken from the previous implementation).
 
