@@ -27,8 +27,8 @@ set it before delegating to the C++ engine).
 
 from __future__ import annotations
 
-import functools
 import enum
+import functools
 import json
 import os
 import threading
