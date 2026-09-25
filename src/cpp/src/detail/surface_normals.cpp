@@ -30,6 +30,9 @@
 #include "meshioplusplus/detail/surface_normals.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "slot_runs.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -75,6 +78,9 @@ public:
         }
         return X;
     }
+    /// The parent link of @p X: never above @p X, since a root is its set's
+    /// smallest index and path halving only moves links down.
+    std::int64_t Parent(std::size_t X) const { return mParent[X]; }
     void Unite(std::int64_t A, std::int64_t B) {
         const std::int64_t ra = Find(A);
         const std::int64_t rb = Find(B);
@@ -171,13 +177,13 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
     std::vector<double> length(ntri, 0.0);
     std::vector<Vec3> unit(ntri, Vec3{0.0, 0.0, 0.0});
     VertexNormalGroups out;
-    for (std::size_t t = 0; t < ntri; ++t) {
+    parallel_for(ntri, [&](std::size_t t) {
         length[t] = vec3_norm(face[t]);
         if (length[t] > 0.0)
             unit[t] = vec3_scale(face[t], 1.0 / length[t]);
-        else
-            ++out.mNumDegenerate;
-    }
+    });
+    for (std::size_t t = 0; t < ntri; ++t)
+        out.mNumDegenerate += length[t] > 0.0 ? 0 : 1;
 
     SnUnionFind sets(ncorner);
     if (SplitAngleDeg < 0.0) {
@@ -194,25 +200,31 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
         const bool always = SplitAngleDeg >= 180.0;
         const double cos_threshold = std::cos(SplitAngleDeg * (kSnPi / 180.0));
 
-        std::vector<SnEdgeUse> uses;
-        uses.reserve(ncorner);
-        for (std::size_t t = 0; t < ntri; ++t) {
-            const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-            for (std::size_t i = 0; i < 3; ++i) {
-                const std::size_t j = (i + 1) % 3;
-                const std::int64_t u = v[i];
-                const std::int64_t w = v[j];
-                if (u == w)
-                    continue;  // a collapsed edge joins nothing
-                const std::int64_t ci = static_cast<std::int64_t>(t * 3 + i);
-                const std::int64_t cj = static_cast<std::int64_t>(t * 3 + j);
-                if (u < w)
-                    uses.push_back({u, w, static_cast<std::int64_t>(t), ci, cj, true});
-                else
-                    uses.push_back({w, u, static_cast<std::int64_t>(t), cj, ci, false});
-            }
-        }
-        std::sort(uses.begin(), uses.end(), sn_edge_use_less);
+        // One use per non-collapsed corner edge, written at its prefix offset
+        // (a collapsed edge joins nothing), then sorted by a total order.
+        std::vector<std::uint64_t> keep(ncorner);
+        parallel_for(ncorner, [&](std::size_t c) {
+            const std::array<std::int64_t, 3>& v = rSoup.mVertices[c / 3];
+            keep[c] = v[c % 3] != v[(c % 3 + 1) % 3] ? 1 : 0;
+        });
+        std::vector<std::uint64_t> at(ncorner);
+        const std::uint64_t nuses =
+            parallel_exclusive_scan(keep.data(), ncorner, at.data(), std::uint64_t{0});
+        std::vector<SnEdgeUse> uses(nuses);
+        parallel_for(ncorner, [&](std::size_t c) {
+            if (!keep[c])
+                return;
+            const std::size_t t = c / 3;
+            const std::size_t i = c % 3;
+            const std::size_t j = (i + 1) % 3;
+            const std::int64_t u = rSoup.mVertices[t][i];
+            const std::int64_t w = rSoup.mVertices[t][j];
+            const std::int64_t ci = static_cast<std::int64_t>(t * 3 + i);
+            const std::int64_t cj = static_cast<std::int64_t>(t * 3 + j);
+            uses[at[c]] = u < w ? SnEdgeUse{u, w, static_cast<std::int64_t>(t), ci, cj, true}
+                                : SnEdgeUse{w, u, static_cast<std::int64_t>(t), cj, ci, false};
+        });
+        parallel_sort(uses.begin(), uses.end(), sn_edge_use_less);
 
         for (std::size_t b = 0; b < uses.size();) {
             std::size_t e = b + 1;
@@ -242,31 +254,54 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
     }
 
     // Number the groups by ascending root. A root is the smallest corner of its
-    // set, so it has always been numbered by the time a later corner asks.
+    // set and every link points down, so one ascending pass resolves each
+    // corner's root, and a group's id is the number of roots before it.
     std::vector<std::int64_t> root(ncorner);
-    std::vector<std::int64_t> id(ncorner, -1);
-    out.mCornerGroup.assign(ncorner, 0);
     for (std::size_t c = 0; c < ncorner; ++c) {
-        root[c] = sets.Find(static_cast<std::int64_t>(c));
-        if (root[c] == static_cast<std::int64_t>(c)) {
-            id[c] = static_cast<std::int64_t>(out.mGroupPoint.size());
-            out.mGroupRoot.push_back(static_cast<std::int64_t>(c));
-            out.mGroupPoint.push_back(rSoup.mVertices[c / 3][c % 3]);
-        }
-        out.mCornerGroup[c] = id[static_cast<std::size_t>(root[c])];
+        const std::int64_t p = sets.Parent(c);
+        root[c] = p == static_cast<std::int64_t>(c) ? p : root[static_cast<std::size_t>(p)];
     }
+    std::vector<std::uint64_t> is_root(ncorner);
+    parallel_for_bw(ncorner, [&](std::size_t c) {
+        is_root[c] = root[c] == static_cast<std::int64_t>(c) ? 1 : 0;
+    });
+    std::vector<std::uint64_t> id(ncorner);
+    const std::uint64_t ngroups =
+        parallel_exclusive_scan(is_root.data(), ncorner, id.data(), std::uint64_t{0});
+    out.mCornerGroup.assign(ncorner, 0);
+    out.mGroupRoot.assign(ngroups, 0);
+    out.mGroupPoint.assign(ngroups, 0);
+    parallel_for(ncorner, [&](std::size_t c) {
+        const std::uint64_t g = id[static_cast<std::size_t>(root[c])];
+        out.mCornerGroup[c] = static_cast<std::int64_t>(g);
+        if (is_root[c]) {
+            out.mGroupRoot[g] = static_cast<std::int64_t>(c);
+            out.mGroupPoint[g] = rSoup.mVertices[c / 3][c % 3];
+        }
+    });
 
-    // Serial scatter in ascending (triangle, corner) order, then normalise.
+    // Gathered per group over its corners in ascending (triangle, corner)
+    // order -- a stable counting sort by group -- which is the order the serial
+    // scatter added them in, then normalised.
+    std::vector<std::uint64_t> order;
+    std::vector<std::uint64_t> start;
+    slot_runs_impl::counting_sort(
+        ncorner, static_cast<std::size_t>(ngroups),
+        [&](std::uint64_t c) { return static_cast<std::size_t>(out.mCornerGroup[c]); }, order,
+        start);
     out.mGroupNormal.assign(out.NumGroups(), Vec3{0.0, 0.0, 0.0});
-    for (std::size_t t = 0; t < ntri; ++t) {
-        if (!(length[t] > 0.0))
-            continue;
-        for (std::size_t i = 0; i < 3; ++i) {
-            Vec3& acc = out.mGroupNormal[static_cast<std::size_t>(out.mCornerGroup[t * 3 + i])];
-            acc = vec3_add(acc,
-                           vec3_scale(unit[t], sn_corner_weight(rSoup, t, i, length[t], Weight)));
+    parallel_for(out.NumGroups(), [&](std::size_t g) {
+        Vec3 acc{0.0, 0.0, 0.0};
+        for (std::uint64_t k = start[g]; k < start[g + 1]; ++k) {
+            const std::size_t c = static_cast<std::size_t>(order[k]);
+            const std::size_t t = c / 3;
+            if (!(length[t] > 0.0))
+                continue;
+            acc = vec3_add(
+                acc, vec3_scale(unit[t], sn_corner_weight(rSoup, t, c % 3, length[t], Weight)));
         }
-    }
+        out.mGroupNormal[g] = acc;
+    });
     for (Vec3& n : out.mGroupNormal) {
         const double len = vec3_norm(n);
         n = len > 0.0 ? vec3_scale(n, 1.0 / len) : Vec3{0.0, 0.0, 0.0};
