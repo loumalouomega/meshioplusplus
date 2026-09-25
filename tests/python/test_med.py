@@ -283,6 +283,29 @@ def test_write_multi_blocks_same_type_with_cell_data(tmp_path):
     assert np.array_equal(tags, np.array([-1, -1, -2, -2]))
 
 
+def test_python_writer_keeps_every_block_of_a_field_in_one_step(tmp_path):
+    """One field over several blocks is one timestep, not one per block.
+
+    The h5py writer (what a build without HDF5 uses) numbered the steps of a
+    cell field by (block, step) entry, so each block's values opened a step of
+    their own and read back as ``c[0] - 0`` .. ``c[k] - 0``, each on one block.
+    """
+    from meshioplusplus.med import _med
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]]),
+        [("triangle", [[0, 1, 2], [1, 3, 2]]), ("line", [[0, 1]])],
+        cell_data={"c": [np.array([1.5, 2.5]), np.array([3.5])]},
+    )
+    path = tmp_path / "blocks.med"
+    _med.write(path, mesh)
+    back = _med.read(path)
+    assert sorted(k for k in back.cell_data if k != "cell_tags") == ["c"]
+    by_type = {b.type: d for b, d in zip(back.cells, back.cell_data["c"])}
+    assert list(by_type["triangle"]) == [1.5, 2.5]
+    assert list(by_type["line"]) == [3.5]
+
+
 def test_read_med_partial_cell_data(tmp_path):
     """A field defined on only one cell type must not crash."""
     filename = tmp_path / "partial.med"

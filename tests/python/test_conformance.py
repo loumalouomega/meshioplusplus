@@ -20,6 +20,11 @@ from . import conformance_spec as cs
 REPO = pathlib.Path(__file__).resolve().parents[2]
 WRITABLE = sorted(meshioplusplus.formats()["writable"])
 
+# Writers with no Python engine that exist only in some native builds, keyed to
+# the core flag that says so. The declaration describes a build that has them;
+# a build without one (the Windows CI job has no zlib, so no gidpost) skips.
+_NEEDS_CORE = {"gid": "__has_gidpost__"}
+
 
 def test_every_writable_format_is_declared():
     missing = [f for f in WRITABLE if f not in cs.SPEC]
@@ -38,6 +43,9 @@ def test_round_trip_matches_the_declaration(fmt):
     spec = cs.SPEC.get(fmt)
     if spec is None:
         pytest.skip("undeclared (reported by test_every_writable_format_is_declared)")
+    flag = _NEEDS_CORE.get(fmt)
+    if flag and not getattr(meshioplusplus._core, flag, False):
+        pytest.skip(f"{fmt}: this build is without {flag}")
     declared = {k: v for k, v in spec.items() if k != "note"}
     cells = list(declared["cells"]) if "cells" in declared else None
     observed = cs.observe(fmt, cells, planar=declared.get("input") == "2d")

@@ -1289,9 +1289,11 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: pv
+          # hdf5=1.14: conda-forge paraview 6.1.1 links libhdf5.so.310 but does
+          # not constrain hdf5, so the solver picks 2.x (libhdf5.so.320) and
+          # pvpython cannot start.
           create-args: >-
-            python=3.12 paraview cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
-          channels: conda-forge
+            -c conda-forge python=3.12 paraview hdf5=1.14 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
       - name: Build meshio++ into ParaView's environment
         env:
           CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF

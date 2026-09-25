@@ -63,24 +63,33 @@ def _env():
     return env
 
 
-def _pvpython_matches():
+def _pvpython_mismatch():
+    """Why pvpython cannot run this build, or ``None`` when it can."""
     out = subprocess.run(
         [PVPYTHON, "-c", "import sys; print(sys.version_info[:2])"],
         capture_output=True,
         text=True,
         timeout=120,
     )
-    return out.stdout.strip().endswith(str(tuple(sys.version_info[:2])))
+    if out.returncode != 0:
+        # Not a version question: pvpython itself did not start (a missing
+        # shared library, say), and its stderr says why.
+        return f"pvpython exited with {out.returncode}: {out.stderr.strip()[-2000:]}"
+    ours = str(tuple(sys.version_info[:2]))
+    if not out.stdout.strip().endswith(ours):
+        return f"pvpython runs Python {out.stdout.strip()!r}, this build {ours}"
+    return None
 
 
 def test_plugin_reads_and_writes_through_paraview(tmp_path):
     assert (
         PVPYTHON is not None
     ), "MESHIOPLUSPLUS_REQUIRE_PVPYTHON is set but there is no pvpython"
-    if not _pvpython_matches():
+    mismatch = _pvpython_mismatch()
+    if mismatch:
         if _REQUIRED:
-            pytest.fail("pvpython runs a different Python than this build")
-        pytest.skip("pvpython runs a different Python than this build")
+            pytest.fail(mismatch)
+        pytest.skip(mismatch)
     mesh = meshioplusplus.Mesh(
         np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
         [("tetra", [[0, 1, 2, 3]]), ("triangle", [[1, 2, 4], [0, 1, 4]])],
