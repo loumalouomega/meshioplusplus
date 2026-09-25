@@ -34,6 +34,7 @@
 #include "meshioplusplus/formats/marc.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 
 namespace {
 
@@ -212,8 +213,21 @@ TEST(Marc, ExtendedDeck) {
     // Element 30 has no cell: the set keeps the other two.
     EXPECT_EQ(region("bricks", RegionKind::Cell), (std::vector<std::int64_t>{0, 1}));
     EXPECT_EQ(mesh.Region(mesh.FindRegion("bricks", RegionKind::Cell)).mDim, 3);
-    // resolve_format: an existing Marc deck named .dat is Marc's.
+    // resolve_format: an existing Marc deck named .dat is Marc's; a write to
+    // the same path is Tecplot's all the same.
     EXPECT_EQ(meshioplusplus::resolve_format(path, ""), "marc");
+    EXPECT_EQ(meshioplusplus::resolve_write_format(path, ""), "tecplot");
+    std::remove(path.c_str());
+}
+
+TEST(Marc, AWriteOverADeckWritesTecplot) {
+    // registry_write_ex resolves a write without looking at the file it
+    // replaces (until v16.17.0 it chose "marc", which has no writer).
+    const std::string path = write_temp(kDeck, ".dat");
+    meshioplusplus::registry_write_ex(path, mt::tri_mesh(), "", meshioplusplus::WriteOptions{});
+    EXPECT_EQ(meshioplusplus::resolve_format(path, ""), "tecplot");
+    mt::expect_same_geometry(mt::tri_mesh(), meshioplusplus::registry_read(
+                                                 path, "tecplot", meshioplusplus::ReadOptions{}));
     std::remove(path.c_str());
 }
 

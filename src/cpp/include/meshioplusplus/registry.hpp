@@ -94,6 +94,17 @@ MESHIOPLUSPLUS_API const std::map<std::string, std::string>& registry_extension_
 MESHIOPLUSPLUS_API std::string resolve_format(const std::string& rPath, const std::string& rFormat);
 
 /**
+ * @brief `resolve_format` for a file about to be written: the same rules
+ *        without the content checks, so an existing file never chooses the
+ *        format of the file that replaces it (`.dat` is Tecplot's and `.mesh`
+ *        Medit's even over a Marc deck or an MFEM mesh; write those by name).
+ *        Since v16.17.0.
+ * @throws ReadError if `rFormat` is empty and the extension is unknown.
+ */
+MESHIOPLUSPLUS_API std::string resolve_write_format(const std::string& rPath,
+                                                    const std::string& rFormat);
+
+/**
  * @brief The optional dependency a known-but-absent format was compiled out
  *        with, or `nullptr`.
  * @return `"HDF5"` / `"netCDF"` when `rFormat` names a format this build

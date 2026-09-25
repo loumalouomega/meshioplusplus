@@ -39,7 +39,7 @@ from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._gradient import gradient
-from ._helpers import _filetypes_from_path, read, write
+from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
 from ._hessian import hessian
 from ._isosurface import isosurface
 from ._normals import compute_normals
@@ -1059,8 +1059,7 @@ def _write_kwargs_from(out, out_path):
     if encoding != "default" or codec is not None:
         out_fmt = out.get("Format")
         if not out_fmt:
-            candidates = _filetypes_from_path(pathlib.Path(str(out_path)))
-            out_fmt = candidates[0] if candidates else None
+            out_fmt = _write_format_for_path(pathlib.Path(str(out_path)))
         if out_fmt is None:
             raise ValueError(
                 "meshio++: pipeline: cannot infer the output format needed to "
@@ -1179,10 +1178,7 @@ def run_pipeline(settings, input_path=None, output_path=None):
     for step in steps_spec:
         mesh = _apply_step(mesh, step, steps, warnings)
 
-    out_fmt = (
-        out.get("Format")
-        or (_filetypes_from_path(pathlib.Path(str(out_path))) or [""])[0]
-    )
+    out_fmt = out.get("Format") or _write_format_for_path(pathlib.Path(str(out_path)))
     out_encoding = out.get("Encoding", "default")
     _prov_set_target(
         out_fmt,

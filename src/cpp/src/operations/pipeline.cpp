@@ -1200,7 +1200,8 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
     mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
 
-    const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
+    const std::string out_fmt =
+        resolve_write_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
     const WriteOptions& wopts = rPipeline.mOutput.mOptions;
     const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
                                 : wopts.mEncoding == WriteEncoding::Binary ? "binary"

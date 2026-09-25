@@ -524,7 +524,7 @@ std::string seq_resolve_write_format(const SequenceOutput& rOutput, std::size_t 
     const std::string probe = sequence_pattern_has_token(rOutput.mPath)
                                   ? sequence_expand_pattern(rOutput.mPath, 0, Count)
                                   : rOutput.mPath;
-    return resolve_format(probe, "");
+    return resolve_write_format(probe, "");
 }
 
 /// The transient writer's data-format choice. An explicit request always
@@ -864,22 +864,39 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         if (!sequence_write_supports_time(ofmt, why))
             throw WriteError(why);
         seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
-        const std::unique_ptr<SeqSeriesSink> writer =
-            seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
-        bool grid_written = false;
-        for (std::size_t i = 0; i < entries.size(); ++i) {
+        // One step, read and run through the pipeline, with its time.
+        auto step = [&](std::size_t i, double& rTime) {
             Mesh mesh =
                 sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
-            double time = entries[i].mTime;
+            rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
                 rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {
                 double t = 0.0;
                 if (seq_time_from_mesh(mesh, t))
-                    time = t;
+                    rTime = t;
             }
             // The single owner of step dispatch, unchanged: sequences are a
             // driver AROUND run_pipeline_steps, never a second dispatch path.
-            mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+            return run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+        };
+        if (ofmt == "gid") {
+            // gid's series writer pulls its steps, as in sequence_to_timeseries
+            // (until v16.17.0 this path wrote XDMF into the .post.msh name).
+            write_gid_series(rPipeline.mOutput.mPath,
+                             [&](std::size_t i, double& rTime, Mesh& rMesh) {
+                                 if (i >= entries.size())
+                                     return false;
+                                 rMesh = step(i, rTime);
+                                 return true;
+                             });
+            return report;
+        }
+        const std::unique_ptr<SeqSeriesSink> writer =
+            seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
+        bool grid_written = false;
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            double time = 0.0;
+            Mesh mesh = step(i, time);
             if (!grid_written) {
                 writer->WritePointsCells(mesh);
                 grid_written = true;

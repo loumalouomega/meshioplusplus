@@ -726,12 +726,11 @@ class TimeSeries:
 
 def _series_target_format(path, file_format):
     """The format a multi-step write to ``path`` would use."""
-    from ._helpers import _filetypes_from_path
+    from ._helpers import _write_format_for_path
 
     if file_format:
         return file_format
-    candidates = _filetypes_from_path(pathlib.Path(str(path)))
-    return candidates[0] if candidates else None
+    return _write_format_for_path(pathlib.Path(str(path)))
 
 
 def _check_series_target(path, file_format):

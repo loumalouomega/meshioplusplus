@@ -16,6 +16,7 @@
 //
 // System includes
 #include <memory>
+#include <set>
 #include <vector>
 
 // External includes
@@ -842,6 +843,38 @@ PYBIND11_MODULE(_core, m) {
                              path, fmt, meshioplusplus::ReadOptions{}));
                      }),
           py::arg("path"), py::arg("format") = "");
+
+    // The native registry's own lists, the way WASM's availableFormats reports
+    // them: what reads, what writes, and the extension defaults. The drift guard
+    // in tests/python/test_conformance.py holds them against Python's registry.
+    m.def("registry_formats", []() {
+        // A format may read only through the options-aware table.
+        std::set<std::string> read_names;
+        for (const auto& entry : meshioplusplus::registry_readers())
+            read_names.insert(entry.first);
+        for (const auto& entry : meshioplusplus::registry_readers_ex())
+            read_names.insert(entry.first);
+        py::list readable;
+        for (const std::string& name : read_names)
+            readable.append(name);
+        py::list writable;
+        for (const auto& entry : meshioplusplus::registry_writers())
+            writable.append(entry.first);
+        py::dict extensions;
+        for (const auto& [ext, fmt] : meshioplusplus::registry_extension_defaults())
+            extensions[py::str(ext)] = fmt;
+        py::dict out;
+        out["readable"] = readable;
+        out["writable"] = writable;
+        out["extensions"] = extensions;
+        return out;
+    });
+    m.def(
+        "resolve_write_format",
+        [](const std::string& path, const std::string& format) {
+            return meshioplusplus::resolve_write_format(path, format);
+        },
+        py::arg("path"), py::arg("format") = "");
 
     // Whether `format` has a native selective-read path (rather than being read
     // whole and filtered afterwards).
