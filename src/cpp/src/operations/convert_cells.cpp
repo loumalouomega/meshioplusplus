@@ -21,9 +21,10 @@
 // every mesh backend. See operations/convert_cells.hpp for the contract.
 //
 // Determinism: the decomposition templates are fixed, and the elevate mid-edge
-// numbering comes from a serial pass over a parallel-filled record buffer --
-// surface.cpp's phase-split idiom -- never from a concurrent hash insert. Output
-// is therefore byte-identical across backends and thread counts.
+// numbering is the first-seen order of a parallel-filled record buffer,
+// recovered by the sort-based table in detail/slot_runs.hpp -- never from a
+// concurrent hash insert. Output is therefore byte-identical across backends
+// and thread counts.
 
 // System includes
 #include <algorithm>
@@ -47,6 +48,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -726,14 +730,6 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
 // A canonical (low, high) node pair identifying one edge.
 using CcellsEdgeKey = std::pair<std::int64_t, std::int64_t>;
 
-struct CcellsEdgeKeyHash {
-    std::size_t operator()(const CcellsEdgeKey& rKey) const {
-        std::size_t h = std::hash<std::int64_t>{}(rKey.first);
-        h ^= std::hash<std::int64_t>{}(rKey.second) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
-
 // Per-block bookkeeping for the elevate pass.
 struct CcellsElevateBlock {
     const CcellsElevateSpec* mpSpec = nullptr;  // null => pass the block through
@@ -786,22 +782,26 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         });
     }
 
-    // --- phase 2: serial dedup in stored order -> deterministic numbering ---
+    // --- phase 2: dedup in first-seen order -> deterministic numbering -------
     const std::size_t num_points = rMesh.NumPoints();
-    std::unordered_map<CcellsEdgeKey, std::int64_t, CcellsEdgeKeyHash> edge_id;
-    edge_id.reserve(total_slots * 2);
+    // First-seen numbering over the slot buffer (detail/slot_runs.hpp): edge
+    // ids in the order a serial sweep first meets them, from a parallel sort.
     std::vector<CcellsEdgeKey> new_edges;
-    std::vector<std::int64_t> slot_id(total_slots);
-    for (std::size_t i = 0; i < total_slots; ++i) {
-        auto it = edge_id.find(keys[i]);
-        if (it == edge_id.end()) {
-            const std::int64_t id = static_cast<std::int64_t>(num_points + new_edges.size());
-            edge_id.emplace(keys[i], id);
-            new_edges.push_back(keys[i]);
-            slot_id[i] = id;
-        } else {
-            slot_id[i] = it->second;
-        }
+    std::vector<std::int64_t> slot_id;
+    {
+        const detail::SlotRuns runs =
+            detail::group_slots(keys, num_points + 1, [num_points](const CcellsEdgeKey& rK) {
+                return rK.first >= 0 && static_cast<std::size_t>(rK.first) < num_points
+                           ? static_cast<std::size_t>(rK.first)
+                           : num_points;
+            });
+        detail::FirstSeen seen = detail::number_first_seen(runs, total_slots);
+        new_edges.resize(seen.NumIds());
+        parallel_for(seen.NumIds(),
+                     [&](std::size_t id) { new_edges[id] = keys[runs.Head(seen.mRunOfId[id])]; });
+        slot_id = std::move(seen.mIdOfSlot);
+        const std::int64_t base = static_cast<std::int64_t>(num_points);
+        parallel_for(slot_id.size(), [&](std::size_t i) { slot_id[i] += base; });
     }
 
     Mesh out;

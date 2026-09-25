@@ -69,7 +69,7 @@
 // System includes
 #include <cstddef>
 #include <cstdint>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -202,7 +202,9 @@ public:
     std::int64_t Find(const std::int64_t* pIds, std::size_t N) const;
 
 private:
-    std::unordered_map<FacetKey, std::int64_t, FacetKeyHash> mMap;
+    // (corner key, face id), sorted by key, found by binary search. A sorted
+    // table, not a hash map, since v16.16.0 (ABI 18): built by a parallel sort.
+    std::vector<std::pair<FacetKey, std::int64_t>> mSorted;
 };
 
 }  // namespace detail

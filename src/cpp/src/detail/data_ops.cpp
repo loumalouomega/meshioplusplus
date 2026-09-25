@@ -84,24 +84,22 @@ void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
         return;
     const std::size_t nrows = total / NumComponents;
 
-    const std::size_t grain = 4096;
-    const std::size_t nchunks = (nrows + grain - 1) / grain;
-    std::vector<std::vector<FiniteStats>> partial(nchunks);
-    parallel_for(
-        nchunks,
-        [&](std::size_t ci) {
+    // Fixed 4096-row chunks merged in chunk order onto the caller's
+    // accumulators (parallel_reduce): the same on every backend and thread count.
+    rStats = parallel_reduce(
+        nrows, 4096, std::move(rStats),
+        [&](std::size_t begin, std::size_t end) {
             std::vector<FiniteStats> local(NumComponents);
-            const std::size_t begin = ci * grain;
-            const std::size_t end = std::min(begin + grain, nrows);
             for (std::size_t r = begin; r < end; ++r)
                 for (std::size_t k = 0; k < NumComponents; ++k)
                     local[k].Add(read_double(rArray, r * NumComponents + k));
-            partial[ci] = std::move(local);
+            return local;
         },
-        1);
-    for (const std::vector<FiniteStats>& chunk : partial)
-        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
-            rStats[k].Merge(chunk[k]);
+        [&](std::vector<FiniteStats> acc, const std::vector<FiniteStats>& chunk) {
+            for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
+                acc[k].Merge(chunk[k]);
+            return acc;
+        });
 }
 
 FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
@@ -119,15 +117,10 @@ void accumulate_weighted(const NDArray& rArray, std::size_t NumComponents,
     if (nrows == 0 || NumComponents == 0)
         return;
 
-    const std::size_t grain = 4096;
-    const std::size_t nchunks = (nrows + grain - 1) / grain;
-    std::vector<std::vector<WeightedSum>> partial(nchunks);
-    parallel_for(
-        nchunks,
-        [&](std::size_t ci) {
+    rStats = parallel_reduce(
+        nrows, 4096, std::move(rStats),
+        [&](std::size_t begin, std::size_t end) {
             std::vector<WeightedSum> local(NumComponents);
-            const std::size_t begin = ci * grain;
-            const std::size_t end = std::min(begin + grain, nrows);
             for (std::size_t r = begin; r < end; ++r) {
                 const double w = rWeights[r];
                 if (!(w > 0.0) || !std::isfinite(w))
@@ -135,12 +128,13 @@ void accumulate_weighted(const NDArray& rArray, std::size_t NumComponents,
                 for (std::size_t k = 0; k < NumComponents; ++k)
                     local[k].Add(read_double(rArray, r * NumComponents + k), w);
             }
-            partial[ci] = std::move(local);
+            return local;
         },
-        1);
-    for (const std::vector<WeightedSum>& chunk : partial)
-        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
-            rStats[k].Merge(chunk[k]);
+        [&](std::vector<WeightedSum> acc, const std::vector<WeightedSum>& chunk) {
+            for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
+                acc[k].Merge(chunk[k]);
+            return acc;
+        });
 }
 
 double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
