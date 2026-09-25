@@ -39,9 +39,21 @@ Every format this section queued is now read: the native FEM interchange, solver
 - **Fortran unformatted-record reader, remaining adoption.** `detail/fortran_records.hpp` (v16.7.0, built for Abaqus `.fil`) sniffs 4/8-byte markers in either byte order and splits a file into its records, and `detail/binary_stream.hpp` reads values in a chosen byte order (libMesh `.xdr`). The OP2 reader (v16.9.0) builds on it, and the Python twins share `_fortran_records.py`; EnSight Fortran binary should too. The ANSYS `.rst` reader addresses records by pointer and keeps its own view, and `d3plot` (v16.9.0) is word-addressed, not record-framed.
 - **Directory-as-format support, remaining half.** Reading sniffs a directory by its files since v16.2.0 (Elmer, OpenFOAM, and a DOLFINx `.bp` since v16.13.0), and sequence globs keep suffixed directories (`.pmsh`, `.zarr`, and `.bp` in both engines). What remains: an Elmer directory has no suffix, so a glob cannot find it and it must be listed explicitly.
 
-### 1.2 Suggested order
+### 1.2 Reader and writer parity
 
-1. **Checks against the vendor tools:** each item under [Awaiting a licensed run](#awaiting-a-licensed-run) as soon as a licence, or a file the tool wrote, is in hand.
+*Admission: a format the [format table](./formats.md) lists as read-only, or as writing less than it reads.* The table is the probe: every row whose Read and Write columns differ is a candidate, and today those are the rows below. A result file has nothing to write back (the solver is the only producer, and `frd`'s page says so), so parity is not automatically the goal; each row needs a decision, written into its `doc/formats/<format>.md` page, before any code.
+
+- **Triage first.** Sort every row into one of three outcomes: *write it* (a file a downstream tool reads), *stay read-only by design* (say why, and list it under [Non-goals](#non-goals-and-decisions-taken)), or *narrow the gap* (a writer that keeps less than the reader reads). The candidates by kind: **input decks and meshes** with no writer — `radioss` (`.rad` starter deck) and `marc` (`.dat` deck); **partial writers** — `femap` (no results) and `z88` (no results, `side` regions or other data); **result files** — `abaqus_fil`, `ansys_rst`, `ansys_rst_cyclic`, `frd`, `lsdyna_binout`, `lsdyna_d3plot`, `marc_t19`, `nastran_h5`, `nastran_op2`, `radioss_anim`, `radioss_th`, `xplt`, plus `vtx` and `szplt`, whose only reader is a heavy or vendor library; and the **export-only** `gltf`, `svg` and `tikz`, which are a surface, not a mesh, and have no reader to pair. **S**
+- **Writers for the decks.** A `radioss` starter-deck writer and a `marc` deck writer, each in both engines, checked by reading the file back and by the vendor's own reader where one is at hand (OpenRadioss's starter is open; Marc is under [Awaiting a licensed run](#awaiting-a-licensed-run)). Node-order tables already exist in both directions ([node ordering](./node_ordering.md)); the new work is the card layouts, regions as sets, and a declaration in `tests/python/conformance_spec.py`. **M each**
+- **Narrow the partial writers.** `femap` writes the mesh and groups but not the results it reads (output vectors), and `z88` writes the structure file, its input files and Z88Aurora's sets but drops `side` regions, other data arrays and the results it reads ([Femap](./formats/femap.md), [Z88](./formats/z88.md)). Each is either closed or recorded on its page as the deliberate limit. **S–M each**
+- **Result-file writers, only with a consumer.** A synthetic `.frd`, `.op2` or d3plot is worth writing when a downstream tool reads it (a post-processor fed from a surrogate's output is the case to look for), not to fill a cell of the table. Until then they are recorded as read-only by design. **M–L each**
+- **Guard against drift.** Extend the conformance matrix, or add a test over the registry, so a new format that reads without writing must carry an explicit `read-only` reason, and the table's reader/writer columns are checked against the registry rather than kept by hand. Probe: register a reader with no writer and no exemption; the test must fail. **S**
+- **Done when.** Every row where Read and Write differ either is closed or names its reason on its format page, the table and the registry agree by test, and the [C](./c_api.md), [WASM](./wasm.md), [Fortran](./fortran.md), [Julia](./julia.md) and [R](./r.md) docs list the new writers.
+
+### 1.3 Suggested order
+
+1. **Reader and writer parity ([§1.2](#_1-2-reader-and-writer-parity)):** the triage and the drift guard first, then the deck writers.
+2. **Checks against the vendor tools:** each item under [Awaiting a licensed run](#awaiting-a-licensed-run) as soon as a licence, or a file the tool wrote, is in hand.
 
 ### Considered, not queued
 
@@ -342,7 +354,7 @@ Recorded so they are not re-proposed as gaps.
 
 Open work only; what shipped is in `CHANGELOG.md`.
 
-1. **Format reach ([§1](#_1-format-reach))** — the shared components as formats need them, and the checks against the vendor tools as licences appear.
+1. **Format reach ([§1](#_1-format-reach))** — reader/writer parity (triage and the drift guard first), the shared components as formats need them, and the checks against the vendor tools as licences appear.
 2. **Spack package upkeep ([§2](#_2-spack-package-upkeep))** — a small, mechanical catch-up (recipes, variants, one release-checklist line) that unblocks HPC users on the current release; then a checklist step, so it stays current.
 3. **The OSS-Fuzz submission ([§3](#_3-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
 4. **Performance ([§4](#_4-performance))** — the sort and scan primitives and the shared facet table, then the remaining operation items, the text and VTU I/O, and the boundaries.
