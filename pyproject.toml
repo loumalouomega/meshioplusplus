@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "16.13.0"
+version = "16.14.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -157,7 +157,3 @@ relative_files = true
 
 [tool.isort]
 profile = "black"
-
-# [options.data_files]
-# share/paraview-5.9/plugins =
-#     tools/paraview-meshioplusplus-plugin.py

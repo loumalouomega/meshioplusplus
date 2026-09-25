@@ -99,7 +99,10 @@
  * embedding aggregates are unchanged -- but a consumer compiled against v14 headers leaves that
  * byte indeterminate and a v15 library reads it as the policy, so it is a break all the same.
  * `tests/cpp/test_abi_layout.cpp` cannot see it beyond the new offset pin; this number is the
- * record |
+ * record | | 16  | v16.0.0            | `CellType` gained `Triangle7` before `Custom` | | 17  |
+ * v16.14.0           | **Tier B**: `NDArray`'s zeroing constructor and `MakeOwned()` skip the
+ * null-pointer `memset`/`memcpy` of an empty buffer, and its allocating constructors refuse a
+ * shape whose byte count overflows (`AllocBytes`); `sizeof(NDArray)` unchanged |
  *
  * ### This is the ONE place the number is written
  *
@@ -118,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 16
+#define MESHIOPLUSPLUS_ABI_VERSION 17
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -533,10 +536,12 @@ inline const std::string& kratos_condition_name(CellType type) {
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <numeric>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -787,9 +792,10 @@ public:
         // 0 for a rank-0 array until one does (see its doc comment). Asking it
         // here would allocate nothing for a scalar and then hand out a null
         // pointer for its single element.
-        const std::size_t nb = ShapeCount(mShape) * dtype_size(mDtype);
-        mOwned.resize(nb);                  // uninitialised (OwnedBuf)
-        std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
+        const std::size_t nb = AllocBytes(mShape, mDtype);
+        mOwned.resize(nb);  // uninitialised (OwnedBuf)
+        if (nb != 0)        // an empty buffer has a null data(): memset(nullptr) is UB
+            std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
     }
 
     /**
@@ -813,7 +819,7 @@ public:
         NDArray a;
         a.mDtype = dt;
         a.mShape = std::move(shape);
-        a.mOwned.resize(ShapeCount(a.mShape) * dtype_size(a.mDtype));  // no memset
+        a.mOwned.resize(AllocBytes(a.mShape, a.mDtype));  // no memset
         return a;
     }
 
@@ -907,7 +913,8 @@ public:
             return;
         const std::size_t nb = Nbytes();
         mOwned.resize(nb);  // uninitialised; fully overwritten by the memcpy below
-        std::memcpy(mOwned.data(), mView, nb);
+        if (nb != 0)
+            std::memcpy(mOwned.data(), mView, nb);
         mView = nullptr;
     }
 
@@ -940,6 +947,21 @@ private:
     static std::size_t ShapeCount(const std::vector<std::size_t>& rShape) {
         return std::accumulate(rShape.begin(), rShape.end(), std::size_t{1},
                                std::multiplies<std::size_t>());
+    }
+
+    // The byte size to allocate for a shape, refusing one whose product wraps
+    // around size_t: a reader sizing an array from a corrupt header count
+    // would otherwise get a *small* buffer and then write past it.
+    // std::length_error is a logic_error, so a reader's guard reports it as a
+    // malformed file.
+    static std::size_t AllocBytes(const std::vector<std::size_t>& rShape, DType Dt) {
+        std::size_t n = dtype_size(Dt);
+        for (const std::size_t d : rShape) {
+            if (d != 0 && n > std::numeric_limits<std::size_t>::max() / d)
+                throw std::length_error("meshio++: array shape overflows size_t");
+            n *= d;
+        }
+        return n;
     }
 
     DType mDtype = DType::Float64;
@@ -1923,8 +1945,19 @@ inline std::int64_t read_int(const NDArray& rA, std::size_t i) {
             return rA.As<std::uint32_t>()[i];
         case DType::UInt64:
             return static_cast<std::int64_t>(rA.As<std::uint64_t>()[i]);
-        default:
-            return static_cast<std::int64_t>(read_double(rA, i));
+        default: {
+            // A float read as an integer: NaN and values outside int64 have
+            // no conversion (the cast would be undefined), so they read as 0
+            // and saturate, respectively.
+            const double d = read_double(rA, i);
+            if (!(d == d))
+                return 0;
+            if (d >= 9223372036854775807.0)
+                return std::numeric_limits<std::int64_t>::max();
+            if (d < -9223372036854775808.0)
+                return std::numeric_limits<std::int64_t>::min();
+            return static_cast<std::int64_t>(d);
+        }
     }
 }
 
@@ -6079,6 +6112,23 @@ struct WriteError : std::runtime_error {
     explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
 };
 
+/**
+ * @brief Thrown by C++ operations for an input they deliberately do not handle.
+ *
+ * The operation counterpart of a reader's recognised decline: a construct the
+ * native kernel leaves to the Python reference implementation (a ragged
+ * block, a polyhedron, a quadratic cell the kernel has no rule for), as
+ * opposed to a bad argument (`std::invalid_argument`) or a bug. The Python
+ * bindings translate it to `NotImplementedError`, which is the one exception
+ * besides a missing `_core` that an operation shim treats as "fall back"
+ * (`core_op_declined` in `_fallback.py`). The flat bindings report it as an
+ * ordinary error status.
+ */
+struct Unsupported : std::runtime_error {
+    Unsupported() : std::runtime_error("") {}
+    explicit Unsupported(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/exceptions.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/binary_stream.hpp =====
@@ -8168,9 +8218,13 @@ enum class RingOrientation : std::uint8_t {
  * signed volume came out negative -- so on return the normals point *out*.
  *
  * BFS over the faces' shared-edge dual: two faces sharing an undirected edge
- * agree iff they traverse it in *opposite* directions. Returns `Unorientable`
- * (leaving @p rRings untouched) when some undirected edge is not used exactly
- * twice, which is what an open or non-manifold face set looks like.
+ * agree iff they traverse it in *opposite* directions. An edge used 4, 6, ...
+ * times (two lobes of the cell touching along it) has no unique pairing to
+ * repair, so such a face set is accepted only as stored: when every
+ * undirected edge is traversed equally often in each direction it is a closed
+ * oriented surface, and only the global flip is decided. Returns
+ * `Unorientable` (leaving @p rRings untouched) for an open face set, and for a
+ * non-manifold one whose stored winding is not balanced.
  */
 MESHIOPLUSPLUS_API RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords);
 
@@ -10573,6 +10627,111 @@ MESHIOPLUSPLUS_API std::vector<std::pair<std::string_view, std::string_view>> no
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_order.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/parse_guard.hpp =====
+/**
+ * @file detail/parse_guard.hpp
+ * @brief Checks a reader makes before trusting what a file says about itself.
+ *
+ * The fuzz campaign (doc/fuzzing.md) finds the same two defects in reader
+ * after reader: a token indexed before the line was checked to have it, and a
+ * count from a header used to size an allocation before the bytes that should
+ * back it were seen. Both turn a malformed file into an out-of-bounds read or
+ * an out-of-memory abort instead of a `ReadError`. These helpers make the
+ * check one line at the site.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <limits>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/**
+ * @brief Throws ReadError unless @p rTokens holds at least @p Count entries.
+ * @param rTokens Any container with `size()`.
+ * @param Count The number of entries the caller is about to index.
+ * @param pFormat Format name for the message.
+ */
+template <class TContainer>
+void need_tokens(const TContainer& rTokens, std::size_t Count, const char* pFormat) {
+    if (rTokens.size() < Count)
+        throw ReadError(std::string("meshio++: ") + pFormat + ": expected " +
+                        std::to_string(Count) + " fields on a line, got " +
+                        std::to_string(rTokens.size()));
+}
+
+/**
+ * @brief A count read from a file, checked against what the file can hold.
+ *
+ * @param Value The count as parsed (any integer type).
+ * @param Limit The most the rest of the file could possibly describe (lines
+ *        or bytes left, divided by the minimum size of one entry).
+ * @param pFormat Format name for the message.
+ * @param pWhat What is being counted, for the message.
+ * @return @p Value as a size.
+ * @throws ReadError if @p Value is negative or exceeds @p Limit.
+ */
+template <class TInt>
+std::size_t checked_count(TInt Value, std::size_t Limit, const char* pFormat, const char* pWhat) {
+    if constexpr (std::numeric_limits<TInt>::is_signed) {
+        if (Value < 0)
+            throw ReadError(std::string("meshio++: ") + pFormat + ": negative " + pWhat +
+                            " count " + std::to_string(Value));
+    }
+    if (static_cast<unsigned long long>(Value) > Limit)
+        throw ReadError(std::string("meshio++: ") + pFormat + ": " + pWhat + " count " +
+                        std::to_string(Value) + " exceeds what the file holds (" +
+                        std::to_string(Limit) + ")");
+    return static_cast<std::size_t>(Value);
+}
+
+/**
+ * @brief A floating-point value converted to an integer type, or ReadError.
+ *
+ * Casting a double outside the target's range (or NaN) is undefined
+ * behaviour; formats that store integers as reals (Ansys `.rst` records,
+ * `.cdb` fields written with an exponent) must go through this.
+ */
+template <class TInt>
+TInt checked_integer(double Value, const char* pFormat) {
+    // min() and max() + 1 are powers of two, so both bounds are exact doubles
+    // and the comparison is exact; the negated form also rejects NaN.
+    constexpr double lo = static_cast<double>(std::numeric_limits<TInt>::min());
+    constexpr double hi = static_cast<double>(std::numeric_limits<TInt>::max()) + 1.0;
+    if (!(Value >= lo && Value < hi))
+        throw ReadError(std::string("meshio++: ") + pFormat + ": integer field out of range");
+    return static_cast<TInt>(Value);
+}
+
+/**
+ * @brief A file's 1-based id as a 0-based index, without overflow.
+ *
+ * `id - 1` is undefined for `INT64_MIN`; modular arithmetic wraps it to a
+ * value the reader's own range check then rejects.
+ */
+inline std::int64_t zero_based(long long Id) {
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(Id) - 1u);
+}
+
+/**
+ * @brief The size of @p rPath in bytes, or 0 when it cannot be read.
+ *
+ * The bound for a text format's header counts: every entity takes at least
+ * one byte of the file, usually several.
+ */
+inline std::size_t file_bytes(const std::string& rPath) {
+    std::error_code ec;
+    const auto n = std::filesystem::file_size(rPath, ec);
+    return ec ? 0 : static_cast<std::size_t>(n);
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/include/meshioplusplus/detail/parse_guard.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
 /**
  * @file detail/point_triangle.hpp
@@ -10810,7 +10969,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 13
+#define MESHIOPLUSPLUS_VERSION_MINOR 14
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10820,7 +10979,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.13.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.14.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -11186,6 +11345,76 @@ MESHIOPLUSPLUS_API ProvenanceReadResult scan_provenance_text(std::string_view te
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/provenance.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/read_guard.hpp =====
+/**
+ * @file detail/read_guard.hpp
+ * @brief Makes every reader entry point fail with ReadError, whatever the parser threw.
+ *
+ * The format readers parse with `std::stoll`, `std::vector::at` and friends,
+ * which report a malformed token as `std::invalid_argument`/`std::out_of_range`
+ * rather than as the `ReadError` the fallback contract is built on (pybind11
+ * would surface them as `ValueError`/`IndexError`, and `core_declined` would
+ * log them as a broken fast path). Wrapping each entry point -- the registry's
+ * readers and the Python `*_read` bindings, not the global exception
+ * translator, which must keep mapping an operation's `std::invalid_argument`
+ * to `ValueError` -- makes "the file is not something this reader reads" one
+ * exception on every surface. `ReadError`, `WriteError`, `Unsupported` and
+ * `std::bad_alloc` pass through unchanged, as does anything that is not a
+ * `std::exception` subclass the parser could have thrown.
+ */
+
+// System includes
+#include <exception>
+#include <new>
+#include <stdexcept>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/**
+ * @brief Rethrows the in-flight exception, as ReadError when a parser threw it.
+ *
+ * Call only from inside a `catch (...)` block.
+ * @param pFormat The format name, used in the message ("malformed <fmt> input").
+ */
+[[noreturn]] inline void rethrow_as_read_error(const char* pFormat) {
+    try {
+        throw;
+    } catch (const ReadError&) {
+        throw;
+    } catch (const WriteError&) {
+        throw;
+    } catch (const Unsupported&) {
+        throw;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::logic_error& e) {
+        throw ReadError(std::string("meshio++: malformed ") + pFormat + " input (" + e.what() +
+                        ")");
+    } catch (const std::runtime_error& e) {
+        throw ReadError(std::string("meshio++: ") + pFormat + ": " + e.what());
+    }
+}
+
+/**
+ * @brief Calls @p rFn, translating a parser's exceptions with rethrow_as_read_error().
+ * @param pFormat The format name for the message.
+ * @param rFn The read to run.
+ * @return Whatever @p rFn returns.
+ */
+template <class TFn>
+decltype(auto) guarded_read(const char* pFormat, TFn&& rFn) {
+    try {
+        return rFn();
+    } catch (...) {
+        rethrow_as_read_error(pFormat);
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/include/meshioplusplus/detail/read_guard.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_hierarchy.hpp =====
 /**
  * @file detail/refine_hierarchy.hpp
@@ -12947,6 +13176,25 @@ MESHIOPLUSPLUS_API void reconstruct_cells(
     const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
     const std::vector<std::int64_t>& rTypes,
     const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
+
+/**
+ * @brief Checks a file's cell arrays are consistent before `reconstruct_cells`
+ *        indexes into them.
+ *
+ * `reconstruct_cells` takes the connectivity as a bare pointer, so it cannot
+ * see where it ends; every reader calls this first with the length it read.
+ * @param ConnSize Number of entries in the connectivity array.
+ * @param rOffsets Per-cell end offsets into it.
+ * @param rTypes Per-cell VTK type ids.
+ * @param rCellDataRaw Cell data covering the whole mesh.
+ * @throws ReadError if the offsets and types differ in length, an offset
+ *         decreases or runs past `ConnSize`, or a cell-data array has fewer
+ *         rows than there are cells.
+ */
+MESHIOPLUSPLUS_API void check_vtk_cell_arrays(
+    std::size_t ConnSize, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw);
 
 /**
  * @brief As above, additionally decoding `VTK_POLYHEDRON` (type 42) cells from
@@ -29512,6 +29760,8 @@ inline Face build_tetra(const std::vector<Face>& rOriented, const P3& rP) {
             all.insert(v);
     for (std::int64_t v : base)
         all.erase(v);
+    if (all.empty())
+        return {};
     std::int64_t apex = *all.begin();
     Face n = {base[0], base[1], base[2], apex};
     if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
@@ -29575,6 +29825,11 @@ inline Face build_hexahedron(const std::vector<Face>& rOriented, const P3& rP) {
 // connectivity is empty (the caller keeps the oriented faces).
 inline std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented,
                                                      const P3& rP) {
+    // A face needs three corners; a malformed list is skipped by the caller
+    // (an empty connectivity), never indexed.
+    for (const auto& f : rOriented)
+        if (f.size() < 3)
+            return {"invalid", {}};
     std::size_t nf = rOriented.size();
     std::size_t np = unique_node_count(rOriented);
     if (nf == 4 && np == 4)
@@ -29596,6 +29851,10 @@ inline Face polygon_from_edges(const std::vector<std::array<std::int64_t, 2>>& r
         return {};
     std::unordered_map<std::int64_t, std::vector<std::int64_t>> next;
     for (const auto& e : rEdges) {
+        // Point ids index rP below: one outside it is a malformed face list.
+        for (const std::int64_t v : e)
+            if (v < 0 || static_cast<std::size_t>(v) >= rP.size())
+                return {};
         next[e[0]].push_back(e[1]);
         next[e[1]].push_back(e[0]);
     }
@@ -51132,9 +51391,33 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
             uses[poly_undirected(a, b)].push_back({f, a < b});
         }
     }
+    bool manifold = true;
     for (const auto& kv : uses)
         if (kv.second.size() != 2)
-            return RingOrientation::Unorientable;
+            manifold = false;
+    if (!manifold) {
+        // An edge used 4, 6, ... times: two lobes of one cell touching along
+        // it (agglomerate's grown groups produce exactly this). There is no
+        // unique face pairing to BFS over, but if every undirected edge is
+        // traversed as often forwards as backwards, the stored rings already
+        // form a closed, consistently oriented surface, and the divergence
+        // theorem gives its volume. Keep them as stored; only the global
+        // inward/outward flip below remains to decide.
+        for (const auto& kv : uses) {
+            std::size_t fwd = 0;
+            for (const EdgeUse& u : kv.second)
+                fwd += u.mForward ? 1 : 0;
+            if (2 * fwd != kv.second.size())
+                return RingOrientation::Unorientable;
+        }
+        if (poly_measure(rRings, pCoords).mVolume >= 0.0)
+            return RingOrientation::Consistent;
+        for (std::size_t f = 0; f < nf; ++f) {
+            std::uint32_t* ring = rRings.FaceMutable(f);
+            std::reverse(ring, ring + rRings.FaceSize(f));
+        }
+        return RingOrientation::Repaired;
+    }
 
     // BFS the face dual. Two faces sharing an undirected edge are consistently
     // wound iff they traverse it in OPPOSITE directions, so an equal
@@ -51505,6 +51788,10 @@ ProvenanceScope::ProvenanceScope(ProvenanceMode mode, ProvenanceRecord record)
     // so the thread-local pointer stays valid across the constructor's
     // return; every note()/set_* call afterwards mutates it in place rather
     // than copying.
+    // The enclosing scope's record was copied into mPrevious above and is
+    // re-created from it on exit, so the heap copy it owned is released here
+    // (a nested scope leaked it before).
+    delete g_active_record;
     g_active_record = new ProvenanceRecord(std::move(record));
     g_active_mode = mode;
 }
@@ -53636,6 +53923,8 @@ namespace meshioplusplus {
 namespace detail {
 
 void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n) {
+    if (n == 0)
+        return;  // an empty block may have no buffer: memcpy(nullptr, ...) is undefined
     constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
     const std::size_t nchunks = (n + kChunk - 1) / kChunk;
     if (nchunks <= 1) {
@@ -53752,6 +54041,26 @@ bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
     return false;
 }
 
+void check_vtk_cell_arrays(std::size_t ConnSize, const std::vector<std::int64_t>& rOffsets,
+                           const std::vector<std::int64_t>& rTypes,
+                           const std::unordered_map<std::string, NDArray>& rCellDataRaw) {
+    if (rOffsets.size() != rTypes.size())
+        throw ReadError("VTK: " + std::to_string(rOffsets.size()) + " cell offsets but " +
+                        std::to_string(rTypes.size()) + " cell types");
+    std::int64_t prev = 0;
+    for (const std::int64_t o : rOffsets) {
+        if (o < prev || static_cast<std::uint64_t>(o) > ConnSize)
+            throw ReadError("VTK: cell offsets decrease or run past the connectivity");
+        prev = o;
+    }
+    for (const auto& [name, arr] : rCellDataRaw) {
+        const std::size_t rows = arr.Shape().empty() ? arr.Size() : arr.Shape()[0];
+        if (rows < rTypes.size())
+            throw ReadError("VTK: cell data '" + name + "' has " + std::to_string(rows) +
+                            " rows for " + std::to_string(rTypes.size()) + " cells");
+    }
+}
+
 void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                        const std::vector<std::int64_t>& rTypes,
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh) {
@@ -53808,15 +54117,24 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                     throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
                 last_face_end = end_at;
                 std::size_t at = static_cast<std::size_t>(begin_at);
-                const std::int64_t nfaces = (*pFaces)[at++];
+                const auto stop = static_cast<std::size_t>(end_at);
+                // Every read stays inside this cell's slice of the stream.
+                const auto take = [&]() {
+                    if (at >= stop)
+                        throw ReadError("VTU: a polyhedron's face stream overruns its entry");
+                    return (*pFaces)[at++];
+                };
+                const std::int64_t nfaces = take();
                 std::vector<std::vector<std::int64_t>> faces;
                 std::vector<std::int64_t> uniq;
                 for (std::int64_t f = 0; f < nfaces; ++f) {
-                    const std::int64_t nn = (*pFaces)[at++];
+                    const std::int64_t nn = take();
+                    if (nn < 0 || static_cast<std::uint64_t>(nn) > stop - at)
+                        throw ReadError("VTU: a polyhedron's face stream overruns its entry");
                     std::vector<std::int64_t> ring;
                     ring.reserve(static_cast<std::size_t>(nn));
                     for (std::int64_t k = 0; k < nn; ++k)
-                        ring.push_back((*pFaces)[at++]);
+                        ring.push_back(take());
                     uniq.insert(uniq.end(), ring.begin(), ring.end());
                     faces.push_back(std::move(ring));
                 }
@@ -53904,6 +54222,11 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             int n = nit->second;
             std::vector<int> order = vtk_to_meshio_order(vtk_type);
             std::size_t m = end - start;
+            // Each cell of a fixed-size type must span exactly n entries.
+            for (std::size_t c = start; c < end; ++c)
+                if (rOffsets[c] - (c == 0 ? 0 : rOffsets[c - 1]) != n)
+                    throw ReadError("VTK: a '" + meshio_type + "' cell does not have " +
+                                    std::to_string(n) + " nodes");
             NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
             std::int64_t* out = data.As<std::int64_t>();
             const int* ord = order.empty() ? nullptr : order.data();
@@ -54476,6 +54799,11 @@ std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsign
 
 std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
                                                       std::size_t n, std::size_t expected) {
+    // The expected size comes from the file's block header and sizes the
+    // output buffer. No codec expands a block by more than about 2^16 (zlib's
+    // ceiling is ~1032:1), so a larger claim is corruption, not an allocation.
+    if (expected > (std::size_t{1} << 16) * (n + 1) + (std::size_t{1} << 20))
+        throw ReadError("VTK compressed block declares an implausible decompressed size");
     switch (codec) {
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
         case VtkCodec::Zlib:
@@ -54527,13 +54855,21 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     if (len < first_chars)
         throw ReadError("VTU compressed-block header too short");
     std::vector<unsigned char> hb = b64decode(pText, first_chars);
+    if (hb.size() < hsz)
+        throw ReadError("VTU compressed-block header too short");
     std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
+    // Every block has an hsz-byte size in the header, so the count is bounded
+    // by the text (and the header size below cannot wrap).
+    if (num_blocks > len / hsz)
+        throw ReadError("VTU compressed-block header declares more blocks than it holds");
 
     std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
     std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
     if (len < num_header_chars)
         throw ReadError("VTU compressed-block header truncated");
     std::vector<unsigned char> header = b64decode(pText, num_header_chars);
+    if (header.size() < num_header_bytes)
+        throw ReadError("VTU compressed-block header truncated");
 
     std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
     std::uint64_t last_block = read_uint_le(header.data() + 2 * hsz, hsz);
@@ -54548,14 +54884,25 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     // output offset of block k is k*max_block per the VTU block scheme -> the
     // per-block inflate runs in parallel into a pre-sized buffer.
     std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
-    for (std::uint64_t k = 0; k < num_blocks; ++k)
-        in_off[static_cast<std::size_t>(k) + 1] =
-            in_off[static_cast<std::size_t>(k)] + static_cast<std::size_t>(comp_sizes[k]);
+    for (std::uint64_t k = 0; k < num_blocks; ++k) {
+        const std::size_t at = in_off[static_cast<std::size_t>(k)];
+        if (comp_sizes[k] > blockdata.size() - at)  // not at + size: that can wrap
+            throw ReadError("VTU compressed blocks are larger than the data that follows");
+        in_off[static_cast<std::size_t>(k) + 1] = at + static_cast<std::size_t>(comp_sizes[k]);
+    }
 
+    // No codec expands a block by more than about 2^16 (zlib's ceiling is
+    // ~1032:1); a header claiming more is corrupt, and would size `out`.
+    const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (blockdata.size() + 1) + (1u << 20);
+    if (num_blocks && (max_block > ceiling || last_block > ceiling ||
+                       (num_blocks - 1) > ceiling / std::max<std::uint64_t>(max_block, 1)))
+        throw ReadError("VTU compressed-block header declares an implausible size");
     const std::size_t total = num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
                                                    static_cast<std::size_t>(max_block) +
                                                static_cast<std::size_t>(last_block)
                                          : 0;
+    if (total > ceiling)
+        throw ReadError("VTU compressed-block header declares an implausible size");
     std::vector<unsigned char> out(total);
     parallel_for(
         static_cast<std::size_t>(num_blocks),
@@ -55394,9 +55741,23 @@ void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
             throw ReadError("Abaqus: GENERATE needs first, last, step");
         const std::int64_t first = rIds[0], last = rIds[1];
         const std::int64_t step = rIds[2] == 0 ? 1 : rIds[2];
-        std::vector<std::int64_t> gen;
-        for (std::int64_t v = first; step > 0 ? v <= last : v >= last; v += step)
-            gen.push_back(v);
+        // Size the range in unsigned 64-bit arithmetic: `v += step` past
+        // INT64_MAX is undefined, and a range of 10^18 ids is a malformed
+        // file, not a set to build.
+        const auto ufirst = static_cast<std::uint64_t>(first);
+        const auto ulast = static_cast<std::uint64_t>(last);
+        const std::uint64_t ustep = step > 0 ? static_cast<std::uint64_t>(step)
+                                             : static_cast<std::uint64_t>(-(step + 1)) + 1;
+        std::uint64_t count = 0;
+        if (step > 0 && last >= first)
+            count = (ulast - ufirst) / ustep + 1;
+        else if (step < 0 && last <= first)
+            count = (ufirst - ulast) / ustep + 1;
+        if (count > (std::uint64_t{1} << 27))
+            throw ReadError("Abaqus: GENERATE range of more than 2^27 ids");
+        std::vector<std::int64_t> gen(static_cast<std::size_t>(count));
+        for (std::size_t k = 0; k < gen.size(); ++k)  // modular, then two's complement
+            gen[k] = static_cast<std::int64_t>(ufirst + static_cast<std::uint64_t>(step) * k);
         rIds = std::move(gen);
     }
 }
@@ -55411,7 +55772,12 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             ++i;
             continue;
         }
-        std::string kw = abaqus_upper(abaqus_trim(split(line, ',')[0]));
+        const std::vector<std::string> head = split(line, ',');
+        if (head.empty()) {  // a line of nothing but separators' whitespace
+            ++i;
+            continue;
+        }
+        std::string kw = abaqus_upper(abaqus_trim(head[0]));
         if (!kw.empty() && kw[0] == '*')
             kw = kw.substr(1);
         const std::unordered_map<std::string, std::string> params = abq_param_map(line);
@@ -55420,6 +55786,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             ++i;
             for (const std::string& row : abq_data_lines(rLines, i)) {
                 const std::vector<std::string> tok = split(row, ',');
+                detail::need_tokens(tok, 1, "Abaqus");
                 const std::int64_t id = std::strtoll(tok[0].c_str(), nullptr, 10);
                 rOut.mPointIds[id] = static_cast<std::int64_t>(rOut.mPoints.size());
                 std::vector<double> c;
@@ -56825,6 +57192,10 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         }
         if (!width)
             continue;
+        // Point numbers and value counts come from the records: a corrupt one
+        // must not size an array of billions of columns.
+        if (count > (std::size_t{1} << 16) || width > (std::size_t{1} << 16))
+            throw ReadError("Abaqus .fil: implausible integration point or component count");
         const std::size_t pts = per_point ? count : 1;
         const std::size_t cols = pts * width;
         std::vector<NDArray> blocks;
@@ -57075,7 +57446,7 @@ struct FluentReader {
     template <class T>
     std::vector<T> Binary(std::size_t Count) {
         const std::size_t size = Count * sizeof(T);
-        if (mP > mD.size() || size > mD.size() - mP)
+        if (mP > mD.size() || Count > (mD.size() - mP) / sizeof(T))  // no wrap
             throw ReadError("Fluent: binary section runs past the end of the file");
         std::vector<T> out(Count);
         if (size)
@@ -57098,7 +57469,8 @@ struct FluentReader {
             T n;
             std::memcpy(&n, mD.data() + mP, sizeof(T));
             const std::size_t row = static_cast<std::size_t>(n) + 3;
-            if (n < 0 || row * sizeof(T) > mD.size() - mP)
+            // Compared by division: row * sizeof(T) wraps for a corrupt n.
+            if (n < 0 || row > (mD.size() - mP) / sizeof(T))
                 throw ReadError("Fluent: binary section runs past the end of the file");
             for (std::size_t k = 0; k < row; ++k) {
                 T v;
@@ -57311,7 +57683,17 @@ Mesh read_ansys(const std::string& rPath) {
         top = std::max(top, z.mLast);
         nd = std::max(nd, z.mDim);
     }
-    const std::size_t npoints = static_cast<std::size_t>(top - base + 1);
+    // Every node, cell and face id range is a count the file declares; none
+    // can exceed the file's size in bytes, which bounds the allocations and
+    // the loops over the ranges below.
+    const std::size_t bytes = detail::file_bytes(rPath);
+    const std::size_t npoints = detail::checked_count(top - base + 1, bytes, "Fluent", "node");
+    for (const auto& z : node_zones)
+        if (z.mLast < z.mFirst ||
+            static_cast<std::size_t>(z.mLast - z.mFirst + 1) * z.mDim > z.mPoints.size())
+            throw ReadError("Fluent: a node zone holds fewer coordinates than its id range");
+    for (const auto& z : cell_zones)
+        detail::checked_count(z.mLast - z.mFirst + 1, bytes, "Fluent", "cell");
     NDArray pts(DType::Float64, {npoints, nd});
     double* pp = pts.As<double>();
     std::fill(pp, pp + npoints * nd, 0.0);
@@ -57358,8 +57740,11 @@ Mesh read_ansys(const std::string& rPath) {
     std::unordered_map<std::int64_t, std::vector<face_cells::Face>> per_cell;
     for (const auto& f : faces) {
         face_cells::Face g(f.mNodes.size());
-        for (std::size_t i = 0; i < g.size(); ++i)
+        for (std::size_t i = 0; i < g.size(); ++i) {
             g[i] = f.mNodes[i] - base;
+            if (g[i] < 0 || static_cast<std::size_t>(g[i]) >= npoints)
+                throw ReadError("Fluent: a face names a node outside the node zones");
+        }
         if (live(f.mC1))
             per_cell[f.mC1].push_back(g);
         if (live(f.mC0))
@@ -57403,7 +57788,8 @@ Mesh read_ansys(const std::string& rPath) {
         if (dim == 2) {
             std::vector<std::array<std::int64_t, 2>> edges;
             for (const auto& f : cf)
-                edges.push_back({f.front(), f.back()});
+                if (!f.empty())
+                    edges.push_back({f.front(), f.back()});
             face_cells::Face ring = face_cells::polygon_from_edges(edges, p3);
             if (ring.empty()) {
                 ++skipped;
@@ -57430,8 +57816,11 @@ Mesh read_ansys(const std::string& rPath) {
         if (f.mBc == kFluentInterior && live(f.mC0) && live(f.mC1))
             continue;
         face_cells::Face g(f.mNodes.size());
-        for (std::size_t i = 0; i < g.size(); ++i)
+        for (std::size_t i = 0; i < g.size(); ++i) {
             g[i] = f.mNodes[i] - base;
+            if (g[i] < 0 || static_cast<std::size_t>(g[i]) >= npoints)
+                throw ReadError("Fluent: a face names a node outside the node zones");
+        }
         // Outward from the domain: the normal points into c0.
         if (live(f.mC0) && !live(f.mC1))
             std::reverse(g.begin(), g.end());
@@ -58027,7 +58416,8 @@ struct RstRecord {
     std::uint64_t mNext = 0;
 
     std::int64_t Int(std::size_t K) const {
-        return K < mValues.size() ? static_cast<std::int64_t>(mValues[K]) : 0;
+        return K < mValues.size() ? detail::checked_integer<std::int64_t>(mValues[K], "Ansys .rst")
+                                  : 0;
     }
 };
 
@@ -58037,6 +58427,8 @@ public:
         : mSource(rPath, rOptions.mMmap), mWords(mSource.Size() / 4) {}
 
     std::int32_t Word(std::uint64_t K) const {
+        if (K >= mWords)
+            rst_fail("word " + std::to_string(K) + " is outside the file");
         std::int32_t v;
         std::memcpy(&v, mSource.Data() + K * 4, 4);
         return v;
@@ -58113,6 +58505,13 @@ public:
                 rst_fail("the windowed-sparse record" + where + " is truncated");
             const std::int32_t size = word(0), n_windows = word(1);
             const std::size_t shift = item / 4;
+            // A constant window expands a few words into many values, so the
+            // expanded size may exceed the record; not beyond 64 values per
+            // word of the whole file, though, or a corrupt size would be an
+            // allocation of gigabytes.
+            if (static_cast<std::uint64_t>(std::max(size, 0)) >
+                std::max<std::uint64_t>(std::uint64_t{1} << 20, 64 * mWords))
+                rst_fail("the windowed-sparse record" + where + " declares an implausible size");
             out.mValues.assign(static_cast<std::size_t>(std::max(size, 0)), 0.0);
             std::size_t pos = 2;
             const auto take = [&](std::size_t Count) {
@@ -58353,7 +58752,7 @@ void RstPart::ReadModel() {
         const auto at = [&](std::size_t K) {
             return K < node.mValues.size() ? node.mValues[K] : 0.0;
         };
-        mModel.mNodeIds.push_back(static_cast<std::int64_t>(at(0)));
+        mModel.mNodeIds.push_back(detail::checked_integer<std::int64_t>(at(0), "Ansys .rst"));
         for (std::size_t d = 1; d <= 3; ++d)
             mModel.mCoords.push_back(at(d));
         for (std::size_t d = 4; d <= 6; ++d)
@@ -58748,6 +59147,10 @@ void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         const std::uint64_t base = results.mSets[Index].mPointer;
         const RstRecord s = file.Record(base);
         const std::int64_t nnod = s.Int(2), numdof = s.Int(19);
+        // The DOF labels are words 20.. of this header, so their count is
+        // bounded by the header's length; a larger one is corruption.
+        if (numdof > 0 && static_cast<std::uint64_t>(numdof) + 20 > s.mValues.size())
+            rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt DOF count");
         std::vector<std::int64_t> dofs;
         for (std::int64_t k = 0; k < numdof; ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
@@ -58755,6 +59158,8 @@ void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         const std::uint64_t ptr_nsl = rst_pointer(s, 104, 105, 10);
         if (!ptr_nsl || numdof <= 0)
             continue;
+        if (sumdof < numdof)  // each row holds every DOF, then the extras
+            rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt DOF count");
         const RstRecord values = file.Record(base + ptr_nsl);
         const auto width = static_cast<std::size_t>(sumdof);
         const std::size_t rows = std::min(static_cast<std::size_t>(std::max<std::int64_t>(nnod, 0)),
@@ -59752,7 +60157,7 @@ std::optional<std::int64_t> ans_int(const std::string& rText) {
     const double v = detail::parse_double(rText.c_str(), end);
     if (end != rText.c_str() + rText.size())
         return std::nullopt;
-    return static_cast<std::int64_t>(v);
+    return detail::checked_integer<std::int64_t>(v, "Ansys .cdb");
 }
 
 // An element type given by number (`186`) or name (`SOLID186`): the routine.
@@ -60403,8 +60808,13 @@ Mesh read_avsucd(const std::string& rPath) {
     std::size_t li = 0;
 
     auto hdr = avsucd_tokens(lines.at(li++));
-    long long num_nodes = std::stoll(hdr[0]);
-    long long num_cells = std::stoll(hdr[1]);
+    detail::need_tokens(hdr, 4, "AVS-UCD");
+    // Each node and each cell is one line of the file, so the header's counts
+    // are bounded by what follows it.
+    const auto num_nodes = static_cast<long long>(
+        detail::checked_count(std::stoll(hdr[0]), lines.size() - li, "AVS-UCD", "node"));
+    const auto num_cells = static_cast<long long>(detail::checked_count(
+        std::stoll(hdr[1]), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
     long long num_node_data = std::stoll(hdr[2]);
     long long num_cell_data = std::stoll(hdr[3]);
 
@@ -60414,6 +60824,7 @@ Mesh read_avsucd(const std::string& rPath) {
     double* pp = pts.As<double>();
     for (long long i = 0; i < num_nodes; ++i) {
         auto t = avsucd_tokens(lines.at(li++));
+        detail::need_tokens(t, 4, "AVS-UCD");
         point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
         for (int c = 0; c < 3; ++c)
             pp[i * 3 + c] = detail::parse_double(t[1 + c]);
@@ -60432,6 +60843,7 @@ Mesh read_avsucd(const std::string& rPath) {
     std::vector<Blk> blocks;
     for (long long c = 0; c < num_cells; ++c) {
         auto t = avsucd_tokens(lines.at(li++));
+        detail::need_tokens(t, 4, "AVS-UCD");
         std::int64_t cid = std::strtoll(t[0].c_str(), nullptr, 10);
         std::int64_t mat = std::strtoll(t[1].c_str(), nullptr, 10);
         auto it = avsucd_to_meshio_type().find(t[2]);
@@ -60439,6 +60851,12 @@ Mesh read_avsucd(const std::string& rPath) {
             throw ReadError("AVS-UCD: unknown cell type '" + t[2] + "'");
         const std::string& mtype = it->second;
         int n = static_cast<int>(t.size()) - 3;
+        const std::vector<int>& order = avsucd_to_meshio_order(mtype);
+        if (!order.empty() && static_cast<std::size_t>(n) != order.size())
+            throw ReadError("AVS-UCD: a '" + t[2] + "' cell needs " + std::to_string(order.size()) +
+                            " nodes, got " + std::to_string(n));
+        if (!blocks.empty() && blocks.back().mType == mtype && blocks.back().mN != n)
+            throw ReadError("AVS-UCD: '" + t[2] + "' cells with different node counts");
         if (blocks.empty() || blocks.back().mType != mtype) {
             Blk b;
             b.mType = mtype;
@@ -60476,10 +60894,24 @@ Mesh read_avsucd(const std::string& rPath) {
                          const std::unordered_map<std::int64_t, std::int64_t>& ids,
                          std::vector<std::string>& names, std::vector<NDArray>& arrays) {
         auto h = avsucd_tokens(lines.at(li++));
-        int narr = std::stoi(h[0]);
+        detail::need_tokens(h, 1, "AVS-UCD");
+        const int narr = static_cast<int>(
+            detail::checked_count(std::stoi(h[0]), h.size() - 1, "AVS-UCD", "data array"));
         std::vector<int> sizes(narr);
-        for (int i = 0; i < narr; ++i)
+        std::size_t width = 0;
+        for (int i = 0; i < narr; ++i) {
             sizes[i] = std::stoi(h[1 + i]);
+            if (sizes[i] < 1)
+                throw ReadError("AVS-UCD: a data array needs at least one component");
+            width += static_cast<std::size_t>(sizes[i]);
+        }
+        // Every entity row holds its id and `width` values; the first row
+        // bounds the widths before they size any allocation.
+        if (num_entities > 0) {
+            if (li + static_cast<std::size_t>(narr) >= lines.size())
+                throw ReadError("AVS-UCD: the file ends before its data rows");
+            detail::need_tokens(avsucd_tokens(lines[li + narr]), 1 + width, "AVS-UCD");
+        }
         for (int i = 0; i < narr; ++i) {
             std::string lbl = lines.at(li++);
             std::size_t comma = lbl.find(',');
@@ -60500,6 +60932,7 @@ Mesh read_avsucd(const std::string& rPath) {
         }
         for (long long e = 0; e < num_entities; ++e) {
             auto t = avsucd_tokens(lines.at(li++));
+            detail::need_tokens(t, 1 + width, "AVS-UCD");
             std::int64_t eid = ids.at(std::strtoll(t[0].c_str(), nullptr, 10));
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
@@ -63734,6 +64167,7 @@ void write_code_aster(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/code_aster.cpp =====
 // ===== begin src/cpp/src/formats/dex.cpp =====
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -63835,6 +64269,13 @@ Mesh read_dex(const std::string& rPath) {
     mesh.AssignPoints(std::move(pts));
 
     std::size_t nc = static_cast<std::size_t>(ncomp);
+    // Components beyond the widest row would be all zeros: a corrupt count,
+    // and one that would otherwise size the array.
+    std::size_t widest = 0;
+    for (const auto& r : rows)
+        widest = std::max(widest, r.size());
+    if (n > 0 && nc > std::max<std::size_t>(widest, kDim) - kDim && nc > 1)
+        throw ReadError("DEX: NB_COMP exceeds the values on any row");
     NDArray vals = nc == 1 ? NDArray(DType::Float64, {n}) : NDArray(DType::Float64, {n, nc});
     for (std::size_t r = 0; r < n; ++r)
         for (std::size_t c = 0; c < nc; ++c) {
@@ -63888,6 +64329,7 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -63932,6 +64374,8 @@ Mesh read_dolfin(const std::string& rPath) {
         throw ReadError("DOLFIN: missing <mesh>");
 
     int dim = mesh_node.attribute("dim").as_int();
+    if (dim < 1 || dim > 3)
+        throw ReadError("DOLFIN: mesh dim must be 1, 2 or 3");
     auto [cell_type, npc] = dolfin_to_meshio(mesh_node.attribute("celltype").value());
 
     Mesh mesh;
@@ -63939,11 +64383,19 @@ Mesh read_dolfin(const std::string& rPath) {
     // Vertices (placed by index).
     pugi::xml_node verts = mesh_node.child("vertices");
     std::size_t nverts = verts.attribute("size").as_uint();
+    // Placed by index: every index must fall inside `size`, and `size` cannot
+    // exceed the vertices the file actually lists.
+    const auto listed_verts = static_cast<std::size_t>(
+        std::distance(verts.children("vertex").begin(), verts.children("vertex").end()));
+    if (nverts > listed_verts)
+        throw ReadError("DOLFIN: <vertices size> exceeds the vertices listed");
     NDArray pts(DType::Float64, {nverts, static_cast<std::size_t>(dim)});
     double* pp = pts.As<double>();
     const char* coord[3] = {"x", "y", "z"};
     for (pugi::xml_node v : verts.children("vertex")) {
         std::size_t k = v.attribute("index").as_uint();
+        if (k >= nverts)
+            throw ReadError("DOLFIN: vertex index out of range");
         for (int c = 0; c < dim; ++c)
             pp[k * dim + c] = v.attribute(coord[c]).as_double();
     }
@@ -63952,15 +64404,23 @@ Mesh read_dolfin(const std::string& rPath) {
     // Cells (single block, placed by index).
     pugi::xml_node cells = mesh_node.child("cells");
     std::size_t ncells = cells.attribute("size").as_uint();
+    const auto listed_cells =
+        static_cast<std::size_t>(std::distance(cells.children().begin(), cells.children().end()));
+    if (ncells > listed_cells)
+        throw ReadError("DOLFIN: <cells size> exceeds the cells listed");
     NDArray data(DType::Int64, {ncells, static_cast<std::size_t>(npc)});
     std::int64_t* dp = data.As<std::int64_t>();
     for (pugi::xml_node c : cells.children()) {
         std::size_t k = c.attribute("index").as_uint();
+        if (k >= ncells)
+            throw ReadError("DOLFIN: cell index out of range");
         for (int j = 0; j < npc; ++j) {
             char tag[16];  // "v" + up to 11 digits (INT_MIN) + '\0'; GCC's static
                            // format-truncation analysis cannot prove j is small
             std::snprintf(tag, sizeof(tag), "v%d", j);
             dp[k * npc + j] = c.attribute(tag).as_llong();
+            if (dp[k * npc + j] < 0 || static_cast<std::size_t>(dp[k * npc + j]) >= nverts)
+                throw ReadError("DOLFIN: cell references a vertex out of range");
         }
     }
     mesh.AddCellBlock(cell_type, std::move(data));
@@ -69708,6 +70168,8 @@ bool fn_parse_int(const std::string& rText, std::int64_t& rValue) {
     for (; i < rText.size(); ++i) {
         if (rText[i] < '0' || rText[i] > '9')
             return false;
+        if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
+            return false;  // more digits than an int64 holds: not an id
         v = v * 10 + (rText[i] - '0');
     }
     rValue = rText[0] == '-' ? -v : v;
@@ -71007,7 +71469,10 @@ Mesh read_flac3d(const std::string& rPath) {
         char hdr[8];
         in.read(hdr, 8);  // unknown header
         std::uint32_t num_nodes = ru32(in);
-        points.reserve(num_nodes * 3);
+        // A binary node record is 28 bytes: bound the count by the file
+        // before it sizes the reservation.
+        detail::checked_count(num_nodes, detail::file_bytes(rPath) / 28, "FLAC3D", "node");
+        points.reserve(static_cast<std::size_t>(num_nodes) * 3);
         for (std::uint32_t i = 0; i < num_nodes; ++i) {
             std::uint32_t pid = ru32(in);
             double x = rf64(in), y = rf64(in), z = rf64(in);
@@ -71025,6 +71490,8 @@ Mesh read_flac3d(const std::string& rPath) {
             for (std::uint32_t k = 0; k < num_cells; ++k) {
                 std::uint32_t cid = ru32(in);
                 std::uint32_t nv = ru32(in);
+                if (nv > 8)  // FLAC3D zones and faces have at most eight corners
+                    throw ReadError("FLAC3D: a cell with " + std::to_string(nv) + " nodes");
                 std::vector<std::int64_t> cell(nv);
                 for (std::uint32_t j = 0; j < nv; ++j)
                     cell[j] = point_ids.at(ru32(in));
@@ -71078,12 +71545,14 @@ Mesh read_flac3d(const std::string& rPath) {
             }
             active = std::string::npos;
             if (s[0] == "G") {
+                detail::need_tokens(s, 2, "FLAC3D");
                 std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
                 for (std::size_t j = 2; j < s.size(); ++j)
                     points.push_back(detail::parse_double(s[j]));
             } else if (s[0] == "Z" || s[0] == "F") {
                 int dim = (s[0] == "Z") ? 3 : 2;
+                detail::need_tokens(s, 3, "FLAC3D");
                 std::int64_t cid = std::strtoll(s[2].c_str(), nullptr, 10);
                 bool is_b7 = (s[1] == "B7");
                 std::vector<std::int64_t> cell;
@@ -71109,9 +71578,12 @@ Mesh read_flac3d(const std::string& rPath) {
 
     // Assemble: faces first, then zones (matching the Python reader).
     Mesh mesh;
+    if (points.size() % 3 != 0)
+        throw ReadError("FLAC3D: a grid point without three coordinates");
     const std::int64_t npoints = static_cast<std::int64_t>(points.size() / 3);
     NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), 3});
-    std::memcpy(pts.Data(), points.data(), points.size() * sizeof(double));
+    if (!points.empty())  // memcpy from/to a null pointer is undefined even for 0 bytes
+        std::memcpy(pts.Data(), points.data(), points.size() * sizeof(double));
     mesh.AssignPoints(std::move(pts));
 
     std::vector<std::size_t> block_sizes;
@@ -71606,6 +72078,9 @@ Mesh read_flux(const std::string& rPath) {
             groups.push_back({mtype, {}, {}});
             it = gindex.find(mtype);
         }
+        if (!groups[it->second].mRows.empty() &&
+            groups[it->second].mRows.front().size() != nodes.size())
+            throw ReadError("pf3: '" + mtype + "' elements with different node counts");
         groups[it->second].mRows.push_back(std::move(nodes));
         groups[it->second].mRef.push_back(ref);
     }
@@ -71872,6 +72347,8 @@ std::int64_t frd_int(std::string_view Text, const char* pWhere) {
     for (; i < s.size(); ++i) {
         if (s[i] < '0' || s[i] > '9')
             frd_fail("invalid integer field '" + std::string(s) + "' in " + pWhere);
+        if (value > (std::numeric_limits<std::int64_t>::max() - (s[i] - '0')) / 10)
+            frd_fail("integer field '" + std::string(s) + "' overflows in " + pWhere);
         value = value * 10 + (s[i] - '0');
     }
     return negative ? -value : value;
@@ -72108,6 +72585,14 @@ private:
             frd_fail(std::string("binary ") + pWhat + " runs past the end of the file");
     }
 
+    // Count rows of Rec bytes from At: checked by division, since At + Count *
+    // Rec wraps for a corrupt Count and would then pass the end check.
+    void BinaryRequireRows(std::size_t At, std::size_t Count, std::size_t Rec,
+                           const char* pWhat) const {
+        if (At > mText.size() || (Rec && Count > (mText.size() - At) / Rec))
+            frd_fail(std::string("binary ") + pWhat + " runs past the end of the file");
+    }
+
     static std::int32_t BinaryReadInt32(const char* pAt) {
         std::int32_t v;
         std::memcpy(&v, pAt, sizeof(v));
@@ -72139,7 +72624,7 @@ private:
                     static_cast<std::size_t>(frd_int(frd_field(line, 6, 30), "a 2C record"));
                 const std::size_t real_bytes = flag == 3 ? 8 : 4;
                 const std::size_t rec = 4 + 3 * real_bytes;
-                BinaryRequire(next + count * rec, "node block");
+                BinaryRequireRows(next, count, rec, "node block");
                 if (seen_nodes)
                     log::warn("{}", "CalculiX FRD: a second node block was ignored");
                 else
@@ -72261,7 +72746,7 @@ private:
             block.mNumEntries = numnod;
             block.mByteOffset = after;
             const std::size_t rec = 4 + block.mDataComps * real_bytes;
-            BinaryRequire(after + numnod * rec, "result block");
+            BinaryRequireRows(after, numnod, rec, "result block");
             frame->mBlocks.push_back(std::move(block));
             return after + numnod * rec;
         }
@@ -72600,6 +73085,7 @@ MeshMetadata read_frd_metadata(const std::string& rPath, const ReadOptions& /*rO
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/frd.cpp =====
 // ===== begin src/cpp/src/formats/freefem.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -72638,9 +73124,16 @@ Mesh read_freefem(const std::string& rPath) {
     std::vector<std::string> tok;
     if (!next_tokens(in, tok) || tok.size() != 3)
         throw ReadError("FreeFem: expected a 3-integer header");
-    const std::int64_t nver = std::strtoll(tok[0].c_str(), nullptr, 10);
-    const std::int64_t n1 = std::strtoll(tok[1].c_str(), nullptr, 10);
-    const std::int64_t n2 = std::strtoll(tok[2].c_str(), nullptr, 10);
+    // Every vertex and element is a line of at least two bytes.
+    const std::size_t max_rows = detail::file_bytes(rPath) / 2;
+    const auto nver = static_cast<std::int64_t>(detail::checked_count(
+        std::strtoll(tok[0].c_str(), nullptr, 10), max_rows, "FreeFem", "vertex"));
+    const auto n1 = static_cast<std::int64_t>(
+        detail::checked_count(std::max<long long>(0, std::strtoll(tok[1].c_str(), nullptr, 10)),
+                              max_rows, "FreeFem", "element"));
+    const auto n2 = static_cast<std::int64_t>(
+        detail::checked_count(std::max<long long>(0, std::strtoll(tok[2].c_str(), nullptr, 10)),
+                              max_rows, "FreeFem", "element"));
 
     if (!next_tokens(in, tok))
         throw ReadError("FreeFem: missing vertices");
@@ -72654,6 +73147,7 @@ Mesh read_freefem(const std::string& rPath) {
     for (std::int64_t i = 0; i < nver; ++i) {
         if (i > 0 && !next_tokens(in, tok))
             throw ReadError("FreeFem: truncated vertices");
+        detail::need_tokens(tok, static_cast<std::size_t>(dim) + 1, "FreeFem");
         for (int c = 0; c < dim; ++c)
             pts.As<double>()[i * dim + c] = detail::parse_double(tok[c]);
         pref.As<std::int64_t>()[i] = std::strtoll(tok[dim].c_str(), nullptr, 10);
@@ -72675,9 +73169,10 @@ Mesh read_freefem(const std::string& rPath) {
         for (std::int64_t k = 0; k < n; ++k) {
             if (!next_tokens(in, tok))
                 throw ReadError("FreeFem: truncated elements");
+            detail::need_tokens(tok, static_cast<std::size_t>(lnv) + 1, "FreeFem");
             for (int j = 0; j < lnv; ++j)
                 data.As<std::int64_t>()[k * lnv + j] =
-                    std::strtoll(tok[j].c_str(), nullptr, 10) - 1;
+                    detail::zero_based(std::strtoll(tok[j].c_str(), nullptr, 10));
             ref.As<std::int64_t>()[k] = std::strtoll(tok[lnv].c_str(), nullptr, 10);
         }
         mesh.AddCellBlock(type, std::move(data));
@@ -77116,15 +77611,33 @@ struct GmshCursor {
         mPos = static_cast<std::size_t>(endp - base);
         return v;
     }
-    std::int64_t next_int() { return static_cast<std::int64_t>(next_double()); }
+    std::int64_t next_int() { return detail::checked_integer<std::int64_t>(next_double(), "Gmsh"); }
+
+    // Every binary read and skip stays inside the buffer.
+    void need(std::size_t N) const {
+        if (N > mBuf.size() - std::min(mPos, mBuf.size()))
+            throw ReadError("Gmsh: the file ends inside a binary section");
+    }
+    void skip(std::size_t N) {
+        need(N);
+        mPos += N;
+    }
+    // A count from the file: each entry it counts takes at least a byte of
+    // what is left, so a larger one is corruption, not an allocation size.
+    std::int64_t count(std::int64_t V) const {
+        return static_cast<std::int64_t>(
+            detail::checked_count(V, mBuf.size() - std::min(mPos, mBuf.size()), "Gmsh", "section"));
+    }
 
     std::int32_t read_i32() {
+        need(4);
         std::int32_t v;
         std::memcpy(&v, mBuf.data() + mPos, 4);
         mPos += 4;
         return v;
     }
     double read_f64() {
+        need(8);
         double v;
         std::memcpy(&v, mBuf.data() + mPos, 8);
         mPos += 8;
@@ -77132,6 +77645,7 @@ struct GmshCursor {
     }
     // Read an unsigned integer of `sz` bytes (little-endian host).
     std::uint64_t read_uint(int sz) {
+        need(static_cast<std::size_t>(sz));
         std::uint64_t v = 0;
         std::memcpy(&v, mBuf.data() + mPos, static_cast<std::size_t>(sz));
         mPos += static_cast<std::size_t>(sz);
@@ -77495,13 +78009,17 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
             long long x;
             while (iss >> x)
                 v.push_back(x);
+            detail::need_tokens(v, 3, "Gmsh");
             int gtype = static_cast<int>(v[1]);
-            std::size_t num_tags = static_cast<std::size_t>(v[2]);
             auto it = g2m.find(gtype);
             if (it == g2m.end())
                 throw ReadError("Gmsh element type " + std::to_string(gtype) +
                                 " not supported by the C++ reader");
             std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
+            if (v[2] < 0 || static_cast<std::uint64_t>(v[2]) > v.size())
+                throw ReadError("Gmsh: bad tag count in $Elements");
+            std::size_t num_tags = static_cast<std::size_t>(v[2]);
+            detail::need_tokens(v, 3 + num_tags + n, "Gmsh");
             append_element(rBlocks, it->second, n, num_tags, v.data() + 3, v.data() + 3 + num_tags);
         }
     } else {
@@ -77678,21 +78196,21 @@ GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) 
             for (int i = 0; i < n; ++i)
                 rCur.next_double();
         } else {
-            rCur.mPos += static_cast<std::size_t>(n) * 8;
+            rCur.skip(static_cast<std::size_t>(n) * 8);
         }
     };
 
     GmshEntities41 out;
     std::array<std::int64_t, 4> counts{};
     for (int d = 0; d < 4; ++d)
-        counts[static_cast<std::size_t>(d)] = rd_size();
+        counts[static_cast<std::size_t>(d)] = rCur.count(rd_size());
 
     for (int d = 0; d < 4; ++d) {
         const std::size_t dz = static_cast<std::size_t>(d);
         for (std::int64_t i = 0; i < counts[dz]; ++i) {
             const std::int32_t tag = rd_int();
             skip_dbl(d == 0 ? 3 : 6);  // bounding box
-            const std::int64_t num_phys = rd_size();
+            const std::int64_t num_phys = rCur.count(rd_size());
             if (num_phys > 0) {
                 std::vector<std::int32_t> phys(static_cast<std::size_t>(num_phys));
                 for (std::int64_t k = 0; k < num_phys; ++k)
@@ -77701,7 +78219,7 @@ GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) 
                 out.mPhysical[dz].emplace(tag, std::move(phys));
             }
             if (d > 0) {
-                const std::int64_t num_bnd = rd_size();
+                const std::int64_t num_bnd = rCur.count(rd_size());
                 std::vector<std::int32_t> bnd(static_cast<std::size_t>(num_bnd));
                 for (std::int64_t k = 0; k < num_bnd; ++k)
                     bnd[static_cast<std::size_t>(k)] = rd_int();
@@ -77724,8 +78242,8 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
     };
     auto rd_dbl = [&]() -> double { return is_ascii ? rCur.next_double() : rCur.read_f64(); };
 
-    std::int64_t num_blocks = rd_size();
-    std::int64_t num_nodes = rd_size();
+    std::int64_t num_blocks = rCur.count(rd_size());
+    std::int64_t num_nodes = rCur.count(rd_size());
     rd_size();  // min tag
     rd_size();  // max tag
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
@@ -77740,9 +78258,12 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
         int parametric = rd_int();
         if (parametric != 0)
             throw ReadError("parametric Gmsh nodes not supported");
-        std::int64_t nb = rd_size();
+        std::int64_t nb = rCur.count(rd_size());
         const std::size_t nbz = static_cast<std::size_t>(nb);
-        if (!is_ascii && data_size == 8) {
+        if (idx + nbz > static_cast<std::size_t>(num_nodes))
+            throw ReadError("Gmsh: $Nodes blocks hold more nodes than declared");
+        if (!is_ascii && data_size == 8 && nbz > 0) {
+            rCur.need(nbz * 4 * 8);
             // Native-endian, contiguous: bulk-copy tags (u64) and coords (3*f64).
             std::memcpy(&rTags[idx], rCur.mBuf.data() + rCur.mPos, nbz * 8);
             rCur.mPos += nbz * 8;
@@ -77783,7 +78304,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
         return is_ascii ? static_cast<int>(rCur.next_int()) : rCur.read_i32();
     };
 
-    std::int64_t num_blocks = rd_size();
+    std::int64_t num_blocks = rCur.count(rd_size());
     rd_size();  // num elements
     rd_size();  // min tag
     rd_size();  // max tag
@@ -77794,7 +78315,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
         int entity_dim = rd_int();
         int entity_tag = rd_int();
         int etype = rd_int();
-        std::int64_t num_ele = rd_size();
+        std::int64_t num_ele = rCur.count(rd_size());
         auto it = g2m.find(etype);
         if (it == g2m.end())
             throw ReadError("Gmsh element type " + std::to_string(etype) +
@@ -77828,6 +78349,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
             // contiguous. Decode the nodes straight from the slurped buffer into
             // the owning connectivity array (drop the tag), one parallel pass.
             const std::size_t stride = n + 1;
+            rCur.need(nez * stride * 8);
             const char* base = rCur.mBuf.data() + rCur.mPos;
             parallel_for_bw(nez, [&](std::size_t e) {
                 const char* row = base + (e * stride + 1) * 8;  // skip element tag
@@ -77900,8 +78422,17 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
     std::vector<std::int64_t> remap;
     if (!remap_identity) {
         std::int64_t max_tag = 0;
-        for (auto t : point_tags)
+        for (auto t : point_tags) {
+            if (t < 0)
+                throw ReadError("Gmsh: a node tag below 1");
             max_tag = std::max(max_tag, t);
+        }
+        // The remap is a dense table over the tags: refuse tags so sparse it
+        // would be gigabytes for a small mesh (a corrupt tag, in practice).
+        const std::uint64_t limit = std::max<std::uint64_t>(
+            std::uint64_t{1} << 24, 8 * static_cast<std::uint64_t>(point_tags.size()));
+        if (static_cast<std::uint64_t>(max_tag) >= limit)
+            throw ReadError("Gmsh: node tags too sparse for the node count");
         remap.assign(static_cast<std::size_t>(max_tag) + 1, -1);
         // Scatter: node tags are unique, so writes never alias -> parallel.
         parallel_for_bw(point_tags.size(), [&](std::size_t i) {
@@ -77929,6 +78460,16 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
             dt.As<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
         });
         mesh.AddPointData("gmsh:dim_tags", std::move(dt));
+    }
+
+    // Every element node must name a node the file defined.
+    const std::size_t known = remap_identity ? point_tags.size() : remap.size();
+    for (const auto& b : eblocks) {
+        const std::int64_t* cn = b.mConn.As<std::int64_t>();
+        for (std::size_t k = 0; k < b.mCount * b.mN; ++k)
+            if (cn[k] < 0 || static_cast<std::size_t>(cn[k]) >= known ||
+                (!remap_identity && remap[static_cast<std::size_t>(cn[k])] < 0))
+                throw ReadError("Gmsh: an element names a node outside $Nodes");
     }
 
     std::vector<NDArray> geom_blocks, physical_blocks;
@@ -78041,8 +78582,8 @@ void gmsh_scan_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshMeta
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
-    const std::int64_t num_blocks = rd_size();
-    const std::int64_t num_nodes = rd_size();
+    const std::int64_t num_blocks = rCur.count(rd_size());
+    const std::int64_t num_nodes = rCur.count(rd_size());
     rd_size();  // min tag
     rd_size();  // max tag
     rMeta.mNumPoints = static_cast<std::size_t>(num_nodes < 0 ? 0 : num_nodes);
@@ -78062,9 +78603,10 @@ void gmsh_scan_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshMeta
         rCur.read_i32();  // dim
         rCur.read_i32();  // entity tag
         rCur.read_i32();  // parametric
-        const std::int64_t in_block = static_cast<std::int64_t>(rCur.read_uint(data_size));
-        rCur.mPos += static_cast<std::size_t>(in_block) * static_cast<std::size_t>(data_size);
-        rCur.mPos += static_cast<std::size_t>(in_block) * 3u * 8u;
+        const auto in_block = static_cast<std::size_t>(
+            rCur.count(static_cast<std::int64_t>(rCur.read_uint(data_size))));
+        rCur.skip(in_block * static_cast<std::size_t>(data_size));
+        rCur.skip(in_block * 3u * 8u);
     }
     rCur.skip_to_end("Nodes");
 }
@@ -78073,7 +78615,7 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
-    const std::int64_t num_blocks = rd_size();
+    const std::int64_t num_blocks = rCur.count(rd_size());
     rd_size();  // num elements
     rd_size();  // min tag
     rd_size();  // max tag
@@ -78090,7 +78632,7 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
             entity_dim = static_cast<int>(rCur.next_int());
             entity_tag = static_cast<std::int32_t>(rCur.next_int());
             etype = static_cast<int>(rCur.next_int());
-            num_ele = rCur.next_int();
+            num_ele = rCur.count(rCur.next_int());
             gmsh_finish_line(rCur);
         } else {
             entity_dim = rCur.read_i32();
@@ -78118,8 +78660,8 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
             for (std::int64_t e = 0; e < num_ele; ++e)
                 gmsh_finish_line(rCur);
         } else {
-            rCur.mPos +=
-                static_cast<std::size_t>(num_ele) * (n + 1u) * static_cast<std::size_t>(data_size);
+            rCur.skip(static_cast<std::size_t>(rCur.count(num_ele)) * (n + 1u) *
+                      static_cast<std::size_t>(data_size));
         }
     }
     rCur.skip_to_end("Elements");
@@ -78305,6 +78847,10 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
         min_tags = std::min(min_tags, b.mNumTags);
 
     std::vector<NDArray> physical_blocks, geometrical_blocks;
+    for (const auto& b : eblocks)
+        for (const std::int64_t gid : b.mConn)
+            if (gid < 0 || static_cast<std::size_t>(gid) >= remap.size())
+                throw ReadError("Gmsh: an element names a node outside $Nodes");
     for (const auto& b : eblocks) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.mType);
         NDArray data(DType::Int64, {b.mCount, b.mN});
@@ -79700,8 +80246,11 @@ Mesh read_ip(const std::string& rPath) {
     if (ints.size() < 4)
         throw ReadError("IP: malformed header");
     int dim = ints[1];
-    std::size_t npoint = static_cast<std::size_t>(ints[2]);
     int ncomp = ints[3];
+    if (dim < 1 || dim > 3)
+        throw ReadError("IP: dimension must be 1, 2 or 3");
+    if (ncomp < 0)
+        throw ReadError("IP: negative component count");
 
     std::vector<std::string> names;
     while (static_cast<int>(names.size()) < ncomp && idx < lines.size()) {
@@ -79726,6 +80275,11 @@ Mesh read_ip(const std::string& rPath) {
             flat.push_back(detail::parse_double(tok));
     }
 
+    if (static_cast<int>(names.size()) != ncomp)
+        throw ReadError("IP: fewer component names than components");
+    // The coordinates at least must be there: dim sections of npoint reals.
+    const std::size_t npoint =
+        detail::checked_count(ints[2], flat.size() / static_cast<std::size_t>(dim), "IP", "point");
     std::size_t nsec = static_cast<std::size_t>(dim + ncomp);
     auto section = [&](std::size_t s, std::size_t i) -> double {
         std::size_t p = s * npoint + i;
@@ -80096,6 +80650,9 @@ public:
 
     bool Xdr() const { return mXdr; }
 
+    /** @brief The whole input's size: the bound on any count it declares. */
+    std::size_t Size() const { return mText.size(); }
+
     std::string String() {
         if (mXdr) {
             const std::uint32_t n = mBin.U32();
@@ -80288,6 +80845,12 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
 
     const std::int64_t n_elem = io.Scalar(hw);
     const std::int64_t n_nodes = io.Scalar(hw);
+    // Each element takes at least a byte of the file and each node three
+    // coordinates of at least a byte: counts beyond that are corruption, not
+    // something to reserve memory for.
+    if (n_elem < 0 || static_cast<std::uint64_t>(n_elem) > io.Size() || n_nodes < 0 ||
+        static_cast<std::uint64_t>(n_nodes) > io.Size() / 3)
+        io.Fail("element or node count larger than the file");
     const std::string bc_file = io.String();
     const std::string sid_file = io.String();
     const std::string pid_file = io.String();
@@ -82295,9 +82858,15 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
             f.push_back(lsd_int(fields, k, where));
         if (generate) {
             for (std::size_t k = 0; k + 1 < f.size(); k += 2)
-                if (f[k] > 0 && f[k + 1] >= f[k])
+                if (f[k] > 0 && f[k + 1] >= f[k]) {
+                    // A range of 10^18 ids is a malformed card, not a set.
+                    if (static_cast<std::uint64_t>(f[k + 1] - f[k]) >= (std::uint64_t{1} << 27) ||
+                        set.mIds.size() > (std::size_t{1} << 27))
+                        throw ReadError("LS-DYNA: *SET_..._GENERATE range of more than 2^27 ids" +
+                                        where);
                     for (std::int64_t v = f[k]; v <= f[k + 1]; ++v)
                         set.mIds.push_back(v);
+                }
         } else {
             for (std::int64_t v : f)
                 if (v != 0)
@@ -83624,10 +84193,12 @@ constexpr std::size_t kD3Npos = std::numeric_limits<std::size_t>::max();
 }
 
 std::int64_t d3_digit(std::int64_t Value, int I) {
-    std::int64_t v = Value < 0 ? -Value : Value;
+    // Unsigned magnitude: negating INT64_MIN is undefined.
+    std::uint64_t v =
+        Value < 0 ? 0 - static_cast<std::uint64_t>(Value) : static_cast<std::uint64_t>(Value);
     for (int k = 0; k < I; ++k)
         v /= 10;
-    return v % 10;
+    return static_cast<std::int64_t>(v % 10);
 }
 
 // --- words ---------------------------------------------------------------------------
@@ -83642,7 +84213,8 @@ struct D3Words {
     std::size_t NumWords() const { return mSize / static_cast<std::size_t>(mWs); }
 
     void Need(std::size_t Pos, std::size_t N) const {
-        if ((Pos + N) * static_cast<std::size_t>(mWs) > mSize)
+        // Compared in words, without multiplying: (Pos + N) * mWs can wrap.
+        if (Pos > NumWords() || N > NumWords() - Pos)
             d3_fail("the file is truncated");
     }
 
@@ -83927,7 +84499,12 @@ D3Header d3_header(const D3Words& rW) {
     h.mVelocity = h.R("iv") != 0;
     h.mAcceleration = h.R("ia") != 0;
 
-    h.mSolids = std::abs(h.R("nel8"));
+    // NEL8 < 0 flags ten-node tetrahedra; its magnitude is the count (and
+    // INT64_MIN, whose magnitude does not fit, is corrupt).
+    const std::int64_t nel8 = h.R("nel8");
+    if (nel8 == std::numeric_limits<std::int64_t>::min())
+        d3_fail("the control block's NEL8 is corrupt");
+    h.mSolids = nel8 < 0 ? -nel8 : nel8;
     h.mSolidExtraNodes = h.R("nel8") < 0;
     h.mBeams = h.R("nel2");
     h.mShells = h.R("nel4");
@@ -83969,14 +84546,20 @@ D3Header d3_header(const D3Words& rW) {
     h.mResidualForces = d3_digit(idtdt, 1) == 1;
     h.mPlasticStrainTensor = d3_digit(idtdt, 2) == 1;
     h.mThermalStrainTensor = d3_digit(idtdt, 3) == 1;
-    const std::int64_t layer_vars = 6 * h.mShellStress + h.mShellPstrain + h.mNeips;
+    // In doubles: the words are unchecked here, and int64 products of corrupt
+    // ones overflow (d3_state_words rejects such a header afterwards).
+    const double layer_vars = 6.0 * static_cast<double>(h.mShellStress) +
+                              static_cast<double>(h.mShellPstrain) + static_cast<double>(h.mNeips);
+    const double layers = static_cast<double>(h.mLayers);
     if (idtdt > 100)
         h.mElementStrain = d3_digit(idtdt, 4) == 1;
     else if (h.mNv2d > 0)
-        h.mElementStrain =
-            h.mNv2d - h.mLayers * layer_vars - 8 * h.mShellForces - 4 * h.mShellExtra > 1;
+        h.mElementStrain = static_cast<double>(h.mNv2d) - layers * layer_vars -
+                               8.0 * static_cast<double>(h.mShellForces) -
+                               4.0 * static_cast<double>(h.mShellExtra) >
+                           1.0;
     else if (h.mNv3dt > 0)
-        h.mElementStrain = h.mNv3dt - h.mLayers * layer_vars > 1;
+        h.mElementStrain = static_cast<double>(h.mNv3dt) - layers * layer_vars > 1.0;
 
     // 20- and 27-node hexahedra are read; the node order of the others
     // (21-node wedges, 15-node tetrahedra, the cubic solids) is not documented
@@ -83992,6 +84575,11 @@ D3Header d3_header(const D3Words& rW) {
             d3_fail("higher-order solids (" + upper + " = " + std::to_string(h.R(key)) +
                     ") are not read");
         }
+    // Every node, element and part is at least a word of the base file; a
+    // larger count is a corrupt control block, and each sizes an id table.
+    for (const std::int64_t n : {h.mNodes, h.mSolids, h.mBeams, h.mShells, h.mTshells, h.mParts})
+        if (n < 0 || static_cast<std::uint64_t>(n) > rW.NumWords())
+            d3_fail("the control block counts more entities than the file holds");
     return h;
 }
 
@@ -84058,6 +84646,9 @@ D3Geometry d3_geometry(const D3Words& rW, const D3Header& rH) {
         pos += sz(rH.R("ialemat"));
     if (rH.mSph > 0) {
         const auto flags = rW.Ints(pos, 11);
+        for (const std::int64_t f : flags)  // counts of SPH variables: small
+            if (f < -(1 << 20) || f > (1 << 20))
+                d3_fail("the SPH flags hold an implausible count");
         // ISPHFG(1) = 10 (newer releases) leaves ISPHFG(11) undefined
         const std::int64_t history = flags[0] == 10 ? 0 : flags[10];
         std::int64_t sum = 0;
@@ -84278,26 +84869,57 @@ std::vector<std::pair<std::string, std::size_t>> d3_node_vars(const D3Header& rH
 }
 
 std::int64_t d3_state_words(const D3Header& rH, const D3Geometry& rG) {
-    std::int64_t n = 1 + rH.mGlobals;
+    // Every term is a count from the control block. A negative one, or a sum
+    // past int64, would let a state's element blocks index outside the state
+    // record the size is checked against -- so both are corruption.
+    constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+    const auto nonneg = [](std::int64_t V) {
+        if (V < 0)
+            d3_fail("the control block holds a negative count");
+        return V;
+    };
+    const auto mul = [&](std::int64_t A, std::int64_t B) {
+        nonneg(A);
+        nonneg(B);
+        if (A != 0 && B > kMax / A)
+            d3_fail("the state size overflows");
+        return A * B;
+    };
+    std::int64_t n = 0;
+    const auto add = [&](std::int64_t V) {
+        if (nonneg(V) > kMax - n)
+            d3_fail("the state size overflows");
+        n += V;
+    };
+    add(1);
+    add(rH.mGlobals);
     std::int64_t comps = 0;
     for (const auto& v : d3_node_vars(rH))
         comps += static_cast<std::int64_t>(v.second);
-    n += comps * rH.mNodes;
-    n += rH.mNt3d * rH.mSolids;
-    n += rH.mSolids * rH.mNv3d;
-    n += rH.mTshells * rH.mNv3dt;
-    n += rH.mBeams * rH.mNv1d;
-    n += (rH.mShells - rG.mRigidShells) * rH.mNv2d;
-    n += rH.mSph * rG.mSphVars;
+    add(mul(comps, rH.mNodes));
+    add(mul(rH.mNt3d, rH.mSolids));
+    add(mul(rH.mSolids, rH.mNv3d));
+    add(mul(rH.mTshells, rH.mNv3dt));
+    add(mul(rH.mBeams, rH.mNv1d));
+    if (rG.mRigidShells > rH.mShells)
+        d3_fail("more rigid shells than shells");
+    add(mul(rH.mShells - rG.mRigidShells, rH.mNv2d));
+    add(mul(rH.mSph, rG.mSphVars));
     if (rH.mNodeDeletion)
-        n += rH.mNodes;
-    else if (rH.mElementDeletion)
-        n += rH.mBeams + rH.mShells + rH.mSolids + rH.mTshells;
-    if (rG.mHasAirbag)
-        n += rH.mAirbags * rG.mAirbagStateGeom + rG.mAirbagParticles * rG.mAirbagVar;
-    n += rG.mRoads * 6;
+        add(rH.mNodes);
+    else if (rH.mElementDeletion) {
+        add(rH.mBeams);
+        add(rH.mShells);
+        add(rH.mSolids);
+        add(rH.mTshells);
+    }
+    if (rG.mHasAirbag) {
+        add(mul(rH.mAirbags, rG.mAirbagStateGeom));
+        add(mul(rG.mAirbagParticles, rG.mAirbagVar));
+    }
+    add(mul(rG.mRoads, 6));
     if (rH.mRigidBodies)
-        n += rG.mRigidBodyMotions * (rH.mReducedRigidBodies ? 12 : 24);
+        add(mul(rG.mRigidBodyMotions, rH.mReducedRigidBodies ? 12 : 24));
     return n;
 }
 
@@ -84797,6 +85419,10 @@ std::vector<double> d3_columns(const double* pData, std::size_t Rows, std::size_
 std::vector<double> d3_layer_columns(const double* pData, std::size_t Rows, std::size_t Stride,
                                      std::size_t Layers, std::size_t LayerWidth, std::size_t C0,
                                      std::size_t Count) {
+    // The last layer's columns must end inside the row; otherwise the last
+    // row's read runs past the state record.
+    if (Layers > 0 && (Layers - 1) * LayerWidth + C0 + Count > Stride)
+        d3_fail("a layered element record is wider than its row");
     std::vector<double> out(Rows * Layers * Count);
     for (std::size_t r = 0; r < Rows; ++r)
         for (std::size_t l = 0; l < Layers; ++l)
@@ -84960,6 +85586,8 @@ void d3_read_state(const D3File& rF, Mesh& rMesh, const D3Cells& rCells, std::si
     }
 
     if (h.mBeams > 0 && h.mNv1d > 0) {
+        if (h.mNeipb < 0)
+            d3_fail("negative beam history count");
         const std::size_t n = zu(h.mBeams), nv = zu(h.mNv1d), nh = zu(h.mNeipb);
         const std::int64_t nl_signed = (-3 * h.mNeipb + h.mNv1d - 6) / (h.mNeipb + 5);
         const std::size_t nl = zu(nl_signed);
@@ -84969,6 +85597,8 @@ void d3_read_state(const D3File& rF, Mesh& rMesh, const D3Cells& rCells, std::si
         put("beam_bending_moment", kD3Beam, d3_columns(d, n, nv, 3, 2), 1, 2);
         put("beam_torsion_moment", kD3Beam, d3_columns(d, n, nv, 5, 1), 1, 1);
         if (nl > 0) {
+            if (6 + 5 * nl > nv)
+                d3_fail("a beam record is narrower than its integration points");
             const double* layered = d + 6;
             put("beam_axial_stress", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 0, 1), nl, 1);
             put("beam_shear_stress", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 1, 2), nl, 2);
@@ -85911,17 +86541,27 @@ std::vector<std::int64_t> marc_expand(
                 if (k < rTokens.size() && rTokens[k] == "by") {
                     if (k + 1 >= rTokens.size())
                         marc_fail(pLabel, "set '" + rName + "' ends with BY and no step");
-                    step = std::abs(number(rTokens[k + 1]));
+                    const std::int64_t by = number(rTokens[k + 1]);
+                    step = by == std::numeric_limits<std::int64_t>::min()
+                               ? std::numeric_limits<std::int64_t>::max()
+                               : std::abs(by);
                     if (step == 0)
                         step = 1;
                     k += 2;
                 }
-                if (stop >= start)
-                    for (std::int64_t v = start; v <= stop; v += step)
-                        items.push_back(v);
-                else
-                    for (std::int64_t v = start; v >= stop; v -= step)
-                        items.push_back(v);
+                // Sized in unsigned arithmetic: `v += step` past INT64_MAX is
+                // undefined, and a 10^18-item range is a corrupt deck.
+                const std::uint64_t span =
+                    stop >= start
+                        ? static_cast<std::uint64_t>(stop) - static_cast<std::uint64_t>(start)
+                        : static_cast<std::uint64_t>(start) - static_cast<std::uint64_t>(stop);
+                const std::uint64_t ustep = static_cast<std::uint64_t>(step);
+                if (span / ustep >= (std::uint64_t{1} << 27))
+                    marc_fail(pLabel, "set '" + rName + "' has a range of more than 2^27 items");
+                for (std::uint64_t n = 0; n <= span / ustep; ++n)
+                    items.push_back(static_cast<std::int64_t>(
+                        stop >= start ? static_cast<std::uint64_t>(start) + n * ustep
+                                      : static_cast<std::uint64_t>(start) - n * ustep));
             } else {
                 items.push_back(start);
             }
@@ -85974,8 +86614,13 @@ Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
         }
         std::string cell = known->mCell;
         std::vector<std::int64_t> nodes = el.mNodes;
-        nodes.resize(std::min(nodes.size(), static_cast<std::size_t>(
-                                                cell_type_num_nodes(cell_type_from_name(cell)))));
+        const auto wanted =
+            static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(cell)));
+        if (nodes.size() < wanted)
+            marc_fail(pLabel, "element " + std::to_string(el.mId) + " lists " +
+                                  std::to_string(nodes.size()) + " nodes, its type needs " +
+                                  std::to_string(wanted));
+        nodes.resize(wanted);
         // The 3-node rebar lines list their middle node second.
         if (el.mType >= 168 && el.mType <= 170 && nodes.size() == 3)
             std::swap(nodes[1], nodes[2]);
@@ -86544,8 +87189,7 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
             }
         } else if (family == 523 && info.mJantyp > 100 && npost > 0 && numel > 0) {
             const auto np = static_cast<std::size_t>(npost), ns = static_cast<std::size_t>(nstres);
-            std::vector<double> values;
-            values.reserve(static_cast<std::size_t>(numel) * ns * np);
+            std::vector<double> values;  // no reserve: numel is the file's word
             for (std::int64_t e = 0; e < numel; ++e)
                 for (std::size_t p = 0; p < ns; ++p) {
                     const auto record = r.Reals(np);
@@ -86554,6 +87198,9 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
             for (const MarcColumn& c : marc_columns(codes)) {
                 if (!rOptions.WantsArray(c.mName))
                     continue;
+                if (c.mFirst + c.mWidth > np)
+                    marc_fail("Marc .t19", "element quantity '" + c.mName +
+                                               "' lies past the end of its post record");
                 // With several integration points, flattened point-major so that
                 // any writer holds it; its (points, components) is the layout.
                 const std::size_t width = ns * c.mWidth;
@@ -87020,6 +87667,8 @@ int mdpa_parse_data_block(
         }
         const std::vector<std::string> toks = mdpa_tokens(line);
         std::int64_t id = 0;
+        if (toks.empty())
+            continue;
         if (!mdpa_parse_int(toks[0], id)) {
             log::warn("mdpa: skipping data line with non-integer id: {}", line);
             continue;
@@ -90034,6 +90683,13 @@ struct Tokenizer {
         return mBuf.substr(start, mPos - start);
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
+    // A section's entry count: every entry takes at least a byte of the file,
+    // so a count beyond its size (or a negative one) is corruption rather than
+    // something to allocate or loop over.
+    std::int64_t next_count() {
+        return static_cast<std::int64_t>(
+            detail::checked_count(next_int(), mBuf.size(), "Medit", "entry"));
+    }
     double next_double() { return detail::parse_double(next()); }
     // Tokens on the line of the next token, without consuming anything.
     std::size_t tokens_on_next_line() {
@@ -90121,7 +90777,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
         } else if (kw == "Dimension") {
             dim = static_cast<int>(tok.next_int());
         } else if (kw == "Vertices") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             // No `Dimension` keyword (FEconv writes none): a vertex row holds
             // the coordinates and a reference.
             if (dim <= 0)
@@ -90133,7 +90789,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
             for (std::int64_t i = 0; i < n; ++i) {
                 for (int c = 0; c < dim; ++c)
                     store_coord(pts, i * dim + c, tok.next_double());
-                point_ref[i] = static_cast<std::int64_t>(tok.next_double());
+                point_ref[i] = detail::checked_integer<std::int64_t>(tok.next_double(), "Medit");
             }
             mesh.AssignPoints(std::move(pts));
             have_points = true;
@@ -90141,7 +90797,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
             const auto& info = e2m.at(kw);
             const std::string& type = info.first;
             int k = info.second;
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             NDArray data(DType::Int64, {static_cast<std::size_t>(n), static_cast<std::size_t>(k)});
             NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
             std::int64_t* dp = data.As<std::int64_t>();
@@ -90154,38 +90810,38 @@ Mesh read_medit_ascii(const std::string& rPath) {
             mesh.AddCellBlock(type, std::move(data));
             mesh.AppendCellData("medit:ref", std::move(ref));
         } else if (kw == "Corners") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n; ++i)
                 tok.next();
         } else if (kw == "Normals") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * dim; ++i)
                 tok.next();
         } else if (kw == "NormalAtVertices") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 2; ++i)
                 tok.next();
         } else if (kw == "SubDomainFromMesh") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 4; ++i)
                 tok.next();
         } else if (kw == "VertexOnGeometricVertex") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 2; ++i)
                 tok.next();
         } else if (kw == "VertexOnGeometricEdge") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 3; ++i)
                 tok.next();
         } else if (kw == "EdgeOnGeometricEdge") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 2; ++i)
                 tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
         } else if (kw == "RequiredVertices" || kw == "TangentAtVertices" || kw == "Tangents" ||
                    kw == "Ridges") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n; ++i)
                 tok.next();
         } else if (kw == "End") {
@@ -90670,6 +91326,8 @@ public:
         for (; i < rText.size(); ++i) {
             if (rText[i] < '0' || rText[i] > '9')
                 return false;
+            if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
+                return false;  // more digits than an int64 holds
             v = v * 10 + (rText[i] - '0');
         }
         rValue = rText[0] == '-' ? -v : v;
@@ -90881,8 +91539,9 @@ std::vector<MfElement> mf_read_elements(MfLexer& rLex, const char* pWhat) {
     const std::int64_t n = rLex.Int("an element count");
     if (n < 0)
         rLex.Fail(std::string("negative ") + pWhat + " count", rLex.Line());
+    // No reserve: n comes from the file, and the lexer fails at its end long
+    // before a corrupt count is reached.
     std::vector<MfElement> out;
-    out.reserve(static_cast<std::size_t>(n));
     for (std::int64_t k = 0; k < n; ++k) {
         const std::size_t line = rLex.Line();
         MfElement el;
@@ -92549,6 +93208,10 @@ std::size_t mf_interior_count(int Geom, int Q, MfSpace::Points Points = MfSpace:
 
 MfDofs mf_dofs(const MfFile& rF, const MfEntities& rEnt, int Q, MfSpace::Points Points) {
     const auto& geoms = mf_geoms();
+    // The order comes from the file's collection name (`H1_3D_P2`); an
+    // order in the millions would size point tables of gigabytes.
+    if (Q < 1 || Q > 64)
+        throw ReadError("MFEM: finite element order " + std::to_string(Q) + " is out of range");
     MfDofs d;
     d.mOrder = Q;
     d.mPoints = Points;
@@ -94858,6 +95521,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/mfem.cpp =====
 // ===== begin src/cpp/src/formats/mff.cpp =====
+#include <algorithm>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -94885,9 +95549,11 @@ Mesh read_mff(const std::string& rPath) {
         mesh.AssignPoints(NDArray(DType::Float64, {0, 0}));
         return mesh;
     }
-    std::size_t count = static_cast<std::size_t>(std::strtoll(toks[0].c_str(), nullptr, 10));
-    if (count + 1 > toks.size())
-        count = toks.size() - 1;
+    const long long declared = std::strtoll(toks[0].c_str(), nullptr, 10);
+    if (declared < 0)
+        throw ReadError("MFF: negative value count");
+    // A short file keeps the values it has (the reference reader's rule).
+    const std::size_t count = std::min(static_cast<std::size_t>(declared), toks.size() - 1);
     NDArray values(DType::Float64, {count});
     for (std::size_t i = 0; i < count; ++i)
         values.As<double>()[i] = detail::parse_double(toks[i + 1]);
@@ -95002,10 +95668,16 @@ Mesh read_mfm(const std::string& rPath) {
             throw ReadError("MFM: unexpected end of file");
     };
 
-    NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
+    // Sizes from the header are checked against the tokens that follow before
+    // any of them sizes an allocation.
+    if (nel < 0 || lnv < 1 || nver < 0 || dim < 1 || dim > 3 ||
+        static_cast<unsigned long long>(nel) > tok.size() / static_cast<std::size_t>(lnv))
+        throw ReadError("MFM: header counts do not match the file");
     need(static_cast<std::size_t>(nel) * lnv);
+    NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
     for (long long i = 0; i < nel * lnv; ++i)
-        data.As<std::int64_t>()[i] = std::strtoll(tok[pos++].c_str(), nullptr, 10) - 1;
+        data.As<std::int64_t>()[i] =
+            detail::zero_based(std::strtoll(tok[pos++].c_str(), nullptr, 10));
 
     // reference arrays (discarded): nrc (dim==3), nra (dim>=2), nrv
     if (dim == 3) {
@@ -95020,8 +95692,10 @@ Mesh read_mfm(const std::string& rPath) {
     pos += nel * lnv;
 
     Mesh mesh;
-    NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
+    if (static_cast<unsigned long long>(nver) > tok.size())
+        throw ReadError("MFM: vertex count larger than the file");
     need(static_cast<std::size_t>(nver) * dim);
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     for (long long i = 0; i < nver * dim; ++i)
         pts.As<double>()[i] = detail::parse_double(tok[pos++]);
     mesh.AssignPoints(std::move(pts));
@@ -95212,11 +95886,20 @@ public:
     virtual bool NextIsInteger() = 0;
     // Whether the next value is a type-name string (text: a length, then a letter).
     virtual bool NextIsName() = 0;
+    // The input's size in bytes: the bound on any count it declares.
+    virtual std::size_t Size() const = 0;
+
+    // A count read from the file, checked before it sizes anything: every
+    // entry it counts takes at least one byte of the input.
+    std::int64_t Count(const char* pWhat) {
+        return static_cast<std::int64_t>(detail::checked_count(Int(), Size(), "COMSOL", pWhat));
+    }
 };
 
 class ComsolText : public ComsolSource {
 public:
     explicit ComsolText(std::string Text) : mText(std::move(Text)) {}
+    std::size_t Size() const override { return mText.size(); }
 
     std::int64_t Int() override {
         const std::string t = Token();
@@ -95324,6 +96007,7 @@ private:
 class ComsolBinary : public ComsolSource {
 public:
     explicit ComsolBinary(std::string Bytes) : mBytes(std::move(Bytes)) {}
+    std::size_t Size() const override { return mBytes.size(); }
 
     std::int64_t Int() override {
         Need(4);
@@ -95424,8 +96108,9 @@ bool comsol_tail_fits(ComsolSource& rIn, std::int64_t Ne, bool Last) {
                 ok = rIn.NextIsInteger() && rIn.Int() >= 0;
             if (ok && rIn.NextIsInteger()) {
                 const std::int64_t nud = rIn.Int();
-                ok = nud >= 0;
-                for (std::int64_t k = 0; k < 2 * nud && ok; ++k)
+                // Two integers per pair, each at least a byte of the input.
+                ok = nud >= 0 && static_cast<std::uint64_t>(nud) <= rIn.Size() / 2;
+                for (std::int64_t k = 0; ok && k < 2 * nud; ++k)
                     ok = rIn.NextIsInteger() && (rIn.Int(), true);
                 if (ok)
                     ok = Last ? comsol_object_or_end(rIn) : rIn.NextIsName();
@@ -95446,7 +96131,8 @@ ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
     const std::int64_t sdim = rIn.Int();
     const std::int64_t np = rIn.Int();
     const std::int64_t lowest = rIn.Int();
-    if (sdim < 1 || sdim > 3 || np < 0)
+    if (sdim < 1 || sdim > 3 || np < 0 ||
+        static_cast<std::uint64_t>(np) > rIn.Size() / static_cast<std::uint64_t>(sdim))
         throw ReadError(std::string(pFormat) + ": invalid Mesh header (sdim " +
                         std::to_string(sdim) + ", " + std::to_string(np) + " vertices)");
     m.mSdim = static_cast<std::size_t>(sdim);
@@ -95464,7 +96150,8 @@ ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
         const std::int64_t nep = rIn.Int();
         const std::int64_t ne = rIn.Int();
         const int expected = cell_type_num_nodes(cell_type_from_name(b.mType));
-        if (nep != expected || ne < 0)
+        if (nep != expected || ne < 0 ||
+            static_cast<std::uint64_t>(ne) > rIn.Size() / static_cast<std::uint64_t>(nep))
             throw ReadError(std::string(pFormat) + ": '" + ctype + "' elements with " +
                             std::to_string(nep) + " nodes");
         b.mNodes = static_cast<std::size_t>(nep);
@@ -95486,6 +96173,11 @@ ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
             // dimension: find how many by where the rest of the record fits.
             const std::int64_t npp = rIn.Int();
             const std::int64_t npar = rIn.Int();
+            // npp * npar * 3 values follow at most, each a byte or more.
+            if (npar < 0 || npp < 0 ||
+                (npp > 0 && static_cast<std::uint64_t>(npar) >
+                                rIn.Size() / 3 / static_cast<std::uint64_t>(npp)))
+                throw ReadError(std::string(pFormat) + ": implausible parameter count");
             const std::size_t start = rIn.Mark();
             bool found = false;
             for (int k = 1; k <= 3 && !found; ++k) {
@@ -95529,7 +96221,7 @@ Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
     if (major != 0 || minor != 1)
         throw ReadError(std::string(pFormat) + ": unsupported file version " +
                         std::to_string(major) + "." + std::to_string(minor));
-    std::vector<std::string> tags(static_cast<std::size_t>(std::max<std::int64_t>(0, rIn.Int())));
+    std::vector<std::string> tags(static_cast<std::size_t>(rIn.Count("tag")));
     for (std::string& t : tags)
         t = rIn.String();
     const std::int64_t ntypes = rIn.Int();
@@ -95557,7 +96249,7 @@ Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
             s.mLabel = rIn.String();
             s.mMeshTag = rIn.String();
             s.mDim = static_cast<int>(rIn.Int());
-            s.mEntities.resize(static_cast<std::size_t>(std::max<std::int64_t>(0, rIn.Int())));
+            s.mEntities.resize(static_cast<std::size_t>(rIn.Count("entity")));
             for (std::int64_t& e : s.mEntities)
                 e = rIn.Int();
             selections.push_back(std::move(s));
@@ -99835,6 +100527,10 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
         std::size_t width = 0;
         for (std::size_t col : e.mCol)
             width = std::max(width, col + 1);
+        // Columns are plies, stations or element nodes: a column index far
+        // beyond the values read is a corrupt record, not a width to allocate.
+        if (width > e.mValue.size() + 4096)
+            op2_fail("a multi-valued element table names column " + std::to_string(width - 1));
         std::vector<NDArray> per_block;
         for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
             NDArray a(DType::Float64, {model.mSizes[b], width});
@@ -99881,6 +100577,7 @@ MeshMetadata read_nastran_op2_metadata(const std::string& rPath, const ReadOptio
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/nastran_op2.cpp =====
 // ===== begin src/cpp/src/formats/netgen.cpp =====
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -100052,6 +100749,8 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         if (eof)
             throw ReadError("Netgen: unexpected end of file in " + rSection);
         std::vector<std::string> data = netgen_split_ws(line);
+        // The node count sits at a fixed column; check the row reaches it.
+        detail::need_tokens(data, dim == 2 ? 5 : (dim == 3 ? 2 : 0), "Netgen");
 
         int nump = fixed_nump;
         if (dim == 2)
@@ -100059,8 +100758,12 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         else if (dim == 3)
             nump = static_cast<int>(std::strtoll(data[1].c_str(), nullptr, 10));
 
-        std::int64_t index = std::strtoll(data[i_index].c_str(), nullptr, 10);
         auto tit = tmap.find(nump);
+        if (tit != tmap.end())
+            detail::need_tokens(data, static_cast<std::size_t>(std::max(i_index + 1, pi0 + nump)),
+                                "Netgen");
+        std::int64_t index =
+            tit == tmap.end() ? 0 : std::strtoll(data[i_index].c_str(), nullptr, 10);
         if (tit == tmap.end())
             throw ReadError("Netgen: unsupported element with " + std::to_string(nump) + " nodes");
         const std::string& type = tit->second;
@@ -100104,10 +100807,15 @@ Mesh read_netgen(const std::string& rPath) {
             break;
         if (line == "dimension") {
             dimension = static_cast<int>(std::strtoll(c.NextCount().c_str(), nullptr, 10));
+            if (dimension < 1 || dimension > 3)
+                throw ReadError("Netgen: dimension must be 1, 2 or 3");
         } else if (line == "geomtype") {
             c.NextCount();  // value; ignored
         } else if (line == "points") {
-            num_points = std::strtoll(c.NextCount().c_str(), nullptr, 10);
+            // A point row is at least a few bytes: bound the count by the file.
+            num_points = static_cast<std::int64_t>(
+                detail::checked_count(std::strtoll(c.NextCount().c_str(), nullptr, 10),
+                                      detail::file_bytes(rPath), "Netgen", "point"));
             raw_points.resize(static_cast<std::size_t>(num_points) * 3, 0.0);
             for (std::int64_t i = 0; i < num_points; ++i) {
                 std::string pl = c.NextReal(eof);
@@ -100331,6 +101039,9 @@ std::string cell_type_for(std::size_t n) {
 NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
     std::size_t n = rRows.size();
     std::size_t nc = n ? rRows[0].size() : 0;
+    for (const auto& row : rRows)
+        if (row.size() != nc)
+            throw ReadError("OBJ: rows of one attribute with different lengths");
     NDArray a(DType::Float64, {n, nc});
     double* p = a.As<double>();
     for (std::size_t i = 0; i < n; ++i)
@@ -100564,6 +101275,10 @@ Mesh read_off(const std::string& rPath) {
     auto cs = detail::make_classic_istringstream(counts);
     long long num_verts = 0, num_faces = 0, num_edges = 0;
     cs >> num_verts >> num_faces >> num_edges;
+    // Three coordinates and a face row each take at least a byte apiece.
+    const std::size_t bytes = detail::file_bytes(rPath);
+    detail::checked_count(num_verts, bytes / 3, "OFF", "vertex");
+    detail::checked_count(num_faces, bytes, "OFF", "face");
 
     Mesh mesh;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(num_verts), 3});
@@ -105296,6 +106011,8 @@ Mesh read_permas(const std::string& rPath) {
                 point_gids[gid] = pindex++;
                 if (points.empty())
                     ncoord = e.size() - 1;
+                if (ncoord == 0 || e.size() - 1 != ncoord)
+                    throw ReadError("PERMAS: node rows with different coordinate counts");
                 for (std::size_t j = 1; j < e.size(); ++j)
                     points.push_back(detail::parse_double(e[j]));
                 ++pos;
@@ -105337,6 +106054,9 @@ Mesh read_permas(const std::string& rPath) {
                 ++pos;
             }
             std::size_t k = rows.empty() ? 0 : rows.front().size();
+            for (const auto& row : rows)
+                if (row.size() != k)
+                    throw ReadError("PERMAS: elements of one block with different node counts");
             NDArray data(DType::Int64, {rows.size(), k});
             std::int64_t* dp = data.As<std::int64_t>();
             for (std::size_t r = 0; r < rows.size(); ++r)
@@ -105347,7 +106067,8 @@ Mesh read_permas(const std::string& rPath) {
         // all other keywords (NSET/ESET/...) are ignored
     }
 
-    std::int64_t npoints = static_cast<std::int64_t>(point_gids.size());
+    // One point per row read (a repeated id re-points the id at its last row).
+    std::int64_t npoints = ncoord ? static_cast<std::int64_t>(points.size() / ncoord) : 0;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), ncoord});
     double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
@@ -105590,6 +106311,8 @@ Mesh read_ply(const std::string& rPath) {
     };
     auto next_sig = [&]() -> std::string {
         while (true) {
+            if (pos >= buf.size())
+                throw ReadError("PLY: the file ends inside its header");
             std::string l = ply_trim(read_line());
             if (!l.empty() && l.rfind("comment", 0) != 0)
                 return l;
@@ -105626,6 +106349,8 @@ Mesh read_ply(const std::string& rPath) {
             std::string ename;
             std::size_t count;
             iss >> ename >> count;
+            // Every element takes at least a byte of the file.
+            detail::checked_count(count, buf.size(), "PLY", "element");
             if (ename == "vertex") {
                 num_verts = count;
                 line = next_sig();
@@ -105682,7 +106407,7 @@ Mesh read_ply(const std::string& rPath) {
             coff[c] = stride;
             stride += dtype_size(vprops[c].mDtype);
         }
-        if (pos + num_verts * stride > buf.size())
+        if (stride != 0 && num_verts > (buf.size() - pos) / stride)
             throw ReadError("PLY binary truncated");
         const std::size_t start = pos;
         parallel_for(num_verts, [&](std::size_t i) {
@@ -105724,16 +106449,18 @@ Mesh read_ply(const std::string& rPath) {
         else if (vprops[c].mName == "z")
             xyz[2] = c;
     }
-    std::size_t ndim = 0;
+    // The coordinate columns present, in x, y, z order (a file may lack x).
+    std::vector<std::size_t> coord_cols;
     for (std::size_t k = 0; k < 3; ++k)
         if (xyz[k] != SIZE_MAX)
-            ++ndim;
-    DType pdt = (xyz[0] != SIZE_MAX) ? vcols[xyz[0]].Dtype() : DType::Float64;
+            coord_cols.push_back(xyz[k]);
+    const std::size_t ndim = coord_cols.size();
+    DType pdt = ndim ? vcols[coord_cols[0]].Dtype() : DType::Float64;
     NDArray pts(pdt, {num_verts, ndim});
     for (std::size_t i = 0; i < num_verts; ++i)
         for (std::size_t k = 0; k < ndim; ++k)
-            store_scalar(pts, i * ndim + k, detail::read_double(vcols[xyz[k]], i),
-                         detail::read_int(vcols[xyz[k]], i), detail::is_float_dtype(pdt));
+            store_scalar(pts, i * ndim + k, detail::read_double(vcols[coord_cols[k]], i),
+                         detail::read_int(vcols[coord_cols[k]], i), detail::is_float_dtype(pdt));
     mesh.AssignPoints(std::move(pts));
     for (std::size_t c = 0; c < vprops.size(); ++c) {
         const std::string& nm = vprops[c].mName;
@@ -105751,7 +106478,8 @@ Mesh read_ply(const std::string& rPath) {
             if (cur_count == 0)
                 return;
             NDArray data(DType::Int64, {cur_count, cur_n});
-            std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
+            if (!cur_conn.empty())  // zero-vertex faces: nothing to copy, and no buffer
+                std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
             mesh.AddCellBlock(cell_type_from_count(cur_n), std::move(data));
             cur_conn.clear();
             cur_count = 0;
@@ -105760,15 +106488,18 @@ Mesh read_ply(const std::string& rPath) {
             std::size_t n;
             std::vector<std::int64_t> idx;
             if (is_binary) {
-                n = static_cast<std::size_t>(rd_int_val(buf, pos, face_count_dt, big));
+                n = detail::checked_count(rd_int_val(buf, pos, face_count_dt, big),
+                                          buf.size() - std::min(pos, buf.size()), "PLY",
+                                          "face vertex");
                 idx.resize(n);
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
                 auto rs = detail::make_classic_istringstream(read_line());
                 long long cnt;
-                rs >> cnt;
-                n = static_cast<std::size_t>(cnt);
+                if (!(rs >> cnt))
+                    throw ReadError("PLY: a face row without a vertex count");
+                n = detail::checked_count(cnt, buf.size(), "PLY", "face vertex");
                 idx.resize(n);
                 for (std::size_t j = 0; j < n; ++j)
                     rs >> idx[j];
@@ -108226,7 +108957,7 @@ public:
     AnimCursor(const std::string& rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
 
     const char* Take(std::size_t N) {
-        if (mPos + N > mData.size())
+        if (N > mData.size() - mPos)  // not mPos + N: that wraps for a huge N
             throw ReadError("Radioss animation: '" + mPath + "' is truncated (needs " +
                             std::to_string(N) + " more bytes at offset " + std::to_string(mPos) +
                             " of " + std::to_string(mData.size()) + ")");
@@ -108238,6 +108969,8 @@ public:
     std::vector<std::int64_t> Ints(std::int64_t N) {
         if (N < 0)
             throw ReadError("Radioss animation: '" + mPath + "' has a negative count");
+        if (static_cast<std::uint64_t>(N) > (mData.size() - mPos) / 4)
+            Take(mData.size() - mPos + 1);  // reports the truncation
         const unsigned char* p =
             reinterpret_cast<const unsigned char*>(Take(4 * static_cast<std::size_t>(N)));
         std::vector<std::int64_t> out(static_cast<std::size_t>(N));
@@ -108255,6 +108988,8 @@ public:
     std::vector<double> Floats(std::int64_t N) {
         if (N < 0)
             throw ReadError("Radioss animation: '" + mPath + "' has a negative count");
+        if (static_cast<std::uint64_t>(N) > (mData.size() - mPos) / 4)
+            Take(mData.size() - mPos + 1);  // reports the truncation
         const unsigned char* p =
             reinterpret_cast<const unsigned char*>(Take(4 * static_cast<std::size_t>(N)));
         std::vector<double> out(static_cast<std::size_t>(N));
@@ -108408,6 +109143,10 @@ Mesh read_radioss_anim(const std::string& rPath) {
     const std::vector<std::int64_t> counts = c.Ints(8);
     const std::int64_t nn = counts[0], nf = counts[1], np2 = counts[2], nfun = counts[3],
                        nefun = counts[4], nvec = counts[5], nten = counts[6], nskew = counts[7];
+    // Every count sizes records of at least one byte per entry, so none can
+    // exceed the file; this also keeps the products below inside int64.
+    for (const std::int64_t n : counts)
+        detail::checked_count(n, data.size(), "Radioss animation", "header");
     c.Take(static_cast<std::size_t>(2 * 6 * std::max<std::int64_t>(nskew, 0)));
     const std::vector<double> coords = c.Floats(3 * nn);
 
@@ -109015,10 +109754,14 @@ struct ThFile {
     }
 
     std::vector<std::int64_t> Ints(std::size_t N, const char* pWhat) {
-        std::vector<std::int64_t> out(N);
         if (N == 0)
-            return out;
+            return {};
+        // Take first: it checks the record holds exactly 4 * N bytes, so a
+        // corrupt N never sizes the allocation (4 * N wrapping included).
+        if (N > mData.size() / 4)
+            th_fail(std::string("implausible size for ") + pWhat);
         const char* p = Take(4 * N, pWhat);
+        std::vector<std::int64_t> out(N);
         for (std::size_t i = 0; i < N; ++i)
             out[i] = th_int(p + 4 * i);
         return out;
@@ -109678,10 +110421,12 @@ void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, s
     std::set<int> types;
     for (std::size_t e = 0; e < count; ++e) {
         auto t = su2_tokens(rLines.at(rLi++));
+        detail::need_tokens(t, 1, "SU2");
         int vt = std::stoi(t[0]);
         int nn = su2_numnodes(vt);
         if (nn == 0)
             throw ReadError("SU2: unsupported element type " + t[0]);
+        detail::need_tokens(t, 1 + static_cast<std::size_t>(nn), "SU2");
         std::vector<std::int64_t> nodes(nn);
         for (int j = 0; j < nn; ++j)
             nodes[j] = std::strtoll(t[1 + j].c_str(), nullptr, 10);
@@ -109748,18 +110493,26 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (zoneBody.mDim != 2 && zoneBody.mDim != 3)
                 throw ReadError("SU2: invalid NDIME");
         } else if (name == "NPOIN") {
-            std::size_t npoin = static_cast<std::size_t>(std::stoll(su2_tokens(rest)[0]));
+            const auto npoin_tok = su2_tokens(rest);
+            detail::need_tokens(npoin_tok, 1, "SU2");
+            if (zoneBody.mDim == 0)
+                throw ReadError("SU2: NPOIN before NDIME");
+            // One point per line: the count cannot exceed the lines left.
+            const std::size_t npoin = detail::checked_count(std::stoll(npoin_tok[0]),
+                                                            rLines.size() - rLi, "SU2", "point");
             NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(zoneBody.mDim)});
             double* pp = pts.As<double>();
             for (std::size_t i = 0; i < npoin; ++i) {
                 auto t = su2_tokens(rLines.at(rLi++));
+                detail::need_tokens(t, static_cast<std::size_t>(zoneBody.mDim), "SU2");
                 for (int c = 0; c < zoneBody.mDim; ++c)
                     pp[i * static_cast<std::size_t>(zoneBody.mDim) + static_cast<std::size_t>(c)] =
                         detail::parse_double(t[static_cast<std::size_t>(c)]);
             }
             zoneBody.mPoints = std::move(pts);
         } else if (name == "NELEM") {
-            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
+            const std::size_t ne =
+                detail::checked_count(std::stoll(rest), rLines.size() - rLi, "SU2", "element");
             read_elem_block(rLines, rLi, ne, 0, zone, zoneBody.mBlocks);
         } else if (name == "NMARK") {
             // handled implicitly via MARKER_TAG/MARKER_ELEMS
@@ -109781,7 +110534,8 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (!current_tag_name.empty())
                 zoneBody.mMarkerNames[current_tag] = current_tag_name;
         } else if (name == "MARKER_ELEMS") {
-            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
+            const std::size_t ne =
+                detail::checked_count(std::stoll(rest), rLines.size() - rLi, "SU2", "element");
             read_elem_block(rLines, rLi, ne, current_tag, zone, zoneBody.mBlocks);
         }
     }
@@ -109845,7 +110599,10 @@ Mesh read_su2(const std::string& rPath) {
             if (eq == std::string::npos)
                 break;
             if (su2_strip(line.substr(0, eq)) == "NZONE") {
-                nzone = static_cast<std::size_t>(std::stoll(su2_tokens(su2_strip(line.substr(eq + 1)))[0]));
+                const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
+                detail::need_tokens(value, 1, "SU2");
+                // Every zone takes lines of its own: bounded by the file.
+                nzone = detail::checked_count(std::stoll(value[0]), lines.size(), "SU2", "zone");
                 multizone = true;
             }
             break;
@@ -109868,9 +110625,9 @@ Mesh read_su2(const std::string& rPath) {
                 break;
             std::string name = su2_strip(line.substr(0, eq));
             if (name == "NZONE" || name == "IZONE") {
+                const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
                 if (name == "IZONE" &&
-                    static_cast<std::size_t>(
-                        std::stoll(su2_tokens(su2_strip(line.substr(eq + 1)))[0])) != z + 1)
+                    (value.empty() || std::stoll(value[0]) != static_cast<long long>(z + 1)))
                     throw ReadError("SU2: IZONE out of order (expected " + std::to_string(z + 1) +
                                     ")");
                 ++li;
@@ -109890,8 +110647,14 @@ Mesh read_su2(const std::string& rPath) {
         // Concatenate zone points, offsetting each zone's connectivity by the
         // running point count -- zones are independent meshes, never welded.
         std::size_t total_points = 0;
-        for (const Su2ZoneBody& z : zones)
+        for (const Su2ZoneBody& z : zones) {
+            // Also catches an NDIME after NPOIN, which leaves the points sized
+            // for the earlier dimension.
+            if (z.mDim != dim || (z.mPoints.Shape().size() == 2 &&
+                                  z.mPoints.Shape()[1] != static_cast<std::size_t>(dim)))
+                throw ReadError("SU2: zones of different dimensions (NDIME)");
             total_points += z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
+        }
         NDArray pts(DType::Float64, {total_points, static_cast<std::size_t>(dim)});
         double* pp = pts.As<double>();
         std::size_t offset = 0;
@@ -110797,7 +111560,8 @@ struct TecplotZone {
         return !mVarShareZone.count(Var) && !mPassiveVars.count(Var);
     }
     std::size_t DataLength(std::size_t Var) const {
-        return mCellCentered[Var] ? mNumCells : mNumNodes;
+        // A zone read before VARIABLES has no per-variable table yet.
+        return Var < mCellCentered.size() && mCellCentered[Var] ? mNumCells : mNumNodes;
     }
     // Node and cell counts of an ordered zone: lines, quads or hexahedra over
     // the dimensions longer than one; a single point is one vertex.
@@ -111091,7 +111855,13 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
 
         TecplotZone z;
         std::string joined = rLines[i];
-        while (i + 1 < rLines.size() && !is_float_token(tecplot_tokens(rLines[i + 1])[0]))
+        // A header continues until the first line that starts with a number
+        // (a blank line has no first token, so it continues too).
+        auto continues = [&](const std::string& rLine) {
+            const std::vector<std::string> t = tecplot_tokens(rLine);
+            return t.empty() || !is_float_token(t[0]);
+        };
+        while (i + 1 < rLines.size() && continues(rLines[i + 1]))
             joined += " " + rLines[++i];
         z.mDataStart = i + 1;
 
@@ -111300,7 +112070,7 @@ public:
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
             for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = std::strtoll(t[j].c_str(), nullptr, 10) - 1;
+                cp[c * nn + j] = detail::zero_based(std::strtoll(t[j].c_str(), nullptr, 10));
         }
     }
 
@@ -112207,8 +112977,14 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     TecplotDecoder decoder(rZones, rVariables.size(), rSource);
     std::vector<const TecplotDecodedZone*> decoded;
     decoded.reserve(rZoneIdxs.size());
-    for (std::size_t idx : rZoneIdxs)
+    for (std::size_t idx : rZoneIdxs) {
         decoded.push_back(&decoder.Zone(idx));
+        // A zone parsed before a later VARIABLES line redefined the list has
+        // per-variable tables of the old length.
+        if (decoded.back()->mCellCentered.size() != rVariables.size())
+            throw ReadError("Tecplot: zone " + std::to_string(idx + 1) +
+                            " was read against a different variable list");
+    }
 
     std::vector<std::size_t> point_offset;
     std::vector<bool> owns_points;
@@ -112223,6 +112999,14 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
             continue;
         const TecplotDecodedZone& d = *decoded[k];
         const std::size_t poff = point_offset[k];
+        // A coordinate given cell-centred, or cut short, has fewer values
+        // than the zone has nodes.
+        for (const int c : {xi, yi, zi})
+            if (c >= 0 && d.mCols[static_cast<std::size_t>(c)].size() < d.mNumNodes)
+                throw ReadError("Tecplot: zone " + std::to_string(rZoneIdxs[k] + 1) +
+                                " has fewer coordinate values than nodes");
+        if (poff + d.mNumNodes > total_points)
+            throw ReadError("Tecplot: zones hold more nodes than the point layout");
         for (std::size_t r = 0; r < d.mNumNodes; ++r) {
             pp[(poff + r) * ndim + 0] = d.mCols[static_cast<std::size_t>(xi)][r];
             pp[(poff + r) * ndim + 1] = d.mCols[static_cast<std::size_t>(yi)][r];
@@ -112295,8 +113079,10 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
                 NDArray arr(DType::Float64, {ref.mNumCells});
                 double* ap = arr.As<double>();
                 if (d.mCellCentered[k])
-                    for (std::size_t r = 0; r < ref.mNumCells; ++r)
-                        ap[r] = d.mCols[k][zone_cell(ref, r)];
+                    for (std::size_t r = 0; r < ref.mNumCells; ++r) {
+                        const std::size_t at = zone_cell(ref, r);
+                        ap[r] = at < d.mCols[k].size() ? d.mCols[k][at] : nan;
+                    }
                 else
                     std::fill(ap, ap + ref.mNumCells, nan);
                 blk.push_back(std::move(arr));
@@ -112308,9 +113094,13 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
             double* ap = arr.As<double>();
             std::fill(ap, ap + total_points, nan);
             for (std::size_t z = 0; z < decoded.size(); ++z)
-                if (owns_points[z] && !decoded[z]->mCellCentered[k])
-                    std::memcpy(ap + point_offset[z], decoded[z]->mCols[k].data(),
-                                decoded[z]->mNumNodes * sizeof(double));
+                if (owns_points[z] && !decoded[z]->mCellCentered[k]) {
+                    // A column shorter than the zone (cut short, or absent)
+                    // leaves the rest NaN rather than reading past it.
+                    const auto& col = decoded[z]->mCols[k];
+                    std::copy_n(col.begin(), std::min(col.size(), decoded[z]->mNumNodes),
+                                ap + point_offset[z]);
+                }
             mesh.AddPointData(rVariables[k], std::move(arr));
         }
     }
@@ -113687,6 +114477,12 @@ struct TriangleTokens {
         return v;
     }
 
+    // A count of rows, each at least one token: bounded by what is left.
+    std::int64_t NextCount(const char* pWhat) {
+        return static_cast<std::int64_t>(
+            detail::checked_count(NextInt(pWhat), mToks.size() - mPos, "Triangle", pWhat));
+    }
+
     double NextDouble(const char* pWhat) {
         const std::string& t = Next(pWhat);
         const char* end = nullptr;
@@ -113749,6 +114545,16 @@ TriangleNodes triangle_read_node_section(TriangleTokens& rTokens) {
         throw ReadError("Triangle: need 2D points");
     if (out.mNumPoints < 0 || nattr < 0 || nmark < 0)
         throw ReadError("Triangle: malformed vertex header");
+    // Each vertex row is at least three tokens; the counts cannot exceed what
+    // is left of the token stream before they size anything.
+    const std::size_t left = rTokens.mToks.size() - rTokens.mPos;
+    detail::checked_count(out.mNumPoints, left / 3, "Triangle", "vertex");
+    detail::checked_count(nattr, left, "Triangle", "attribute");
+    detail::checked_count(nmark, left, "Triangle", "marker");
+    // One token per vertex per attribute or marker, too.
+    if (out.mNumPoints > 0 && static_cast<std::uint64_t>(nattr + nmark) >
+                                  left / static_cast<std::uint64_t>(out.mNumPoints))
+        throw ReadError("Triangle: more vertex attributes than the file holds");
 
     out.mXY.resize(static_cast<std::size_t>(out.mNumPoints) * 2);
     out.mAttrs.assign(static_cast<std::size_t>(nattr),
@@ -113760,7 +114566,9 @@ TriangleNodes triangle_read_node_section(TriangleTokens& rTokens) {
         const std::int64_t idx = rTokens.NextInt("vertex index");
         if (i == 0)
             out.mBase = idx;
-        if (idx != out.mBase + i)
+        // Compared in unsigned (modular) arithmetic, which cannot overflow.
+        if (static_cast<std::uint64_t>(idx) - static_cast<std::uint64_t>(i) !=
+            static_cast<std::uint64_t>(out.mBase))
             throw ReadError("Triangle: vertices not numbered consecutively");
         out.mXY[static_cast<std::size_t>(i) * 2] = rTokens.NextDouble("x coordinate");
         out.mXY[static_cast<std::size_t>(i) * 2 + 1] = rTokens.NextDouble("y coordinate");
@@ -113808,7 +114616,7 @@ Mesh triangle_read_node_ele(const std::string& rStem) {
     if (!have_ele)
         return mesh;
 
-    const std::int64_t ne = ele_tokens.NextInt("triangle count");
+    const std::int64_t ne = ele_tokens.NextCount("triangle count");
     const std::int64_t npc = ele_tokens.NextInt("nodes per triangle");
     const std::int64_t nattr = ele_tokens.NextInt("attribute count");
     if (npc != 3 && npc != 6)
@@ -113824,7 +114632,10 @@ Mesh triangle_read_node_ele(const std::string& rStem) {
     for (std::int64_t i = 0; i < ne; ++i) {
         ele_tokens.NextInt("triangle index");
         for (std::int64_t c = 0; c < npc; ++c) {
-            const std::int64_t v = ele_tokens.NextInt("triangle connectivity") - nodes.mBase;
+            // Modular subtraction: a corrupt id far from the base must not overflow.
+            const auto v = static_cast<std::int64_t>(
+                static_cast<std::uint64_t>(ele_tokens.NextInt("triangle connectivity")) -
+                static_cast<std::uint64_t>(nodes.mBase));
             if (v < 0 || v >= nodes.mNumPoints)
                 throw ReadError("Triangle: connectivity index out of range");
             cp[i * npc + c] = v;
@@ -113875,7 +114686,7 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
     triangle_apply_nodes(mesh, nodes);
 
     // Segment section -> one "line" cell block (+ optional marker cell_data).
-    const std::int64_t ns = tokens.NextInt("segment count");
+    const std::int64_t ns = tokens.NextCount("segment count");
     const std::int64_t nmark = tokens.NextInt("segment marker count");
     if (ns < 0 || nmark < 0 || nmark > 1)
         throw ReadError("Triangle: malformed segment header");
@@ -113885,7 +114696,10 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
     for (std::int64_t i = 0; i < ns; ++i) {
         tokens.NextInt("segment index");
         for (int c = 0; c < 2; ++c) {
-            const std::int64_t v = tokens.NextInt("segment endpoint") - nodes.mBase;
+            // Modular subtraction: a corrupt id far from the base must not overflow.
+            const auto v = static_cast<std::int64_t>(
+                static_cast<std::uint64_t>(tokens.NextInt("segment endpoint")) -
+                static_cast<std::uint64_t>(nodes.mBase));
             if (v < 0 || v >= nodes.mNumPoints)
                 throw ReadError("Triangle: segment endpoint out of range");
             cp[i * 2 + c] = v;
@@ -113904,14 +114718,14 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
 
     // Holes (and optional regional attributes) are not representable — skip.
     if (!tokens.AtEnd()) {
-        const std::int64_t nh = tokens.NextInt("hole count");
+        const std::int64_t nh = tokens.NextCount("hole count");
         if (nh > 0)
             log::warn("Triangle: skipping {} hole(s) in {}", nh, rPath);
         for (std::int64_t i = 0; i < nh * 3; ++i)
             tokens.NextDouble("hole entry");
     }
     if (!tokens.AtEnd()) {
-        const std::int64_t nr = tokens.NextInt("region count");
+        const std::int64_t nr = tokens.NextCount("region count");
         if (nr > 0)
             log::warn("Triangle: skipping {} regional attribute(s) in {}", nr, rPath);
     }
@@ -114448,6 +115262,11 @@ Mesh read_ugrid(const std::string& rPath) {
     for (int i = 0; i < 7; ++i)
         counts[i] = next_int();
     skip_marker();
+
+    // Every count sizes a table of at least one byte per entry.
+    const std::size_t file_size = detail::file_bytes(rPath);
+    for (const std::int64_t c : counts)
+        detail::checked_count(c, file_size, "UGRID", "header");
 
     const std::int64_t npoints = counts[0];
     const std::int64_t ntri = counts[1];
@@ -115658,6 +116477,14 @@ void unv_parse_result(const UnvDataset& rDs, UnvFile& rFile) {
     }
     if (ndv == 0)
         return;
+    // Each value is at least a character of the dataset: a larger count per
+    // entity is corruption, and it would size every entity's value vector.
+    std::size_t chars_left = 0;
+    for (std::size_t j = k; j < lines.size(); ++j)
+        chars_left += lines[j].size();
+    if (ndv > chars_left)
+        throw ReadError("UNV: dataset " + std::to_string(rDs.mId) +
+                        " declares more values per entity than it holds");
     res.mComplex = data_type == 5 || data_type == 6;
     res.mNumComps = ndv;
     const std::size_t width = res.mComplex ? 2 : 1;
@@ -115668,9 +116495,12 @@ void unv_parse_result(const UnvDataset& rDs, UnvFile& rFile) {
             continue;
         }
         auto rec = unv_ints(lines[k++]);
+        if (rec.empty())
+            throw ReadError("UNV: dataset " + std::to_string(rDs.mId) +
+                            " has a data record without an entity number");
         std::size_t count = ndv;
         if (res.mLocation == 2 && rec.size() >= 2 && rec[1] > 0)
-            count = static_cast<std::size_t>(rec[1]);  // NDVAL of this element
+            count = std::min(static_cast<std::size_t>(rec[1]), chars_left);  // NDVAL
         auto vals = unv_take_reals(lines, k, count * width);
         if (count != ndv) {
             if (!warned_layers)
@@ -117426,11 +118256,13 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtk.cpp =====
 // ===== begin src/cpp/src/formats/vtk_read.cpp =====
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -117536,8 +118368,14 @@ struct VtkCursor {
 
     // Read `count` values of dtype `dt`, ascii or big-endian binary.
     NDArray ReadValues(DType dt, std::size_t count, bool is_ascii) {
-        NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         const std::size_t isz = dtype_size(dt);
+        // A header count is checked against the bytes left before it sizes
+        // anything: an ASCII value takes at least one byte, a binary one isz.
+        const std::size_t left = mBuf.size() - std::min(mPos, mBuf.size());
+        if (count > left / (is_ascii ? 1 : isz))
+            throw ReadError("VTK: an array of " + std::to_string(count) +
+                            " values is larger than the rest of the file");
+        NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
             // strtod/strtoll scan for a terminator: a buffered source is a
@@ -117649,25 +118487,33 @@ Mesh read_vtk(const std::string& rPath) {
             if (tok.size() < 2 || vtk_upper(tok[1]) != "UNSTRUCTURED_GRID")
                 throw ReadError("C++ VTK reader only handles UNSTRUCTURED_GRID");
         } else if (section == "POINTS") {
+            detail::need_tokens(tok, 3, "VTK");
             std::size_t n = std::stoull(tok[1]);
+            if (n > std::numeric_limits<std::size_t>::max() / 3)
+                throw ReadError("VTK: point count overflows");
             DType dt = dtype_from_vtk_token(tok[2]);
             NDArray pts = cur.ReadValues(dt, n * 3, is_ascii);
             pts.Reshape({n, 3});
             mesh.AssignPoints(std::move(pts));
         } else if (section == "CELLS") {
+            detail::need_tokens(tok, 3, "VTK");
             if (is_v5) {
                 std::size_t num_off = std::stoull(tok[1]);
                 std::size_t num_idx = std::stoull(tok[2]);
                 std::string l = cur.ReadLine();
                 if (vtk_upper(l).rfind("OFFSETS", 0) != 0)
                     throw ReadError("Expected OFFSETS (VTK 5.1 layout)");
-                DType odt = dtype_from_vtk_token(split(l)[1]);
+                const std::vector<std::string> otok = split(l);
+                detail::need_tokens(otok, 2, "VTK");
+                DType odt = dtype_from_vtk_token(otok[1]);
                 std::vector<std::int64_t> off_all =
                     vtk_to_int64(cur.ReadValues(odt, num_off, is_ascii));
                 l = cur.ReadLine();
                 if (vtk_upper(l).rfind("CONNECTIVITY", 0) != 0)
                     throw ReadError("Expected CONNECTIVITY");
-                DType cdt = dtype_from_vtk_token(split(l)[1]);
+                const std::vector<std::string> ctok = split(l);
+                detail::need_tokens(ctok, 2, "VTK");
+                DType cdt = dtype_from_vtk_token(ctok[1]);
                 conn_nd = cur.ReadValues(cdt, num_idx, is_ascii);
                 if (conn_nd.Dtype() == DType::Int64) {
                     // Already int64 (vtktypeint64) -> read the buffer directly.
@@ -117678,19 +118524,26 @@ Mesh read_vtk(const std::string& rPath) {
                     conn_ptr = conn.data();
                 }
                 // off_all has a leading 0; end-offsets are the remainder.
-                offsets.assign(off_all.begin() + 1, off_all.end());
+                if (!off_all.empty())
+                    offsets.assign(off_all.begin() + 1, off_all.end());
             } else {
                 // Version 4.2: interleaved [count, nodes...]; int32 values.
                 std::size_t num_cells = std::stoull(tok[1]);
                 std::size_t total = std::stoull(tok[2]);
                 DType dt = is_ascii ? DType::Int64 : DType::Int32;
                 std::vector<std::int64_t> raw = vtk_to_int64(cur.ReadValues(dt, total, is_ascii));
+                if (num_cells > total)
+                    throw ReadError("VTK: more cells than CELLS entries");
                 conn.reserve(total - num_cells);
                 offsets.reserve(num_cells);
                 std::size_t p = 0;
                 std::int64_t running = 0;
                 for (std::size_t i = 0; i < num_cells; ++i) {
+                    if (p >= raw.size())
+                        throw ReadError("VTK: CELLS list ends early");
                     std::int64_t n = raw[p++];
+                    if (n < 0 || static_cast<std::uint64_t>(n) > raw.size() - p)
+                        throw ReadError("VTK: a cell's node count overruns the CELLS list");
                     for (std::int64_t j = 0; j < n; ++j)
                         conn.push_back(raw[p++]);
                     running += n;
@@ -117699,6 +118552,7 @@ Mesh read_vtk(const std::string& rPath) {
                 conn_ptr = conn.data();
             }
         } else if (section == "CELL_TYPES") {
+            detail::need_tokens(tok, 2, "VTK");
             std::size_t n = std::stoull(tok[1]);
             DType dt = is_ascii ? DType::Int64 : DType::Int32;
             types = vtk_to_int64(cur.ReadValues(dt, n, is_ascii));
@@ -117707,6 +118561,7 @@ Mesh read_vtk(const std::string& rPath) {
         } else if (section == "CELL_DATA") {
             active = "CELL_DATA";
         } else if (section == "FIELD") {
+            detail::need_tokens(tok, 3, "VTK");
             std::size_t k = std::stoull(tok[2]);
             for (std::size_t fi = 0; fi < k; ++fi) {
                 std::vector<std::string> ft = split(cur.ReadLine());
@@ -117722,9 +118577,12 @@ Mesh read_vtk(const std::string& rPath) {
                     }
                     ft = split(cur.ReadLine());
                 }
+                detail::need_tokens(ft, 4, "VTK");
                 std::string name = ft[0];
                 std::size_t ncomp = std::stoull(ft[1]);
                 std::size_t ntuples = std::stoull(ft[2]);
+                if (ncomp != 0 && ntuples > std::numeric_limits<std::size_t>::max() / ncomp)
+                    throw ReadError("VTK: field array size overflows");
                 DType dt = dtype_from_vtk_token(ft[3]);
                 NDArray arr = cur.ReadValues(dt, ncomp * ntuples, is_ascii);
                 if (ncomp != 1)
@@ -117785,8 +118643,11 @@ Mesh read_vtk(const std::string& rPath) {
             }
         }
     }
-    if (!moved)
+    if (!moved) {
+        detail::check_vtk_cell_arrays(conn_owned ? conn_nd.Size() : conn.size(), offsets, types,
+                                      cell_data_raw);
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
+    }
     return mesh;
 }
 
@@ -120658,6 +121519,7 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     vtp_build_types(lines, 1, conn, offsets, types);
     vtp_build_types(polys, 2, conn, offsets, types);
 
+    detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
     return mesh;
 }
@@ -122320,6 +123182,7 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
             vtu_read_field_data(rPiece, ctx, rOpts, mesh);
     }
 
+    detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh);
     return mesh;
@@ -123050,6 +123913,7 @@ Mesh read_vtx(const std::string& rPath, const ReadOptions& rOpts) {
     }
     Mesh mesh;
     mesh.AssignPoints(std::move(step.mPoints));
+    detail::check_vtk_cell_arrays(step.mConn.size(), step.mOffsets, step.mTypes, step.mCellData);
     detail::reconstruct_cells(step.mConn.data(), step.mOffsets, step.mTypes, step.mCellData, mesh);
     for (auto& rEntry : step.mPointData)
         mesh.AddPointData(rEntry.first, std::move(rEntry.second));
@@ -123547,13 +124411,17 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         int xt = static_cast<int>(detail::read_int(rFlat, r));
         types.push_back(xt);
         offsets.push_back(r);
-        if (xt == 2) {  // polyline: next value is point count, must be 2
-            if (detail::read_int(rFlat, r + 1) != 2)
-                throw ReadError("XDMF: only 2-point lines supported");
-            r += 1;
-        }
-        r += 1;
-        r += static_cast<std::size_t>(xdmf_idx_num_nodes(xt));
+        const auto nn = static_cast<std::size_t>(xdmf_idx_num_nodes(xt));
+        // Polyvertex (1) and Polyline (2) carry their node count after the
+        // type -- the writers emit it for both; reading it only for lines
+        // misparsed every mixed topology holding a vertex.
+        const std::size_t head = (xt == 1 || xt == 2) ? 2 : 1;
+        if (r + head + nn > n)
+            throw ReadError("XDMF: mixed topology ends inside a cell");
+        if (head == 2 && static_cast<std::size_t>(detail::read_int(rFlat, r + 1)) != nn)
+            throw ReadError(xt == 1 ? "XDMF: only 1-point polyvertices supported"
+                                    : "XDMF: only 2-point lines supported");
+        r += head + nn;
     }
     // group consecutive equal types
     std::size_t start = 0;
@@ -123567,7 +124435,7 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         NDArray data(DType::Int64, {nrows, static_cast<std::size_t>(nn)});
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t b = 0; b < nrows; ++b) {
-            std::size_t base = offsets[start + b] + (xt == 2 ? 2 : 1);
+            std::size_t base = offsets[start + b] + ((xt == 1 || xt == 2) ? 2 : 1);
             for (int j = 0; j < nn; ++j)
                 dp[b * nn + j] = detail::read_int(rFlat, base + j);
         }
@@ -126813,6 +127681,11 @@ Mesh read_z88(const std::string& rPath, bool Results) {
     if (head.size() < 3 || head[0] < 1 || head[0] > 3 || head[1] < 0 || head[2] < 0)
         z88_fail("the header needs the dimension, node and element counts", i + 1);
     const int ndim = static_cast<int>(head[0]);
+    // One node or element per line at least: counts beyond the lines left
+    // are corruption, and the node count sizes reservations below.
+    if (static_cast<std::uint64_t>(head[1]) > lines.size() ||
+        static_cast<std::uint64_t>(head[2]) > lines.size())
+        z88_fail("the node or element count exceeds the lines in the file", i + 1);
     const std::size_t nnodes = static_cast<std::size_t>(head[1]);
     const std::size_t nelem = static_cast<std::size_t>(head[2]);
     // Z88OS v15: ndim nnodes nelem ndof kflag. Z88 <= V13 / Aurora V1: ndim nnodes
@@ -128473,7 +129346,7 @@ std::array<detail::Vec3, 4> cons_oriented_tet(const detail::Vec3 v[4]) {
 std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
                                          const detail::Vec3& rPlanePoint,
                                          const detail::Vec3& rPlaneNormal,
-                                         std::vector<detail::Vec3>* pNewPts) {
+                                         std::vector<detail::Vec3>* pNewPts, double EpsSide = 0.0) {
     if (rPoly.empty())
         return {};
     const std::size_t n = rPoly.size();
@@ -128482,17 +129355,27 @@ std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
     auto s = [&](const detail::Vec3& p) {
         return detail::vec3_dot(detail::vec3_sub(p, rPlanePoint), rPlaneNormal);
     };
+    // A vertex within EpsSide of the plane is ON it, and on-plane counts as
+    // inside. The 3D clip's capping step classifies with the same tolerance;
+    // a vertex that is on the plane up to rounding (a coordinate like 1/3)
+    // but clipped here as outside left a sliver with no cap over it.
     for (std::size_t i = 0; i < n; ++i) {
         const detail::Vec3& cur = rPoly[i];
         const detail::Vec3& prev = rPoly[(i + n - 1) % n];
         const double s_cur = s(cur);
         const double s_prev = s(prev);
-        const bool cur_in = s_cur <= 0.0;
-        const bool prev_in = s_prev <= 0.0;
+        const bool cur_in = s_cur <= EpsSide;
+        const bool prev_in = s_prev <= EpsSide;
         if (cur_in != prev_in) {
-            const double t = s_prev / (s_prev - s_cur);
+            // The inside end of the crossing edge: when it lies on the plane
+            // it IS the crossing point (interpolating would overshoot it).
+            const detail::Vec3& in_end = cur_in ? cur : prev;
+            const double s_in = cur_in ? s_cur : s_prev;
             const detail::Vec3 ip =
-                detail::vec3_add(prev, detail::vec3_scale(detail::vec3_sub(cur, prev), t));
+                std::abs(s_in) <= EpsSide
+                    ? in_end
+                    : detail::vec3_add(prev, detail::vec3_scale(detail::vec3_sub(cur, prev),
+                                                                s_prev / (s_prev - s_cur)));
             out.push_back(ip);
             if (pNewPts != nullptr)
                 pNewPts->push_back(ip);
@@ -128591,18 +129474,39 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
         const detail::Vec3 normal =
             detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
 
+        // Distance-like test value of a point against this plane, and the
+        // tolerance under which a point counts as lying ON it.
+        auto side = [&](const detail::Vec3& rP) {
+            return detail::vec3_dot(detail::vec3_sub(rP, p0), normal);
+        };
+        const double eps_side = 1e-12 * scale * detail::vec3_norm(normal);
+        bool cuts = false;
+        for (const auto& t : tris)
+            for (const detail::Vec3& p : t)
+                cuts = cuts || side(p) > eps_side;
+
         std::vector<std::array<detail::Vec3, 3>> kept;
         std::vector<detail::Vec3> chord;
         for (const auto& t : tris) {
             std::vector<detail::Vec3> new_pts;
             const std::vector<detail::Vec3> ring =
-                cons_clip_ring({t[0], t[1], t[2]}, p0, normal, &new_pts);
+                cons_clip_ring({t[0], t[1], t[2]}, p0, normal, &new_pts, eps_side);
             for (const detail::Vec3& p : new_pts)
                 chord.push_back(p);
             for (std::size_t i = 1; i + 1 < ring.size(); ++i)
                 kept.push_back({ring[0], ring[i], ring[i + 1]});
         }
         tris = std::move(kept);
+        if (!cuts)
+            continue;  // nothing removed: no hole, and capping would double a face
+        // The hole's boundary also runs through every kept vertex that lies ON
+        // the plane -- a corner the clip kept rather than interpolated (s == 0
+        // is "inside"), which aligned meshes produce all the time. Leaving it
+        // out of the cap shrank the cap and under-measured the overlap.
+        for (const auto& t : tris)
+            for (const detail::Vec3& p : t)
+                if (std::abs(side(p)) <= eps_side)
+                    chord.push_back(p);
 
         // Cap the new hole (if this half-space actually cut anything) with
         // the dedup'd chord, angle-sorted around the cutting plane's own 2D
@@ -134336,7 +135240,7 @@ DiffVerdict diff_array_verdict(const ArrayDiff& rA) {
 void diff_compare_data_section(const std::vector<std::string>& rNamesA,
                                const std::vector<std::string>& rNamesB, DataDiff& rOut,
                                const Mesh& rA, const Mesh& rB, const std::int64_t* pRowMapA,
-                               bool cell_data, double atol, double rtol) {
+                               bool cell_data, double atol, double rtol, bool field_data = false) {
     std::vector<std::string> shared = diff_key_diff(rNamesA, rNamesB, rOut);
     for (const std::string& name : shared) {
         ArrayDiff summary;
@@ -134359,6 +135263,11 @@ void diff_compare_data_section(const std::vector<std::string>& rNamesA,
                     base += static_cast<std::int64_t>(aa.Size());
                 }
             }
+        } else if (field_data) {
+            // Field data has no rows to renumber: compared entry by entry.
+            summary =
+                diff_compare_array(rA.FieldData(name), rB.FieldData(name), nullptr, atol, rtol);
+            summary.mName = name;
         } else {
             summary =
                 diff_compare_array(rA.PointData(name), rB.PointData(name), pRowMapA, atol, rtol);
@@ -134482,7 +135391,7 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
     diff_compare_data_section(rA.CellDataNames(), rB.CellDataNames(), rep.mCellData, rA, rB,
                               nullptr, /*cell_data=*/true, atol, rtol);
     diff_compare_data_section(rA.FieldDataNames(), rB.FieldDataNames(), rep.mFieldData, rA, rB,
-                              nullptr, /*cell_data=*/false, atol, rtol);
+                              nullptr, /*cell_data=*/false, atol, rtol, /*field_data=*/true);
 
     diff_compare_regions(rA, rB, rep.mRegions);
 
@@ -152882,8 +153791,28 @@ bool regions_equal(const Region& rA, const Region& rB) {
 
 namespace meshioplusplus {
 
+namespace {
+
+/**
+ * @brief Wraps every reader so a parser's std:: exception leaves as ReadError.
+ *
+ * Every consumer of the registry -- the native CLI, the C API, WASM and the
+ * fuzz targets -- then sees one exception for "not a file this reader reads"
+ * (detail/read_guard.hpp explains why that matters to the Python fallback).
+ */
+std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadFn> raw) {
+    for (auto& [name, fn] : raw) {
+        fn = [format = name, inner = std::move(fn)](const std::string& rPath) {
+            return detail::guarded_read(format.c_str(), [&] { return inner(rPath); });
+        };
+    }
+    return raw;
+}
+
+}  // namespace
+
 const std::map<std::string, ReadFn>& registry_readers() {
-    static const std::map<std::string, ReadFn> m = {
+    static const std::map<std::string, ReadFn> m = registry_guard_readers({
         {"abaqus", meshioplusplus::read_abaqus},
         {"abaqus_fil",
          [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
@@ -153037,7 +153966,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
         {"szplt", [](const std::string& path) { return meshioplusplus::read_szplt(path); }},
 #endif
-    };
+    });
     return m;
 }
 
@@ -153728,7 +154657,7 @@ Mesh registry_read(const std::string& rPath, const std::string& rFormat,
                    const ReadOptions& rOptions) {
     auto it = registry_readers_ex().find(rFormat);
     if (it != registry_readers_ex().end())
-        return it->second(rPath, rOptions);
+        return detail::guarded_read(rFormat.c_str(), [&] { return it->second(rPath, rOptions); });
     // No native selective path: a full read is still the correct answer.
     return registry_full_reader(rFormat)(rPath);
 }
@@ -153751,7 +154680,8 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
     auto it = registry_metadata_readers().find(rFormat);
     if (it != registry_metadata_readers().end()) {
         try {
-            MeshMetadata meta = it->second(rPath, rOptions);
+            MeshMetadata meta =
+                detail::guarded_read(rFormat.c_str(), [&] { return it->second(rPath, rOptions); });
             meta.mFormat = rFormat;
             fill_provenance(meta);
             return meta;

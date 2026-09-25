@@ -78,7 +78,10 @@
  * embedding aggregates are unchanged -- but a consumer compiled against v14 headers leaves that
  * byte indeterminate and a v15 library reads it as the policy, so it is a break all the same.
  * `tests/cpp/test_abi_layout.cpp` cannot see it beyond the new offset pin; this number is the
- * record |
+ * record | | 16  | v16.0.0            | `CellType` gained `Triangle7` before `Custom` | | 17  |
+ * v16.14.0           | **Tier B**: `NDArray`'s zeroing constructor and `MakeOwned()` skip the
+ * null-pointer `memset`/`memcpy` of an empty buffer, and its allocating constructors refuse a
+ * shape whose byte count overflows (`AllocBytes`); `sizeof(NDArray)` unchanged |
  *
  * ### This is the ONE place the number is written
  *
@@ -97,4 +100,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 16
+#define MESHIOPLUSPLUS_ABI_VERSION 17
