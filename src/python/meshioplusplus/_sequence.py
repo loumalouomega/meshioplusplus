@@ -183,17 +183,25 @@ _TIME_CAPABLE_READERS = (
 # Deliberately narrower than "every directory": an ordinary subdirectory that
 # happens to match a pattern is still skipped. The C++ glob keeps `.bp` only:
 # `pmsh` and `zarr` are Python-only and unreadable from that surface anyway,
-# while a DOLFINx VTX `.bp` (v16.13.0) is read by the core too.
+# while a DOLFINx VTX `.bp` (v16.13.0) is read by the core too. An Elmer mesh
+# directory has no suffix and is kept by its files instead (v16.17.0), in both
+# engines; an OpenFOAM case is not, since it holds several steps itself.
 DIRECTORY_FORMAT_SUFFIXES = (".pmsh", ".zarr", ".bp")
 
 
 def is_sample_path(path) -> bool:
-    """Whether ``path`` is one step's worth of data: a file, or a directory
-    store (see :data:`DIRECTORY_FORMAT_SUFFIXES`)."""
+    """Whether ``path`` is one step's worth of data: a file, a directory store
+    (see :data:`DIRECTORY_FORMAT_SUFFIXES`) or an Elmer mesh directory."""
     text = str(path)
     if os.path.isfile(text):
         return True
-    return os.path.isdir(text) and text.lower().endswith(DIRECTORY_FORMAT_SUFFIXES)
+    if not os.path.isdir(text):
+        return False
+    if text.lower().endswith(DIRECTORY_FORMAT_SUFFIXES):
+        return True
+    from ._sniff import _sniff_directory
+
+    return _sniff_directory(pathlib.Path(text)) == "elmer"
 
 
 _SEQUENCE_INPUT_KEYS = ("Pattern", "Paths", "Times", "TimeFrom")

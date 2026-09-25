@@ -380,14 +380,19 @@ std::vector<std::string> seq_glob(const std::string& rPattern) {
                         rPattern + "': " + ec.message());
     for (const std::filesystem::directory_entry& entry : it) {
         const std::string name = entry.path().filename().string();
-        // A `.bp` directory is one sample (a DOLFINx VTX file), like a file.
-        if (!entry.is_regular_file(ec) && !(entry.is_directory(ec) && seq_is_bp_directory(name)))
+        const bool is_file = entry.is_regular_file(ec);
+        if (!is_file && !entry.is_directory(ec))
             continue;
         // `d3plot01`, `d3plot02`... continue the `d3plot` beside them: one sample.
-        if (seq_is_d3plot_member(entry.path()))
+        if (seq_is_d3plot_member(entry.path()) || !sequence_glob_match(base, name))
             continue;
-        if (sequence_glob_match(base, name))
-            out.push_back(entry.path().string());
+        // A `.bp` directory is one sample (a DOLFINx VTX file), like a file, and
+        // so is an Elmer mesh directory, which has no suffix and is known by its
+        // files. Other directories, OpenFOAM cases included, are not.
+        if (!is_file && !seq_is_bp_directory(name) &&
+            sniff_format(entry.path().string()) != "elmer")
+            continue;
+        out.push_back(entry.path().string());
     }
     std::sort(out.begin(), out.end(), sequence_natural_less);
     if (out.empty())
