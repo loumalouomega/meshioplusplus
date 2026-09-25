@@ -81,7 +81,7 @@ By default paths are unrestricted — the server runs locally under your own acc
 | Tool | Returns |
 |---|---|
 | `formats` | readable/writable format lists + extension map (also the `meshioplusplus://formats` resource) |
-| `sniff` | format identified from leading bytes (a directory: the files it holds) + extension |
+| `sniff` | format identified from leading bytes (a directory: the files it holds — Elmer, OpenFOAM, a DOLFINx VTX `.bp`) + extension |
 | `info` | fast file summary via `read_metadata` — counts, cell blocks, data names, regions, time steps |
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |

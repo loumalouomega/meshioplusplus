@@ -940,9 +940,9 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("DOLFINx ADIOS2 .bp", "M"),
-                ("vendor routes (.odb · .t16)", "M"),
-                ("shared infrastructure", "S"),
+                ("card tokenizer · node orders", "S"),
+                ("Fortran records · Elmer globs", "S"),
+                ("route runs (.odb · .t16 · DPF)", "S"),
                 ("checks awaiting a licence", "S"),
             ],
             [],

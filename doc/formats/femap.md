@@ -1,6 +1,6 @@
 # Femap neutral file (`.neu`)
 
-The neutral file is [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/)'s documented ASCII interchange format, and the only open route into or out of a Femap model. Solvers write their results to it too: NX Nastran through Femap, MYSTRAN and EMSolution. It is a sequence of **data blocks**. Each opens with a line holding `-1`, then the block id, and closes at the next `-1` line. Records are comma-separated.
+The neutral file is [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/)'s documented ASCII interchange format, and the only open route into or out of a Femap model: a `.modfem` model is exported to it by Femap ([Femap `.modfem` route](../routes/femap_modfem.md), v16.13.0). Solvers write their results to it too: NX Nastran through Femap, MYSTRAN and EMSolution. It is a sequence of **data blocks**. Each opens with a line holding `-1`, then the block id, and closes at the next `-1` line. Records are comma-separated.
 
 | | |
 |---|---|

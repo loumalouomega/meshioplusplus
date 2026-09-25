@@ -26,7 +26,7 @@ meshioplusplus convert job.dat job.vtu
 meshioplusplus convert job.t19 'inc_{step}.vtu'      # one .vtu per increment
 ```
 
-`read_t19` (and `read` on a `.t19`) also takes `points_only` and `arrays` (read only the named arrays). The binary `.t16` is not read: Marc writes the `.t19` beside it when the `POST` option asks for a formatted file (its fourth field set to 1), and `.t16` files need Marc's own PyPost library.
+`read_t19` (and `read` on a `.t19`) also takes `points_only` and `arrays` (read only the named arrays). The binary `.t16` is not read: Marc writes the `.t19` beside it when the `POST` option asks for a formatted file (its fourth field set to 1), and `.t16` files need Marc's own PyPost library: the [Marc `.t16` route](../routes/marc_t16.md) (v16.13.0) exports one through it.
 
 ## Which `.dat` is Marc's
 
@@ -117,5 +117,5 @@ The C++ and Python readers agree bit for bit on all of them.
 
 - The history definition (load cases, boundary conditions, loads), and model definition options other than the three above (materials, geometry properties, boundary conditions, tables).
 - The mapping of edge and face sets to facets (their numbering is Volume A's), which are kept as field data instead.
-- The binary post file `.t16`, and post files of revision 8 or earlier.
+- The binary post file `.t16` (see the [route](../routes/marc_t16.md)), and post files of revision 8 or earlier.
 - Marc element types not in the table above, and element types added after 2005.

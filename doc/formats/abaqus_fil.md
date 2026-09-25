@@ -1,6 +1,6 @@
 # Abaqus results file (`.fil`)
 
-The results file Abaqus/Standard (and Explicit, with `*FILE OUTPUT`) writes on request with `*NODE FILE` and `*EL FILE`: the one route into Abaqus results that needs neither the ODB API nor an Abaqus installation. For `.odb` see the [roadmap](../roadmap.md) (an exporter script is planned). The input deck itself is the [`abaqus`](./abaqus.md) format.
+The results file Abaqus/Standard (and Explicit, with `*FILE OUTPUT`) writes on request with `*NODE FILE` and `*EL FILE`: the one route into Abaqus results that needs neither the ODB API nor an Abaqus installation. For `.odb`, run the exporter script in Abaqus's own Python ([Abaqus `.odb` route](../routes/abaqus_odb.md), v16.13.0). The input deck itself is the [`abaqus`](./abaqus.md) format.
 
 | | |
 |---|---|
