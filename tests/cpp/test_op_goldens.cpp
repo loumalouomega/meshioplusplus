@@ -271,6 +271,20 @@ std::uint64_t og_remesh() {
     return d.Value();
 }
 
+// The metric and gradation paths: vertex normals, curvature fits, tensors
+// and face quadrics all feed the clustering.
+std::uint64_t og_remesh_metrics() {
+    MeshDigest d;
+    for (auto metric : {mio::RemeshMetric::Quadric, mio::RemeshMetric::Anisotropic}) {
+        mio::RemeshOptions o;
+        o.mNumClusters = 120;
+        o.mMetric = metric;
+        o.mGradation = 0.5;
+        d.Of(mio::remesh(og_surface(), o).mMesh);
+    }
+    return d.Value();
+}
+
 std::uint64_t og_remesh_volume() {
     mio::RemeshVolumeOptions o;
     o.mCellSize = 0.15;
@@ -502,6 +516,7 @@ const OgCase kOgCases[] = {
     {"undo_green", og_undo_green, 0x994d7afcbc6f56d9ull},
     {"hessian", og_hessian, 0x68a9b378a927d1b3ull},
     {"remesh", og_remesh, 0x79378985b87aac45ull},
+    {"remesh_metrics", og_remesh_metrics, 0x8e4ec97dbb94abbfull},
     {"remesh_volume", og_remesh_volume, 0x7494ff7f3f992c87ull},
     {"sample_distance", og_sample_distance, 0x95506a1b94a08374ull},
     {"distance_to_surface", og_distance_to_surface, 0xd6ade37c6fb97ec8ull},
