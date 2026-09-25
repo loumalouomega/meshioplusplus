@@ -176,7 +176,9 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_CGNSLIB"] = bool(
             self.options.with_cgnslib
         )
-        tc.cache_variables["MESHIOPLUSPLUS_WITH_ADIOS2"] = bool(self.options.with_adios2)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_ADIOS2"] = bool(
+            self.options.with_adios2
+        )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_TECIO"] = bool(self.options.with_tecio)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_GIDPOST"] = bool(
             self.options.with_gidpost
