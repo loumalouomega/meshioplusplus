@@ -54,6 +54,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/gid.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 
 namespace meshioplusplus {
 namespace gid_detail {
@@ -214,7 +215,8 @@ inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
  * is 8-11 bottom ring, 12-15 VERTICALS, 16-19 top ring -- the reverse split.
  * Face centres 20-25 also disagree: meshio++ orders them x-min/x-max/y-min/
  * y-max/bottom/top, Kratos orders them bottom/y-min/x-max/y-max/x-min/top.
- * Body centre 26 agrees. The permutation below is `dst[c] = src[p[c]]` (the
+ * Body centre 26 agrees. The permutation (the node-ordering registry's "gid"
+ * entry) is `dst[c] = src[p[c]]` (the
  * `med_node_perm()`/`flatten_f`/`unflatten_f` convention already used
  * elsewhere in this repo, reused rather than reinvented) mapping a
  * GiD/Kratos slot to the meshio++ index holding the same edge/face/body; it
@@ -227,61 +229,20 @@ inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
  * top triangle -- the same reverse-split pattern, and again self-inverse.
  *
  * `pyramid13`: identical in both conventions (base-ring edges 5-8, apex
- * edges 9-12) -- no permutation, `mPerm == nullptr`.
+ * edges 9-12) -- no permutation.
  */
-struct GidCellPermEntry {
-    const char* mMeshioName;
-    std::size_t mNumNodes;
-    const int* mPerm;  // nullptr = identity
-};
-
-/// `dst[c] = src[p[c]]`, self-inverse. See `hexahedron27`'s derivation above;
-/// independently confirmed against Kratos's `vtk_output.cpp` array verbatim.
-/// Indexed and grouped deliberately, not a flat literal, so a slipped digit
-/// here is easy to catch by eye against the derivation comment above:
-///   corners 0-7, bottom-ring edges 8-11: identity
-///   top-ring edges 12-15 <- meshio++'s verticals 16-19
-///   verticals 16-19      <- meshio++'s top-ring edges 12-15
-///   face centres: 20<-24(bottom), 21<-22(y-min), 22<-21(x-max),
-///                 23<-23(y-max, fixed), 24<-20(x-min), 25<-25(top, fixed)
-///   body centre 26: fixed
-inline constexpr int kGidHexahedron27Perm[27] = {
-    0,  1,  2,  3,  4,  5,  6, 7,  // corners
-    8,  9,  10, 11,                // bottom-ring edges
-    16, 17, 18, 19,                // slot 12-15 (top ring)   <- verticals
-    12, 13, 14, 15,                // slot 16-19 (verticals)  <- top ring
-    24, 22, 21, 23, 20, 25,        // face centres 20-25
-    26,                            // body centre
-};
-
-/// `dst[c] = src[p[c]]`, self-inverse. See `wedge15`'s derivation above:
-///   corners 0-5, bottom-triangle edges 6-8: identity
-///   top-triangle edges 9-11 <- meshio++'s verticals 12-14
-///   verticals 12-14         <- meshio++'s top-triangle edges 9-11
-inline constexpr int kGidWedge15Perm[15] = {
-    0,  1,  2,  3, 4, 5,  // corners
-    6,  7,  8,            // bottom-triangle edges
-    12, 13, 14,           // slot 9-11 (top triangle) <- verticals
-    9,  10, 11,           // slot 12-14 (verticals)   <- top triangle
-};
-
-inline const std::vector<GidCellPermEntry>& gid_cell_perm_table() {
-    static const std::vector<GidCellPermEntry> table = {
-        {"hexahedron27", 27, kGidHexahedron27Perm},
-        {"wedge15", 15, kGidWedge15Perm},
-        {"pyramid13", 13, nullptr},
-    };
-    return table;
-}
-
-/// The permutation for @p rMeshioName / @p nnode, or nullptr for identity
+/// The gather table for @p rMeshioName / @p nnode, or nullptr for identity
 /// (either because the type needs none, like `pyramid13`, or because it is
-/// not in this table at all -- every OTHER GiD-supported type is identity).
-inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnode) {
-    for (const GidCellPermEntry& e : gid_cell_perm_table())
-        if (e.mNumNodes == nnode && rMeshioName == e.mMeshioName)
-            return e.mPerm;
-    return nullptr;
+/// not in the table at all -- every OTHER GiD-supported type is identity).
+/// The tables are the "gid" entries of the node-ordering registry
+/// (detail/node_order.cpp): with @p ToMeshio, meshio++ slot j receives GiD
+/// file slot perm[j] (reading); otherwise GiD slot j receives meshio++ node
+/// perm[j] (writing).
+inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnode, bool ToMeshio) {
+    const detail::NodeOrder* order = detail::node_order("gid", rMeshioName);
+    if (!order || order->mToMeshio.size() != nnode)
+        return nullptr;
+    return ToMeshio ? order->mToMeshio.data() : order->mFromMeshio.data();
 }
 
 /**

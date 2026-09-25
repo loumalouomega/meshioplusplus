@@ -605,3 +605,67 @@ def test_a_region_less_mesh_still_writes_no_eb_names(tmp_path):
     py_exodus.write(tmp_path / "plain.exo", _two_block_mesh())
     with netCDF4.Dataset(tmp_path / "plain.exo") as nc:
         assert "eb_names" not in nc.variables
+
+
+def _quadratic_cells():
+    """A unit hexahedron20/hexahedron27/wedge15, each in meshio++ (VTK) order."""
+    c = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4)]
+    edges += [(0, 4), (1, 5), (2, 6), (3, 7)]
+    faces = [
+        (0, 4, 7, 3),
+        (1, 2, 6, 5),
+        (0, 1, 5, 4),
+        (3, 7, 6, 2),
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+    ]
+    h20 = np.vstack([c] + [(c[a] + c[b])[None] / 2 for a, b in edges])
+    h27 = np.vstack(
+        [h20] + [c[list(f)].mean(0)[None] for f in faces] + [c.mean(0)[None]]
+    )
+    w = c[[0, 1, 3, 4, 5, 7]]
+    w_edges = [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)]
+    w15 = np.vstack([w] + [(w[a] + w[b])[None] / 2 for a, b in w_edges])
+    return {"hexahedron20": h20, "hexahedron27": h27, "wedge15": w15}
+
+
+@pytest.mark.parametrize("engine", ["cpp", "python"])
+@pytest.mark.parametrize("cell_type", ["hexahedron20", "hexahedron27", "wedge15"])
+def test_quadratic_solids_are_written_in_seacas_order(tmp_path, engine, cell_type):
+    # SEACAS lists the vertical mid-edges before the top ring (Hex27: body
+    # centre first, then the face centres). VTK's own Exodus reader applies the
+    # same tables, so it must place every node back at its coordinate.
+    vtk = pytest.importorskip("vtk")
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    pts = _quadratic_cells()[cell_type]
+    mesh = meshioplusplus.Mesh(pts, [(cell_type, np.arange(len(pts))[None])])
+    out = str(tmp_path / "q.exo")
+    if engine == "cpp":
+        _core.exodus_write(out, mesh)
+    else:
+        py_exodus.write(out, mesh)
+    reader = vtk.vtkExodusIIReader()
+    reader.SetFileName(out)
+    reader.UpdateInformation()
+    reader.SetAllArrayStatus(reader.ELEM_BLOCK, 1)
+    reader.Update()
+    block = reader.GetOutput().GetBlock(0).GetBlock(0)
+    cell = block.GetCell(0)
+    ids = [cell.GetPointId(i) for i in range(cell.GetNumberOfPoints())]
+    np.testing.assert_array_equal(vtk_to_numpy(block.GetPoints().GetData())[ids], pts)
+    back = meshioplusplus.read(out)
+    np.testing.assert_array_equal(back.points[back.cells[0].data[0]], pts)

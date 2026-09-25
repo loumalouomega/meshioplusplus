@@ -1,10 +1,11 @@
 """The node-ordering registry (``_node_order.py``, twin of ``detail/node_order.cpp``).
 
-Every table is checked geometrically. A meshio++ reference element (mid-edge
-nodes on edge midpoints, face and body centres on centroids) is written into the
-file's order and read back through another table; the result must again be a
-valid element. For Code_Aster the tables are also pinned against Code_Aster's
-own readers:
+Every table is a permutation whose two directions are inverses. The tables of
+gmsh, CGNS, GiD, Kratos and Exodus are pinned geometrically: an element built
+in the file's order from that format's own documentation (mid-edge nodes on
+edge midpoints, face and body centres on centroids) must read as a valid
+meshio++ element. For Code_Aster the tables are pinned against Code_Aster's own
+readers:
 
 - ``bibfor/prepost/inigms.F90`` (gmsh -> Aster, used by ``PRE_GMSH``) composed
   with meshio++'s gmsh tables must give the ``code_aster`` table exactly;
@@ -109,14 +110,117 @@ _ALL = _node_order.node_order_keys()
 
 
 @pytest.mark.parametrize("fmt, cell_type", _ALL, ids=[f"{f}-{t}" for f, t in _ALL])
-def test_every_table_round_trips_a_reference_element(fmt, cell_type):
+def test_every_table_is_a_permutation_and_its_inverse(fmt, cell_type):
     order = _node_order.node_order(fmt, cell_type)
-    ref = _reference(cell_type)
-    assert sorted(order.to_meshio) == list(range(len(ref)))
-    in_file = ref[list(order.from_meshio)]
-    back = in_file[list(order.to_meshio)]
-    np.testing.assert_array_equal(back, ref)
-    assert _is_valid(back, cell_type)
+    n = len(_reference(cell_type))
+    assert sorted(order.to_meshio) == list(range(n))
+    assert [order.to_meshio[j] for j in order.from_meshio] == list(range(n))
+
+
+# ---------------------------------------------------------------------------
+# File-order reference elements, transcribed from each format's own
+# documentation rather than from the tables: every file slot past the corners
+# is the centroid of the listed corners (meshio++ corner numbering; the corners
+# of these formats are meshio++'s). Built in file order and read through
+# `to_meshio`, each must come out a valid meshio++ element.
+# ---------------------------------------------------------------------------
+
+_HEX_CORNERS_ONLY = [(k,) for k in range(8)]
+_WED_CORNERS_ONLY = [(k,) for k in range(6)]
+_PYR_CORNERS_ONLY = [(k,) for k in range(5)]
+# Bottom ring, verticals, top ring: CGNS SIDS HEXA_20, SEACAS Ioss Hex20 and
+# Kratos's Hexahedra3D20 (PointsLocalCoordinates, GenerateEdges).
+_HEX20_VERTICALS_FIRST = _HEX_CORNERS_ONLY + [
+    (0, 1), (1, 2), (2, 3), (3, 0),
+    (0, 4), (1, 5), (2, 6), (3, 7),
+    (4, 5), (5, 6), (6, 7), (7, 4),
+]  # fmt: skip
+_WED15_VERTICALS_FIRST = _WED_CORNERS_ONLY + [
+    (0, 1), (1, 2), (2, 0),
+    (0, 3), (1, 4), (2, 5),
+    (3, 4), (4, 5), (5, 3),
+]  # fmt: skip
+_Z_MINUS, _Z_PLUS = (0, 1, 2, 3), (4, 5, 6, 7)
+_X_MINUS, _X_PLUS = (0, 3, 7, 4), (1, 2, 6, 5)
+_Y_MINUS, _Y_PLUS = (0, 1, 5, 4), (2, 3, 7, 6)
+_BODY = tuple(range(8))
+# gmsh reference manual, "Node ordering".
+_GMSH_HEX20 = _HEX_CORNERS_ONLY + [
+    (0, 1), (0, 3), (0, 4), (1, 2), (1, 5), (2, 3),
+    (2, 6), (3, 7), (4, 5), (4, 7), (5, 6), (6, 7),
+]  # fmt: skip
+_GMSH_WED15 = _WED_CORNERS_ONLY + [
+    (0, 1), (0, 2), (0, 3), (1, 2), (1, 4), (2, 5), (3, 4), (3, 5), (4, 5),
+]  # fmt: skip
+_GMSH_PYR13 = _PYR_CORNERS_ONLY + [
+    (0, 1), (0, 3), (0, 4), (1, 2), (1, 4), (2, 3), (2, 4), (3, 4),
+]  # fmt: skip
+
+_FILE_ORDER = {
+    ("gmsh", "tetra10"): [
+        (0,),
+        (1,),
+        (2,),
+        (3,),
+        (0, 1),
+        (1, 2),
+        (0, 2),
+        (0, 3),
+        (2, 3),
+        (1, 3),
+    ],
+    ("gmsh", "hexahedron20"): _GMSH_HEX20,
+    ("gmsh", "hexahedron27"): _GMSH_HEX20
+    + [_Z_MINUS, _Y_MINUS, _X_MINUS, _X_PLUS, _Y_PLUS, _Z_PLUS, _BODY],
+    ("gmsh", "wedge15"): _GMSH_WED15,
+    ("gmsh", "wedge18"): _GMSH_WED15 + [(0, 1, 4, 3), (0, 2, 5, 3), (1, 2, 5, 4)],
+    ("gmsh", "pyramid13"): _GMSH_PYR13,
+    ("gmsh", "pyramid14"): _GMSH_PYR13 + [(0, 1, 2, 3)],
+    # CGNS SIDS, "Unstructured Grid Element Numbering Conventions".
+    ("cgns", "hexahedron20"): _HEX20_VERTICALS_FIRST,
+    ("cgns", "hexahedron27"): _HEX20_VERTICALS_FIRST
+    + [_Z_MINUS, _Y_MINUS, _X_PLUS, _Y_PLUS, _X_MINUS, _Z_PLUS, _BODY],
+    ("cgns", "wedge15"): _WED15_VERTICALS_FIRST,
+    ("cgns", "wedge18"): _WED15_VERTICALS_FIRST
+    + [(0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)],
+    # Kratos's geometry classes (hexahedra_3d_27.h, prism_3d_15.h), which the
+    # GiD writer emits unchanged for these two types and `.mdpa` stores.
+    ("gid", "hexahedron27"): _HEX20_VERTICALS_FIRST
+    + [_Z_MINUS, _Y_MINUS, _X_PLUS, _Y_PLUS, _X_MINUS, _Z_PLUS, _BODY],
+    ("gid", "wedge15"): _WED15_VERTICALS_FIRST,
+    ("mdpa", "hexahedron20"): _HEX20_VERTICALS_FIRST,
+    ("mdpa", "hexahedron27"): _HEX20_VERTICALS_FIRST
+    + [_Z_MINUS, _Y_MINUS, _X_PLUS, _Y_PLUS, _X_MINUS, _Z_PLUS, _BODY],
+    ("mdpa", "wedge15"): _WED15_VERTICALS_FIRST,
+    # SEACAS Ioss (Hex20, Hex27, Wedge15): Hex27 puts the body centre first.
+    ("exodus", "hexahedron20"): _HEX20_VERTICALS_FIRST,
+    ("exodus", "hexahedron27"): _HEX20_VERTICALS_FIRST
+    + [_BODY, _Z_MINUS, _Z_PLUS, _X_MINUS, _X_PLUS, _Y_MINUS, _Y_PLUS],
+    ("exodus", "wedge15"): _WED15_VERTICALS_FIRST,
+}
+
+
+@pytest.mark.parametrize(
+    "fmt, cell_type",
+    sorted(_FILE_ORDER),
+    ids=[f"{f}-{t}" for f, t in sorted(_FILE_ORDER)],
+)
+def test_a_file_order_element_reads_as_a_valid_element(fmt, cell_type):
+    corners = np.array(_SHAPES[cell_type][0], dtype=float)
+    in_file = np.array(
+        [corners[list(s)].mean(0) for s in _FILE_ORDER[(fmt, cell_type)]]
+    )
+    assert len(in_file) == len(_reference(cell_type))
+    back = _node_order.to_meshio(fmt, cell_type, np.arange(len(in_file))[None])[0]
+    assert _is_valid(in_file[back], cell_type)
+
+
+def test_every_moved_format_has_a_file_order_reference():
+    # The tables moved out of the gmsh, CGNS, GiD, Kratos and Exodus readers
+    # are each pinned by a transcription of their own format's documentation.
+    moved = {"gmsh", "cgns", "gid", "mdpa", "exodus"}
+    keys = {key for key in _ALL if key[0] in moved}
+    assert keys == set(_FILE_ORDER)
 
 
 def test_matches_the_cpp_twin():

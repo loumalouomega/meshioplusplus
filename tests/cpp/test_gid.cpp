@@ -282,7 +282,7 @@ TEST(GidOrdering, Quad8MatchesGidGeometry) {
 // pyramid_3d_13.h) were read directly and cross-checked against a second,
 // Element-agnostic Kratos source (kratos/input_output/vtk_output.cpp's
 // Kratos-to-VTK conversion, mirrored in ensight_output.cpp). See
-// gid_common.hpp's `gid_cell_perm_table()` for the full derivation.
+// gid_common.hpp's `gid_cell_perm()` for the full derivation.
 //
 // The expected permutation is written out LITERALLY here rather than by
 // calling gid_detail::gid_cell_perm() -- a bug in that table must not be able

@@ -136,7 +136,7 @@ namespace {
 // -- and it is the only one of the three with NO Kratos-GiD precedent
 // whatsoever, since Kratos never registers a GiD mesh container for any
 // pyramid; its ordering rests on Kratos's internal geometry convention
-// alone. See gid_common.hpp's `gid_cell_perm_table()` for the full
+// alone. See gid_common.hpp's `gid_cell_perm()` for the full
 // derivation and the permutation arrays themselves.
 //
 // Anything not in this table -- polygon/polyhedron (GiD has no such type),
@@ -291,7 +291,7 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         // gid_common.hpp's derivation): GiD slot j receives meshio++ node
         // perm[j], the exact `dst[c] = src[p[c]]` convention med.cpp's
         // `flatten_f` already uses in this repo.
-        const int* perm = gid_detail::gid_cell_perm(cb.Type(), npc);
+        const int* perm = gid_detail::gid_cell_perm(std::string(cb.Type()), npc, false);
         std::vector<int> ids(ne);
         std::vector<int> flat_conn(ne * npc);
         for (std::size_t r = 0; r < ne; ++r) {

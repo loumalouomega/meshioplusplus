@@ -38,6 +38,7 @@
 #include "meshioplusplus/backends/kratos_names.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -108,21 +109,15 @@ bool mdpa_parse_double(const std::string& rS, double& rOut) {
 //
 // `mdpa_kratos_node_order(type)[i]` is the meshio/VTK slot the node in Kratos
 // slot `i` belongs in. Reading therefore scatters (`out[table[i]] = in[i]`) and
-// writing gathers (`out[j] = in[table[j]]`) — the exact inverse pair the Python
-// reference builds with `np.argsort`.
+// writing gathers (`out[j] = in[table[j]]`). The tables are the "mdpa" entries
+// of the node-ordering registry (detail/node_order.cpp), read from Kratos's own
+// geometry classes.
 // ---------------------------------------------------------------------------
 
 const std::vector<int>& mdpa_kratos_node_order(CellType type) {
-    static const std::vector<int> h20 = {0,  1, 2,  3,  4,  5,  6,  7,  8,  11,
-                                         10, 9, 16, 19, 18, 17, 12, 13, 14, 15};
-    static const std::vector<int> h27 = {0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 10, 9,  16, 19,
-                                         18, 17, 12, 15, 14, 13, 20, 23, 21, 24, 22, 25, 26};
     static const std::vector<int> none;
-    if (type == CellType::Hexahedron20)
-        return h20;
-    if (type == CellType::Hexahedron27)
-        return h27;
-    return none;
+    const detail::NodeOrder* order = detail::node_order("mdpa", cell_type_name(type));
+    return order ? order->mFromMeshio : none;
 }
 
 /**

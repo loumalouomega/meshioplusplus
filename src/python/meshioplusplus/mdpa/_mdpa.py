@@ -68,6 +68,7 @@ import io
 
 import numpy as np
 
+from .. import _node_order
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
@@ -174,6 +175,9 @@ _kratos_geometries_to_meshio_type = {
     "Tetrahedra3D4": "tetra",
     "Hexahedra3D8": "hexahedron",
     "Prism3D6": "wedge",
+    "Prism3D15": "wedge15",
+    "Pyramid3D5": "pyramid",
+    "Pyramid3D13": "pyramid13",
     "Line2D3": "line3",
     "Line3D3": "line3",
     "Triangle2D6": "triangle6",
@@ -207,7 +211,7 @@ _kratos_elements_to_meshio_type = {
     "Element3D6N": "wedge",
     "Element3D8N": "hexahedron",
     "Element3D10N": "tetra10",
-    "Element3D13N": "wedge15",
+    "Element3D13N": "pyramid13",
     "Element3D15N": "wedge15",
     "Element3D20N": "hexahedron20",
     "Element3D27N": "hexahedron27",
@@ -232,6 +236,10 @@ _kratos_elements_to_meshio_type = {
     "Quadrilateral3D4": "quad",
     "Hexahedra3D20": "hexahedron20",
     "Hexahedra3D27": "hexahedron27",
+    "Prism3D6": "wedge",
+    "Prism3D15": "wedge15",
+    "Pyramid3D5": "pyramid",
+    "Pyramid3D13": "pyramid13",
 }
 
 _kratos_conditions_to_meshio_type = {
@@ -1018,52 +1026,6 @@ def _prepare_cells(cells_list_of_tuples, cell_tags_dict, cell_ids_dict=None):
                 ids_list, dtype=int
             )
     final_cells_for_mesh = []
-    # Kratos to VTK node index permutations for hexahedron20 and hexahedron27 elements.
-    # These are applied to convert MDPA's Kratos-specific node ordering to meshio's VTK-based ordering.
-    # We define the Kratos node IDs as they appear in a standard MDPA file for these elements.
-    # The permutation maps Kratos index i to VTK index j.
-    # h20_kratos_nodes[i] gives the VTK index corresponding to Kratos node i.
-    h20_kratos_nodes = np.array(
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 10, 9, 16, 19, 18, 17, 12, 13, 14, 15],
-        dtype=int,
-    )
-    # We use argsort to find the permutation that transforms Kratos data to meshio (VTK) order.
-    kratos_to_vtk_h20_perm = np.argsort(h20_kratos_nodes)
-
-    h27_kratos_nodes = np.array(
-        [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            11,
-            10,
-            9,
-            16,
-            19,
-            18,
-            17,
-            12,
-            15,
-            14,
-            13,
-            20,
-            23,
-            21,
-            24,
-            22,
-            25,
-            26,
-        ],
-        dtype=int,
-    )
-    kratos_to_vtk_h27_perm = np.argsort(h27_kratos_nodes)
-
     for cell_type_str, cell_data_list_of_lists in cells_list_of_tuples:
         if not cell_data_list_of_lists:
             num_expected_nodes = num_nodes_per_cell.get(cell_type_str, 0)
@@ -1090,11 +1052,9 @@ def _prepare_cells(cells_list_of_tuples, cell_tags_dict, cell_ids_dict=None):
                         actual_type = mtype
                         break
 
-            if actual_type == "hexahedron20" and cell_array.shape[1] == 20:
-                cell_array = cell_array[:, kratos_to_vtk_h20_perm]
-            elif actual_type == "hexahedron27" and cell_array.shape[1] == 27:
-                if len(kratos_to_vtk_h27_perm) == 27:
-                    cell_array = cell_array[:, kratos_to_vtk_h27_perm]
+            # Kratos's internal node order -> meshio++'s: the "mdpa" entries of
+            # the node-ordering registry (_node_order.py).
+            cell_array = _node_order.to_meshio("mdpa", actual_type, cell_array)
 
             final_cells_for_mesh.append(CellBlock(actual_type, cell_array))
     return final_cells_for_mesh, output_cell_tags_meshio, has_additional_tag_data
@@ -2471,66 +2431,9 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
 
     misc_data = getattr(mesh, "misc_data", {})
 
-    # VTK to Kratos permutations. These are the inverses of the Kratos-to-VTK
-    # permutations applied in `_prepare_cells`.
-    # To write in Kratos order, we need to map VTK index j back to Kratos index i.
-    # We define the mapping explicitly: h20_kratos_nodes[i] is the VTK index for Kratos node i.
-    h20_kratos_nodes = np.array(
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 10, 9, 16, 19, 18, 17, 12, 13, 14, 15],
-        dtype=int,
-    )
-    vtk_to_kratos_h20_perm = h20_kratos_nodes
-
-    h27_kratos_nodes = np.array(
-        [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            11,
-            10,
-            9,
-            16,
-            19,
-            18,
-            17,
-            12,
-            15,
-            14,
-            13,
-            20,
-            23,
-            21,
-            24,
-            22,
-            25,
-            26,
-        ],
-        dtype=int,
-    )
-    vtk_to_kratos_h27_perm = h27_kratos_nodes
-
     cells_to_write = []
     for cell_block in mesh.cells:
-        data = cell_block.data.copy()
-        if cell_block.type == "hexahedron20":
-            if (
-                data.shape[1] == 20
-            ):  # Check if data is not empty and has correct num columns
-                data = data[:, vtk_to_kratos_h20_perm]
-        elif cell_block.type == "hexahedron27":
-            if data.shape[1] == 27:  # Check if data is not empty
-                if len(vtk_to_kratos_h27_perm) == 27:  # Basic check
-                    data = data[:, vtk_to_kratos_h27_perm]
-                else:
-                    warn(
-                        f"VTK H27 permutation array is not of length 27. Skipping permutation for {cell_block.type}."
-                    )
+        data = _node_order.from_meshio("mdpa", cell_block.type, cell_block.data.copy())
         cells_to_write.append(CellBlock(cell_block.type, data))
 
     with open_file(filename, "wb") as fh:

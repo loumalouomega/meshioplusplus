@@ -19,79 +19,40 @@ import warnings
 
 import numpy as np
 
-from .. import _provenance
+from .. import _node_order, _provenance
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
 
 # meshio++ <-> CGNS ElementType_t table, kept in exact sync with
-# src/cpp/src/formats/cgns.cpp's cgns_type_table() -- see that file's
-# comment for the SIDS/VTK sources each permutation was derived from.
-# name -> (cgns_name, ElementType_t code, permutation-or-None)
+# src/cpp/src/formats/cgns.cpp's cgns_type_table(). The SIDS node order of
+# PENTA_15/18 and HEXA_20/27 differs from meshio++'s; those permutations are
+# the "cgns" entries of the node-ordering registry (_node_order.py).
+# name -> (cgns_name, ElementType_t code)
 _CGNS_TYPES = {
-    "vertex": ("NODE", 2, None),
-    "line": ("BAR_2", 3, None),
-    "line3": ("BAR_3", 4, None),
-    "triangle": ("TRI_3", 5, None),
-    "triangle6": ("TRI_6", 6, None),
-    "quad": ("QUAD_4", 7, None),
-    "quad8": ("QUAD_8", 8, None),
-    "quad9": ("QUAD_9", 9, None),
-    "tetra": ("TETRA_4", 10, None),
-    "tetra10": ("TETRA_10", 11, None),
-    "pyramid": ("PYRA_5", 12, None),
-    "pyramid14": ("PYRA_14", 13, None),
-    "wedge": ("PENTA_6", 14, None),
-    "wedge15": ("PENTA_15", 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11]),
-    "wedge18": (
-        "PENTA_18",
-        16,
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17],
-    ),
-    "hexahedron": ("HEXA_8", 17, None),
-    "hexahedron20": (
-        "HEXA_20",
-        18,
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15],
-    ),
-    "hexahedron27": (
-        "HEXA_27",
-        19,
-        [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            16,
-            17,
-            18,
-            19,
-            12,
-            13,
-            14,
-            15,
-            24,
-            22,
-            21,
-            23,
-            20,
-            25,
-            26,
-        ],
-    ),
-    # PYRA_13's code (21) is non-monotonic -- appended after MIXED in the
-    # CGNS ElementType_t enum, not a typo.
-    "pyramid13": ("PYRA_13", 21, None),
+    "vertex": ("NODE", 2),
+    "line": ("BAR_2", 3),
+    "line3": ("BAR_3", 4),
+    "triangle": ("TRI_3", 5),
+    "triangle6": ("TRI_6", 6),
+    "quad": ("QUAD_4", 7),
+    "quad8": ("QUAD_8", 8),
+    "quad9": ("QUAD_9", 9),
+    "tetra": ("TETRA_4", 10),
+    "tetra10": ("TETRA_10", 11),
+    "pyramid": ("PYRA_5", 12),
+    "pyramid14": ("PYRA_14", 13),
+    "wedge": ("PENTA_6", 14),
+    "wedge15": ("PENTA_15", 15),
+    "wedge18": ("PENTA_18", 16),
+    "hexahedron": ("HEXA_8", 17),
+    "hexahedron20": ("HEXA_20", 18),
+    "hexahedron27": ("HEXA_27", 19),
+    # PYRA_13's code (21) is non-monotonic -- appended to ElementType_t after
+    # MIXED in the CGNS enum -- not a typo.
+    "pyramid13": ("PYRA_13", 21),
 }
-_CODE_TO_TYPE = {code: name for name, (_cgns_name, code, _perm) in _CGNS_TYPES.items()}
+_CODE_TO_TYPE = {code: name for name, (_cgns_name, code) in _CGNS_TYPES.items()}
 _CODE_TO_CGNS_NAME = {
     2: "NODE",
     3: "BAR_2",
@@ -218,12 +179,13 @@ def _read_solution(sol, sol_name, expected_rows):
     return out
 
 
-def _permute_conn(conn, perm, shift):
-    """Column permutation + additive shift; every table entry above is
-    self-inverse, so the same `perm` serves write (shift=+1) and read
-    (shift=-1) -- the exact C++ `cgns_permute_conn` convention."""
-    if perm is not None:
-        conn = conn[:, perm]
+def _permute_conn(conn, cell_type, shift):
+    """Node reorder + additive shift, the C++ `cgns_permute_conn` convention:
+    shift=+1 writes (meshio++ to SIDS order), shift=-1 reads."""
+    if shift > 0:
+        conn = _node_order.from_meshio("cgns", cell_type, conn)
+    else:
+        conn = _node_order.to_meshio("cgns", cell_type, conn)
     return conn + shift
 
 
@@ -424,7 +386,7 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
         nc = conn.shape[0]
         if nc == 0:
             continue  # a zero-length ElementRange is not representable
-        cgns_name, code, perm = _CGNS_TYPES[cb.type]
+        cgns_name, code = _CGNS_TYPES[cb.type]
 
         first, last = next_id, next_id + nc - 1
         next_id = last + 1
@@ -443,7 +405,7 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
         _write_node_attrs(rng, "ElementRange", "IndexRange_t", _type_code(out_dtype))
         rng.create_dataset(" data", data=np.array([first, last], dtype=out_dtype))
 
-        permuted = _permute_conn(conn.astype(out_dtype), perm, 1)
+        permuted = _permute_conn(conn.astype(out_dtype), cb.type, 1)
         flat = permuted.reshape(-1)
 
         ec = _create_group(sect, "ElementConnectivity")
@@ -676,7 +638,7 @@ def _read_spec(f):
                     f"CGNS: element section '{sname}' has unknown ElementType "
                     f"code {code}."
                 )
-            cgns_name, _code, perm = _CGNS_TYPES[meshio_type]
+            cgns_name, _code = _CGNS_TYPES[meshio_type]
 
             rng = np.asarray(s["ElementRange"][" data"][()]).reshape(-1)
             first, last = int(rng[0]), int(rng[1])
@@ -696,7 +658,7 @@ def _read_spec(f):
                 )
 
             conn = flat.reshape(nc, expected_npc)
-            conn = _permute_conn(conn, perm, -1)
+            conn = _permute_conn(conn, meshio_type, -1)
             if point_offset:
                 conn = conn + point_offset
             cells.append((meshio_type, conn.astype(np.int64)))

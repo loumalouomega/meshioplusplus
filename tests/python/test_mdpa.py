@@ -1740,6 +1740,21 @@ def test_roundtrip_tables_varied(tmp_path):
     assert_misc_data_equal(mesh1.field_data, mesh2.field_data)
 
 
+def _assert_valid_quadratic_hex(x):
+    """Mid-edge nodes on edge midpoints and, for 27 nodes, the face and body
+    centres on centroids, all in meshio++'s (VTK) order."""
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4)]
+    edges += [(0, 4), (1, 5), (2, 6), (3, 7)]
+    for k, (a, b) in enumerate(edges):
+        np.testing.assert_allclose(x[8 + k], (x[a] + x[b]) / 2)
+    if len(x) == 27:
+        faces = [(0, 4, 7, 3), (1, 2, 6, 5), (0, 1, 5, 4), (3, 7, 6, 2)]
+        faces += [(0, 3, 2, 1), (4, 5, 6, 7)]
+        for k, f in enumerate(faces):
+            np.testing.assert_allclose(x[20 + k], x[list(f)].mean(0))
+        np.testing.assert_allclose(x[26], x[:8].mean(0))
+
+
 def test_elements_permutations_read():
     """Test reading elements with Kratos-specific node ordering (H20, H27)."""
     mesh = meshioplusplus.read(ELEMENTS_PERMUTATIONS_FILE)
@@ -1760,14 +1775,16 @@ def test_elements_permutations_read():
     assert h20_block.type == "hexahedron20"
     assert h27_block.type == "hexahedron27"
 
-    # Expected VTK ordering (0-indexed) after permutation by _prepare_cells
-    # For H20, nodes 0-19 are used.
-    expected_h20_vtk_nodes = np.arange(20)
-    np.testing.assert_array_equal(h20_block.data[0], expected_h20_vtk_nodes)
-
-    # For H27, nodes 0-26 are used.
-    expected_h27_vtk_nodes = np.arange(27)
-    np.testing.assert_array_equal(h27_block.data[0], expected_h27_vtk_nodes)
+    # The fixture lists its elements in Kratos's own order
+    # (kratos/geometries/hexahedra_3d_20.h, hexahedra_3d_27.h); its nodes are
+    # numbered bottom ring, top ring, verticals, then the face centres z-, y-,
+    # x+, y+, x- and z+ and the body centre.
+    np.testing.assert_array_equal(h20_block.data[0], np.arange(20))
+    np.testing.assert_array_equal(
+        h27_block.data[0], list(range(20)) + [24, 22, 21, 23, 20, 25, 26]
+    )
+    for block in (h20_block, h27_block):
+        _assert_valid_quadratic_hex(mesh.points[block.data[0]])
 
 
 def test_elements_permutations_roundtrip(tmp_path):
@@ -2461,9 +2478,9 @@ def test_cpp_kratos_node_permutations_match_python(tmp_path):
     cpp_mesh = _core.mdpa_read(str(p))
     _assert_same_geometry(py_mesh, cpp_mesh)
     for block in cpp_mesh.cells:
-        # The fixture stores the identity permutation in Kratos order, so the
-        # VTK-ordered result must be 0..n-1.
-        np.testing.assert_array_equal(block.data[0], np.arange(block.data.shape[1]))
+        # The fixture lists Kratos's own order, which must read as a valid
+        # meshio++ element.
+        _assert_valid_quadratic_hex(cpp_mesh.points[block.data[0]])
 
     # ... and the C++ writer puts them back in Kratos order (the Python
     # reference reader agrees on the result).
