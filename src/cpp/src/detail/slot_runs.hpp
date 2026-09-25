@@ -305,6 +305,47 @@ SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::s
         FacetKeyLess{});
 }
 
+/**
+ * @brief `group_slots` for variable-length integer keys stored as CSR: key
+ * `i` is `rValues[rOffsets[i] .. rOffsets[i + 1])`, and two keys are equal
+ * exactly when they have the same length and values. Bucketed by each key's
+ * first value (`NumIds` when the key is empty or that value is not in
+ * `[0, NumIds)`), so a caller whose keys are sorted rows gets the smallest
+ * id as the bucket. The keep-first rule of a duplicate filter is the run
+ * head: slots ascend within a run.
+ */
+inline SlotRuns group_int_rows(const std::vector<std::int64_t>& rValues,
+                               const std::vector<std::uint64_t>& rOffsets, std::size_t NumIds) {
+    const std::size_t n = rOffsets.empty() ? 0 : rOffsets.size() - 1;
+    std::vector<std::uint64_t> slots(n);
+    parallel_for_bw(n, [&](std::size_t i) { slots[i] = i; });
+    const std::int64_t* v = rValues.data();
+    const std::uint64_t* off = rOffsets.data();
+    return group_slots(
+        slots, NumIds + 1,
+        [&](std::uint64_t i) -> std::size_t {
+            if (off[i] == off[i + 1] || v[off[i]] < 0 ||
+                static_cast<std::size_t>(v[off[i]]) >= NumIds)
+                return NumIds;
+            return static_cast<std::size_t>(v[off[i]]);
+        },
+        [&](std::uint64_t a, std::uint64_t b) {
+            return std::lexicographical_compare(v + off[a], v + off[a + 1], v + off[b],
+                                                v + off[b + 1]);
+        });
+}
+
+/// Per slot, whether an earlier slot holds its key: every member of a run
+/// but its head (the keep-first rule).
+inline std::vector<std::uint8_t> later_duplicates(const SlotRuns& rRuns, std::size_t NumSlots) {
+    std::vector<std::uint8_t> dup(NumSlots, 0);
+    parallel_for(rRuns.NumRuns(), [&](std::size_t r) {
+        for (const std::uint64_t* p = rRuns.Begin(r) + 1; p < rRuns.End(r); ++p)
+            dup[*p] = 1;
+    });
+    return dup;
+}
+
 /// Per slot, how many slots hold its key (the count-only rule).
 inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::size_t NumSlots) {
     std::vector<std::uint32_t> count(NumSlots, 0);
