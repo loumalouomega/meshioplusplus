@@ -229,7 +229,7 @@ CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOp
     const detail::SurfaceEdgeMap edges = detail::build_surface_edges(soup);
 
     CurvatureResult out;
-    out.mQuality = detail::soup_quality(soup);
+    out.mQuality = detail::soup_quality(soup, edges);  // the one edge map, built once
     out.mMesh = detail::clone_mesh(
         rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
 

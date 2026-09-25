@@ -177,6 +177,11 @@ MESHIOPLUSPLUS_API SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup)
 /// The four edge defect counts of a soup, and the resulting verdict.
 MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
 
+/// `soup_quality` over an edge map the caller already built for @p rSoup with
+/// `build_surface_edges` (v16.17.0), so it is not built twice.
+MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
+                                               const SurfaceEdgeMap& rEdges);
+
 /**
  * @brief A soup prepared for querying: the accelerator plus the normal tables.
  *

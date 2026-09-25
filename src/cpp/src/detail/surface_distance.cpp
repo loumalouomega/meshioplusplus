@@ -216,6 +216,10 @@ SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
 }
 
 SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
+    return soup_quality(rSoup, build_surface_edges(rSoup));
+}
+
+SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEdges) {
     SurfaceQuality q;
     const std::size_t ntri = rSoup.NumTriangles();
 
@@ -227,8 +231,7 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
             ++q.mDegenerateTriangles;
     }
 
-    const SurfaceEdgeMap edges = build_surface_edges(rSoup);
-    for (const auto& kv : edges) {
+    for (const auto& kv : rEdges) {
         const std::int64_t used = kv.second.mUsed;
         const std::int64_t forward = kv.second.mForward;
         if (used == 1)
