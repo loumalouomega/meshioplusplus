@@ -158,6 +158,10 @@ tests/python/meshes/femap/** -filter -diff -merge text
 # of LFS like the ones above; the .xdr twins are big-endian XDR bytes.
 tests/python/meshes/libmesh/** -filter -diff -merge text
 tests/python/meshes/libmesh/*.xdr binary
+# ...and the compressed twins: gzip/bzip2 bytes, which a CRLF-normalizing Windows
+# checkout corrupted while they were covered by the `text` rule above.
+tests/python/meshes/libmesh/*.gz binary
+tests/python/meshes/libmesh/*.bz2 binary
 # Z88 decks written by tools/gen_z88_fixtures.py and the Z88R V15 output for the
 # cantilever (see that directory's README.md): small text kept out of LFS.
 tests/python/meshes/z88/** -filter -diff -merge text

@@ -115,6 +115,9 @@ def translate_mixed_cells(data):
 
     # https://xdmf.org/index.php/XDMF_Model_and_Format#Arbitrary
     # https://gitlab.kitware.com/xdmf/xdmf/blob/master/XdmfTopologyType.hpp#L394
+    # The C++ reader's table (xdmf.cpp's xdmf_idx_num_nodes): the quadratic
+    # types were missing here, so a mixed topology holding any of them could
+    # only be read by the core.
     xdmf_idx_to_num_nodes = {
         1: 1,  # vertex
         2: 2,  # line
@@ -124,7 +127,17 @@ def translate_mixed_cells(data):
         7: 5,  # pyramid
         8: 6,  # wedge
         9: 8,  # hex
-        11: 6,  # triangle6
+        0x22: 3,  # line3
+        0x23: 9,  # quad9
+        0x24: 6,  # triangle6
+        0x25: 8,  # quad8
+        0x26: 10,  # tetra10
+        0x27: 13,  # pyramid13
+        0x28: 15,  # wedge15
+        0x29: 18,  # wedge18
+        0x30: 20,  # hexahedron20
+        0x31: 24,  # hexahedron24
+        0x32: 27,  # hexahedron27
     }
 
     # collect types and offsets
