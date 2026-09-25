@@ -40,7 +40,9 @@ def read(filename):
                 for name, na in value.items():
                     point_data[name] = na[()]
 
-        cell_data = cell_data_from_raw(cells, cell_data_raw)
+        # Split by each block's cell count; iterating the dict itself would
+        # split by the length of the type *name*.
+        cell_data = cell_data_from_raw(list(cells.values()), cell_data_raw)
 
         return Mesh(
             points,
