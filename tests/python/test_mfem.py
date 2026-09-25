@@ -742,7 +742,8 @@ def test_nurbs_skips_other_grid_functions(engine, tmp_path, capfd):
     )
     mesh = engine.read(MESHES / "nurbs" / "cube-nurbs.mesh", {"p": str(gf)})
     assert "p" not in mesh.point_data
-    assert "not the NURBS mesh's own" in capfd.readouterr().err
+    # the warning may be wrapped (long temporary paths on macOS)
+    assert "not the NURBS mesh's own" in " ".join(capfd.readouterr().err.split())
 
 
 # --- Bernstein and serendipity spaces ------------------------------------------------------
@@ -821,4 +822,4 @@ def test_serendipity_needs_quadrilaterals(engine, capfd):
         {"u": str(MESHES / "modal" / "ser-quad-p3.u.gf")},
     )
     assert "u" not in mesh.point_data
-    assert "quadrilateral meshes only" in capfd.readouterr().err
+    assert "quadrilateral meshes only" in " ".join(capfd.readouterr().err.split())
