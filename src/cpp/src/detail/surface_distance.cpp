@@ -78,13 +78,24 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
     TriangleSoup soup;
     const std::size_t dim = rSurface.PointDim();
     const NDArray& points = rSurface.Points();
-    soup.mPoints.resize(rSurface.NumPoints());
-    for (std::size_t p = 0; p < rSurface.NumPoints(); ++p)
+    const std::size_t npts = rSurface.NumPoints();
+    soup.mPoints.resize(npts);
+    parallel_for_bw(npts, [&](std::size_t p) {
         soup.mPoints[p] = read_point(points, dim, static_cast<std::int64_t>(p));
+    });
 
     const std::vector<char> mask = sd_region_mask(rSurface, rRegion);
     const std::vector<std::int64_t> bases = block_bases(rSurface);
 
+    // Pass 1 (serial over blocks, parallel over cells): validate each block --
+    // in block order, so the first bad block is the one reported -- and count
+    // each cell's fan triangles.
+    struct Blk {
+        Mesh::CellView mCells;
+        std::int64_t mBase;
+        std::vector<std::int64_t> mFirstTri;  // ncells + 1 prefix
+    };
+    std::vector<Blk> blocks;
     std::size_t bi = 0;
     for (const auto cb : rSurface.CellRange()) {
         const std::int64_t base = bases[bi++];
@@ -107,40 +118,60 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
                                         "' is not a linear surface cell (linearize the mesh "
                                         "first, then run extract_surface if needed)");
         }
-
         const std::size_t ncells = cb.NumCells();
-        for (std::size_t c = 0; c < ncells; ++c) {
+        std::vector<std::int64_t> ntri(ncells + 1, 0);
+        parallel_for(ncells, [&](std::size_t c) {
             const std::int64_t global = base + static_cast<std::int64_t>(c);
             if (!mask.empty() && !mask[static_cast<std::size_t>(global)])
-                continue;
+                return;
+            const std::size_t n = cb.IsRagged() ? cb.RowSize(c) : cb.NodesPerCell();
+            ntri[c + 1] = n < 3 ? 0 : static_cast<std::int64_t>(n - 2);
+        });
+        for (std::size_t c = 0; c < ncells; ++c)
+            ntri[c + 1] += ntri[c];
+        blocks.push_back(Blk{cb, base, std::move(ntri)});
+    }
 
-            // Gather this cell's corners, ragged or not.
-            std::vector<std::int64_t> ids;
-            if (cb.IsRagged()) {
-                const std::size_t n = cb.RowSize(c);
-                const std::int64_t* row = cb.Row(c);
-                ids.assign(row, row + n);
-            } else {
-                const NDArray& conn = cb.Conn();
-                const std::size_t npc = cb.NodesPerCell();
-                ids.resize(npc);
-                for (std::size_t i = 0; i < npc; ++i)
-                    ids[i] = read_int(conn, c * npc + i);
-            }
-            if (ids.size() < 3)
-                continue;
-
+    // Pass 2: every cell writes its fan at its own offset -- the triangles
+    // come out in (block, cell, fan) order, as the serial append gave them.
+    std::size_t total = 0;
+    std::vector<std::size_t> block_first(blocks.size());
+    for (std::size_t k = 0; k < blocks.size(); ++k) {
+        block_first[k] = total;
+        total += static_cast<std::size_t>(blocks[k].mFirstTri.back());
+    }
+    soup.mVertices.resize(total);
+    soup.mSourceCell.resize(total);
+    soup.mCorners.resize(total * 3);
+    for (std::size_t k = 0; k < blocks.size(); ++k) {
+        const Blk& b = blocks[k];
+        const auto& cb = b.mCells;
+        parallel_for(cb.NumCells(), [&](std::size_t c) {
+            const std::size_t first = block_first[k] + static_cast<std::size_t>(b.mFirstTri[c]);
+            const std::size_t count = static_cast<std::size_t>(b.mFirstTri[c + 1] - b.mFirstTri[c]);
+            if (count == 0)
+                return;
             // The same fan convert_cells(Simplexify) uses: corner 0 to every
             // non-adjacent edge. Transcribing a different fan here would make
             // the two disagree about which diagonal a quad is split on.
-            for (std::size_t k = 1; k + 1 < ids.size(); ++k) {
-                const std::array<std::int64_t, 3> tri{ids[0], ids[k], ids[k + 1]};
-                soup.mVertices.push_back(tri);
-                soup.mSourceCell.push_back(global);
+            const auto id = [&](std::size_t i) -> std::int64_t {
+                const std::int64_t v =
+                    cb.IsRagged() ? cb.Row(c)[i] : read_int(cb.Conn(), c * cb.NodesPerCell() + i);
+                if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                    throw std::invalid_argument(std::string(kSdPrefix) +
+                                                "a cell references a point the mesh does not have");
+                return v;
+            };
+            const std::int64_t a = id(0);
+            for (std::size_t j = 0; j < count; ++j) {
+                const std::array<std::int64_t, 3> tri{a, id(j + 1), id(j + 2)};
+                const std::size_t t = first + j;
+                soup.mVertices[t] = tri;
+                soup.mSourceCell[t] = b.mBase + static_cast<std::int64_t>(c);
                 for (std::size_t i = 0; i < 3; ++i)
-                    soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(tri[i])]);
+                    soup.mCorners[t * 3 + i] = soup.mPoints[static_cast<std::size_t>(tri[i])];
             }
-        }
+        });
     }
     return soup;
 }

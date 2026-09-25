@@ -126,19 +126,39 @@ std::vector<Vec3> soup_face_normals(const TriangleSoup& rSoup) {
 std::vector<Vec3> accumulate_vertex_normals(const TriangleSoup& rSoup,
                                             const std::vector<Vec3>& rFaceNormal,
                                             SdfPseudonormalWeight Weight) {
-    std::vector<Vec3> sums(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
-    for (std::size_t t = 0; t < rSoup.NumTriangles(); ++t) {
-        const Vec3& n = rFaceNormal[t];
-        const double len = vec3_norm(n);
-        if (!(len > 0.0))
-            continue;  // degenerate: no direction to contribute
-        const Vec3 unit = vec3_scale(n, 1.0 / len);
-        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        for (std::size_t i = 0; i < 3; ++i) {
-            Vec3& acc = sums[static_cast<std::size_t>(v[i])];
-            acc = vec3_add(acc, vec3_scale(unit, sn_corner_weight(rSoup, t, i, len, Weight)));
-        }
+    // Gather form: each vertex sums its own corners, in ascending (triangle,
+    // corner) order -- the order the serial scatter added them in, so the bits
+    // are the same -- found through a counting sort of the corners by vertex.
+    const std::size_t npts = rSoup.mPoints.size();
+    const std::size_t ncorner = rSoup.NumTriangles() * 3;
+    std::vector<std::int64_t> start(npts + 1, 0);
+    for (std::size_t c = 0; c < ncorner; ++c)
+        ++start[static_cast<std::size_t>(rSoup.mVertices[c / 3][c % 3]) + 1];
+    for (std::size_t p = 0; p < npts; ++p)
+        start[p + 1] += start[p];
+    std::vector<std::int64_t> corners(ncorner);
+    {
+        std::vector<std::int64_t> cursor(start.begin(), start.end() - 1);
+        for (std::size_t c = 0; c < ncorner; ++c)
+            corners[static_cast<std::size_t>(
+                cursor[static_cast<std::size_t>(rSoup.mVertices[c / 3][c % 3])]++)] =
+                static_cast<std::int64_t>(c);
     }
+    std::vector<Vec3> sums(npts, Vec3{0.0, 0.0, 0.0});
+    parallel_for(npts, [&](std::size_t p) {
+        Vec3 acc{0.0, 0.0, 0.0};
+        for (std::int64_t k = start[p]; k < start[p + 1]; ++k) {
+            const std::size_t c = static_cast<std::size_t>(corners[static_cast<std::size_t>(k)]);
+            const std::size_t t = c / 3;
+            const Vec3& n = rFaceNormal[t];
+            const double len = vec3_norm(n);
+            if (!(len > 0.0))
+                continue;  // degenerate: no direction to contribute
+            const Vec3 unit = vec3_scale(n, 1.0 / len);
+            acc = vec3_add(acc, vec3_scale(unit, sn_corner_weight(rSoup, t, c % 3, len, Weight)));
+        }
+        sums[p] = acc;
+    });
     return sums;
 }
 
