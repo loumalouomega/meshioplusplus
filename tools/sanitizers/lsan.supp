@@ -1,0 +1,5 @@
+# LeakSanitizer suppressions for the cpp-sanitize CI job (doc/fuzzing.md).
+#
+# Only leaks inside third-party libraries belong here, one `leak:<symbol or
+# library>` line each, with the reason. A leak in meshio++'s own code is a bug
+# to fix, never a line in this file. None is needed today.

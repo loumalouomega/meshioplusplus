@@ -29,6 +29,7 @@ import copy
 import numpy as np
 
 from ._data_common import location_map, normalize_location, num_components, require_key
+from ._fallback import core_op_declined
 
 _ALL_OUTPUTS = ("mises", "principal", "hydrostatic", "deviatoric")
 
@@ -227,15 +228,15 @@ def tensor_invariants(
     args = (loc, names, outs, prefix, suffix, overwrite)
     try:
         from . import _core
-    except Exception:
+    except ImportError:
         return _tensor_invariants_py(mesh, *args)
     try:
         out = _core.tensor_invariants(
             mesh, loc, names, ",".join(outs), prefix, suffix, overwrite
         )
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "tensor_invariants"):
+            raise
         return _tensor_invariants_py(mesh, *args)
     for attr in ("point_sets", "cell_sets"):
         value = getattr(mesh, attr, None)

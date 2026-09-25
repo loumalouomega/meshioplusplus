@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 __all__ = ["grid"]
@@ -249,9 +250,7 @@ def grid(
             [float(v) for v in spacing],
             int(max_cells),
         )
-    except (ValueError, TypeError):
-        # A genuine user error must not fall through to the numpy path, which
-        # would report it differently or not at all.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "grid"):
+            raise
         return _grid_py(dims, origin, spacing)

@@ -209,7 +209,7 @@ def _core_module():
     except AttributeError:
         try:
             from . import _core as mod
-        except Exception:
+        except ImportError:
             mod = None
         _core_module._mod = mod
         return mod

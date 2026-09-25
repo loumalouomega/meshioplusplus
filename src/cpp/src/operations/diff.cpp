@@ -389,7 +389,7 @@ DiffVerdict diff_array_verdict(const ArrayDiff& rA) {
 void diff_compare_data_section(const std::vector<std::string>& rNamesA,
                                const std::vector<std::string>& rNamesB, DataDiff& rOut,
                                const Mesh& rA, const Mesh& rB, const std::int64_t* pRowMapA,
-                               bool cell_data, double atol, double rtol) {
+                               bool cell_data, double atol, double rtol, bool field_data = false) {
     std::vector<std::string> shared = diff_key_diff(rNamesA, rNamesB, rOut);
     for (const std::string& name : shared) {
         ArrayDiff summary;
@@ -412,6 +412,11 @@ void diff_compare_data_section(const std::vector<std::string>& rNamesA,
                     base += static_cast<std::int64_t>(aa.Size());
                 }
             }
+        } else if (field_data) {
+            // Field data has no rows to renumber: compared entry by entry.
+            summary =
+                diff_compare_array(rA.FieldData(name), rB.FieldData(name), nullptr, atol, rtol);
+            summary.mName = name;
         } else {
             summary =
                 diff_compare_array(rA.PointData(name), rB.PointData(name), pRowMapA, atol, rtol);
@@ -535,7 +540,7 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
     diff_compare_data_section(rA.CellDataNames(), rB.CellDataNames(), rep.mCellData, rA, rB,
                               nullptr, /*cell_data=*/true, atol, rtol);
     diff_compare_data_section(rA.FieldDataNames(), rB.FieldDataNames(), rep.mFieldData, rA, rB,
-                              nullptr, /*cell_data=*/false, atol, rtol);
+                              nullptr, /*cell_data=*/false, atol, rtol, /*field_data=*/true);
 
     diff_compare_regions(rA, rB, rep.mRegions);
 

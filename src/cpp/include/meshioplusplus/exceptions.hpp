@@ -63,4 +63,21 @@ struct WriteError : std::runtime_error {
     explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
 };
 
+/**
+ * @brief Thrown by C++ operations for an input they deliberately do not handle.
+ *
+ * The operation counterpart of a reader's recognised decline: a construct the
+ * native kernel leaves to the Python reference implementation (a ragged
+ * block, a polyhedron, a quadratic cell the kernel has no rule for), as
+ * opposed to a bad argument (`std::invalid_argument`) or a bug. The Python
+ * bindings translate it to `NotImplementedError`, which is the one exception
+ * besides a missing `_core` that an operation shim treats as "fall back"
+ * (`core_op_declined` in `_fallback.py`). The flat bindings report it as an
+ * ordinary error status.
+ */
+struct Unsupported : std::runtime_error {
+    Unsupported() : std::runtime_error("") {}
+    explicit Unsupported(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
 }  // namespace meshioplusplus

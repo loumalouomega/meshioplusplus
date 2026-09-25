@@ -31,6 +31,8 @@ namespace meshioplusplus {
 namespace detail {
 
 void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n) {
+    if (n == 0)
+        return;  // an empty block may have no buffer: memcpy(nullptr, ...) is undefined
     constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
     const std::size_t nchunks = (n + kChunk - 1) / kChunk;
     if (nchunks <= 1) {
@@ -147,6 +149,26 @@ bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
     return false;
 }
 
+void check_vtk_cell_arrays(std::size_t ConnSize, const std::vector<std::int64_t>& rOffsets,
+                           const std::vector<std::int64_t>& rTypes,
+                           const std::unordered_map<std::string, NDArray>& rCellDataRaw) {
+    if (rOffsets.size() != rTypes.size())
+        throw ReadError("VTK: " + std::to_string(rOffsets.size()) + " cell offsets but " +
+                        std::to_string(rTypes.size()) + " cell types");
+    std::int64_t prev = 0;
+    for (const std::int64_t o : rOffsets) {
+        if (o < prev || static_cast<std::uint64_t>(o) > ConnSize)
+            throw ReadError("VTK: cell offsets decrease or run past the connectivity");
+        prev = o;
+    }
+    for (const auto& [name, arr] : rCellDataRaw) {
+        const std::size_t rows = arr.Shape().empty() ? arr.Size() : arr.Shape()[0];
+        if (rows < rTypes.size())
+            throw ReadError("VTK: cell data '" + name + "' has " + std::to_string(rows) +
+                            " rows for " + std::to_string(rTypes.size()) + " cells");
+    }
+}
+
 void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                        const std::vector<std::int64_t>& rTypes,
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh) {
@@ -203,15 +225,24 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                     throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
                 last_face_end = end_at;
                 std::size_t at = static_cast<std::size_t>(begin_at);
-                const std::int64_t nfaces = (*pFaces)[at++];
+                const auto stop = static_cast<std::size_t>(end_at);
+                // Every read stays inside this cell's slice of the stream.
+                const auto take = [&]() {
+                    if (at >= stop)
+                        throw ReadError("VTU: a polyhedron's face stream overruns its entry");
+                    return (*pFaces)[at++];
+                };
+                const std::int64_t nfaces = take();
                 std::vector<std::vector<std::int64_t>> faces;
                 std::vector<std::int64_t> uniq;
                 for (std::int64_t f = 0; f < nfaces; ++f) {
-                    const std::int64_t nn = (*pFaces)[at++];
+                    const std::int64_t nn = take();
+                    if (nn < 0 || static_cast<std::uint64_t>(nn) > stop - at)
+                        throw ReadError("VTU: a polyhedron's face stream overruns its entry");
                     std::vector<std::int64_t> ring;
                     ring.reserve(static_cast<std::size_t>(nn));
                     for (std::int64_t k = 0; k < nn; ++k)
-                        ring.push_back((*pFaces)[at++]);
+                        ring.push_back(take());
                     uniq.insert(uniq.end(), ring.begin(), ring.end());
                     faces.push_back(std::move(ring));
                 }
@@ -299,6 +330,11 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             int n = nit->second;
             std::vector<int> order = vtk_to_meshio_order(vtk_type);
             std::size_t m = end - start;
+            // Each cell of a fixed-size type must span exactly n entries.
+            for (std::size_t c = start; c < end; ++c)
+                if (rOffsets[c] - (c == 0 ? 0 : rOffsets[c - 1]) != n)
+                    throw ReadError("VTK: a '" + meshio_type + "' cell does not have " +
+                                    std::to_string(n) + " nodes");
             NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
             std::int64_t* out = data.As<std::int64_t>();
             const int* ord = order.empty() ? nullptr : order.data();

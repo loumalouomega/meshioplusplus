@@ -46,6 +46,7 @@ import math
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._regions import Region, block_bases
 
 _PREFIX = "meshio++: normals: "
@@ -621,10 +622,9 @@ def compute_normals(
                 "quality",
             )
         }
-    except (ValueError, TypeError):
-        # A genuine user error must not fall through to the numpy path.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "compute_normals"):
+            raise
         out = None
 
     if out is None:

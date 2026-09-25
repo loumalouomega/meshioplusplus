@@ -55,6 +55,31 @@ cd benchmark
 
 The notebook records the machine, library versions, and the inputs (the bundled `example.msh` bracket plus a synthetic tetrahedral cube and a size sweep), runs the harness, writes `results.csv`, and regenerates the plots above. Numbers are single-machine and indicative — the *shape* of the result is the point, not the exact factors.
 
+## Every format
+
+`benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
+
+```sh
+python benchmark/bench.py --sizes S,M --out results_all.csv            # every format
+python benchmark/bench.py --sizes L --formats vtu,gmsh22,xdmf,med      # a subset
+```
+
+The sizes are 6·(n−1)³ tetrahedra for n = 16, 36 and 56 points per edge (about 20k, 250k and 1M). Legacy meshio is optional here: with `MESHIO_LEGACY_SRC` pointing at a source checkout's `src`, or `meshio` installed, the curated comparison above fills its legacy columns; without it only the meshio++ columns are written.
+
+## Operations
+
+`meshioplusplus_bench_ops` (built with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`, `src/cpp/benchmark/bench_ops.cpp`) times nine operations on the same cube: `extract_surface`, `smooth`, `refine`, `merge` (welding a mesh onto itself), `clean`, `compute_sdf` (48³ grid), `decimate` (half the surface), `partition` (8 parts) and `reorder`. Tiers S, M and L are about 10k, 160k and 750k tetrahedra; `--tier XL` (about 10M) is opt-in. Output is one CSV row per tier and operation: `backend,threads,op,cells,median_s,runs`.
+
+The parallel backend is a compile-time choice, so `tools/bench_ops.sh` configures one tree per backend (SEQ, OpenMP, TBB; one that fails to configure is skipped) and sweeps `OMP_NUM_THREADS`, which the benchmark also applies to TBB:
+
+```sh
+CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4 8" -- --tier S --tier M
+```
+
+## In CI
+
+The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads. It uploads the CSVs as artifacts and prints them in the job summary, and it never fails a build — a hosted runner is noisy, so the numbers are for trends across runs, not for gating one change. Every [performance](./roadmap.md#_4-performance) item on the roadmap is expected to show its before and after with these tools.
+
 ## Mesh-backend benchmarks
 
 The C++ core's [mesh backend](cpp_backends.md) (MESHIO / NATIVE / KRATOS) is an exclusive compile-time choice, so `benchmark/bench_backends.sh` builds one benchmark binary per backend (`src/cpp/benchmark/bench_backends.cpp`, enabled with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV (`benchmark/results_backends.csv`). Method mirrors the Python harness: warmup + median of 5 (`std::chrono`), a synthetic structured tet cube (default 6·35³ = 257k tets over 46k shared points), and four kinds of rows:

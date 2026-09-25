@@ -1,40 +1,52 @@
 # ParaView Plugin
 
-meshio++ ships a ParaView plugin (`tools/paraview-meshioplusplus-plugin.py`) that lets you open any meshio++-supported file directly in ParaView without converting it first.
+meshio++ ships a ParaView Python plugin (`tools/paraview-meshioplusplus-plugin.py`) with a reader and a writer, so ParaView can open any file meshio++ reads and save to any format it writes, without converting first.
 
 ## Installation
 
-1. Find the Python version that your ParaView uses:
+The plugin runs inside ParaView's own Python, so meshio++ must be installed for that interpreter, and its compiled core must match that interpreter's version.
+
+1. Find the Python that your ParaView uses:
 
    ```sh
-   pvpython --version
+   pvpython -c "import sys; print(sys.version)"
    ```
 
-2. Install meshio++ for that Python:
+2. Install meshio++ for that Python (a conda-forge ParaView: into the same environment; a system ParaView: into the system Python, or a virtual environment on `PYTHONPATH`):
 
    ```sh
-   pip install meshioplusplus[all]
+   pip install "meshioplusplus[all]"
    ```
 
-3. Open ParaView and navigate to **Tools → Manage Plugins → Load New**.
-
-4. Browse to the plugin file. On Linux it is typically installed at:
+3. The wheel installs the plugin as data, at a path with no ParaView version in it:
 
    ```
-   ~/.local/share/paraview-5.9/plugins/paraview-meshioplusplus-plugin.py
+   <prefix>/share/meshioplusplus/paraview/paraview-meshioplusplus-plugin.py
    ```
 
-You can also point directly to the file in the meshio++ source tree at `tools/paraview-meshioplusplus-plugin.py`.
+   where `<prefix>` is the environment's root (`python -c "import sys; print(sys.prefix)"`). A source checkout has the same file at `tools/paraview-meshioplusplus-plugin.py`.
 
-5. *(Optional)* Tick **Auto Load** so the plugin is active every time ParaView starts.
+4. Load it in ParaView, either:
+
+   - **Tools → Manage Plugins → Load New**, browse to the file, and tick **Auto Load** to load it on every start; or
+   - point `PV_PLUGIN_PATH` at the directory before starting ParaView, which loads every plugin in it:
+
+     ```sh
+     export PV_PLUGIN_PATH="$(python -c 'import sys; print(sys.prefix)')/share/meshioplusplus/paraview"
+     ```
+
+From `pvpython` or `pvbatch`, `paraview.simple.LoadPlugin(path, ns=globals())` loads it and defines `meshioreader` and `meshioWriter`.
 
 ## Usage
 
-After loading the plugin, any meshio++-supported file extension appears in the ParaView file open dialog. ParaView will use meshio++ to read the file and expose it as a `vtkUnstructuredGrid`.
+After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader's **FileFormat** property picks the format explicitly (`automatic` infers it from the file), and the file is exposed as a `vtkUnstructuredGrid` with its point, cell and field data. The writer saves an unstructured grid through `meshioplusplus.write`, choosing the format from the file name.
 
-The plugin provides both a reader and a writer. The writer allows exporting ParaView data to any format meshio++ can write.
+## Limitations
 
-## Notes
+- Polyhedron blocks are skipped by the reader (the legacy cell layout the plugin builds has no face stream); a message on ParaView's output names each skipped block.
+- The writer groups cells by VTK type and node count, so a mesh's cell order is not preserved across a write.
+- Optional format dependencies (`h5py`, `netCDF4`, ...) must be installed in ParaView's Python as well.
 
-- The plugin requires the same Python environment that ParaView's `pvpython` uses. If they differ (e.g. system Python vs. Conda), the plugin will not find meshioplusplus.
-- All optional format dependencies (`h5py`, `netCDF4`) must be installed in that same environment.
+## Testing
+
+`tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads a file through the reader, writes it back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView.

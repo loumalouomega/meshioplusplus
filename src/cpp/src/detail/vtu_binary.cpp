@@ -332,6 +332,11 @@ std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsign
 
 std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
                                                       std::size_t n, std::size_t expected) {
+    // The expected size comes from the file's block header and sizes the
+    // output buffer. No codec expands a block by more than about 2^16 (zlib's
+    // ceiling is ~1032:1), so a larger claim is corruption, not an allocation.
+    if (expected > (std::size_t{1} << 16) * (n + 1) + (std::size_t{1} << 20))
+        throw ReadError("VTK compressed block declares an implausible decompressed size");
     switch (codec) {
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
         case VtkCodec::Zlib:
@@ -383,13 +388,21 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     if (len < first_chars)
         throw ReadError("VTU compressed-block header too short");
     std::vector<unsigned char> hb = b64decode(pText, first_chars);
+    if (hb.size() < hsz)
+        throw ReadError("VTU compressed-block header too short");
     std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
+    // Every block has an hsz-byte size in the header, so the count is bounded
+    // by the text (and the header size below cannot wrap).
+    if (num_blocks > len / hsz)
+        throw ReadError("VTU compressed-block header declares more blocks than it holds");
 
     std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
     std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
     if (len < num_header_chars)
         throw ReadError("VTU compressed-block header truncated");
     std::vector<unsigned char> header = b64decode(pText, num_header_chars);
+    if (header.size() < num_header_bytes)
+        throw ReadError("VTU compressed-block header truncated");
 
     std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
     std::uint64_t last_block = read_uint_le(header.data() + 2 * hsz, hsz);
@@ -404,14 +417,25 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     // output offset of block k is k*max_block per the VTU block scheme -> the
     // per-block inflate runs in parallel into a pre-sized buffer.
     std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
-    for (std::uint64_t k = 0; k < num_blocks; ++k)
-        in_off[static_cast<std::size_t>(k) + 1] =
-            in_off[static_cast<std::size_t>(k)] + static_cast<std::size_t>(comp_sizes[k]);
+    for (std::uint64_t k = 0; k < num_blocks; ++k) {
+        const std::size_t at = in_off[static_cast<std::size_t>(k)];
+        if (comp_sizes[k] > blockdata.size() - at)  // not at + size: that can wrap
+            throw ReadError("VTU compressed blocks are larger than the data that follows");
+        in_off[static_cast<std::size_t>(k) + 1] = at + static_cast<std::size_t>(comp_sizes[k]);
+    }
 
+    // No codec expands a block by more than about 2^16 (zlib's ceiling is
+    // ~1032:1); a header claiming more is corrupt, and would size `out`.
+    const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (blockdata.size() + 1) + (1u << 20);
+    if (num_blocks && (max_block > ceiling || last_block > ceiling ||
+                       (num_blocks - 1) > ceiling / std::max<std::uint64_t>(max_block, 1)))
+        throw ReadError("VTU compressed-block header declares an implausible size");
     const std::size_t total = num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
                                                    static_cast<std::size_t>(max_block) +
                                                static_cast<std::size_t>(last_block)
                                          : 0;
+    if (total > ceiling)
+        throw ReadError("VTU compressed-block header declares an implausible size");
     std::vector<unsigned char> out(total);
     parallel_for(
         static_cast<std::size_t>(num_blocks),

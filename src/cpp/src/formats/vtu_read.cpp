@@ -638,6 +638,7 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
             vtu_read_field_data(rPiece, ctx, rOpts, mesh);
     }
 
+    detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh);
     return mesh;

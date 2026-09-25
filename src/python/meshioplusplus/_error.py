@@ -60,6 +60,7 @@ from ._data_average import (
     cell_data_to_point_data,
     point_data_to_cell_data,
 )
+from ._fallback import core_op_declined
 from ._gradient import gradient
 
 _PREFIX = "meshio++: estimate_error: "
@@ -328,12 +329,9 @@ def estimate_error(
             "num_skipped": res["num_skipped"],
             "num_marked": res["num_marked"],
         }
-    except (ValueError, TypeError):
-        # A genuine user error must not fall through to the numpy path, which
-        # would either raise something less helpful or silently succeed
-        # differently.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "estimate_error"):
+            raise
         out = None
 
     if out is None:

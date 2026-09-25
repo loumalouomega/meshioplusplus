@@ -32,6 +32,7 @@ import math
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 _METHODS = ("nearest", "barycentric")
@@ -511,12 +512,9 @@ def interpolate(
             float(default_value),
             str(on_conflict),
         )
-    except (ValueError, TypeError):
-        # A genuine user error (bad method/conflict name, unknown array, a name
-        # collision under 'error') must not fall through to the numpy path —
-        # it would just raise the same thing more slowly.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "interpolate"):
+            raise
         out = None
     if out is None:
         out = _interpolate_py(

@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,8 @@ Mesh read_dolfin(const std::string& rPath) {
         throw ReadError("DOLFIN: missing <mesh>");
 
     int dim = mesh_node.attribute("dim").as_int();
+    if (dim < 1 || dim > 3)
+        throw ReadError("DOLFIN: mesh dim must be 1, 2 or 3");
     auto [cell_type, npc] = dolfin_to_meshio(mesh_node.attribute("celltype").value());
 
     Mesh mesh;
@@ -79,11 +82,19 @@ Mesh read_dolfin(const std::string& rPath) {
     // Vertices (placed by index).
     pugi::xml_node verts = mesh_node.child("vertices");
     std::size_t nverts = verts.attribute("size").as_uint();
+    // Placed by index: every index must fall inside `size`, and `size` cannot
+    // exceed the vertices the file actually lists.
+    const auto listed_verts = static_cast<std::size_t>(
+        std::distance(verts.children("vertex").begin(), verts.children("vertex").end()));
+    if (nverts > listed_verts)
+        throw ReadError("DOLFIN: <vertices size> exceeds the vertices listed");
     NDArray pts(DType::Float64, {nverts, static_cast<std::size_t>(dim)});
     double* pp = pts.As<double>();
     const char* coord[3] = {"x", "y", "z"};
     for (pugi::xml_node v : verts.children("vertex")) {
         std::size_t k = v.attribute("index").as_uint();
+        if (k >= nverts)
+            throw ReadError("DOLFIN: vertex index out of range");
         for (int c = 0; c < dim; ++c)
             pp[k * dim + c] = v.attribute(coord[c]).as_double();
     }
@@ -92,15 +103,23 @@ Mesh read_dolfin(const std::string& rPath) {
     // Cells (single block, placed by index).
     pugi::xml_node cells = mesh_node.child("cells");
     std::size_t ncells = cells.attribute("size").as_uint();
+    const auto listed_cells =
+        static_cast<std::size_t>(std::distance(cells.children().begin(), cells.children().end()));
+    if (ncells > listed_cells)
+        throw ReadError("DOLFIN: <cells size> exceeds the cells listed");
     NDArray data(DType::Int64, {ncells, static_cast<std::size_t>(npc)});
     std::int64_t* dp = data.As<std::int64_t>();
     for (pugi::xml_node c : cells.children()) {
         std::size_t k = c.attribute("index").as_uint();
+        if (k >= ncells)
+            throw ReadError("DOLFIN: cell index out of range");
         for (int j = 0; j < npc; ++j) {
             char tag[16];  // "v" + up to 11 digits (INT_MIN) + '\0'; GCC's static
                            // format-truncation analysis cannot prove j is small
             std::snprintf(tag, sizeof(tag), "v%d", j);
             dp[k * npc + j] = c.attribute(tag).as_llong();
+            if (dp[k * npc + j] < 0 || static_cast<std::size_t>(dp[k * npc + j]) >= nverts)
+                throw ReadError("DOLFIN: cell references a vertex out of range");
         }
     }
     mesh.AddCellBlock(cell_type, std::move(data));

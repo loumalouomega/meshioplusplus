@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._marching import FIELD_GRADIENT, _marching_cut, _marching_prepare
 from ._mesh import Mesh
 
@@ -305,9 +306,9 @@ def isosurface(
             -1 if component is None else component,
             bool(record_parent_ids),
         )
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "isosurface"):
+            raise
         out = None
     if out is None:
         out = _isosurface_py(mesh, array, isovalues, component, record_parent_ids)

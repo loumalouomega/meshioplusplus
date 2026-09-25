@@ -64,6 +64,8 @@ Off by default and never auto-enabled: `-DMESHIOPLUSPLUS_WITH_ZSTD=ON` / `_LZ4=O
 
 Two read-only formats need a library meshio++ never builds by default (v16.13.0). `-DMESHIOPLUSPLUS_WITH_ADIOS2=ON` links ADIOS2 (its own CMake config, `adios2::cxx11`; set `ADIOS2_DIR` if it is not found) so the core reads [DOLFINx VTX](formats/vtx.md) `.bp` directories; without it they go through the `adios2` Python package (`pip install meshioplusplus[adios2]`); `_core.__has_adios2__` reports it (Conan `with_adios2`, bring-your-own; vcpkg feature `adios2`). `-DMESHIOPLUSPLUS_WITH_TECIO=ON -DTECIO_ROOT=<dir>` links a TecIO you already have (`<dir>` holding `TECIO.h` and `libtecio`) so the core reads [Tecplot SZL](formats/szplt.md) `.szplt` files; without it they go through a shared TecIO named by `MESHIOPLUSPLUS_TECIO_LIBRARY`; `_core.__has_tecio__` reports it (Conan `with_tecio`, bring-your-own). `build/configure.sh` takes `--with-adios2`, `--with-tecio <dir>` and `--with-bzip2`. The release wheels carry neither library.
 
+For development, `-DMESHIOPLUSPLUS_SANITIZE="address;undefined"` (`build/configure.sh --sanitize address,undefined`, GCC or Clang) builds the core, the C API and the tests with the sanitizers, and `-DMESHIOPLUSPLUS_BUILD_FUZZERS=ON` (`--fuzzers`, Clang) the libFuzzer reader target; both refuse the Python extension and configure a separate `-san` tree ([fuzzing and sanitizers](fuzzing.md)).
+
 ### Standalone C++ build
 
 For using the C++ library directly (without Python), two configure scripts live in `build/`:

@@ -1,0 +1,12 @@
+# Draft OSS-Fuzz project file (doc/fuzzing.md). Not submitted yet: the
+# submission is an open roadmap item. It would live at
+# projects/meshioplusplus/project.yaml in google/oss-fuzz.
+homepage: "https://github.com/loumalouomega/meshioplusplus"
+language: c++
+primary_contact: "TODO: the maintainer's address, filled in at submission"
+main_repo: "https://github.com/loumalouomega/meshioplusplus"
+sanitizers:
+  - address
+  - undefined
+fuzzing_engines:
+  - libfuzzer

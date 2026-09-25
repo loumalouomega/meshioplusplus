@@ -34,6 +34,7 @@
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/read_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
@@ -115,8 +116,28 @@
 
 namespace meshioplusplus {
 
+namespace {
+
+/**
+ * @brief Wraps every reader so a parser's std:: exception leaves as ReadError.
+ *
+ * Every consumer of the registry -- the native CLI, the C API, WASM and the
+ * fuzz targets -- then sees one exception for "not a file this reader reads"
+ * (detail/read_guard.hpp explains why that matters to the Python fallback).
+ */
+std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadFn> raw) {
+    for (auto& [name, fn] : raw) {
+        fn = [format = name, inner = std::move(fn)](const std::string& rPath) {
+            return detail::guarded_read(format.c_str(), [&] { return inner(rPath); });
+        };
+    }
+    return raw;
+}
+
+}  // namespace
+
 const std::map<std::string, ReadFn>& registry_readers() {
-    static const std::map<std::string, ReadFn> m = {
+    static const std::map<std::string, ReadFn> m = registry_guard_readers({
         {"abaqus", meshioplusplus::read_abaqus},
         {"abaqus_fil",
          [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
@@ -270,7 +291,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
         {"szplt", [](const std::string& path) { return meshioplusplus::read_szplt(path); }},
 #endif
-    };
+    });
     return m;
 }
 
@@ -961,7 +982,7 @@ Mesh registry_read(const std::string& rPath, const std::string& rFormat,
                    const ReadOptions& rOptions) {
     auto it = registry_readers_ex().find(rFormat);
     if (it != registry_readers_ex().end())
-        return it->second(rPath, rOptions);
+        return detail::guarded_read(rFormat.c_str(), [&] { return it->second(rPath, rOptions); });
     // No native selective path: a full read is still the correct answer.
     return registry_full_reader(rFormat)(rPath);
 }
@@ -984,7 +1005,8 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
     auto it = registry_metadata_readers().find(rFormat);
     if (it != registry_metadata_readers().end()) {
         try {
-            MeshMetadata meta = it->second(rPath, rOptions);
+            MeshMetadata meta =
+                detail::guarded_read(rFormat.c_str(), [&] { return it->second(rPath, rOptions); });
             meta.mFormat = rFormat;
             fill_provenance(meta);
             return meta;

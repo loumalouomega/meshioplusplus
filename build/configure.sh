@@ -37,6 +37,8 @@ CLI="OFF"
 DO_BUILD="no"
 PYTHON_EXE=""
 TBB_DIR=""
+SANITIZE=""
+FUZZERS="OFF"
 
 usage() {
     cat <<EOF
@@ -70,6 +72,11 @@ Usage: $0 [options]
                                   semicolon-separated; default MESHIO,NATIVE,KRATOS;
                                   implies --install-cpp)
   --cli                           build the native command-line binary (meshioplusplus)
+  --sanitize <LIST>               build the core, tests and C API with sanitizers
+                                  (comma-separated, e.g. address,undefined; GCC/Clang;
+                                  implies no Python extension; tree cpp-<type>-san)
+  --fuzzers                       build the libFuzzer reader targets (Clang; set
+                                  CXX=clang++; see doc/fuzzing.md)
   --build                         run the build after configuring
   --python <exe>                  Python executable (default: auto)
   --tbb-dir <path>                TBBConfig.cmake dir (e.g. oneAPI)
@@ -101,6 +108,8 @@ while [ $# -gt 0 ]; do
         --install-cpp) INSTALL_CPP="ON"; shift ;;
         --cpp-backends) CPP_BACKENDS=$(echo "$2" | tr '[:lower:],' '[:upper:];'); INSTALL_CPP="ON"; shift 2 ;;
         --cli) CLI="ON"; shift ;;
+        --sanitize) SANITIZE=$(echo "$2" | tr ',' ';'); shift 2 ;;
+        --fuzzers) FUZZERS="ON"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
         --python) PYTHON_EXE="$2"; shift 2 ;;
         --tbb-dir) TBB_DIR="$2"; shift 2 ;;
@@ -133,6 +142,12 @@ if [ "$MESH_BACKEND" != "MESHIO" ]; then
     BUILD_PYTHON="OFF"
     TREE_SUFFIX="-$(echo "$MESH_BACKEND" | tr '[:upper:]' '[:lower:]')"
 fi
+# Sanitized and fuzzing trees are separate trees without the Python extension
+# (a sanitized _core needs the runtime preloaded into the interpreter).
+if [ -n "$SANITIZE" ] || [ "$FUZZERS" = "ON" ]; then
+    BUILD_PYTHON="OFF"
+    TREE_SUFFIX="$TREE_SUFFIX-san"
+fi
 
 BUILD_DIR="$SCRIPT_DIR/cpp-$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')$TREE_SUFFIX"
 
@@ -160,6 +175,8 @@ set -- \
     -DMESHIOPLUSPLUS_INSTALL_CPP="$INSTALL_CPP" \
     -DMESHIOPLUSPLUS_BUILD_CLI="$CLI" \
     -DMESHIOPLUSPLUS_BUILD_FORTRAN="$FORTRAN" \
+    -DMESHIOPLUSPLUS_SANITIZE="$SANITIZE" \
+    -DMESHIOPLUSPLUS_BUILD_FUZZERS="$FUZZERS" \
     -DPython_EXECUTABLE="$PYTHON_EXE"
 
 # Only pass the backend list when the user gave one, so the CMake cache

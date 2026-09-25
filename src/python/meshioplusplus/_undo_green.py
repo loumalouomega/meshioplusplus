@@ -74,6 +74,7 @@ import warnings
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._refine import (
     CELL_ID_NAME,
@@ -441,9 +442,9 @@ def undo_green(coarse, fine, return_report: bool = False):
             "num_groups_undone": res["num_groups_undone"],
             "num_cells_removed": res["num_cells_removed"],
         }
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "undo_green"):
+            raise
         out = None
 
     if out is None:

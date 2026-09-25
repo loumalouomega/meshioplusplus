@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 from paraview.util.vtkAlgorithm import (
     VTKPythonAlgorithmBase,
@@ -7,6 +9,7 @@ from paraview.util.vtkAlgorithm import (
     smproxy,
 )
 from vtkmodules.numpy_interface import dataset_adapter as dsa
+from vtkmodules.util.numpy_support import vtk_to_numpy
 from vtkmodules.vtkCommonDataModel import vtkUnstructuredGrid
 
 import meshioplusplus
@@ -78,32 +81,43 @@ class MeshioReader(VTKPythonAlgorithmBase):
             points = np.hstack([points, np.zeros((len(points), 1))])
         output.SetPoints(points)
 
-        # CellBlock, adapted from test/legacy_writer.py
-        cell_types = np.array([], dtype=np.ubyte)
-        cell_offsets = np.array([], dtype=int)
-        cell_conn = np.array([], dtype=int)
-        for meshio_type, data in cells:
-            vtk_type = meshio_to_vtk_type[meshio_type]
-            ncells, npoints = data.shape
-            cell_types = np.hstack(
-                [cell_types, np.full(ncells, vtk_type, dtype=np.ubyte)]
-            )
-            offsets = len(cell_conn) + (1 + npoints) * np.arange(ncells, dtype=int)
-            cell_offsets = np.hstack([cell_offsets, offsets])
-            conn = np.hstack(
-                [npoints * np.ones((ncells, 1), dtype=int), data]
-            ).flatten()
-            cell_conn = np.hstack([cell_conn, conn])
-        output.SetCells(cell_types, cell_offsets, cell_conn)
+        # Cells, in VTK's legacy (count, ids...) layout. Ragged polygon rows
+        # are written one by one; a block VTK has no id for (polyhedra, which
+        # need a face stream) is skipped with a message rather than failing
+        # the whole read.
+        cell_types, cell_offsets, cell_conn, kept = [], [], [], []
+        size = 0
+        for block in cells:
+            vtk_type = meshio_to_vtk_type.get(block.type)
+            if vtk_type is None or block.type.startswith("polyhedron"):
+                print(
+                    f"meshio++ reader: skipping '{block.type}' cells", file=sys.stderr
+                )
+                kept.append(False)
+                continue
+            kept.append(True)
+            for row in block.data:
+                row = np.asarray(row, dtype=np.int64)
+                cell_types.append(vtk_type)
+                cell_offsets.append(size)
+                cell_conn.append(len(row))
+                cell_conn.extend(row.tolist())
+                size += 1 + len(row)
+        output.SetCells(
+            np.asarray(cell_types, dtype=np.ubyte),
+            np.asarray(cell_offsets, dtype=np.int64),
+            np.asarray(cell_conn, dtype=np.int64),
+        )
 
         # Point data
         for name, array in mesh.point_data.items():
             output.PointData.append(array, name)
 
-        # Cell data
+        # Cell data, for the blocks that became cells
         for name, data in mesh.cell_data.items():
-            array = np.concatenate(data)
-            output.CellData.append(array, name)
+            parts = [np.asarray(d) for d, k in zip(data, kept) if k]
+            if parts:
+                output.CellData.append(np.concatenate(parts), name)
 
         # Field data
         for name, array in mesh.field_data.items():
@@ -140,21 +154,27 @@ class MeshioWriter(VTKPythonAlgorithmBase):
         # Read points
         points = np.asarray(mesh.GetPoints())
 
-        # Read cells
-        # Adapted from test/legacy_reader.py
-        cell_conn = mesh.GetCells()
-        cell_offsets = mesh.GetCellLocations()
-        cell_types = mesh.GetCellTypes()
-        cells_dict = {}
-        for vtk_cell_type in np.unique(cell_types):
-            offsets = cell_offsets[cell_types == vtk_cell_type]
-            ncells = len(offsets)
-            npoints = cell_conn[offsets[0]]
-            array = np.empty((ncells, npoints), dtype=int)
-            for i in range(npoints):
-                array[:, i] = cell_conn[offsets + i + 1]
-            cells_dict[vtk_to_meshio_type[vtk_cell_type]] = array
-        cells = [meshioplusplus.CellBlock(key, cells_dict[key]) for key in cells_dict]
+        # Cells, grouped by (VTK type, node count) in first-seen order: a
+        # meshio++ cell block is one type with one row length.
+        grid = mesh.VTKObject
+        types = (
+            vtk_to_numpy(grid.GetCellTypesArray()) if grid.GetNumberOfCells() else []
+        )
+        array = grid.GetCells()
+        offsets = vtk_to_numpy(array.GetOffsetsArray())
+        conn = vtk_to_numpy(array.GetConnectivityArray())
+        groups = {}
+        for c, vtk_type in enumerate(types):
+            row = conn[offsets[c] : offsets[c + 1]]
+            groups.setdefault((int(vtk_type), len(row)), []).append((c, row))
+        cells, members = [], []
+        for (vtk_type, _), rows in groups.items():
+            cells.append(
+                meshioplusplus.CellBlock(
+                    vtk_to_meshio_type[vtk_type], np.array([r for _, r in rows])
+                )
+            )
+            members.append(np.array([c for c, _ in rows]))
 
         # Read point and field data
         # Adapted from test/legacy_reader.py
@@ -169,24 +189,21 @@ class MeshioWriter(VTKPythonAlgorithmBase):
         point_data = _read_data(mesh.GetPointData())
         field_data = _read_data(mesh.GetFieldData())
 
-        # Read cell data
-        cell_data_flattened = _read_data(mesh.GetCellData())
-        cell_data = {}
-        for name, array in cell_data_flattened.items():
-            cell_data[name] = []
-            for cell_type in cells_dict:
-                vtk_cell_type = meshio_to_vtk_type[cell_type]
-                mask_cell_type = cell_types == vtk_cell_type
-                cell_data[name].append(array[mask_cell_type])
+        # Cell data, split the same way as the cells
+        cell_data = {
+            name: [array[m] for m in members]
+            for name, array in _read_data(mesh.GetCellData()).items()
+        }
 
-        # Use meshio++ to write mesh
-        meshioplusplus.write_points_cells(
+        meshioplusplus.write(
             self._filename,
-            points,
-            cells,
-            point_data=point_data,
-            cell_data=cell_data,
-            field_data=field_data,
+            meshioplusplus.Mesh(
+                points,
+                cells,
+                point_data=point_data,
+                cell_data=cell_data,
+                field_data=field_data,
+            ),
         )
         return 1
 

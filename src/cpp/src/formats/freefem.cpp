@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -28,6 +29,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
@@ -59,9 +61,16 @@ Mesh read_freefem(const std::string& rPath) {
     std::vector<std::string> tok;
     if (!next_tokens(in, tok) || tok.size() != 3)
         throw ReadError("FreeFem: expected a 3-integer header");
-    const std::int64_t nver = std::strtoll(tok[0].c_str(), nullptr, 10);
-    const std::int64_t n1 = std::strtoll(tok[1].c_str(), nullptr, 10);
-    const std::int64_t n2 = std::strtoll(tok[2].c_str(), nullptr, 10);
+    // Every vertex and element is a line of at least two bytes.
+    const std::size_t max_rows = detail::file_bytes(rPath) / 2;
+    const auto nver = static_cast<std::int64_t>(detail::checked_count(
+        std::strtoll(tok[0].c_str(), nullptr, 10), max_rows, "FreeFem", "vertex"));
+    const auto n1 = static_cast<std::int64_t>(
+        detail::checked_count(std::max<long long>(0, std::strtoll(tok[1].c_str(), nullptr, 10)),
+                              max_rows, "FreeFem", "element"));
+    const auto n2 = static_cast<std::int64_t>(
+        detail::checked_count(std::max<long long>(0, std::strtoll(tok[2].c_str(), nullptr, 10)),
+                              max_rows, "FreeFem", "element"));
 
     if (!next_tokens(in, tok))
         throw ReadError("FreeFem: missing vertices");
@@ -75,6 +84,7 @@ Mesh read_freefem(const std::string& rPath) {
     for (std::int64_t i = 0; i < nver; ++i) {
         if (i > 0 && !next_tokens(in, tok))
             throw ReadError("FreeFem: truncated vertices");
+        detail::need_tokens(tok, static_cast<std::size_t>(dim) + 1, "FreeFem");
         for (int c = 0; c < dim; ++c)
             pts.As<double>()[i * dim + c] = detail::parse_double(tok[c]);
         pref.As<std::int64_t>()[i] = std::strtoll(tok[dim].c_str(), nullptr, 10);
@@ -96,9 +106,10 @@ Mesh read_freefem(const std::string& rPath) {
         for (std::int64_t k = 0; k < n; ++k) {
             if (!next_tokens(in, tok))
                 throw ReadError("FreeFem: truncated elements");
+            detail::need_tokens(tok, static_cast<std::size_t>(lnv) + 1, "FreeFem");
             for (int j = 0; j < lnv; ++j)
                 data.As<std::int64_t>()[k * lnv + j] =
-                    std::strtoll(tok[j].c_str(), nullptr, 10) - 1;
+                    detail::zero_based(std::strtoll(tok[j].c_str(), nullptr, 10));
             ref.As<std::int64_t>()[k] = std::strtoll(tok[lnv].c_str(), nullptr, 10);
         }
         mesh.AddCellBlock(type, std::move(data));

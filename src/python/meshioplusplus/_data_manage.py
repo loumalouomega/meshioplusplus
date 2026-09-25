@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 
 from ._data_common import LOCATIONS, location_map, normalize_location, require_key
+from ._fallback import core_op_declined
 
 
 def _clone(mesh):
@@ -141,7 +142,7 @@ def data_manage(mesh, keep=None, drop=None, rename=None, ignore_missing=False) -
 
     try:
         from . import _core
-    except Exception:
+    except ImportError:
         return _manage_py(mesh, keep, drop, rename, ignore_missing)
 
     # A ValueError is the user's own error (unknown key, rename collision) and
@@ -149,9 +150,9 @@ def data_manage(mesh, keep=None, drop=None, rename=None, ignore_missing=False) -
     # so fall back to the reference implementation.
     try:
         raw = _core.data_manage(mesh, keep, drop, rename, ignore_missing)
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "data_manage"):
+            raise
         return _manage_py(mesh, keep, drop, rename, ignore_missing)
 
     out = raw["mesh"]

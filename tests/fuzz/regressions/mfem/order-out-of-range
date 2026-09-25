@@ -1,0 +1,13 @@
+MFEM mesh v1.0
+dimension
+1
+vertices
+5
+nodes
+FiniteElementSpace
+FiniteElementCollection:H1_P67755
+9
+9
+7
+2
+2

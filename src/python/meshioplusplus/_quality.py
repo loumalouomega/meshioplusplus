@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._skin import _CELL_FACES
 
@@ -431,8 +432,9 @@ def compute_quality(mesh) -> dict:
         from . import _core
 
         return _core.compute_quality(mesh)
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "compute_quality"):
+            raise
     return _compute_quality_py(mesh)
 
 
@@ -442,6 +444,7 @@ def attach_quality(mesh) -> Mesh:
         from . import _core
 
         return _core.attach_quality(mesh)
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "attach_quality"):
+            raise
     return _attach_quality_py(mesh)

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian" compressor="vtkZLibDataCompressor">
+<!--Written by meshio++ v16.13.0-->
+<PolyData>
+<Piece NumberOfPoints="4" NumberOfVerts="0" NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="2">
+<Points>
+<DataArray type="Float64" Name="Points" NumberOfComponents="3" format="binary">
+AQAAAAC&@ABgAAAAFAAAAA==eJxjYMAHPtjjFyckz8AAALNMBL5=
+</DataArray>
+</Points>
+<Polys>
+<DataArray type="Int64" Name="connectivity" format="binary">
+AQAAAACAAAAwAAAAFgAAAA==eJxjYIAARijNBKVhAMZnhtIAANAACQ==
+</DataArray>
+<DataArray type="Int49" Name="offsets" format="binary">
+AQAAAACAAAAQzAAADgAAAA==eJxjZoAANigNAABwAAo=
+</DataArray>
+</Polys>
+</Piece>
+</PolyData>
+</VTKFile>

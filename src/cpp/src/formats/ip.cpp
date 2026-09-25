@@ -24,6 +24,7 @@
 // Project includes
 #include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -64,8 +65,11 @@ Mesh read_ip(const std::string& rPath) {
     if (ints.size() < 4)
         throw ReadError("IP: malformed header");
     int dim = ints[1];
-    std::size_t npoint = static_cast<std::size_t>(ints[2]);
     int ncomp = ints[3];
+    if (dim < 1 || dim > 3)
+        throw ReadError("IP: dimension must be 1, 2 or 3");
+    if (ncomp < 0)
+        throw ReadError("IP: negative component count");
 
     std::vector<std::string> names;
     while (static_cast<int>(names.size()) < ncomp && idx < lines.size()) {
@@ -90,6 +94,11 @@ Mesh read_ip(const std::string& rPath) {
             flat.push_back(detail::parse_double(tok));
     }
 
+    if (static_cast<int>(names.size()) != ncomp)
+        throw ReadError("IP: fewer component names than components");
+    // The coordinates at least must be there: dim sections of npoint reals.
+    const std::size_t npoint =
+        detail::checked_count(ints[2], flat.size() / static_cast<std::size_t>(dim), "IP", "point");
     std::size_t nsec = static_cast<std::size_t>(dim + ncomp);
     auto section = [&](std::size_t s, std::size_t i) -> double {
         std::size_t p = s * npoint + i;

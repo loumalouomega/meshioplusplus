@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 
@@ -350,9 +351,9 @@ def split(mesh, by: str = "type", tag: str | None = None) -> dict:
             )
             for p in raw
         ]
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "split"):
+            raise
         pieces = None
     used_cpp = pieces is not None
     if pieces is None:

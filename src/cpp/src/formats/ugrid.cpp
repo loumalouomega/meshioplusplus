@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -352,6 +353,11 @@ Mesh read_ugrid(const std::string& rPath) {
     for (int i = 0; i < 7; ++i)
         counts[i] = next_int();
     skip_marker();
+
+    // Every count sizes a table of at least one byte per entry.
+    const std::size_t file_size = detail::file_bytes(rPath);
+    for (const std::int64_t c : counts)
+        detail::checked_count(c, file_size, "UGRID", "header");
 
     const std::int64_t npoints = counts[0];
     const std::int64_t ntri = counts[1];

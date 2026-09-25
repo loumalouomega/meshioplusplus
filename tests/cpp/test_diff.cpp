@@ -188,4 +188,23 @@ TEST(Diff, UnorderedCorrespondenceFails) {
     EXPECT_EQ(rep.mVerdict, DiffVerdict::Different);
 }
 
+// Field data used to be looked up as *point* data, so any mesh carrying it
+// threw std::out_of_range (Python's meshes_equal then silently used its numpy
+// twin). Found by the MESHIOPLUSPLUS_STRICT_CORE run of the Python suite.
+TEST(Diff, FieldDataIsComparedAsFieldData) {
+    auto with_field = [](double v) {
+        Mesh m = tri_with_points(kSquare);
+        NDArray f(meshioplusplus::DType::Float64, {2});
+        f.As<double>()[0] = 1.5;
+        f.As<double>()[1] = v;
+        m.AddFieldData("time", std::move(f));
+        return m;
+    };
+    EXPECT_TRUE(meshes_equal(with_field(2.5), with_field(2.5)));
+    const DiffReport rep = diff(with_field(2.5), with_field(3.5));
+    EXPECT_EQ(rep.mVerdict, DiffVerdict::Different);
+    ASSERT_EQ(rep.mFieldData.mShared.size(), 1u);
+    EXPECT_EQ(rep.mFieldData.mShared[0].mName, "time");
+}
+
 }  // namespace

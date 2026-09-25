@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._regions import block_bases
 
 _PREFIX = "meshio++: curvature: "
@@ -410,11 +411,9 @@ def compute_curvature(
             "total_angle_defect": res["total_angle_defect"],
             "quality": res["quality"],
         }
-    except (ValueError, TypeError):
-        # A genuine user error must not fall through to the numpy path, which
-        # would either raise something less helpful or silently differ.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "compute_curvature"):
+            raise
         out = None
 
     if out is None:

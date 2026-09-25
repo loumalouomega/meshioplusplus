@@ -49,6 +49,7 @@ Public API:
 
 from __future__ import annotations
 
+from ._fallback import core_op_declined
 from ._gradient import gradient
 
 _PREFIX = "meshio++: hessian: "
@@ -221,12 +222,9 @@ def hessian(
             "num_skipped": res["num_skipped"],
             "num_fallback": res["num_fallback"],
         }
-    except (ValueError, TypeError):
-        # A genuine user error must not fall through to the composition path,
-        # which would either raise something less helpful or silently
-        # succeed differently.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "hessian"):
+            raise
         out = None
 
     if out is None:

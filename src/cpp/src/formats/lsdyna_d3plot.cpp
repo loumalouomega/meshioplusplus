@@ -62,10 +62,12 @@ constexpr std::size_t kD3Npos = std::numeric_limits<std::size_t>::max();
 }
 
 std::int64_t d3_digit(std::int64_t Value, int I) {
-    std::int64_t v = Value < 0 ? -Value : Value;
+    // Unsigned magnitude: negating INT64_MIN is undefined.
+    std::uint64_t v =
+        Value < 0 ? 0 - static_cast<std::uint64_t>(Value) : static_cast<std::uint64_t>(Value);
     for (int k = 0; k < I; ++k)
         v /= 10;
-    return v % 10;
+    return static_cast<std::int64_t>(v % 10);
 }
 
 // --- words ---------------------------------------------------------------------------
@@ -80,7 +82,8 @@ struct D3Words {
     std::size_t NumWords() const { return mSize / static_cast<std::size_t>(mWs); }
 
     void Need(std::size_t Pos, std::size_t N) const {
-        if ((Pos + N) * static_cast<std::size_t>(mWs) > mSize)
+        // Compared in words, without multiplying: (Pos + N) * mWs can wrap.
+        if (Pos > NumWords() || N > NumWords() - Pos)
             d3_fail("the file is truncated");
     }
 
@@ -365,7 +368,12 @@ D3Header d3_header(const D3Words& rW) {
     h.mVelocity = h.R("iv") != 0;
     h.mAcceleration = h.R("ia") != 0;
 
-    h.mSolids = std::abs(h.R("nel8"));
+    // NEL8 < 0 flags ten-node tetrahedra; its magnitude is the count (and
+    // INT64_MIN, whose magnitude does not fit, is corrupt).
+    const std::int64_t nel8 = h.R("nel8");
+    if (nel8 == std::numeric_limits<std::int64_t>::min())
+        d3_fail("the control block's NEL8 is corrupt");
+    h.mSolids = nel8 < 0 ? -nel8 : nel8;
     h.mSolidExtraNodes = h.R("nel8") < 0;
     h.mBeams = h.R("nel2");
     h.mShells = h.R("nel4");
@@ -407,14 +415,20 @@ D3Header d3_header(const D3Words& rW) {
     h.mResidualForces = d3_digit(idtdt, 1) == 1;
     h.mPlasticStrainTensor = d3_digit(idtdt, 2) == 1;
     h.mThermalStrainTensor = d3_digit(idtdt, 3) == 1;
-    const std::int64_t layer_vars = 6 * h.mShellStress + h.mShellPstrain + h.mNeips;
+    // In doubles: the words are unchecked here, and int64 products of corrupt
+    // ones overflow (d3_state_words rejects such a header afterwards).
+    const double layer_vars = 6.0 * static_cast<double>(h.mShellStress) +
+                              static_cast<double>(h.mShellPstrain) + static_cast<double>(h.mNeips);
+    const double layers = static_cast<double>(h.mLayers);
     if (idtdt > 100)
         h.mElementStrain = d3_digit(idtdt, 4) == 1;
     else if (h.mNv2d > 0)
-        h.mElementStrain =
-            h.mNv2d - h.mLayers * layer_vars - 8 * h.mShellForces - 4 * h.mShellExtra > 1;
+        h.mElementStrain = static_cast<double>(h.mNv2d) - layers * layer_vars -
+                               8.0 * static_cast<double>(h.mShellForces) -
+                               4.0 * static_cast<double>(h.mShellExtra) >
+                           1.0;
     else if (h.mNv3dt > 0)
-        h.mElementStrain = h.mNv3dt - h.mLayers * layer_vars > 1;
+        h.mElementStrain = static_cast<double>(h.mNv3dt) - layers * layer_vars > 1.0;
 
     // 20- and 27-node hexahedra are read; the node order of the others
     // (21-node wedges, 15-node tetrahedra, the cubic solids) is not documented
@@ -430,6 +444,11 @@ D3Header d3_header(const D3Words& rW) {
             d3_fail("higher-order solids (" + upper + " = " + std::to_string(h.R(key)) +
                     ") are not read");
         }
+    // Every node, element and part is at least a word of the base file; a
+    // larger count is a corrupt control block, and each sizes an id table.
+    for (const std::int64_t n : {h.mNodes, h.mSolids, h.mBeams, h.mShells, h.mTshells, h.mParts})
+        if (n < 0 || static_cast<std::uint64_t>(n) > rW.NumWords())
+            d3_fail("the control block counts more entities than the file holds");
     return h;
 }
 
@@ -496,6 +515,9 @@ D3Geometry d3_geometry(const D3Words& rW, const D3Header& rH) {
         pos += sz(rH.R("ialemat"));
     if (rH.mSph > 0) {
         const auto flags = rW.Ints(pos, 11);
+        for (const std::int64_t f : flags)  // counts of SPH variables: small
+            if (f < -(1 << 20) || f > (1 << 20))
+                d3_fail("the SPH flags hold an implausible count");
         // ISPHFG(1) = 10 (newer releases) leaves ISPHFG(11) undefined
         const std::int64_t history = flags[0] == 10 ? 0 : flags[10];
         std::int64_t sum = 0;
@@ -716,26 +738,57 @@ std::vector<std::pair<std::string, std::size_t>> d3_node_vars(const D3Header& rH
 }
 
 std::int64_t d3_state_words(const D3Header& rH, const D3Geometry& rG) {
-    std::int64_t n = 1 + rH.mGlobals;
+    // Every term is a count from the control block. A negative one, or a sum
+    // past int64, would let a state's element blocks index outside the state
+    // record the size is checked against -- so both are corruption.
+    constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+    const auto nonneg = [](std::int64_t V) {
+        if (V < 0)
+            d3_fail("the control block holds a negative count");
+        return V;
+    };
+    const auto mul = [&](std::int64_t A, std::int64_t B) {
+        nonneg(A);
+        nonneg(B);
+        if (A != 0 && B > kMax / A)
+            d3_fail("the state size overflows");
+        return A * B;
+    };
+    std::int64_t n = 0;
+    const auto add = [&](std::int64_t V) {
+        if (nonneg(V) > kMax - n)
+            d3_fail("the state size overflows");
+        n += V;
+    };
+    add(1);
+    add(rH.mGlobals);
     std::int64_t comps = 0;
     for (const auto& v : d3_node_vars(rH))
         comps += static_cast<std::int64_t>(v.second);
-    n += comps * rH.mNodes;
-    n += rH.mNt3d * rH.mSolids;
-    n += rH.mSolids * rH.mNv3d;
-    n += rH.mTshells * rH.mNv3dt;
-    n += rH.mBeams * rH.mNv1d;
-    n += (rH.mShells - rG.mRigidShells) * rH.mNv2d;
-    n += rH.mSph * rG.mSphVars;
+    add(mul(comps, rH.mNodes));
+    add(mul(rH.mNt3d, rH.mSolids));
+    add(mul(rH.mSolids, rH.mNv3d));
+    add(mul(rH.mTshells, rH.mNv3dt));
+    add(mul(rH.mBeams, rH.mNv1d));
+    if (rG.mRigidShells > rH.mShells)
+        d3_fail("more rigid shells than shells");
+    add(mul(rH.mShells - rG.mRigidShells, rH.mNv2d));
+    add(mul(rH.mSph, rG.mSphVars));
     if (rH.mNodeDeletion)
-        n += rH.mNodes;
-    else if (rH.mElementDeletion)
-        n += rH.mBeams + rH.mShells + rH.mSolids + rH.mTshells;
-    if (rG.mHasAirbag)
-        n += rH.mAirbags * rG.mAirbagStateGeom + rG.mAirbagParticles * rG.mAirbagVar;
-    n += rG.mRoads * 6;
+        add(rH.mNodes);
+    else if (rH.mElementDeletion) {
+        add(rH.mBeams);
+        add(rH.mShells);
+        add(rH.mSolids);
+        add(rH.mTshells);
+    }
+    if (rG.mHasAirbag) {
+        add(mul(rH.mAirbags, rG.mAirbagStateGeom));
+        add(mul(rG.mAirbagParticles, rG.mAirbagVar));
+    }
+    add(mul(rG.mRoads, 6));
     if (rH.mRigidBodies)
-        n += rG.mRigidBodyMotions * (rH.mReducedRigidBodies ? 12 : 24);
+        add(mul(rG.mRigidBodyMotions, rH.mReducedRigidBodies ? 12 : 24));
     return n;
 }
 
@@ -1235,6 +1288,10 @@ std::vector<double> d3_columns(const double* pData, std::size_t Rows, std::size_
 std::vector<double> d3_layer_columns(const double* pData, std::size_t Rows, std::size_t Stride,
                                      std::size_t Layers, std::size_t LayerWidth, std::size_t C0,
                                      std::size_t Count) {
+    // The last layer's columns must end inside the row; otherwise the last
+    // row's read runs past the state record.
+    if (Layers > 0 && (Layers - 1) * LayerWidth + C0 + Count > Stride)
+        d3_fail("a layered element record is wider than its row");
     std::vector<double> out(Rows * Layers * Count);
     for (std::size_t r = 0; r < Rows; ++r)
         for (std::size_t l = 0; l < Layers; ++l)
@@ -1398,6 +1455,8 @@ void d3_read_state(const D3File& rF, Mesh& rMesh, const D3Cells& rCells, std::si
     }
 
     if (h.mBeams > 0 && h.mNv1d > 0) {
+        if (h.mNeipb < 0)
+            d3_fail("negative beam history count");
         const std::size_t n = zu(h.mBeams), nv = zu(h.mNv1d), nh = zu(h.mNeipb);
         const std::int64_t nl_signed = (-3 * h.mNeipb + h.mNv1d - 6) / (h.mNeipb + 5);
         const std::size_t nl = zu(nl_signed);
@@ -1407,6 +1466,8 @@ void d3_read_state(const D3File& rF, Mesh& rMesh, const D3Cells& rCells, std::si
         put("beam_bending_moment", kD3Beam, d3_columns(d, n, nv, 3, 2), 1, 2);
         put("beam_torsion_moment", kD3Beam, d3_columns(d, n, nv, 5, 1), 1, 1);
         if (nl > 0) {
+            if (6 + 5 * nl > nv)
+                d3_fail("a beam record is narrower than its integration points");
             const double* layered = d + 6;
             put("beam_axial_stress", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 0, 1), nl, 1);
             put("beam_shear_stress", kD3Beam, d3_layer_columns(layered, n, nv, nl, 5, 1, 2), nl, 2);

@@ -112,6 +112,8 @@ inline Face build_tetra(const std::vector<Face>& rOriented, const P3& rP) {
             all.insert(v);
     for (std::int64_t v : base)
         all.erase(v);
+    if (all.empty())
+        return {};
     std::int64_t apex = *all.begin();
     Face n = {base[0], base[1], base[2], apex};
     if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
@@ -175,6 +177,11 @@ inline Face build_hexahedron(const std::vector<Face>& rOriented, const P3& rP) {
 // connectivity is empty (the caller keeps the oriented faces).
 inline std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented,
                                                      const P3& rP) {
+    // A face needs three corners; a malformed list is skipped by the caller
+    // (an empty connectivity), never indexed.
+    for (const auto& f : rOriented)
+        if (f.size() < 3)
+            return {"invalid", {}};
     std::size_t nf = rOriented.size();
     std::size_t np = unique_node_count(rOriented);
     if (nf == 4 && np == 4)
@@ -196,6 +203,10 @@ inline Face polygon_from_edges(const std::vector<std::array<std::int64_t, 2>>& r
         return {};
     std::unordered_map<std::int64_t, std::vector<std::int64_t>> next;
     for (const auto& e : rEdges) {
+        // Point ids index rP below: one outside it is a malformed face list.
+        for (const std::int64_t v : e)
+            if (v < 0 || static_cast<std::size_t>(v) >= rP.size())
+                return {};
         next[e[0]].push_back(e[1]);
         next[e[1]].push_back(e[0]);
     }

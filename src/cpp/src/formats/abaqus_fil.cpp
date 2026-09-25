@@ -1090,6 +1090,10 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         }
         if (!width)
             continue;
+        // Point numbers and value counts come from the records: a corrupt one
+        // must not size an array of billions of columns.
+        if (count > (std::size_t{1} << 16) || width > (std::size_t{1} << 16))
+            throw ReadError("Abaqus .fil: implausible integration point or component count");
         const std::size_t pts = per_point ? count : 1;
         const std::size_t cols = pts * width;
         std::vector<NDArray> blocks;

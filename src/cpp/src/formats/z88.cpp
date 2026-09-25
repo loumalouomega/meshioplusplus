@@ -850,6 +850,11 @@ Mesh read_z88(const std::string& rPath, bool Results) {
     if (head.size() < 3 || head[0] < 1 || head[0] > 3 || head[1] < 0 || head[2] < 0)
         z88_fail("the header needs the dimension, node and element counts", i + 1);
     const int ndim = static_cast<int>(head[0]);
+    // One node or element per line at least: counts beyond the lines left
+    // are corruption, and the node count sizes reservations below.
+    if (static_cast<std::uint64_t>(head[1]) > lines.size() ||
+        static_cast<std::uint64_t>(head[2]) > lines.size())
+        z88_fail("the node or element count exceeds the lines in the file", i + 1);
     const std::size_t nnodes = static_cast<std::size_t>(head[1]);
     const std::size_t nelem = static_cast<std::size_t>(head[2]);
     // Z88OS v15: ndim nnodes nelem ndof kflag. Z88 <= V13 / Aurora V1: ndim nnodes

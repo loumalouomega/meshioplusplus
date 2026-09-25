@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 
@@ -106,9 +107,9 @@ def merge(
         out = res["mesh"]
         point_maps = [np.asarray(a) for a in res["point_maps"]]
         cell_maps = [np.asarray(a) for a in res["cell_maps"]]
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "merge"):
+            raise
         out = None
     used_cpp = out is not None
     if out is None:

@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -194,6 +196,8 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         if (eof)
             throw ReadError("Netgen: unexpected end of file in " + rSection);
         std::vector<std::string> data = netgen_split_ws(line);
+        // The node count sits at a fixed column; check the row reaches it.
+        detail::need_tokens(data, dim == 2 ? 5 : (dim == 3 ? 2 : 0), "Netgen");
 
         int nump = fixed_nump;
         if (dim == 2)
@@ -201,8 +205,12 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         else if (dim == 3)
             nump = static_cast<int>(std::strtoll(data[1].c_str(), nullptr, 10));
 
-        std::int64_t index = std::strtoll(data[i_index].c_str(), nullptr, 10);
         auto tit = tmap.find(nump);
+        if (tit != tmap.end())
+            detail::need_tokens(data, static_cast<std::size_t>(std::max(i_index + 1, pi0 + nump)),
+                                "Netgen");
+        std::int64_t index =
+            tit == tmap.end() ? 0 : std::strtoll(data[i_index].c_str(), nullptr, 10);
         if (tit == tmap.end())
             throw ReadError("Netgen: unsupported element with " + std::to_string(nump) + " nodes");
         const std::string& type = tit->second;
@@ -246,10 +254,15 @@ Mesh read_netgen(const std::string& rPath) {
             break;
         if (line == "dimension") {
             dimension = static_cast<int>(std::strtoll(c.NextCount().c_str(), nullptr, 10));
+            if (dimension < 1 || dimension > 3)
+                throw ReadError("Netgen: dimension must be 1, 2 or 3");
         } else if (line == "geomtype") {
             c.NextCount();  // value; ignored
         } else if (line == "points") {
-            num_points = std::strtoll(c.NextCount().c_str(), nullptr, 10);
+            // A point row is at least a few bytes: bound the count by the file.
+            num_points = static_cast<std::int64_t>(
+                detail::checked_count(std::strtoll(c.NextCount().c_str(), nullptr, 10),
+                                      detail::file_bytes(rPath), "Netgen", "point"));
             raw_points.resize(static_cast<std::size_t>(num_points) * 3, 0.0);
             for (std::int64_t i = 0; i < num_points; ++i) {
                 std::string pl = c.NextReal(eof);

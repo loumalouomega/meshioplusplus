@@ -30,6 +30,27 @@ through the Python twin, but says so instead of silently running slower.
 Set ``MESHIOPLUSPLUS_STRICT_CORE=1`` (also ``on``/``true``/``yes``) to turn every
 fall-back into a re-raise. That is how a contributor finds out that a format
 believed to be native has been quietly running its Python twin.
+
+The operations (``clean``, ``refine``, ``compute_sdf``, ...) have their own
+shims with a different contract, :func:`core_op_declined`, because an
+operation's fallback is not the same algorithm read differently: it is a
+*different algorithm*, so a bad argument must never reach it.
+
+======================================  =========================  ==========
+exception out of ``_core``              meaning                    default
+======================================  =========================  ==========
+``ImportError``                         no compiled core           silent, fall back
+``NotImplementedError``,               a recognised decline       DEBUG, fall back
+``ReadError`` / ``WriteError``          (C++ ``Unsupported``, or
+                                        the mesh conversion)
+``ValueError`` / ``TypeError`` /        a bad argument             propagate
+``MemoryError`` / ``RecursionError``
+anything else                           the fast path *broke*      WARNING, fall back
+======================================  =========================  ==========
+
+The native readers never let a parser's ``std::`` exception out any more (every
+entry point rethrows it as ``ReadError``, ``detail/read_guard.hpp``), so for
+formats the last row of the first table is now a real bug report too.
 """
 
 from __future__ import annotations
@@ -112,6 +133,68 @@ def core_declined(exc: BaseException, fmt: str, direction: str, target) -> bool:
             fmt,
             direction,
             target,
+            type(exc).__name__,
+            exc,
+            _ENV_VAR,
+        )
+    return True
+
+
+# An operation's arguments are validated on both paths; a `ValueError` out of
+# the core is the user's mistake, and re-running a different algorithm on it
+# would answer a question nobody asked.
+_OP_BAD_ARGUMENT = (ValueError, TypeError, MemoryError, RecursionError)
+
+
+def core_op_declined(exc: BaseException, op: str) -> bool:
+    """Log why a native operation failed and say whether to run its Python twin.
+
+    The operation shims' counterpart of :func:`core_declined`::
+
+        try:
+            from . import _core
+
+            out = _core.clean(...)
+        except Exception as exc:
+            if not core_op_declined(exc, "clean"):
+                raise
+            out = None
+
+    :param exc: the exception the import or the ``_core`` call raised.
+    :param op: the operation name, for the log line.
+    :returns: ``True`` to fall back to the Python twin, ``False`` to re-raise.
+    """
+    if isinstance(exc, ImportError):
+        # A pure-Python install: the twin is the only implementation there is.
+        return True
+    if isinstance(exc, _OP_BAD_ARGUMENT):
+        return False
+
+    if strict_core():
+        _LOG.warning(
+            "meshio++: %s: C++ core refused (%s: %s); %s=1, not falling back",
+            op,
+            type(exc).__name__,
+            exc,
+            _ENV_VAR,
+        )
+        return False
+
+    if isinstance(exc, (NotImplementedError,) + _RECOGNISED_DECLINE):
+        # NotImplementedError is the kernel's `Unsupported`; ReadError /
+        # WriteError come from handing the mesh to the core at all (a ragged
+        # block, a string array the numpy conversion cannot carry).
+        _LOG.debug(
+            "meshio++: %s: C++ core declined (%s: %s); using the Python twin",
+            op,
+            type(exc).__name__,
+            exc,
+        )
+    else:
+        _LOG.warning(
+            "meshio++: %s: C++ core failed unexpectedly (%s: %s); "
+            "using the Python twin. Set %s=1 to raise instead.",
+            op,
             type(exc).__name__,
             exc,
             _ENV_VAR,

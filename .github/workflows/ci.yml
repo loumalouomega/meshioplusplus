@@ -219,6 +219,59 @@ jobs:
   #   * shared, one backend -- the only configuration where symbol visibility is
   #     observable. The variants are built -fvisibility=hidden, so a public
   #     declaration missing MESHIOPLUSPLUS_API fails THIS link and nothing else.
+  # ASan + UBSan over the C++ suite (roadmap §3). Clang, SEQ, no Python (a
+  # sanitized _core would need the runtime preloaded into the interpreter)
+  # and no Fortran; the gtest binary, the C API objects and the fuzz replay
+  # driver are all instrumented (MESHIOPLUSPLUS_SANITIZE applies PUBLIC). UBSan
+  # is fatal and ASan aborts, so any report fails ctest. Leaks are checked;
+  # tools/sanitizers/lsan.supp names the only third-party ones tolerated.
+  cpp-sanitize:
+    name: C++ tests (ASan + UBSan)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          submodules: recursive
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y clang libhdf5-dev libnetcdf-dev zlib1g-dev libbz2-dev pkg-config ninja-build
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DMESHIOPLUSPLUS_SANITIZE="address;undefined"
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
+          -DMESHIOPLUSPLUS_WITH_BZIP2=ON
+      - name: Build
+        run: cmake --build build
+      - name: Run C++ tests under the sanitizers
+        if: steps.lfs.outputs.available != 'false'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/sanitizers/lsan.supp
+        run: ctest --test-dir build --output-on-failure
+
   cpp-install:
     name: C++ API install (${{ matrix.name }})
     needs: [lint]
@@ -1178,6 +1231,44 @@ jobs:
       # default matrix; this job adds the zarr- and pxr-gated ones.
       - name: Physics-ML format tests
         run: python -m pytest tests/python/test_pmsh.py tests/python/test_zarr.py tests/python/test_cae.py tests/python/test_usd.py -v
+
+  # --------------------------------------------------------------------------
+  # The ParaView plugin (tools/paraview-meshioplusplus-plugin.py) under a real
+  # pvpython: conda-forge ParaView, with meshio++ built into the same
+  # environment so the compiled core matches pvpython's Python. The test skips
+  # without pvpython; MESHIOPLUSPLUS_REQUIRE_PVPYTHON makes that a failure
+  # here, so the job cannot pass by skipping.
+  # --------------------------------------------------------------------------
+  paraview-plugin:
+    name: ParaView plugin (pvpython)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a GL runtime
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0 libegl1 xvfb
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: pv
+          create-args: >-
+            python=3.12 paraview cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
+          channels: conda-forge
+      - name: Build meshio++ into ParaView's environment
+        env:
+          CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+        run: python -m pip install --no-build-isolation .
+      - name: Plugin smoke test
+        env:
+          MESHIOPLUSPLUS_REQUIRE_PVPYTHON: "1"
+        # The source tree is src/-laid-out, so this imports the installed package.
+        run: xvfb-run -a python -m pytest tests/python/test_paraview_plugin.py -v
 
   # --------------------------------------------------------------------------
   # glTF output against the Khronos glTF-Validator (the `gltf-validator` npm

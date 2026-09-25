@@ -30,6 +30,7 @@ from bisect import bisect_left, insort
 import numpy as np
 
 from ._convert_cells import _simplexify_py
+from ._fallback import core_op_declined
 from ._mesh import Mesh, topological_dimension
 
 _PLACEMENTS = ("optimal", "midpoint", "endpoint")
@@ -778,12 +779,9 @@ def decimate(
             "collapses_rejected": res["collapses_rejected"],
             "max_error_applied": res["max_error_applied"],
         }
-    except (ValueError, TypeError):
-        # A genuine user error (no criterion, a volume mesh, a bad placement, a
-        # frozen id out of bounds) must not fall through to the numpy path and
-        # there either succeed silently or raise something less precise.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "decimate"):
+            raise
         out = None
     used_cpp = out is not None
     if out is None:

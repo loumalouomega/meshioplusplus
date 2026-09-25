@@ -6,9 +6,12 @@ to do it hid why the C++ path declined and swallowed real bugs. The decision now
 lives in ``meshioplusplus._fallback.core_declined``; this static guard fails any
 handler that catches ``Exception`` around a ``_core.`` call without asking it.
 
-Scoped to the per-format packages (``<fmt>/*.py``). The package-root operation
-shims (``_clean.py``, ``_data_average.py``, ...) have the same defect shape but
-are a separate scope.
+The package-root operation shims (``_clean.py``, ``_data_average.py``, ...)
+had the same defect with a worse outcome -- their fallback is a *different
+algorithm*, not the same file read differently -- and ask
+``core_op_declined`` instead, which never lets a bad argument reach the twin.
+There, merely importing ``_core`` inside the ``try`` counts, since an import
+guarded by ``except Exception`` hides a broken extension as "no core".
 """
 
 import ast
@@ -25,6 +28,20 @@ def _format_python_files():
         if path.parent.name in _SKIP_DIRS:
             continue
         yield path
+
+
+def _operation_python_files():
+    for path in sorted(PKG.glob("_*.py")):
+        if path.name != "_fallback.py":
+            yield path
+
+
+def _references_core(node):
+    return any(
+        (isinstance(n, ast.Name) and n.id == "_core")
+        or (isinstance(n, ast.ImportFrom) and any(a.name == "_core" for a in n.names))
+        for n in ast.walk(node)
+    )
 
 
 def _calls_core(node):
@@ -52,7 +69,7 @@ def _asks_core_declined(handler):
     return any(
         isinstance(n, ast.Call)
         and isinstance(n.func, ast.Name)
-        and n.func.id == "core_declined"
+        and n.func.id in ("core_declined", "core_op_declined")
         for n in ast.walk(handler)
     )
 
@@ -87,3 +104,34 @@ def test_the_guard_actually_sees_the_shims():
             if isinstance(node, ast.Try) and any(_calls_core(s) for s in node.body):
                 seen += sum(1 for h in node.handlers if _catches_everything(h))
     assert seen >= 80, seen
+
+
+def _operation_violations():
+    found, seen = [], 0
+    for path in _operation_python_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            if not any(_references_core(stmt) for stmt in node.body):
+                continue
+            for handler in node.handlers:
+                if _catches_everything(handler):
+                    seen += 1
+                    if not _asks_core_declined(handler):
+                        found.append(f"{path.relative_to(REPO)}:{handler.lineno}")
+    return found, seen
+
+
+def test_no_broad_except_around_core_in_operations():
+    violations, _ = _operation_violations()
+    assert not violations, (
+        "a broad `except` around a `_core` import or call in an operation shim "
+        "must ask `meshioplusplus._fallback.core_op_declined` (or narrow a bare "
+        "import to `except ImportError`):\n" + "\n".join(violations)
+    )
+
+
+def test_the_operation_guard_actually_sees_the_shims():
+    _, seen = _operation_violations()
+    assert seen >= 45, seen

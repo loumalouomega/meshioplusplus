@@ -26,6 +26,7 @@
 #include "meshioplusplus/detail/colormap.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/read_guard.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -198,7 +199,38 @@ meshioplusplus::GhostPolicy core_ghost_policy(const std::string& rGhosts) {
         return meshioplusplus::GhostPolicy::Keep;
     if (rGhosts == "drop")
         return meshioplusplus::GhostPolicy::Drop;
-    throw std::invalid_argument("meshio++: ghosts must be 'keep' or 'drop', got '" + rGhosts + "'");
+    // py::value_error, not std::invalid_argument: this runs inside guard_read,
+    // which would otherwise report a bad keyword as a malformed file.
+    throw py::value_error("meshio++: ghosts must be 'keep' or 'drop', got '" + rGhosts + "'");
+}
+
+/**
+ * @brief Wraps a `*_read` binding so a parser's std:: exception leaves as ReadError.
+ *
+ * detail/read_guard.hpp has the reasoning. pybind11's own exceptions
+ * (`py::value_error` for a bad keyword, `py::error_already_set` from a Python
+ * callback, cast errors) pass through untouched: they describe the call, not
+ * the file. Deduces the lambda's signature so pybind11 still sees the
+ * argument types it needs for `py::arg` defaults.
+ */
+template <class TFn, class TRet, class... TArgs>
+auto core_guard_read_impl(const char* pFormat, TFn fn, TRet (TFn::*)(TArgs...) const) {
+    return [pFormat, fn = std::move(fn)](TArgs... args) -> TRet {
+        try {
+            return fn(std::forward<TArgs>(args)...);
+        } catch (const py::builtin_exception&) {
+            throw;
+        } catch (const py::error_already_set&) {
+            throw;
+        } catch (...) {
+            meshioplusplus::detail::rethrow_as_read_error(pFormat);
+        }
+    };
+}
+
+template <class TFn>
+auto guard_read(const char* pFormat, TFn fn) {
+    return core_guard_read_impl(pFormat, std::move(fn), &TFn::operator());
 }
 
 /**
@@ -394,6 +426,9 @@ PYBIND11_MODULE(_core, m) {
         } catch (const meshioplusplus::WriteError& e) {
             py::object exc = py::module_::import("meshioplusplus").attr("WriteError");
             PyErr_SetString(exc.ptr(), e.what());
+        } catch (const meshioplusplus::Unsupported& e) {
+            // An operation's recognised decline: core_op_declined's signal.
+            PyErr_SetString(PyExc_NotImplementedError, e.what());
         }
     });
 
@@ -453,13 +488,13 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus::write_vti(path, cpp, binary, zlib);
     });
 
-    m.def(
-        "vti_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_vti(path, core_read_options(points_only, arrays)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+    m.def("vti_read",
+          guard_read("vti",
+                     [](const std::string& path, bool points_only, py::object arrays) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vti(
+                             path, core_read_options(points_only, arrays)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTS (StructuredGrid) writer / reader (v11.6.0, roadmap §1 tier B4). Same
     // dense-lattice requirement on write as VTI; allow_ragged stays false.
@@ -480,13 +515,13 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus::write_vts(path, cpp, binary, zlib);
     });
 
-    m.def(
-        "vts_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_vts(path, core_read_options(points_only, arrays)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+    m.def("vts_read",
+          guard_read("vts",
+                     [](const std::string& path, bool points_only, py::object arrays) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vts(
+                             path, core_read_options(points_only, arrays)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTR (RectilinearGrid) writer / reader (v11.6.0, roadmap §1 tier B4). The
     // writer needs a UNIFORM dense lattice (same requirement as VTI/VTS); the
@@ -508,13 +543,13 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus::write_vtr(path, cpp, binary, zlib);
     });
 
-    m.def(
-        "vtr_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_vtr(path, core_read_options(points_only, arrays)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+    m.def("vtr_read",
+          guard_read("vtr",
+                     [](const std::string& path, bool points_only, py::object arrays) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtr(
+                             path, core_read_options(points_only, arrays)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTM (MultiBlock) writer / reader (v11.6.0, roadmap §1 tier B4, part 3 of
     // 3). Each CellBlock becomes its own .vtu piece, so allow_ragged=true like
@@ -539,13 +574,13 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus::write_vtm(path, cpp, binary, zlib);
     });
 
-    m.def(
-        "vtm_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_vtm(path, core_read_options(points_only, arrays)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+    m.def("vtm_read",
+          guard_read("vtm",
+                     [](const std::string& path, bool points_only, py::object arrays) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtm(
+                             path, core_read_options(points_only, arrays)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // ParaView parallel indices (.pvtu / .pvtp, v15.0.0): an index
     // plus one .vtu/.vtp piece per part. allow_ragged=true like vtm -- a piece is a
@@ -586,11 +621,12 @@ PYBIND11_MODULE(_core, m) {
 
     m.def(
         "pvtu_read",
-        [](const std::string& path, bool points_only, py::object arrays, py::object piece,
-           const std::string& ghosts) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtu(
-                path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
-        },
+        guard_read("pvtu",
+                   [](const std::string& path, bool points_only, py::object arrays,
+                      py::object piece, const std::string& ghosts) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtu(
+                           path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
 
@@ -629,11 +665,12 @@ PYBIND11_MODULE(_core, m) {
 
     m.def(
         "pvtp_read",
-        [](const std::string& path, bool points_only, py::object arrays, py::object piece,
-           const std::string& ghosts) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtp(
-                path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
-        },
+        guard_read("pvtp",
+                   [](const std::string& path, bool points_only, py::object arrays,
+                      py::object piece, const std::string& ghosts) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtp(
+                           path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
 
@@ -650,15 +687,16 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
 
-    m.def(
-        "pvd_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           py::object piece, const std::string& ghosts) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvd(
-                path, core_read_options(points_only, arrays, time_step, piece, false, ghosts)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
+    m.def("pvd_read",
+          guard_read("pvd",
+                     [](const std::string& path, bool points_only, py::object arrays, int time_step,
+                        py::object piece, const std::string& ghosts) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvd(
+                             path, core_read_options(points_only, arrays, time_step, piece, false,
+                                                     ghosts)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
 
     // VTP (PolyData) writer / reader; allow_ragged so jagged polygon blocks
     // reach the C++ writer (they are legal PolyData Polys rows).
@@ -680,22 +718,22 @@ PYBIND11_MODULE(_core, m) {
                                                                  /*allow_ragged=*/true);
         meshioplusplus::write_vtp(path, cpp, binary, zlib);
     });
-    m.def(
-        "vtp_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_vtp(path, core_read_options(points_only, arrays)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+    m.def("vtp_read",
+          guard_read("vtp",
+                     [](const std::string& path, bool points_only, py::object arrays) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtp(
+                             path, core_read_options(points_only, arrays)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTU reader -> Python mesh (zero-copy capsule-backed arrays).
-    m.def(
-        "vtu_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_vtu(path, core_read_options(points_only, arrays)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+    m.def("vtu_read",
+          guard_read("vtu",
+                     [](const std::string& path, bool points_only, py::object arrays) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtu(
+                             path, core_read_options(points_only, arrays)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTK writer (version 5.1 or 4.2; ascii or big-endian binary).
     m.def("vtk_write", [](const std::string& path, py::object pymesh, bool binary, bool v51) {
@@ -705,9 +743,9 @@ PYBIND11_MODULE(_core, m) {
     });
 
     // VTK 5.1 reader -> Python mesh (zero-copy capsule-backed arrays).
-    m.def("vtk_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtk(path));
-    });
+    m.def("vtk_read", guard_read("vtk", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtk(path));
+          }));
 
     // Boundary-skin extraction (volume mesh -> surface mesh).
     m.def(
@@ -787,23 +825,23 @@ PYBIND11_MODULE(_core, m) {
     // without materializing the heavy arrays. Formats lacking a native metadata
     // path are read in full and report fell_back_to_full_read=True -- the
     // answer is always correct, and always honest about whether it was cheap.
-    m.def(
-        "read_metadata",
-        [](const std::string& path, const std::string& format) {
-            std::string fmt = format;
-            if (fmt.empty()) {
-                try {
-                    fmt = meshioplusplus::resolve_format(path, "");
-                } catch (const meshioplusplus::ReadError&) {
-                    fmt = meshioplusplus::sniff_format(path);  // read-only fallback
-                    if (fmt.empty())
-                        throw;
-                }
-            }
-            return core_metadata_to_py(
-                meshioplusplus::registry_read_metadata(path, fmt, meshioplusplus::ReadOptions{}));
-        },
-        py::arg("path"), py::arg("format") = "");
+    m.def("read_metadata",
+          guard_read("metadata",
+                     [](const std::string& path, const std::string& format) {
+                         std::string fmt = format;
+                         if (fmt.empty()) {
+                             try {
+                                 fmt = meshioplusplus::resolve_format(path, "");
+                             } catch (const meshioplusplus::ReadError&) {
+                                 fmt = meshioplusplus::sniff_format(path);  // read-only fallback
+                                 if (fmt.empty())
+                                     throw;
+                             }
+                         }
+                         return core_metadata_to_py(meshioplusplus::registry_read_metadata(
+                             path, fmt, meshioplusplus::ReadOptions{}));
+                     }),
+          py::arg("path"), py::arg("format") = "");
 
     // Whether `format` has a native selective-read path (rather than being read
     // whole and filtered afterwards).
@@ -2676,27 +2714,27 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::write_stl(path, cpp, binary, skin);
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = false, py::arg("skin") = true);
-    m.def("stl_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_stl(path));
-    });
+    m.def("stl_read", guard_read("stl", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_stl(path));
+          }));
 
     // OFF writer / reader.
     m.def("off_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_off(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("off_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_off(path));
-    });
+    m.def("off_read", guard_read("off", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_off(path));
+          }));
 
     // OBJ writer / reader.
     m.def("obj_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_obj(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("obj_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_obj(path));
-    });
+    m.def("obj_read", guard_read("obj", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_obj(path));
+          }));
 
     // PCD (PCL point clouds) writer / reader.
     m.def(
@@ -2720,14 +2758,15 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("data") = "binary",
         py::arg("float64_points") = false);
-    m.def(
-        "pcd_read",
-        [](const std::string& path, bool drop_invalid) {
-            meshioplusplus::PcdReadOptions options;
-            options.mDropInvalid = drop_invalid;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pcd(path, options));
-        },
-        py::arg("path"), py::arg("drop_invalid") = false);
+    m.def("pcd_read",
+          guard_read("pcd",
+                     [](const std::string& path, bool drop_invalid) {
+                         meshioplusplus::PcdReadOptions options;
+                         options.mDropInvalid = drop_invalid;
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_pcd(path, options));
+                     }),
+          py::arg("path"), py::arg("drop_invalid") = false);
 
     // XYZ (headerless ASCII point clouds) writer / reader.
     m.def(
@@ -2737,17 +2776,18 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::write_xyz(path, meshioplusplus_py::py_to_mesh(pymesh, refs), float_fmt);
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = "");
-    m.def(
-        "xyz_read",
-        [](const std::string& path, const std::vector<std::string>& columns,
-           const std::string& delimiter) {
-            meshioplusplus::XyzReadOptions options;
-            options.mColumns = columns;
-            options.mDelimiter = delimiter;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xyz(path, options));
-        },
-        py::arg("path"), py::arg("columns") = std::vector<std::string>{},
-        py::arg("delimiter") = "");
+    m.def("xyz_read",
+          guard_read("xyz",
+                     [](const std::string& path, const std::vector<std::string>& columns,
+                        const std::string& delimiter) {
+                         meshioplusplus::XyzReadOptions options;
+                         options.mColumns = columns;
+                         options.mDelimiter = delimiter;
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_xyz(path, options));
+                     }),
+          py::arg("path"), py::arg("columns") = std::vector<std::string>{},
+          py::arg("delimiter") = "");
 
     // Gmsh 2.2 writer / reader.
     m.def("gmsh22_write", [](const std::string& path, py::object pymesh, bool binary) {
@@ -2782,23 +2822,24 @@ PYBIND11_MODULE(_core, m) {
         py::arg("bounding_entities") = py::none());
     m.def(
         "gmsh_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            meshioplusplus::GmshInfo info;
-            py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
-                path, info, core_read_options(points_only, arrays, time_step)));
-            // The 4.1 $Entities bounding entities are signed entity tags, not
-            // cell indices, so they ride the GmshInfo side channel and land in
-            // cell_sets here -- where the Mesh's own predicate routes them to
-            // the verbatim passthrough, exactly as the Python reference's do.
-            if (!info.mBoundingEntities.empty()) {
-                py::list blocks;
-                for (const auto& tags : info.mBoundingEntities)
-                    blocks.append(py::array_t<std::int32_t>(static_cast<py::ssize_t>(tags.size()),
-                                                            tags.data()));
-                pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
-            }
-            return pymesh;
-        },
+        guard_read("gmsh",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       meshioplusplus::GmshInfo info;
+                       py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
+                           path, info, core_read_options(points_only, arrays, time_step)));
+                       // The 4.1 $Entities bounding entities are signed entity tags, not
+                       // cell indices, so they ride the GmshInfo side channel and land in
+                       // cell_sets here -- where the Mesh's own predicate routes them to
+                       // the verbatim passthrough, exactly as the Python reference's do.
+                       if (!info.mBoundingEntities.empty()) {
+                           py::list blocks;
+                           for (const auto& tags : info.mBoundingEntities)
+                               blocks.append(py::array_t<std::int32_t>(
+                                   static_cast<py::ssize_t>(tags.size()), tags.data()));
+                           pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
+                       }
+                       return pymesh;
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
 
@@ -2811,36 +2852,36 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::write_ply(path, cpp, binary, skin);
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("skin") = true);
-    m.def("ply_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ply(path));
-    });
+    m.def("ply_read", guard_read("ply", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ply(path));
+          }));
 
     // Medit ascii writer / reader (.mesh).
     m.def("medit_write_ascii", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_medit_ascii(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("medit_read_ascii", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_medit_ascii(path));
-    });
+    m.def("medit_read_ascii", guard_read("medit", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_medit_ascii(path));
+          }));
 
     // Kratos MDPA writer / reader (.mdpa).
     m.def("mdpa_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_mdpa(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("mdpa_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mdpa(path));
-    });
+    m.def("mdpa_read", guard_read("mdpa", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mdpa(path));
+          }));
 
     // Abaqus writer / reader (.inp).
     m.def("abaqus_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_abaqus(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("abaqus_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_abaqus(path));
-    });
+    m.def("abaqus_read", guard_read("abaqus", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_abaqus(path));
+          }));
 
     // LS-DYNA keyword deck writer / reader (.k / .key / .dyn).
     m.def("lsdyna_write", [](const std::string& path, py::object pymesh) {
@@ -2849,29 +2890,29 @@ PYBIND11_MODULE(_core, m) {
     });
     // CalculiX results (.frd): read-only. `time_step` selects the increment;
     // `derived` adds <NAME>_mises/<NAME>_principal beside each tensor.
-    m.def(
-        "frd_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           bool derived) {
-            meshioplusplus::FrdReadOptions frd_opts;
-            frd_opts.mDerived = derived;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_frd(
-                path, core_read_options(points_only, arrays, time_step), frd_opts));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("derived") = false);
-    m.def("lsdyna_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna(path));
-    });
+    m.def("frd_read",
+          guard_read("frd",
+                     [](const std::string& path, bool points_only, py::object arrays, int time_step,
+                        bool derived) {
+                         meshioplusplus::FrdReadOptions frd_opts;
+                         frd_opts.mDerived = derived;
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_frd(
+                             path, core_read_options(points_only, arrays, time_step), frd_opts));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0, py::arg("derived") = false);
+    m.def("lsdyna_read", guard_read("lsdyna", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna(path));
+          }));
 
     // Code_Aster native mesh (.mail) writer / reader.
     m.def("code_aster_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_code_aster(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("code_aster_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_code_aster(path));
-    });
+    m.def("code_aster_read", guard_read("code_aster", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_code_aster(path));
+          }));
 
     // MFEM mesh (.mesh) and grid functions (.gf) writer / reader.
     m.def(
@@ -2882,32 +2923,34 @@ PYBIND11_MODULE(_core, m) {
                                        grid_functions);
         },
         py::arg("path"), py::arg("mesh"), py::arg("grid_functions") = false);
-    m.def(
-        "mfem_read",
-        [](const std::string& path,
-           const std::vector<std::pair<std::string, std::string>>& grid_functions,
-           py::object piece) {
-            std::vector<meshioplusplus::MfemGridFunction> gfs;
-            for (const auto& [name, gf] : grid_functions)
-                gfs.push_back({name, gf});
-            meshioplusplus::ReadOptions opts;
-            if (!piece.is_none()) {
-                opts.mPiece = piece.cast<std::int64_t>();
-                opts.mPieceSet = true;
-            }
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfem(path, gfs, opts));
-        },
-        py::arg("path"),
-        py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{},
-        py::arg("piece") = py::none());
+    m.def("mfem_read",
+          guard_read("mfem",
+                     [](const std::string& path,
+                        const std::vector<std::pair<std::string, std::string>>& grid_functions,
+                        py::object piece) {
+                         std::vector<meshioplusplus::MfemGridFunction> gfs;
+                         for (const auto& [name, gf] : grid_functions)
+                             gfs.push_back({name, gf});
+                         meshioplusplus::ReadOptions opts;
+                         if (!piece.is_none()) {
+                             opts.mPiece = piece.cast<std::int64_t>();
+                             opts.mPieceSet = true;
+                         }
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_mfem(path, gfs, opts));
+                     }),
+          py::arg("path"),
+          py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{},
+          py::arg("piece") = py::none());
 
     // Femap neutral file (.neu) reader / mesh writer.
     m.def(
         "femap_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_femap(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("femap",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_femap(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("femap_write", [](const std::string& path, py::object pymesh) {
@@ -2920,10 +2963,11 @@ PYBIND11_MODULE(_core, m) {
     // Abaqus results file (.fil) reader.
     m.def(
         "abaqus_fil_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_abaqus_fil(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("abaqus_fil",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_abaqus_fil(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("abaqus_fil_time_values",
@@ -2932,10 +2976,11 @@ PYBIND11_MODULE(_core, m) {
     // Nastran OP2 result file reader.
     m.def(
         "nastran_op2_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_op2(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("nastran_op2",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_op2(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("nastran_op2_time_values",
@@ -2944,10 +2989,11 @@ PYBIND11_MODULE(_core, m) {
     // LS-DYNA d3plot state database reader.
     m.def(
         "lsdyna_d3plot_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_d3plot(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("lsdyna_d3plot",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_d3plot(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("lsdyna_d3plot_time_values",
@@ -2956,19 +3002,20 @@ PYBIND11_MODULE(_core, m) {
     // LS-DYNA binout (LSDA) reader.
     m.def(
         "lsdyna_binout_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_binout(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("lsdyna_binout",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_binout(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("lsdyna_binout_time_values",
           [](const std::string& path) { return meshioplusplus::lsdyna_binout_time_values(path); });
 
     // libMesh .xda/.xdr reader.
-    m.def("libmesh_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_libmesh(path));
-    });
+    m.def("libmesh_read", guard_read("libmesh", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_libmesh(path));
+          }));
     m.def("libmesh_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_libmesh(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
@@ -2976,32 +3023,34 @@ PYBIND11_MODULE(_core, m) {
 
     // OpenRadioss starter deck (.rad) reader.
     // MSC Marc input deck (.dat) and formatted post file (.t19) readers.
-    m.def("marc_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_marc(path));
-    });
+    m.def("marc_read", guard_read("marc", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_marc(path));
+          }));
     m.def(
         "marc_t19_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_marc_t19(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("marc_t19",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_marc_t19(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("marc_t19_time_values", [](const std::string& path) {
         return meshioplusplus::read_marc_t19_metadata(path).mTimeValues;
     });
 
-    m.def("radioss_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
-    });
+    m.def("radioss_read", guard_read("radioss", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
+          }));
     // OpenRadioss animation file (A001...) reader.
     // OpenRadioss time-history (T01) reader.
     m.def(
         "radioss_th_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_th(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("radioss_th",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_th(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("radioss_th_time_values",
@@ -3009,16 +3058,17 @@ PYBIND11_MODULE(_core, m) {
 
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     // DOLFINx VTX (.bp directory) reader; ADIOS2 builds only.
-    m.def(
-        "vtx_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           const std::string& ghosts) {
-            meshioplusplus::ReadOptions opts = core_read_options(points_only, arrays, time_step);
-            opts.mGhosts = core_ghost_policy(ghosts);
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtx(path, opts));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("ghosts") = "keep");
+    m.def("vtx_read",
+          guard_read("vtx",
+                     [](const std::string& path, bool points_only, py::object arrays, int time_step,
+                        const std::string& ghosts) {
+                         meshioplusplus::ReadOptions opts =
+                             core_read_options(points_only, arrays, time_step);
+                         opts.mGhosts = core_ghost_policy(ghosts);
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtx(path, opts));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0, py::arg("ghosts") = "keep");
     m.def("vtx_time_values",
           [](const std::string& path) { return meshioplusplus::vtx_time_values(path); });
 #endif
@@ -3026,27 +3076,29 @@ PYBIND11_MODULE(_core, m) {
     // Tecplot .szplt through a user-installed TecIO; TecIO builds only.
     m.def(
         "szplt_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_szplt(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("szplt",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_szplt(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
     m.def("szplt_time_values",
           [](const std::string& path) { return meshioplusplus::szplt_time_values(path); });
 #endif
 
-    m.def("radioss_anim_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));
-    });
+    m.def("radioss_anim_read", guard_read("radioss_anim", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));
+          }));
 
     // Z88 structure file (z88i1.txt) reader / writer, with its results.
-    m.def(
-        "z88_read",
-        [](const std::string& path, bool results) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_z88(path, results));
-        },
-        py::arg("path"), py::arg("results") = true);
+    m.def("z88_read",
+          guard_read("z88",
+                     [](const std::string& path, bool results) {
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_z88(path, results));
+                     }),
+          py::arg("path"), py::arg("results") = true);
     m.def(
         "z88_write",
         [](const std::string& path, py::object pymesh, bool stubs) {
@@ -3060,16 +3112,17 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_patran(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def(
-        "patran_read",
-        [](const std::string& path,
-           const std::vector<std::pair<std::string, std::string>>& results) {
-            std::vector<meshioplusplus::PatranResultFile> files;
-            for (const auto& [name, file] : results)
-                files.push_back({name, file});
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_patran(path, files));
-        },
-        py::arg("path"), py::arg("results") = std::vector<std::pair<std::string, std::string>>{});
+    m.def("patran_read",
+          guard_read("patran",
+                     [](const std::string& path,
+                        const std::vector<std::pair<std::string, std::string>>& results) {
+                         std::vector<meshioplusplus::PatranResultFile> files;
+                         for (const auto& [name, file] : results)
+                             files.push_back({name, file});
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_patran(path, files));
+                     }),
+          py::arg("path"), py::arg("results") = std::vector<std::pair<std::string, std::string>>{});
 
     // Elmer mesh directory writer / reader.
     m.def(
@@ -3079,15 +3132,15 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::write_elmer(path, meshioplusplus_py::py_to_mesh(pymesh, refs), halo);
         },
         py::arg("path"), py::arg("mesh"), py::arg("halo") = false);
-    m.def(
-        "elmer_read",
-        [](const std::string& path, bool points_only, py::object arrays, py::object piece,
-           bool lenient) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_elmer(
-                path, core_read_options(points_only, arrays, 0, piece, lenient)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("piece") = py::none(), py::arg("lenient") = false);
+    m.def("elmer_read",
+          guard_read("elmer",
+                     [](const std::string& path, bool points_only, py::object arrays,
+                        py::object piece, bool lenient) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_elmer(
+                             path, core_read_options(points_only, arrays, 0, piece, lenient)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("piece") = py::none(), py::arg("lenient") = false);
 
     // FEBio input (.feb) writer / reader: the mesh only.
     m.def("febio_write", [](const std::string& path, py::object pymesh) {
@@ -3096,41 +3149,43 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def(
         "febio_read",
-        [](const std::string& path, bool points_only, py::object arrays, bool lenient) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_febio(
-                path, core_read_options(points_only, arrays, 0, py::none(), lenient)));
-        },
+        guard_read("febio",
+                   [](const std::string& path, bool points_only, py::object arrays, bool lenient) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_febio(
+                           path, core_read_options(points_only, arrays, 0, py::none(), lenient)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("lenient") = false);
 
     // FEBio plot file (.xplt) reader: one state per read.
-    m.def(
-        "xplt_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           bool lenient) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xplt(
-                path, core_read_options(points_only, arrays, time_step, py::none(), lenient)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("lenient") = false);
+    m.def("xplt_read",
+          guard_read("xplt",
+                     [](const std::string& path, bool points_only, py::object arrays, int time_step,
+                        bool lenient) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xplt(
+                             path, core_read_options(points_only, arrays, time_step, py::none(),
+                                                     lenient)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0, py::arg("lenient") = false);
     m.def("xplt_time_values", [](const std::string& path) {
         return meshioplusplus::read_xplt_metadata(path).mTimeValues;
     });
 
     // Ansys MAPDL results (.rst/.rth) reader: one result set per read; `cyclic`
     // expands a static cyclic-symmetry model to the full rotor.
-    m.def(
-        "ansys_rst_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           bool lenient, bool cyclic) {
-            const auto options =
-                core_read_options(points_only, arrays, time_step, py::none(), lenient);
-            return meshioplusplus_py::mesh_to_py(
-                cyclic ? meshioplusplus::read_ansys_rst_cyclic(path, options)
-                       : meshioplusplus::read_ansys_rst(path, options));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("lenient") = false, py::arg("cyclic") = false);
+    m.def("ansys_rst_read",
+          guard_read("ansys_rst",
+                     [](const std::string& path, bool points_only, py::object arrays, int time_step,
+                        bool lenient, bool cyclic) {
+                         const auto options =
+                             core_read_options(points_only, arrays, time_step, py::none(), lenient);
+                         return meshioplusplus_py::mesh_to_py(
+                             cyclic ? meshioplusplus::read_ansys_rst_cyclic(path, options)
+                                    : meshioplusplus::read_ansys_rst(path, options));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0, py::arg("lenient") = false, py::arg("cyclic") = false);
     m.def("ansys_rst_time_values", [](const std::string& path) {
         return meshioplusplus::read_ansys_rst_metadata(path).mTimeValues;
     });
@@ -3140,27 +3195,27 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_avsucd(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("avsucd_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_avsucd(path));
-    });
+    m.def("avsucd_read", guard_read("avsucd", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_avsucd(path));
+          }));
 
     // Nastran writer / reader (.bdf/.fem/.nas) — meshio++-C++ files only.
     m.def("nastran_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_nastran(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("nastran_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran(path));
-    });
+    m.def("nastran_read", guard_read("nastran", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran(path));
+          }));
 
     // SU2 writer / reader (.su2).
     m.def("su2_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_su2(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("su2_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_su2(path));
-    });
+    m.def("su2_read", guard_read("su2", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_su2(path));
+          }));
 
     // Tecplot writer / reader (.dat/.tec). allow_ragged: polygon and polyhedron
     // blocks become FEPOLYGON / FEPOLYHEDRON zones.
@@ -3171,23 +3226,24 @@ PYBIND11_MODULE(_core, m) {
                                                                     /*lenient_field_data=*/false,
                                                                     /*allow_ragged=*/true));
     });
-    m.def(
-        "tecplot_read",
-        [](const std::string& path, int time_step) {
-            meshioplusplus::ReadOptions opts;
-            opts.mTimeStep = time_step;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_tecplot(path, opts));
-        },
-        py::arg("path"), py::arg("time_step") = 0);
+    m.def("tecplot_read",
+          guard_read("tecplot",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_tecplot(path, opts));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
 
     // UGRID writer / reader (.ugrid, ascii + binary variants).
     m.def("ugrid_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_ugrid(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("ugrid_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ugrid(path));
-    });
+    m.def("ugrid_read", guard_read("ugrid", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ugrid(path));
+          }));
 
     // UNV (I-DEAS Universal) writer / reader (.unv / .uff). Groups travel as the mesh's
     // regions; `point_sets`/`cell_sets` are extra groups (the UnvInfo side channel).
@@ -3211,10 +3267,11 @@ PYBIND11_MODULE(_core, m) {
         py::arg("code_aster") = false, py::arg("node_dataset") = 2411);
     m.def(
         "unv_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_unv(path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("unv",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_unv(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
 
@@ -3223,32 +3280,33 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_ensight(path, meshioplusplus_py::py_to_mesh(pymesh, refs), binary);
     });
-    m.def(
-        "ensight_read",
-        [](const std::string& path, int time_step) {
-            meshioplusplus::ReadOptions opts;
-            opts.mTimeStep = time_step;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ensight(path, opts));
-        },
-        py::arg("path"), py::arg("time_step") = 0);
+    m.def("ensight_read",
+          guard_read("ensight",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_ensight(path, opts));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
 
     // TetGen writer / reader (.node/.ele pair).
     m.def("tetgen_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_tetgen(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("tetgen_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_tetgen(path));
-    });
+    m.def("tetgen_read", guard_read("tetgen", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_tetgen(path));
+          }));
 
     // Triangle writer / reader (.node/.ele pair or .poly).
     m.def("triangle_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_triangle(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("triangle_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_triangle(path));
-    });
+    m.def("triangle_read", guard_read("triangle", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_triangle(path));
+          }));
 
     // XDMF writer / reader (.xdmf/.xmf) — XML/Binary always; HDF when built
     // with HDF5.
@@ -3263,10 +3321,11 @@ PYBIND11_MODULE(_core, m) {
         py::arg("path"), py::arg("mesh"), py::arg("data_format"), py::arg("gzip_level") = -1);
     m.def(
         "xdmf_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_xdmf(path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("xdmf",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xdmf(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         // XDMF is *the* multi-step format, and `read_xdmf` has honoured
         // ReadOptions::mTimeStep since v9.0.0 -- this binding simply never
@@ -3422,11 +3481,12 @@ finalizes.
     });
     m.def(
         "cgns_read",
-        [](const std::string& path, int time_step) {
-            meshioplusplus::ReadOptions opts;
-            opts.mTimeStep = time_step;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_cgns(path, opts));
-        },
+        guard_read("cgns",
+                   [](const std::string& path, int time_step) {
+                       meshioplusplus::ReadOptions opts;
+                       opts.mTimeStep = time_step;
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_cgns(path, opts));
+                   }),
         py::arg("path"), py::arg("time_step") = 0);
 
     // HMF writer / reader (.hmf).
@@ -3435,9 +3495,9 @@ finalizes.
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
         meshioplusplus::write_hmf(path, cpp, gzip_level);
     });
-    m.def("hmf_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_hmf(path));
-    });
+    m.def("hmf_read", guard_read("hmf", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_hmf(path));
+          }));
 
     // MOAB h5m writer / reader (.h5m).
     m.def("h5m_write",
@@ -3446,9 +3506,9 @@ finalizes.
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
               meshioplusplus::write_h5m(path, cpp, add_global_ids, gzip_level);
           });
-    m.def("h5m_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_h5m(path));
-    });
+    m.def("h5m_read", guard_read("h5m", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_h5m(path));
+          }));
 
     // VTKHDF writer / reader (.vtkhdf). Ragged conversions are on
     // both ways: polyhedra and jagged polygons are first-class here. `piece` is
@@ -3483,23 +3543,25 @@ finalizes.
         },
         py::arg("path"), py::arg("mesh"), py::arg("gzip_level") = 4,
         py::arg("dataset_type") = "UnstructuredGrid", py::arg("version") = py::none());
-    m.def(
-        "vtkhdf_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step,
-           py::object piece, bool lenient) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtkhdf(
-                path, core_read_options(points_only, arrays, time_step, piece, lenient)));
-        },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("lenient") = false);
+    m.def("vtkhdf_read",
+          guard_read("vtkhdf",
+                     [](const std::string& path, bool points_only, py::object arrays, int time_step,
+                        py::object piece, bool lenient) {
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtkhdf(
+                             path,
+                             core_read_options(points_only, arrays, time_step, piece, lenient)));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("lenient") = false);
     // MSC Nastran HDF5 results (.h5): read-only. `time_step` selects the result
     // domain; `arrays`/`points_only` skip the result tables not asked for.
     m.def(
         "nastran_h5_read",
-        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_h5(
-                path, core_read_options(points_only, arrays, time_step)));
-        },
+        guard_read("nastran_h5",
+                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_h5(
+                           path, core_read_options(points_only, arrays, time_step)));
+                   }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
 
@@ -3636,37 +3698,37 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               info.mCellTagGroups = std::move(cell_tag_groups);
               meshioplusplus::write_med(path, cpp, info, med_version);
           });
-    m.def(
-        "med_read",
-        [](const std::string& path, int time_step, bool lenient) {
-            meshioplusplus::ReadOptions opts;
-            opts.mTimeStep = time_step;
-            opts.mLenient = lenient;
-            meshioplusplus::MedInfo info;
-            py::object pymesh =
-                meshioplusplus_py::mesh_to_py(meshioplusplus::read_med(path, info, opts));
-            py::dict ptags, ctags, pgroups, cgroups;
-            for (const auto& kv : info.mPointTags)
-                ptags[py::int_(kv.first)] = kv.second;
-            for (const auto& kv : info.mCellTags)
-                ctags[py::int_(kv.first)] = kv.second;
-            for (const auto& kv : info.mPointTagGroups)
-                pgroups[py::int_(kv.first)] = kv.second;
-            for (const auto& kv : info.mCellTagGroups)
-                cgroups[py::int_(kv.first)] = kv.second;
-            pymesh.attr("point_tags") = ptags;
-            pymesh.attr("cell_tags") = ctags;
-            pymesh.attr("point_tag_groups") = pgroups;
-            pymesh.attr("cell_tag_groups") = cgroups;
-            pymesh.attr("mesh_name") = info.mMeshName;
-            pymesh.attr("description") = info.mDescription;
-            pymesh.attr("unit_time") = info.mUnitTime;
-            pymesh.attr("unit_coords") = info.mUnitCoords;
-            if (!info.mMedNom.empty())
-                pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
-            return pymesh;
-        },
-        py::arg("path"), py::arg("time_step") = 0, py::arg("lenient") = false);
+    m.def("med_read",
+          guard_read("med",
+                     [](const std::string& path, int time_step, bool lenient) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         opts.mLenient = lenient;
+                         meshioplusplus::MedInfo info;
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_med(path, info, opts));
+                         py::dict ptags, ctags, pgroups, cgroups;
+                         for (const auto& kv : info.mPointTags)
+                             ptags[py::int_(kv.first)] = kv.second;
+                         for (const auto& kv : info.mCellTags)
+                             ctags[py::int_(kv.first)] = kv.second;
+                         for (const auto& kv : info.mPointTagGroups)
+                             pgroups[py::int_(kv.first)] = kv.second;
+                         for (const auto& kv : info.mCellTagGroups)
+                             cgroups[py::int_(kv.first)] = kv.second;
+                         pymesh.attr("point_tags") = ptags;
+                         pymesh.attr("cell_tags") = ctags;
+                         pymesh.attr("point_tag_groups") = pgroups;
+                         pymesh.attr("cell_tag_groups") = cgroups;
+                         pymesh.attr("mesh_name") = info.mMeshName;
+                         pymesh.attr("description") = info.mDescription;
+                         pymesh.attr("unit_time") = info.mUnitTime;
+                         pymesh.attr("unit_coords") = info.mUnitCoords;
+                         if (!info.mMedNom.empty())
+                             pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
+                         return pymesh;
+                     }),
+          py::arg("path"), py::arg("time_step") = 0, py::arg("lenient") = false);
 #endif
 
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
@@ -3675,21 +3737,21 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_exodus(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def(
-        "exodus_read",
-        [](const std::string& path, int time_step) {
-            meshioplusplus::ReadOptions opts;
-            opts.mTimeStep = time_step;
-            meshioplusplus::ExodusInfo info;
-            py::object pymesh =
-                meshioplusplus_py::mesh_to_py(meshioplusplus::read_exodus(path, info, opts));
-            // qa_records/info_records are strings, which NDArray cannot hold --
-            // they ride the ExodusInfo side channel and land here, so the C++
-            // path produces the same `mesh.info` the Python reference does.
-            pymesh.attr("info") = py::cast(info.mInfoRecords);
-            return pymesh;
-        },
-        py::arg("path"), py::arg("time_step") = 0);
+    m.def("exodus_read",
+          guard_read("exodus",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         meshioplusplus::ExodusInfo info;
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_exodus(path, info, opts));
+                         // qa_records/info_records are strings, which NDArray cannot hold --
+                         // they ride the ExodusInfo side channel and land here, so the C++
+                         // path produces the same `mesh.info` the Python reference does.
+                         pymesh.attr("info") = py::cast(info.mInfoRecords);
+                         return pymesh;
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
 #endif
 
     // DOLFIN XML writer / reader (.xml).
@@ -3697,9 +3759,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_dolfin(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("dolfin_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_dolfin(path));
-    });
+    m.def("dolfin_read", guard_read("dolfin", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_dolfin(path));
+          }));
 
     // Ansys/Fluent writer / reader (.msh, ascii + binary).
     m.def("ansys_write", [](const std::string& path, py::object pymesh, bool binary) {
@@ -3709,9 +3771,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         meshioplusplus::write_ansys(path, cpp, binary);
     });
-    m.def("ansys_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansys(path));
-    });
+    m.def("ansys_read", guard_read("ansys", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansys(path));
+          }));
 
     // Ansys MAPDL coded database (.cdb/.inp). CMBLOCK components arrive as
     // point/cell regions (the Python point_sets/cell_sets views read them).
@@ -3730,44 +3792,45 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("path"), py::arg("mesh"),
         py::arg("point_sets") = std::map<std::string, std::vector<std::int64_t>>{},
         py::arg("cell_sets") = std::map<std::string, std::vector<std::vector<std::int64_t>>>{});
-    m.def(
-        "ansysinp_read",
-        [](const std::string& path, bool lenient) {
-            meshioplusplus::AnsysInfo info;
-            meshioplusplus::ReadOptions opts;
-            opts.mLenient = lenient;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansysinp(path, opts, info));
-        },
-        py::arg("path"), py::arg("lenient") = false);
+    m.def("ansysinp_read",
+          guard_read("ansysinp",
+                     [](const std::string& path, bool lenient) {
+                         meshioplusplus::AnsysInfo info;
+                         meshioplusplus::ReadOptions opts;
+                         opts.mLenient = lenient;
+                         return meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_ansysinp(path, opts, info));
+                     }),
+          py::arg("path"), py::arg("lenient") = false);
 
     // OpenFOAM polyMesh reader. Boundary patch names and types are
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
     // `region` selects one region of a multi-region case (v11.4.0, roadmap §1
     // tier B2): `<case>/constant/<region>/polyMesh`. `time_step`/`arrays`
     // (same tier) select a time directory and which of its fields to attach.
-    m.def(
-        "openfoam_read",
-        [](const std::string& path, const std::string& region, bool points_only, py::object arrays,
-           int time_step) {
-            meshioplusplus::OpenFoamInfo info;
-            info.mRegion = region;
-            const meshioplusplus::ReadOptions opts =
-                core_read_options(points_only, arrays, time_step);
-            py::object pymesh =
-                meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, opts, info));
-            py::dict ctags;
-            for (const auto& kv : info.mCellTags)
-                ctags[py::int_(kv.first)] = kv.second;
-            pymesh.attr("cell_tags") = ctags;
-            pymesh.attr("point_tags") = py::dict();
-            py::dict ptypes;
-            for (const auto& kv : info.mPatchTypes)
-                ptypes[py::int_(kv.first)] = kv.second;
-            pymesh.attr("openfoam_patch_types") = ptypes;
-            return pymesh;
-        },
-        py::arg("path"), py::arg("region") = std::string(), py::arg("points_only") = false,
-        py::arg("arrays") = py::none(), py::arg("time_step") = 0);
+    m.def("openfoam_read",
+          guard_read("openfoam",
+                     [](const std::string& path, const std::string& region, bool points_only,
+                        py::object arrays, int time_step) {
+                         meshioplusplus::OpenFoamInfo info;
+                         info.mRegion = region;
+                         const meshioplusplus::ReadOptions opts =
+                             core_read_options(points_only, arrays, time_step);
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_openfoam(path, opts, info));
+                         py::dict ctags;
+                         for (const auto& kv : info.mCellTags)
+                             ctags[py::int_(kv.first)] = kv.second;
+                         pymesh.attr("cell_tags") = ctags;
+                         pymesh.attr("point_tags") = py::dict();
+                         py::dict ptypes;
+                         for (const auto& kv : info.mPatchTypes)
+                             ptypes[py::int_(kv.first)] = kv.second;
+                         pymesh.attr("openfoam_patch_types") = ptypes;
+                         return pymesh;
+                     }),
+          py::arg("path"), py::arg("region") = std::string(), py::arg("points_only") = false,
+          py::arg("arrays") = py::none(), py::arg("time_step") = 0);
 
     // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
     // is this format's native cell shape, and the reader emits them, so a
@@ -3804,9 +3867,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_wkt(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("wkt_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
-    });
+    m.def("wkt_read", guard_read("wkt", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
+          }));
 
     // The node-ordering registry, exported so tests/python/test_node_order.py can
     // pin it against its `_node_order.py` twin (the colormap_table precedent).
@@ -3938,9 +4001,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_permas(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("permas_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_permas(path));
-    });
+    m.def("permas_read", guard_read("permas", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_permas(path));
+          }));
 
     // FLAC3D writer / reader (.f3grid, ascii + binary, common path).
     m.def("flac3d_write", [](const std::string& path, py::object pymesh,
@@ -3949,18 +4012,18 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
         meshioplusplus::write_flac3d(path, cpp, float_fmt, binary);
     });
-    m.def("flac3d_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_flac3d(path));
-    });
+    m.def("flac3d_read", guard_read("flac3d", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_flac3d(path));
+          }));
 
     // FLUX .pf3 writer / reader.
     m.def("flux_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_flux(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("flux_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_flux(path));
-    });
+    m.def("flux_read", guard_read("flux", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_flux(path));
+          }));
 
     // Modulef Formatted Field (.mff), FLUX field (.dex), ANSYS Fluent
     // interpolation (.ip) -- field-only formats read/written as geometry-less
@@ -3969,48 +4032,48 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_mff(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("mff_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mff(path));
-    });
+    m.def("mff_read", guard_read("mff", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mff(path));
+          }));
     m.def("dex_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_dex(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("dex_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_dex(path));
-    });
+    m.def("dex_read", guard_read("dex", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_dex(path));
+          }));
     m.def("ip_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_ip(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("ip_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ip(path));
-    });
+    m.def("ip_read", guard_read("ip", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ip(path));
+          }));
 
     // COMSOL .mphtxt writer / reader.
     m.def("mphtxt_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_mphtxt(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("mphtxt_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mphtxt(path));
-    });
+    m.def("mphtxt_read", guard_read("mphtxt", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mphtxt(path));
+          }));
     m.def("mphbin_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_mphbin(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("mphbin_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mphbin(path));
-    });
+    m.def("mphbin_read", guard_read("mphbin", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mphbin(path));
+          }));
 
     // FreeFem++ writer / reader (.msh).
     m.def("freefem_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_freefem(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("freefem_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_freefem(path));
-    });
+    m.def("freefem_read", guard_read("freefem", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_freefem(path));
+          }));
 
     // GiD postprocess writer, on a vendored gidpost (write-only -- gidpost
     // has no read functions at all). `mode` is one of "auto"/"ascii"/
@@ -4055,14 +4118,14 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("analysis_name") = "meshio++");
     // GiD postprocess reader. Needs no gidpost (that library is write-only),
     // so it is available in builds that cannot write the format at all.
-    m.def(
-        "gid_read",
-        [](const std::string& path, int time_step) {
-            meshioplusplus::ReadOptions opts;
-            opts.mTimeStep = time_step;
-            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_gid(path, opts));
-        },
-        py::arg("path"), py::arg("time_step") = 0);
+    m.def("gid_read",
+          guard_read("gid",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_gid(path, opts));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
 
     // MFM (Modulef Formatted Mesh) writer / reader (.mfm).
     m.def("mfm_write",
@@ -4071,9 +4134,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
               meshioplusplus::write_mfm(path, cpp, float_fmt);
           });
-    m.def("mfm_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfm(path));
-    });
+    m.def("mfm_read", guard_read("mfm", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfm(path));
+          }));
 
     // Netgen writer / reader (.vol, common path).
     m.def("netgen_write",
@@ -4082,9 +4145,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
               meshioplusplus::write_netgen(path, cpp, float_fmt);
           });
-    m.def("netgen_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
-    });
+    m.def("netgen_read", guard_read("netgen", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
+          }));
 
     // Provenance bridge (v10.16.0): keeps Python's `_provenance.scope` and the
     // C++ writers' `detail::ProvenanceScope` reading from the SAME thread-local

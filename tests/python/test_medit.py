@@ -178,3 +178,12 @@ def test_missing_dimension_is_inferred(engine):
     tetra = [c for c in mesh.cells if c.type == "tetra"]
     np.testing.assert_array_equal(tetra[0].data, [[0, 1, 2, 3], [1, 4, 2, 3]])
     np.testing.assert_array_equal(mesh.cell_data["medit:ref"][0], [1, 2])
+
+
+def test_medit_file_ending_inside_vertices_raises(tmp_path):
+    # No `Dimension` and nothing after the vertex count: the blank-line skip
+    # used to spin for ever on readline()'s "" at EOF.
+    p = tmp_path / "truncated.mesh"
+    p.write_text("MeshVersionFormatted 2\nVertices\n3\n\n")
+    with pytest.raises(meshioplusplus.ReadError, match="ends inside"):
+        _medit_py_read(str(p))

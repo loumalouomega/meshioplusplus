@@ -28,6 +28,7 @@
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/log.hpp"
@@ -81,6 +82,10 @@ Mesh read_off(const std::string& rPath) {
     auto cs = detail::make_classic_istringstream(counts);
     long long num_verts = 0, num_faces = 0, num_edges = 0;
     cs >> num_verts >> num_faces >> num_edges;
+    // Three coordinates and a face row each take at least a byte apiece.
+    const std::size_t bytes = detail::file_bytes(rPath);
+    detail::checked_count(num_verts, bytes / 3, "OFF", "vertex");
+    detail::checked_count(num_faces, bytes, "OFF", "face");
 
     Mesh mesh;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(num_verts), 3});

@@ -616,17 +616,27 @@ std::vector<std::int64_t> marc_expand(
                 if (k < rTokens.size() && rTokens[k] == "by") {
                     if (k + 1 >= rTokens.size())
                         marc_fail(pLabel, "set '" + rName + "' ends with BY and no step");
-                    step = std::abs(number(rTokens[k + 1]));
+                    const std::int64_t by = number(rTokens[k + 1]);
+                    step = by == std::numeric_limits<std::int64_t>::min()
+                               ? std::numeric_limits<std::int64_t>::max()
+                               : std::abs(by);
                     if (step == 0)
                         step = 1;
                     k += 2;
                 }
-                if (stop >= start)
-                    for (std::int64_t v = start; v <= stop; v += step)
-                        items.push_back(v);
-                else
-                    for (std::int64_t v = start; v >= stop; v -= step)
-                        items.push_back(v);
+                // Sized in unsigned arithmetic: `v += step` past INT64_MAX is
+                // undefined, and a 10^18-item range is a corrupt deck.
+                const std::uint64_t span =
+                    stop >= start
+                        ? static_cast<std::uint64_t>(stop) - static_cast<std::uint64_t>(start)
+                        : static_cast<std::uint64_t>(start) - static_cast<std::uint64_t>(stop);
+                const std::uint64_t ustep = static_cast<std::uint64_t>(step);
+                if (span / ustep >= (std::uint64_t{1} << 27))
+                    marc_fail(pLabel, "set '" + rName + "' has a range of more than 2^27 items");
+                for (std::uint64_t n = 0; n <= span / ustep; ++n)
+                    items.push_back(static_cast<std::int64_t>(
+                        stop >= start ? static_cast<std::uint64_t>(start) + n * ustep
+                                      : static_cast<std::uint64_t>(start) - n * ustep));
             } else {
                 items.push_back(start);
             }
@@ -679,8 +689,13 @@ Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
         }
         std::string cell = known->mCell;
         std::vector<std::int64_t> nodes = el.mNodes;
-        nodes.resize(std::min(nodes.size(), static_cast<std::size_t>(
-                                                cell_type_num_nodes(cell_type_from_name(cell)))));
+        const auto wanted =
+            static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(cell)));
+        if (nodes.size() < wanted)
+            marc_fail(pLabel, "element " + std::to_string(el.mId) + " lists " +
+                                  std::to_string(nodes.size()) + " nodes, its type needs " +
+                                  std::to_string(wanted));
+        nodes.resize(wanted);
         // The 3-node rebar lines list their middle node second.
         if (el.mType >= 168 && el.mType <= 170 && nodes.size() == 3)
             std::swap(nodes[1], nodes[2]);
@@ -1249,8 +1264,7 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
             }
         } else if (family == 523 && info.mJantyp > 100 && npost > 0 && numel > 0) {
             const auto np = static_cast<std::size_t>(npost), ns = static_cast<std::size_t>(nstres);
-            std::vector<double> values;
-            values.reserve(static_cast<std::size_t>(numel) * ns * np);
+            std::vector<double> values;  // no reserve: numel is the file's word
             for (std::int64_t e = 0; e < numel; ++e)
                 for (std::size_t p = 0; p < ns; ++p) {
                     const auto record = r.Reals(np);
@@ -1259,6 +1273,9 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
             for (const MarcColumn& c : marc_columns(codes)) {
                 if (!rOptions.WantsArray(c.mName))
                     continue;
+                if (c.mFirst + c.mWidth > np)
+                    marc_fail("Marc .t19", "element quantity '" + c.mName +
+                                               "' lies past the end of its post record");
                 // With several integration points, flattened point-major so that
                 // any writer holds it; its (points, components) is the layout.
                 const std::size_t width = ns * c.mWidth;

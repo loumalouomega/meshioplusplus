@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -122,6 +123,13 @@ Mesh read_dex(const std::string& rPath) {
     mesh.AssignPoints(std::move(pts));
 
     std::size_t nc = static_cast<std::size_t>(ncomp);
+    // Components beyond the widest row would be all zeros: a corrupt count,
+    // and one that would otherwise size the array.
+    std::size_t widest = 0;
+    for (const auto& r : rows)
+        widest = std::max(widest, r.size());
+    if (n > 0 && nc > std::max<std::size_t>(widest, kDim) - kDim && nc > 1)
+        throw ReadError("DEX: NB_COMP exceeds the values on any row");
     NDArray vals = nc == 1 ? NDArray(DType::Float64, {n}) : NDArray(DType::Float64, {n, nc});
     for (std::size_t r = 0; r < n; ++r)
         for (std::size_t c = 0; c < nc; ++c) {

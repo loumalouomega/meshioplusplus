@@ -32,6 +32,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -201,6 +202,8 @@ Mesh read_ply(const std::string& rPath) {
     };
     auto next_sig = [&]() -> std::string {
         while (true) {
+            if (pos >= buf.size())
+                throw ReadError("PLY: the file ends inside its header");
             std::string l = ply_trim(read_line());
             if (!l.empty() && l.rfind("comment", 0) != 0)
                 return l;
@@ -237,6 +240,8 @@ Mesh read_ply(const std::string& rPath) {
             std::string ename;
             std::size_t count;
             iss >> ename >> count;
+            // Every element takes at least a byte of the file.
+            detail::checked_count(count, buf.size(), "PLY", "element");
             if (ename == "vertex") {
                 num_verts = count;
                 line = next_sig();
@@ -293,7 +298,7 @@ Mesh read_ply(const std::string& rPath) {
             coff[c] = stride;
             stride += dtype_size(vprops[c].mDtype);
         }
-        if (pos + num_verts * stride > buf.size())
+        if (stride != 0 && num_verts > (buf.size() - pos) / stride)
             throw ReadError("PLY binary truncated");
         const std::size_t start = pos;
         parallel_for(num_verts, [&](std::size_t i) {
@@ -335,16 +340,18 @@ Mesh read_ply(const std::string& rPath) {
         else if (vprops[c].mName == "z")
             xyz[2] = c;
     }
-    std::size_t ndim = 0;
+    // The coordinate columns present, in x, y, z order (a file may lack x).
+    std::vector<std::size_t> coord_cols;
     for (std::size_t k = 0; k < 3; ++k)
         if (xyz[k] != SIZE_MAX)
-            ++ndim;
-    DType pdt = (xyz[0] != SIZE_MAX) ? vcols[xyz[0]].Dtype() : DType::Float64;
+            coord_cols.push_back(xyz[k]);
+    const std::size_t ndim = coord_cols.size();
+    DType pdt = ndim ? vcols[coord_cols[0]].Dtype() : DType::Float64;
     NDArray pts(pdt, {num_verts, ndim});
     for (std::size_t i = 0; i < num_verts; ++i)
         for (std::size_t k = 0; k < ndim; ++k)
-            store_scalar(pts, i * ndim + k, detail::read_double(vcols[xyz[k]], i),
-                         detail::read_int(vcols[xyz[k]], i), detail::is_float_dtype(pdt));
+            store_scalar(pts, i * ndim + k, detail::read_double(vcols[coord_cols[k]], i),
+                         detail::read_int(vcols[coord_cols[k]], i), detail::is_float_dtype(pdt));
     mesh.AssignPoints(std::move(pts));
     for (std::size_t c = 0; c < vprops.size(); ++c) {
         const std::string& nm = vprops[c].mName;
@@ -362,7 +369,8 @@ Mesh read_ply(const std::string& rPath) {
             if (cur_count == 0)
                 return;
             NDArray data(DType::Int64, {cur_count, cur_n});
-            std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
+            if (!cur_conn.empty())  // zero-vertex faces: nothing to copy, and no buffer
+                std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
             mesh.AddCellBlock(cell_type_from_count(cur_n), std::move(data));
             cur_conn.clear();
             cur_count = 0;
@@ -371,15 +379,18 @@ Mesh read_ply(const std::string& rPath) {
             std::size_t n;
             std::vector<std::int64_t> idx;
             if (is_binary) {
-                n = static_cast<std::size_t>(rd_int_val(buf, pos, face_count_dt, big));
+                n = detail::checked_count(rd_int_val(buf, pos, face_count_dt, big),
+                                          buf.size() - std::min(pos, buf.size()), "PLY",
+                                          "face vertex");
                 idx.resize(n);
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
                 auto rs = detail::make_classic_istringstream(read_line());
                 long long cnt;
-                rs >> cnt;
-                n = static_cast<std::size_t>(cnt);
+                if (!(rs >> cnt))
+                    throw ReadError("PLY: a face row without a vertex count");
+                n = detail::checked_count(cnt, buf.size(), "PLY", "face vertex");
                 idx.resize(n);
                 for (std::size_t j = 0; j < n; ++j)
                     rs >> idx[j];

@@ -45,6 +45,7 @@
 #include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/detail/ansys_model.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -74,7 +75,8 @@ struct RstRecord {
     std::uint64_t mNext = 0;
 
     std::int64_t Int(std::size_t K) const {
-        return K < mValues.size() ? static_cast<std::int64_t>(mValues[K]) : 0;
+        return K < mValues.size() ? detail::checked_integer<std::int64_t>(mValues[K], "Ansys .rst")
+                                  : 0;
     }
 };
 
@@ -84,6 +86,8 @@ public:
         : mSource(rPath, rOptions.mMmap), mWords(mSource.Size() / 4) {}
 
     std::int32_t Word(std::uint64_t K) const {
+        if (K >= mWords)
+            rst_fail("word " + std::to_string(K) + " is outside the file");
         std::int32_t v;
         std::memcpy(&v, mSource.Data() + K * 4, 4);
         return v;
@@ -160,6 +164,13 @@ public:
                 rst_fail("the windowed-sparse record" + where + " is truncated");
             const std::int32_t size = word(0), n_windows = word(1);
             const std::size_t shift = item / 4;
+            // A constant window expands a few words into many values, so the
+            // expanded size may exceed the record; not beyond 64 values per
+            // word of the whole file, though, or a corrupt size would be an
+            // allocation of gigabytes.
+            if (static_cast<std::uint64_t>(std::max(size, 0)) >
+                std::max<std::uint64_t>(std::uint64_t{1} << 20, 64 * mWords))
+                rst_fail("the windowed-sparse record" + where + " declares an implausible size");
             out.mValues.assign(static_cast<std::size_t>(std::max(size, 0)), 0.0);
             std::size_t pos = 2;
             const auto take = [&](std::size_t Count) {
@@ -400,7 +411,7 @@ void RstPart::ReadModel() {
         const auto at = [&](std::size_t K) {
             return K < node.mValues.size() ? node.mValues[K] : 0.0;
         };
-        mModel.mNodeIds.push_back(static_cast<std::int64_t>(at(0)));
+        mModel.mNodeIds.push_back(detail::checked_integer<std::int64_t>(at(0), "Ansys .rst"));
         for (std::size_t d = 1; d <= 3; ++d)
             mModel.mCoords.push_back(at(d));
         for (std::size_t d = 4; d <= 6; ++d)
@@ -795,6 +806,10 @@ void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         const std::uint64_t base = results.mSets[Index].mPointer;
         const RstRecord s = file.Record(base);
         const std::int64_t nnod = s.Int(2), numdof = s.Int(19);
+        // The DOF labels are words 20.. of this header, so their count is
+        // bounded by the header's length; a larger one is corruption.
+        if (numdof > 0 && static_cast<std::uint64_t>(numdof) + 20 > s.mValues.size())
+            rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt DOF count");
         std::vector<std::int64_t> dofs;
         for (std::int64_t k = 0; k < numdof; ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
@@ -802,6 +817,8 @@ void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         const std::uint64_t ptr_nsl = rst_pointer(s, 104, 105, 10);
         if (!ptr_nsl || numdof <= 0)
             continue;
+        if (sumdof < numdof)  // each row holds every DOF, then the extras
+            rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt DOF count");
         const RstRecord values = file.Record(base + ptr_nsl);
         const auto width = static_cast<std::size_t>(sumdof);
         const std::size_t rows = std::min(static_cast<std::size_t>(std::max<std::int64_t>(nnod, 0)),

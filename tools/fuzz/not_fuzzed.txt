@@ -1,0 +1,20 @@
+# Registry readers the fuzz campaign skips, one per line (# comments allowed).
+# Read by run_campaign.sh and seed_corpus.py.
+#
+# A directory, not a file: the harness feeds one file.
+elmer
+# Bytes parsed by a third-party library (HDF5, netCDF, ADIOS2, TecIO) that is
+# neither instrumented in this build nor ours to fix; meshio++'s own code only
+# walks the objects the library returns.
+cgns
+h5m
+hmf
+med
+nastran_h5
+vtkhdf
+exodus
+vtx
+szplt
+# XDMF's heavy data lives in an HDF5 sibling; the XML is fuzzed through vtu's
+# shared pugixml path.
+xdmf

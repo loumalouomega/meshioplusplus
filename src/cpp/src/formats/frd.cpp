@@ -122,6 +122,8 @@ std::int64_t frd_int(std::string_view Text, const char* pWhere) {
     for (; i < s.size(); ++i) {
         if (s[i] < '0' || s[i] > '9')
             frd_fail("invalid integer field '" + std::string(s) + "' in " + pWhere);
+        if (value > (std::numeric_limits<std::int64_t>::max() - (s[i] - '0')) / 10)
+            frd_fail("integer field '" + std::string(s) + "' overflows in " + pWhere);
         value = value * 10 + (s[i] - '0');
     }
     return negative ? -value : value;
@@ -358,6 +360,14 @@ private:
             frd_fail(std::string("binary ") + pWhat + " runs past the end of the file");
     }
 
+    // Count rows of Rec bytes from At: checked by division, since At + Count *
+    // Rec wraps for a corrupt Count and would then pass the end check.
+    void BinaryRequireRows(std::size_t At, std::size_t Count, std::size_t Rec,
+                           const char* pWhat) const {
+        if (At > mText.size() || (Rec && Count > (mText.size() - At) / Rec))
+            frd_fail(std::string("binary ") + pWhat + " runs past the end of the file");
+    }
+
     static std::int32_t BinaryReadInt32(const char* pAt) {
         std::int32_t v;
         std::memcpy(&v, pAt, sizeof(v));
@@ -389,7 +399,7 @@ private:
                     static_cast<std::size_t>(frd_int(frd_field(line, 6, 30), "a 2C record"));
                 const std::size_t real_bytes = flag == 3 ? 8 : 4;
                 const std::size_t rec = 4 + 3 * real_bytes;
-                BinaryRequire(next + count * rec, "node block");
+                BinaryRequireRows(next, count, rec, "node block");
                 if (seen_nodes)
                     log::warn("{}", "CalculiX FRD: a second node block was ignored");
                 else
@@ -511,7 +521,7 @@ private:
             block.mNumEntries = numnod;
             block.mByteOffset = after;
             const std::size_t rec = 4 + block.mDataComps * real_bytes;
-            BinaryRequire(after + numnod * rec, "result block");
+            BinaryRequireRows(after, numnod, rec, "result block");
             frame->mBlocks.push_back(std::move(block));
             return after + numnod * rec;
         }

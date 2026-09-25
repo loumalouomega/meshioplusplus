@@ -40,10 +40,12 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <numeric>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -294,9 +296,10 @@ public:
         // 0 for a rank-0 array until one does (see its doc comment). Asking it
         // here would allocate nothing for a scalar and then hand out a null
         // pointer for its single element.
-        const std::size_t nb = ShapeCount(mShape) * dtype_size(mDtype);
-        mOwned.resize(nb);                  // uninitialised (OwnedBuf)
-        std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
+        const std::size_t nb = AllocBytes(mShape, mDtype);
+        mOwned.resize(nb);  // uninitialised (OwnedBuf)
+        if (nb != 0)        // an empty buffer has a null data(): memset(nullptr) is UB
+            std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
     }
 
     /**
@@ -320,7 +323,7 @@ public:
         NDArray a;
         a.mDtype = dt;
         a.mShape = std::move(shape);
-        a.mOwned.resize(ShapeCount(a.mShape) * dtype_size(a.mDtype));  // no memset
+        a.mOwned.resize(AllocBytes(a.mShape, a.mDtype));  // no memset
         return a;
     }
 
@@ -414,7 +417,8 @@ public:
             return;
         const std::size_t nb = Nbytes();
         mOwned.resize(nb);  // uninitialised; fully overwritten by the memcpy below
-        std::memcpy(mOwned.data(), mView, nb);
+        if (nb != 0)
+            std::memcpy(mOwned.data(), mView, nb);
         mView = nullptr;
     }
 
@@ -447,6 +451,21 @@ private:
     static std::size_t ShapeCount(const std::vector<std::size_t>& rShape) {
         return std::accumulate(rShape.begin(), rShape.end(), std::size_t{1},
                                std::multiplies<std::size_t>());
+    }
+
+    // The byte size to allocate for a shape, refusing one whose product wraps
+    // around size_t: a reader sizing an array from a corrupt header count
+    // would otherwise get a *small* buffer and then write past it.
+    // std::length_error is a logic_error, so a reader's guard reports it as a
+    // malformed file.
+    static std::size_t AllocBytes(const std::vector<std::size_t>& rShape, DType Dt) {
+        std::size_t n = dtype_size(Dt);
+        for (const std::size_t d : rShape) {
+            if (d != 0 && n > std::numeric_limits<std::size_t>::max() / d)
+                throw std::length_error("meshio++: array shape overflows size_t");
+            n *= d;
+        }
+        return n;
     }
 
     DType mDtype = DType::Float64;

@@ -27,6 +27,8 @@ Run from the repository root unless specified otherwise.
 | Python tests | `.venv/bin/python -m pytest tests/python/`; scope to affected files while developing |
 | Python lint | `isort --check <files>`, `black --check <files>`, `flake8 <files>`; full hooks: `pre-commit run -a` |
 | Standalone C++ tests | `build/configure.sh --tests --build`, then `ctest --test-dir <configured-tree> --output-on-failure` |
+| Sanitizers / fuzzing | `CC=clang CXX=clang++ build/configure.sh --sanitize address,undefined --tests` (or `--fuzzers`); run `ctest` serially; see [doc/fuzzing.md](doc/fuzzing.md) |
+| Format conformance | `python tools/gen_conformance_table.py` regenerates `doc/conformance.md` and the formats-table column; `--observe <fmt>` prints a declaration to review |
 | Native CLI | `build/configure.sh --cli --build` |
 | C / Fortran libraries | `build/configure.sh --c-api` or `--fortran`, then build and install the configured tree |
 | Installable C++ API | `build/configure.sh --install-cpp --cpp-backends MESHIO,NATIVE`; see [doc/cpp_api.md](doc/cpp_api.md) |
@@ -81,10 +83,11 @@ C entry points must catch exceptions through the existing guards and return stat
 
 ### Adding a new format or operation
 
-1. For a format, add the Python reference and registration under `src/python/meshioplusplus/<format>/`, then import/export it in the package `__init__.py`. A native implementation is optional. If added, put it in `src/cpp/{include/meshioplusplus,src}/formats/`, bind it in `_core.cpp`, register readers/writers and extension defaults in `registry.cpp`, and add the C++/Python fallback shim. In the shim, ask `core_declined(exc, "<fmt>", "read"|"write", filename)` from `_fallback.py` inside `except Exception as exc:` and re-raise when it returns `False`; never write a bare `except Exception: pass` (`tests/python/test_no_broad_core_swallow.py` fails it). Set `MESHIOPLUSPLUS_STRICT_CORE=1` to make every fallback an error and prove the core handles a file.
+1. For a format, add the Python reference and registration under `src/python/meshioplusplus/<format>/`, then import/export it in the package `__init__.py`. A native implementation is optional. If added, put it in `src/cpp/{include/meshioplusplus,src}/formats/`, bind it in `_core.cpp`, register readers/writers and extension defaults in `registry.cpp`, and add the C++/Python fallback shim. In the shim, ask `core_declined(exc, "<fmt>", "read"|"write", filename)` from `_fallback.py` inside `except Exception as exc:` and re-raise when it returns `False`; never write a bare `except Exception: pass` (`tests/python/test_no_broad_core_swallow.py` fails it). Set `MESHIOPLUSPLUS_STRICT_CORE=1` to make every fallback an error and prove the core handles a file. An operation's shim asks `core_op_declined(exc, "<op>")` instead (bad arguments propagate; a native kernel declines an input its twin handles by throwing `Unsupported`), and an import-only guard catches `ImportError` alone; the same test fails either mistake.
 2. For a native operation, use `operations/` and expose it through Python, C, Fortran, Julia, R, WASM, and both CLIs as appropriate. Add pipeline support where the operation fits the pipeline contract. Python-only integrations can remain Python-only.
-3. Test direct C++ behavior as well as Python dispatch: broad fallback handlers can hide a broken native implementation. Check cross-compatibility with the Python reference, optional dependencies, relevant mesh backends, and meaningful edge cases. Preserve documented numerical parity; do not silently substitute a different algorithm where parity is unavailable.
-4. Follow the change checklist above, including MCP, docs, examples, and generated outputs.
+3. A native reader must return a mesh or throw `ReadError` on any input: check tokens and header counts with `detail/parse_guard.hpp` before indexing or allocating. Every reader crash fix commits its minimized input under `tests/fuzz/regressions/<format>/` ([doc/fuzzing.md](doc/fuzzing.md)), and a new writable format needs a declaration in `tests/python/conformance_spec.py`.
+4. Test direct C++ behavior as well as Python dispatch: broad fallback handlers can hide a broken native implementation. Check cross-compatibility with the Python reference, optional dependencies, relevant mesh backends, and meaningful edge cases. Preserve documented numerical parity; do not silently substitute a different algorithm where parity is unavailable.
+5. Follow the change checklist above, including MCP, docs, examples, and generated outputs.
 
 Reference fixtures in `tests/python/meshes/` and `tests/python/input/` use Git LFS. Do not copy GPL fixtures into this MIT repository; generate them or use compatible licensed sources with attribution in `CITATION.cff`/`CHANGELOG.md`.
 

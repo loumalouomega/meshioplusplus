@@ -148,6 +148,8 @@ bool fn_parse_int(const std::string& rText, std::int64_t& rValue) {
     for (; i < rText.size(); ++i) {
         if (rText[i] < '0' || rText[i] > '9')
             return false;
+        if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
+            return false;  // more digits than an int64 holds: not an id
         v = v * 10 + (rText[i] - '0');
     }
     rValue = rText[0] == '-' ? -v : v;

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 _SFC_BITS = 21
@@ -413,9 +414,9 @@ def reorder(mesh, method: str = "rcm", return_permutation: bool = False):
         out = res["mesh"]
         node_perm = np.asarray(res["node_permutation"])
         cell_perms = [np.asarray(c) for c in res["cell_permutations"]]
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "reorder"):
+            raise
         out = None
     used_cpp = out is not None
     if out is None:
@@ -452,6 +453,7 @@ def compute_bandwidth(mesh) -> int:
         from . import _core
 
         return int(_core.compute_bandwidth(mesh))
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "compute_bandwidth"):
+            raise
     return _compute_bandwidth_py(mesh)

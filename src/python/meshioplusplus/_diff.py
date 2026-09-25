@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
+
 
 # --------------------------------------------------------------------------- #
 # elementwise array comparison                                                #
@@ -466,7 +468,9 @@ def diff(
         from . import _core
 
         report = _core.diff(mesh_a, mesh_b, atol, rtol, unordered, int(max_reported))
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "diff"):
+            raise
         report = None
     if report is None:
         report = _diff_py(mesh_a, mesh_b, atol, rtol, unordered, int(max_reported))
@@ -496,8 +500,9 @@ def meshes_equal(mesh_a, mesh_b, *, atol=1e-12, rtol=1e-9, unordered=False) -> b
             from . import _core
 
             return bool(_core.meshes_equal(mesh_a, mesh_b, atol, rtol))
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_op_declined(exc, "meshes_equal"):
+                raise
     report = diff(mesh_a, mesh_b, atol=atol, rtol=rtol, unordered=unordered)
     # diff() may flip the verdict to "different" purely on sets; recompute a
     # sets-agnostic verdict for the boolean helper.

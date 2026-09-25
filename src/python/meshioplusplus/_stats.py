@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
+
 # Linear-corner face node lists (matching detail/cell_faces.hpp), outward-wound.
 _FACES = {
     "tetra": [[0, 1, 3], [1, 2, 3], [2, 0, 3], [0, 2, 1]],
@@ -222,6 +224,7 @@ def compute_stats(mesh) -> dict:
             "unsigned_volume": float(res["unsigned_volume"]),
             "num_inverted": int(res["num_inverted"]),
         }
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "compute_stats"):
+            raise
     return _compute_stats_py(mesh)

@@ -166,6 +166,25 @@ MESHIOPLUSPLUS_API void reconstruct_cells(
     const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
 
 /**
+ * @brief Checks a file's cell arrays are consistent before `reconstruct_cells`
+ *        indexes into them.
+ *
+ * `reconstruct_cells` takes the connectivity as a bare pointer, so it cannot
+ * see where it ends; every reader calls this first with the length it read.
+ * @param ConnSize Number of entries in the connectivity array.
+ * @param rOffsets Per-cell end offsets into it.
+ * @param rTypes Per-cell VTK type ids.
+ * @param rCellDataRaw Cell data covering the whole mesh.
+ * @throws ReadError if the offsets and types differ in length, an offset
+ *         decreases or runs past `ConnSize`, or a cell-data array has fewer
+ *         rows than there are cells.
+ */
+MESHIOPLUSPLUS_API void check_vtk_cell_arrays(
+    std::size_t ConnSize, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw);
+
+/**
  * @brief As above, additionally decoding `VTK_POLYHEDRON` (type 42) cells from
  *        VTU's `faces` / `faceoffsets` arrays.
  *

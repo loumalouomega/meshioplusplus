@@ -434,6 +434,8 @@ public:
         for (; i < rText.size(); ++i) {
             if (rText[i] < '0' || rText[i] > '9')
                 return false;
+            if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
+                return false;  // more digits than an int64 holds
             v = v * 10 + (rText[i] - '0');
         }
         rValue = rText[0] == '-' ? -v : v;
@@ -645,8 +647,9 @@ std::vector<MfElement> mf_read_elements(MfLexer& rLex, const char* pWhat) {
     const std::int64_t n = rLex.Int("an element count");
     if (n < 0)
         rLex.Fail(std::string("negative ") + pWhat + " count", rLex.Line());
+    // No reserve: n comes from the file, and the lexer fails at its end long
+    // before a corrupt count is reached.
     std::vector<MfElement> out;
-    out.reserve(static_cast<std::size_t>(n));
     for (std::int64_t k = 0; k < n; ++k) {
         const std::size_t line = rLex.Line();
         MfElement el;
@@ -2313,6 +2316,10 @@ std::size_t mf_interior_count(int Geom, int Q, MfSpace::Points Points = MfSpace:
 
 MfDofs mf_dofs(const MfFile& rF, const MfEntities& rEnt, int Q, MfSpace::Points Points) {
     const auto& geoms = mf_geoms();
+    // The order comes from the file's collection name (`H1_3D_P2`); an
+    // order in the millions would size point tables of gigabytes.
+    if (Q < 1 || Q > 64)
+        throw ReadError("MFEM: finite element order " + std::to_string(Q) + " is out of range");
     MfDofs d;
     d.mOrder = Q;
     d.mPoints = Points;

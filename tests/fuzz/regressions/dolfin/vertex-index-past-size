@@ -1,0 +1,1 @@
+<dolfin><mesh celltype="tetrahedron" dim="3"><vertices><vertex/></vertices></mesh></dolfin>

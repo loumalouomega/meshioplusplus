@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -48,9 +49,11 @@ Mesh read_mff(const std::string& rPath) {
         mesh.AssignPoints(NDArray(DType::Float64, {0, 0}));
         return mesh;
     }
-    std::size_t count = static_cast<std::size_t>(std::strtoll(toks[0].c_str(), nullptr, 10));
-    if (count + 1 > toks.size())
-        count = toks.size() - 1;
+    const long long declared = std::strtoll(toks[0].c_str(), nullptr, 10);
+    if (declared < 0)
+        throw ReadError("MFF: negative value count");
+    // A short file keeps the values it has (the reference reader's rule).
+    const std::size_t count = std::min(static_cast<std::size_t>(declared), toks.size() - 1);
     NDArray values(DType::Float64, {count});
     for (std::size_t i = 0; i < count; ++i)
         values.As<double>()[i] = detail::parse_double(toks[i + 1]);

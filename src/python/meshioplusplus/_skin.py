@@ -19,6 +19,7 @@ from __future__ import annotations
 import numpy as np
 
 from ._common import warn
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 # Volume cell type -> list of (face_type, num_corners, local node indices).
@@ -261,8 +262,7 @@ def extract_skin(mesh, linearize: bool = False) -> Mesh:
         from . import _core
 
         return _core.extract_skin(mesh, linearize)
-    except ValueError:
-        raise
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "extract_skin"):
+            raise
     return _extract_skin_py(mesh, linearize)

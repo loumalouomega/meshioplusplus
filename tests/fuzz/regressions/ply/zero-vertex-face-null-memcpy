@@ -1,0 +1,8 @@
+ply
+format ascii 1.0
+comment zipper oty float intensity
+element face 948
+property list uchar int vertex_indices
+end_header
+118611 0.04499 0.426724 
+0.014783 430 

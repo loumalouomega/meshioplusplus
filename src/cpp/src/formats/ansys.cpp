@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -212,7 +213,7 @@ struct FluentReader {
     template <class T>
     std::vector<T> Binary(std::size_t Count) {
         const std::size_t size = Count * sizeof(T);
-        if (mP > mD.size() || size > mD.size() - mP)
+        if (mP > mD.size() || Count > (mD.size() - mP) / sizeof(T))  // no wrap
             throw ReadError("Fluent: binary section runs past the end of the file");
         std::vector<T> out(Count);
         if (size)
@@ -235,7 +236,8 @@ struct FluentReader {
             T n;
             std::memcpy(&n, mD.data() + mP, sizeof(T));
             const std::size_t row = static_cast<std::size_t>(n) + 3;
-            if (n < 0 || row * sizeof(T) > mD.size() - mP)
+            // Compared by division: row * sizeof(T) wraps for a corrupt n.
+            if (n < 0 || row > (mD.size() - mP) / sizeof(T))
                 throw ReadError("Fluent: binary section runs past the end of the file");
             for (std::size_t k = 0; k < row; ++k) {
                 T v;
@@ -448,7 +450,17 @@ Mesh read_ansys(const std::string& rPath) {
         top = std::max(top, z.mLast);
         nd = std::max(nd, z.mDim);
     }
-    const std::size_t npoints = static_cast<std::size_t>(top - base + 1);
+    // Every node, cell and face id range is a count the file declares; none
+    // can exceed the file's size in bytes, which bounds the allocations and
+    // the loops over the ranges below.
+    const std::size_t bytes = detail::file_bytes(rPath);
+    const std::size_t npoints = detail::checked_count(top - base + 1, bytes, "Fluent", "node");
+    for (const auto& z : node_zones)
+        if (z.mLast < z.mFirst ||
+            static_cast<std::size_t>(z.mLast - z.mFirst + 1) * z.mDim > z.mPoints.size())
+            throw ReadError("Fluent: a node zone holds fewer coordinates than its id range");
+    for (const auto& z : cell_zones)
+        detail::checked_count(z.mLast - z.mFirst + 1, bytes, "Fluent", "cell");
     NDArray pts(DType::Float64, {npoints, nd});
     double* pp = pts.As<double>();
     std::fill(pp, pp + npoints * nd, 0.0);
@@ -495,8 +507,11 @@ Mesh read_ansys(const std::string& rPath) {
     std::unordered_map<std::int64_t, std::vector<face_cells::Face>> per_cell;
     for (const auto& f : faces) {
         face_cells::Face g(f.mNodes.size());
-        for (std::size_t i = 0; i < g.size(); ++i)
+        for (std::size_t i = 0; i < g.size(); ++i) {
             g[i] = f.mNodes[i] - base;
+            if (g[i] < 0 || static_cast<std::size_t>(g[i]) >= npoints)
+                throw ReadError("Fluent: a face names a node outside the node zones");
+        }
         if (live(f.mC1))
             per_cell[f.mC1].push_back(g);
         if (live(f.mC0))
@@ -540,7 +555,8 @@ Mesh read_ansys(const std::string& rPath) {
         if (dim == 2) {
             std::vector<std::array<std::int64_t, 2>> edges;
             for (const auto& f : cf)
-                edges.push_back({f.front(), f.back()});
+                if (!f.empty())
+                    edges.push_back({f.front(), f.back()});
             face_cells::Face ring = face_cells::polygon_from_edges(edges, p3);
             if (ring.empty()) {
                 ++skipped;
@@ -567,8 +583,11 @@ Mesh read_ansys(const std::string& rPath) {
         if (f.mBc == kFluentInterior && live(f.mC0) && live(f.mC1))
             continue;
         face_cells::Face g(f.mNodes.size());
-        for (std::size_t i = 0; i < g.size(); ++i)
+        for (std::size_t i = 0; i < g.size(); ++i) {
             g[i] = f.mNodes[i] - base;
+            if (g[i] < 0 || static_cast<std::size_t>(g[i]) >= npoints)
+                throw ReadError("Fluent: a face names a node outside the node zones");
+        }
         // Outward from the domain: the normal points into c0.
         if (live(f.mC0) && !live(f.mC1))
             std::reverse(g.begin(), g.end());

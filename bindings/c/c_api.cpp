@@ -3926,11 +3926,13 @@ meshioplusplus::SequenceInput seq_input_from_opts(const mio_sequence_opts* pOpts
 }
 
 mio_sequence* seq_open(meshioplusplus::SequenceInput in) {
-    auto* out = new mio_sequence{};
+    // Owned until returned: sequence_expand throws on a pattern that matches
+    // nothing, and the guard would otherwise leak the half-built handle.
+    auto out = std::make_unique<mio_sequence>();
     out->mEntries = meshioplusplus::sequence_expand(in);
     out->mFormat = in.mFormat;
     out->mOptions = in.mOptions;
-    return out;
+    return out.release();
 }
 
 const meshioplusplus::SequenceEntry& seq_entry(const mio_sequence* pSeq, int64_t Index) {

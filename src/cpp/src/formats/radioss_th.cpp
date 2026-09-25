@@ -188,10 +188,14 @@ struct ThFile {
     }
 
     std::vector<std::int64_t> Ints(std::size_t N, const char* pWhat) {
-        std::vector<std::int64_t> out(N);
         if (N == 0)
-            return out;
+            return {};
+        // Take first: it checks the record holds exactly 4 * N bytes, so a
+        // corrupt N never sizes the allocation (4 * N wrapping included).
+        if (N > mData.size() / 4)
+            th_fail(std::string("implausible size for ") + pWhat);
         const char* p = Take(4 * N, pWhat);
+        std::vector<std::int64_t> out(N);
         for (std::size_t i = 0; i < N; ++i)
             out[i] = th_int(p + 4 * i);
         return out;

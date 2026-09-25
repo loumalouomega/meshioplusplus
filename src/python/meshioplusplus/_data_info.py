@@ -20,6 +20,8 @@ import warnings
 
 import numpy as np
 
+from ._fallback import core_op_declined
+
 
 def _summarize(location, name, arrays, num_blocks):
     """Build one summary dict from the array(s) making up a single entry."""
@@ -127,7 +129,9 @@ def data_info(mesh) -> list:
         from . import _core
 
         raw = _core.data_info(mesh)
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "data_info"):
+            raise
         return _info_py(mesh)
 
     # Re-type so both paths return byte-identical structures.

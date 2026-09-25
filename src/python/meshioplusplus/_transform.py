@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 
@@ -227,7 +228,9 @@ def transform(
         from . import _core
 
         out = _core.transform(mesh, m.reshape(-1).tolist(), bool(rotate_vector_data))
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "transform"):
+            raise
         out = None
     if out is None:
         out = _transform_py(mesh, m, rotate_vector_data)

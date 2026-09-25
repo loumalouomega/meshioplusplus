@@ -37,6 +37,7 @@
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -118,11 +119,20 @@ public:
     virtual bool NextIsInteger() = 0;
     // Whether the next value is a type-name string (text: a length, then a letter).
     virtual bool NextIsName() = 0;
+    // The input's size in bytes: the bound on any count it declares.
+    virtual std::size_t Size() const = 0;
+
+    // A count read from the file, checked before it sizes anything: every
+    // entry it counts takes at least one byte of the input.
+    std::int64_t Count(const char* pWhat) {
+        return static_cast<std::int64_t>(detail::checked_count(Int(), Size(), "COMSOL", pWhat));
+    }
 };
 
 class ComsolText : public ComsolSource {
 public:
     explicit ComsolText(std::string Text) : mText(std::move(Text)) {}
+    std::size_t Size() const override { return mText.size(); }
 
     std::int64_t Int() override {
         const std::string t = Token();
@@ -230,6 +240,7 @@ private:
 class ComsolBinary : public ComsolSource {
 public:
     explicit ComsolBinary(std::string Bytes) : mBytes(std::move(Bytes)) {}
+    std::size_t Size() const override { return mBytes.size(); }
 
     std::int64_t Int() override {
         Need(4);
@@ -330,8 +341,9 @@ bool comsol_tail_fits(ComsolSource& rIn, std::int64_t Ne, bool Last) {
                 ok = rIn.NextIsInteger() && rIn.Int() >= 0;
             if (ok && rIn.NextIsInteger()) {
                 const std::int64_t nud = rIn.Int();
-                ok = nud >= 0;
-                for (std::int64_t k = 0; k < 2 * nud && ok; ++k)
+                // Two integers per pair, each at least a byte of the input.
+                ok = nud >= 0 && static_cast<std::uint64_t>(nud) <= rIn.Size() / 2;
+                for (std::int64_t k = 0; ok && k < 2 * nud; ++k)
                     ok = rIn.NextIsInteger() && (rIn.Int(), true);
                 if (ok)
                     ok = Last ? comsol_object_or_end(rIn) : rIn.NextIsName();
@@ -352,7 +364,8 @@ ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
     const std::int64_t sdim = rIn.Int();
     const std::int64_t np = rIn.Int();
     const std::int64_t lowest = rIn.Int();
-    if (sdim < 1 || sdim > 3 || np < 0)
+    if (sdim < 1 || sdim > 3 || np < 0 ||
+        static_cast<std::uint64_t>(np) > rIn.Size() / static_cast<std::uint64_t>(sdim))
         throw ReadError(std::string(pFormat) + ": invalid Mesh header (sdim " +
                         std::to_string(sdim) + ", " + std::to_string(np) + " vertices)");
     m.mSdim = static_cast<std::size_t>(sdim);
@@ -370,7 +383,8 @@ ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
         const std::int64_t nep = rIn.Int();
         const std::int64_t ne = rIn.Int();
         const int expected = cell_type_num_nodes(cell_type_from_name(b.mType));
-        if (nep != expected || ne < 0)
+        if (nep != expected || ne < 0 ||
+            static_cast<std::uint64_t>(ne) > rIn.Size() / static_cast<std::uint64_t>(nep))
             throw ReadError(std::string(pFormat) + ": '" + ctype + "' elements with " +
                             std::to_string(nep) + " nodes");
         b.mNodes = static_cast<std::size_t>(nep);
@@ -392,6 +406,11 @@ ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
             // dimension: find how many by where the rest of the record fits.
             const std::int64_t npp = rIn.Int();
             const std::int64_t npar = rIn.Int();
+            // npp * npar * 3 values follow at most, each a byte or more.
+            if (npar < 0 || npp < 0 ||
+                (npp > 0 && static_cast<std::uint64_t>(npar) >
+                                rIn.Size() / 3 / static_cast<std::uint64_t>(npp)))
+                throw ReadError(std::string(pFormat) + ": implausible parameter count");
             const std::size_t start = rIn.Mark();
             bool found = false;
             for (int k = 1; k <= 3 && !found; ++k) {
@@ -435,7 +454,7 @@ Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
     if (major != 0 || minor != 1)
         throw ReadError(std::string(pFormat) + ": unsupported file version " +
                         std::to_string(major) + "." + std::to_string(minor));
-    std::vector<std::string> tags(static_cast<std::size_t>(std::max<std::int64_t>(0, rIn.Int())));
+    std::vector<std::string> tags(static_cast<std::size_t>(rIn.Count("tag")));
     for (std::string& t : tags)
         t = rIn.String();
     const std::int64_t ntypes = rIn.Int();
@@ -463,7 +482,7 @@ Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
             s.mLabel = rIn.String();
             s.mMeshTag = rIn.String();
             s.mDim = static_cast<int>(rIn.Int());
-            s.mEntities.resize(static_cast<std::size_t>(std::max<std::int64_t>(0, rIn.Int())));
+            s.mEntities.resize(static_cast<std::size_t>(rIn.Count("entity")));
             for (std::int64_t& e : s.mEntities)
                 e = rIn.Int();
             selections.push_back(std::move(s));

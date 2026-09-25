@@ -686,6 +686,7 @@ Mesh read_vtx(const std::string& rPath, const ReadOptions& rOpts) {
     }
     Mesh mesh;
     mesh.AssignPoints(std::move(step.mPoints));
+    detail::check_vtk_cell_arrays(step.mConn.size(), step.mOffsets, step.mTypes, step.mCellData);
     detail::reconstruct_cells(step.mConn.data(), step.mOffsets, step.mTypes, step.mCellData, mesh);
     for (auto& rEntry : step.mPointData)
         mesh.AddPointData(rEntry.first, std::move(rEntry.second));
