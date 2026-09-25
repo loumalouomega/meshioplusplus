@@ -42,6 +42,7 @@ To refresh after an intended change: ``python tools/gen_conformance_table.py
 
 from __future__ import annotations
 
+import gc
 import pathlib
 import tempfile
 
@@ -219,44 +220,54 @@ def observe(fmt: str, cell_types=None, planar=None) -> dict:
             if "points" in flat:
                 return flat
         return out
+    with tempfile.TemporaryDirectory() as tmp:
+        out = _observe_in(pathlib.Path(tmp), fmt, cell_types, planar)
+        # Every mesh read back died with _observe_in's frame; collect any cycle
+        # still holding one before the directory goes. A lazy reader (pmsh
+        # memory-maps its arrays) keeps its files open, and Windows cannot
+        # delete an open file.
+        gc.collect()
+    return out
+
+
+def _observe_in(tmp: pathlib.Path, fmt: str, cell_types, planar: bool) -> dict:
+    """:func:`observe`'s round trips, inside the scratch directory ``tmp``."""
     candidates = [t for t in CELL_TYPES if not planar or t in _PLANAR]
     errors = []
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = pathlib.Path(tmp)
-        wrote_something = False
-        if cell_types is None:
-            cell_types = []
-            for i, ctype in enumerate(candidates):
-                # Bare first; then with data, which some writers require (DEX
-                # writes a nodal field and nothing else).
-                for data in (False, True):
-                    sub = tmp / f"probe{i}{int(data)}"
-                    sub.mkdir()
-                    try:
-                        back = round_trip(
-                            fmt, canonical_mesh([ctype], data, False, planar), sub
-                        )
-                    except Exception as exc:
-                        errors.append(type(exc).__name__)
-                        continue
-                    wrote_something = True
-                    if sum(len(b.data) for b in back.cells):
-                        cell_types.append(ctype)
-                    break
-            if not cell_types and wrote_something:
-                # A points-only format: it takes the cells and keeps none.
-                cell_types = list(candidates)
-        if not cell_types:
-            if errors and all(e == "ImportError" for e in errors):
-                return {"error": "ImportError"}
-            return {"error": "no cell type round-trips"}
-        mesh = canonical_mesh(cell_types, planar=planar)
-        full = tmp / "full"
-        full.mkdir()
-        try:
-            back = round_trip(fmt, mesh, full)
-        except Exception as exc:
-            return {"cells": {c: "?" for c in cell_types}, "error": type(exc).__name__}
+    wrote_something = False
+    if cell_types is None:
+        cell_types = []
+        for i, ctype in enumerate(candidates):
+            # Bare first; then with data, which some writers require (DEX
+            # writes a nodal field and nothing else).
+            for data in (False, True):
+                sub = tmp / f"probe{i}{int(data)}"
+                sub.mkdir()
+                try:
+                    back = round_trip(
+                        fmt, canonical_mesh([ctype], data, False, planar), sub
+                    )
+                except Exception as exc:
+                    errors.append(type(exc).__name__)
+                    continue
+                wrote_something = True
+                if sum(len(b.data) for b in back.cells):
+                    cell_types.append(ctype)
+                break
+        if not cell_types and wrote_something:
+            # A points-only format: it takes the cells and keeps none.
+            cell_types = list(candidates)
+    if not cell_types:
+        if errors and all(e == "ImportError" for e in errors):
+            return {"error": "ImportError"}
+        return {"error": "no cell type round-trips"}
+    mesh = canonical_mesh(cell_types, planar=planar)
+    full = tmp / "full"
+    full.mkdir()
+    try:
+        back = round_trip(fmt, mesh, full)
+    except Exception as exc:
+        return {"cells": {c: "?" for c in cell_types}, "error": type(exc).__name__}
     out = _describe(mesh, back)
     if planar:
         out["input"] = "2d"

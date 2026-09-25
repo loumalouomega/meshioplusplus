@@ -54382,14 +54382,55 @@ std::size_t vtk_xml_header_bytes(const Mesh& rMesh) {
 // ===== end src/cpp/src/detail/vtk_cells.cpp =====
 // ===== begin src/cpp/src/detail/vtk_xml.cpp =====
 #include <cctype>
+#include <charconv>
+#include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <system_error>
+#include <type_traits>
 
 // Project includes
 
 namespace meshioplusplus {
 namespace detail {
+
+namespace {
+
+// strtoll/strtoull over [pFirst, pLast): an optional sign, decimal digits,
+// saturation on overflow and strtoull's modular negation, but never a read
+// past the token. The strto* calls it replaces take a NUL-terminated string,
+// and ASan's strict_string_checks makes every such call check the whole rest
+// of it, so a DataArray of n integers cost O(n^2) under the sanitizers.
+// Returns pFirst when there is no digit to convert.
+template <class TInt>
+const char* vtkxml_parse_decimal(const char* pFirst, const char* pLast, TInt& rValue) {
+    const char* p = pFirst;
+    const bool negative = p != pLast && *p == '-';
+    if (p != pLast && (*p == '+' || *p == '-'))
+        ++p;
+    if (p == pLast || !std::isdigit(static_cast<unsigned char>(*p)))
+        return pFirst;
+    std::uint64_t magnitude = 0;
+    const auto [end, ec] = std::from_chars(p, pLast, magnitude);
+    const bool overflow = ec == std::errc::result_out_of_range;
+    if constexpr (std::is_signed_v<TInt>) {
+        const std::uint64_t limit =
+            static_cast<std::uint64_t>(std::numeric_limits<TInt>::max()) + (negative ? 1 : 0);
+        if (overflow || magnitude > limit)
+            rValue = negative ? std::numeric_limits<TInt>::min() : std::numeric_limits<TInt>::max();
+        else
+            rValue = static_cast<TInt>(negative ? std::uint64_t{0} - magnitude : magnitude);
+    } else {
+        if (overflow)
+            rValue = std::numeric_limits<TInt>::max();
+        else
+            rValue = static_cast<TInt>(negative ? std::uint64_t{0} - magnitude : magnitude);
+    }
+    return end;
+}
+
+}  // namespace
 
 const char* vtu_type_str(DType dt) {
     switch (dt) {
@@ -54505,6 +54546,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<double> dv;
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
+    const char* const last = p + std::strlen(p);
     while (*p) {
         while (*p && std::isspace(static_cast<unsigned char>(*p)))
             ++p;
@@ -54519,17 +54561,19 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             dv.push_back(x);
             endp = const_cast<char*>(fend);
         } else if (dt == DType::UInt64) {
-            // strtoll saturates above INT64_MAX; the bit pattern round-trips
+            // Unsigned: a signed parse saturates above INT64_MAX; the bit pattern round-trips
             // through the int64 buffer and vtu_store's cast back.
-            unsigned long long x = std::strtoull(p, &endp, 10);
+            std::uint64_t x = 0;
+            endp = const_cast<char*>(vtkxml_parse_decimal(p, last, x));
             if (endp == p)
                 break;
             iv.push_back(static_cast<std::int64_t>(x));
         } else {
-            long long x = std::strtoll(p, &endp, 10);
+            std::int64_t x = 0;
+            endp = const_cast<char*>(vtkxml_parse_decimal(p, last, x));
             if (endp == p)
                 break;
-            iv.push_back(static_cast<std::int64_t>(x));
+            iv.push_back(x);
         }
         p = endp;
     }
