@@ -17,9 +17,13 @@
 
 // System includes
 #include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <system_error>
+#include <type_traits>
 
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
@@ -139,11 +143,52 @@ void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
     }
 }
 
+namespace {
+
+/**
+ * @brief Parse one base-10 integer at @p p with `std::strtoll`/`strtoull`'s
+ * acceptance -- an optional sign, saturation on overflow, and for an unsigned
+ * target a negated magnitude wrapping as `strtoull` does -- but through
+ * `std::from_chars`, bounded by @p pEnd. `strto*` finds the end of the string
+ * first under instrumentation (ASan's `strict_string_checks`), which made
+ * parsing one ASCII `DataArray` quadratic in its length.
+ * @return Past the number, or @p p when there is none.
+ */
+template <class T>
+const char* vxml_parse_integer(const char* p, const char* pEnd, T& rOut) {
+    const char* q = p;
+    bool neg = false;
+    if (q < pEnd && (*q == '+' || *q == '-')) {
+        neg = *q == '-';
+        ++q;
+    }
+    unsigned long long mag = 0;
+    const auto [ptr, ec] = std::from_chars(q, pEnd, mag);
+    if (ptr == q)
+        return p;
+    const bool overflow = ec == std::errc::result_out_of_range;
+    if constexpr (std::is_signed_v<T>) {
+        constexpr unsigned long long kMax = std::numeric_limits<long long>::max();
+        if (!neg)
+            rOut = overflow || mag > kMax ? std::numeric_limits<long long>::max()
+                                          : static_cast<long long>(mag);
+        else  // -(kMax + 1) is exactly the minimum; anything larger saturates to it
+            rOut = overflow || mag > kMax ? std::numeric_limits<long long>::min()
+                                          : -static_cast<long long>(mag);
+    } else {
+        rOut = overflow ? std::numeric_limits<unsigned long long>::max() : (neg ? 0ull - mag : mag);
+    }
+    return ptr;
+}
+
+}  // namespace
+
 NDArray vtu_parse_ascii(const char* pText, DType dt) {
     const bool isflt = is_float_dtype(dt);
     std::vector<double> dv;
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
+    const char* const text_end = p + std::strlen(p);
     while (*p) {
         while (*p && std::isspace(static_cast<unsigned char>(*p)))
             ++p;
@@ -160,15 +205,19 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         } else if (dt == DType::UInt64) {
             // strtoll saturates above INT64_MAX; the bit pattern round-trips
             // through the int64 buffer and vtu_store's cast back.
-            unsigned long long x = std::strtoull(p, &endp, 10);
-            if (endp == p)
+            unsigned long long x = 0;
+            const char* e = vxml_parse_integer(p, text_end, x);
+            if (e == p)
                 break;
             iv.push_back(static_cast<std::int64_t>(x));
+            endp = const_cast<char*>(e);
         } else {
-            long long x = std::strtoll(p, &endp, 10);
-            if (endp == p)
+            long long x = 0;
+            const char* e = vxml_parse_integer(p, text_end, x);
+            if (e == p)
                 break;
             iv.push_back(static_cast<std::int64_t>(x));
+            endp = const_cast<char*>(e);
         }
         p = endp;
     }
