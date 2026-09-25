@@ -65,17 +65,25 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
+#include "meshioplusplus/operations/interpolate.hpp"
+#include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -441,6 +449,66 @@ int main(int argc, char** argv) {
             mio::VoxelOptions o;
             o.mResolution = std::array<std::int64_t, 3>{48, 48, 48};
             of(pD, mio::voxelize(volume, o).mMesh);
+        });
+        // Rows for roadmap §4's remaining operation items (v16.18.0).
+        row("remesh", [&](MeshDigest* pD) {
+            mio::RemeshOptions o;
+            o.mNumClusters = static_cast<std::int64_t>(surface.NumPoints() / 4);
+            of(pD, mio::remesh(surface, o).mMesh);
+        });
+        row("remesh_volume", [&](MeshDigest* pD) {
+            mio::RemeshVolumeOptions o;
+            o.mCellSize = 1.5 / static_cast<double>(n);
+            of(pD, mio::remesh_volume(surface, o).mMesh);
+        });
+        row("sample_distance", [&](MeshDigest* pD) {
+            const NDArray d = mio::sample_distance(surface, jittered.Points());
+            if (pD)
+                pD->Array(d);
+        });
+        row("distance_to_surface",
+            [&](MeshDigest* pD) { of(pD, mio::distance_to_surface(jittered, surface).mMesh); });
+        row("isosurface", [&](MeshDigest* pD) {
+            mio::IsosurfaceOptions o;
+            o.mArrayName = "u";
+            o.mIsovalues = {0.3, 0.6};
+            of(pD, mio::isosurface(with_field, o));
+        });
+        row("slice", [&](MeshDigest* pD) {
+            mio::SliceOptions o;
+            o.mOrigin = {0.5, 0.45, 0.47};
+            o.mNormal = {0.3, 0.2, 1.0};
+            of(pD, mio::slice(with_field, o));
+        });
+        row("convert_cells", [&](MeshDigest* pD) {
+            mio::ConvertCellsOptions o;
+            o.mMode = mio::ConvertCellsMode::Elevate;
+            of(pD, mio::convert_cells(volume, o).mMesh);
+        });
+        row("interpolate", [&](MeshDigest* pD) {
+            mio::InterpolateOptions o;
+            o.mMethod = mio::InterpolateMethod::Barycentric;
+            o.mExtrapolate = true;
+            of(pD, mio::interpolate(with_field, jittered, o));
+        });
+        row("repair", [&](MeshDigest* pD) { of(pD, mio::repair(surface).mMesh); });
+        row("sobolev_deform", [&](MeshDigest* pD) {
+            Mesh m = bench_ops_moved(surface, [](std::size_t, double*) {});
+            NDArray disp = NDArray::Uninit(DType::Float64, {m.NumPoints(), 3});
+            for (std::size_t i = 0; i < m.NumPoints() * 3; ++i)
+                disp.As<double>()[i] = 0.01 * static_cast<double>((i * 7) % 13) - 0.06;
+            m.AddPointData("d", std::move(disp));
+            mio::SobolevOptions o;
+            o.mArrayName = "d";
+            o.mLengthScale = 2.0 / static_cast<double>(n);
+            of(pD, mio::sobolev_deform(m, o).mMesh);
+        });
+        row("gradient", [&](MeshDigest* pD) {
+            mio::GradientOptions o;
+            o.mArrayName = "u";
+            o.mMethod = mio::GradientMethod::LeastSquares;
+            o.mLocation = mio::DataLocation::Point;
+            of(pD, mio::gradient(with_field, o).mMesh);
         });
     }
     return 0;
