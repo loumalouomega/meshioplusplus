@@ -4098,6 +4098,13 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         "gid_write_series",
         [](const std::string& path, const py::function& next_step, const std::string& mode,
            const std::string& analysis_name) {
+            // The mesh py_to_mesh builds borrows the arrays its refs hold.
+            // write_gid_series writes a step after this callback returns and
+            // then keeps it as the previous mesh to compare the next step
+            // with, so the refs of the current and the previous step both
+            // outlive the callback (a local here freed an array the generator
+            // held no other reference to before it was written).
+            meshioplusplus_py::PyMeshRefs refs_prev, refs_cur;
             meshioplusplus::write_gid_series(
                 path,
                 [&](std::size_t, double& time, meshioplusplus::Mesh& mesh) {
@@ -4106,10 +4113,10 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                         return false;
                     auto pair = item.cast<py::tuple>();
                     time = pair[0].cast<double>();
-                    // The refs must outlive the conversion only until the mesh
-                    // is written, which happens before the next pull.
                     meshioplusplus_py::PyMeshRefs refs;
                     mesh = meshioplusplus_py::py_to_mesh(pair[1], refs);
+                    refs_prev = std::move(refs_cur);
+                    refs_cur = std::move(refs);
                     return true;
                 },
                 meshioplusplus::gid_mode_from_name(mode), analysis_name);

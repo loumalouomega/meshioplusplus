@@ -89,6 +89,13 @@ void vtu_ascii_double(std::ostream& rOs, double v) {
 void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
     const bool flt = is_float_dtype(rA.Dtype());
     const std::size_t n = rA.Size();
+    if (rA.Dtype() == DType::UInt64) {
+        // read_int would hand a value above INT64_MAX back as a negative one.
+        const std::uint64_t* p = rA.As<std::uint64_t>();
+        for (std::size_t i = 0; i < n; ++i)
+            rOs << p[i] << '\n';
+        return;
+    }
     for (std::size_t i = 0; i < n; ++i) {
         if (flt)
             vtu_ascii_double(rOs, read_double(rA, i));
@@ -150,6 +157,13 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
                 break;
             dv.push_back(x);
             endp = const_cast<char*>(fend);
+        } else if (dt == DType::UInt64) {
+            // strtoll saturates above INT64_MAX; the bit pattern round-trips
+            // through the int64 buffer and vtu_store's cast back.
+            unsigned long long x = std::strtoull(p, &endp, 10);
+            if (endp == p)
+                break;
+            iv.push_back(static_cast<std::int64_t>(x));
         } else {
             long long x = std::strtoll(p, &endp, 10);
             if (endp == p)
@@ -211,6 +225,11 @@ const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, N
 
 void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
                            bool Binary, VtkCodec Codec) {
+    vtu_write_field_array(rOs, rName, rArray, Binary, Codec, 4);
+}
+
+void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
+                           bool Binary, VtkCodec Codec, std::size_t Hsz) {
     const std::vector<std::size_t>& shape = rArray.Shape();
     const std::size_t tuples = shape.empty() ? 1 : shape[0];
     rOs << "<DataArray type=\"" << vtu_type_str(rArray.Dtype()) << "\" Name=\"" << rName
@@ -224,7 +243,7 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
     rOs << " format=\"" << (Binary ? "binary" : "ascii") << "\">\n";
     if (Binary)
         rOs << vtu_encode_binary(reinterpret_cast<const unsigned char*>(rArray.Data()),
-                                 rArray.Nbytes(), Codec)
+                                 rArray.Nbytes(), Codec, Hsz)
             << "\n";
     else
         vtu_ascii_ndarray(rOs, rArray);

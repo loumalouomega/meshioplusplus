@@ -169,10 +169,12 @@ struct GmshCursor {
         }
     }
     double next_double() {
-        // strtod scans for a terminator. A buffered source is a std::string
-        // (NUL-terminated); a mapped one relies on the kernel zero-filling the
-        // final partial page -- which is exactly why FileSource declines to map
-        // files whose size is an exact page multiple.
+        // parse_double stops at the first character that cannot continue the
+        // number, so one must follow the last. A buffered source is a
+        // std::string (NUL-terminated); a mapped one relies on the kernel
+        // zero-filling the final partial page -- which is exactly why
+        // FileSource declines to map files whose size is an exact page
+        // multiple.
         const char* base = mBuf.data();
         const char* endp = nullptr;
         double v = detail::parse_double(base + mPos, endp);
@@ -1395,9 +1397,19 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     }
 
     // Build node-tag remap (gmsh ids are 1-based, possibly non-contiguous).
+    // Tags are 1-based; a tag below 1, or one so large for the node count
+    // that the dense table would be gigabytes, is a corrupt $Nodes (the 4.1
+    // reader applies the same rule).
     std::int64_t max_tag = 0;
-    for (auto t : point_tags)
+    for (auto t : point_tags) {
+        if (t < 1)
+            throw ReadError("Gmsh: a node tag below 1");
         max_tag = std::max(max_tag, t - 1);
+    }
+    if (static_cast<std::uint64_t>(max_tag) >=
+        std::max<std::uint64_t>(std::uint64_t{1} << 24,
+                                8 * static_cast<std::uint64_t>(point_tags.size())))
+        throw ReadError("Gmsh: node tags too sparse for the node count");
     std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
     // Scatter: node tags are unique, so writes never alias -> parallel.
     parallel_for_bw(point_tags.size(), [&](std::size_t i) {
@@ -1419,7 +1431,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     std::vector<NDArray> physical_blocks, geometrical_blocks;
     for (const auto& b : eblocks)
         for (const std::int64_t gid : b.mConn)
-            if (gid < 0 || static_cast<std::size_t>(gid) >= remap.size())
+            if (gid < 0 || static_cast<std::size_t>(gid) >= remap.size() ||
+                remap[static_cast<std::size_t>(gid)] < 0)
                 throw ReadError("Gmsh: an element names a node outside $Nodes");
     for (const auto& b : eblocks) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.mType);

@@ -8747,7 +8747,9 @@ inline bool is_c_decimal_point(const char* pDecimalPoint) noexcept {
  * locale.
  *
  * @param pFirst NUL-terminated text to parse from (only the prefix up to
- * the parsed number is read; the buffer must outlive `rEnd`).
+ * the first character that cannot continue the number is read, never the
+ * rest of the buffer, so a cursor calling this once per number over a
+ * whole file stays linear; the buffer must outlive `rEnd`).
  * @param rEnd Set to the first unparsed character.
  * @return The parsed value, or `0.0` on failure (`rEnd == pFirst`).
  */
@@ -8773,8 +8775,41 @@ inline double parse_double(const char* pFirst, const char*& rEnd) noexcept {
     const bool looks_like_hex_float =
         hex_check[0] == '0' && (hex_check[1] == 'x' || hex_check[1] == 'X');
     if (!looks_like_hex_float) {
+        // Bound from_chars to the span a decimal, inf or nan literal can
+        // cover (sign, digits, '.', exponent; or letters plus an optional
+        // "(n-char-seq)"). from_chars' result depends only on that span, so
+        // the value and the end are those of an unbounded parse -- while a
+        // strlen here read to the end of the buffer on every call and made
+        // every reader that parses a whole file this way quadratic.
+        const char* last = (*p == '-') ? p + 1 : p;
+        auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+        auto is_alpha = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+        if (is_alpha(*last)) {
+            while (is_alpha(*last))
+                ++last;
+            if (*last == '(') {
+                ++last;
+                while (is_alpha(*last) || is_digit(*last) || *last == '_')
+                    ++last;
+                if (*last == ')')
+                    ++last;
+            }
+        } else {
+            while (is_digit(*last))
+                ++last;
+            if (*last == '.')
+                ++last;
+            while (is_digit(*last))
+                ++last;
+            if (*last == 'e' || *last == 'E') {
+                ++last;
+                if (*last == '+' || *last == '-')
+                    ++last;
+                while (is_digit(*last))
+                    ++last;
+            }
+        }
         double value = 0.0;
-        const char* last = pFirst + std::strlen(pFirst);
         auto [ptr, ec] = std::from_chars(p, last, value);
         if (ec == std::errc()) {
             rEnd = ptr;
@@ -13224,6 +13259,20 @@ MESHIOPLUSPLUS_API void reconstruct_cells(
     const std::vector<std::int64_t>* pFaces, const std::vector<std::int64_t>& rFaceOffsets,
     Mesh& rMesh);
 
+/**
+ * @brief The `header_type` item size (4 or 8, via `vtu_header_bytes_for`) a
+ * VTK XML writer needs for @p rMesh's uncompressed binary arrays.
+ *
+ * An upper bound, computed before the `<VTKFile>` tag that carries the
+ * attribute is written: every array such a writer emits holds items of at most
+ * 8 bytes, and none holds more items than the largest of 3 per point (padded
+ * points), the connectivity (a polyhedron block counted as its whole face
+ * stream), one per cell (offsets, types, face offsets), or one data array's
+ * elements (a cell-data array's blocks summed). A mesh whose bound stays
+ * under 4 GiB therefore gets 4, and its output bytes do not change.
+ */
+MESHIOPLUSPLUS_API std::size_t vtk_xml_header_bytes(const Mesh& rMesh);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
@@ -13438,6 +13487,30 @@ MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pTex
  */
 MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec);
 
+/**
+ * @brief As above, with the file's `header_type` item size: every size in the
+ * array's header (the byte count, or the block counts and sizes) is written as
+ * a little-endian integer of @p hsz bytes. The three-argument form is this with
+ * @p hsz = 4, what a file with no `header_type` attribute means.
+ *
+ * An **overload**, not a changed signature (`vtu_binary.hpp` is installed).
+ *
+ * @param hsz 4 (`header_type="UInt32"`) or 8 (`header_type="UInt64"`).
+ * @throws WriteError if @p hsz is neither, or if a size does not fit in
+ *         @p hsz bytes -- an uncompressed array of 4 GiB or more under
+ *         `UInt32` -- rather than writing a truncated header (the caller picks
+ *         @p hsz with `vtu_header_bytes_for`), or as for the three-argument form.
+ */
+MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
+                                                 VtkCodec codec, std::size_t hsz);
+
+/**
+ * @brief The `header_type` item size a VTK XML file needs when its largest
+ * array holds @p maxArrayBytes bytes: 4 (`UInt32`, the default every writer
+ * uses, so small files keep their bytes) while that fits in 32 bits, else 8.
+ */
+MESHIOPLUSPLUS_API std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
@@ -13589,6 +13662,14 @@ MESHIOPLUSPLUS_API DType vtu_disk_dtype(const std::string& rName, DType Dt);
  */
 MESHIOPLUSPLUS_API void vtu_write_field_array(std::ostream& rOs, const std::string& rName,
                                               const NDArray& rArray, bool Binary, VtkCodec Codec);
+
+/**
+ * @brief As above, with the file's `header_type` item size for a binary body
+ * (4 or 8; see `vtu_encode_binary`). The five-argument form passes 4.
+ */
+MESHIOPLUSPLUS_API void vtu_write_field_array(std::ostream& rOs, const std::string& rName,
+                                              const NDArray& rArray, bool Binary, VtkCodec Codec,
+                                              std::size_t Hsz);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -54260,6 +54341,42 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
     }
 }
 
+std::size_t vtk_xml_header_bytes(const Mesh& rMesh) {
+    std::uint64_t items = 3 * static_cast<std::uint64_t>(rMesh.NumPoints());
+    std::uint64_t conn = 0;
+    std::uint64_t ncells = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t nc = cb.NumCells();
+        ncells += nc;
+        if (cb.IsPolyhedron()) {
+            // The face stream [nfaces, [n, nodes...] per face] bounds both it
+            // and the cell's (sorted unique) connectivity.
+            for (std::size_t r = 0; r < nc; ++r) {
+                conn += 1 + cb.NumFaces(r);
+                for (std::size_t f = 0; f < cb.NumFaces(r); ++f)
+                    conn += 1 + cb.Face(r, f).second;
+            }
+        } else if (cb.IsRagged()) {
+            for (std::size_t r = 0; r < nc; ++r)
+                conn += cb.RowSize(r);
+        } else {
+            conn += cb.Conn().Size();
+        }
+    }
+    items = std::max({items, conn, ncells});
+    for (const auto& name : rMesh.PointDataNames())
+        items = std::max<std::uint64_t>(items, rMesh.PointData(name).Size());
+    for (const auto& name : rMesh.CellDataNames()) {
+        std::uint64_t n = 0;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            n += rMesh.CellData(name, b).Size();
+        items = std::max(items, n);
+    }
+    for (const auto& name : rMesh.FieldDataNames())
+        items = std::max<std::uint64_t>(items, rMesh.FieldData(name).Size());
+    return vtu_header_bytes_for(8 * items);
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtk_cells.cpp =====
@@ -54333,6 +54450,13 @@ void vtu_ascii_double(std::ostream& rOs, double v) {
 void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
     const bool flt = is_float_dtype(rA.Dtype());
     const std::size_t n = rA.Size();
+    if (rA.Dtype() == DType::UInt64) {
+        // read_int would hand a value above INT64_MAX back as a negative one.
+        const std::uint64_t* p = rA.As<std::uint64_t>();
+        for (std::size_t i = 0; i < n; ++i)
+            rOs << p[i] << '\n';
+        return;
+    }
     for (std::size_t i = 0; i < n; ++i) {
         if (flt)
             vtu_ascii_double(rOs, read_double(rA, i));
@@ -54394,6 +54518,13 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
                 break;
             dv.push_back(x);
             endp = const_cast<char*>(fend);
+        } else if (dt == DType::UInt64) {
+            // strtoll saturates above INT64_MAX; the bit pattern round-trips
+            // through the int64 buffer and vtu_store's cast back.
+            unsigned long long x = std::strtoull(p, &endp, 10);
+            if (endp == p)
+                break;
+            iv.push_back(static_cast<std::int64_t>(x));
         } else {
             long long x = std::strtoll(p, &endp, 10);
             if (endp == p)
@@ -54455,6 +54586,11 @@ const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, N
 
 void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
                            bool Binary, VtkCodec Codec) {
+    vtu_write_field_array(rOs, rName, rArray, Binary, Codec, 4);
+}
+
+void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
+                           bool Binary, VtkCodec Codec, std::size_t Hsz) {
     const std::vector<std::size_t>& shape = rArray.Shape();
     const std::size_t tuples = shape.empty() ? 1 : shape[0];
     rOs << "<DataArray type=\"" << vtu_type_str(rArray.Dtype()) << "\" Name=\"" << rName
@@ -54468,7 +54604,7 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
     rOs << " format=\"" << (Binary ? "binary" : "ascii") << "\">\n";
     if (Binary)
         rOs << vtu_encode_binary(reinterpret_cast<const unsigned char*>(rArray.Data()),
-                                 rArray.Nbytes(), Codec)
+                                 rArray.Nbytes(), Codec, Hsz)
             << "\n";
     else
         vtu_ascii_ndarray(rOs, rArray);
@@ -54487,7 +54623,10 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
 // ===== end src/cpp/src/detail/vtk_xml.cpp =====
 // ===== begin src/cpp/src/detail/vtu_binary.cpp =====
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <limits>
+#include <string>
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
@@ -54541,16 +54680,17 @@ std::string b64encode(const unsigned char* pData, std::size_t len) {
 }
 
 std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
-    static int8_t inv[256];
-    static bool init = false;
-    if (!init) {
-        for (int i = 0; i < 256; ++i)
-            inv[i] = -1;
+    // A magic static, initialised once and thread-safely ([stmt.dcl]/4): the
+    // hand-rolled "static bool init" it replaces was a data race when two
+    // threads decoded at once (C, Fortran, Julia or R callers).
+    static const std::array<int8_t, 256> inv = [] {
+        std::array<int8_t, 256> t;
+        t.fill(-1);
         const char* tbl = b64_table();
         for (int i = 0; i < 64; ++i)
-            inv[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
-        init = true;
-    }
+            t[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
+        return t;
+    }();
     std::vector<unsigned char> out;
     out.reserve(len / 4 * 3);
     int buf = 0, bits = 0;
@@ -54920,21 +55060,41 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
 }
 
 std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec) {
+    return vtu_encode_binary(pData, nbytes, codec, 4);
+}
+
+std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes) {
+    return maxArrayBytes > std::numeric_limits<std::uint32_t>::max() ? 8 : 4;
+}
+
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
+                              std::size_t hsz) {
+    if (hsz != 4 && hsz != 8)
+        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(hsz));
+    // One little-endian header item of hsz bytes. A size that does not fit is
+    // refused: a UInt32 header silently truncated a 4 GiB array's byte count.
+    auto put = [hsz](std::vector<unsigned char>& rOut, std::uint64_t Value) {
+        if (hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
+            throw WriteError("VTK XML: a size of " + std::to_string(Value) +
+                             " does not fit a UInt32 header_type (the writer must choose UInt64)");
+        for (std::size_t b = 0; b < hsz; ++b)
+            rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
+    };
+
     if (codec == VtkCodec::None) {
-        std::vector<unsigned char> buf(4 + nbytes);
-        std::uint32_t header = static_cast<std::uint32_t>(nbytes);
-        std::memcpy(buf.data(), &header, 4);
+        std::vector<unsigned char> buf;
+        put(buf, nbytes);  // refuses before the payload is allocated
+        buf.reserve(hsz + nbytes);
         if (nbytes)
-            std::memcpy(buf.data() + 4, pData, nbytes);
+            buf.insert(buf.end(), pData, pData + nbytes);
         return b64encode(buf.data(), buf.size());
     }
 
     vtk_codec_require_write(codec);
-    const std::uint32_t max_block = 32768;
-    std::uint32_t num_blocks = static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
-    std::uint32_t last_block_size =
-        num_blocks ? static_cast<std::uint32_t>(nbytes - std::size_t(num_blocks - 1) * max_block)
-                   : max_block;
+    const std::size_t max_block = 32768;
+    const std::size_t num_blocks = (nbytes + max_block - 1) / max_block;
+    const std::size_t last_block_size =
+        num_blocks ? nbytes - (num_blocks - 1) * max_block : max_block;
 
     // Blocks are independent -> compress in parallel into pre-sized slots.
     std::vector<std::vector<unsigned char> > blocks(num_blocks);
@@ -54947,17 +55107,20 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
-    std::vector<std::uint32_t> header;
-    header.reserve(3 + num_blocks);
-    header.push_back(num_blocks);
-    header.push_back(max_block);
-    header.push_back(last_block_size);
-    for (const auto& b : blocks)
-        header.push_back(static_cast<std::uint32_t>(b.size()));
+    std::vector<unsigned char> header;
+    header.reserve((3 + num_blocks) * hsz);
+    put(header, num_blocks);
+    put(header, max_block);
+    put(header, last_block_size);
+    std::size_t total = 0;
+    for (const auto& b : blocks) {
+        put(header, b.size());
+        total += b.size();
+    }
 
-    std::string out = b64encode(reinterpret_cast<const unsigned char*>(header.data()),
-                                header.size() * sizeof(std::uint32_t));
+    std::string out = b64encode(header.data(), header.size());
     std::vector<unsigned char> concat;
+    concat.reserve(total);
     for (const auto& b : blocks)
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
@@ -77601,10 +77764,12 @@ struct GmshCursor {
         }
     }
     double next_double() {
-        // strtod scans for a terminator. A buffered source is a std::string
-        // (NUL-terminated); a mapped one relies on the kernel zero-filling the
-        // final partial page -- which is exactly why FileSource declines to map
-        // files whose size is an exact page multiple.
+        // parse_double stops at the first character that cannot continue the
+        // number, so one must follow the last. A buffered source is a
+        // std::string (NUL-terminated); a mapped one relies on the kernel
+        // zero-filling the final partial page -- which is exactly why
+        // FileSource declines to map files whose size is an exact page
+        // multiple.
         const char* base = mBuf.data();
         const char* endp = nullptr;
         double v = detail::parse_double(base + mPos, endp);
@@ -78827,9 +78992,19 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     }
 
     // Build node-tag remap (gmsh ids are 1-based, possibly non-contiguous).
+    // Tags are 1-based; a tag below 1, or one so large for the node count
+    // that the dense table would be gigabytes, is a corrupt $Nodes (the 4.1
+    // reader applies the same rule).
     std::int64_t max_tag = 0;
-    for (auto t : point_tags)
+    for (auto t : point_tags) {
+        if (t < 1)
+            throw ReadError("Gmsh: a node tag below 1");
         max_tag = std::max(max_tag, t - 1);
+    }
+    if (static_cast<std::uint64_t>(max_tag) >=
+        std::max<std::uint64_t>(std::uint64_t{1} << 24,
+                                8 * static_cast<std::uint64_t>(point_tags.size())))
+        throw ReadError("Gmsh: node tags too sparse for the node count");
     std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
     // Scatter: node tags are unique, so writes never alias -> parallel.
     parallel_for_bw(point_tags.size(), [&](std::size_t i) {
@@ -78851,7 +79026,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     std::vector<NDArray> physical_blocks, geometrical_blocks;
     for (const auto& b : eblocks)
         for (const std::int64_t gid : b.mConn)
-            if (gid < 0 || static_cast<std::size_t>(gid) >= remap.size())
+            if (gid < 0 || static_cast<std::size_t>(gid) >= remap.size() ||
+                remap[static_cast<std::size_t>(gid)] < 0)
                 throw ReadError("Gmsh: an element names a node outside $Nodes");
     for (const auto& b : eblocks) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.mType);
@@ -117759,6 +117935,10 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         throw WriteError("Could not open file for writing: " + rPath);
 
     const char* fmt = binary ? "binary" : "ascii";
+    // UInt64 size headers only where an uncompressed array could pass 4 GiB
+    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
+    const std::size_t hsz =
+        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
         if (ncomp > 0)
@@ -117766,7 +117946,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();
@@ -117776,6 +117956,8 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<VTKFile type=\"ImageData\" version=\"0.1\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    if (hsz == 8)
+        os << " header_type=\"UInt64\"";
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     // Origin/Spacing/WholeExtent ARE the geometry: no Points section exists, and
@@ -121101,6 +121283,10 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     const std::size_t pt_isz = dtype_size(points.Dtype());
 
     const char* fmt = binary ? "binary" : "ascii";
+    // UInt64 size headers only where an uncompressed array could pass 4 GiB
+    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
+    const std::size_t hsz =
+        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
 
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
@@ -121109,7 +121295,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
     };
     auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
         da_header("Int64", name, 0);
@@ -121127,6 +121313,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    if (hsz == 8)
+        os << " header_type=\"UInt64\"";
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<PolyData>\n";
@@ -121136,7 +121324,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "<FieldData>\n";
         for (const auto& name : rMesh.FieldDataNames())
             detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
-                                          binary ? codec : detail::VtkCodec::None);
+                                          binary ? codec : detail::VtkCodec::None, hsz);
         os << "</FieldData>\n";
     }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfVerts=\"" << verts.mOffsets.size()
@@ -121765,6 +121953,10 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         throw WriteError("Could not open file for writing: " + rPath);
 
     const char* fmt = binary ? "binary" : "ascii";
+    // UInt64 size headers only where an uncompressed array could pass 4 GiB
+    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
+    const std::size_t hsz =
+        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
         if (ncomp > 0)
@@ -121772,7 +121964,7 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();
@@ -121782,6 +121974,8 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<VTKFile type=\"RectilinearGrid\" version=\"0.1\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    if (hsz == 8)
+        os << " header_type=\"UInt64\"";
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<RectilinearGrid WholeExtent=\"" << ext.str() << "\">\n";
@@ -122133,6 +122327,10 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         throw WriteError("Could not open file for writing: " + rPath);
 
     const char* fmt = binary ? "binary" : "ascii";
+    // UInt64 size headers only where an uncompressed array could pass 4 GiB
+    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
+    const std::size_t hsz =
+        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
         if (ncomp > 0)
@@ -122140,7 +122338,7 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();
@@ -122150,6 +122348,8 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<VTKFile type=\"StructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    if (hsz == 8)
+        os << " header_type=\"UInt64\"";
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<StructuredGrid WholeExtent=\"" << ext.str() << "\">\n";
@@ -122367,6 +122567,10 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         total_cells += cb.NumCells();
 
     const char* fmt = binary ? "binary" : "ascii";
+    // UInt64 size headers only where an uncompressed array could pass 4 GiB
+    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
+    const std::size_t hsz =
+        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
 
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
@@ -122375,7 +122579,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -122383,6 +122587,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
           "byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    if (hsz == 8)
+        os << " header_type=\"UInt64\"";
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<UnstructuredGrid>\n";
@@ -122392,7 +122598,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "<FieldData>\n";
         for (const auto& name : rMesh.FieldDataNames())
             detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
-                                          binary ? codec : detail::VtkCodec::None);
+                                          binary ? codec : detail::VtkCodec::None, hsz);
         os << "</FieldData>\n";
     }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells

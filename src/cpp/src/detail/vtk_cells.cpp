@@ -22,6 +22,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/vtk_cells.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
@@ -366,6 +367,42 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
         }
         start = end;
     }
+}
+
+std::size_t vtk_xml_header_bytes(const Mesh& rMesh) {
+    std::uint64_t items = 3 * static_cast<std::uint64_t>(rMesh.NumPoints());
+    std::uint64_t conn = 0;
+    std::uint64_t ncells = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t nc = cb.NumCells();
+        ncells += nc;
+        if (cb.IsPolyhedron()) {
+            // The face stream [nfaces, [n, nodes...] per face] bounds both it
+            // and the cell's (sorted unique) connectivity.
+            for (std::size_t r = 0; r < nc; ++r) {
+                conn += 1 + cb.NumFaces(r);
+                for (std::size_t f = 0; f < cb.NumFaces(r); ++f)
+                    conn += 1 + cb.Face(r, f).second;
+            }
+        } else if (cb.IsRagged()) {
+            for (std::size_t r = 0; r < nc; ++r)
+                conn += cb.RowSize(r);
+        } else {
+            conn += cb.Conn().Size();
+        }
+    }
+    items = std::max({items, conn, ncells});
+    for (const auto& name : rMesh.PointDataNames())
+        items = std::max<std::uint64_t>(items, rMesh.PointData(name).Size());
+    for (const auto& name : rMesh.CellDataNames()) {
+        std::uint64_t n = 0;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            n += rMesh.CellData(name, b).Size();
+        items = std::max(items, n);
+    }
+    for (const auto& name : rMesh.FieldDataNames())
+        items = std::max<std::uint64_t>(items, rMesh.FieldData(name).Size());
+    return vtu_header_bytes_for(8 * items);
 }
 
 }  // namespace detail

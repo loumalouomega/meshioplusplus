@@ -212,5 +212,19 @@ MESHIOPLUSPLUS_API void reconstruct_cells(
     const std::vector<std::int64_t>* pFaces, const std::vector<std::int64_t>& rFaceOffsets,
     Mesh& rMesh);
 
+/**
+ * @brief The `header_type` item size (4 or 8, via `vtu_header_bytes_for`) a
+ * VTK XML writer needs for @p rMesh's uncompressed binary arrays.
+ *
+ * An upper bound, computed before the `<VTKFile>` tag that carries the
+ * attribute is written: every array such a writer emits holds items of at most
+ * 8 bytes, and none holds more items than the largest of 3 per point (padded
+ * points), the connectivity (a polyhedron block counted as its whole face
+ * stream), one per cell (offsets, types, face offsets), or one data array's
+ * elements (a cell-data array's blocks summed). A mesh whose bound stays
+ * under 4 GiB therefore gets 4, and its output bytes do not change.
+ */
+MESHIOPLUSPLUS_API std::size_t vtk_xml_header_bytes(const Mesh& rMesh);
+
 }  // namespace detail
 }  // namespace meshioplusplus

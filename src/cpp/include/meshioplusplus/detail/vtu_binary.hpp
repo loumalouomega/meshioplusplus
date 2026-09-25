@@ -227,5 +227,29 @@ MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pTex
  */
 MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec);
 
+/**
+ * @brief As above, with the file's `header_type` item size: every size in the
+ * array's header (the byte count, or the block counts and sizes) is written as
+ * a little-endian integer of @p hsz bytes. The three-argument form is this with
+ * @p hsz = 4, what a file with no `header_type` attribute means.
+ *
+ * An **overload**, not a changed signature (`vtu_binary.hpp` is installed).
+ *
+ * @param hsz 4 (`header_type="UInt32"`) or 8 (`header_type="UInt64"`).
+ * @throws WriteError if @p hsz is neither, or if a size does not fit in
+ *         @p hsz bytes -- an uncompressed array of 4 GiB or more under
+ *         `UInt32` -- rather than writing a truncated header (the caller picks
+ *         @p hsz with `vtu_header_bytes_for`), or as for the three-argument form.
+ */
+MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
+                                                 VtkCodec codec, std::size_t hsz);
+
+/**
+ * @brief The `header_type` item size a VTK XML file needs when its largest
+ * array holds @p maxArrayBytes bytes: 4 (`UInt32`, the default every writer
+ * uses, so small files keep their bytes) while that fits in 32 bits, else 8.
+ */
+MESHIOPLUSPLUS_API std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes);
+
 }  // namespace detail
 }  // namespace meshioplusplus
