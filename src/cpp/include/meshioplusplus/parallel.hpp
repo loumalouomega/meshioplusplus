@@ -529,7 +529,7 @@ void parallel_sort(It first, It last, Comp comp) {
     detail::parallel_merge_sort(first, last, comp,
                                 static_cast<std::size_t>(std::max(1, omp_get_max_threads())) * 2);
 #elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
-    kokkos_ensure_initialized();
+    detail::kokkos_ensure_initialized();
     detail::parallel_merge_sort(
         first, last, comp,
         static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency())) *
