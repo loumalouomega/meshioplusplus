@@ -8,6 +8,17 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.17.0 (2026-09-25)
+
+**Roadmap §4 (performance), third part:** the operation items -- welding, the distance kernel's construction, a core neighbour search for `proximity_graph`, and two operations that had no parallel phase. Every operation's output is byte-identical to v16.16.0's (the `bench_ops --hash` digests, and a new golden-digest test taken from the previous implementation).
+
+- **`proximity_graph` searches in the C++ core**: a new exact cell-lattice radius and k-nearest search (`operations/neighbors.hpp`, `neighbor_pairs`), parallel per point, gives numpy's answer -- inclusive radius, k-nearest ties to the lower index, minimum images rounded half to even, the same squared-distance arithmetic -- while Python keeps the input handling, the periodic wrap and the graph assembly. On 200k uniform points `method="knn", max_neighbors=16` went from 17 s to about 1 s and a radius graph from 0.5 s to 0.17 s; the numpy search remains the fallback.
+- **Welding** (`clean`, `merge`): one shared keep-first weld (`detail/weld.hpp`) whose cell keys, cell sort and neighbour cells are parallel and whose serial decision loop no longer hashes; `clean`'s duplicate-cell pass over rectangular blocks is parallel and sort-based instead of a `std::string` key per cell in a hash set.
+- **Distance kernel**: the triangle soup is built in two parallel passes (a cell naming a point the mesh does not have is now refused instead of read out of bounds), vertex normals are gathered per vertex in the old summation order, and `compute_curvature` builds its edge map once (`soup_quality` takes an already-built one).
+- **`agglomerate`** computes each face's area once in parallel and keeps no hash map per seed; **`undo_green`** groups sibling cells by sorting, so it also visits them in the same order on every platform (it decided which of several malformed groups was reported by hash-map iteration order).
+- ABI 18 unchanged: `operations/neighbors.hpp` is a new header, and `detail/surface_distance.hpp` gains one `soup_quality` overload ([ABI reviews](doc/abi_reviews.md)).
+- Docs: roadmap §4 narrowed and its map; [proximity graphs](doc/proximity_graphs.md) timings.
+
 ## v16.16.0 (2026-09-25)
 
 **Roadmap §4 (performance), second part:** parallel sort, reduce and scan primitives, one shared sort-based facet and edge table in place of six single-threaded hash maps, and CSR storage for ragged cell blocks. **ABI 18.** Every operation's output is byte-identical to v16.15.0's on SEQ, OpenMP and TBB at 1, 4 and 8 threads (`bench_ops --hash` against the v16.15.0 digests), and SEQ builds are not slower.

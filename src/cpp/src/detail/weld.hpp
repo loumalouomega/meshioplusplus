@@ -30,11 +30,11 @@
  * first such representative, otherwise it becomes a new one. The result is
  * order-dependent by design (chains A~B, B~C, A!~C), so the decision loop
  * stays serial; what this moves out of it (roadmap §4, "Welding") is
- * everything else: the cell keys, a sort of the points into cells, and each
- * cell's non-empty neighbour cells are computed in parallel up front, and the
- * serial loop walks per-cell representative lists by index -- no hash map, no
- * dtype switch -- with exactly the old visiting order, so the welded ids are
- * unchanged.
+ * everything else: the cell keys and each cell's non-empty neighbour cells are
+ * computed in parallel up front (cell ids come from one serial pass through a
+ * flat open-addressing table), and the serial loop walks per-cell
+ * representative lists by index -- no node-based hash map, no dtype switch --
+ * with exactly the old visiting order, so the welded ids are unchanged.
  */
 
 // System includes
@@ -70,52 +70,49 @@ inline WeldMap weld_keep_first(const std::vector<double>& rXyz, std::size_t N, s
         return out;
     const double atol2 = Atol * Atol;
 
-    // Cell key per point, then the points sorted by (key, index): cell b holds
-    // order[cell_start[b] .. cell_start[b+1]).
+    // Cell key per point (parallel), then dense cell ids in first-seen order
+    // through a flat open-addressing table (serial, O(N) -- no allocation per
+    // entry, unlike an unordered_map), and each cell's non-empty neighbour
+    // cells, in the dz -> dy -> dx order the grid scan used, by read-only
+    // lookups in that table (parallel).
     std::vector<GridKey> keys(N);
     parallel_for(N, [&](std::size_t g) {
         keys[g] = GridKey{grid_quantize(rXyz[g * 3], Atol), grid_quantize(rXyz[g * 3 + 1], Atol),
                           grid_quantize(rXyz[g * 3 + 2], Atol)};
     });
-    const auto key_less = [](const GridKey& rA, const GridKey& rB) {
-        if (rA.x != rB.x)
-            return rA.x < rB.x;
-        if (rA.y != rB.y)
-            return rA.y < rB.y;
-        return rA.z < rB.z;
+    std::size_t cap = 16;
+    while (cap < 2 * N)
+        cap <<= 1;
+    const std::size_t mask = cap - 1;
+    const auto slot_of = [mask](const GridKey& rK) {
+        std::uint64_t h = static_cast<std::uint64_t>(rK.x) * 0x9E3779B97F4A7C15ull;
+        h ^= static_cast<std::uint64_t>(rK.y) * 0xC2B2AE3D27D4EB4Full + (h >> 29);
+        h ^= static_cast<std::uint64_t>(rK.z) * 0x165667B19E3779F9ull + (h >> 31);
+        h ^= h >> 33;
+        return static_cast<std::size_t>(h) & mask;
     };
-    std::vector<std::uint64_t> order(N);
-    parallel_for_bw(N, [&](std::size_t g) { order[g] = g; });
-    parallel_sort(order.begin(), order.end(), [&](std::uint64_t a, std::uint64_t b) {
-        if (key_less(keys[a], keys[b]))
-            return true;
-        if (key_less(keys[b], keys[a]))
-            return false;
-        return a < b;
-    });
-    std::vector<std::uint8_t> starts(N);
-    parallel_for(N, [&](std::size_t i) {
-        starts[i] = i == 0 || key_less(keys[order[i - 1]], keys[order[i]]);
-    });
-    std::vector<std::int64_t> cell_at(N);
-    const std::int64_t ncells =
-        parallel_exclusive_scan(starts.data(), N, cell_at.data(), std::int64_t{0});
-    std::vector<GridKey> cell_key(static_cast<std::size_t>(ncells));
+    std::vector<std::int64_t> table(cap, -1);  // slot -> cell id
+    std::vector<GridKey> cell_key;
     std::vector<std::int64_t> cell_of(N);
-    parallel_for(N, [&](std::size_t i) {
-        // cell_at is exclusive: a start's own cell is its prefix value.
-        const std::int64_t c = cell_at[i] + (starts[i] ? 0 : -1);
-        cell_of[order[i]] = c;
-        if (starts[i])
-            cell_key[static_cast<std::size_t>(c)] = keys[order[i]];
-    });
-
-    // Each cell's non-empty neighbour cells, in the dz -> dy -> dx order the
-    // grid scan used (CSR: two passes, count then fill).
+    for (std::size_t g = 0; g < N; ++g) {
+        std::size_t s = slot_of(keys[g]);
+        while (table[s] >= 0 && !(cell_key[static_cast<std::size_t>(table[s])] == keys[g]))
+            s = (s + 1) & mask;
+        if (table[s] < 0) {
+            table[s] = static_cast<std::int64_t>(cell_key.size());
+            cell_key.push_back(keys[g]);
+        }
+        cell_of[g] = table[s];
+    }
+    const std::size_t ncells = cell_key.size();
     const auto find_cell = [&](const GridKey& rK) -> std::int64_t {
-        const auto it = std::lower_bound(cell_key.begin(), cell_key.end(), rK, key_less);
-        return it != cell_key.end() && *it == rK ? static_cast<std::int64_t>(it - cell_key.begin())
-                                                 : -1;
+        for (std::size_t s = slot_of(rK);; s = (s + 1) & mask) {
+            const std::int64_t c = table[s];
+            if (c < 0)
+                return -1;
+            if (cell_key[static_cast<std::size_t>(c)] == rK)
+                return c;
+        }
     };
     const auto for_neighbours = [&](std::size_t c, auto&& fn) {
         const GridKey k = cell_key[c];
@@ -127,24 +124,23 @@ inline WeldMap weld_keep_first(const std::vector<double>& rXyz, std::size_t N, s
                         fn(nb);
                 }
     };
-    std::vector<std::int64_t> nbr_start(static_cast<std::size_t>(ncells) + 1, 0);
-    parallel_for(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+    std::vector<std::int64_t> nbr_start(ncells + 1, 0);
+    parallel_for(ncells, [&](std::size_t c) {
         std::int64_t count = 0;
         for_neighbours(c, [&](std::int64_t) { ++count; });
         nbr_start[c + 1] = count;
     });
-    for (std::size_t c = 0; c < static_cast<std::size_t>(ncells); ++c)
+    for (std::size_t c = 0; c < ncells; ++c)
         nbr_start[c + 1] += nbr_start[c];
     std::vector<std::int64_t> nbrs(static_cast<std::size_t>(nbr_start.back()));
-    parallel_for(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+    parallel_for(ncells, [&](std::size_t c) {
         std::int64_t at = nbr_start[c];
         for_neighbours(c, [&](std::int64_t nb) { nbrs[static_cast<std::size_t>(at++)] = nb; });
     });
 
     // The keep-first decisions, serial in point order. A cell's representatives
     // form a list linked in creation order.
-    std::vector<std::int64_t> head(static_cast<std::size_t>(ncells), -1),
-        tail(static_cast<std::size_t>(ncells), -1), next;
+    std::vector<std::int64_t> head(ncells, -1), tail(ncells, -1), next;
     for (std::size_t g = 0; g < N; ++g) {
         const std::size_t c = static_cast<std::size_t>(cell_of[g]);
         std::int64_t found = -1;

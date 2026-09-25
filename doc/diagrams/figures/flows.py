@@ -969,7 +969,7 @@ def roadmap_map():
         (
             "§4 performance",
             [
-                ("welds · distance kernel · kNN", "M"),
+                ("dtype hoists · serial operations", "M"),
                 ("text tokenizer · VTU copy chain", "M"),
                 ("GIL release · lazy imports", "M"),
                 ("ragged readers · marching table", "S"),
