@@ -312,6 +312,27 @@ MESHIOPLUSPLUS_API void set_default_provenance_mode(ProvenanceMode mode);
  */
 MESHIOPLUSPLUS_API void provenance_begin_write();
 
+/**
+ * @brief Ends a write whose file has no provenance slot (MED, CGNS, MDPA,
+ * libMesh, UNV): on scope exit, even by an exception, the notes that write
+ * raised are dropped -- they have nowhere to go -- instead of surfacing in the
+ * header of whatever file is written next through a format writer called
+ * directly (which, not being a write entry point, does not reset them).
+ * Like `provenance_begin_write`, a no-op while a `ProvenanceScope` is open.
+ * (v16.16.0; a leaked MED note made a later VTK XML file unparseable.)
+ */
+struct ProvenanceSlotlessWrite {
+    ProvenanceSlotlessWrite() = default;
+    ProvenanceSlotlessWrite(const ProvenanceSlotlessWrite&) = delete;
+    ProvenanceSlotlessWrite& operator=(const ProvenanceSlotlessWrite&) = delete;
+    ~ProvenanceSlotlessWrite() {
+        try {
+            provenance_begin_write();
+        } catch (...) {
+        }
+    }
+};
+
 /// What `read_provenance_lines` found in a file.
 struct ProvenanceReadResult {
     /// The block's lines as found, comment punctuation stripped, in file

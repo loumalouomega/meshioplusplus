@@ -268,8 +268,18 @@ std::string provenance_render_lines(SlotTier tier, std::string_view prefix) {
 
 std::string provenance_render_xml_comment(SlotTier tier) {
     auto lines = provenance_lines(tier);
-    if (lines.size() == 1)
+    // An XML comment may not contain "--", nor end in '-' (the "-->" would
+    // then read "--->"): a note such as "... dropped -- a facet is ..." made
+    // the whole VTK XML file unparseable. Break every "--" apart.
+    for (std::string& line : lines) {
+        for (std::size_t at = line.find("--"); at != std::string::npos; at = line.find("--", at))
+            line.insert(at + 1, 1, ' ');
+    }
+    if (lines.size() == 1) {
+        if (!lines[0].empty() && lines[0].back() == '-')
+            lines[0] += ' ';
         return "<!--" + lines[0] + "-->";
+    }
     std::string out = "<!--\n";
     for (const auto& line : lines) {
         out += line;

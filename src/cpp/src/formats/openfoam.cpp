@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -1330,15 +1331,14 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     }
     // ragged polyhedron blocks
     for (const std::string& key : poly_order) {
-        std::vector<std::vector<std::vector<std::int64_t>>> cells;
-        for (const auto& cell : poly_buckets[key]) {
-            std::vector<std::vector<std::int64_t>> ph;
-            for (const auto& face : cell)
-                ph.push_back(face);
-            cells.push_back(std::move(ph));
-        }
-        std::size_t nc = cells.size();
-        mesh.AddPolyhedronBlock(key, std::move(cells));
+        // Flattened once into the CSR the mesh stores (no per-face copy).
+        auto& bucket = poly_buckets[key];
+        const std::size_t nc = bucket.size();
+        std::vector<std::int64_t> flat, row_offsets, face_offsets;
+        detail::csr_from_cells(bucket, flat, row_offsets, face_offsets);
+        decltype(poly_buckets)::mapped_type().swap(bucket);
+        mesh.AddPolyhedronBlock(key, std::move(flat), std::move(row_offsets),
+                                std::move(face_offsets));
         cell_tags.emplace_back(DType::Int64, std::vector<std::size_t>{nc});  // zeros
     }
 

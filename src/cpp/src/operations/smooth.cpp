@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -1208,21 +1209,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     out.AssignPoints(smooth_write_coords(rMesh.Points(), prev, n, dim));
 
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> blocks(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                blocks[c].resize(cb.NumFaces(c));
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    auto face = cb.Face(c, f);
-                    blocks[c][f].assign(face.first, face.first + face.second);
-                }
-            }
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(blocks));
-        } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        if (cb.IsRagged()) {
+            detail::append_ragged_copy(cb, out);
         } else {
             out.AddCellBlock(std::string(cb.Type()), smooth_owned_copy(cb.Conn()));
         }

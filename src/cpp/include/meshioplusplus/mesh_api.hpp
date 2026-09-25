@@ -55,6 +55,12 @@
  *  - `void AddPolygonBlock(std::string type, std::vector<std::vector<std::int64_t>> rows)`
  *  - `void AddPolyhedronBlock(std::string type, std::vector<std::vector<std::vector<std::int64_t>>>
  * cells)`
+ *  - the CSR forms, with no per-cell allocation (v16.16.0; see
+ *    `detail/ragged_csr.hpp`): `void AddPolygonBlock(std::string type,
+ *    std::vector<std::int64_t> flat, std::vector<std::int64_t> rowOffsets)` and
+ *    `void AddPolyhedronBlock(std::string type, std::vector<std::int64_t> flat,
+ *    std::vector<std::int64_t> rowOffsets, std::vector<std::int64_t> faceOffsets)`
+ *    -- every backend stores ragged blocks this way, so these move straight in.
  *  - `void AddPointData(std::string name, NDArray data)` /
  *    `AddFieldData(std::string name, NDArray data)` — insert-or-assign.
  *  - `void AddCellData(std::string name, std::vector<NDArray> blocks)` — one

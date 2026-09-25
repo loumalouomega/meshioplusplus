@@ -301,6 +301,7 @@ def _read_attr_str(obj, name):
 # ---- write -----------------------------------------------------------------
 
 
+@_provenance.slotless_writer
 def write(filename, mesh, compression="gzip", compression_opts=4):
     import h5py
 

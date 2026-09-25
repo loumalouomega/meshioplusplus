@@ -54,6 +54,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/map_order.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/properties.hpp"
@@ -67,61 +68,60 @@ namespace meshioplusplus {
  * Mirrors a Python `meshio.CellBlock`. Most blocks are *rectangular*: `mData`
  * is a `(num_cells, nodes_per_cell)` integer `NDArray` of node indices.
  * Some formats, however, produce cells that cannot be described by a fixed
- * nodes-per-cell count, so `CellBlock` also carries two optional *ragged*
- * (jagged) representations:
+ * nodes-per-cell count, so `CellBlock` also carries a *ragged* (jagged)
+ * representation, stored CSR-style exactly as the NATIVE backend stores it:
  *
- *  - `mPolygonRows` — 1-level ragged: a `"polygon"` block whose cells have
- *    varying node counts (e.g. MED POG Voronoi meshes). Row `i` is the list
- *    of node ids for cell `i`.
- *  - `mPolyhedronRows` — 2-level ragged: a `"polyhedron"` block. Cell `i` is
- *    a list of faces, each face itself a list of node ids.
+ *  - a `"polygon"` block (1-level ragged, e.g. MED POG Voronoi meshes): row
+ *    `i`'s node ids are `mFlat[mRowOffsets[i] .. mRowOffsets[i+1])`;
+ *  - a `"polyhedron"` block (2-level ragged): cell `c`'s faces are rows
+ *    `mFaceOffsets[c] .. mFaceOffsets[c+1])` of `mRowOffsets`.
  *
- * Exactly one of `mData`, `mPolygonRows`, `mPolyhedronRows` is populated per
- * block (see `IsRagged()`); the unused members are left empty, so ordinary
- * rectangular blocks (the overwhelming majority) are unaffected. Zero-copy
- * numpy conversion at the binding boundary only applies to the rectangular
- * `mData` case — ragged blocks are always *copied* across the boundary, and
- * `py_to_mesh`'s `allow_ragged` flag is off by default so a rectangular-only
- * writer given a ragged mesh safely throws and triggers the Python fallback;
- * only ragged-aware bindings (e.g. MED write) opt in.
+ * Until v16.16.0 (ABI 18) the ragged forms were nested `std::vector`s -- one
+ * heap allocation per cell and per face; `AddPolygonBlock`/
+ * `AddPolyhedronBlock` still accept them, and take the CSR triple directly
+ * too. A block is ragged only when it holds at least one cell in that form
+ * (`IsRagged()`); an empty one reads as an empty rectangular block, as
+ * before. Zero-copy numpy conversion at the binding boundary only applies to
+ * the rectangular `mData` case — ragged blocks are always *copied* across the
+ * boundary, and `py_to_mesh`'s `allow_ragged` flag is off by default so a
+ * rectangular-only writer given a ragged mesh safely throws and triggers the
+ * Python fallback; only ragged-aware bindings (e.g. MED write) opt in.
  */
 struct CellBlock {
     std::string mType;  // meshio cell type, e.g. "triangle"
     NDArray mData;      // (num_cells, nodes_per_cell), integer dtype
     std::vector<std::string> mTags;
 
-    // Ragged (jagged) representations, used only for cell types whose rows do
-    // not fit a rectangular buffer. Exactly one of `mData` / `mPolygonRows` /
-    // `mPolyhedronRows` is populated per block; the two ragged members are
-    // empty for every rectangular block (all rectangular formats unaffected).
-    //
-    //  * mPolygonRows    — 1-level ragged: a "polygon" block whose cells have
-    //                      varying node counts (e.g. MED POG Voronoi meshes).
-    //                      Row i = mPolygonRows[i] = node ids of cell i.
-    //  * mPolyhedronRows — 2-level ragged: a "polyhedron" block. Cell i is a
-    //                      list of faces; each face is a list of node ids.
-    std::vector<std::vector<std::int64_t>> mPolygonRows;
-    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronRows;
+    // Ragged storage (CSR), empty for every rectangular block:
+    std::vector<std::int64_t> mFlat;         // all node ids, row-major
+    std::vector<std::int64_t> mRowOffsets;   // nrows+1 offsets into mFlat
+    std::vector<std::int64_t> mFaceOffsets;  // polyhedron only: ncells+1 offsets
+                                             // into mRowOffsets' rows
 
     CellBlock() = default;
     CellBlock(std::string t, NDArray d) : mType(std::move(t)), mData(std::move(d)) {}
 
+    /** @brief Whether this is a polyhedron block holding at least one cell. */
+    bool IsPolyhedron() const { return mFaceOffsets.size() > 1; }
+
     /**
-     * @brief Whether this block uses one of the ragged representations.
-     * @return `true` iff `mPolygonRows` or `mPolyhedronRows` is non-empty.
+     * @brief Whether this block uses the ragged representation.
+     * @return `true` iff it holds at least one polygon row or polyhedron cell.
      */
-    bool IsRagged() const { return !mPolygonRows.empty() || !mPolyhedronRows.empty(); }
+    bool IsRagged() const {
+        return IsPolyhedron() || (mFaceOffsets.empty() && mRowOffsets.size() > 1);
+    }
 
     /**
      * @brief Number of cells in this block, whichever representation is active.
-     * @return `mPolygonRows.size()`, else `mPolyhedronRows.size()`, else the
-     *         first dimension of `mData` (0 if `mData` has no shape).
+     * @return The ragged cell count, else the first dimension of `mData` (0 if
+     *         `mData` has no shape).
      */
     std::size_t NumCells() const {
-        if (!mPolygonRows.empty())
-            return mPolygonRows.size();
-        if (!mPolyhedronRows.empty())
-            return mPolyhedronRows.size();
+        if (IsPolyhedron())
+            return mFaceOffsets.size() - 1;
+        if (IsRagged())
+            return mRowOffsets.size() - 1;
         return mData.Shape().empty() ? 0 : mData.Shape()[0];
     }
 };
@@ -201,23 +201,29 @@ struct Mesh {
         /** @brief Whether the block uses a ragged representation. */
         bool IsRagged() const { return mpBlock->IsRagged(); }
         /** @brief Whether the block is 2-level ragged (list of faces per cell). */
-        bool IsPolyhedron() const { return !mpBlock->mPolyhedronRows.empty(); }
+        bool IsPolyhedron() const { return mpBlock->IsPolyhedron(); }
         /** @brief Rectangular `(num_cells, nodes_per_cell)` connectivity (empty if ragged). */
         const NDArray& Conn() const { return mpBlock->mData; }
         /** @brief Node count of polygon cell @p cell (1-level ragged blocks). */
-        std::size_t RowSize(std::size_t cell) const { return mpBlock->mPolygonRows[cell].size(); }
+        std::size_t RowSize(std::size_t cell) const {
+            return static_cast<std::size_t>(mpBlock->mRowOffsets[cell + 1] -
+                                            mpBlock->mRowOffsets[cell]);
+        }
         /** @brief Node ids of polygon cell @p cell (1-level ragged blocks). */
         const std::int64_t* Row(std::size_t cell) const {
-            return mpBlock->mPolygonRows[cell].data();
+            return mpBlock->mFlat.data() + mpBlock->mRowOffsets[cell];
         }
         /** @brief Face count of polyhedron cell @p cell (2-level ragged blocks). */
         std::size_t NumFaces(std::size_t cell) const {
-            return mpBlock->mPolyhedronRows[cell].size();
+            return static_cast<std::size_t>(mpBlock->mFaceOffsets[cell + 1] -
+                                            mpBlock->mFaceOffsets[cell]);
         }
         /** @brief `{node ids, count}` of face @p face of polyhedron cell @p cell. */
         std::pair<const std::int64_t*, std::size_t> Face(std::size_t cell, std::size_t face) const {
-            const auto& r_face = mpBlock->mPolyhedronRows[cell][face];
-            return {r_face.data(), r_face.size()};
+            const std::size_t row = static_cast<std::size_t>(mpBlock->mFaceOffsets[cell]) + face;
+            return {mpBlock->mFlat.data() + mpBlock->mRowOffsets[row],
+                    static_cast<std::size_t>(mpBlock->mRowOffsets[row + 1] -
+                                             mpBlock->mRowOffsets[row])};
         }
 
     private:
@@ -232,19 +238,57 @@ struct Mesh {
     void AddCellBlock(std::string type, NDArray conn) {
         mCells.emplace_back(std::move(type), std::move(conn));
     }
-    /** @brief Appends a 1-level ragged (polygon) cell block. */
+    /** @brief Appends a 1-level ragged (polygon) cell block, stored CSR-style. */
     void AddPolygonBlock(std::string type, std::vector<std::vector<std::int64_t>> rows) {
         CellBlock cb;
         cb.mType = std::move(type);
-        cb.mPolygonRows = std::move(rows);
+        detail::csr_from_rows(rows, cb.mFlat, cb.mRowOffsets);
         mCells.push_back(std::move(cb));
     }
-    /** @brief Appends a 2-level ragged (polyhedron) cell block. */
+    /**
+     * @brief Appends a 1-level ragged (polygon) cell block given as CSR: row
+     * `i`'s node ids are `flat[rowOffsets[i] .. rowOffsets[i+1])`.
+     * @throws std::invalid_argument when the offsets do not describe `flat`.
+     */
+    void AddPolygonBlock(std::string type, std::vector<std::int64_t> flat,
+                         std::vector<std::int64_t> rowOffsets) {
+        if (rowOffsets.empty())
+            rowOffsets.push_back(0);
+        detail::check_csr(flat.size(), rowOffsets, "polygon row");
+        CellBlock cb;
+        cb.mType = std::move(type);
+        cb.mFlat = std::move(flat);
+        cb.mRowOffsets = std::move(rowOffsets);
+        mCells.push_back(std::move(cb));
+    }
+    /** @brief Appends a 2-level ragged (polyhedron) cell block, stored CSR-style. */
     void AddPolyhedronBlock(std::string type,
                             std::vector<std::vector<std::vector<std::int64_t>>> cells) {
         CellBlock cb;
         cb.mType = std::move(type);
-        cb.mPolyhedronRows = std::move(cells);
+        detail::csr_from_cells(cells, cb.mFlat, cb.mRowOffsets, cb.mFaceOffsets);
+        mCells.push_back(std::move(cb));
+    }
+    /**
+     * @brief Appends a 2-level ragged (polyhedron) cell block given as CSR: face
+     * `f`'s node ids are `flat[rowOffsets[f] .. rowOffsets[f+1])`, and cell
+     * `c`'s faces are `faceOffsets[c] .. faceOffsets[c+1])`.
+     * @throws std::invalid_argument when the offsets do not describe `flat`.
+     */
+    void AddPolyhedronBlock(std::string type, std::vector<std::int64_t> flat,
+                            std::vector<std::int64_t> rowOffsets,
+                            std::vector<std::int64_t> faceOffsets) {
+        if (rowOffsets.empty())
+            rowOffsets.push_back(0);
+        if (faceOffsets.empty())
+            faceOffsets.push_back(0);
+        detail::check_csr(flat.size(), rowOffsets, "polyhedron face");
+        detail::check_csr(rowOffsets.size() - 1, faceOffsets, "polyhedron cell");
+        CellBlock cb;
+        cb.mType = std::move(type);
+        cb.mFlat = std::move(flat);
+        cb.mRowOffsets = std::move(rowOffsets);
+        cb.mFaceOffsets = std::move(faceOffsets);
         mCells.push_back(std::move(cb));
     }
     /** @brief Inserts or replaces a named per-point data array. */

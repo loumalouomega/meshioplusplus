@@ -87,7 +87,10 @@
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/detail/face_mesh.hpp"
+#include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
+#include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 
 namespace {
@@ -352,6 +355,16 @@ static_assert(sizeof(meshioplusplus::SmoothMethod) == 1,
               "Appending enumerators is safe and expected; widening "
               "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
+// The sort-based tables (v16.16.0, ABI 18), pinned from the release that
+// changed them from hash maps: `FaceLookup` and `FacetIndex` hold sorted
+// vectors, and `DistanceQuery` a per-corner edge-normal index instead of a map.
+// `ProvenanceSlotlessWrite` is new and stateless.
+MIO_ABI_LAYOUT(meshioplusplus::detail::FaceLookup, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::FacetIndex, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 232, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::TriangleSoup, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceSlotlessWrite, 1, 1);
+
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;
 // only the one this TU was compiled for is checked, and the cpp-tests matrix
@@ -362,6 +375,10 @@ MIO_ABI_LAYOUT(meshioplusplus::Mesh, 560, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Mesh, 680, 8);
 #else
 MIO_ABI_LAYOUT(meshioplusplus::Mesh, 392, 8);
+// A MESHIO cell block stores ragged cells as CSR since v16.16.0 (ABI 18) --
+// three flat vectors where two nested ones were -- and is pinned from then on:
+// `Mesh` embeds a vector of them, so its own size could not show the change.
+MIO_ABI_LAYOUT(meshioplusplus::CellBlock, 200, 8);
 #endif
 
 #endif  // MIO_ABI_LAYOUT_PINNED

@@ -27,7 +27,9 @@
  */
 
 // System includes
+#include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -125,6 +127,49 @@ TEST(MeshApi, RaggedBlocks) {
     const auto face = poh.Face(0, 3);
     ASSERT_EQ(face.second, 3u);
     EXPECT_EQ(face.first[1], 2);
+}
+
+// The CSR forms (v16.16.0) move straight into the storage every backend
+// keeps, and read back exactly like the nested forms.
+TEST(MeshApi, RaggedBlocksFromCsr) {
+    Mesh nested, csr;
+    nested.AddPolygonBlock("polygon", {{0, 1, 2}, {1, 2, 3, 4, 5}, {}});
+    nested.AddPolyhedronBlock("polyhedron", {{{0, 1, 2}, {0, 1, 3}, {1, 2, 3}, {0, 2, 3}},
+                                             {{4, 5, 6, 7}, {}}});
+    csr.AddPolygonBlock("polygon", {0, 1, 2, 1, 2, 3, 4, 5}, {0, 3, 8, 8});
+    csr.AddPolyhedronBlock("polyhedron", {0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3, 4, 5, 6, 7},
+                           {0, 3, 6, 9, 12, 16, 16}, {0, 4, 6});
+    for (std::size_t b = 0; b < 2; ++b) {
+        const auto x = nested.Cells(b), y = csr.Cells(b);
+        ASSERT_EQ(x.NumCells(), y.NumCells());
+        EXPECT_EQ(x.IsRagged(), y.IsRagged());
+        EXPECT_EQ(x.IsPolyhedron(), y.IsPolyhedron());
+        for (std::size_t c = 0; c < x.NumCells(); ++c) {
+            if (x.IsPolyhedron()) {
+                ASSERT_EQ(x.NumFaces(c), y.NumFaces(c));
+                for (std::size_t f = 0; f < x.NumFaces(c); ++f) {
+                    const auto fx = x.Face(c, f), fy = y.Face(c, f);
+                    ASSERT_EQ(fx.second, fy.second);
+                    EXPECT_TRUE(std::equal(fx.first, fx.first + fx.second, fy.first));
+                }
+            } else {
+                ASSERT_EQ(x.RowSize(c), y.RowSize(c));
+                EXPECT_TRUE(std::equal(x.Row(c), x.Row(c) + x.RowSize(c), y.Row(c)));
+            }
+        }
+    }
+    EXPECT_EQ(csr.Cells(0).NumCells(), 3u);
+    EXPECT_EQ(csr.Cells(1).NumCells(), 2u);
+    EXPECT_EQ(csr.Cells(1).NumFaces(1), 2u);
+
+    // Offsets that do not describe the node buffer are refused.
+    Mesh bad;
+    EXPECT_THROW(bad.AddPolygonBlock("polygon", {0, 1, 2}, {1, 3}), std::invalid_argument);
+    EXPECT_THROW(bad.AddPolygonBlock("polygon", {0, 1, 2}, {0, 2, 1, 3}), std::invalid_argument);
+    EXPECT_THROW(bad.AddPolygonBlock("polygon", {0, 1, 2}, {0, 2}), std::invalid_argument);
+    EXPECT_THROW(bad.AddPolyhedronBlock("polyhedron", {0, 1, 2}, {0, 3}, {0, 2}),
+                 std::invalid_argument);
+    EXPECT_EQ(bad.NumCellBlocks(), 0u);
 }
 
 TEST(MeshApi, DataNamesStaySortedAfterLaterInserts) {

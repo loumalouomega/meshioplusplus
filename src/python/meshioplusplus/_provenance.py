@@ -27,6 +27,7 @@ set it before delegating to the C++ engine).
 
 from __future__ import annotations
 
+import functools
 import enum
 import json
 import os
@@ -193,6 +194,24 @@ def begin_write() -> None:
         core.provenance_begin_write()
     if not _stack():
         _state.ambient = Record()
+
+
+def slotless_writer(fn):
+    """Decorate the ``write`` of a format with no provenance slot (CGNS,
+    libMesh, UNV): on return, or on an exception, the notes that write raised
+    are dropped -- they have nowhere to go -- instead of surfacing in the
+    header of the next file written through a format writer called directly.
+    A no-op while a scope is open. The twin of ``detail::ProvenanceSlotlessWrite``.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            begin_write()
+
+    return wrapper
 
 
 def _core_module():
@@ -430,10 +449,19 @@ def render_lines(tier: SlotTier, prefix: str) -> str:
 def render_xml_comment(tier: SlotTier) -> str:
     """``lines(tier)`` wrapped as one XML comment. The twin of
     ``detail::provenance_render_xml_comment``."""
-    rendered = lines(tier)
+    # An XML comment may not contain "--", nor end in "-": break every "--"
+    # apart, exactly as the C++ twin does.
+    rendered = [_xml_comment_safe(line) for line in lines(tier)]
     if len(rendered) == 1:
-        return f"<!--{rendered[0]}-->"
+        line = rendered[0] + (" " if rendered[0].endswith("-") else "")
+        return f"<!--{line}-->"
     return "<!--\n" + "".join(line + "\n" for line in rendered) + "-->"
+
+
+def _xml_comment_safe(line: str) -> str:
+    while "--" in line:
+        line = line.replace("--", "- -")
+    return line
 
 
 def lines(tier: SlotTier) -> list:

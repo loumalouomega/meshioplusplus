@@ -1096,6 +1096,7 @@ def _write_reals(f, values, fmt, per_line):
             f.write("\n")
 
 
+@_provenance.slotless_writer
 def write(filename, mesh, code_aster=False, node_dataset=2411):
     points = np.asarray(mesh.points)
     if node_dataset not in (2411, 781):
