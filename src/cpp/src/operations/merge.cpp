@@ -35,10 +35,12 @@
 // Project includes
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/weld.hpp"
 
 namespace meshioplusplus {
 
@@ -116,11 +118,10 @@ void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::
     });
 }
 
-// --- spatial hash (weld) ----------------------------------------------------
-// The bucket grid itself lives in detail/spatial_hash.hpp (hoisted from here
-// in v7.13.0, shared with operations/interpolate.cpp); cell size = atol, so
-// points within atol of each other fall in the same or an adjacent cell (the
-// 3x3x3 neighbourhood searched during dedup).
+// --- weld ---------------------------------------------------------------------
+// Grid cells of size atol, so points within atol of each other fall in the
+// same or an adjacent cell (the 3x3x3 neighbourhood searched during dedup);
+// the keep-first loop is detail/weld.hpp's, shared with clean.
 
 // Build the weld remap over the (Float64, global-order) `rPoints`: fills
 // `rRemap` (global point index -> output point index) and returns, per output
@@ -129,57 +130,19 @@ void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::
 std::vector<std::int64_t> merge_build_weld_map(const NDArray& rPoints, std::size_t total,
                                                std::size_t dim, double atol,
                                                std::vector<std::int64_t>& rRemap) {
+    // Keep-first weld (detail/weld.hpp): a point within atol of an existing
+    // representative in the 3x3x3 cell neighbourhood welds onto the first one
+    // found; otherwise it becomes one. Same visiting order, same ids.
     const double* pts = rPoints.As<double>();
     const std::size_t ddim = std::min<std::size_t>(dim, 3);
-
-    // Phase 1 (parallel): quantized bucket key per point.
-    std::vector<detail::GridKey> keys(total);
-    parallel_for(total, [&](std::size_t g) {
-        double c[3] = {0.0, 0.0, 0.0};
+    std::vector<double> xyz(total * 3, 0.0);
+    parallel_for_bw(total, [&](std::size_t g) {
         for (std::size_t d = 0; d < ddim; ++d)
-            c[d] = pts[g * dim + d];
-        keys[g] =
-            detail::GridKey{detail::grid_quantize(c[0], atol), detail::grid_quantize(c[1], atol),
-                            detail::grid_quantize(c[2], atol)};
+            xyz[g * 3 + d] = pts[g * dim + d];
     });
-
-    // Phase 2 (serial, deterministic): first occurrence in a bucket wins; a
-    // later point within atol of an existing representative welds onto it.
-    rRemap.assign(total, -1);
-    std::vector<std::int64_t> rep_global;
-    rep_global.reserve(total);
-    detail::SpatialGrid grid(atol);
-    const double atol2 = atol * atol;
-
-    for (std::size_t g = 0; g < total; ++g) {
-        const detail::GridKey k = keys[g];
-        std::int64_t found = -1;
-        grid.ForEachIn27(k, [&](const std::vector<std::int64_t>& rReps) {
-            for (std::int64_t rep : rReps) {
-                const std::int64_t rg = rep_global[static_cast<std::size_t>(rep)];
-                double d2 = 0.0;
-                for (std::size_t d = 0; d < ddim; ++d) {
-                    const double delta =
-                        pts[g * dim + d] - pts[static_cast<std::size_t>(rg) * dim + d];
-                    d2 += delta * delta;
-                }
-                if (d2 <= atol2) {
-                    found = rep;
-                    return false;
-                }
-            }
-            return true;
-        });
-        if (found >= 0) {
-            rRemap[g] = found;
-        } else {
-            const std::int64_t nidx = static_cast<std::int64_t>(rep_global.size());
-            rRemap[g] = nidx;
-            rep_global.push_back(static_cast<std::int64_t>(g));
-            grid.Insert(k, nidx);
-        }
-    }
-    return rep_global;
+    detail::WeldMap weld = detail::weld_keep_first(xyz, total, ddim, atol);
+    rRemap = std::move(weld.mRepOf);
+    return std::move(weld.mRepSource);
 }
 
 // Gather `new_count` rows from `rSrc` by `rRepGlobal[n]` -> output row n (a
