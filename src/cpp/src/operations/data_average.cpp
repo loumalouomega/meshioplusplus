@@ -315,6 +315,43 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
             if (data_num_components(rMesh.CellData(name, b)) != ncomp)
                 throw std::invalid_argument("meshio++: data_average: cell_data '" + name +
                                             "' has inconsistent component counts across blocks");
+        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
+        double* pdst = dst.As<double>();
+        if (detail::slot_runs_impl::workers() <= 1) {
+            // One worker (a SEQ build, or one thread): the plain scatter, which
+            // adds the same terms in the same order as the gather below and is
+            // cheaper than building the incidence table first.
+            std::vector<double> sum(npoints * ncomp, 0.0);
+            std::vector<double> wsum(npoints * ncomp, 0.0);
+            std::vector<std::int64_t> nodes;
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const auto cb = rMesh.Cells(b);
+                const detail::DoubleView src(rMesh.CellData(name, b));
+                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                    davg_cell_nodes(cb, c, nodes);
+                    const double w = weights[b][c];
+                    for (std::size_t k = 0; k < ncomp; ++k) {
+                        const double v = src[c * ncomp + k];
+                        if (!std::isfinite(v))
+                            continue;
+                        for (std::int64_t node : nodes) {
+                            if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                                continue;
+                            const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
+                            sum[idx] += w * v;
+                            wsum[idx] += w;
+                        }
+                    }
+                }
+            }
+            for (std::size_t i = 0; i < npoints * ncomp; ++i)
+                pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
+            for (std::size_t i = 0; i < npoints * ncomp; ++i)
+                pdst[i] =
+                    davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
+            out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
+            continue;
+        }
         if (!incidence) {
             std::vector<std::size_t> block_base(nblocks + 1, 0);
             for (std::size_t b = 0; b < nblocks; ++b)
@@ -339,8 +376,6 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
         // --- cells' weighted values in (block, cell, node) order -- the order
         // --- the serial scatter added them in (FP add is not associative) --
         // --- so the sums are bit-identical on every backend and thread count.
-        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
-        double* pdst = dst.As<double>();
         const DavgIncidence& inc = *incidence;
         parallel_for(npoints, [&](std::size_t pnt) {
             for (std::size_t k = 0; k < ncomp; ++k) {

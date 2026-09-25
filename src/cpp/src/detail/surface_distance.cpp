@@ -315,11 +315,16 @@ void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
         for (std::uint64_t k = 0; k < count[t]; ++k)
             tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
     });
-    std::vector<GridKey> bucket_keys(runs.NumRuns());
-    std::vector<std::vector<std::int64_t>> bucket_ids(runs.NumRuns());
-    parallel_for(runs.NumRuns(), [&](std::size_t r) {
-        bucket_keys[r] = keys[runs.Head(r)];
-        std::vector<std::int64_t>& ids = bucket_ids[r];
+    // Buckets in first-seen order: the map is then built by the same sequence
+    // of key insertions as the serial loop, so it ends in the same state
+    // (bucket count, node order) and queries walk it as fast.
+    const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
+    std::vector<GridKey> bucket_keys(first.NumIds());
+    std::vector<std::vector<std::int64_t>> bucket_ids(first.NumIds());
+    parallel_for(first.NumIds(), [&](std::size_t b) {
+        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
+        bucket_keys[b] = keys[runs.Head(r)];
+        std::vector<std::int64_t>& ids = bucket_ids[b];
         ids.reserve(runs.Size(r));
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
             ids.push_back(tri_of[*p]);

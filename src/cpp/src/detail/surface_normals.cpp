@@ -261,47 +261,74 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
         const std::int64_t p = sets.Parent(c);
         root[c] = p == static_cast<std::int64_t>(c) ? p : root[static_cast<std::size_t>(p)];
     }
-    std::vector<std::uint64_t> is_root(ncorner);
-    parallel_for_bw(ncorner, [&](std::size_t c) {
-        is_root[c] = root[c] == static_cast<std::int64_t>(c) ? 1 : 0;
-    });
-    std::vector<std::uint64_t> id(ncorner);
-    const std::uint64_t ngroups =
-        parallel_exclusive_scan(is_root.data(), ncorner, id.data(), std::uint64_t{0});
     out.mCornerGroup.assign(ncorner, 0);
-    out.mGroupRoot.assign(ngroups, 0);
-    out.mGroupPoint.assign(ngroups, 0);
-    parallel_for(ncorner, [&](std::size_t c) {
-        const std::uint64_t g = id[static_cast<std::size_t>(root[c])];
-        out.mCornerGroup[c] = static_cast<std::int64_t>(g);
-        if (is_root[c]) {
-            out.mGroupRoot[g] = static_cast<std::int64_t>(c);
-            out.mGroupPoint[g] = rSoup.mVertices[c / 3][c % 3];
+    if (slot_runs_impl::workers() <= 1) {
+        // One worker: a single pass, numbering each root as it is met.
+        std::vector<std::int64_t> id(ncorner, -1);
+        for (std::size_t c = 0; c < ncorner; ++c) {
+            if (root[c] == static_cast<std::int64_t>(c)) {
+                id[c] = static_cast<std::int64_t>(out.mGroupPoint.size());
+                out.mGroupRoot.push_back(static_cast<std::int64_t>(c));
+                out.mGroupPoint.push_back(rSoup.mVertices[c / 3][c % 3]);
+            }
+            out.mCornerGroup[c] = id[static_cast<std::size_t>(root[c])];
         }
-    });
+    } else {
+        std::vector<std::uint64_t> is_root(ncorner);
+        parallel_for_bw(ncorner, [&](std::size_t c) {
+            is_root[c] = root[c] == static_cast<std::int64_t>(c) ? 1 : 0;
+        });
+        std::vector<std::uint64_t> id(ncorner);
+        const std::uint64_t nroots =
+            parallel_exclusive_scan(is_root.data(), ncorner, id.data(), std::uint64_t{0});
+        out.mGroupRoot.assign(nroots, 0);
+        out.mGroupPoint.assign(nroots, 0);
+        parallel_for(ncorner, [&](std::size_t c) {
+            const std::uint64_t g = id[static_cast<std::size_t>(root[c])];
+            out.mCornerGroup[c] = static_cast<std::int64_t>(g);
+            if (is_root[c]) {
+                out.mGroupRoot[g] = static_cast<std::int64_t>(c);
+                out.mGroupPoint[g] = rSoup.mVertices[c / 3][c % 3];
+            }
+        });
+    }
+    const std::size_t ngroups = out.NumGroups();
 
     // Gathered per group over its corners in ascending (triangle, corner)
     // order -- a stable counting sort by group -- which is the order the serial
-    // scatter added them in, then normalised.
-    std::vector<std::uint64_t> order;
-    std::vector<std::uint64_t> start;
-    slot_runs_impl::counting_sort(
-        ncorner, static_cast<std::size_t>(ngroups),
-        [&](std::uint64_t c) { return static_cast<std::size_t>(out.mCornerGroup[c]); }, order,
-        start);
+    // scatter added them in, then normalised. One worker scatters directly:
+    // the same sums, without building the sort.
     out.mGroupNormal.assign(out.NumGroups(), Vec3{0.0, 0.0, 0.0});
-    parallel_for(out.NumGroups(), [&](std::size_t g) {
-        Vec3 acc{0.0, 0.0, 0.0};
-        for (std::uint64_t k = start[g]; k < start[g + 1]; ++k) {
-            const std::size_t c = static_cast<std::size_t>(order[k]);
-            const std::size_t t = c / 3;
+    if (slot_runs_impl::workers() <= 1) {
+        for (std::size_t t = 0; t < ntri; ++t) {
             if (!(length[t] > 0.0))
                 continue;
-            acc = vec3_add(
-                acc, vec3_scale(unit[t], sn_corner_weight(rSoup, t, c % 3, length[t], Weight)));
+            for (std::size_t i = 0; i < 3; ++i) {
+                Vec3& acc = out.mGroupNormal[static_cast<std::size_t>(out.mCornerGroup[t * 3 + i])];
+                acc = vec3_add(
+                    acc, vec3_scale(unit[t], sn_corner_weight(rSoup, t, i, length[t], Weight)));
+            }
         }
-        out.mGroupNormal[g] = acc;
-    });
+    } else {
+        std::vector<std::uint64_t> order;
+        std::vector<std::uint64_t> start;
+        slot_runs_impl::counting_sort(
+            ncorner, static_cast<std::size_t>(ngroups),
+            [&](std::uint64_t c) { return static_cast<std::size_t>(out.mCornerGroup[c]); }, order,
+            start);
+        parallel_for(out.NumGroups(), [&](std::size_t g) {
+            Vec3 acc{0.0, 0.0, 0.0};
+            for (std::uint64_t k = start[g]; k < start[g + 1]; ++k) {
+                const std::size_t c = static_cast<std::size_t>(order[k]);
+                const std::size_t t = c / 3;
+                if (!(length[t] > 0.0))
+                    continue;
+                acc = vec3_add(
+                    acc, vec3_scale(unit[t], sn_corner_weight(rSoup, t, c % 3, length[t], Weight)));
+            }
+            out.mGroupNormal[g] = acc;
+        });
+    }
     for (Vec3& n : out.mGroupNormal) {
         const double len = vec3_norm(n);
         n = len > 0.0 ? vec3_scale(n, 1.0 / len) : Vec3{0.0, 0.0, 0.0};

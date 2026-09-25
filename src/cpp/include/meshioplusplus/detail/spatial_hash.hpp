@@ -131,10 +131,11 @@ public:
     /// grouped its (key, id) pairs itself -- in parallel -- with each bucket's
     /// ids already in the order serial inserts would have appended them:
     /// `Ids[i]` is appended to the cell at `Keys[i]`, and the occupied box
-    /// grows to cover `[rLo, rHi]`, the bounds of every box inserted.
+    /// grows to cover `[rLo, rHi]`, the bounds of every box inserted. Keys in
+    /// the order serial inserts would first have met them leave the map as
+    /// those inserts would have.
     void AssignBuckets(std::vector<GridKey> Keys, std::vector<std::vector<std::int64_t>> Ids,
                        const GridKey& rLo, const GridKey& rHi) {
-        mCells.reserve(mCells.size() + Keys.size());
         for (std::size_t i = 0; i < Keys.size(); ++i) {
             std::vector<std::int64_t>& r_bucket = mCells[Keys[i]];
             if (r_bucket.empty())
