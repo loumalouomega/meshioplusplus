@@ -347,45 +347,33 @@ bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double
     if (ddim == 0)
         return false;
 
-    // Chunked parallel reduction, then a serial combine. min/max are associative
-    // and exact, so the chunking is not observable -- which is exactly why only
-    // the bbox was hoisted here and stats.cpp's centroid sum was not.
-    const std::size_t grain = 4096;
-    const std::size_t nchunks = (n + grain - 1) / grain;
-    std::vector<std::array<double, 3>> pmin(nchunks), pmax(nchunks);
-    parallel_for(
-        nchunks,
-        [&](std::size_t ci) {
-            std::array<double, 3> lmin = {std::numeric_limits<double>::infinity(),
-                                          std::numeric_limits<double>::infinity(),
-                                          std::numeric_limits<double>::infinity()};
-            std::array<double, 3> lmax = {-std::numeric_limits<double>::infinity(),
-                                          -std::numeric_limits<double>::infinity(),
-                                          -std::numeric_limits<double>::infinity()};
-            const std::size_t start = ci * grain;
-            const std::size_t stop = n < start + grain ? n : start + grain;
+    // Chunked parallel reduction combined in chunk order (parallel_reduce).
+    // min/max are associative and exact, so the chunking is not observable --
+    // which is exactly why only the bbox was hoisted here and stats.cpp's
+    // centroid sum was not.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    using Box = std::array<double, 6>;  // min[3], max[3]
+    const Box box = parallel_reduce(
+        n, 4096, Box{kInf, kInf, kInf, -kInf, -kInf, -kInf},
+        [&](std::size_t start, std::size_t stop) {
+            Box l{kInf, kInf, kInf, -kInf, -kInf, -kInf};
             for (std::size_t g = start; g < stop; ++g)
                 for (std::size_t d = 0; d < ddim; ++d) {
                     const double v = read_double(points, g * dim + d);
-                    lmin[d] = lmin[d] < v ? lmin[d] : v;
-                    lmax[d] = lmax[d] > v ? lmax[d] : v;
+                    l[d] = l[d] < v ? l[d] : v;
+                    l[3 + d] = l[3 + d] > v ? l[3 + d] : v;
                 }
-            pmin[ci] = lmin;
-            pmax[ci] = lmax;
+            return l;
         },
-        1);
-
-    std::array<double, 3> gmin = {std::numeric_limits<double>::infinity(),
-                                  std::numeric_limits<double>::infinity(),
-                                  std::numeric_limits<double>::infinity()};
-    std::array<double, 3> gmax = {-std::numeric_limits<double>::infinity(),
-                                  -std::numeric_limits<double>::infinity(),
-                                  -std::numeric_limits<double>::infinity()};
-    for (std::size_t ci = 0; ci < nchunks; ++ci)
-        for (std::size_t d = 0; d < 3; ++d) {
-            gmin[d] = gmin[d] < pmin[ci][d] ? gmin[d] : pmin[ci][d];
-            gmax[d] = gmax[d] > pmax[ci][d] ? gmax[d] : pmax[ci][d];
-        }
+        [](Box g, const Box& p) {
+            for (std::size_t d = 0; d < 3; ++d) {
+                g[d] = g[d] < p[d] ? g[d] : p[d];
+                g[3 + d] = g[3 + d] > p[3 + d] ? g[3 + d] : p[3 + d];
+            }
+            return g;
+        });
+    const double* gmin = box.data();
+    const double* gmax = box.data() + 3;
     for (std::size_t d = 0; d < ddim; ++d) {
         rLo[d] = gmin[d];
         rHi[d] = gmax[d];

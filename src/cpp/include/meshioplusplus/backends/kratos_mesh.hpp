@@ -148,6 +148,18 @@ public:
         ResetModelPartOnly();
         mStage.AddPolyhedronBlock(std::move(type), std::move(cells));
     }
+    void AddPolygonBlock(std::string type, std::vector<std::int64_t> flat,
+                         std::vector<std::int64_t> rowOffsets) {
+        ResetModelPartOnly();
+        mStage.AddPolygonBlock(std::move(type), std::move(flat), std::move(rowOffsets));
+    }
+    void AddPolyhedronBlock(std::string type, std::vector<std::int64_t> flat,
+                            std::vector<std::int64_t> rowOffsets,
+                            std::vector<std::int64_t> faceOffsets) {
+        ResetModelPartOnly();
+        mStage.AddPolyhedronBlock(std::move(type), std::move(flat), std::move(rowOffsets),
+                                  std::move(faceOffsets));
+    }
     void AddPointData(std::string name, NDArray data) {
         ResetModelPartOnly();
         mStage.AddPointData(std::move(name), std::move(data));

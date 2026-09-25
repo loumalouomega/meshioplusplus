@@ -43,6 +43,8 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
 #include "smooth_odt.hpp"
 
 namespace meshioplusplus {
@@ -188,7 +190,8 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
-    // Every (face key, slot) of every tet, slot = 4 t + local face, sorted:
+    // Every (face key, slot) of every tet, slot = 4 t + local face, sorted (a
+    // total order, so parallel_sort gives one sequence on every backend):
     // equal faces form runs in slot order -- the order the former hash map
     // saw them in -- so a run gives each face's count and its first two
     // (tet, apex) occurrences, with no hashing. Counts are kept modulo 256
@@ -209,7 +212,7 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             recs[t * 4 + static_cast<std::size_t>(lf)] = {optvol_face_key(fo[0], fo[1], fo[2]),
                                                           t * 4 + static_cast<std::size_t>(lf)};
         }
-    std::sort(recs.begin(), recs.end(), [](const FaceRec& a, const FaceRec& b) {
+    parallel_sort(recs.begin(), recs.end(), [](const FaceRec& a, const FaceRec& b) {
         return a.mKey != b.mKey ? a.mKey < b.mKey : a.mSlot < b.mSlot;
     });
     std::vector<FaceRun> runs;
@@ -307,7 +310,8 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
-    // Every (edge key, tet) sorted: each run is one edge's tets in ascending
+    // Every (edge key, tet) sorted (a total order: parallel_sort gives one
+    // sequence on every backend): each run is one edge's tets in ascending
     // tet order -- what the former hash map's per-edge vector held -- and the
     // runs come in ascending key order, the order that map's keys were
     // sorted into for a deterministic sweep.
@@ -321,7 +325,7 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
     for (std::size_t t = 0; t < nt; ++t)
         for (auto& ev : kEdges)
             recs.push_back({optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]]), t});
-    std::sort(recs.begin(), recs.end(), [](const EdgeRec& a, const EdgeRec& b) {
+    parallel_sort(recs.begin(), recs.end(), [](const EdgeRec& a, const EdgeRec& b) {
         return a.mKey != b.mKey ? a.mKey < b.mKey : a.mTet < b.mTet;
     });
 

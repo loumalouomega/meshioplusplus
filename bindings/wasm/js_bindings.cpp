@@ -591,8 +591,10 @@ Mesh val_to_mesh(const val& rObj) {
         std::string type = block["type"].as<std::string>();
         val data_val = block["data"];
         if (block.hasOwnProperty("cellOffsets")) {
-            // Polyhedron: three flat CSR arrays (see mesh_to_val) -> the
-            // nested vectors AddPolyhedronBlock wants.
+            // Polyhedron: three flat CSR arrays (see mesh_to_val), which is
+            // the form every mesh backend stores -- moved straight in when
+            // they are well-formed, compacted first otherwise (JS callers may
+            // hand ranges that skip parts of the node array).
             std::vector<std::int64_t> flat = emscripten::vecFromJSArray<std::int64_t>(data_val);
             std::vector<std::int64_t> face_offsets =
                 emscripten::vecFromJSArray<std::int64_t>(block["faceOffsets"]);
@@ -601,10 +603,8 @@ Mesh val_to_mesh(const val& rObj) {
             if (cell_offsets.empty())
                 throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                  "' has an empty cellOffsets");
-            std::vector<std::vector<std::vector<std::int64_t>>> cells_of_faces;
-            cells_of_faces.reserve(cell_offsets.size() - 1);
+            std::vector<std::int64_t> nodes, rows{0}, cellsx{0};
             for (std::size_t c = 0; c + 1 < cell_offsets.size(); ++c) {
-                std::vector<std::vector<std::int64_t>> faces;
                 for (std::int64_t f = cell_offsets[c]; f < cell_offsets[c + 1]; ++f) {
                     if (f < 0 || static_cast<std::size_t>(f) + 1 >= face_offsets.size())
                         throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
@@ -618,29 +618,30 @@ Mesh val_to_mesh(const val& rObj) {
                     if (start < 0 || end < start || static_cast<std::size_t>(end) > flat.size())
                         throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                          "' faceOffsets out of range");
-                    faces.emplace_back(flat.begin() + start, flat.begin() + end);
+                    nodes.insert(nodes.end(), flat.begin() + start, flat.begin() + end);
+                    rows.push_back(static_cast<std::int64_t>(nodes.size()));
                 }
-                cells_of_faces.push_back(std::move(faces));
+                cellsx.push_back(static_cast<std::int64_t>(rows.size() - 1));
             }
-            mesh.AddPolyhedronBlock(type, std::move(cells_of_faces));
+            mesh.AddPolyhedronBlock(type, std::move(nodes), std::move(rows), std::move(cellsx));
         } else if (block.hasOwnProperty("rowOffsets")) {
-            // Polygon: two flat CSR arrays -> jagged rows.
+            // Polygon: two flat CSR arrays, compacted into the stored CSR.
             std::vector<std::int64_t> flat = emscripten::vecFromJSArray<std::int64_t>(data_val);
             std::vector<std::int64_t> row_offsets =
                 emscripten::vecFromJSArray<std::int64_t>(block["rowOffsets"]);
             if (row_offsets.empty())
                 throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                  "' has an empty rowOffsets");
-            std::vector<std::vector<std::int64_t>> rows;
-            rows.reserve(row_offsets.size() - 1);
+            std::vector<std::int64_t> nodes, rows{0};
             for (std::size_t c = 0; c + 1 < row_offsets.size(); ++c) {
                 const std::int64_t start = row_offsets[c], end = row_offsets[c + 1];
                 if (start < 0 || end < start || static_cast<std::size_t>(end) > flat.size())
                     throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                      "' rowOffsets out of range");
-                rows.emplace_back(flat.begin() + start, flat.begin() + end);
+                nodes.insert(nodes.end(), flat.begin() + start, flat.begin() + end);
+                rows.push_back(static_cast<std::int64_t>(nodes.size()));
             }
-            mesh.AddPolygonBlock(type, std::move(rows));
+            mesh.AddPolygonBlock(type, std::move(nodes), std::move(rows));
         } else {
             auto nodes_per_cell = block["nodesPerCell"].as<std::size_t>();
             auto data_len = data_val["length"].as<std::size_t>();

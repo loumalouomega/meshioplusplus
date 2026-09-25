@@ -32,8 +32,10 @@ nodes[ face_offsets[ cell_offsets[c] + f ] .. face_offsets[ cell_offsets[c] + f 
 
 A 1-level block has exactly one face per cell, so `face_offsets` *is* the row-offsets array and there is no `cell_offsets` at all — the C API returns `NULL` and JS omits the key, rather than synthesising a `0,1,2,…` identity that a caller could mistake for information.
 
+Every mesh backend stores ragged blocks in exactly this shape (the `MESHIO` backend since v16.16.0; it held nested vectors before), and C++ code hands it over whole: `AddPolygonBlock(type, nodes, face_offsets)` and `AddPolyhedronBlock(type, nodes, face_offsets, cell_offsets)` move the three arrays in, with no allocation per cell or face, after checking that each offset array starts at 0, never decreases and ends at the length it indexes (`std::invalid_argument` otherwise). The nested-vector overloads remain and convert. The readers that build polyhedra in bulk -- VTK XML, OpenFOAM, CGNS and MED -- use the CSR forms.
+
 ::: tip A naming skew worth knowing
-The `NATIVE` mesh backend stores the same two arrays under the opposite names: its `mRowOffsets` is this page's `face_offsets`, and its `mFaceOffsets` is this page's `cell_offsets`. The CSR vocabulary above is what every *binding* uses; `native_mesh.hpp`'s field names are internal and predate it.
+The mesh backends store the same two offset arrays under the opposite names: their `mRowOffsets` is this page's `face_offsets`, and their `mFaceOffsets` is this page's `cell_offsets` -- which is also the order the C++ `AddPolyhedronBlock` overload takes them in. The CSR vocabulary above is what every *binding* uses; the backends' field names are internal and predate it.
 :::
 
 ![A two-level ragged block as the three CSR arrays cell_offsets, face_offsets and nodes, with the indexing of one face traced through them](/diagrams/polyhedra_csr.svg)
@@ -72,7 +74,7 @@ Each language gets its **natural** shape over one flat ABI: Fortran has no ragge
 
 ### The C API's snapshot is not a borrow
 
-Every other getter in the C API is a zero-copy borrow that dies at the next mutating call ([rule 3](/c_api)). `mio_poly_conn` is an **owning snapshot** instead, and deliberately so: the `MESHIO` mesh backend stores ragged blocks as nested vectors, so there is no offsets array inside the mesh to point at, and the `KRATOS` backend rebuilds its blocks lazily. The snapshot is therefore *safer* than a borrow — it stays valid across mutating calls — and must be released with `mio_poly_conn_free()`.
+Every other getter in the C API is a zero-copy borrow that dies at the next mutating call ([rule 3](/c_api)). `mio_poly_conn` is an **owning snapshot** instead, and deliberately so: until v16.16.0 the `MESHIO` mesh backend stored ragged blocks as nested vectors, with no offsets array inside the mesh to point at, and the `KRATOS` backend still rebuilds its blocks lazily. The snapshot is therefore *safer* than a borrow — it stays valid across mutating calls — and must be released with `mio_poly_conn_free()`.
 
 Julia's `polygon_block`/`polyhedron_block` copy out of that snapshot and free it, so there is no `_ptr` form for ragged blocks: a `MeshBorrow` carries the mesh's mutation generation as its guard, which is the wrong guard here.
 

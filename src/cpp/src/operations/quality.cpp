@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -540,21 +541,8 @@ Mesh quality_clone_mesh(const Mesh& rMesh) {
     Mesh out;
     out.AssignPoints(quality_owned_copy(rMesh.Points()));
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                cells[c].resize(cb.NumFaces(c));
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    auto face = cb.Face(c, f);
-                    cells[c][f].assign(face.first, face.first + face.second);
-                }
-            }
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
-        } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        if (cb.IsRagged()) {
+            detail::append_ragged_copy(cb, out);
         } else {
             out.AddCellBlock(std::string(cb.Type()), quality_owned_copy(cb.Conn()));
         }
@@ -705,15 +693,11 @@ QualityReport compute_quality(const Mesh& rMesh) {
         starts[bi + 1] = starts[bi] + block_vals[bi].size();
     const std::size_t total_cells = starts.back();
     constexpr std::size_t hist_chunk = 4096;
-    const std::size_t nchunks = (total_cells + hist_chunk - 1) / hist_chunk;
     using Hist = std::array<std::array<std::int64_t, QualityMetricSummary::K>, NUM_METRICS>;
-    std::vector<Hist> partial(nchunks);
-    parallel_for(
-        nchunks,
-        [&](std::size_t ci) {
-            Hist& h = partial[ci];
-            const std::size_t lo = ci * hist_chunk;
-            const std::size_t hi = std::min(total_cells, lo + hist_chunk);
+    const Hist hist = parallel_reduce(
+        total_cells, hist_chunk, Hist{},
+        [&](std::size_t lo, std::size_t hi) {
+            Hist h{};
             std::size_t bi = static_cast<std::size_t>(
                 std::upper_bound(starts.begin(), starts.end(), lo) - starts.begin() - 1);
             for (std::size_t g = lo; g < hi; ++g) {
@@ -733,12 +717,17 @@ QualityReport compute_quality(const Mesh& rMesh) {
                     ++h[mi][bin];
                 }
             }
+            return h;
         },
-        /*grain=*/1);
-    for (const Hist& h : partial)
-        for (int mi = 0; mi < NUM_METRICS; ++mi)
-            for (int k = 0; k < K; ++k)
-                summ[mi].mHistogram[k] += h[mi][k];
+        [&](Hist acc, const Hist& h) {
+            for (int mi = 0; mi < NUM_METRICS; ++mi)
+                for (int k = 0; k < K; ++k)
+                    acc[mi][k] += h[mi][k];
+            return acc;
+        });
+    for (int mi = 0; mi < NUM_METRICS; ++mi)
+        for (int k = 0; k < K; ++k)
+            summ[mi].mHistogram[k] += hist[mi][k];
 
     // --- assemble the report ---
     for (int mi = 0; mi < NUM_METRICS; ++mi) {

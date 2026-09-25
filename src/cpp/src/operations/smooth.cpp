@@ -39,10 +39,14 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
 #include "smooth_odt.hpp"
+#include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -526,7 +530,6 @@ SmoothCsr smooth_build_incidence(const SmoothCellTable& rTable, std::size_t n) {
 // ONE shared key type is what lets a hexahedron and a polyhedron meeting on a
 // face cancel each other out instead of both reporting it as boundary.
 using SmoothFacetKey = detail::FacetKey;
-using SmoothFacetKeyHash = detail::FacetKeyHash;
 
 // One facet of a cell, corners only: unifies CellFaceDef (3D) and CellEdgeDef
 // (2D) so the two-phase extractor is dimension-agnostic.
@@ -588,8 +591,10 @@ std::vector<SmoothFacetDef> smooth_facets_for(CellType Type, bool FaceMode) {
 //
 // This is surface.cpp's phase-split idiom re-implemented locally with smooth_
 // prefixes, following the v7.6.0 partition precedent: surface.cpp's
-// anon-namespace machinery stays untouched. The two serial passes are the
-// determinism pin and must never become concurrent hash inserts.
+// anon-namespace machinery stays untouched. The keys are counted by the
+// sort-based table (detail/slot_runs.hpp), deterministic by construction; the
+// marking pass stays serial in stored order and must never become a
+// concurrent hash insert.
 void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
                           const std::vector<double>& rXyz, std::vector<std::uint8_t>& rBoundary,
                           std::vector<SmoothBoundaryFacet>* pFacets) {
@@ -674,15 +679,17 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
         });
     }
 
-    // --- phase 2, pass A: count key occurrences (serial -> deterministic) ---
-    std::unordered_map<SmoothFacetKey, std::uint32_t, SmoothFacetKeyHash> counts;
-    counts.reserve(total_facets * 2);
-    for (const SmoothFacetRecord& r : recs)
-        ++counts[r.mKey];
+    // --- phase 2, pass A: count key occurrences ---
+    // Run sizes of the sorted (key, slot) pairs (detail/slot_runs.hpp).
+    const std::vector<std::uint32_t> counts = detail::slot_multiplicity(
+        detail::group_facet_slots(
+            recs, [](const SmoothFacetRecord& rR) -> const SmoothFacetKey& { return rR.mKey; }, n),
+        recs.size());
 
     // --- phase 2, pass B: mark once-used facets (serial, stored order) ---
-    for (const SmoothFacetRecord& r : recs) {
-        if (counts[r.mKey] != 1)
+    for (std::size_t ri = 0; ri < recs.size(); ++ri) {
+        const SmoothFacetRecord& r = recs[ri];
+        if (counts[ri] != 1)
             continue;
         const SmoothFacetBlock& b = blocks[r.mBlock];
         if (b.mPolyhedron) {
@@ -1202,21 +1209,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     out.AssignPoints(smooth_write_coords(rMesh.Points(), prev, n, dim));
 
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> blocks(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                blocks[c].resize(cb.NumFaces(c));
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    auto face = cb.Face(c, f);
-                    blocks[c][f].assign(face.first, face.first + face.second);
-                }
-            }
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(blocks));
-        } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        if (cb.IsRagged()) {
+            detail::append_ragged_copy(cb, out);
         } else {
             out.AddCellBlock(std::string(cb.Type()), smooth_owned_copy(cb.Conn()));
         }

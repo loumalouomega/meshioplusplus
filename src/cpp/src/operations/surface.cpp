@@ -14,11 +14,12 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// Surface/boundary extraction, following the facet-hashing algorithm of Kratos
+// Surface/boundary extraction, following the facet-counting rule of Kratos
 // Multiphysics' SkinDetectionProcess: a facet (a face of a 3D cell, or an edge
 // of a 2D cell) whose sorted corner-node key occurs exactly once across all
 // cells of the chosen dimension is a boundary facet; facets seen twice are
-// interior and cancel out. This single translation unit implements both the
+// interior and cancel out. The keys are counted by sorting (key, slot) pairs
+// (detail/slot_runs.hpp), not in a hash map. This single translation unit implements both the
 // general `extract_surface` and the volume-only, linearize-able `extract_skin`
 // (declared in skin.hpp) so the two never drift.
 
@@ -30,7 +31,6 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -44,6 +44,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -98,7 +101,7 @@ bool surface_skin_block_supported(CellType type, bool is_ragged) {
     return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
 }
 
-// --- facet key + hash -------------------------------------------------------
+// --- facet key ----------------------------------------------------------------
 //
 // detail::FacetKey rather than the fixed array<int64_t,4> this used before
 // v9.16.0: a polyhedron's face can have any number of corners. It keeps a
@@ -108,7 +111,6 @@ bool surface_skin_block_supported(CellType type, bool is_ragged) {
 // -- with two key types they would each report that face as boundary.
 
 using SurfaceFacetKey = detail::FacetKey;
-using SurfaceFacetKeyHash = detail::FacetKeyHash;
 
 SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
                                   const SurfaceFacetDef& rFacet) {
@@ -319,11 +321,14 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         });
     }
 
-    // --- phase 2, pass A: count key occurrences (serial → deterministic) ---
-    std::unordered_map<SurfaceFacetKey, std::uint32_t, SurfaceFacetKeyHash> face_count;
-    face_count.reserve(total_facets * 2);
-    for (const SurfaceFacetRecord& r : recs)
-        ++face_count[r.mKey];
+    // --- phase 2, pass A: count key occurrences ---
+    // A key's count is the size of its run once (key, slot) pairs are sorted
+    // (detail/slot_runs.hpp): parallel, and the same on every thread count.
+    const std::vector<std::uint32_t> face_count = detail::slot_multiplicity(
+        detail::group_facet_slots(
+            recs, [](const SurfaceFacetRecord& rR) -> const SurfaceFacetKey& { return rR.mKey; },
+            rMesh.NumPoints()),
+        recs.size());
 
     // --- phase 2, pass B: emit boundary facets (count == 1) in stored order ---
     const std::size_t num_out = surface_num_out_types(mode);
@@ -333,8 +338,9 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     // those go to a ragged `polygon` block emitted alongside the fixed ones.
     std::vector<std::vector<std::int64_t>> poly_rows;
     std::vector<std::int64_t> poly_parent;
-    for (const SurfaceFacetRecord& r : recs) {
-        if (face_count[r.mKey] != 1)
+    for (std::size_t ri = 0; ri < recs.size(); ++ri) {
+        const SurfaceFacetRecord& r = recs[ri];
+        if (face_count[ri] != 1)
             continue;
         const SurfaceBlockDesc& d = descs[r.mDesc];
         if (d.mPolyhedron) {

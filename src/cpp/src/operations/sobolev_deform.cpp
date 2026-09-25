@@ -285,24 +285,16 @@ void sobo_assemble(const SoboCells& rCells, const std::vector<double>& rXyz, std
 /// partials folded serially, the `accumulate_stats` idiom.
 double sobo_dot(const std::vector<double>& rA, const std::vector<double>& rB, std::size_t n,
                 std::size_t dim) {
-    const std::size_t nchunks = (n + kSoboChunk - 1) / kSoboChunk;
-    std::vector<double> partial(nchunks, 0.0);
-    parallel_for(
-        nchunks,
-        [&](std::size_t ci) {
-            const std::size_t lo = ci * kSoboChunk;
-            const std::size_t hi = std::min(n, lo + kSoboChunk);
+    return parallel_reduce(
+        n, kSoboChunk, 0.0,
+        [&](std::size_t lo, std::size_t hi) {
             double s = 0.0;
             for (std::size_t i = lo; i < hi; ++i)
                 for (std::size_t d = 0; d < dim; ++d)
                     s += rA[i * dim + d] * rB[i * dim + d];
-            partial[ci] = s;
+            return s;
         },
-        1);
-    double total = 0.0;
-    for (const double p : partial)
-        total += p;
-    return total;
+        [](double total, double p) { return total + p; });
 }
 
 }  // namespace

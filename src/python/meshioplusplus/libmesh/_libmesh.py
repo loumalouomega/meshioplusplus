@@ -1005,6 +1005,7 @@ def _shellface(name):
     return None
 
 
+@_provenance.slotless_writer
 def write(filename, mesh):
     """Write a libMesh ``.xda`` (ASCII) or ``.xdr`` (XDR) mesh, libMesh-1.8.0.
 

@@ -69,7 +69,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -155,8 +155,14 @@ struct SurfaceEdgeRecord {
     std::int64_t mFirstTriangle = -1;
 };
 
-/// Every undirected edge of a soup, keyed by its sorted endpoint pair.
-using SurfaceEdgeMap = std::unordered_map<SurfaceEdgeKey, SurfaceEdgeRecord, SurfaceEdgeKeyHash>;
+/**
+ * @brief Every undirected edge of a soup, with its use record, **sorted by key**
+ * (binary-search it with `std::lower_bound` on `.first`). A sorted vector, not
+ * an `unordered_map`, since v16.16.0 (ABI 18): it is built by a parallel sort
+ * of (edge, triangle corner) records, with exactly the counts and first
+ * triangles the serial map insert gave.
+ */
+using SurfaceEdgeMap = std::vector<std::pair<SurfaceEdgeKey, SurfaceEdgeRecord>>;
 
 /**
  * @brief The per-edge use record of a soup.
@@ -185,8 +191,14 @@ struct DistanceQuery {
     std::vector<Vec3> mFaceNormal;
     /// Per welded vertex, the weighted sum of incident unit face normals.
     std::vector<Vec3> mVertexNormal;
-    /// Per edge (sorted endpoint ids), the sum of incident unit face normals.
-    std::unordered_map<SurfaceEdgeKey, Vec3, SurfaceEdgeKeyHash> mEdgeNormal;
+    /// Per triangle corner -- entry `3 t + i` is triangle `t`'s edge from
+    /// corner `i` to corner `i + 1` -- the index of that edge's normal in
+    /// `mEdgeNormals`, or -1 when no non-degenerate triangle uses the edge.
+    /// (Before v16.16.0, ABI 18: a hash map keyed by the edge.)
+    std::vector<std::int64_t> mEdgeOfCorner;
+    /// Per edge used by a non-degenerate triangle, the sum of its incident unit
+    /// face normals, added in ascending (triangle, corner) order.
+    std::vector<Vec3> mEdgeNormals;
     /// The bucket size actually used, after the auto rule or the caller's override.
     double mCellSize = 1.0;
 };

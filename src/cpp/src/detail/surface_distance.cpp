@@ -37,6 +37,9 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 
+// Project includes (private, not installed)
+#include "slot_runs.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -145,24 +148,39 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
 SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
     // Per undirected edge: how many triangles use it, and how many use it in the
     // low->high direction. A consistently wound closed surface has every edge
-    // used exactly twice, once in each direction.
+    // used exactly twice, once in each direction. One record per (triangle,
+    // corner), grouped by a parallel sort (slot_runs.hpp): a run is one edge,
+    // its slots in ascending (triangle, corner) order, so its head names the
+    // first triangle, as the serial map insert did.
     const std::size_t ntri = rSoup.NumTriangles();
-    SurfaceEdgeMap edges;
-    edges.reserve(ntri * 3 * 2);
-    for (std::size_t t = 0; t < ntri; ++t) {
+    std::vector<SurfaceEdgeKey> keys(ntri * 3);
+    std::vector<std::uint8_t> forward(ntri * 3);
+    parallel_for(ntri, [&](std::size_t t) {
         const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
         for (std::size_t e = 0; e < 3; ++e) {
             const std::int64_t u = v[e];
             const std::int64_t w = v[(e + 1) % 3];
-            const SurfaceEdgeKey key{u < w ? u : w, u < w ? w : u};
-            SurfaceEdgeRecord& rec = edges[key];
-            ++rec.mUsed;
-            if (u < w)
-                ++rec.mForward;
-            if (rec.mFirstTriangle < 0)
-                rec.mFirstTriangle = static_cast<std::int64_t>(t);
+            keys[t * 3 + e] = SurfaceEdgeKey{u < w ? u : w, u < w ? w : u};
+            forward[t * 3 + e] = u < w;
         }
-    }
+    });
+    // Bucketed by the lower endpoint, the key's leading component, so the runs
+    // come out in ascending key order: the map is sorted, as documented.
+    const std::size_t npts = rSoup.mPoints.size();
+    const SlotRuns runs = group_slots(keys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
+        return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
+                   ? static_cast<std::size_t>(rK[0])
+                   : npts;
+    });
+    SurfaceEdgeMap edges(runs.NumRuns());
+    parallel_for(runs.NumRuns(), [&](std::size_t r) {
+        SurfaceEdgeRecord rec;
+        rec.mUsed = static_cast<std::int64_t>(runs.Size(r));
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
+            rec.mForward += forward[*p];
+        rec.mFirstTriangle = static_cast<std::int64_t>(runs.Head(r) / 3);
+        edges[r] = {keys[runs.Head(r)], rec};
+    });
     return edges;
 }
 
@@ -268,27 +286,64 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
                           static_cast<std::int64_t>(t));
     }
 
-    // Face normals, then the vertex and edge tables. The table pass is SERIAL
-    // and in ascending (triangle, corner) order: summing unit normals in a
-    // different order changes the last bits, and a last-bit change can flip the
-    // sign of a query point sitting almost exactly on the surface.
+    // Face normals, then the vertex and edge tables. Every sum runs in
+    // ascending (triangle, corner) order: summing unit normals in a different
+    // order changes the last bits, and a last-bit change can flip the sign of a
+    // query point sitting almost exactly on the surface.
     q.mFaceNormal = soup_face_normals(rSoup);
     q.mVertexNormal = accumulate_vertex_normals(rSoup, q.mFaceNormal, rOptions.mWeight);
-    for (std::size_t t = 0; t < ntri; ++t) {
+    // Edge normals: the (triangle, corner) records grouped by edge with a
+    // parallel sort (slot_runs.hpp), each run's unit normals summed in its
+    // slot order -- ascending (triangle, corner), the serial order -- from
+    // zero. A degenerate triangle contributes nothing, and an edge only
+    // degenerate triangles use has no normal (-1), as it had no map entry.
+    std::vector<Vec3> unit(ntri);
+    std::vector<std::uint8_t> has_unit(ntri, 0);
+    parallel_for(ntri, [&](std::size_t t) {
         const Vec3 n = q.mFaceNormal[t];
         const double len = vec3_norm(n);
         if (!(len > 0.0))
-            continue;  // degenerate: no direction to contribute
-        const Vec3 unit = vec3_scale(n, 1.0 / len);
+            return;  // degenerate: no direction to contribute
+        unit[t] = vec3_scale(n, 1.0 / len);
+        has_unit[t] = 1;
+    });
+    std::vector<SurfaceEdgeKey> keys(ntri * 3);
+    parallel_for(ntri, [&](std::size_t t) {
         const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
         for (std::size_t i = 0; i < 3; ++i) {
             const std::int64_t p = v[i];
             const std::int64_t r = v[(i + 1) % 3];
-            const SurfaceEdgeKey key{p < r ? p : r, p < r ? r : p};
-            Vec3& e = q.mEdgeNormal[key];
-            e = vec3_add(e, unit);
+            keys[t * 3 + i] = SurfaceEdgeKey{p < r ? p : r, p < r ? r : p};
         }
-    }
+    });
+    const std::size_t npts = rSoup.mPoints.size();
+    const SlotRuns runs = group_slots(keys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
+        return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
+                   ? static_cast<std::size_t>(rK[0])
+                   : npts;
+    });
+    std::vector<std::uint8_t> used(runs.NumRuns(), 0);
+    parallel_for(runs.NumRuns(), [&](std::size_t r) {
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r) && !used[r]; ++p)
+            used[r] = has_unit[*p / 3];
+    });
+    std::vector<std::int64_t> index_of_run(runs.NumRuns());
+    const std::int64_t nedges =
+        parallel_exclusive_scan(used.data(), runs.NumRuns(), index_of_run.data(), std::int64_t{0});
+    q.mEdgeNormals.assign(static_cast<std::size_t>(nedges), Vec3{0.0, 0.0, 0.0});
+    q.mEdgeOfCorner.assign(ntri * 3, -1);
+    parallel_for(runs.NumRuns(), [&](std::size_t r) {
+        if (!used[r])
+            return;
+        const std::int64_t id = index_of_run[r];
+        Vec3 e{0.0, 0.0, 0.0};
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            if (has_unit[*p / 3])
+                e = vec3_add(e, unit[*p / 3]);
+            q.mEdgeOfCorner[*p] = id;
+        }
+        q.mEdgeNormals[static_cast<std::size_t>(id)] = e;
+    });
     return q;
 }
 
@@ -386,12 +441,9 @@ Vec3 sd_feature_normal(const DistanceQuery& rQuery, const TriangleSoup& rSoup, s
             const std::size_t e = Feature == TriangleFeature::EdgeAB
                                       ? 0
                                       : (Feature == TriangleFeature::EdgeBC ? 1 : 2);
-            const std::int64_t a = v[e];
-            const std::int64_t b = v[(e + 1) % 3];
-            const SurfaceEdgeKey key{a < b ? a : b, a < b ? b : a};
-            auto it = rQuery.mEdgeNormal.find(key);
-            if (it != rQuery.mEdgeNormal.end())
-                normal = it->second;
+            const std::int64_t id = rQuery.mEdgeOfCorner[ti * 3 + e];
+            if (id >= 0)
+                normal = rQuery.mEdgeNormals[static_cast<std::size_t>(id)];
             break;
         }
         case TriangleFeature::Face:

@@ -23,7 +23,8 @@
  * Several formats name a boundary facet by its node list rather than by
  * (cell, local facet): LS-DYNA segments, FEBio surfaces, Elmer boundary
  * elements. `FacetIndex` keys every facet of a mesh by its sorted corner nodes
- * and answers, for a node list, which cells own that facet and under which
+ * (at most four: every cell type's faces and edges are triangles, quads or
+ * lines) and answers, for a node list, which cells own that facet and under which
  * local facet number — the numbering a `Side` region uses (`cell_faces` for a
  * 3-D cell, `cell_edges` for a 2-D one; see `doc/regions.md`). An interior
  * facet has two owners; the first two in block-major order are kept, with the
@@ -33,9 +34,9 @@
  */
 
 // System includes
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -91,10 +92,15 @@ public:
     const FacetHit* Find(const std::int64_t* pCorners, std::size_t N) const;
 
     /// Number of distinct facets held.
-    std::size_t Size() const { return mMap.size(); }
+    std::size_t Size() const { return mHits.size(); }
 
 private:
-    std::unordered_map<FacetKey, FacetHit, FacetKeyHash> mMap;
+    // Sorted facet keys -- the corner count, then the sorted corners,
+    // zero-padded -- and each one's hit, found by binary search. A sorted
+    // table, not a hash map, since v16.16.0 (ABI 18): it is built by a
+    // parallel sort with the same hits a serial insert gave.
+    std::vector<std::array<std::int64_t, 5>> mKeys;
+    std::vector<FacetHit> mHits;
 };
 
 /**

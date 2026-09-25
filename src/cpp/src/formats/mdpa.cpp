@@ -1127,6 +1127,9 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
 }
 
 void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo) {
+    // No provenance slot in this format: drop the notes this write raises on
+    // the way out rather than let them reach the next file written.
+    const detail::ProvenanceSlotlessWrite slotless;
     auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);

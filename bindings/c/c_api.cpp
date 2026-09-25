@@ -3214,11 +3214,9 @@ mio_status mio_mesh_add_polygon_block(mio_mesh* mesh, const char* cell_type, int
             return s;
         if (mio_status s = poly_check_nodes(nodes, num_nodes); s != MIO_OK)
             return s;
-        std::vector<std::vector<std::int64_t>> rows(static_cast<std::size_t>(num_cells));
-        for (std::int64_t c = 0; c < num_cells; ++c)
-            rows[static_cast<std::size_t>(c)].assign(nodes + row_offsets[c],
-                                                     nodes + row_offsets[c + 1]);
-        mesh->mMesh.AddPolygonBlock(cell_type, std::move(rows));
+        // The C arrays are already the CSR the mesh stores: copy them in whole.
+        mesh->mMesh.AddPolygonBlock(cell_type, std::vector<std::int64_t>(nodes, nodes + num_nodes),
+                                    std::vector<std::int64_t>(row_offsets, row_offsets + num_cells + 1));
         return MIO_OK;
     });
 }
@@ -3239,16 +3237,12 @@ mio_status mio_mesh_add_polyhedron_block(mio_mesh* mesh, const char* cell_type, 
             return s;
         if (mio_status s = poly_check_nodes(nodes, num_nodes); s != MIO_OK)
             return s;
-        std::vector<std::vector<std::vector<std::int64_t>>> cells(
-            static_cast<std::size_t>(num_cells));
-        for (std::int64_t c = 0; c < num_cells; ++c) {
-            auto& r_cell = cells[static_cast<std::size_t>(c)];
-            r_cell.resize(static_cast<std::size_t>(cell_offsets[c + 1] - cell_offsets[c]));
-            for (std::int64_t f = cell_offsets[c]; f < cell_offsets[c + 1]; ++f)
-                r_cell[static_cast<std::size_t>(f - cell_offsets[c])].assign(
-                    nodes + face_offsets[f], nodes + face_offsets[f + 1]);
-        }
-        mesh->mMesh.AddPolyhedronBlock(cell_type, std::move(cells));
+        // The C arrays are already the CSR the mesh stores (face_offsets over
+        // the nodes, cell_offsets over the faces): copy them in whole.
+        mesh->mMesh.AddPolyhedronBlock(
+            cell_type, std::vector<std::int64_t>(nodes, nodes + num_nodes),
+            std::vector<std::int64_t>(face_offsets, face_offsets + num_faces + 1),
+            std::vector<std::int64_t>(cell_offsets, cell_offsets + num_cells + 1));
         return MIO_OK;
     });
 }

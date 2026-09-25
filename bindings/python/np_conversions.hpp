@@ -236,37 +236,39 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& rRefs) {
  *
  * The nesting depth depends on the cell type name:
  *  - A `"polyhedron"`-prefixed block is 2-level: a list of cells, each a
- *    list of faces, each a sequence of node ids -> populates
- *    `CellBlock::mPolyhedronRows`.
+ *    list of faces, each a sequence of node ids -> the CSR triple
+ *    `mFlat`/`mRowOffsets`/`mFaceOffsets`.
  *  - Any other ragged block (a `"polygon"` block with varying node counts
  *    per cell) is 1-level: a list of cells, each a sequence of node ids ->
- *    populates `CellBlock::mPolygonRows`.
+ *    `mFlat`/`mRowOffsets`.
  *
  * @param type The meshio++ cell type name (e.g. `"polygon"`,
  *             `"polyhedron4"`); consumed by move into the returned block.
  * @param data_obj The Python `cells[i].data` list for this block.
- * @return A `CellBlock` with `mType` set and exactly one of
- *         `mPolygonRows`/`mPolyhedronRows` populated (owned copies).
+ * @return A `CellBlock` with `mType` set and its CSR storage populated (owned
+ *         copies).
  */
 inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::handle data_obj) {
     meshioplusplus::CellBlock cb;
     cb.mType = std::move(type);
-    auto to_ids = [](py::handle seq) {
-        std::vector<std::int64_t> ids;
+    // Straight into the CSR storage (backends/meshio_mesh.hpp), one row at a
+    // time: no per-cell vector.
+    const auto append_row = [&](py::handle seq) {
         for (py::handle v : seq)
-            ids.push_back(py::cast<std::int64_t>(v));
-        return ids;
+            cb.mFlat.push_back(py::cast<std::int64_t>(v));
+        cb.mRowOffsets.push_back(static_cast<std::int64_t>(cb.mFlat.size()));
     };
+    cb.mRowOffsets.push_back(0);
     if (cb.mType.rfind("polyhedron", 0) == 0) {
+        cb.mFaceOffsets.push_back(0);
         for (py::handle cell : data_obj) {
-            std::vector<std::vector<std::int64_t>> faces;
             for (py::handle face : cell)
-                faces.push_back(to_ids(face));
-            cb.mPolyhedronRows.push_back(std::move(faces));
+                append_row(face);
+            cb.mFaceOffsets.push_back(static_cast<std::int64_t>(cb.mRowOffsets.size() - 1));
         }
     } else {
         for (py::handle row : data_obj)
-            cb.mPolygonRows.push_back(to_ids(row));
+            append_row(row);
     }
     return cb;
 }
@@ -520,10 +522,10 @@ inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
  * (via `std::memcpy` into freshly allocated `py::array_t<std::int64_t>`
  * objects) rather than adopted zero-copy the way `numpy_from_ndarray` does
  * for rectangular blocks:
- *  - For a jagged polygon block (`cb.mPolygonRows` non-empty): a Python
- *    list of 1-D int64 numpy arrays, one per cell.
- *  - For a polyhedron block (`cb.mPolyhedronRows` non-empty): a Python list
- *    of cells, each itself a list of 1-D int64 numpy arrays, one per face.
+ *  - For a jagged polygon block: a Python list of 1-D int64 numpy arrays,
+ *    one per cell.
+ *  - For a polyhedron block (`cb.IsPolyhedron()`): a Python list of cells,
+ *    each itself a list of 1-D int64 numpy arrays, one per face.
  *
  * This matches exactly what `meshioplusplus.Mesh`/`CellBlock` expect to
  * store for these cell types on the Python side (kept as a Python list,
@@ -533,23 +535,26 @@ inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
  * @return A `py::object` (a `py::list`) as described above.
  */
 inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
-    auto ids_to_arr = [](const std::vector<std::int64_t>& ids) {
-        py::array_t<std::int64_t> a(static_cast<py::ssize_t>(ids.size()));
-        if (!ids.empty())
-            std::memcpy(a.mutable_data(), ids.data(), ids.size() * sizeof(std::int64_t));
+    // Row r of the CSR storage as a fresh 1-D int64 array.
+    auto row_to_arr = [&](std::size_t r) {
+        const std::int64_t b = rCb.mRowOffsets[r];
+        const std::size_t n = static_cast<std::size_t>(rCb.mRowOffsets[r + 1] - b);
+        py::array_t<std::int64_t> a(static_cast<py::ssize_t>(n));
+        if (n)
+            std::memcpy(a.mutable_data(), rCb.mFlat.data() + b, n * sizeof(std::int64_t));
         return a;
     };
     py::list out;
-    if (!rCb.mPolyhedronRows.empty()) {
-        for (const auto& cell : rCb.mPolyhedronRows) {
+    if (rCb.IsPolyhedron()) {
+        for (std::size_t c = 0; c + 1 < rCb.mFaceOffsets.size(); ++c) {
             py::list faces;
-            for (const auto& face : cell)
-                faces.append(ids_to_arr(face));
+            for (auto f = rCb.mFaceOffsets[c]; f < rCb.mFaceOffsets[c + 1]; ++f)
+                faces.append(row_to_arr(static_cast<std::size_t>(f)));
             out.append(faces);
         }
     } else {
-        for (const auto& row : rCb.mPolygonRows)
-            out.append(ids_to_arr(row));
+        for (std::size_t r = 0; r + 1 < rCb.mRowOffsets.size(); ++r)
+            out.append(row_to_arr(r));
     }
     return out;
 }

@@ -39,6 +39,7 @@
 #include "pindex_common.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -63,21 +64,8 @@ Mesh vtm_extract_piece(const Mesh& rMesh, std::size_t Idx) {
     piece.AssignPoints(detail::data_owned_copy(rMesh.Points()));
 
     const auto cb = rMesh.Cells(Idx);
-    if (cb.IsPolyhedron()) {
-        std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            cells[r].resize(cb.NumFaces(r));
-            for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
-                const auto face = cb.Face(r, f);
-                cells[r][f].assign(face.first, face.first + face.second);
-            }
-        }
-        piece.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
-    } else if (cb.IsRagged()) {
-        std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
-        for (std::size_t r = 0; r < cb.NumCells(); ++r)
-            rows[r].assign(cb.Row(r), cb.Row(r) + cb.RowSize(r));
-        piece.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+    if (cb.IsRagged()) {
+        detail::append_ragged_copy(cb, piece);
     } else {
         piece.AddCellBlock(std::string(cb.Type()), detail::data_owned_copy(cb.Conn()));
     }
