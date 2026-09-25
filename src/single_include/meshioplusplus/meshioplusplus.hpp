@@ -11215,7 +11215,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 17
+#define MESHIOPLUSPLUS_VERSION_MINOR 18
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11225,7 +11225,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.17.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.18.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12214,6 +12214,7 @@ inline std::vector<std::int64_t> sfc_stable_argsort(const std::vector<std::uint6
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace meshioplusplus {
@@ -12244,8 +12245,9 @@ inline std::int64_t grid_quantize(double coord, double cell) {
 }
 
 /// The bucket grid: cell key -> ids in insertion order. Callers insert ids in
-/// ascending order from a serial pass, so every bucket vector is ascending and
-/// every scan over it is deterministic.
+/// ascending order from a serial pass, or group them in parallel and hand each
+/// bucket over ascending (`AssignBuckets`), so every bucket vector is
+/// ascending and every scan over it is deterministic.
 class SpatialGrid {
 public:
     explicit SpatialGrid(double cellSize) : mCell(cellSize) {}
@@ -12271,6 +12273,26 @@ public:
             for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
                 for (std::int64_t x = rLo.x; x <= rHi.x; ++x)
                     mCells[GridKey{x, y, z}].push_back(id);
+        Cover(rLo);
+        Cover(rHi);
+    }
+
+    /// The bulk form of `Insert`/`InsertBox` (v16.18.0), for a caller that
+    /// grouped its (key, id) pairs itself -- in parallel -- with each bucket's
+    /// ids already in the order serial inserts would have appended them:
+    /// `Ids[i]` is appended to the cell at `Keys[i]`, and the occupied box
+    /// grows to cover `[rLo, rHi]`, the bounds of every box inserted. Keys in
+    /// the order serial inserts would first have met them leave the map as
+    /// those inserts would have.
+    void AssignBuckets(std::vector<GridKey> Keys, std::vector<std::vector<std::int64_t>> Ids,
+                       const GridKey& rLo, const GridKey& rHi) {
+        for (std::size_t i = 0; i < Keys.size(); ++i) {
+            std::vector<std::int64_t>& r_bucket = mCells[Keys[i]];
+            if (r_bucket.empty())
+                r_bucket = std::move(Ids[i]);
+            else
+                r_bucket.insert(r_bucket.end(), Ids[i].begin(), Ids[i].end());
+        }
         Cover(rLo);
         Cover(rHi);
     }
@@ -30248,6 +30270,7 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -30273,6 +30296,90 @@ struct SlotRuns {
 };
 
 namespace slot_runs_impl {
+
+/// How many workers the build's backend runs `parallel_for` on right now:
+/// the chunk count of `group_slots`' counting sort, whose output does not
+/// depend on it (a stable counting sort gives one order for any chunking).
+inline std::size_t workers() {
+#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    return std::max<std::size_t>(
+        1, tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    detail::kokkos_ensure_initialized();
+    return static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency()));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
+#else
+    return 1;
+#endif
+}
+
+/**
+ * @brief The stable counting sort of slots `0 .. n-1` by `bucket(slot)`:
+ * `rOrder` receives the slots in (bucket, slot) order and `rStart` the
+ * `NumBuckets + 1` bucket offsets. Chunked over the workers when the input
+ * is large -- per-chunk histograms, each bucket's chunk offsets in chunk
+ * order, per-chunk scatters -- and serial otherwise; one result either way.
+ * The chunk count keeps `chunks x buckets` counters within twice the slots.
+ */
+template <class Bucket>
+void counting_sort(std::size_t n, std::size_t NumBuckets, Bucket bucket,
+                   std::vector<std::uint64_t>& rOrder, std::vector<std::uint64_t>& rStart) {
+    rStart.assign(NumBuckets + 1, 0);
+    rOrder.resize(n);
+    constexpr std::size_t kSerialBelow = std::size_t{1} << 15;
+    std::size_t chunks = n < kSerialBelow ? 1 : workers();
+    chunks =
+        std::min(chunks, std::max<std::size_t>(1, 2 * n / std::max<std::size_t>(1, NumBuckets)));
+    if (chunks <= 1) {
+        for (std::size_t i = 0; i < n; ++i)
+            ++rStart[bucket(i) + 1];
+        for (std::size_t b = 0; b < NumBuckets; ++b)
+            rStart[b + 1] += rStart[b];
+        std::vector<std::uint64_t> cursor(rStart.begin(), rStart.end() - 1);
+        for (std::size_t i = 0; i < n; ++i)
+            rOrder[cursor[bucket(i)]++] = i;
+        return;
+    }
+    const std::size_t per = (n + chunks - 1) / chunks;
+    // counts[c * NumBuckets + b]: chunk c's slots in bucket b, then that
+    // chunk's first position within the bucket.
+    std::vector<std::uint64_t> counts(chunks * NumBuckets, 0);
+    parallel_for(
+        chunks,
+        [&](std::size_t c) {
+            std::uint64_t* mine = counts.data() + c * NumBuckets;
+            const std::size_t end = std::min(n, (c + 1) * per);
+            for (std::size_t i = c * per; i < end; ++i)
+                ++mine[bucket(i)];
+        },
+        1);
+    std::vector<std::uint64_t> total(NumBuckets);
+    parallel_for(NumBuckets, [&](std::size_t b) {
+        std::uint64_t run = 0;
+        for (std::size_t c = 0; c < chunks; ++c) {
+            const std::uint64_t k = counts[c * NumBuckets + b];
+            counts[c * NumBuckets + b] = run;
+            run += k;
+        }
+        total[b] = run;
+    });
+    rStart[NumBuckets] =
+        parallel_exclusive_scan(total.data(), NumBuckets, rStart.data(), std::uint64_t{0});
+    parallel_for(
+        chunks,
+        [&](std::size_t c) {
+            std::uint64_t* cursor = counts.data() + c * NumBuckets;
+            const std::size_t end = std::min(n, (c + 1) * per);
+            for (std::size_t i = c * per; i < end; ++i) {
+                const std::size_t b = bucket(i);
+                rOrder[rStart[b] + cursor[b]++] = i;
+            }
+        },
+        1);
+}
 
 /// Cut an ordering of the slots in which equal keys are adjacent into runs.
 template <class Key, class Less, class SameGroup>
@@ -30356,18 +30463,10 @@ SlotRuns group_slots(const std::vector<Key>& rKeys, std::size_t NumBuckets, Buck
         return narrow ? bucket32[slot] : bucket64[slot];
     };
     // Stable counting sort by bucket: exact integer counts, so the order is
-    // (bucket, slot) on every backend.
-    std::vector<std::uint64_t> start(NumBuckets + 1, 0);
-    for (std::size_t i = 0; i < n; ++i)
-        ++start[bucket(i) + 1];
-    for (std::size_t b = 0; b < NumBuckets; ++b)
-        start[b + 1] += start[b];
-    std::vector<std::uint64_t> order(n);
-    {
-        std::vector<std::uint64_t> cursor(start.begin(), start.end() - 1);
-        for (std::size_t i = 0; i < n; ++i)
-            order[cursor[bucket(i)]++] = i;
-    }
+    // (bucket, slot) on every backend, chunked or not.
+    std::vector<std::uint64_t> start;
+    std::vector<std::uint64_t> order;
+    slot_runs_impl::counting_sort(n, NumBuckets, bucket, order, start);
     // Within a bucket the slots ascend already; sort them by (key, slot).
     parallel_for(
         NumBuckets,
@@ -30498,6 +30597,47 @@ SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::s
         FacetKeyLess{});
 }
 
+/**
+ * @brief `group_slots` for variable-length integer keys stored as CSR: key
+ * `i` is `rValues[rOffsets[i] .. rOffsets[i + 1])`, and two keys are equal
+ * exactly when they have the same length and values. Bucketed by each key's
+ * first value (`NumIds` when the key is empty or that value is not in
+ * `[0, NumIds)`), so a caller whose keys are sorted rows gets the smallest
+ * id as the bucket. The keep-first rule of a duplicate filter is the run
+ * head: slots ascend within a run.
+ */
+inline SlotRuns group_int_rows(const std::vector<std::int64_t>& rValues,
+                               const std::vector<std::uint64_t>& rOffsets, std::size_t NumIds) {
+    const std::size_t n = rOffsets.empty() ? 0 : rOffsets.size() - 1;
+    std::vector<std::uint64_t> slots(n);
+    parallel_for_bw(n, [&](std::size_t i) { slots[i] = i; });
+    const std::int64_t* v = rValues.data();
+    const std::uint64_t* off = rOffsets.data();
+    return group_slots(
+        slots, NumIds + 1,
+        [&](std::uint64_t i) -> std::size_t {
+            if (off[i] == off[i + 1] || v[off[i]] < 0 ||
+                static_cast<std::size_t>(v[off[i]]) >= NumIds)
+                return NumIds;
+            return static_cast<std::size_t>(v[off[i]]);
+        },
+        [&](std::uint64_t a, std::uint64_t b) {
+            return std::lexicographical_compare(v + off[a], v + off[a + 1], v + off[b],
+                                                v + off[b + 1]);
+        });
+}
+
+/// Per slot, whether an earlier slot holds its key: every member of a run
+/// but its head (the keep-first rule).
+inline std::vector<std::uint8_t> later_duplicates(const SlotRuns& rRuns, std::size_t NumSlots) {
+    std::vector<std::uint8_t> dup(NumSlots, 0);
+    parallel_for(rRuns.NumRuns(), [&](std::size_t r) {
+        for (const std::uint64_t* p = rRuns.Begin(r) + 1; p < rRuns.End(r); ++p)
+            dup[*p] = 1;
+    });
+    return dup;
+}
+
 /// Per slot, how many slots hold its key (the count-only rule).
 inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::size_t NumSlots) {
     std::vector<std::uint32_t> count(NumSlots, 0);
@@ -30512,6 +30652,158 @@ inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/slot_runs.hpp =====
+// ===== begin src/cpp/src/detail/surface_edge_runs.hpp =====
+/**
+ * @file detail/surface_edge_runs.hpp
+ * @brief A soup's (triangle, corner) edge records grouped by undirected edge,
+ * computed once for the two tables built from them.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * `build_surface_edges` (the watertightness report) and `build_distance_query`
+ * (the edge normals) group the same keys -- corner `3 t + i`'s edge from
+ * corner `i` to corner `i + 1`, as (low, high) -- the same way. An operation
+ * that needs both (`sample_distance`, `distance_to_surface`, `shrinkwrap`,
+ * `remesh_volume`) groups them once and hands the runs to both, with results
+ * identical to the one-argument forms. Roadmap §4, "Build once".
+ */
+
+// System includes
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Every corner's undirected edge key and the runs of equal keys, in
+/// ascending key order (bucketed by the lower endpoint).
+struct SurfaceEdgeRuns {
+    std::vector<SurfaceEdgeKey> mKeys;  ///< per corner `3 t + i`
+    SlotRuns mRuns;
+};
+
+/// Group @p rSoup's corner edges.
+SurfaceEdgeRuns surface_edge_runs(const TriangleSoup& rSoup);
+
+/// `build_surface_edges(rSoup)` from runs `surface_edge_runs(rSoup)` built.
+SurfaceEdgeMap build_surface_edges_from_runs(const TriangleSoup& rSoup,
+                                             const SurfaceEdgeRuns& rRuns);
+
+/// `build_distance_query(rSoup, rOptions)` from runs `surface_edge_runs(rSoup)`
+/// built.
+DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
+                                             const SurfaceDistanceOptions& rOptions,
+                                             const SurfaceEdgeRuns& rRuns);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/typed_view.hpp =====
+/**
+ * @file detail/typed_view.hpp
+ * @brief An array's elements as `int64_t` or `double`, with the dtype switch
+ * taken once per array instead of once per element.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * `Int64View` reads every element exactly as `detail::read_int` does, and
+ * `DoubleView` exactly as `detail::read_double` does -- a pointer into the
+ * array itself when its dtype already is the target, otherwise one converted
+ * copy made in parallel through `dispatch_dtype`. A hot loop then indexes a
+ * plain pointer. Roadmap §4, "Hoist the dtype switch in operations".
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <type_traits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One element as `read_int` converts it.
+template <class T>
+inline std::int64_t typed_view_int(T v) {
+    if constexpr (std::is_floating_point_v<T>) {
+        const double d = static_cast<double>(v);
+        if (!(d == d))
+            return 0;
+        if (d >= 9223372036854775807.0)
+            return std::numeric_limits<std::int64_t>::max();
+        if (d < -9223372036854775808.0)
+            return std::numeric_limits<std::int64_t>::min();
+        return static_cast<std::int64_t>(d);
+    } else {
+        return static_cast<std::int64_t>(v);
+    }
+}
+
+/// An array read as `int64_t`, as `read_int` reads each element.
+class Int64View {
+public:
+    explicit Int64View(const NDArray& rA) {
+        const std::size_t n = rA.Size();
+        if (rA.Dtype() == DType::Int64) {
+            mpData = rA.As<std::int64_t>();
+            return;
+        }
+        mOwned.resize(n);
+        dispatch_dtype(rA.Dtype(), [&]<class T>() {
+            const T* src = rA.As<T>();
+            std::int64_t* dst = mOwned.data();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i] = typed_view_int<T>(src[i]); });
+        });
+        mpData = mOwned.data();
+    }
+    Int64View(const Int64View&) = delete;
+    Int64View& operator=(const Int64View&) = delete;
+
+    const std::int64_t* Data() const { return mpData; }
+    std::int64_t operator[](std::size_t i) const { return mpData[i]; }
+
+private:
+    const std::int64_t* mpData = nullptr;
+    std::vector<std::int64_t> mOwned;
+};
+
+/// An array read as `double`, as `read_double` reads each element.
+class DoubleView {
+public:
+    explicit DoubleView(const NDArray& rA) {
+        const std::size_t n = rA.Size();
+        if (rA.Dtype() == DType::Float64) {
+            mpData = rA.As<double>();
+            return;
+        }
+        mOwned.resize(n);
+        dispatch_dtype(rA.Dtype(), [&]<class T>() {
+            const T* src = rA.As<T>();
+            double* dst = mOwned.data();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i] = static_cast<double>(src[i]); });
+        });
+        mpData = mOwned.data();
+    }
+    DoubleView(const DoubleView&) = delete;
+    DoubleView& operator=(const DoubleView&) = delete;
+
+    const double* Data() const { return mpData; }
+    double operator[](std::size_t i) const { return mpData[i]; }
+
+private:
+    const double* mpData = nullptr;
+    std::vector<double> mOwned;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/typed_view.hpp =====
 // ===== begin src/cpp/src/detail/weld.hpp =====
 /**
  * @file detail/weld.hpp
@@ -48535,24 +48827,28 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 namespace detail {
 
 DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n) {
+    // A stable counting sort of the corners by vertex (chunked in parallel
+    // when large, slot_runs.hpp): each row lists its faces in ascending order,
+    // a face once per corner it has at the vertex.
+    const std::size_t ncorner = rFaces.mNumFaces * 3;
+    std::vector<std::uint64_t> order;
+    std::vector<std::uint64_t> start;
+    slot_runs_impl::counting_sort(
+        ncorner, n, [&](std::uint64_t c) { return static_cast<std::size_t>(rFaces.mCorners[c]); },
+        order, start);
     DecimCsr csr;
-    csr.mXadj.assign(n + 1, 0);
-    const std::size_t nf = rFaces.mNumFaces;
-    for (std::size_t i = 0; i < nf * 3; ++i)
-        ++csr.mXadj[static_cast<std::size_t>(rFaces.mCorners[i]) + 1];
-    for (std::size_t i = 0; i < n; ++i)
-        csr.mXadj[i + 1] += csr.mXadj[i];
-    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
-    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
-    for (std::size_t f = 0; f < nf; ++f)
-        for (std::size_t k = 0; k < 3; ++k) {
-            const std::size_t v = static_cast<std::size_t>(rFaces.mCorners[f * 3 + k]);
-            csr.mAdj[static_cast<std::size_t>(cursor[v]++)] = static_cast<std::int64_t>(f);
-        }
+    csr.mXadj.resize(n + 1);
+    parallel_for_bw(n + 1,
+                    [&](std::size_t i) { csr.mXadj[i] = static_cast<std::int64_t>(start[i]); });
+    csr.mAdj.resize(ncorner);
+    parallel_for_bw(ncorner,
+                    [&](std::size_t j) { csr.mAdj[j] = static_cast<std::int64_t>(order[j] / 3); });
     return csr;
 }
 
@@ -48700,7 +48996,7 @@ DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t 
 
     if (rCtx.mPlacement == DecimatePlacement::Optimal) {
         const double midpoint[3] = {(xa[0] + xb[0]) * 0.5, (xa[1] + xb[1]) * 0.5,
-                                     (xa[2] + xb[2]) * 0.5};
+                                    (xa[2] + xb[2]) * 0.5};
         decim_quadric_optimal_point(q, midpoint, out.mX);
     } else {  // Midpoint
         out.mX[0] = (xa[0] + xb[0]) * 0.5;
@@ -51222,13 +51518,15 @@ std::string format_real16(double Value) {
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 namespace detail {
@@ -51239,14 +51537,6 @@ namespace {
 // simplices sharing an edge produce the same key, so the crossing point is
 // deduped to one output node (the section is watertight).
 using MarchingEdgeKey = std::pair<std::int64_t, std::int64_t>;
-
-struct MarchingEdgeKeyHash {
-    std::size_t operator()(const MarchingEdgeKey& rKey) const {
-        std::size_t h = std::hash<std::int64_t>{}(rKey.first);
-        h ^= std::hash<std::int64_t>{}(rKey.second) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
 
 // Local edges of a tetrahedron: e0=(0,1) e1=(0,2) e2=(0,3) e3=(1,2) e4=(1,3) e5=(2,3).
 constexpr std::uint8_t kTetEdge[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
@@ -51379,49 +51669,83 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
     const bool has_parent = simp.HasCellData("convert:parent_cell") &&
                             simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
 
-    // --- serial cut + edge-key dedup (the determinism pin) -------------------
-    // Iterated in a fixed (block, cell, ring-edge) order; node ids are handed
-    // out by a single sweep, so output is identical across backends and threads.
-    std::unordered_map<MarchingEdgeKey, std::int64_t, MarchingEdgeKeyHash> node_id;
+    // --- cut + edge-key dedup (the determinism pin) --------------------------
+    // Slots in a fixed (block, cell, ring-edge) order, and node ids handed out
+    // in the order a serial sweep over them first meets each edge: first-seen
+    // numbering over the sort-based table (slot_runs.hpp), so the output is
+    // identical across backends and threads. Each cell's corners, mask and
+    // ring are found in parallel, then every face and edge slot is written at
+    // its prefix offset.
     std::vector<MarchingEdgeKey> node_edges;
     std::vector<MarchingFace> faces;
 
     if (maxdim == 2 || maxdim == 3) {
         const CellType want = maxdim == 3 ? CellType::Tetra : CellType::Triangle;
+        const std::size_t ncorners = maxdim == 3 ? 4u : 3u;
+        const auto* edge_tbl = maxdim == 3 ? &kTetEdge[0] : &kTriEdge[0];
+        const MarchingRing* ring_tbl = maxdim == 3 ? kTetRing : kTriRing;
+        const NDArray& points = simp.Points();
+
+        struct MarchingCutBlock {
+            std::size_t mBlock;
+            std::vector<std::array<std::int64_t, 4>> mCorners;  // per cell
+            std::vector<std::uint8_t> mMask;                    // per cell
+            std::vector<std::int64_t> mWithin;                  // per cell: parent within block
+            std::size_t mFaceBase = 0;                          // first face of the block
+            std::vector<std::uint64_t> mFaceAt;                 // per cell: block-local face index
+        };
+        std::vector<MarchingCutBlock> cut;
         std::size_t bi = 0;
         for (const auto cb : simp.CellRange()) {
             const std::size_t block = bi++;
             const CellType type = cell_type_from_name(std::string(cb.Type()));
             if (type != want || cb.IsRagged())
                 continue;
-            const NDArray& conn = cb.Conn();
+            MarchingCutBlock b;
+            b.mBlock = block;
             const std::size_t npc = cb.NodesPerCell();
-            const std::size_t ncorners = maxdim == 3 ? 4u : 3u;
-            const auto* edge_tbl = maxdim == 3 ? &kTetEdge[0] : &kTriEdge[0];
-            const MarchingRing* ring_tbl = maxdim == 3 ? kTetRing : kTriRing;
-            const NDArray* parent =
-                has_parent ? &simp.CellData("convert:parent_cell", block) : nullptr;
-            const NDArray& points = simp.Points();
             const std::size_t nc = cb.NumCells();
-            for (std::size_t c = 0; c < nc; ++c) {
-                const std::size_t row = c * npc;
-                std::array<std::int64_t, 4> nid{};
+            const Int64View conn(cb.Conn());
+            std::unique_ptr<Int64View> parent;
+            if (has_parent)
+                parent = std::make_unique<Int64View>(simp.CellData("convert:parent_cell", block));
+            b.mCorners.resize(nc);
+            b.mMask.resize(nc);
+            b.mWithin.resize(nc);
+            std::vector<std::uint64_t> has_face(nc);
+            parallel_for(nc, [&](std::size_t c) {
                 unsigned mask = 0;
                 for (std::size_t k = 0; k < ncorners; ++k) {
-                    nid[k] = detail::read_int(conn, row + k);
-                    if (dist[static_cast<std::size_t>(nid[k])] < 0.0)
+                    const std::int64_t id = conn[c * npc + k];
+                    b.mCorners[c][k] = id;
+                    if (dist[static_cast<std::size_t>(id)] < 0.0)
                         mask |= (1u << k);
                 }
-                const MarchingRing& ring = ring_tbl[mask];
+                b.mMask[c] = static_cast<std::uint8_t>(mask);
+                b.mWithin[c] = parent ? (*parent)[c] : static_cast<std::int64_t>(c);
+                has_face[c] = ring_tbl[mask].mCount != 0 ? 1 : 0;
+            });
+            b.mFaceAt.resize(nc);
+            const std::uint64_t nfaces =
+                parallel_exclusive_scan(has_face.data(), nc, b.mFaceAt.data(), std::uint64_t{0});
+            b.mFaceBase = faces.size();
+            faces.resize(faces.size() + nfaces);
+            cut.push_back(std::move(b));
+        }
+
+        // Every face's edge slots, at prefix offsets over the faces.
+        const std::size_t nfaces = faces.size();
+        for (MarchingCutBlock& b : cut) {
+            const std::size_t nc = b.mMask.size();
+            parallel_for(nc, [&](std::size_t c) {
+                const MarchingRing& ring = ring_tbl[b.mMask[c]];
                 if (ring.mCount == 0)
-                    continue;
-                MarchingFace f;
+                    return;
+                MarchingFace& f = faces[b.mFaceBase + b.mFaceAt[c]];
                 f.mNumVerts = ring.mCount;
-                f.mParentBlock = block;
+                f.mParentBlock = b.mBlock;
                 f.mParentLocal = c;
-                const std::int64_t within =
-                    parent ? detail::read_int(*parent, c) : static_cast<std::int64_t>(c);
-                f.mParentGlobalCell = rInput.mOrigBlockBase[block] + within;
+                f.mParentGlobalCell = rInput.mOrigBlockBase[b.mBlock] + b.mWithin[c];
                 f.mOrientRef = {0.0, 0.0, 0.0};
                 if (field_gradient) {
                     // Reference direction = centroid(corners with d >= 0) minus
@@ -51433,8 +51757,8 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
                     std::size_t npos = 0;
                     std::size_t nneg = 0;
                     for (std::size_t k = 0; k < ncorners; ++k) {
-                        const Vec3 x = detail::read_point(points, dim, nid[k]);
-                        if ((mask & (1u << k)) != 0u) {
+                        const Vec3 x = detail::read_point(points, dim, b.mCorners[c][k]);
+                        if ((b.mMask[c] & (1u << k)) != 0u) {
                             neg = detail::vec3_add(neg, x);
                             ++nneg;
                         } else {
@@ -51447,26 +51771,41 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
                         detail::vec3_sub(detail::vec3_scale(pos, 1.0 / static_cast<double>(npos)),
                                          detail::vec3_scale(neg, 1.0 / static_cast<double>(nneg)));
                 }
+            });
+        }
+        std::vector<std::uint64_t> verts(nfaces);
+        parallel_for_bw(nfaces, [&](std::size_t f) { verts[f] = faces[f].mNumVerts; });
+        std::vector<std::uint64_t> slot_of(nfaces);
+        const std::uint64_t nslots =
+            parallel_exclusive_scan(verts.data(), nfaces, slot_of.data(), std::uint64_t{0});
+        std::vector<MarchingEdgeKey> keys(nslots);
+        for (const MarchingCutBlock& b : cut) {
+            parallel_for(b.mMask.size(), [&](std::size_t c) {
+                const MarchingRing& ring = ring_tbl[b.mMask[c]];
+                if (ring.mCount == 0)
+                    return;
+                const std::uint64_t base = slot_of[b.mFaceBase + b.mFaceAt[c]];
                 for (std::size_t e = 0; e < ring.mCount; ++e) {
                     const std::uint8_t ei = ring.mEdges[e];
-                    const std::int64_t ga = nid[edge_tbl[ei][0]];
-                    const std::int64_t gb = nid[edge_tbl[ei][1]];
-                    const MarchingEdgeKey key =
-                        ga < gb ? MarchingEdgeKey{ga, gb} : MarchingEdgeKey{gb, ga};
-                    auto it = node_id.find(key);
-                    std::int64_t id;
-                    if (it == node_id.end()) {
-                        id = static_cast<std::int64_t>(node_edges.size());
-                        node_id.emplace(key, id);
-                        node_edges.push_back(key);
-                    } else {
-                        id = it->second;
-                    }
-                    f.mNodes[e] = id;
+                    const std::int64_t ga = b.mCorners[c][edge_tbl[ei][0]];
+                    const std::int64_t gb = b.mCorners[c][edge_tbl[ei][1]];
+                    keys[base + e] = ga < gb ? MarchingEdgeKey{ga, gb} : MarchingEdgeKey{gb, ga};
                 }
-                faces.push_back(f);
-            }
+            });
         }
+        const SlotRuns runs = group_slots(keys, nnodes_in + 1, [&](const MarchingEdgeKey& rK) {
+            return rK.first >= 0 && static_cast<std::size_t>(rK.first) < nnodes_in
+                       ? static_cast<std::size_t>(rK.first)
+                       : nnodes_in;
+        });
+        const FirstSeen ids = number_first_seen(runs, nslots);
+        node_edges.resize(ids.NumIds());
+        parallel_for_bw(ids.NumIds(),
+                        [&](std::size_t i) { node_edges[i] = keys[runs.Head(ids.mRunOfId[i])]; });
+        parallel_for(nfaces, [&](std::size_t f) {
+            for (std::size_t e = 0; e < faces[f].mNumVerts; ++e)
+                faces[f].mNodes[e] = ids.mIdOfSlot[slot_of[f] + e];
+        });
     }
 
     const std::size_t nnodes = node_edges.size();
@@ -54509,6 +54848,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/subset.cpp =====
 // ===== begin src/cpp/src/detail/surface_distance.cpp =====
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -54657,41 +54997,54 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
     return soup;
 }
 
-SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
-    // Per undirected edge: how many triangles use it, and how many use it in the
-    // low->high direction. A consistently wound closed surface has every edge
-    // used exactly twice, once in each direction. One record per (triangle,
-    // corner), grouped by a parallel sort (slot_runs.hpp): a run is one edge,
-    // its slots in ascending (triangle, corner) order, so its head names the
-    // first triangle, as the serial map insert did.
+SurfaceEdgeRuns surface_edge_runs(const TriangleSoup& rSoup) {
+    // One record per (triangle, corner), grouped by a parallel sort
+    // (slot_runs.hpp): a run is one edge, its slots in ascending (triangle,
+    // corner) order, so its head names the first triangle, as the serial map
+    // insert did.
     const std::size_t ntri = rSoup.NumTriangles();
-    std::vector<SurfaceEdgeKey> keys(ntri * 3);
-    std::vector<std::uint8_t> forward(ntri * 3);
+    SurfaceEdgeRuns out;
+    out.mKeys.resize(ntri * 3);
     parallel_for(ntri, [&](std::size_t t) {
         const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
         for (std::size_t e = 0; e < 3; ++e) {
             const std::int64_t u = v[e];
             const std::int64_t w = v[(e + 1) % 3];
-            keys[t * 3 + e] = SurfaceEdgeKey{u < w ? u : w, u < w ? w : u};
-            forward[t * 3 + e] = u < w;
+            out.mKeys[t * 3 + e] = SurfaceEdgeKey{u < w ? u : w, u < w ? w : u};
         }
     });
     // Bucketed by the lower endpoint, the key's leading component, so the runs
-    // come out in ascending key order: the map is sorted, as documented.
+    // come out in ascending key order: the edge map is sorted, as documented.
     const std::size_t npts = rSoup.mPoints.size();
-    const SlotRuns runs = group_slots(keys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
+    out.mRuns = group_slots(out.mKeys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
         return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
                    ? static_cast<std::size_t>(rK[0])
                    : npts;
     });
+    return out;
+}
+
+SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
+    return build_surface_edges_from_runs(rSoup, surface_edge_runs(rSoup));
+}
+
+SurfaceEdgeMap build_surface_edges_from_runs(const TriangleSoup& rSoup,
+                                             const SurfaceEdgeRuns& rRuns) {
+    // Per undirected edge: how many triangles use it, and how many use it in the
+    // low->high direction. A consistently wound closed surface has every edge
+    // used exactly twice, once in each direction.
+    const SlotRuns& runs = rRuns.mRuns;
     SurfaceEdgeMap edges(runs.NumRuns());
     parallel_for(runs.NumRuns(), [&](std::size_t r) {
         SurfaceEdgeRecord rec;
         rec.mUsed = static_cast<std::int64_t>(runs.Size(r));
-        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
-            rec.mForward += forward[*p];
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            const std::array<std::int64_t, 3>& v = rSoup.mVertices[*p / 3];
+            const std::size_t e = static_cast<std::size_t>(*p % 3);
+            rec.mForward += v[e] < v[(e + 1) % 3] ? 1 : 0;
+        }
         rec.mFirstTriangle = static_cast<std::int64_t>(runs.Head(r) / 3);
-        edges[r] = {keys[runs.Head(r)], rec};
+        edges[r] = {rRuns.mKeys[runs.Head(r)], rec};
     });
     return edges;
 }
@@ -54727,8 +55080,101 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
     return q;
 }
 
+namespace {
+
+// Grid insertion (roadmap §4): every (bucket, triangle) pair of the
+// triangles' quantized boxes, laid out in (triangle, z, y, x) order -- the
+// serial `InsertBox` loop's order -- and grouped by bucket with the
+// sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
+// Every bucket therefore lists its triangles in ascending order, exactly as
+// the serial inserts appended them, and the occupied box is the same.
+void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
+                         const std::vector<Vec3>& rHi) {
+    const std::size_t ntri = rLo.size();
+    std::vector<GridKey> key_lo(ntri);
+    std::vector<GridKey> key_hi(ntri);
+    std::vector<std::uint64_t> count(ntri);
+    parallel_for(ntri, [&](std::size_t t) {
+        key_lo[t] = rGrid.KeyOf(rLo[t].data());
+        key_hi[t] = rGrid.KeyOf(rHi[t].data());
+        const std::int64_t nx = key_hi[t].x - key_lo[t].x + 1;
+        const std::int64_t ny = key_hi[t].y - key_lo[t].y + 1;
+        const std::int64_t nz = key_hi[t].z - key_lo[t].z + 1;
+        count[t] = nx > 0 && ny > 0 && nz > 0
+                       ? static_cast<std::uint64_t>(nx) * static_cast<std::uint64_t>(ny) *
+                             static_cast<std::uint64_t>(nz)
+                       : 0;
+    });
+    std::vector<std::uint64_t> offset(ntri);
+    const std::uint64_t npairs =
+        parallel_exclusive_scan(count.data(), ntri, offset.data(), std::uint64_t{0});
+    std::vector<GridKey> keys(npairs);
+    parallel_for(ntri, [&](std::size_t t) {
+        GridKey* out = keys.data() + offset[t];
+        for (std::int64_t z = key_lo[t].z; z <= key_hi[t].z; ++z)
+            for (std::int64_t y = key_lo[t].y; y <= key_hi[t].y; ++y)
+                for (std::int64_t x = key_lo[t].x; x <= key_hi[t].x; ++x)
+                    *out++ = GridKey{x, y, z};
+    });
+    // About four pairs per counting-sort bucket; any bucket function gives the
+    // same runs, since a run is one key.
+    const std::size_t nbuckets = static_cast<std::size_t>(npairs / 4) + 1;
+    const SlotRuns runs = group_slots(
+        keys, nbuckets, [nbuckets](const GridKey& rK) { return GridKeyHash{}(rK) % nbuckets; },
+        [](const GridKey& rA, const GridKey& rB) {
+            if (rA.x != rB.x)
+                return rA.x < rB.x;
+            if (rA.y != rB.y)
+                return rA.y < rB.y;
+            return rA.z < rB.z;
+        });
+    // Slot -> triangle: the slots of triangle t are [offset[t], offset[t] + count[t]).
+    std::vector<std::int64_t> tri_of(npairs);
+    parallel_for(ntri, [&](std::size_t t) {
+        for (std::uint64_t k = 0; k < count[t]; ++k)
+            tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
+    });
+    // Buckets in first-seen order: the map is then built by the same sequence
+    // of key insertions as the serial loop, so it ends in the same state
+    // (bucket count, node order) and queries walk it as fast.
+    const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
+    std::vector<GridKey> bucket_keys(first.NumIds());
+    std::vector<std::vector<std::int64_t>> bucket_ids(first.NumIds());
+    parallel_for(first.NumIds(), [&](std::size_t b) {
+        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
+        bucket_keys[b] = keys[runs.Head(r)];
+        std::vector<std::int64_t>& ids = bucket_ids[b];
+        ids.reserve(runs.Size(r));
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
+            ids.push_back(tri_of[*p]);
+    });
+    // The occupied box: InsertBox covers every triangle's low and high key.
+    GridKey lo = key_lo[0];
+    GridKey hi = key_hi[0];
+    for (std::size_t t = 0; t < ntri; ++t) {
+        lo = GridKey{std::min(lo.x, std::min(key_lo[t].x, key_hi[t].x)),
+                     std::min(lo.y, std::min(key_lo[t].y, key_hi[t].y)),
+                     std::min(lo.z, std::min(key_lo[t].z, key_hi[t].z))};
+        hi = GridKey{std::max(hi.x, std::max(key_lo[t].x, key_hi[t].x)),
+                     std::max(hi.y, std::max(key_lo[t].y, key_hi[t].y)),
+                     std::max(hi.z, std::max(key_lo[t].z, key_hi[t].z))};
+    }
+    rGrid.AssignBuckets(std::move(bucket_keys), std::move(bucket_ids), lo, hi);
+}
+
+}  // namespace
+
 DistanceQuery build_distance_query(const TriangleSoup& rSoup,
                                    const SurfaceDistanceOptions& rOptions) {
+    if (rSoup.NumTriangles() == 0)
+        throw std::invalid_argument(std::string(kSdPrefix) +
+                                    "the surface has no triangles to measure against");
+    return build_distance_query_from_runs(rSoup, rOptions, surface_edge_runs(rSoup));
+}
+
+DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
+                                             const SurfaceDistanceOptions& rOptions,
+                                             const SurfaceEdgeRuns& rRuns) {
     const std::size_t ntri = rSoup.NumTriangles();
     if (ntri == 0)
         throw std::invalid_argument(std::string(kSdPrefix) +
@@ -54753,20 +55199,32 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     // root of the triangle count (roughly "one bucket per triangle's worth of
     // volume"), floored at the mean triangle so buckets never split a single
     // triangle needlessly and capped a few multiples above it.
+    // Every triangle's bounding box, in parallel: both the bucket size and the
+    // grid insertion below read them.
+    std::vector<Vec3> tri_lo(ntri);
+    std::vector<Vec3> tri_hi(ntri);
+    parallel_for(ntri, [&](std::size_t t) {
+        Vec3 tlo = rSoup.mCorners[t * 3];
+        Vec3 thi = tlo;
+        for (std::size_t i = 1; i < 3; ++i)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double v = rSoup.mCorners[t * 3 + i][k];
+                tlo[k] = tlo[k] < v ? tlo[k] : v;
+                thi[k] = thi[k] > v ? thi[k] : v;
+            }
+        tri_lo[t] = tlo;
+        tri_hi[t] = thi;
+    });
     double cell = rOptions.mGridCellSize;
     if (!(cell > 0.0)) {
+        // A serial fold in triangle order: the mean is a floating-point sum,
+        // and `mCellSize` is observable.
         Vec3 lo = rSoup.mCorners[0];
         Vec3 hi = lo;
         double sum = 0.0;
         for (std::size_t t = 0; t < ntri; ++t) {
-            Vec3 tlo = rSoup.mCorners[t * 3];
-            Vec3 thi = tlo;
-            for (std::size_t i = 1; i < 3; ++i)
-                for (std::size_t k = 0; k < 3; ++k) {
-                    const double v = rSoup.mCorners[t * 3 + i][k];
-                    tlo[k] = tlo[k] < v ? tlo[k] : v;
-                    thi[k] = thi[k] > v ? thi[k] : v;
-                }
+            const Vec3& tlo = tri_lo[t];
+            const Vec3& thi = tri_hi[t];
             for (std::size_t k = 0; k < 3; ++k) {
                 lo[k] = lo[k] < tlo[k] ? lo[k] : tlo[k];
                 hi[k] = hi[k] > thi[k] ? hi[k] : thi[k];
@@ -54784,22 +55242,7 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
         cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
     q.mCellSize = cell;
     q.mGrid = SpatialGrid(cell);
-
-    // Serial ascending insert. The bucket contents order is not observable given
-    // the tie-break, but keeping the insert serial costs nothing here and keeps
-    // the structure's documented determinism contract intact.
-    for (std::size_t t = 0; t < ntri; ++t) {
-        Vec3 lo = rSoup.mCorners[t * 3];
-        Vec3 hi = lo;
-        for (std::size_t i = 1; i < 3; ++i)
-            for (std::size_t k = 0; k < 3; ++k) {
-                const double v = rSoup.mCorners[t * 3 + i][k];
-                lo[k] = lo[k] < v ? lo[k] : v;
-                hi[k] = hi[k] > v ? hi[k] : v;
-            }
-        q.mGrid.InsertBox(q.mGrid.KeyOf(lo.data()), q.mGrid.KeyOf(hi.data()),
-                          static_cast<std::int64_t>(t));
-    }
+    sd_insert_triangles(q.mGrid, tri_lo, tri_hi);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -54822,21 +55265,7 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
         unit[t] = vec3_scale(n, 1.0 / len);
         has_unit[t] = 1;
     });
-    std::vector<SurfaceEdgeKey> keys(ntri * 3);
-    parallel_for(ntri, [&](std::size_t t) {
-        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        for (std::size_t i = 0; i < 3; ++i) {
-            const std::int64_t p = v[i];
-            const std::int64_t r = v[(i + 1) % 3];
-            keys[t * 3 + i] = SurfaceEdgeKey{p < r ? p : r, p < r ? r : p};
-        }
-    });
-    const std::size_t npts = rSoup.mPoints.size();
-    const SlotRuns runs = group_slots(keys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
-        return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
-                   ? static_cast<std::size_t>(rK[0])
-                   : npts;
-    });
+    const SlotRuns& runs = rRuns.mRuns;
     std::vector<std::uint8_t> used(runs.NumRuns(), 0);
     parallel_for(runs.NumRuns(), [&](std::size_t r) {
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r) && !used[r]; ++p)
@@ -55119,6 +55548,8 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -55164,6 +55595,9 @@ public:
         }
         return X;
     }
+    /// The parent link of @p X: never above @p X, since a root is its set's
+    /// smallest index and path halving only moves links down.
+    std::int64_t Parent(std::size_t X) const { return mParent[X]; }
     void Unite(std::int64_t A, std::int64_t B) {
         const std::int64_t ra = Find(A);
         const std::int64_t rb = Find(B);
@@ -55260,13 +55694,13 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
     std::vector<double> length(ntri, 0.0);
     std::vector<Vec3> unit(ntri, Vec3{0.0, 0.0, 0.0});
     VertexNormalGroups out;
-    for (std::size_t t = 0; t < ntri; ++t) {
+    parallel_for(ntri, [&](std::size_t t) {
         length[t] = vec3_norm(face[t]);
         if (length[t] > 0.0)
             unit[t] = vec3_scale(face[t], 1.0 / length[t]);
-        else
-            ++out.mNumDegenerate;
-    }
+    });
+    for (std::size_t t = 0; t < ntri; ++t)
+        out.mNumDegenerate += length[t] > 0.0 ? 0 : 1;
 
     SnUnionFind sets(ncorner);
     if (SplitAngleDeg < 0.0) {
@@ -55283,25 +55717,31 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
         const bool always = SplitAngleDeg >= 180.0;
         const double cos_threshold = std::cos(SplitAngleDeg * (kSnPi / 180.0));
 
-        std::vector<SnEdgeUse> uses;
-        uses.reserve(ncorner);
-        for (std::size_t t = 0; t < ntri; ++t) {
-            const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-            for (std::size_t i = 0; i < 3; ++i) {
-                const std::size_t j = (i + 1) % 3;
-                const std::int64_t u = v[i];
-                const std::int64_t w = v[j];
-                if (u == w)
-                    continue;  // a collapsed edge joins nothing
-                const std::int64_t ci = static_cast<std::int64_t>(t * 3 + i);
-                const std::int64_t cj = static_cast<std::int64_t>(t * 3 + j);
-                if (u < w)
-                    uses.push_back({u, w, static_cast<std::int64_t>(t), ci, cj, true});
-                else
-                    uses.push_back({w, u, static_cast<std::int64_t>(t), cj, ci, false});
-            }
-        }
-        std::sort(uses.begin(), uses.end(), sn_edge_use_less);
+        // One use per non-collapsed corner edge, written at its prefix offset
+        // (a collapsed edge joins nothing), then sorted by a total order.
+        std::vector<std::uint64_t> keep(ncorner);
+        parallel_for(ncorner, [&](std::size_t c) {
+            const std::array<std::int64_t, 3>& v = rSoup.mVertices[c / 3];
+            keep[c] = v[c % 3] != v[(c % 3 + 1) % 3] ? 1 : 0;
+        });
+        std::vector<std::uint64_t> at(ncorner);
+        const std::uint64_t nuses =
+            parallel_exclusive_scan(keep.data(), ncorner, at.data(), std::uint64_t{0});
+        std::vector<SnEdgeUse> uses(nuses);
+        parallel_for(ncorner, [&](std::size_t c) {
+            if (!keep[c])
+                return;
+            const std::size_t t = c / 3;
+            const std::size_t i = c % 3;
+            const std::size_t j = (i + 1) % 3;
+            const std::int64_t u = rSoup.mVertices[t][i];
+            const std::int64_t w = rSoup.mVertices[t][j];
+            const std::int64_t ci = static_cast<std::int64_t>(t * 3 + i);
+            const std::int64_t cj = static_cast<std::int64_t>(t * 3 + j);
+            uses[at[c]] = u < w ? SnEdgeUse{u, w, static_cast<std::int64_t>(t), ci, cj, true}
+                                : SnEdgeUse{w, u, static_cast<std::int64_t>(t), cj, ci, false};
+        });
+        parallel_sort(uses.begin(), uses.end(), sn_edge_use_less);
 
         for (std::size_t b = 0; b < uses.size();) {
             std::size_t e = b + 1;
@@ -55331,30 +55771,80 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
     }
 
     // Number the groups by ascending root. A root is the smallest corner of its
-    // set, so it has always been numbered by the time a later corner asks.
+    // set and every link points down, so one ascending pass resolves each
+    // corner's root, and a group's id is the number of roots before it.
     std::vector<std::int64_t> root(ncorner);
-    std::vector<std::int64_t> id(ncorner, -1);
-    out.mCornerGroup.assign(ncorner, 0);
     for (std::size_t c = 0; c < ncorner; ++c) {
-        root[c] = sets.Find(static_cast<std::int64_t>(c));
-        if (root[c] == static_cast<std::int64_t>(c)) {
-            id[c] = static_cast<std::int64_t>(out.mGroupPoint.size());
-            out.mGroupRoot.push_back(static_cast<std::int64_t>(c));
-            out.mGroupPoint.push_back(rSoup.mVertices[c / 3][c % 3]);
-        }
-        out.mCornerGroup[c] = id[static_cast<std::size_t>(root[c])];
+        const std::int64_t p = sets.Parent(c);
+        root[c] = p == static_cast<std::int64_t>(c) ? p : root[static_cast<std::size_t>(p)];
     }
-
-    // Serial scatter in ascending (triangle, corner) order, then normalise.
-    out.mGroupNormal.assign(out.NumGroups(), Vec3{0.0, 0.0, 0.0});
-    for (std::size_t t = 0; t < ntri; ++t) {
-        if (!(length[t] > 0.0))
-            continue;
-        for (std::size_t i = 0; i < 3; ++i) {
-            Vec3& acc = out.mGroupNormal[static_cast<std::size_t>(out.mCornerGroup[t * 3 + i])];
-            acc = vec3_add(acc,
-                           vec3_scale(unit[t], sn_corner_weight(rSoup, t, i, length[t], Weight)));
+    out.mCornerGroup.assign(ncorner, 0);
+    if (slot_runs_impl::workers() <= 1) {
+        // One worker: a single pass, numbering each root as it is met.
+        std::vector<std::int64_t> id(ncorner, -1);
+        for (std::size_t c = 0; c < ncorner; ++c) {
+            if (root[c] == static_cast<std::int64_t>(c)) {
+                id[c] = static_cast<std::int64_t>(out.mGroupPoint.size());
+                out.mGroupRoot.push_back(static_cast<std::int64_t>(c));
+                out.mGroupPoint.push_back(rSoup.mVertices[c / 3][c % 3]);
+            }
+            out.mCornerGroup[c] = id[static_cast<std::size_t>(root[c])];
         }
+    } else {
+        std::vector<std::uint64_t> is_root(ncorner);
+        parallel_for_bw(ncorner, [&](std::size_t c) {
+            is_root[c] = root[c] == static_cast<std::int64_t>(c) ? 1 : 0;
+        });
+        std::vector<std::uint64_t> id(ncorner);
+        const std::uint64_t nroots =
+            parallel_exclusive_scan(is_root.data(), ncorner, id.data(), std::uint64_t{0});
+        out.mGroupRoot.assign(nroots, 0);
+        out.mGroupPoint.assign(nroots, 0);
+        parallel_for(ncorner, [&](std::size_t c) {
+            const std::uint64_t g = id[static_cast<std::size_t>(root[c])];
+            out.mCornerGroup[c] = static_cast<std::int64_t>(g);
+            if (is_root[c]) {
+                out.mGroupRoot[g] = static_cast<std::int64_t>(c);
+                out.mGroupPoint[g] = rSoup.mVertices[c / 3][c % 3];
+            }
+        });
+    }
+    const std::size_t ngroups = out.NumGroups();
+
+    // Gathered per group over its corners in ascending (triangle, corner)
+    // order -- a stable counting sort by group -- which is the order the serial
+    // scatter added them in, then normalised. One worker scatters directly:
+    // the same sums, without building the sort.
+    out.mGroupNormal.assign(out.NumGroups(), Vec3{0.0, 0.0, 0.0});
+    if (slot_runs_impl::workers() <= 1) {
+        for (std::size_t t = 0; t < ntri; ++t) {
+            if (!(length[t] > 0.0))
+                continue;
+            for (std::size_t i = 0; i < 3; ++i) {
+                Vec3& acc = out.mGroupNormal[static_cast<std::size_t>(out.mCornerGroup[t * 3 + i])];
+                acc = vec3_add(
+                    acc, vec3_scale(unit[t], sn_corner_weight(rSoup, t, i, length[t], Weight)));
+            }
+        }
+    } else {
+        std::vector<std::uint64_t> order;
+        std::vector<std::uint64_t> start;
+        slot_runs_impl::counting_sort(
+            ncorner, static_cast<std::size_t>(ngroups),
+            [&](std::uint64_t c) { return static_cast<std::size_t>(out.mCornerGroup[c]); }, order,
+            start);
+        parallel_for(out.NumGroups(), [&](std::size_t g) {
+            Vec3 acc{0.0, 0.0, 0.0};
+            for (std::uint64_t k = start[g]; k < start[g + 1]; ++k) {
+                const std::size_t c = static_cast<std::size_t>(order[k]);
+                const std::size_t t = c / 3;
+                if (!(length[t] > 0.0))
+                    continue;
+                acc = vec3_add(
+                    acc, vec3_scale(unit[t], sn_corner_weight(rSoup, t, c % 3, length[t], Weight)));
+            }
+            out.mGroupNormal[g] = acc;
+        });
     }
     for (Vec3& n : out.mGroupNormal) {
         const double len = vec3_norm(n);
@@ -130687,8 +131177,8 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 // Project includes
@@ -130743,6 +131233,37 @@ std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_
     rWeldRep = std::move(weld.mRepOf);
     rRepSource = std::move(weld.mRepSource);
     return static_cast<std::int64_t>(rRepSource.size());
+}
+
+// Keep-first duplicate flags per cell: the non-degenerate cells' keys
+// (`rKeys`, empty when duplicates are kept) grouped by the sort-based table
+// (detail/slot_runs.hpp), every member of a run but its first flagged. The
+// same cells a serial sweep through a hash set of keys drops.
+std::vector<std::uint8_t> clean_later_duplicates(
+    const std::vector<std::vector<std::int64_t>>& rKeys,
+    const std::vector<std::uint8_t>& rDegenerate, std::size_t NumIds) {
+    const std::size_t nc = rDegenerate.size();
+    std::vector<std::uint8_t> duplicate(nc, 0);
+    if (rKeys.empty())
+        return duplicate;
+    std::vector<std::uint64_t> live;
+    live.reserve(nc);
+    for (std::size_t c = 0; c < nc; ++c)
+        if (!rDegenerate[c])
+            live.push_back(c);
+    const std::size_t nl = live.size();
+    std::vector<std::uint64_t> length(nl);
+    parallel_for_bw(nl, [&](std::size_t j) { length[j] = rKeys[live[j]].size(); });
+    std::vector<std::uint64_t> offset(nl + 1);
+    offset[nl] = parallel_exclusive_scan(length.data(), nl, offset.data(), std::uint64_t{0});
+    std::vector<std::int64_t> values(offset[nl]);
+    parallel_for(nl, [&](std::size_t j) {
+        std::copy(rKeys[live[j]].begin(), rKeys[live[j]].end(), values.begin() + offset[j]);
+    });
+    const detail::SlotRuns runs = detail::group_int_rows(values, offset, NumIds);
+    const std::vector<std::uint8_t> later = detail::later_duplicates(runs, nl);
+    parallel_for_bw(nl, [&](std::size_t j) { duplicate[live[j]] = later[j]; });
+    return duplicate;
 }
 
 }  // namespace
@@ -130807,10 +131328,17 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
             // per-face rotations still collide -- a plain sorted node list
             // could not tell a cube from a differently-connected solid on the
             // same eight nodes.
-            std::unordered_set<std::string> seen_poly;
-            for (std::size_t c = 0; c < nc; ++c) {
-                std::vector<std::vector<std::int64_t>> cell(cb.NumFaces(c));
-                bool degenerate = false;
+            //
+            // Phase A (parallel): each cell's welded faces, its degenerate
+            // test and its duplicate key -- the smallest id, the face count,
+            // then every face's length and sorted distinct ids, faces sorted.
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+            std::vector<std::uint8_t> degenerate(nc, 0);
+            std::vector<std::vector<std::int64_t>> keys(rOpts.drop_duplicate_cells ? nc : 0);
+            parallel_for(nc, [&](std::size_t c) {
+                std::vector<std::vector<std::int64_t>>& cell = cells[c];
+                cell.resize(cb.NumFaces(c));
+                bool degen = false;
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     auto face = cb.Face(c, f);
                     cell[f].reserve(face.second);
@@ -130821,10 +131349,10 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                         std::sort(u.begin(), u.end());
                         if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
                             3)
-                            degenerate = true;  // the face collapsed below a triangle
+                            degen = true;  // the face collapsed below a triangle
                     }
                 }
-                if (rOpts.drop_degenerate && !degenerate) {
+                if (rOpts.drop_degenerate && !degen) {
                     // Measure it through the shared kernel, on the WELDED nodes.
                     detail::CellRings rings;
                     std::vector<Vec3> coords;
@@ -130846,85 +131374,100 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     }
                     if (detail::orient_rings(rings, coords.data()) ==
                         detail::RingOrientation::Unorientable) {
-                        degenerate = true;
+                        degen = true;
                     } else {
                         const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
                         const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
                         if (!(std::abs(pm.mVolume) > eps * scale))
-                            degenerate = true;
+                            degen = true;
                     }
                 }
-                if (degenerate) {
+                degenerate[c] = degen ? 1 : 0;
+                if (degen || !rOpts.drop_duplicate_cells)
+                    return;
+                std::vector<std::vector<std::int64_t>> faces(cell);
+                std::int64_t smallest = std::numeric_limits<std::int64_t>::max();
+                for (std::vector<std::int64_t>& face : faces) {
+                    std::sort(face.begin(), face.end());
+                    face.erase(std::unique(face.begin(), face.end()), face.end());
+                    if (!face.empty())
+                        smallest = std::min(smallest, face.front());
+                }
+                std::sort(faces.begin(), faces.end());
+                std::vector<std::int64_t>& key = keys[c];
+                key.push_back(smallest);
+                key.push_back(static_cast<std::int64_t>(faces.size()));
+                for (const std::vector<std::int64_t>& face : faces) {
+                    key.push_back(static_cast<std::int64_t>(face.size()));
+                    key.insert(key.end(), face.begin(), face.end());
+                }
+            });
+            // Phase B: keep-first duplicates among the non-degenerate cells.
+            const std::vector<std::uint8_t> duplicate =
+                clean_later_duplicates(keys, degenerate, static_cast<std::size_t>(W));
+            // Phase C (serial, stored order): counts and the kept cells.
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (degenerate[c]) {
                     ++res.mCellsDroppedDegenerate;
                     continue;
                 }
-                if (rOpts.drop_duplicate_cells) {
-                    std::vector<std::string> face_keys;
-                    face_keys.reserve(cell.size());
-                    for (const std::vector<std::int64_t>& face : cell) {
-                        std::vector<std::int64_t> sorted(face);
-                        std::sort(sorted.begin(), sorted.end());
-                        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
-                        std::string k;
-                        for (std::int64_t v : sorted) {
-                            k.append(reinterpret_cast<const char*>(&v), sizeof(v));
-                            k.push_back(',');
-                        }
-                        face_keys.push_back(std::move(k));
-                    }
-                    std::sort(face_keys.begin(), face_keys.end());
-                    std::string key;
-                    for (const std::string& k : face_keys) {
-                        key += k;
-                        key.push_back(';');
-                    }
-                    if (!seen_poly.insert(std::move(key)).second) {
-                        ++res.mCellsDroppedDuplicate;
-                        continue;
-                    }
+                if (duplicate[c]) {
+                    ++res.mCellsDroppedDuplicate;
+                    continue;
                 }
-                for (const std::vector<std::int64_t>& face : cell)
+                for (const std::vector<std::int64_t>& face : cells[c])
                     for (std::int64_t r : face)
                         rep_used[static_cast<std::size_t>(r)] = 1;
-                bo.polyh.push_back(std::move(cell));
+                bo.polyh.push_back(std::move(cells[c]));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else if (cb.IsRagged()) {
             bo.kind = 1;
-            std::unordered_set<std::string> seen_rows;
-            for (std::size_t c = 0; c < nc; ++c) {
-                std::vector<std::int64_t> row(cb.RowSize(c));
+            // Phase A (parallel): welded rows, the degenerate test and the
+            // duplicate key (the sorted row).
+            std::vector<std::vector<std::int64_t>> rows(nc);
+            std::vector<std::uint8_t> degenerate(nc, 0);
+            std::vector<std::vector<std::int64_t>> keys(rOpts.drop_duplicate_cells ? nc : 0);
+            parallel_for(nc, [&](std::size_t c) {
+                std::vector<std::int64_t>& row = rows[c];
+                row.resize(cb.RowSize(c));
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
                 if (rOpts.drop_degenerate) {
                     std::vector<std::int64_t> u(row);
                     std::sort(u.begin(), u.end());
                     if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
-                        ++res.mCellsDroppedDegenerate;
-                        continue;  // fewer than three distinct nodes is not a polygon
+                        degenerate[c] = 1;  // fewer than three distinct nodes is not a polygon
+                        return;
                     }
                     std::vector<Vec3> coords(row.size());
                     for (std::size_t k = 0; k < row.size(); ++k)
                         coords[k] = detail::read_point(
                             points, dim, rep_source[static_cast<std::size_t>(row[k])]);
                     if (!(detail::polygon_area(coords.data(), coords.size()) > eps)) {
-                        ++res.mCellsDroppedDegenerate;
-                        continue;
+                        degenerate[c] = 1;
+                        return;
                     }
                 }
                 if (rOpts.drop_duplicate_cells) {
-                    std::vector<std::int64_t> sorted(row);
-                    std::sort(sorted.begin(), sorted.end());
-                    std::string key(reinterpret_cast<const char*>(sorted.data()),
-                                    sorted.size() * sizeof(std::int64_t));
-                    if (!seen_rows.insert(std::move(key)).second) {
-                        ++res.mCellsDroppedDuplicate;
-                        continue;
-                    }
+                    keys[c] = row;
+                    std::sort(keys[c].begin(), keys[c].end());
                 }
-                for (std::int64_t r : row)
+            });
+            const std::vector<std::uint8_t> duplicate =
+                clean_later_duplicates(keys, degenerate, static_cast<std::size_t>(W));
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (degenerate[c]) {
+                    ++res.mCellsDroppedDegenerate;
+                    continue;
+                }
+                if (duplicate[c]) {
+                    ++res.mCellsDroppedDuplicate;
+                    continue;
+                }
+                for (std::int64_t r : rows[c])
                     rep_used[static_cast<std::size_t>(r)] = 1;
-                bo.poly_rows.push_back(std::move(row));
+                bo.poly_rows.push_back(std::move(rows[c]));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else {
@@ -131931,6 +132474,8 @@ Mesh conservative_interpolate(const Mesh& rSource, const Mesh& rTarget,
 
 // Project includes (private, not installed)
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -132104,12 +132649,13 @@ CcellsOutBlock ccells_stage_passthrough(const Mesh::CellView& rBlock) {
         }
     } else {
         const NDArray& conn = rBlock.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = rBlock.NodesPerCell();
         out.mNodesPerCell = npc;
         out.mConn.resize(rBlock.NumCells() * npc);
         parallel_for_bw(rBlock.NumCells(), [&](std::size_t c) {
             for (std::size_t k = 0; k < npc; ++k)
-                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+                out.mConn[c * npc + k] = conn_v[c * npc + k];
         });
     }
     return out;
@@ -132237,6 +132783,7 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
         const std::size_t npc_in = cb.NodesPerCell();
         const std::size_t npc_out = static_cast<std::size_t>(cell_type_num_nodes(base));
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t ncells = cb.NumCells();
 
         CcellsOutBlock out;
@@ -132246,7 +132793,7 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
         std::vector<std::int64_t>& dst = out.mConn;
         parallel_for_bw(ncells, [&](std::size_t c) {
             for (std::size_t k = 0; k < npc_out; ++k)
-                dst[c * npc_out + k] = detail::read_int(conn, c * npc_in + k);
+                dst[c * npc_out + k] = conn_v[c * npc_in + k];
         });
         staged.push_back(std::move(out));
     }
@@ -132477,6 +133024,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         const std::size_t npc_out = tpl->mNodesPerChild;
         const std::size_t per_cell = tpl->mNumChildren;
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
 
         CcellsOutBlock out;
         out.mType = cell_type_name(tpl->mChildType);
@@ -132491,7 +133039,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             for (std::size_t child = 0; child < per_cell; ++child) {
                 for (std::size_t k = 0; k < npc_out; ++k)
                     dst[base_out + child * npc_out + k] =
-                        detail::read_int(conn, base_in + nodes[child * npc_out + k]);
+                        conn_v[base_in + nodes[child * npc_out + k]];
                 parents[c * per_cell + child] = static_cast<std::int64_t>(c);
             }
         });
@@ -132509,6 +133057,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         // of its source nodes. Order-independent, so neighbouring cells that
         // share a face agree on that face's centroid bit for bit.
         const NDArray& points = mesh.Points();
+        const detail::DoubleView points_v(points);
         const std::size_t dim = detail::cols(points);
         NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
         std::memcpy(np.Data(), points.Data(), points.Nbytes());
@@ -132517,7 +133066,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             for (std::size_t d = 0; d < dim; ++d) {
                 double sum = 0.0;
                 for (std::int64_t nid : src)
-                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                    sum += points_v[static_cast<std::size_t>(nid) * dim + d];
                 detail::write_double(np, (num_points + i) * dim + d,
                                      sum / static_cast<double>(src.size()));
             }
@@ -132531,6 +133080,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     } else {
         for (const std::string& name : mesh.PointDataNames()) {
             const NDArray& a = mesh.PointData(name);
+            const detail::DoubleView a_v(a);
             if (detail::rows(a) != num_points) {
                 out.AddPointData(name, detail::data_owned_copy(a));
                 continue;  // not per-point data; copy verbatim rather than mangle
@@ -132545,7 +133095,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
                     for (std::int64_t nid : src)
-                        sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                        sum += a_v[static_cast<std::size_t>(nid) * ncomp + k];
                     detail::write_double(b, (num_points + i) * ncomp + k,
                                          sum / static_cast<double>(src.size()));
                 }
@@ -132649,14 +133199,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         if (d.mpSpec == nullptr)
             continue;
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t nedges = d.mNumEdges;
         const std::vector<std::array<std::uint8_t, 2>>& edges = d.mpSpec->mEdges;
         parallel_for(cb.NumCells() * nedges, [&](std::size_t j) {
             const std::size_t cell = j / nedges;
             const std::size_t slot = j % nedges;
-            const std::int64_t a = detail::read_int(conn, cell * npc + edges[slot][0]);
-            const std::int64_t b = detail::read_int(conn, cell * npc + edges[slot][1]);
+            const std::int64_t a = conn_v[cell * npc + edges[slot][0]];
+            const std::int64_t b = conn_v[cell * npc + edges[slot][1]];
             keys[d.mFirstSlot + j] = a < b ? CcellsEdgeKey{a, b} : CcellsEdgeKey{b, a};
         });
     }
@@ -132687,6 +133238,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
 
     // --- phase 3: points = originals + one midpoint per unique edge ---
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t dim = detail::cols(points);
     {
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points + new_edges.size(), dim});
@@ -132695,8 +133247,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             const std::size_t a = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t b = static_cast<std::size_t>(new_edges[i].second);
             for (std::size_t k = 0; k < dim; ++k) {
-                const double v = 0.5 * (detail::read_double(points, a * dim + k) +
-                                        detail::read_double(points, b * dim + k));
+                const double v = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
                 detail::write_double(new_points, (num_points + i) * dim + k, v);
             }
         });
@@ -132713,6 +133264,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             continue;
         }
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc_in = cb.NodesPerCell();
         const std::size_t ncorners = d.mpSpec->mNumCorners;
         const std::size_t nedges = d.mNumEdges;
@@ -132723,7 +133275,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         std::int64_t* dst = block.As<std::int64_t>();
         parallel_for_bw(ncells, [&](std::size_t c) {
             for (std::size_t k = 0; k < ncorners; ++k)
-                dst[c * npc_out + k] = detail::read_int(conn, c * npc_in + k);
+                dst[c * npc_out + k] = conn_v[c * npc_in + k];
             for (std::size_t e = 0; e < nedges; ++e)
                 dst[c * npc_out + ncorners + e] = slot_id[d.mFirstSlot + c * nedges + e];
         });
@@ -132733,6 +133285,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
     // --- phase 5: point_data = originals + the endpoint mean per new node ---
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
+        const detail::DoubleView a_v(a);
         if (detail::rows(a) != num_points) {
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
@@ -132746,8 +133299,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             const std::size_t p = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t q = static_cast<std::size_t>(new_edges[i].second);
             for (std::size_t k = 0; k < ncomp; ++k) {
-                const double v = 0.5 * (detail::read_double(a, p * ncomp + k) +
-                                        detail::read_double(a, q * ncomp + k));
+                const double v = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
                 detail::write_double(b, (num_points + i) * ncomp + k, v);
             }
         });
@@ -133288,9 +133840,11 @@ CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOp
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/curvature.cpp =====
 // ===== begin src/cpp/src/operations/data_average.cpp =====
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -133298,6 +133852,8 @@ CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOp
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -133381,6 +133937,63 @@ void davg_cell_nodes(const Mesh::CellView& rCell, std::size_t index,
     rNodes.reserve(npc);
     for (std::size_t k = 0; k < npc; ++k)
         rNodes.push_back(detail::read_int(conn, index * npc + k));
+}
+
+/// Every point's incident cells (global, block-major ids), one entry per
+/// occurrence of the point in `davg_cell_nodes`, in (block, cell, node)
+/// order: the order in which the serial scatter added their contributions.
+/// Entries naming no point of the mesh are dropped, as the scatter skipped
+/// them.
+struct DavgIncidence {
+    std::vector<std::uint64_t> mStart;   ///< `npoints + 1` offsets into `mCellOf`
+    std::vector<std::uint64_t> mCellOf;  ///< per entry, its global cell
+};
+
+DavgIncidence davg_incidence(const Mesh& rMesh, const std::vector<std::size_t>& rBlockBase,
+                             std::size_t NumPoints) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t ncells = rBlockBase[nblocks];
+    std::vector<std::uint64_t> count(ncells);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        parallel_for(cb.NumCells(), [&](std::size_t c) {
+            thread_local std::vector<std::int64_t> nodes;
+            davg_cell_nodes(cb, c, nodes);
+            count[rBlockBase[b] + c] = nodes.size();
+        });
+    }
+    std::vector<std::uint64_t> offset(ncells);
+    const std::uint64_t nentries =
+        parallel_exclusive_scan(count.data(), ncells, offset.data(), std::uint64_t{0});
+    std::vector<std::uint64_t> point_of(nentries);
+    std::vector<std::uint64_t> cell_of(nentries);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        parallel_for(cb.NumCells(), [&](std::size_t c) {
+            thread_local std::vector<std::int64_t> nodes;
+            davg_cell_nodes(cb, c, nodes);
+            const std::size_t gc = rBlockBase[b] + c;
+            std::uint64_t e = offset[gc];
+            for (std::int64_t node : nodes) {
+                point_of[e] = node < 0 || static_cast<std::size_t>(node) >= NumPoints
+                                  ? NumPoints
+                                  : static_cast<std::uint64_t>(node);
+                cell_of[e] = gc;
+                ++e;
+            }
+        });
+    }
+    // A stable counting sort by point keeps each point's entries in entry
+    // order; bucket `NumPoints` collects the dropped ones.
+    std::vector<std::uint64_t> order;
+    DavgIncidence out;
+    detail::slot_runs_impl::counting_sort(
+        nentries, NumPoints + 1, [&](std::uint64_t e) { return point_of[e]; }, order, out.mStart);
+    out.mStart.pop_back();  // drop the invalid bucket's end
+    const std::uint64_t kept = out.mStart[NumPoints];
+    out.mCellOf.resize(kept);
+    parallel_for_bw(kept, [&](std::size_t j) { out.mCellOf[j] = cell_of[order[j]]; });
+    return out;
 }
 
 }  // namespace
@@ -133491,6 +134104,10 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
         }
     }
 
+    // Built on first use and shared by every array.
+    std::unique_ptr<DavgIncidence> incidence;
+    std::vector<double> cell_weight;
+    std::vector<std::size_t> cell_block_base;
     for (const std::string& name : names) {
         if (rMesh.CellDataNumBlocks(name) != nblocks)
             throw std::invalid_argument("meshio++: data_average: cell_data '" + name + "' has " +
@@ -133499,42 +134116,87 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
                                         " cell block(s)");
 
         const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
-        std::vector<double> sum(npoints * ncomp, 0.0);
-        std::vector<double> wsum(npoints * ncomp, 0.0);
-
-        // --- accumulation: SERIAL on purpose (scatter; FP add is not
-        // --- associative, so a parallel version would be thread-count
-        // --- dependent and non-reproducible across backends).
-        std::vector<std::int64_t> nodes;
-        for (std::size_t b = 0; b < nblocks; ++b) {
-            const auto cb = rMesh.Cells(b);
-            const NDArray& src = rMesh.CellData(name, b);
-            if (data_num_components(src) != ncomp)
+        for (std::size_t b = 0; b < nblocks; ++b)
+            if (data_num_components(rMesh.CellData(name, b)) != ncomp)
                 throw std::invalid_argument("meshio++: data_average: cell_data '" + name +
                                             "' has inconsistent component counts across blocks");
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                davg_cell_nodes(cb, c, nodes);
-                const double w = weights[b][c];
-                for (std::size_t k = 0; k < ncomp; ++k) {
-                    const double v = detail::read_double(src, c * ncomp + k);
-                    if (!std::isfinite(v))
-                        continue;
-                    for (std::int64_t node : nodes) {
-                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
+        double* pdst = dst.As<double>();
+        if (detail::slot_runs_impl::workers() <= 1) {
+            // One worker (a SEQ build, or one thread): the plain scatter, which
+            // adds the same terms in the same order as the gather below and is
+            // cheaper than building the incidence table first.
+            std::vector<double> sum(npoints * ncomp, 0.0);
+            std::vector<double> wsum(npoints * ncomp, 0.0);
+            std::vector<std::int64_t> nodes;
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const auto cb = rMesh.Cells(b);
+                const detail::DoubleView src(rMesh.CellData(name, b));
+                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                    davg_cell_nodes(cb, c, nodes);
+                    const double w = weights[b][c];
+                    for (std::size_t k = 0; k < ncomp; ++k) {
+                        const double v = src[c * ncomp + k];
+                        if (!std::isfinite(v))
                             continue;
-                        const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
-                        sum[idx] += w * v;
-                        wsum[idx] += w;
+                        for (std::int64_t node : nodes) {
+                            if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                                continue;
+                            const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
+                            sum[idx] += w * v;
+                            wsum[idx] += w;
+                        }
                     }
                 }
             }
+            for (std::size_t i = 0; i < npoints * ncomp; ++i)
+                pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
+            for (std::size_t i = 0; i < npoints * ncomp; ++i)
+                pdst[i] =
+                    davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
+            out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
+            continue;
+        }
+        if (!incidence) {
+            std::vector<std::size_t> block_base(nblocks + 1, 0);
+            for (std::size_t b = 0; b < nblocks; ++b)
+                block_base[b + 1] = block_base[b] + rMesh.Cells(b).NumCells();
+            incidence = std::make_unique<DavgIncidence>(davg_incidence(rMesh, block_base, npoints));
+            cell_weight.resize(block_base[nblocks]);
+            for (std::size_t b = 0; b < nblocks; ++b)
+                std::copy(weights[b].begin(), weights[b].end(),
+                          cell_weight.begin() + static_cast<std::ptrdiff_t>(block_base[b]));
+            cell_block_base = std::move(block_base);
+        }
+        // The cell values as doubles, block-major (read_double's conversion).
+        std::vector<double> values(cell_weight.size() * ncomp);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const detail::DoubleView src(rMesh.CellData(name, b));
+            const std::size_t n = (cell_block_base[b + 1] - cell_block_base[b]) * ncomp;
+            double* to = values.data() + cell_block_base[b] * ncomp;
+            parallel_for_bw(n, [&](std::size_t i) { to[i] = src[i]; });
         }
 
-        // --- final divide: bandwidth-bound, safe to parallelise -------------
-        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
-        double* pdst = dst.As<double>();
-        parallel_for_bw(npoints * ncomp, [&](std::size_t i) {
-            pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
+        // --- accumulation, gathered per point: each point adds its incident
+        // --- cells' weighted values in (block, cell, node) order -- the order
+        // --- the serial scatter added them in (FP add is not associative) --
+        // --- so the sums are bit-identical on every backend and thread count.
+        const DavgIncidence& inc = *incidence;
+        parallel_for(npoints, [&](std::size_t pnt) {
+            for (std::size_t k = 0; k < ncomp; ++k) {
+                double sum = 0.0;
+                double wsum = 0.0;
+                for (std::uint64_t j = inc.mStart[pnt]; j < inc.mStart[pnt + 1]; ++j) {
+                    const std::uint64_t gc = inc.mCellOf[j];
+                    const double v = values[gc * ncomp + k];
+                    if (!std::isfinite(v))
+                        continue;
+                    const double w = cell_weight[gc];
+                    sum += w * v;
+                    wsum += w;
+                }
+                pdst[pnt * ncomp + k] = wsum > 0.0 ? sum / wsum : std::nan("");
+            }
         });
         for (std::size_t i = 0; i < npoints * ncomp; ++i)
             pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
@@ -138450,7 +139112,13 @@ HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
     grad1.mMethod = rOptions.mMethod;
     grad1.mOutputName = kHessRawGradName;
     grad1.mOverwrite = true;
-    const GradientResult r1 = gradient(rMesh, grad1);
+    // Both passes run on the geometry and the field alone, so none of the
+    // input's other arrays is copied through their clones.
+    const Mesh work = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return Location == DataLocation::Point && rName == rOptions.mArrayName;
+        });
+    const GradientResult r1 = gradient(work, grad1);
 
     // The second pass differentiates the first pass' (n,3) gradient with the
     // default Gradient operator, which is generic over the input's own
@@ -138465,25 +139133,34 @@ HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
     grad2.mOverwrite = true;
     const GradientResult r2 = gradient(r1.mMesh, grad2);
 
-    // --- build the actual result from a fresh clone of the ORIGINAL input ---
-    Mesh out = detail::clone_mesh(rMesh);
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    std::vector<NDArray> hess_blocks;
-    hess_blocks.reserve(nblocks);
-    for (std::size_t b = 0; b < nblocks; ++b)
-        hess_blocks.push_back(r2.mMesh.CellData(kHessRawName, b));  // deep copy: NDArray owns its buffer
-    out.AddCellData(out_name, std::move(hess_blocks));
-
-    if (rOptions.mLocation == DataLocation::Point) {
+    // --- build the actual result from one clone of the ORIGINAL input -------
+    // Every array rides through except the ones the result replaces: the
+    // output name at its location and, for Point, at Cell too (the Cell-first
+    // array the averaging consumes is dropped afterwards, as before).
+    const bool at_point = rOptions.mLocation == DataLocation::Point;
+    Mesh out = detail::clone_mesh(rMesh, [&](DataLocation Location, const std::string& rName,
+                                             std::string&) {
+        if (rName != out_name)
+            return true;
+        return !(Location == DataLocation::Cell || (at_point && Location == DataLocation::Point));
+    });
+    if (!at_point) {
+        const std::size_t nblocks = rMesh.NumCellBlocks();
+        std::vector<NDArray> hess_blocks;
+        hess_blocks.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            hess_blocks.push_back(r2.mMesh.CellData(kHessRawName, b));  // deep copy
+        out.AddCellData(out_name, std::move(hess_blocks));
+    } else {
         // Compose the existing averaging rather than reimplementing a scatter
         // -- gradient()'s own Point-location handling, applied to the final
-        // Hessian array.
+        // Hessian array on the working mesh, which has the same geometry.
         DataAverageOptions avg;
-        avg.names = {out_name};
+        avg.names = {kHessRawName};
         avg.weight = CellPointWeight::Uniform;
         avg.overwrite = true;
-        Mesh with_points = cell_data_to_point_data(out, avg);
-        out = data_drop(with_points, DataLocation::Cell, {out_name});
+        const Mesh with_points = cell_data_to_point_data(r2.mMesh, avg);
+        out.AddPointData(out_name, NDArray(with_points.PointData(kHessRawName)));
     }
 
     return HessianResult{std::move(out), r2.mNumSkipped, r1.mNumFallback + r2.mNumFallback};
@@ -138504,6 +139181,8 @@ HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -138560,6 +139239,7 @@ std::size_t interp_total_cells(const Mesh& rMesh) {
 // _partition.py's _centroids in step, the numpy parity test pins this).
 std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
 
@@ -138579,8 +139259,7 @@ std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::int64_t node : nodes)
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] +=
-                            detail::read_double(points, static_cast<std::size_t>(node) * pdim + d);
+                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
                 if (!nodes.empty())
                     for (std::size_t d = 0; d < dim; ++d)
                         out[d] /= static_cast<double>(nodes.size());
@@ -138592,22 +139271,21 @@ std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::size_t k = 0; k < nn; ++k)
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points,
-                                                      static_cast<std::size_t>(row[k]) * pdim + d);
+                        out[d] += points_v[static_cast<std::size_t>(row[k]) * pdim + d];
                 if (nn > 0)
                     for (std::size_t d = 0; d < dim; ++d)
                         out[d] /= static_cast<double>(nn);
             });
         } else {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             parallel_for(ncells, [&, base](std::size_t c) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node =
-                        static_cast<std::size_t>(detail::read_int(conn, c * npc + k));
+                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points, node * pdim + d);
+                        out[d] += points_v[node * pdim + d];
                 }
                 if (npc > 0)
                     for (std::size_t d = 0; d < dim; ++d)
@@ -139000,11 +139678,12 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 if (cb.Type() != want || cb.NumCells() == 0)
                     continue;
                 const NDArray& conn = cb.Conn();
+                const detail::Int64View conn_v(conn);
                 const std::size_t n = cb.NumCells() * nv;
                 const std::size_t base = sconn.size();
                 sconn.resize(base + n);
                 for (std::size_t j = 0; j < n; ++j)
-                    sconn[base + j] = detail::read_int(conn, j);
+                    sconn[base + j] = conn_v[j];
             }
             const std::size_t nsimp = sconn.size() / nv;
 
@@ -139967,26 +140646,48 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         // Dedup (keep-first) if requested; else identity.
         bb.finalpos.assign(ob.pre_count, 0);
         if (rOpts.weld && rOpts.drop_duplicate_cells) {
-            std::map<std::vector<std::int64_t>, std::int64_t> seen;
-            for (std::size_t p = 0; p < ob.pre_count; ++p) {
-                std::vector<std::int64_t> key;
+            // Each cell's key -- the sorted multiset of all its nodes (every
+            // face's, for a polyhedron) -- built in parallel as CSR and
+            // grouped by the sort-based table (detail/slot_runs.hpp); every
+            // member of a run but its first is a duplicate, the cells a
+            // serial sweep through a map of keys drops.
+            const std::size_t pc = ob.pre_count;
+            const std::int64_t* rect = ob.poly || ob.ragged ? nullptr : bb.conn.As<std::int64_t>();
+            std::vector<std::uint64_t> length(pc);
+            parallel_for_bw(pc, [&](std::size_t p) {
+                std::size_t len = 0;
                 if (ob.poly) {
                     for (const auto& face : bb.polycells[p])
-                        key.insert(key.end(), face.begin(), face.end());
-                } else if (ob.ragged) {
-                    key = bb.polyrows[p];
+                        len += face.size();
                 } else {
-                    const std::int64_t* dst = bb.conn.As<std::int64_t>();
-                    key.assign(dst + p * ob.npc, dst + (p + 1) * ob.npc);
+                    len = ob.ragged ? bb.polyrows[p].size() : ob.npc;
                 }
-                std::sort(key.begin(), key.end());
-                auto it = seen.find(key);
-                if (it != seen.end()) {
+                length[p] = len;
+            });
+            std::vector<std::uint64_t> offset(pc + 1);
+            offset[pc] =
+                parallel_exclusive_scan(length.data(), pc, offset.data(), std::uint64_t{0});
+            std::vector<std::int64_t> keys(offset[pc]);
+            parallel_for(pc, [&](std::size_t p) {
+                std::int64_t* key = keys.data() + offset[p];
+                std::int64_t* out_k = key;
+                if (ob.poly) {
+                    for (const auto& face : bb.polycells[p])
+                        out_k = std::copy(face.begin(), face.end(), out_k);
+                } else if (ob.ragged) {
+                    out_k = std::copy(bb.polyrows[p].begin(), bb.polyrows[p].end(), out_k);
+                } else {
+                    out_k = std::copy(rect + p * ob.npc, rect + (p + 1) * ob.npc, out_k);
+                }
+                std::sort(key, out_k);
+            });
+            const detail::SlotRuns runs = detail::group_int_rows(keys, offset, out_pts);
+            const std::vector<std::uint8_t> duplicate = detail::later_duplicates(runs, pc);
+            for (std::size_t p = 0; p < pc; ++p) {
+                if (duplicate[p]) {
                     bb.finalpos[p] = -1;  // dropped duplicate
                 } else {
-                    const std::int64_t fidx = static_cast<std::int64_t>(bb.final_to_pre.size());
-                    seen.emplace(std::move(key), fidx);
-                    bb.finalpos[p] = fidx;
+                    bb.finalpos[p] = static_cast<std::int64_t>(bb.final_to_pre.size());
                     bb.final_to_pre.push_back(static_cast<std::int64_t>(p));
                 }
             }
@@ -140549,6 +141250,8 @@ NeighborPairs neighbor_pairs(const NDArray& rPoints, const NeighborOptions& rOpt
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 namespace {
 
@@ -140660,20 +141363,21 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
     const double nan = std::numeric_limits<double>::quiet_NaN();
     NDArray point_normals(DType::Float64, {n_out, std::size_t{3}});
     double* pn = point_normals.As<double>();
-    for (std::size_t i = 0; i < n_out * 3; ++i)
-        pn[i] = nan;
-    for (std::size_t g = 0; g < ngroups; ++g) {
+    parallel_for_bw(n_out * 3, [&](std::size_t i) { pn[i] = nan; });
+    // Each written row belongs to exactly one group (its primary, or its own
+    // appended copy), so the groups fill their rows independently.
+    parallel_for(ngroups, [&](std::size_t g) {
         const std::int64_t p = groups.mGroupPoint[g];
         const bool is_primary =
             static_cast<std::int64_t>(g) == primary[static_cast<std::size_t>(p)];
         if (!is_primary && group_point[g] == p)
-            continue;  // an undefined group folded into the primary one
+            return;  // an undefined group folded into the primary one
         if (!defined(g))
-            continue;  // stays NaN
+            return;  // stays NaN
         const std::size_t row = static_cast<std::size_t>(group_point[g]);
         for (std::size_t k = 0; k < 3; ++k)
             pn[row * 3 + k] = groups.mGroupNormal[g][k];
-    }
+    });
     for (std::size_t p = 0; p < n; ++p) {
         if (primary[p] < 0)
             ++result.mNumIsolated;
@@ -140690,12 +141394,18 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
         first_tri.assign(ncells_total, -1);
         cell_sum.assign(ncells_total, Vec3{0.0, 0.0, 0.0});
         const std::vector<Vec3> face = detail::soup_face_normals(soup);
-        for (std::size_t t = 0; t < ntri; ++t) {
-            const std::size_t c = static_cast<std::size_t>(soup.mSourceCell[t]);
-            if (first_tri[c] < 0)
-                first_tri[c] = static_cast<std::int64_t>(t);
-            cell_sum[c] = detail::vec3_add(cell_sum[c], face[t]);
-        }
+        // A cell's fan triangles are consecutive in the soup, in fan order:
+        // each run's first triangle sums the run, in the serial order.
+        parallel_for(ntri, [&](std::size_t t) {
+            const std::int64_t c = soup.mSourceCell[t];
+            if (t > 0 && soup.mSourceCell[t - 1] == c)
+                return;
+            Vec3 acc = cell_sum[static_cast<std::size_t>(c)];
+            for (std::size_t u = t; u < ntri && soup.mSourceCell[u] == c; ++u)
+                acc = detail::vec3_add(acc, face[u]);
+            first_tri[static_cast<std::size_t>(c)] = static_cast<std::int64_t>(t);
+            cell_sum[static_cast<std::size_t>(c)] = acc;
+        });
     }
 
     if (n_added == 0) {
@@ -140736,24 +141446,31 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
                 rIds[nv - 1] = corner_point(t + nv - 3, 2);
             };
             if (cb.IsRagged()) {
-                std::vector<std::vector<std::int64_t>> rows(ncells);
-                for (std::size_t c = 0; c < ncells; ++c) {
-                    rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-                    rewrite(c, rows[c]);
-                }
-                out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+                // Straight into CSR: the rows keep their sizes, so the offsets
+                // are the input's.
+                std::vector<std::int64_t> offsets(ncells + 1, 0);
+                for (std::size_t c = 0; c < ncells; ++c)
+                    offsets[c + 1] = offsets[c] + static_cast<std::int64_t>(cb.RowSize(c));
+                std::vector<std::int64_t> flat(static_cast<std::size_t>(offsets[ncells]));
+                parallel_for(ncells, [&](std::size_t c) {
+                    thread_local std::vector<std::int64_t> ids;
+                    ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+                    rewrite(c, ids);
+                    std::copy(ids.begin(), ids.end(),
+                              flat.begin() + static_cast<std::ptrdiff_t>(offsets[c]));
+                });
+                out.AddPolygonBlock(std::string(cb.Type()), std::move(flat), std::move(offsets));
             } else {
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 NDArray new_conn = NDArray::Uninit(DType::Int64, {ncells, npc});
-                std::vector<std::int64_t> ids(npc);
-                for (std::size_t c = 0; c < ncells; ++c) {
-                    for (std::size_t i = 0; i < npc; ++i)
-                        ids[i] = detail::read_int(conn, c * npc + i);
+                std::int64_t* dst = new_conn.As<std::int64_t>();
+                parallel_for(ncells, [&](std::size_t c) {
+                    thread_local std::vector<std::int64_t> ids;
+                    ids.assign(conn.Data() + c * npc, conn.Data() + (c + 1) * npc);
                     rewrite(c, ids);
-                    for (std::size_t i = 0; i < npc; ++i)
-                        detail::write_int(new_conn, c * npc + i, ids[i]);
-                }
+                    std::copy(ids.begin(), ids.end(), dst + c * npc);
+                });
                 out.AddCellBlock(std::string(cb.Type()), std::move(new_conn));
             }
         }
@@ -140809,13 +141526,13 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
             const std::size_t ncells = cb.NumCells();
             NDArray a(DType::Float64, {ncells, std::size_t{3}});
             double* d = a.As<double>();
-            for (std::size_t c = 0; c < ncells; ++c) {
+            parallel_for(ncells, [&](std::size_t c) {
                 const std::size_t global = static_cast<std::size_t>(bases[bi]) + c;
                 const Vec3& s = cell_sum[global];
                 const double len = detail::vec3_norm(s);
                 for (std::size_t k = 0; k < 3; ++k)
                     d[c * 3 + k] = (first_tri[global] >= 0 && len > 0.0) ? s[k] * (1.0 / len) : nan;
-            }
+            });
             blocks.push_back(std::move(a));
         }
         result.mMesh.AddCellData(kNormalsName, std::move(blocks));
@@ -140855,6 +141572,8 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 // Project includes (private, not installed)
 
@@ -140996,8 +141715,8 @@ std::array<std::int64_t, 3> optvol_face_ordered(const Tet& t, int lf) {
 // two tets with three around the segment joining their apexes, iff the segment
 // lies inside the (convex) union -- a pure signed-volume test -- and the worst
 // of the three new tets is strictly better than the worst of the two old ones.
-std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
-                            double min_improve, double eps_len, double eps_vol6) {
+std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets, double min_improve,
+                            double eps_len, double eps_vol6) {
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
@@ -141082,9 +141801,9 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             const double vC = optvol_svol6(g2, g0, pe, pd);
             if (vA <= eps_vol6 || vB <= eps_vol6 || vC <= eps_vol6)
                 continue;  // non-convex union -> invalid flip
-            const double q_new = std::min(
-                {optvol_quality_tet(rXyz, A, eps_len), optvol_quality_tet(rXyz, B, eps_len),
-                 optvol_quality_tet(rXyz, C, eps_len)});
+            const double q_new = std::min({optvol_quality_tet(rXyz, A, eps_len),
+                                           optvol_quality_tet(rXyz, B, eps_len),
+                                           optvol_quality_tet(rXyz, C, eps_len)});
             const double q_old = std::min(optvol_quality_tet(rXyz, rTets[t], eps_len),
                                           optvol_quality_tet(rXyz, rTets[u], eps_len));
             if (q_new <= q_old + min_improve)
@@ -141116,8 +141835,8 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
 // candidate: replace the three tets with two capping the ring triangle, iff the
 // two caps tile the same trigonal bipyramid (a signed-volume tiling test) and
 // the worse cap beats the worst of the three old tets.
-std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
-                            double min_improve, double eps_len, double eps_vol6) {
+std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, double min_improve,
+                            double eps_len, double eps_vol6) {
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
@@ -141209,16 +141928,16 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             continue;
         double old_sum = 0.0;
         for (int r = 0; r < 3; ++r)
-            old_sum += std::fabs(optvol_svol6(
-                optvol_point(rXyz, rTets[ring_tets[r]][0]), optvol_point(rXyz, rTets[ring_tets[r]][1]),
-                optvol_point(rXyz, rTets[ring_tets[r]][2]),
-                optvol_point(rXyz, rTets[ring_tets[r]][3])));
+            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, rTets[ring_tets[r]][0]),
+                                              optvol_point(rXyz, rTets[ring_tets[r]][1]),
+                                              optvol_point(rXyz, rTets[ring_tets[r]][2]),
+                                              optvol_point(rXyz, rTets[ring_tets[r]][3])));
         const double new_sum = vcap1 + vcap2;
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;  // not a clean tiling -> non-convex / invalid
         const Tet cap1{a, b, c, uu}, cap2{a, c, b, vv};
-        const double q_new =
-            std::min(optvol_quality_tet(rXyz, cap1, eps_len), optvol_quality_tet(rXyz, cap2, eps_len));
+        const double q_new = std::min(optvol_quality_tet(rXyz, cap1, eps_len),
+                                      optvol_quality_tet(rXyz, cap2, eps_len));
         double q_old = 1.0;
         for (int r = 0; r < 3; ++r)
             q_old = std::min(q_old, optvol_quality_tet(rXyz, rTets[ring_tets[r]], eps_len));
@@ -141289,9 +142008,10 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     std::vector<double> xyz(n * 3, 0.0);
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView points_v(points);
         parallel_for_bw(n, [&](std::size_t i) {
             for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+                xyz[i * 3 + d] = points_v[i * dim + d];
         });
     }
     const std::vector<double> xyz0 = xyz;  // for the moved-count at the end
@@ -141303,11 +142023,12 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
         std::size_t bi = 0;
         for (const auto cb : rMesh.CellRange()) {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t nc = cb.NumCells();
             const std::size_t base = static_cast<std::size_t>(bases[bi]);
             for (std::size_t c = 0; c < nc; ++c)
                 for (std::size_t k = 0; k < 4; ++k)
-                    tets[base + c][k] = detail::read_int(conn, c * 4 + k);
+                    tets[base + c][k] = conn_v[c * 4 + k];
             ++bi;
         }
     }
@@ -141323,8 +142044,9 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
                 hi[d] = std::max(hi[d], xyz[i * 3 + d]);
             }
     }
-    const double L = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                               (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const double L =
+        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
     const double eps_len = (L > 0.0 ? L : 1.0) * 1e-14;
     const double eps_vol6 = (L > 0.0 ? L * L * L : 1.0) * 1e-14;
 
@@ -141383,13 +142105,14 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     Mesh& out = result.mMesh;
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView points_v(points);
         NDArray np = NDArray::Uninit(points.Dtype(), {n, dim});
         detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
             T* dst = np.As<T>();
             for (std::size_t i = 0; i < n; ++i)
                 for (std::size_t d = 0; d < dim; ++d)
                     dst[i * dim + d] = d < 3 ? static_cast<T>(xyz[i * 3 + d])
-                                             : static_cast<T>(detail::read_double(points, i * dim + d));
+                                             : static_cast<T>(points_v[i * dim + d]);
         });
         out.AssignPoints(std::move(np));
     }
@@ -141415,13 +142138,14 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     for (std::size_t i = 0; i < static_cast<std::size_t>(rMesh.NumRegions()); ++i) {
         const Region& r = rMesh.Region(i);
         if (r.mKind == RegionKind::Point)
-            out.AddRegion(Region(r.mName, r.mKind, r.mDim, r.mTag, detail::data_owned_copy(r.mEntries)));
+            out.AddRegion(
+                Region(r.mName, r.mKind, r.mDim, r.mTag, detail::data_owned_copy(r.mEntries)));
         else
             ++dropped_cell_regions;
     }
     if (!rMesh.CellDataNames().empty())
-        log::warn("{}dropped {} cell_data array(s): a flip has no cell correspondence",
-                  kOvPrefix, rMesh.CellDataNames().size());
+        log::warn("{}dropped {} cell_data array(s): a flip has no cell correspondence", kOvPrefix,
+                  rMesh.CellDataNames().size());
     if (dropped_cell_regions > 0)
         log::warn("{}dropped {} Cell/Side region(s): a flip has no cell correspondence", kOvPrefix,
                   dropped_cell_regions);
@@ -141443,6 +142167,8 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // System includes (KaHIP dual-graph path only)
@@ -141473,6 +142199,7 @@ std::size_t partition_total_cells(const Mesh& rMesh) {
 // across their faces (a node shared by several faces counts once).
 std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
 
@@ -141492,8 +142219,7 @@ std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::int64_t node : nodes)
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] +=
-                            detail::read_double(points, static_cast<std::size_t>(node) * pdim + d);
+                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
                 if (!nodes.empty())
                     for (std::size_t d = 0; d < dim; ++d)
                         out[d] /= static_cast<double>(nodes.size());
@@ -141513,14 +142239,14 @@ std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
             });
         } else {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             parallel_for(ncells, [&, base](std::size_t c) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node =
-                        static_cast<std::size_t>(detail::read_int(conn, c * npc + k));
+                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points, node * pdim + d);
+                        out[d] += points_v[node * pdim + d];
                 }
                 if (npc > 0)
                     for (std::size_t d = 0; d < dim; ++d)
@@ -141806,6 +142532,7 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
             continue;
         }
         const NDArray& conn = *d.mpConn;
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacets.size();
         parallel_for(d.mNumCells * fpc, [&](std::size_t j) {
@@ -141814,7 +142541,7 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
             PartitionFacetRecord& r = recs[d.mFirstFacet + j];
             std::array<std::int64_t, 4> ids{};
             for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
-                ids[k] = detail::read_int(conn, cell * npc + facet.mNodes[k]);
+                ids[k] = conn_v[cell * npc + facet.mNodes[k]];
             r.mKey = PartitionFacetKey(ids.data(), facet.mNumCorners);
             r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
         });
@@ -144516,6 +145243,8 @@ Mesh attach_quality(const Mesh& rMesh) {
 
 // Project includes (private, not installed)
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -144695,9 +145424,10 @@ std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
         for (std::size_t k = 0; k < 4; ++k)
             keys[p][k] = detail::read_int(a, p * 4 + k);
 
-    const NDArray& points = rMesh.Points();
-    const std::size_t dim = detail::cols(points);
-    NDArray scratch = NDArray::Uninit(points.Dtype(), {std::size_t{1}});
+    const NDArray& points_arr = rMesh.Points();
+    const detail::DoubleView points(points_arr);
+    const std::size_t dim = detail::cols(points_arr);
+    NDArray scratch = NDArray::Uninit(points_arr.Dtype(), {std::size_t{1}});
     for (std::size_t p = 0; p < num_points; ++p) {
         const RefineNodeKey& key = keys[p];
         if (key[3] < 0)
@@ -144712,9 +145442,9 @@ std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
         for (std::size_t k = 0; k < dim && ok; ++k) {
             double sum = 0.0;
             for (std::size_t c = first; c < 4; ++c)
-                sum += detail::read_double(points, static_cast<std::size_t>(key[c]) * dim + k);
+                sum += points[static_cast<std::size_t>(key[c]) * dim + k];
             detail::write_double(scratch, 0, sum * inv);
-            ok = detail::read_double(scratch, 0) == detail::read_double(points, p * dim + k);
+            ok = detail::read_double(scratch, 0) == points[p * dim + k];
         }
         if (!ok) {
             log::warn(
@@ -144778,7 +145508,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             const RefineBlockDesc& d = descs[bi++];
             if (d.mSlotsPerCell == 0 || d.mNumCells == 0)
                 continue;
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t npc = cb.NodesPerCell();
             const std::vector<detail::CellEdgePair>& edges = *d.mpEdges;
             const std::vector<detail::CellQuadFace>& faces = *d.mpFaces;
@@ -144791,13 +145521,11 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 RefineNodeKey& key = keys[d.mFirstSlot + j];
                 if (slot < nedges) {
                     const detail::CellEdgePair& e = edges[slot];
-                    key = refine_edge_key(detail::read_int(conn, row + e[0]),
-                                          detail::read_int(conn, row + e[1]));
+                    key = refine_edge_key(conn[row + e[0]], conn[row + e[1]]);
                 } else {
                     const detail::CellQuadFace& f = faces[slot - nedges];
-                    key = refine_face_key(
-                        detail::read_int(conn, row + f[0]), detail::read_int(conn, row + f[1]),
-                        detail::read_int(conn, row + f[2]), detail::read_int(conn, row + f[3]));
+                    key = refine_face_key(conn[row + f[0]], conn[row + f[1]], conn[row + f[2]],
+                                          conn[row + f[3]]);
                 }
             });
         }
@@ -144871,13 +145599,13 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 std::size_t bi = 0;
                 for (const auto cb : rMesh.CellRange()) {
                     const RefineBlockDesc& d = descs[bi++];
-                    const NDArray& conn = cb.Conn();
+                    const detail::Int64View conn(cb.Conn());
                     const std::size_t npc = cb.NodesPerCell();
                     for (std::size_t c = 0; c < d.mNumCells; ++c) {
                         const std::size_t g = d.mFirstCell + c;
                         const std::int64_t post = level_of(g) + (red[g] ? 1 : 0);
                         for (std::size_t n = 0; n < npc; ++n) {
-                            const std::int64_t p = detail::read_int(conn, c * npc + n);
+                            const std::int64_t p = conn[c * npc + n];
                             if (p >= 0 && p < static_cast<std::int64_t>(num_points)) {
                                 std::int64_t& m = node_max[static_cast<std::size_t>(p)];
                                 m = std::max(m, post);
@@ -144890,14 +145618,14 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const RefineBlockDesc& d = descs[bi++];
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t c = 0; c < d.mNumCells; ++c) {
                     const std::size_t g = d.mFirstCell + c;
                     if (red[g])
                         continue;
                     for (std::size_t n = 0; n < npc; ++n) {
-                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        const std::int64_t p = conn[c * npc + n];
                         if (p >= 0 && p < static_cast<std::int64_t>(num_points) &&
                             node_max[static_cast<std::size_t>(p)] > level_of(g) + 1) {
                             red[g] = 1;
@@ -145085,10 +145813,11 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // order-independent, so two neighbours sharing an entity compute
     // bit-identical coordinates from the same sorted key -- no tie-break rule.
     {
-        const NDArray& points = rMesh.Points();
-        const std::size_t dim = detail::cols(points);
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points_out, dim});
-        std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
+        const NDArray& points_arr = rMesh.Points();
+        const detail::DoubleView points(points_arr);
+        const std::size_t dim = detail::cols(points_arr);
+        NDArray new_points = NDArray::Uninit(points_arr.Dtype(), {num_points_out, dim});
+        std::memcpy(new_points.Data(), points_arr.Data(), points_arr.Nbytes());
         parallel_for_bw(new_entities.size(), [&](std::size_t i) {
             const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
@@ -145096,7 +145825,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             for (std::size_t k = 0; k < dim; ++k) {
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
-                    sum += detail::read_double(points, static_cast<std::size_t>(key[c]) * dim + k);
+                    sum += points[static_cast<std::size_t>(key[c]) * dim + k];
                 detail::write_double(new_points, (num_points + i) * dim + k, sum * inv);
             }
         });
@@ -145107,7 +145836,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 const RefineBlockDesc& d = descs[bi++];
                 if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
@@ -145118,9 +145847,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                     for (std::size_t k = 0; k < dim; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p =
-                                static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
-                            sum += detail::read_double(points, p * dim + k);
+                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
+                            sum += points[p * dim + k];
                         }
                         detail::write_double(new_points, static_cast<std::size_t>(body) * dim + k,
                                              sum * inv);
@@ -145146,7 +145874,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             const std::size_t b = bi++;
             const RefineBlockDesc& d = descs[b];
             const std::size_t out_npc = static_cast<std::size_t>(cell_type_num_nodes(d.mType));
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t npc = cb.NodesPerCell();
             const std::size_t nedges = d.mpEdges->size();
             const std::size_t nfaces = d.mpFaces->size();
@@ -145170,7 +145898,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 // references one, by construction of the node rules in phase 4.
                 std::int64_t local[27];
                 for (std::size_t n = 0; n < ncorners; ++n)
-                    local[n] = detail::read_int(conn, c * npc + n);
+                    local[n] = conn[c * npc + n];
                 const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
                 for (std::size_t s = 0; s < nedges + nfaces; ++s)
                     local[ncorners + s] =
@@ -145214,6 +145942,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
         }
+        const detail::DoubleView av(a);
         const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
         std::vector<std::size_t> shape = a.Shape();
         shape[0] = num_points_out;
@@ -145226,7 +145955,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             for (std::size_t k = 0; k < ncomp; ++k) {
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
-                    sum += detail::read_double(a, static_cast<std::size_t>(key[c]) * ncomp + k);
+                    sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
                 detail::write_double(b, (num_points + i) * ncomp + k, sum * inv);
             }
         });
@@ -145236,7 +145965,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 const RefineBlockDesc& d = descs[bi++];
                 if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
@@ -145247,9 +145976,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                     for (std::size_t k = 0; k < ncomp; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p =
-                                static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
-                            sum += detail::read_double(a, p * ncomp + k);
+                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
+                            sum += av[p * ncomp + k];
                         }
                         detail::write_double(b, static_cast<std::size_t>(body) * ncomp + k,
                                              sum * inv);
@@ -145367,7 +146095,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 const std::size_t ncells = cb.NumCells();
                 if (ncells == 0)
                     continue;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t c = 0; c < ncells; ++c) {
                     const std::size_t row = c * npc;
@@ -145377,7 +146105,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                             return;
                         const std::size_t node = static_cast<std::size_t>(it->second);
                         for (std::size_t n = 0; n < npc; ++n)
-                            if (detail::read_int(conn, row + n) == it->second)
+                            if (conn[row + n] == it->second)
                                 return;  // this cell references it: not hanging here
                         if (!hanging[node]) {
                             hanging[node] = 1;
@@ -145385,13 +146113,10 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                         }
                     };
                     for (const detail::CellEdgePair& e : edges)
-                        mark(refine_edge_key(detail::read_int(conn, row + e[0]),
-                                             detail::read_int(conn, row + e[1])));
+                        mark(refine_edge_key(conn[row + e[0]], conn[row + e[1]]));
                     for (const detail::CellQuadFace& f : faces)
-                        mark(refine_face_key(detail::read_int(conn, row + f[0]),
-                                             detail::read_int(conn, row + f[1]),
-                                             detail::read_int(conn, row + f[2]),
-                                             detail::read_int(conn, row + f[3])));
+                        mark(refine_face_key(conn[row + f[0]], conn[row + f[1]], conn[row + f[2]],
+                                             conn[row + f[3]]));
                 }
             }
         }
@@ -145661,11 +146386,11 @@ std::vector<char> refine_resolve_selection(const Mesh& rMesh, const RefineOption
                 const std::size_t base = static_cast<std::size_t>(bases[b++]);
                 if (cb.IsRagged())
                     continue;  // rejected by refine_check_block later, by name
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t c = 0; c < cb.NumCells(); ++c) {
                     for (std::size_t n = 0; n < npc; ++n) {
-                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        const std::int64_t p = conn[c * npc + n];
                         if (p >= 0 && p < static_cast<std::int64_t>(in_region.size()) &&
                             in_region[static_cast<std::size_t>(p)]) {
                             red[base + c] = 1;
@@ -145931,19 +146656,18 @@ RemeshSurface remesh_build_surface(const Mesh& rMesh) {
 
     for (const auto cb : rMesh.CellRange()) {
         if (cell_type_from_name(cb.Type()) != CellType::Triangle)
-            throw std::invalid_argument(
-                "meshio++: remesh: internal error: simplexified block '" + cb.Type() +
-                "' is not a triangle block");
+            throw std::invalid_argument("meshio++: remesh: internal error: simplexified block '" +
+                                        cb.Type() + "' is not a triangle block");
         const std::size_t nc = cb.NumCells();
         const NDArray& conn = cb.Conn();
         for (std::size_t c = 0; c < nc; ++c)
             for (std::size_t k = 0; k < 3; ++k) {
                 const std::int64_t v = detail::read_int(conn, c * 3 + k);
                 if (v < 0 || static_cast<std::size_t>(v) >= s.mNumPoints)
-                    throw std::invalid_argument(
-                        "meshio++: remesh: connectivity references point " + std::to_string(v) +
-                        ", which is outside the mesh's " + std::to_string(s.mNumPoints) +
-                        " points");
+                    throw std::invalid_argument("meshio++: remesh: connectivity references point " +
+                                                std::to_string(v) +
+                                                ", which is outside the mesh's " +
+                                                std::to_string(s.mNumPoints) + " points");
                 s.mCorners.push_back(v);
             }
         s.mNumFaces += nc;
@@ -145965,13 +146689,16 @@ RemeshSurface remesh_build_surface(const Mesh& rMesh) {
 /// same weight-clamping idea the real ACVD reference documents for its own
 /// isotropic weighting). A perfectly flat mesh (`kappa` identically zero
 /// everywhere) leaves `rArea` untouched -- there is nothing to grade.
-void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCurvature,
-                         double Gradation, std::vector<double>& rArea,
-                         std::vector<double>& rWeighted) {
+void remesh_item_weights(const RemeshSurface& rS, const detail::DecimCsr& rVertexFaces,
+                         const std::vector<double>& rCurvature, double Gradation,
+                         std::vector<double>& rArea, std::vector<double>& rWeighted) {
     rArea.assign(rS.mNumPoints, 0.0);
     rWeighted.assign(rS.mNumPoints * 3, 0.0);
 
-    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+    // Each face's third of its area, then gathered per vertex over its faces
+    // in ascending order -- the order the serial scatter added them in.
+    std::vector<double> face_area(rS.mNumFaces);
+    parallel_for(rS.mNumFaces, [&](std::size_t f) {
         const std::int64_t i0 = rS.mCorners[f * 3];
         const std::int64_t i1 = rS.mCorners[f * 3 + 1];
         const std::int64_t i2 = rS.mCorners[f * 3 + 2];
@@ -145983,12 +146710,15 @@ void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCu
         const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
         const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
                              e0[0] * e1[1] - e0[1] * e1[0]};
-        const double area = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
-
-        rArea[static_cast<std::size_t>(i0)] += area;
-        rArea[static_cast<std::size_t>(i1)] += area;
-        rArea[static_cast<std::size_t>(i2)] += area;
-    }
+        face_area[f] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
+    });
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
+        double a = 0.0;
+        for (std::int64_t j = rVertexFaces.mXadj[i]; j < rVertexFaces.mXadj[i + 1]; ++j)
+            a +=
+                face_area[static_cast<std::size_t>(rVertexFaces.mAdj[static_cast<std::size_t>(j)])];
+        rArea[i] = a;
+    });
 
     if (Gradation != 0.0 && !rCurvature.empty()) {
         double kappa_max = 0.0;
@@ -145996,20 +146726,24 @@ void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCu
             kappa_max = std::max(kappa_max, k);
         if (kappa_max > 0.0) {
             const double kappa_floor = kappa_max * 1e-3;
-            for (std::size_t i = 0; i < rS.mNumPoints; ++i)
+            parallel_for(rS.mNumPoints, [&](std::size_t i) {
                 rArea[i] *= std::pow(std::max(rCurvature[i], kappa_floor), Gradation);
+            });
         }
     }
 
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i)
-        for (int d = 0; d < 3; ++d)
+    parallel_for_bw(rS.mNumPoints, [&](std::size_t i) {
+        for (std::size_t d = 0; d < 3; ++d)
             rWeighted[i * 3 + d] = rArea[i] * rS.mXyz[i * 3 + d];
+    });
 }
 
 /// Each vertex's own accumulated quadric (sum of its incident face planes),
 /// via `detail/decimate_common.hpp`'s existing, already-tested machinery.
 /// Empty (never computed) when `Metric == Isotropic`, which never reads it.
-std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric Metric) {
+std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS,
+                                           const detail::DecimCsr& rVertexFaces,
+                                           RemeshMetric Metric) {
     if (Metric != RemeshMetric::Quadric)
         return {};
     detail::DecimFaces faces;
@@ -146017,11 +146751,37 @@ std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric
     faces.mBlockBase = {0};
     faces.mNumFaces = rS.mNumFaces;
 
-    const detail::DecimCsr csr = detail::decim_vertex_faces_csr(faces, rS.mNumPoints);
     std::vector<double> quad_k;
     std::vector<double> normals;
     detail::decim_face_planes(faces, rS.mXyz, quad_k, normals);
-    return detail::decim_accumulate_quadrics(csr, rS.mNumPoints, quad_k);
+    return detail::decim_accumulate_quadrics(rVertexFaces, rS.mNumPoints, quad_k);
+}
+
+/// Every vertex's incident faces, ascending (a face once per corner at the
+/// vertex): the gather order of the per-vertex sums below.
+detail::DecimCsr remesh_vertex_faces(const RemeshSurface& rS) {
+    detail::DecimFaces faces;
+    faces.mCorners = rS.mCorners;
+    faces.mBlockBase = {0};
+    faces.mNumFaces = rS.mNumFaces;
+    return detail::decim_vertex_faces_csr(faces, rS.mNumPoints);
+}
+
+/// Each face's unnormalised normal, the cross product of its two edges from
+/// corner 0.
+std::vector<double> remesh_face_crosses(const RemeshSurface& rS) {
+    std::vector<double> cross(rS.mNumFaces * 3);
+    parallel_for(rS.mNumFaces, [&](std::size_t f) {
+        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
+        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
+        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
+        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
+        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
+        cross[f * 3] = e0[1] * e1[2] - e0[2] * e1[1];
+        cross[f * 3 + 1] = e0[2] * e1[0] - e0[0] * e1[2];
+        cross[f * 3 + 2] = e0[0] * e1[1] - e0[1] * e1[0];
+    });
+    return cross;
 }
 
 /// Each vertex's own curvature-tensor quadric (`RemeshMetric::Anisotropic`
@@ -146039,7 +146799,7 @@ std::vector<double> remesh_vertex_metrics(const RemeshSurface& rS,
                                           const std::vector<double>& rTensors,
                                           const std::vector<double>& rArea) {
     std::vector<double> quad(rS.mNumPoints * 10, 0.0);
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
         const double* m = rTensors.data() + i * 6;  // [xx,xy,xz,yy,yz,zz]
         const double* x = rS.mXyz.data() + i * 3;
         const double w = rArea[i];
@@ -146060,36 +146820,31 @@ std::vector<double> remesh_vertex_metrics(const RemeshSurface& rS,
         q[7] = w * m[5];
         q[8] = -w * mx2;
         q[9] = c_term;
-    }
+    });
     return quad;
 }
 
 /// Area-weighted unit normal at each vertex, from its incident face normals
 /// (the per-vertex analogue of `remesh_cluster_normals` below). Only computed
 /// when curvature gradation is requested.
-std::vector<double> remesh_vertex_normals(const RemeshSurface& rS) {
+std::vector<double> remesh_vertex_normals(const RemeshSurface& rS,
+                                          const detail::DecimCsr& rVertexFaces) {
+    // Each vertex gathers its faces' crosses in ascending face order -- the
+    // order the serial scatter added them in -- then normalises.
+    const std::vector<double> cross = remesh_face_crosses(rS);
     std::vector<double> nrm(rS.mNumPoints * 3, 0.0);
-    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
-        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
-        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
-        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
-        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
-        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
-        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
-                             e0[0] * e1[1] - e0[1] * e1[0]};
-        for (int k = 0; k < 3; ++k) {
-            const std::size_t vi = static_cast<std::size_t>(rS.mCorners[f * 3 + k]);
-            for (int d = 0; d < 3; ++d)
-                nrm[vi * 3 + d] += c[d];
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
+        double acc[3] = {0.0, 0.0, 0.0};
+        for (std::int64_t j = rVertexFaces.mXadj[i]; j < rVertexFaces.mXadj[i + 1]; ++j) {
+            const std::size_t f =
+                static_cast<std::size_t>(rVertexFaces.mAdj[static_cast<std::size_t>(j)]);
+            for (std::size_t d = 0; d < 3; ++d)
+                acc[d] += cross[f * 3 + d];
         }
-    }
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
-        const double len = std::sqrt(nrm[i * 3] * nrm[i * 3] + nrm[i * 3 + 1] * nrm[i * 3 + 1] +
-                                     nrm[i * 3 + 2] * nrm[i * 3 + 2]);
-        if (len > 0.0)
-            for (int d = 0; d < 3; ++d)
-                nrm[i * 3 + d] /= len;
-    }
+        const double len = std::sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
+        for (std::size_t d = 0; d < 3; ++d)
+            nrm[i * 3 + d] = len > 0.0 ? acc[d] / len : acc[d];
+    });
     return nrm;
 }
 
@@ -146111,12 +146866,12 @@ bool remesh_solve_sym3(double m00, double m01, double m02, double m11, double m1
     if (std::abs(det) <= 1e-12 * (scale * scale * scale))
         return false;
 
-    const double det0 = b0 * (m11 * m22 - m12 * m12) - m01 * (b1 * m22 - m12 * b2) +
-                        m02 * (b1 * m12 - m11 * b2);
-    const double det1 = m00 * (b1 * m22 - m12 * b2) - b0 * (m01 * m22 - m12 * m02) +
-                        m02 * (m01 * b2 - b1 * m02);
-    const double det2 = m00 * (m11 * b2 - b1 * m12) - m01 * (m01 * b2 - b1 * m02) +
-                        b0 * (m01 * m12 - m11 * m02);
+    const double det0 =
+        b0 * (m11 * m22 - m12 * m12) - m01 * (b1 * m22 - m12 * b2) + m02 * (b1 * m12 - m11 * b2);
+    const double det1 =
+        m00 * (b1 * m22 - m12 * b2) - b0 * (m01 * m22 - m12 * m02) + m02 * (m01 * b2 - b1 * m02);
+    const double det2 =
+        m00 * (m11 * b2 - b1 * m12) - m01 * (m01 * b2 - b1 * m02) + b0 * (m01 * m12 - m11 * m02);
     pOut[0] = det0 / det;
     pOut[1] = det1 / det;
     pOut[2] = det2 / det;
@@ -146155,16 +146910,17 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
         }
     }
     std::vector<double> kappa(rS.mNumPoints, 0.0);
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+    // Every vertex's fit reads only its own 1-ring: independent, in parallel.
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
         const std::int64_t lo = rAdj.mXadj[i];
         const std::int64_t hi = rAdj.mXadj[i + 1];
         if (hi - lo < 3)
-            continue;
+            return;
 
         const double* p0 = rS.mXyz.data() + i * 3;
         const double* n = rNormals.data() + i * 3;
         if (n[0] == 0.0 && n[1] == 0.0 && n[2] == 0.0)
-            continue;  // an unreferenced or degenerate-fan vertex
+            return;  // an unreferenced or degenerate-fan vertex
 
         // An orthonormal tangent basis (u, w) perpendicular to n: seed u from
         // whichever coordinate axis is least aligned with n (so the
@@ -146177,7 +146933,7 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
         double u[3] = {seed[0] - dp * n[0], seed[1] - dp * n[1], seed[2] - dp * n[2]};
         const double ulen = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
         if (ulen <= 0.0)
-            continue;
+            return;
         u[0] /= ulen;
         u[1] /= ulen;
         u[2] /= ulen;
@@ -146207,7 +146963,7 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
 
         double abc[3];
         if (!remesh_solve_sym3(m00, m01, m02, m11, m12, m22, b0, b1, b2, abc))
-            continue;  // ill-conditioned -> kappa stays 0
+            return;  // ill-conditioned -> kappa stays 0
 
         // Principal curvatures = eigenvalues of [[2a, b], [b, 2c]].
         const double a = abc[0], b = abc[1], c = abc[2];
@@ -146268,9 +147024,8 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
             // limit, not a special case grafted on.
             double ratio = 1.0;
             if (hi_kappa > 0.0)
-                ratio = (lo_kappa > 0.0)
-                            ? std::min(std::sqrt(hi_kappa / lo_kappa), MaxAnisotropy)
-                            : MaxAnisotropy;
+                ratio = (lo_kappa > 0.0) ? std::min(std::sqrt(hi_kappa / lo_kappa), MaxAnisotropy)
+                                         : MaxAnisotropy;
 
             // Unit-determinant SPD tensor: in-plane eigenvalues (lam_hi,
             // lam_lo), normal eigenvalue pinned to lam_hi (keeps clusters on
@@ -146285,14 +147040,14 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
 
             for (int r = 0; r < 3; ++r)
                 for (int cc = r; cc < 3; ++cc) {
-                    const double m_rc = lam_hi * (e_hi[r] * e_hi[cc] + n[r] * n[cc]) +
-                                        lam_lo * e_lo[r] * e_lo[cc];
+                    const double m_rc =
+                        lam_hi * (e_hi[r] * e_hi[cc] + n[r] * n[cc]) + lam_lo * e_lo[r] * e_lo[cc];
                     const std::size_t idx =
                         static_cast<std::size_t>(r == 0 ? cc : (r == 1 ? cc + 2 : 5));
                     (*pTensors)[i * 6 + idx] = m_rc;
                 }
         }
-    }
+    });
     return kappa;
 }
 
@@ -146322,7 +147077,7 @@ std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
 /// other one). `std::map` (not a hash map) is deliberate: it costs nothing
 /// here and gives a canonical, deterministic edge-visitation order for free.
 struct RemeshBoundaryInfo {
-    std::vector<std::uint8_t> mIsBoundaryVertex;  ///< size NumPoints.
+    std::vector<std::uint8_t> mIsBoundaryVertex;                        ///< size NumPoints.
     std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
 };
 
@@ -146383,9 +147138,8 @@ std::vector<std::int64_t> remesh_seed_order(std::size_t NumPoints,
 /// `remesh_seed_order`); this function itself has no boundary-specific logic
 /// at all -- it only ever asks "what's the next free vertex in this order."
 void remesh_seed_clusters(std::vector<std::int64_t>& rClusters, const detail::NodeAdjacency& rAdj,
-                          const std::vector<double>& rArea,
-                          const std::vector<std::int64_t>& rOrder, std::int64_t NumClusters,
-                          std::size_t NumPoints) {
+                          const std::vector<double>& rArea, const std::vector<std::int64_t>& rOrder,
+                          std::int64_t NumClusters, std::size_t NumPoints) {
     double area_remain = 0.0;
     for (std::size_t i = 0; i < NumPoints; ++i)
         area_remain += rArea[i];
@@ -146498,47 +147252,47 @@ double remesh_trial_badness(RemeshMetric Metric, const double* pSgamma, double S
                                new_srho;
 
     switch (Metric) {
-    case RemeshMetric::Isotropic:
-        return iso_badness;
-    case RemeshMetric::Quadric: {
-        // Quadric mode ADDS the quadric flatness error to the isotropic
-        // compactness term rather than using the quadric error alone --
-        // measured (see remesh.hpp's doc comment): pure quadric-error
-        // badness has no compactness pull at all, since a cluster confined
-        // to a common plane can grow arbitrarily thin and snake-like along a
-        // low-curvature direction without its quadric error rising, which
-        // repeatedly produced disconnected, non-manifold clusters even after
-        // every repair pass (17 of 150 clusters still split on a smooth
-        // closed sphere in gtest). The isotropic term is the SAME
-        // `-|sgamma|^2/srho` form `Isotropic` mode uses on its own -- both
-        // terms are area-weighted squared-distance-like quantities
-        // (dimensionally consistent, no free blend weight to tune), and
-        // their sum keeps the compactness pull that prevents pathological
-        // elongation while still rewarding flatness/feature alignment where
-        // a real crease or corner makes the quadric term the deciding
-        // factor.
-        double new_quad[10];
-        for (int k = 0; k < 10; ++k)
-            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
-        double centroid[3];
-        remesh_centroid_of(new_sgamma, new_srho, centroid);
-        return iso_badness + remesh_quadric_badness(new_quad, centroid);
-    }
-    case RemeshMetric::Anisotropic: {
-        // The per-vertex curvature tensor is SPD (never rank-deficient the
-        // way a flat quadric is), so unlike `Quadric` this metric's own
-        // error term already penalises spread in every direction -- just
-        // anisotropically -- and is used PURE, not additively stabilised.
-        // See remesh.hpp's doc comment and doc/remesh.md for the measurement
-        // that justified this (mNumIsolatedClusters/mNumNonManifoldVertices
-        // swept across mMaxAnisotropy on the fixtures below).
-        double new_quad[10];
-        for (int k = 0; k < 10; ++k)
-            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
-        double centroid[3];
-        remesh_centroid_of(new_sgamma, new_srho, centroid);
-        return remesh_quadric_badness(new_quad, centroid);
-    }
+        case RemeshMetric::Isotropic:
+            return iso_badness;
+        case RemeshMetric::Quadric: {
+            // Quadric mode ADDS the quadric flatness error to the isotropic
+            // compactness term rather than using the quadric error alone --
+            // measured (see remesh.hpp's doc comment): pure quadric-error
+            // badness has no compactness pull at all, since a cluster confined
+            // to a common plane can grow arbitrarily thin and snake-like along a
+            // low-curvature direction without its quadric error rising, which
+            // repeatedly produced disconnected, non-manifold clusters even after
+            // every repair pass (17 of 150 clusters still split on a smooth
+            // closed sphere in gtest). The isotropic term is the SAME
+            // `-|sgamma|^2/srho` form `Isotropic` mode uses on its own -- both
+            // terms are area-weighted squared-distance-like quantities
+            // (dimensionally consistent, no free blend weight to tune), and
+            // their sum keeps the compactness pull that prevents pathological
+            // elongation while still rewarding flatness/feature alignment where
+            // a real crease or corner makes the quadric term the deciding
+            // factor.
+            double new_quad[10];
+            for (int k = 0; k < 10; ++k)
+                new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+            double centroid[3];
+            remesh_centroid_of(new_sgamma, new_srho, centroid);
+            return iso_badness + remesh_quadric_badness(new_quad, centroid);
+        }
+        case RemeshMetric::Anisotropic: {
+            // The per-vertex curvature tensor is SPD (never rank-deficient the
+            // way a flat quadric is), so unlike `Quadric` this metric's own
+            // error term already penalises spread in every direction -- just
+            // anisotropically -- and is used PURE, not additively stabilised.
+            // See remesh.hpp's doc comment and doc/remesh.md for the measurement
+            // that justified this (mNumIsolatedClusters/mNumNonManifoldVertices
+            // swept across mMaxAnisotropy on the fixtures below).
+            double new_quad[10];
+            for (int k = 0; k < 10; ++k)
+                new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+            double centroid[3];
+            remesh_centroid_of(new_sgamma, new_srho, centroid);
+            return remesh_quadric_badness(new_quad, centroid);
+        }
     }
     // Unreachable: every RemeshMetric enumerator is handled above, and
     // -Wswitch (no `default:`) makes a future enumerator a compile error
@@ -146549,10 +147303,10 @@ double remesh_trial_badness(RemeshMetric Metric, const double* pSgamma, double S
 /// The accumulators one cluster carries. `mQuad` is filled and read only
 /// under `RemeshMetric::Quadric`; `Isotropic` mode never touches it.
 struct RemeshState {
-    std::vector<double> mSgamma;  ///< `3 * n_clus`, sum of weighted positions.
-    std::vector<double> mSrho;    ///< `n_clus`, sum of weights.
-    std::vector<double> mBadness; ///< `n_clus`, the metric's own badness.
-    std::vector<double> mQuad;    ///< `10 * n_clus`, quadric mode only.
+    std::vector<double> mSgamma;   ///< `3 * n_clus`, sum of weighted positions.
+    std::vector<double> mSrho;     ///< `n_clus`, sum of weights.
+    std::vector<double> mBadness;  ///< `n_clus`, the metric's own badness.
+    std::vector<double> mQuad;     ///< `10 * n_clus`, quadric mode only.
     std::vector<std::int64_t> mCount;
 };
 
@@ -146593,21 +147347,21 @@ RemeshState remesh_init_state(const std::vector<std::int64_t>& rClusters,
                              st.mSgamma[c * 3 + 2] * st.mSgamma[c * 3 + 2]) /
                            st.mSrho[c];
         switch (Metric) {
-        case RemeshMetric::Isotropic:
-            st.mBadness[c] = iso;
-            break;
-        case RemeshMetric::Quadric: {
-            double centroid[3];
-            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
-            st.mBadness[c] = iso + remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
-            break;
-        }
-        case RemeshMetric::Anisotropic: {
-            double centroid[3];
-            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
-            st.mBadness[c] = remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
-            break;
-        }
+            case RemeshMetric::Isotropic:
+                st.mBadness[c] = iso;
+                break;
+            case RemeshMetric::Quadric: {
+                double centroid[3];
+                remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+                st.mBadness[c] = iso + remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+                break;
+            }
+            case RemeshMetric::Anisotropic: {
+                double centroid[3];
+                remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+                st.mBadness[c] = remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+                break;
+            }
         }
     }
     return st;
@@ -146633,46 +147387,46 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
         rSt.mSgamma[uf * 3 + d] -= rWeighted[Item * 3 + d];
     }
     switch (Metric) {
-    case RemeshMetric::Isotropic:
-        rSt.mBadness[uf] = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
-                             rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
-                             rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
-                           rSt.mSrho[uf];
-        rSt.mBadness[ut] = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
-                             rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
-                             rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
-                           rSt.mSrho[ut];
-        break;
-    case RemeshMetric::Quadric:
-    case RemeshMetric::Anisotropic: {
-        for (int k = 0; k < 10; ++k) {
-            rSt.mQuad[ut * 10 + static_cast<std::size_t>(k)] +=
-                rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
-            rSt.mQuad[uf * 10 + static_cast<std::size_t>(k)] -=
-                rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+        case RemeshMetric::Isotropic:
+            rSt.mBadness[uf] = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                                 rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                                 rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                               rSt.mSrho[uf];
+            rSt.mBadness[ut] = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                                 rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                                 rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                               rSt.mSrho[ut];
+            break;
+        case RemeshMetric::Quadric:
+        case RemeshMetric::Anisotropic: {
+            for (int k = 0; k < 10; ++k) {
+                rSt.mQuad[ut * 10 + static_cast<std::size_t>(k)] +=
+                    rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+                rSt.mQuad[uf * 10 + static_cast<std::size_t>(k)] -=
+                    rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+            }
+            double cen_f[3], cen_t[3];
+            remesh_centroid_of(rSt.mSgamma.data() + uf * 3, rSt.mSrho[uf], cen_f);
+            remesh_centroid_of(rSt.mSgamma.data() + ut * 3, rSt.mSrho[ut], cen_t);
+            // Quadric adds the isotropic compactness term back in (see
+            // remesh_trial_badness); Anisotropic's own SPD tensor already
+            // penalises spread in every direction and uses the quadric error
+            // pure.
+            double iso_f = 0.0, iso_t = 0.0;
+            if (Metric == RemeshMetric::Quadric) {
+                iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                          rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                          rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                        rSt.mSrho[uf];
+                iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                          rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                          rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                        rSt.mSrho[ut];
+            }
+            rSt.mBadness[uf] = iso_f + remesh_quadric_badness(rSt.mQuad.data() + uf * 10, cen_f);
+            rSt.mBadness[ut] = iso_t + remesh_quadric_badness(rSt.mQuad.data() + ut * 10, cen_t);
+            break;
         }
-        double cen_f[3], cen_t[3];
-        remesh_centroid_of(rSt.mSgamma.data() + uf * 3, rSt.mSrho[uf], cen_f);
-        remesh_centroid_of(rSt.mSgamma.data() + ut * 3, rSt.mSrho[ut], cen_t);
-        // Quadric adds the isotropic compactness term back in (see
-        // remesh_trial_badness); Anisotropic's own SPD tensor already
-        // penalises spread in every direction and uses the quadric error
-        // pure.
-        double iso_f = 0.0, iso_t = 0.0;
-        if (Metric == RemeshMetric::Quadric) {
-            iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
-                     rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
-                     rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
-                   rSt.mSrho[uf];
-            iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
-                     rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
-                     rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
-                   rSt.mSrho[ut];
-        }
-        rSt.mBadness[uf] = iso_f + remesh_quadric_badness(rSt.mQuad.data() + uf * 10, cen_f);
-        rSt.mBadness[ut] = iso_t + remesh_quadric_badness(rSt.mQuad.data() + ut * 10, cen_t);
-        break;
-    }
     }
 }
 
@@ -146681,8 +147435,7 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
 /// the next test reads. Clusters unmodified in the previous sweep are
 /// skipped.
 std::int64_t remesh_minimize(const std::vector<std::int64_t>& rEdges,
-                             std::vector<std::int64_t>& rClusters,
-                             const std::vector<double>& rArea,
+                             std::vector<std::int64_t>& rClusters, const std::vector<double>& rArea,
                              const std::vector<double>& rWeighted,
                              const std::vector<double>& rVertexQuad, RemeshMetric Metric,
                              RemeshState& rSt, std::int64_t NumClusters, int MaxIterations) {
@@ -146728,22 +147481,22 @@ std::int64_t remesh_minimize(const std::vector<std::int64_t>& rEdges,
             double badness_move_b = badness_orig;  // sentinel: "no better than orig"
             if (can_move_b)
                 badness_move_b =
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca],
-                                         q_a, rWeighted.data() + pb * 3, rArea[pb], item_q_b,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca], q_a,
+                                         rWeighted.data() + pb * 3, rArea[pb], item_q_b,
                                          /*Adding=*/true) +
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb],
-                                         q_b, rWeighted.data() + pb * 3, rArea[pb], item_q_b,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb], q_b,
+                                         rWeighted.data() + pb * 3, rArea[pb], item_q_b,
                                          /*Adding=*/false);
 
             // Candidate 2: move a into b (a leaves its own cluster).
             double badness_move_a = badness_orig;
             if (can_move_a)
                 badness_move_a =
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca],
-                                         q_a, rWeighted.data() + pa * 3, rArea[pa], item_q_a,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca], q_a,
+                                         rWeighted.data() + pa * 3, rArea[pa], item_q_a,
                                          /*Adding=*/false) +
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb],
-                                         q_b, rWeighted.data() + pa * 3, rArea[pa], item_q_a,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb], q_b,
+                                         rWeighted.data() + pa * 3, rArea[pa], item_q_a,
                                          /*Adding=*/true);
 
             // Accept the strictly better candidate; ties resolve toward moving
@@ -146880,23 +147633,23 @@ std::vector<double> remesh_final_positions(const std::vector<std::int64_t>& rClu
         double centroid[3];
         remesh_centroid_of(sgamma.data() + c * 3, srho[c], centroid);
         switch (Metric) {
-        case RemeshMetric::Isotropic:
-            out[c * 3] = centroid[0];
-            out[c * 3 + 1] = centroid[1];
-            out[c * 3 + 2] = centroid[2];
-            break;
-        case RemeshMetric::Quadric:
-        case RemeshMetric::Anisotropic: {
-            // Both metrics place the dual vertex at their own quadric's
-            // optimal point -- Anisotropic's quadric already encodes the
-            // curvature-tensor shape, so no separate placement rule exists.
-            double pt[3];
-            detail::decim_quadric_optimal_point(quad.data() + c * 10, centroid, pt);
-            out[c * 3] = pt[0];
-            out[c * 3 + 1] = pt[1];
-            out[c * 3 + 2] = pt[2];
-            break;
-        }
+            case RemeshMetric::Isotropic:
+                out[c * 3] = centroid[0];
+                out[c * 3 + 1] = centroid[1];
+                out[c * 3 + 2] = centroid[2];
+                break;
+            case RemeshMetric::Quadric:
+            case RemeshMetric::Anisotropic: {
+                // Both metrics place the dual vertex at their own quadric's
+                // optimal point -- Anisotropic's quadric already encodes the
+                // curvature-tensor shape, so no separate placement rule exists.
+                double pt[3];
+                detail::decim_quadric_optimal_point(quad.data() + c * 10, centroid, pt);
+                out[c * 3] = pt[0];
+                out[c * 3 + 1] = pt[1];
+                out[c * 3 + 2] = pt[2];
+                break;
+            }
         }
     }
     return out;
@@ -146918,8 +147671,8 @@ std::vector<double> remesh_cluster_normals(const RemeshSurface& rS,
         const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
                              e0[0] * e1[1] - e0[1] * e1[0]};
         for (int k = 0; k < 3; ++k) {
-            const std::size_t uc = static_cast<std::size_t>(rClusters[static_cast<std::size_t>(
-                rS.mCorners[f * 3 + k])]);
+            const std::size_t uc = static_cast<std::size_t>(
+                rClusters[static_cast<std::size_t>(rS.mCorners[f * 3 + k])]);
             for (int d = 0; d < 3; ++d)
                 nrm[uc * 3 + d] += c[d];
         }
@@ -146972,8 +147725,7 @@ std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
                                             const std::vector<std::int64_t>& rClusters,
                                             const std::vector<double>& rPositions,
                                             const std::vector<double>& rNormals) {
-    const std::vector<std::array<std::int64_t, 3>> keys =
-        remesh_dual_triangle_keys(rS, rClusters);
+    const std::vector<std::array<std::int64_t, 3>> keys = remesh_dual_triangle_keys(rS, rClusters);
 
     std::vector<std::int64_t> out;
     out.reserve(keys.size() * 3);
@@ -147142,10 +147894,9 @@ int remesh_suggest_subdivide(std::int64_t NumPoints, std::int64_t NumClusters,
 
 RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     if (rOptions.mNumClusters < 4)
-        throw std::invalid_argument(
-            "meshio++: remesh: num_clusters must be at least 4, got " +
-            std::to_string(rOptions.mNumClusters) +
-            " (fewer vertices cannot bound a closed surface)");
+        throw std::invalid_argument("meshio++: remesh: num_clusters must be at least 4, got " +
+                                    std::to_string(rOptions.mNumClusters) +
+                                    " (fewer vertices cannot bound a closed surface)");
     if (rOptions.mMaxIterations <= 0)
         throw std::invalid_argument("meshio++: remesh: max_iterations must be positive, got " +
                                     std::to_string(rOptions.mMaxIterations));
@@ -147156,9 +147907,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     if (rOptions.mSubsampleRatio <= 0.0)
         throw std::invalid_argument("meshio++: remesh: subsample_ratio must be positive");
     if (rOptions.mMetric == RemeshMetric::Anisotropic && rOptions.mMaxAnisotropy < 1.0)
-        throw std::invalid_argument(
-            "meshio++: remesh: max_anisotropy must be at least 1.0, got " +
-            std::to_string(rOptions.mMaxAnisotropy));
+        throw std::invalid_argument("meshio++: remesh: max_anisotropy must be at least 1.0, got " +
+                                    std::to_string(rOptions.mMaxAnisotropy));
     if (rOptions.mMetric != RemeshMetric::Anisotropic &&
         rOptions.mMaxAnisotropy != kRemeshDefaultMaxAnisotropy)
         throw std::invalid_argument(
@@ -147207,10 +147957,11 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         detail::build_node_adjacency(work, surf.mNumPoints, detail::NodeAdjacencyKind::Edge);
     const std::vector<std::int64_t> edges = remesh_unique_edges(adj, surf.mNumPoints);
 
+    const detail::DecimCsr vertex_faces = remesh_vertex_faces(surf);
     std::vector<double> curvature;
     std::vector<double> curvature_tensors;  // Anisotropic only, 6 doubles/vertex
     if (rOptions.mGradation != 0.0 || metric == RemeshMetric::Anisotropic) {
-        const std::vector<double> vertex_normals = remesh_vertex_normals(surf);
+        const std::vector<double> vertex_normals = remesh_vertex_normals(surf, vertex_faces);
         curvature = remesh_vertex_curvature(
             surf, adj, vertex_normals,
             metric == RemeshMetric::Anisotropic ? &curvature_tensors : nullptr,
@@ -147218,13 +147969,13 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     }
     std::vector<double> area;
     std::vector<double> weighted;
-    remesh_item_weights(surf, curvature, rOptions.mGradation, area, weighted);
+    remesh_item_weights(surf, vertex_faces, curvature, rOptions.mGradation, area, weighted);
     // Anisotropic packs its per-vertex curvature tensor into the accumulator
     // AFTER item weights exist (it needs rArea); Quadric's plain
     // face-quadric accumulation needs no weight at all.
-    const std::vector<double> vertex_quad = metric == RemeshMetric::Anisotropic
-                                                ? remesh_vertex_metrics(surf, curvature_tensors, area)
-                                                : remesh_vertex_quadrics(surf, metric);
+    const std::vector<double> vertex_quad =
+        metric == RemeshMetric::Anisotropic ? remesh_vertex_metrics(surf, curvature_tensors, area)
+                                            : remesh_vertex_quadrics(surf, vertex_faces, metric);
 
     const RemeshBoundaryInfo boundary =
         rOptions.mPreserveBoundary ? remesh_boundary_info(surf) : RemeshBoundaryInfo{};
@@ -147240,9 +147991,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
 
     RemeshState state = remesh_init_state(clusters, area, weighted, vertex_quad, metric,
                                           rOptions.mNumClusters, surf.mNumPoints);
-    result.mNumIterations =
-        remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
-                        rOptions.mNumClusters, rOptions.mMaxIterations);
+    result.mNumIterations = remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric,
+                                            state, rOptions.mNumClusters, rOptions.mMaxIterations);
 
     // Repair: a minimisation sweep can leave a cluster in two pieces, or the
     // dual can come out non-manifold at some vertex even with every cluster
@@ -147257,8 +148007,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
                 clusters[i] = -1;
     };
 
-    std::int64_t disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
-                                                          surf.mNumPoints);
+    std::int64_t disconnected =
+        remesh_split_disconnected(adj, clusters, rOptions.mNumClusters, surf.mNumPoints);
     std::vector<std::uint8_t> bad_vertices = remesh_detect_nonmanifold_vertices(
         remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
     std::int64_t nonmanifold =
@@ -147267,7 +148017,7 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         unassign_bad_clusters(bad_vertices);
 
     for (int pass = 0; pass < rOptions.mMaxRepairPasses && (disconnected > 0 || nonmanifold > 0);
-        ++pass) {
+         ++pass) {
         if (remesh_grow_null(edges, clusters))
             for (std::size_t i = 0; i < surf.mNumPoints; ++i)
                 if (clusters[i] == -1)
@@ -147277,10 +148027,10 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         result.mNumIterations +=
             remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
                             rOptions.mNumClusters, rOptions.mMaxIterations);
-        disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
-                                                 surf.mNumPoints);
-        bad_vertices = remesh_detect_nonmanifold_vertices(
-            remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
+        disconnected =
+            remesh_split_disconnected(adj, clusters, rOptions.mNumClusters, surf.mNumPoints);
+        bad_vertices = remesh_detect_nonmanifold_vertices(remesh_dual_triangle_keys(surf, clusters),
+                                                          rOptions.mNumClusters);
         nonmanifold = std::count(bad_vertices.begin(), bad_vertices.end(), std::uint8_t{1});
         if (nonmanifold > 0)
             unassign_bad_clusters(bad_vertices);
@@ -147291,20 +148041,20 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
             if (clusters[i] == -1)
                 clusters[i] = 0;
 
-    const std::int64_t n_clus =
-        remesh_renumber(clusters, rOptions.mNumClusters, surf.mNumPoints);
+    const std::int64_t n_clus = remesh_renumber(clusters, rOptions.mNumClusters, surf.mNumPoints);
     result.mNumClusters = n_clus;
     if (n_clus < rOptions.mNumClusters)
-        log::warn("remesh: produced {} clusters of the {} requested (the surface could not be "
-                  "split more finely)",
-                  n_clus, rOptions.mNumClusters);
+        log::warn(
+            "remesh: produced {} clusters of the {} requested (the surface could not be "
+            "split more finely)",
+            n_clus, rOptions.mNumClusters);
 
     // The honest, final, vertex-level manifoldness count: whatever repair
     // could not fix, checked once more on the true final (renumbered)
     // clustering -- distinct in kind from mNumIsolatedClusters, which the
     // loop above already tracks at cluster granularity.
-    const std::vector<std::uint8_t> final_bad = remesh_detect_nonmanifold_vertices(
-        remesh_dual_triangle_keys(surf, clusters), n_clus);
+    const std::vector<std::uint8_t> final_bad =
+        remesh_detect_nonmanifold_vertices(remesh_dual_triangle_keys(surf, clusters), n_clus);
     result.mNumNonManifoldVertices =
         std::count(final_bad.begin(), final_bad.end(), std::uint8_t{1});
 
@@ -147313,9 +148063,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     const std::vector<double> normals = remesh_cluster_normals(surf, clusters, n_clus);
     const std::vector<std::int64_t> faces = remesh_dual_faces(surf, clusters, positions, normals);
     const std::vector<std::int64_t> boundary_lines =
-        rOptions.mPreserveBoundary
-            ? remesh_dual_boundary_edges(boundary.mBoundaryEdges, clusters)
-            : std::vector<std::int64_t>{};
+        rOptions.mPreserveBoundary ? remesh_dual_boundary_edges(boundary.mBoundaryEdges, clusters)
+                                   : std::vector<std::int64_t>{};
 
     Mesh& out = result.mMesh;
     {
@@ -147359,10 +148108,11 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
 #include <functional>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -147484,33 +148234,49 @@ RvolLattice rvol_build_lattice(const detail::LatticeSpec& rSpec) {
         return numA + (i * ny + j) * nz + k;
     };
 
+    // Every point and tet has a closed-form index, so both fill in parallel:
+    // A point (i, j, k) at a_id, B point at b_id, and cell (i, j, k)'s twelve
+    // tets at 12 * ((i * ny + j) * nz + k), in kBccLocalTets order.
     lat.mPoints.resize(static_cast<std::size_t>(numA + numB));
-    for (std::int64_t i = 0; i < nax; ++i)
-        for (std::int64_t j = 0; j < nay; ++j)
-            for (std::int64_t k = 0; k < naz; ++k)
-                lat.mPoints[static_cast<std::size_t>(a_id(i, j, k))] =
-                    Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
-                        o[2] + static_cast<double>(k) * h[2]};
-    for (std::int64_t i = 0; i < nx; ++i)
-        for (std::int64_t j = 0; j < ny; ++j)
-            for (std::int64_t k = 0; k < nz; ++k)
-                lat.mPoints[static_cast<std::size_t>(b_id(i, j, k))] =
-                    Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
-                        o[1] + (static_cast<double>(j) + 0.5) * h[1],
-                        o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+    parallel_for(static_cast<std::size_t>(numA), [&](std::size_t id) {
+        const std::int64_t a = static_cast<std::int64_t>(id);
+        const std::int64_t k = a % naz;
+        const std::int64_t j = (a / naz) % nay;
+        const std::int64_t i = a / (naz * nay);
+        lat.mPoints[id] =
+            Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
+                 o[2] + static_cast<double>(k) * h[2]};
+    });
+    parallel_for(static_cast<std::size_t>(numB), [&](std::size_t id) {
+        const std::int64_t b = static_cast<std::int64_t>(id);
+        const std::int64_t k = b % nz;
+        const std::int64_t j = (b / nz) % ny;
+        const std::int64_t i = b / (nz * ny);
+        lat.mPoints[static_cast<std::size_t>(numA) + id] =
+            Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
+                 o[1] + (static_cast<double>(j) + 0.5) * h[1],
+                 o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+    });
 
-    lat.mTets.reserve(static_cast<std::size_t>(numB) * 12);
-    for (std::int64_t i = 0; i < nx; ++i)
-        for (std::int64_t j = 0; j < ny; ++j)
-            for (std::int64_t k = 0; k < nz; ++k) {
-                const std::int64_t corner[8] = {
-                    a_id(i, j, k),         a_id(i + 1, j, k),         a_id(i + 1, j + 1, k),
-                    a_id(i, j + 1, k),     a_id(i, j, k + 1),         a_id(i + 1, j, k + 1),
-                    a_id(i + 1, j + 1, k + 1), a_id(i, j + 1, k + 1)};
-                const std::int64_t centre = b_id(i, j, k);
-                for (const auto& t : kBccLocalTets)
-                    lat.mTets.push_back({centre, corner[t[0]], corner[t[1]], corner[t[2]]});
-            }
+    lat.mTets.resize(static_cast<std::size_t>(numB) * 12);
+    parallel_for(static_cast<std::size_t>(numB), [&](std::size_t id) {
+        const std::int64_t b = static_cast<std::int64_t>(id);
+        const std::int64_t k = b % nz;
+        const std::int64_t j = (b / nz) % ny;
+        const std::int64_t i = b / (nz * ny);
+        const std::int64_t corner[8] = {a_id(i, j, k),
+                                        a_id(i + 1, j, k),
+                                        a_id(i + 1, j + 1, k),
+                                        a_id(i, j + 1, k),
+                                        a_id(i, j, k + 1),
+                                        a_id(i + 1, j, k + 1),
+                                        a_id(i + 1, j + 1, k + 1),
+                                        a_id(i, j + 1, k + 1)};
+        const std::int64_t centre = b_id(i, j, k);
+        std::size_t out = id * 12;
+        for (const auto& t : kBccLocalTets)
+            lat.mTets[out++] = {centre, corner[t[0]], corner[t[1]], corner[t[2]]};
+    });
     return lat;
 }
 
@@ -147543,24 +148309,32 @@ RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
 
     const std::vector<detail::DistanceHit> hits =
         detail::query_distances(rQuery, rLattice.mPoints, rDistOpts);
-    for (std::size_t i = 0; i < n; ++i) {
+    parallel_for_bw(n, [&](std::size_t i) {
         c.mDistance[i] = hits[i].mSignedDistance;
         c.mInside[i] = hits[i].mSignedDistance <= 0.0 ? 1 : 0;
-    }
+    });
 
     if (!(WarpThreshold > 0.0))
         return c;
 
-    std::vector<std::size_t> candidates;
-    for (std::size_t i = 0; i < n; ++i)
-        if (std::fabs(c.mDistance[i]) <= WarpThreshold)
-            candidates.push_back(i);
-    if (candidates.empty())
+    // The candidates in ascending id: flags, then a scan.
+    std::vector<std::uint64_t> near(n);
+    parallel_for_bw(
+        n, [&](std::size_t i) { near[i] = std::fabs(c.mDistance[i]) <= WarpThreshold ? 1 : 0; });
+    std::vector<std::uint64_t> at(n);
+    const std::uint64_t ncand =
+        parallel_exclusive_scan(near.data(), n, at.data(), std::uint64_t{0});
+    if (ncand == 0)
         return c;
+    std::vector<std::size_t> candidates(ncand);
+    parallel_for_bw(n, [&](std::size_t i) {
+        if (near[i])
+            candidates[at[i]] = i;
+    });
 
     std::vector<Vec3> qpts(candidates.size());
-    for (std::size_t ci = 0; ci < candidates.size(); ++ci)
-        qpts[ci] = rLattice.mPoints[candidates[ci]];
+    parallel_for_bw(candidates.size(),
+                    [&](std::size_t ci) { qpts[ci] = rLattice.mPoints[candidates[ci]]; });
     const std::vector<detail::ClosestPointHit> chits = detail::query_closest_points(rQuery, qpts);
 
     std::int64_t warped = 0;
@@ -147578,94 +148352,88 @@ RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
 
 // --- cut: resolve one crossing edge to a point id ----------------------------
 
-// Resolves a crossing edge (one endpoint inside, one outside -- the caller's
-// contract, never checked here) to a point id in the combined id space:
-// [0, numLatticeIds) are original lattice vertices (kept whole or REUSED as a
-// cut point when warped -- see the file doc comment for why reuse is safe:
-// warping never moves a vertex past its own edges); ids at or beyond
-// numLatticeIds are fresh points, one per distinct crossing edge, deduped by
-// the sorted endpoint-id pair (the `refine.cpp`/`surface.cpp` phase-split
-// idiom's dedup key, applied here to a SERIAL pass rather than a parallel
-// fill + serial dedup, since the classify/warp pass above -- not this one --
-// is the genuinely expensive step; see the file doc comment).
-class RvolCutResolver {
+// Every crossing edge (one endpoint inside, one outside -- the caller's
+// contract, never checked here) gets exactly one FRESH point, in the combined
+// id space: [0, numLatticeIds) are original lattice vertices, ids at or beyond
+// numLatticeIds fresh points, one per distinct crossing edge, deduped by the
+// sorted endpoint-id pair -- the plain marching-tetrahedra rule, which is what
+// makes watertightness a structural consequence of global, edge-keyed dedup
+// rather than something this code has to reason about per case. Warping
+// affects only WHERE that point sits (reusing an incident endpoint's own warp
+// target when available), never WHETHER it is a distinct point --
+// deliberately a genuinely FRESH point every time, even when it coincides
+// exactly with another edge's own fresh point (both incident to the same
+// warped vertex): any scheme that instead SHARES one id across multiple edges
+// was tried and rejected here (see git history) -- sharing by the warped
+// vertex's own id collapsed a straddling tet's kept corner onto its own cut
+// point when that same vertex was both kept and a cut-point source; sharing by
+// a SEPARATE id per warped vertex avoided that but broke winding CONSISTENCY
+// between neighbouring tets instead
+// (RemeshVolume.OutputIsWatertightAndPositivelyOriented caught both, first as
+// non-manifold edges, then as inconsistently wound pairs).
+// Genuinely-coincident fresh points are instead welded AFTER every tet is
+// built (see remesh_volume's own weld pass below), which touches only WHICH id
+// a face uses, never any tet's already-decided winding.
+//
+// Fresh ids are numbered in the order a serial sweep over the root tets, in
+// ascending order and each tet's own Resolve order, first meets each edge
+// (first-seen numbering over the sort-based table, detail/slot_runs.hpp);
+// each root tet is cut independently, in parallel, against a tet-local
+// resolver whose placeholders are mapped to those ids afterwards.
+
+// Where a crossing edge's fresh point sits: a function of the edge alone.
+Vec3 rvol_fresh_position(const RvolLattice& rLattice, const RvolClassification& rClass,
+                         std::int64_t Inside, std::int64_t Outside) {
+    if (rClass.mWarped[static_cast<std::size_t>(Inside)])
+        return rClass.mFinalPosition[static_cast<std::size_t>(Inside)];
+    if (rClass.mWarped[static_cast<std::size_t>(Outside)])
+        return rClass.mFinalPosition[static_cast<std::size_t>(Outside)];
+    const double du = rClass.mDistance[static_cast<std::size_t>(Inside)];
+    const double dv = rClass.mDistance[static_cast<std::size_t>(Outside)];
+    double t = (du - dv) != 0.0 ? du / (du - dv) : 0.5;
+    if (!(t > 0.0 && t < 1.0))
+        t = 0.5;  // a near-tangent crossing: the safe interior fallback
+    const Vec3& pu = rLattice.mPoints[static_cast<std::size_t>(Inside)];
+    const Vec3& pv = rLattice.mPoints[static_cast<std::size_t>(Outside)];
+    return {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]), pu[2] + t * (pv[2] - pu[2])};
+}
+
+// One root tet's resolver: its crossing edges in first-Resolve order, as
+// placeholders numLatticeIds + k (a tet cuts at most four edges).
+class RvolLocalResolver {
 public:
-    RvolCutResolver(const RvolLattice& rLattice, const RvolClassification& rClass)
+    RvolLocalResolver(const RvolLattice& rLattice, const RvolClassification& rClass)
         : mrLattice(rLattice), mrClass(rClass) {}
 
-    // Every crossing edge gets exactly one FRESH point id, deduped by the
-    // sorted endpoint-id pair -- the plain marching-tetrahedra rule, which is
-    // what makes watertightness a structural consequence of global,
-    // edge-keyed dedup rather than something this function has to reason
-    // about per case. Warping affects only WHERE that point sits (reusing an
-    // incident endpoint's own warp target when available), never WHETHER it
-    // is a distinct point -- deliberately a genuinely FRESH point every time,
-    // even when it coincides exactly with another edge's own fresh point
-    // (both incident to the same warped vertex): any scheme that instead
-    // SHARES one id across multiple edges was tried and rejected here (see
-    // git history) -- sharing by the warped vertex's own id collapsed a
-    // straddling tet's kept corner onto its own cut point when that same
-    // vertex was both kept and a cut-point source; sharing by a SEPARATE id
-    // per warped vertex avoided that but broke winding CONSISTENCY between
-    // neighbouring tets instead (RemeshVolume.OutputIsWatertightAndPositivelyOriented
-    // caught both, first as non-manifold edges, then as inconsistently wound
-    // pairs). Genuinely-coincident fresh points are instead welded AFTER
-    // every tet is built (see remesh_volume's own weld pass below), which
-    // touches only WHICH id a face uses, never any tet's already-decided
-    // winding.
+    void Reset() { mCount = 0; }
+
     std::int64_t Resolve(std::int64_t Inside, std::int64_t Outside) {
         const std::int64_t lo = Inside < Outside ? Inside : Outside;
         const std::int64_t hi = Inside < Outside ? Outside : Inside;
         const detail::SurfaceEdgeKey key{lo, hi};
-        auto it = mEdgeToNew.find(key);
-        if (it != mEdgeToNew.end())
-            return it->second;
-
-        Vec3 np;
-        if (mrClass.mWarped[static_cast<std::size_t>(Inside)]) {
-            np = mrClass.mFinalPosition[static_cast<std::size_t>(Inside)];
-        } else if (mrClass.mWarped[static_cast<std::size_t>(Outside)]) {
-            np = mrClass.mFinalPosition[static_cast<std::size_t>(Outside)];
-        } else {
-            const double du = mrClass.mDistance[static_cast<std::size_t>(Inside)];
-            const double dv = mrClass.mDistance[static_cast<std::size_t>(Outside)];
-            double t = (du - dv) != 0.0 ? du / (du - dv) : 0.5;
-            if (!(t > 0.0 && t < 1.0))
-                t = 0.5;  // a near-tangent crossing: the safe interior fallback
-            const Vec3& pu = mrLattice.mPoints[static_cast<std::size_t>(Inside)];
-            const Vec3& pv = mrLattice.mPoints[static_cast<std::size_t>(Outside)];
-            np = {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]),
-                 pu[2] + t * (pv[2] - pu[2])};
-        }
-        const std::int64_t id = NewPoint(np);
-        mEdgeToNew.emplace(key, id);
-        return id;
+        for (std::size_t k = 0; k < mCount; ++k)
+            if (mKeys[k] == key)
+                return mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(k);
+        mKeys[mCount] = key;
+        mPositions[mCount] = rvol_fresh_position(mrLattice, mrClass, Inside, Outside);
+        return mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(mCount++);
     }
 
-    const std::vector<Vec3>& NewPositions() const { return mNewPositions; }
-
-    // The position of ANY id in the combined space: an original lattice
-    // vertex (using its current, possibly-warped position) or a fresh cut
-    // point this resolver created.
     const Vec3& PositionOf(std::int64_t Id) const {
         return Id < mrLattice.mNumLatticeIds()
-                  ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
-                  : mNewPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
+                   ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
+                   : mPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
     }
+
+    std::size_t NumKeys() const { return mCount; }
+    const detail::SurfaceEdgeKey& Key(std::size_t K) const { return mKeys[K]; }
 
 private:
-    std::int64_t NewPoint(const Vec3& rPos) {
-        const std::int64_t id =
-            mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(mNewPositions.size());
-        mNewPositions.push_back(rPos);
-        return id;
-    }
-
     const RvolLattice& mrLattice;
     const RvolClassification& mrClass;
-    std::unordered_map<detail::SurfaceEdgeKey, std::int64_t, detail::SurfaceEdgeKeyHash>
-        mEdgeToNew;
-    std::vector<Vec3> mNewPositions;
+    std::array<detail::SurfaceEdgeKey, 4> mKeys{};
+    std::array<Vec3, 4> mPositions{};
+    std::size_t mCount = 0;
 };
 
 // --- cut: the sign-mask case table -------------------------------------------
@@ -147704,8 +148472,9 @@ bool rvol_tet_ok(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
     return v > Eps;
 }
 
+template <class TResolver, class TOut>
 void rvol_cut_tet(const std::array<std::int64_t, 4>& rV, const RvolClassification& rClass,
-                  RvolCutResolver& rResolver, std::vector<std::array<std::int64_t, 4>>& rOut) {
+                  TResolver& rResolver, TOut& rOut) {
     bool lab[4];
     int count = 0;
     for (int i = 0; i < 4; ++i) {
@@ -147855,7 +148624,8 @@ bool rvol_has_volume_cells(const Mesh& rMesh) {
 
 RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& rOptions) {
     if (!(rOptions.mWarpFraction >= 0.0))
-        throw std::invalid_argument(std::string(kRvolPrefix) + "warp_fraction must not be "
+        throw std::invalid_argument(std::string(kRvolPrefix) +
+                                    "warp_fraction must not be "
                                     "negative, got " +
                                     std::to_string(rOptions.mWarpFraction));
 
@@ -147884,9 +148654,9 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
         const double tol = 1e-9 * (h0 > 0.0 ? h0 : 1.0);
         if (std::fabs(spec.mSpacing[1] - h0) > tol || std::fabs(spec.mSpacing[2] - h0) > tol)
             throw std::invalid_argument(
-                std::string(kRvolPrefix) +
-                "the resolved lattice cell is not cubic (spacing " + std::to_string(spec.mSpacing[0]) +
-                ", " + std::to_string(spec.mSpacing[1]) + ", " + std::to_string(spec.mSpacing[2]) +
+                std::string(kRvolPrefix) + "the resolved lattice cell is not cubic (spacing " +
+                std::to_string(spec.mSpacing[0]) + ", " + std::to_string(spec.mSpacing[1]) + ", " +
+                std::to_string(spec.mSpacing[2]) +
                 ") -- a per-axis resolution over a non-cube bounding box does not fit this "
                 "operation's fixed BCC cell; use cell_size instead");
     }
@@ -147894,86 +148664,165 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
     detail::warn_regions_dropped(rMesh, "remesh_volume");
 
     RemeshVolumeResult result;
-    result.mQuality = detail::soup_quality(soup);
-    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error && !result.mQuality.mWatertight)
-        throw std::invalid_argument(std::string(kRvolPrefix) + "the surface is not watertight "
-                                    "(boundary_edges=" +
-                                    std::to_string(result.mQuality.mBoundaryEdges) +
-                                    ", non_manifold_edges=" +
-                                    std::to_string(result.mQuality.mNonManifoldEdges) +
-                                    ", inconsistent_pairs=" +
-                                    std::to_string(result.mQuality.mInconsistentPairs) + ")");
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
+    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error &&
+        !result.mQuality.mWatertight)
+        throw std::invalid_argument(
+            std::string(kRvolPrefix) +
+            "the surface is not watertight "
+            "(boundary_edges=" +
+            std::to_string(result.mQuality.mBoundaryEdges) +
+            ", non_manifold_edges=" + std::to_string(result.mQuality.mNonManifoldEdges) +
+            ", inconsistent_pairs=" + std::to_string(result.mQuality.mInconsistentPairs) + ")");
     else if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Warn &&
-            !result.mQuality.mWatertight)
-        log::warn("remesh_volume: the surface is not watertight; signs may be unreliable "
-                  "near the defect");
+             !result.mQuality.mWatertight)
+        log::warn(
+            "remesh_volume: the surface is not watertight; signs may be unreliable "
+            "near the defect");
 
-    const detail::DistanceQuery query = detail::build_distance_query(soup, rOptions.mDistance);
+    const detail::DistanceQuery query =
+        detail::build_distance_query_from_runs(soup, rOptions.mDistance, edge_runs);
     const RvolLattice lattice = rvol_build_lattice(spec);
 
     const double h = spec.mSpacing[0];
     std::int64_t num_warped = 0;
-    const RvolClassification cls = rvol_classify_and_warp(
-        lattice, query, rOptions.mDistance, rOptions.mWarpFraction * h, num_warped);
+    const RvolClassification cls = rvol_classify_and_warp(lattice, query, rOptions.mDistance,
+                                                          rOptions.mWarpFraction * h, num_warped);
     result.mNumVerticesWarped = num_warped;
 
-    // --- cut: SERIAL, ascending root-tet order -- see rvol_build_lattice's
-    // doc comment above for why this pass, unlike the classify/warp one
-    // above it, does not need to be parallel.
-    RvolCutResolver resolver(lattice, cls);
-    std::vector<std::array<std::int64_t, 4>> raw_tets;
-    raw_tets.reserve(lattice.mTets.size());
-    std::int64_t num_rejected = 0;
-    // A cut tet may reference a point resolver.Resolve() has not yet created
-    // (impossible for a WHOLE tet, but possible for a cut one), so validation
-    // must happen only after every Resolve() call for that root tet has run --
-    // hence the per-root-tet scratch buffer rather than validating in place.
-    std::vector<std::array<std::int64_t, 4>> scratch;
-    auto point_at = [&](std::int64_t id) -> const Vec3& { return resolver.PositionOf(id); };
-    for (const auto& t : lattice.mTets) {
-        scratch.clear();
-        rvol_cut_tet(t, cls, resolver, scratch);
-        for (const auto& tt : scratch) {
-            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
-                            1e-15 * h * h * h))
-                raw_tets.push_back(tt);
-            else
-                ++num_rejected;
+    // --- cut: every root tet in parallel against a tet-local resolver (at
+    // most three sub-tets and four crossing edges each), then the fresh
+    // points numbered first-seen over (root tet, Resolve order) -- the ids the
+    // serial sweep handed out.
+    const std::int64_t num_lattice = lattice.mNumLatticeIds();
+    const std::size_t nroot = lattice.mTets.size();
+    struct RvolTetCut {
+        std::uint8_t mNumSub = 0;
+        std::uint8_t mNumKeys = 0;
+    };
+    struct RvolSubs {
+        std::array<std::array<std::int64_t, 4>, 3> mTet{};
+        std::size_t mCount = 0;
+        void push_back(const std::array<std::int64_t, 4>& rT) { mTet[mCount++] = rT; }
+    };
+    std::vector<RvolTetCut> per_root(nroot);
+    parallel_for(nroot, [&](std::size_t r) {
+        RvolLocalResolver local(lattice, cls);
+        RvolSubs subs;
+        rvol_cut_tet(lattice.mTets[r], cls, local, subs);
+        per_root[r].mNumSub = static_cast<std::uint8_t>(subs.mCount);
+        per_root[r].mNumKeys = static_cast<std::uint8_t>(local.NumKeys());
+    });
+    std::vector<std::uint64_t> nsub(nroot), nkey(nroot);
+    parallel_for_bw(nroot, [&](std::size_t r) {
+        nsub[r] = per_root[r].mNumSub;
+        nkey[r] = per_root[r].mNumKeys;
+    });
+    std::vector<std::uint64_t> sub_at(nroot), key_at(nroot);
+    const std::uint64_t total_sub =
+        parallel_exclusive_scan(nsub.data(), nroot, sub_at.data(), std::uint64_t{0});
+    const std::uint64_t total_key =
+        parallel_exclusive_scan(nkey.data(), nroot, key_at.data(), std::uint64_t{0});
+    std::vector<std::array<std::int64_t, 4>> sub_tets(total_sub);
+    std::vector<std::uint64_t> sub_root(total_sub);
+    std::vector<detail::SurfaceEdgeKey> keys(total_key);
+    parallel_for(nroot, [&](std::size_t r) {
+        if (nsub[r] == 0)
+            return;
+        RvolLocalResolver local(lattice, cls);
+        RvolSubs subs;
+        rvol_cut_tet(lattice.mTets[r], cls, local, subs);
+        for (std::size_t k = 0; k < local.NumKeys(); ++k)
+            keys[key_at[r] + k] = local.Key(k);
+        for (std::size_t q = 0; q < subs.mCount; ++q) {
+            sub_tets[sub_at[r] + q] = subs.mTet[q];
+            sub_root[sub_at[r] + q] = r;
         }
-    }
+    });
+    const detail::SlotRuns key_runs = detail::group_slots(
+        keys, static_cast<std::size_t>(num_lattice) + 1, [&](const detail::SurfaceEdgeKey& rK) {
+            return rK[0] >= 0 && rK[0] < num_lattice ? static_cast<std::size_t>(rK[0])
+                                                     : static_cast<std::size_t>(num_lattice);
+        });
+    const detail::FirstSeen fresh_ids = detail::number_first_seen(key_runs, total_key);
+    // Each fresh point at its edge's position (the inside endpoint is the one
+    // labelled inside: every Resolve call names it first).
+    std::vector<Vec3> fresh(fresh_ids.NumIds());
+    parallel_for(fresh.size(), [&](std::size_t f) {
+        const detail::SurfaceEdgeKey& k = keys[key_runs.Head(fresh_ids.mRunOfId[f])];
+        const bool lo_inside = cls.mInside[static_cast<std::size_t>(k[0])] != 0;
+        fresh[f] =
+            rvol_fresh_position(lattice, cls, lo_inside ? k[0] : k[1], lo_inside ? k[1] : k[0]);
+    });
+    auto point_at = [&](std::int64_t id) -> const Vec3& {
+        return id < num_lattice ? cls.mFinalPosition[static_cast<std::size_t>(id)]
+                                : fresh[static_cast<std::size_t>(id - num_lattice)];
+    };
+    // Placeholders to fresh ids, and the degenerate test, per sub-tet.
+    const double eps = 1e-15 * h * h * h;
+    std::vector<std::uint64_t> ok(total_sub);
+    parallel_for(total_sub, [&](std::size_t q) {
+        std::array<std::int64_t, 4>& tt = sub_tets[q];
+        for (std::int64_t& id : tt)
+            if (id >= num_lattice)
+                id = num_lattice + fresh_ids.mIdOfSlot[key_at[sub_root[q]] +
+                                                       static_cast<std::size_t>(id - num_lattice)];
+        ok[q] = rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]), eps)
+                    ? 1
+                    : 0;
+    });
+    // The kept sub-tets in (root tet, sub-tet) order.
+    const auto compact = [](const std::vector<std::array<std::int64_t, 4>>& rAll,
+                            const std::vector<std::uint64_t>& rKeep) {
+        std::vector<std::uint64_t> at(rAll.size());
+        const std::uint64_t nkept =
+            parallel_exclusive_scan(rKeep.data(), rAll.size(), at.data(), std::uint64_t{0});
+        std::vector<std::array<std::int64_t, 4>> kept(nkept);
+        parallel_for_bw(rAll.size(), [&](std::size_t q) {
+            if (rKeep[q])
+                kept[at[q]] = rAll[q];
+        });
+        return kept;
+    };
+    std::vector<std::array<std::int64_t, 4>> raw_tets = compact(sub_tets, ok);
+    std::int64_t num_rejected = static_cast<std::int64_t>(total_sub - raw_tets.size());
+
     // --- weld: exact-position dedup of fresh points, then re-check for any
     // tet that welding itself made degenerate (two of its own corners
     // collapsing onto one welded id) -- see RvolPosKey's own doc comment for
     // why this is the safe place to fix duplicate coincident points, and
-    // why it is exact rather than tolerance-based.
-    const std::int64_t num_lattice = lattice.mNumLatticeIds();
+    // why it is exact rather than tolerance-based. Each fresh point maps to
+    // the first fresh point at its exact position: the head of its run.
     {
-        const std::vector<Vec3>& fresh = resolver.NewPositions();
-        std::unordered_map<RvolPosKey, std::int64_t, RvolPosKeyHash> pos_to_first;
+        std::vector<RvolPosKey> pos_keys(fresh.size());
+        parallel_for_bw(fresh.size(), [&](std::size_t i) { pos_keys[i] = rvol_pos_key(fresh[i]); });
+        const std::size_t nb = fresh.size() / 4 + 1;
+        const detail::SlotRuns runs = detail::group_slots(
+            pos_keys, nb, [nb](const RvolPosKey& rK) { return RvolPosKeyHash{}(rK) % nb; },
+            [](const RvolPosKey& rA, const RvolPosKey& rB) {
+                return std::lexicographical_compare(rA.mBits, rA.mBits + 3, rB.mBits, rB.mBits + 3);
+            });
         std::vector<std::int64_t> fresh_remap(fresh.size());
-        for (std::size_t i = 0; i < fresh.size(); ++i) {
-            const RvolPosKey key = rvol_pos_key(fresh[i]);
-            auto it = pos_to_first.find(key);
-            if (it == pos_to_first.end()) {
-                pos_to_first.emplace(key, static_cast<std::int64_t>(i));
-                fresh_remap[i] = static_cast<std::int64_t>(i);
-            } else {
-                fresh_remap[i] = it->second;
-            }
-        }
-        std::vector<std::array<std::int64_t, 4>> welded;
-        welded.reserve(raw_tets.size());
-        for (const auto& t : raw_tets) {
-            std::array<std::int64_t, 4> tt = t;
+        parallel_for(runs.NumRuns(), [&](std::size_t r) {
+            const std::int64_t head = static_cast<std::int64_t>(runs.Head(r));
+            for (const std::uint64_t* q = runs.Begin(r); q != runs.End(r); ++q)
+                fresh_remap[*q] = head;
+        });
+        std::vector<std::uint64_t> keep(raw_tets.size());
+        parallel_for(raw_tets.size(), [&](std::size_t q) {
+            std::array<std::int64_t, 4>& tt = raw_tets[q];
             for (std::int64_t& id : tt)
                 if (id >= num_lattice)
                     id = num_lattice + fresh_remap[static_cast<std::size_t>(id - num_lattice)];
-            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
-                            1e-15 * h * h * h))
-                welded.push_back(tt);
-            else
-                ++num_rejected;
-        }
+            keep[q] =
+                rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]), eps)
+                    ? 1
+                    : 0;
+        });
+        std::vector<std::array<std::int64_t, 4>> welded = compact(raw_tets, keep);
+        num_rejected += static_cast<std::int64_t>(raw_tets.size() - welded.size());
         raw_tets = std::move(welded);
     }
     result.mNumTetsRejected = num_rejected;
@@ -147985,28 +148834,21 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
             "); coarsen the lattice or raise max_tets");
 
     // --- compact: used lattice vertices (in ascending original id) + the
-    // resolver's fresh points (already in deterministic assignment order) ---
-    std::vector<std::uint8_t> used(static_cast<std::size_t>(num_lattice), 0);
+    // fresh points (in their first-seen order) ------------------------------
+    std::vector<std::uint64_t> used(static_cast<std::size_t>(num_lattice), 0);
     for (const auto& t : raw_tets)
         for (std::int64_t id : t)
             if (id < num_lattice)
                 used[static_cast<std::size_t>(id)] = 1;
-
-    std::vector<std::int64_t> remap(static_cast<std::size_t>(num_lattice), -1);
-    std::vector<Vec3> out_points;
-    out_points.reserve(raw_tets.size());  // a reasonable-order estimate
-    for (std::int64_t i = 0; i < num_lattice; ++i)
-        if (used[static_cast<std::size_t>(i)]) {
-            remap[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(out_points.size());
-            out_points.push_back(cls.mFinalPosition[static_cast<std::size_t>(i)]);
-        }
-    const std::int64_t new_base = static_cast<std::int64_t>(out_points.size());
-    for (const Vec3& p : resolver.NewPositions())
-        out_points.push_back(p);
-
+    std::vector<std::uint64_t> used_at(static_cast<std::size_t>(num_lattice));
+    const std::uint64_t num_used = parallel_exclusive_scan(
+        used.data(), static_cast<std::size_t>(num_lattice), used_at.data(), std::uint64_t{0});
+    const std::int64_t new_base = static_cast<std::int64_t>(num_used);
     auto final_id = [&](std::int64_t id) -> std::int64_t {
         if (id < num_lattice)
-            return remap[static_cast<std::size_t>(id)];
+            return used[static_cast<std::size_t>(id)]
+                       ? static_cast<std::int64_t>(used_at[static_cast<std::size_t>(id)])
+                       : -1;
         return new_base + (id - num_lattice);
     };
 
@@ -148014,19 +148856,28 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 
     Mesh& out = result.mMesh;
     {
-        NDArray pts = NDArray::Uninit(DType::Float64, {out_points.size(), std::size_t{3}});
+        const std::size_t npts = static_cast<std::size_t>(num_used) + fresh.size();
+        NDArray pts = NDArray::Uninit(DType::Float64, {npts, std::size_t{3}});
         double* dst = pts.As<double>();
-        for (std::size_t i = 0; i < out_points.size(); ++i)
-            for (int d = 0; d < 3; ++d)
-                dst[i * 3 + static_cast<std::size_t>(d)] = out_points[i][static_cast<std::size_t>(d)];
+        parallel_for_bw(static_cast<std::size_t>(num_lattice), [&](std::size_t i) {
+            if (!used[i])
+                return;
+            for (std::size_t d = 0; d < 3; ++d)
+                dst[used_at[i] * 3 + d] = cls.mFinalPosition[i][d];
+        });
+        parallel_for_bw(fresh.size(), [&](std::size_t f) {
+            for (std::size_t d = 0; d < 3; ++d)
+                dst[(static_cast<std::size_t>(num_used) + f) * 3 + d] = fresh[f][d];
+        });
         out.AssignPoints(std::move(pts));
     }
     {
         NDArray conn = NDArray::Uninit(DType::Int64, {raw_tets.size(), std::size_t{4}});
         std::int64_t* dst = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < raw_tets.size(); ++i)
-            for (int c = 0; c < 4; ++c)
-                dst[i * 4 + static_cast<std::size_t>(c)] = final_id(raw_tets[i][static_cast<std::size_t>(c)]);
+        parallel_for_bw(raw_tets.size(), [&](std::size_t i) {
+            for (std::size_t c = 0; c < 4; ++c)
+                dst[i * 4 + c] = final_id(raw_tets[i][c]);
+        });
         if (!raw_tets.empty())
             out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
     }
@@ -148038,7 +148889,8 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
     // RemeshVolumeResult::mNumNonManifoldEdges' doc comment). Skipped for an
     // empty result, which extract_surface refuses.
     if (!raw_tets.empty())
-        result.mNumNonManifoldEdges = surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
+        result.mNumNonManifoldEdges =
+            surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
 
     return result;
 }
@@ -148060,6 +148912,8 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -148222,6 +149076,7 @@ constexpr int REORDER_SFC_BITS = detail::sfc_bits;  // 3 * 21 = 63 bits fit in a
 // REORDER_SFC_BITS per axis). `hilbert` selects Hilbert vs Morton.
 std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bool hilbert) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
     const int bits = REORDER_SFC_BITS;
@@ -148242,7 +149097,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
             const std::size_t stop = std::min(n, (ci + 1) * kChunk);
             for (std::size_t i = ci * kChunk; i < stop; ++i)
                 for (std::size_t d = 0; d < dim; ++d) {
-                    const double c = detail::read_double(points, i * pdim + d);
+                    const double c = points_v[i * pdim + d];
                     b[d] = std::min(b[d], c);
                     b[3 + d] = std::max(b[3 + d], c);
                 }
@@ -148267,7 +149122,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
     parallel_for(n, [&](std::size_t i) {
         std::uint32_t q[3] = {0, 0, 0};
         for (std::size_t d = 0; d < dim; ++d) {
-            const double c = detail::read_double(points, i * pdim + d);
+            const double c = points_v[i * pdim + d];
             double t = (c - lo[d]) * scale[d];
             std::int64_t qi = static_cast<std::int64_t>(t + 0.5);
             if (qi < 0)
@@ -148349,6 +149204,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             // with no per-cell node vector (out-of-range ids skipped, as
             // cell_node_ids does; a cell with none keys 0).
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
                 const T* ids = conn.As<T>();
@@ -148358,7 +149214,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                     for (std::size_t k = 0; k < npc; ++k) {
                         std::int64_t id;
                         if constexpr (std::is_floating_point_v<T>)
-                            id = detail::read_int(conn, c * npc + k);  // NaN-safe
+                            id = conn_v[c * npc + k];  // NaN-safe
                         else
                             id = static_cast<std::int64_t>(ids[c * npc + k]);
                         if (id < 0 || static_cast<std::size_t>(id) >= n)
@@ -148424,13 +149280,14 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             NDArray block = NDArray::Uninit(DType::Int64, {nc, npc});
             std::int64_t* dst = block.As<std::int64_t>();
             parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 for (std::size_t k = 0; k < npc; ++k)
-                    dst[p * npc + k] = remap(detail::read_int(conn, oc * npc + k));
+                    dst[p * npc + k] = remap(conn_v[oc * npc + k]);
             });
             out.AddCellBlock(std::string(cb.Type()), std::move(block));
         }
@@ -148570,6 +149427,8 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 namespace {
@@ -149028,10 +149887,9 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
                                                 std::string(cb.Type()) + "' is not triangles");
                 block_is_surface[bi] = 1;
                 const NDArray& conn = cb.Conn();
+                const detail::Int64View conn_v(conn);
                 for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                    tris.push_back({detail::read_int(conn, c * 3),
-                                    detail::read_int(conn, c * 3 + 1),
-                                    detail::read_int(conn, c * 3 + 2)});
+                    tris.push_back({conn_v[c * 3], conn_v[c * 3 + 1], conn_v[c * 3 + 2]});
             }
             ++bi;
         }
@@ -149230,6 +150088,7 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
     // the mean of their loop's rows (dtype preserved).
     for (const std::string& name : simp.PointDataNames()) {
         const NDArray& a = simp.PointData(name);
+        const detail::DoubleView a_v(a);
         if (detail::rows(a) != n || n == 0) {
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
@@ -149255,7 +150114,7 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
             for (std::size_t c = 0; c < ncomp; ++c) {
                 double sum = 0.0;
                 for (const std::int64_t v : loop)
-                    sum += detail::read_double(a, src_row(v) * ncomp + c);
+                    sum += a_v[src_row(v) * ncomp + c];
                 detail::write_double(b, (n + n_copies + h) * ncomp + c, sum * inv);
             }
         }
@@ -149563,9 +150422,14 @@ NDArray sample_distance(const Mesh& rSurface, const NDArray& rPoints,
 
     const detail::TriangleSoup soup =
         detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
-    sdfop_report_quality(detail::soup_quality(soup), rOptions.mWatertightCheck);
+    // One edge grouping for both the quality report and the query's edge
+    // normals (surface_edge_runs.hpp).
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    sdfop_report_quality(
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs)),
+        rOptions.mWatertightCheck);
 
-    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    detail::DistanceQuery query = detail::build_distance_query_from_runs(soup, rOptions, edge_runs);
     std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
 
     NDArray out = NDArray::Uninit(DType::Float64, {n});
@@ -149583,11 +150447,13 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
 
     const detail::TriangleSoup soup =
         detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
-    result.mQuality = detail::soup_quality(soup);
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
     sdfop_report_quality(result.mQuality, rOptions.mWatertightCheck);
 
     const std::vector<detail::Vec3> queries = sdfop_query_points(rQuery, rOptions.mLocation);
-    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    detail::DistanceQuery query = detail::build_distance_query_from_runs(soup, rOptions, edge_runs);
     const std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
     const std::size_t n = hits.size();
 
@@ -150762,7 +151628,9 @@ ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
                                     "target: the surface has no triangles to project onto");
 
     ShrinkwrapResult result;
-    result.mQuality = detail::soup_quality(soup);
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
     if (!result.mQuality.mWatertight)
         log::warn(
             "{}the target is not watertight: {} boundary edge(s), {} non-manifold edge(s), {} "
@@ -150774,7 +151642,8 @@ ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
     SurfaceDistanceOptions sd_opts;
     sd_opts.mWeight = rOptions.mNormalWeight;
     sd_opts.mGridCellSize = rOptions.mGridCellSize;
-    const detail::DistanceQuery query = detail::build_distance_query(soup, sd_opts);
+    const detail::DistanceQuery query =
+        detail::build_distance_query_from_runs(soup, sd_opts, edge_runs);
 
     // --- the source: coordinates and the selection ---------------------------
     const std::vector<double> w = swrap_weights(rMesh, rOptions.mWeights, n);
@@ -150934,6 +151803,8 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
 
 // Project includes (private, not installed)
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -151032,9 +151903,10 @@ std::vector<double> smooth_read_coords(const Mesh& rMesh, std::size_t n, std::si
     if (n == 0 || dim == 0)
         return xyz;
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     parallel_for_bw(n, [&](std::size_t i) {
         for (std::size_t d = 0; d < dim && d < 3; ++d)
-            xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+            xyz[i * 3 + d] = points_v[i * dim + d];
     });
     return xyz;
 }
@@ -151156,14 +152028,14 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
         }
 
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t nc = cb.NumCells();
         for (std::size_t c = 0; c < nc; ++c) {
             bool ok = true;
             const std::size_t first = t.mCornerNodes.size();
             for (int k = 0; k < corners; ++k) {
-                const std::int64_t id =
-                    detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
+                const std::int64_t id = conn_v[c * npc + static_cast<std::size_t>(k)];
                 if (id < 0 || static_cast<std::size_t>(id) >= n) {
                     ok = false;
                     break;
@@ -151547,6 +152419,7 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             continue;
         }
         const NDArray& conn = *b.mpConn;
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = b.mNpc;
         const std::size_t fpc = b.mFacets.size();
         parallel_for(b.mNumCells * fpc, [&, bi](std::size_t j) {
@@ -151557,7 +152430,7 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             std::array<std::int64_t, 4> ids{};
             const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
             for (std::uint8_t k = 0; k < nk; ++k)
-                ids[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
+                ids[k] = conn_v[cell * npc + fd.mNodes[k]];
             r.mKey = SmoothFacetKey(ids.data(), nk);
             r.mBlock = bi;
             r.mCell = static_cast<std::uint32_t>(cell);
@@ -151924,14 +152797,15 @@ std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdj
                     const std::size_t c =
                         static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
                     const std::int64_t cb = cells.mCornerOffset[c];
-                    const SmoothCornerReader at{&prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)],
-                                                -1, nullptr};
+                    const SmoothCornerReader at{
+                        &prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)], -1, nullptr};
                     const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
                     Vec3 cc;
                     if (!smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, cc))
                         continue;  // degenerate tet: no circumsphere, no contribution
                     const Vec3 coords[4] = {p0, p1, p2, p3};
-                    const double vol = std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
+                    const double vol =
+                        std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
                     if (vol < kOdtEps)
                         continue;
                     sum_v += vol;
@@ -152762,6 +153636,8 @@ std::string sniff_format(const std::string& rPath) {
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 namespace {
 
@@ -152817,10 +153693,11 @@ SoboCells sobo_gather_cells(const Mesh& rMesh) {
                                         "' is ragged");
         const std::size_t nc = cb.NumCells();
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t base = out.mConn.size();
         out.mConn.resize(base + nc * nv);
         for (std::size_t c = 0; c < nc * nv; ++c)
-            out.mConn[base + c] = detail::read_int(conn, c);
+            out.mConn[base + c] = conn_v[c];
         out.mNumCells += nc;
     }
     return out;
@@ -153113,9 +153990,10 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
         std::vector<double> xyz(n * dim, 0.0);
         {
             const NDArray& points = rMesh.Points();
+            const detail::DoubleView points_v(points);
             parallel_for_bw(n, [&](std::size_t i) {
                 for (std::size_t k = 0; k < dim; ++k)
-                    xyz[i * dim + k] = detail::read_double(points, i * dim + k);
+                    xyz[i * dim + k] = points_v[i * dim + k];
             });
         }
         std::vector<double> kloc;
@@ -153275,13 +154153,13 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
     result.mMesh = detail::clone_mesh(rMesh);
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView points_v(points);
         NDArray moved = NDArray::Uninit(points.Dtype(), {n, dim});
         detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
             T* dst = moved.As<T>();
             parallel_for_bw(n, [&](std::size_t i) {
                 for (std::size_t kk = 0; kk < dim; ++kk)
-                    dst[i * dim + kk] =
-                        static_cast<T>(detail::read_double(points, i * dim + kk) + u[i * dim + kk]);
+                    dst[i * dim + kk] = static_cast<T>(points_v[i * dim + kk] + u[i * dim + kk]);
             });
         });
         result.mMesh.AssignPoints(std::move(moved));
@@ -153308,6 +154186,8 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -153360,6 +154240,14 @@ void split_visit_nodes(const Mesh::CellView& rCb, std::size_t c, F&& f) {
     }
 }
 
+// The same visit over a rectangular block whose connectivity was read once
+// (`pConn`, `npc` ids per cell).
+template <class F>
+void split_visit_rect(const std::int64_t* pConn, std::size_t npc, std::size_t c, F&& f) {
+    for (std::size_t k = 0; k < npc; ++k)
+        f(pConn[c * npc + k]);
+}
+
 std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     std::vector<SplitGroup> groups;
@@ -153400,49 +154288,60 @@ std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
     const std::size_t total = block_base[nblocks];
 
     std::vector<std::int64_t> parent(total);
-    for (std::size_t i = 0; i < total; ++i)
-        parent[i] = static_cast<std::int64_t>(i);
+    parallel_for_bw(total, [&](std::size_t i) { parent[i] = static_cast<std::int64_t>(i); });
 
-    // Union cells that share a node (first cell per node as the anchor).
+    // Union cells that share a node (first cell per node as the anchor). The
+    // sweep is order-dependent and stays serial; a rectangular block's
+    // connectivity is read once, not through a dtype switch per id.
     std::vector<std::int64_t> node_first(n, -1);
     bi = 0;
     for (const auto cb : rMesh.CellRange()) {
-        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+        const auto visit = [&](std::size_t c, std::int64_t node) {
             const std::int64_t gc = static_cast<std::int64_t>(block_base[bi] + c);
-            split_visit_nodes(cb, c, [&](std::int64_t node) {
-                std::int64_t& first = node_first[static_cast<std::size_t>(node)];
-                if (first < 0)
-                    first = gc;
-                else
-                    split_uf_union(parent, first, gc);
-            });
+            std::int64_t& first = node_first[static_cast<std::size_t>(node)];
+            if (first < 0)
+                first = gc;
+            else
+                split_uf_union(parent, first, gc);
+        };
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const detail::Int64View conn(cb.Conn());
+            const std::size_t npc = cb.NodesPerCell();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                split_visit_rect(conn.Data(), npc, c, [&](std::int64_t node) { visit(c, node); });
+        } else {
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                split_visit_nodes(cb, c, [&](std::int64_t node) { visit(c, node); });
         }
         ++bi;
     }
 
-    // Map component roots to piece indices in first-seen (ascending gc) order.
-    std::vector<SplitGroup> groups;
-    std::unordered_map<std::int64_t, std::size_t> root_index;
-    std::vector<std::size_t> gc_to_group(total, 0);
-    for (std::size_t gc = 0; gc < total; ++gc) {
-        const std::int64_t root = split_uf_find(parent, static_cast<std::int64_t>(gc));
-        auto it = root_index.find(root);
-        std::size_t gi;
-        if (it == root_index.end()) {
-            gi = groups.size();
-            root_index[root] = gi;
-            groups.push_back({});
-            groups.back().key = std::to_string(gi);
-            split_init_group(groups.back(), nblocks);
-        } else {
-            gi = it->second;
-        }
-        gc_to_group[gc] = gi;
-    }
+    // Every root is its component's smallest cell (a union points the larger
+    // root at the smaller) and parent[x] <= x, so one ascending pass resolves
+    // each cell's root. Pieces are numbered in first-seen (ascending gc)
+    // order: a component's first cell is its root, so the piece of a cell is
+    // the number of roots before its own -- a scan of the root flags.
+    for (std::size_t gc = 0; gc < total; ++gc)
+        parent[gc] = parent[static_cast<std::size_t>(parent[gc])];
+    std::vector<std::uint64_t> is_root(total);
+    parallel_for_bw(total, [&](std::size_t gc) {
+        is_root[gc] = parent[gc] == static_cast<std::int64_t>(gc) ? 1 : 0;
+    });
+    std::vector<std::uint64_t> piece_at(total);
+    const std::uint64_t npieces =
+        parallel_exclusive_scan(is_root.data(), total, piece_at.data(), std::uint64_t{0});
 
+    std::vector<SplitGroup> groups(npieces);
+    parallel_for(npieces, [&](std::size_t gi) {
+        groups[gi].key = std::to_string(gi);
+        split_init_group(groups[gi], nblocks);
+    });
     for (std::size_t b = 0; b < nblocks; ++b)
-        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c)
-            groups[gc_to_group[block_base[b] + c]].kept[b].push_back(static_cast<std::int64_t>(c));
+        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c) {
+            const std::size_t gc = block_base[b] + c;
+            groups[piece_at[static_cast<std::size_t>(parent[gc])]].kept[b].push_back(
+                static_cast<std::int64_t>(c));
+        }
 
     return groups;
 }
@@ -153587,17 +154486,23 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
     }
 
     SplitResult res;
-    res.mPieces.reserve(groups.size());
-    for (SplitGroup& g : groups) {
-        detail::SubsetResult sub =
-            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true, "split");
-        SplitPiece piece;
-        piece.mKey = std::move(g.key);
+    res.mPieces.resize(groups.size());
+    const auto extract = [&](std::size_t i) {
+        detail::SubsetResult sub = detail::build_cell_subset(rMesh, groups[i].kept, "", "",
+                                                             /*drop_empty_blocks=*/true, "split");
+        SplitPiece& piece = res.mPieces[i];
+        piece.mKey = std::move(groups[i].key);
         piece.mMesh = std::move(sub.mMesh);
         piece.mPointMap = std::move(sub.mPointMap);
         piece.mCellMaps = std::move(sub.mCellMaps);
-        res.mPieces.push_back(std::move(piece));
-    }
+    };
+    // Pieces are independent: extract them in parallel -- unless the mesh has
+    // regions, whose remap may warn, and warnings keep piece order.
+    if (rMesh.NumRegions() == 0)
+        parallel_for(groups.size(), extract, 1);
+    else
+        for (std::size_t i = 0; i < groups.size(); ++i)
+            extract(i);
     return res;
 }
 

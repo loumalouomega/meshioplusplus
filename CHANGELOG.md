@@ -8,6 +8,21 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.18.0 (2026-09-26)
+
+**Roadmap §4 (performance), the rest of the operation items:** every serial phase §4 listed inside an operation now runs in parallel or in gather form, byte-identical to v16.17.0 on SEQ, OpenMP and TBB at 1, 4 and 8 threads (`bench_ops --hash`), and pinned by `test_op_goldens.cpp`, which gains 15 cases whose digests were taken from the previous implementation (among them `clean` and `merge` over hexahedron, polyhedron and ragged polygon blocks, and `remesh`'s Quadric and Anisotropic metrics).
+
+- **Distance kernel:** `sample_distance`, `distance_to_surface`, `shrinkwrap` and `remesh_volume` group the surface's edges once where they grouped them twice, and `build_distance_query` inserts triangles into its bucket grid in parallel (each bucket still lists its triangles in ascending order).
+- **Duplicate cells:** `clean`'s ragged and polyhedral passes and `merge`'s `drop_duplicate_cells` find duplicates with the sort-based table in parallel instead of a string key per cell in a hash set, or a `std::map` of node vectors.
+- **The shared facet table's counting sort** is chunked across threads for large inputs (one order for any chunking).
+- **`isosurface` and `slice`** cut every simplex in parallel and number the crossing points by first-seen order over the sort-based table, where they used a serial hash map.
+- **`split`** resolves components in one ascending pass, numbers them by a scan and extracts the pieces in parallel.
+- **`cell_data_to_point_data`** gathers each point's incident cells in parallel, adding the same terms in the order the serial scatter did; `gradient` and `hessian` at Point location use it, and `hessian` no longer copies the input's other arrays through its two gradient passes.
+- **`compute_normals`**, **`remesh_volume`** (lattice, classification, cut, weld and compaction) and **`remesh`'s setup passes** (item weights, vertex normals, curvature and metric fits) run in parallel; `remesh`'s clustering sweep stays serial by design.
+- **The per-element dtype switch** is hoisted out of the hot loops of `refine`, `convert_cells`, `interpolate`, `repair`, `partition`, `sobolev_deform`, `reorder`, `smooth` and `optimize_volume` (63 call sites).
+- ABI 18 unchanged: `detail/spatial_hash.hpp` gains one inline member, `SpatialGrid::AssignBuckets` ([ABI reviews](doc/abi_reviews.md)).
+- Docs: roadmap §4 narrowed to the items that need the next ABI bump, and its map.
+
 ## v16.17.0 (2026-09-26)
 
 **Roadmap §4 (performance), third part:** the operation items -- welding, the distance kernel's construction, a core neighbour search for `proximity_graph`, and two operations that had no parallel phase. Every operation's output is byte-identical to v16.16.0's (the `bench_ops --hash` digests, and a new golden-digest test taken from the previous implementation).

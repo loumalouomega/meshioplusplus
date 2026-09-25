@@ -278,6 +278,12 @@ int main(int argc, char** argv) {
             m.AddPointData("u", std::move(u));
             return m;
         }();
+        // The cube elevated to quadratic tetrahedra, for `linearize`.
+        const Mesh quadratic = [&] {
+            mio::ConvertCellsOptions o;
+            o.mMode = mio::ConvertCellsMode::Elevate;
+            return mio::convert_cells(volume, o).mMesh;
+        }();
         // A green-closed refinement of every 7th cell, for `undo_green`.
         const Mesh green = [&] {
             mio::RefineOptions o;
@@ -480,10 +486,10 @@ int main(int argc, char** argv) {
             o.mNormal = {0.3, 0.2, 1.0};
             of(pD, mio::slice(with_field, o));
         });
-        row("convert_cells", [&](MeshDigest* pD) {
+        row("linearize", [&](MeshDigest* pD) {
             mio::ConvertCellsOptions o;
-            o.mMode = mio::ConvertCellsMode::Elevate;
-            of(pD, mio::convert_cells(volume, o).mMesh);
+            o.mMode = mio::ConvertCellsMode::Linearize;
+            of(pD, mio::convert_cells(quadratic, o).mMesh);
         });
         row("interpolate", [&](MeshDigest* pD) {
             mio::InterpolateOptions o;
