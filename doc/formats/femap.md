@@ -6,7 +6,7 @@ The neutral file is [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/)'s
 |---|---|
 | **Format name** | `femap` |
 | **Extensions** | `.neu` (also recognised by content: a lone `-1` line, then `100`) |
-| **Read / Write** | ✓ (mesh, groups and results) / ✓ (mesh and groups) |
+| **Read / Write** | ✓ (mesh, groups and results) / ✓ (mesh, groups and one output set of results) |
 | **Extra dependencies** | — |
 
 ## Reading & writing

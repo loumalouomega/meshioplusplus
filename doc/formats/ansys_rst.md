@@ -4,9 +4,9 @@ The `.rst` file is the binary results database Ansys MAPDL writes (Ansys Mechani
 
 | | |
 |---|---|
-| **Format name** | `ansys_rst`; `ansys_rst_cyclic` for the full rotor of a cyclic model (by name only) |
+| **Format name** | `ansys_rst`; `ansys_rst_cyclic` for the full rotor of a cyclic model (by name only; [read-only](../conformance.md#ansys-rst-cyclic) like `ansys_rst`) |
 | **Extensions** | `.rst`, `.rth` (also recognised by content: the standard header of MAPDL file 12) |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#ansys-rst): Ansys writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | — |
 
 ## Reading

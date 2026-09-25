@@ -43,12 +43,14 @@ def time_values(filename):
 
 def write(filename, mesh):
     """Write a Femap 8.2 neutral file (``.neu``): header, properties, nodes,
-    elements and groups.
+    elements, groups and one output set of results.
 
     Element properties and types come from ``femap:property``/``femap:type`` (else
     1 and a type derived from the cell); other point and cell regions become
-    groups. Results are not written: data arrays, side regions and cell types
-    with no Femap topology are dropped with a warning.
+    groups. Numeric point and cell data become the output set's nodal and
+    elemental vectors, one per component (``<name>_0``...); its id is
+    ``femap:set`` and its value ``meshio:time``. Side regions, other data and
+    cell types with no Femap topology are dropped with a warning.
     """
     if not is_buffer(filename, "w"):
         try:

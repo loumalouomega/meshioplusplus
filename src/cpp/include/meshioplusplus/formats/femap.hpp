@@ -83,13 +83,17 @@ MESHIOPLUSPLUS_API std::vector<double> femap_time_values(const std::string& rPat
 
 /**
  * @brief Write `rMesh` as a Femap 8.2 neutral file: blocks 100, 402, 403, 404
- * and 408.
+ * and 408, and one output set (450) with its vectors (451) when the mesh has
+ * numeric point or cell data.
  *
  * The property of each element is `femap:property` (else 1) and its type
  * `femap:type` (else one derived from the cell type); properties take their
  * titles from the cell regions the reader makes of them. Other point and cell
- * regions become groups; results are not written. Cell types without a Femap
- * topology, side regions and data arrays are dropped with a warning.
+ * regions become groups. Numeric point and cell data become nodal and
+ * elemental output vectors, one per component of a multi-component array
+ * (`<name>_0`, `<name>_1`...), in one output set whose id is `femap:set` and
+ * whose value is `meshio:time`. Cell types without a Femap topology, side
+ * regions and other data are dropped with a warning.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write

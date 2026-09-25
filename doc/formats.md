@@ -7,11 +7,11 @@ Each format name links to a detailed reference page (structure, options, data ma
 | Format name | Extensions | Read | Write | Extra dependencies | Round trip |
 |---|---|---|---|---|---|
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — | [6/8 cells · no data · regions CPS](./conformance.md#abaqus) |
-| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | — | — | — |
+| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | — | — | [read-only](./conformance.md#abaqus-fil) |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansysinp) |
-| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — | — |
-| [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — | — |
+| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — | [read-only](./conformance.md#ansys-rst) |
+| [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — | [read-only](./conformance.md#ansys-rst-cyclic) |
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#avsucd) |
 | [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#cae) |
 | [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` | [8/8 cells · data P](./conformance.md#cgns) |
@@ -22,23 +22,23 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#ensight) |
 | [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` | [8/8 cells · data PC · regions CP](./conformance.md#exodus) |
 | [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — | [7/8 cells · data PC · regions CPS](./conformance.md#febio) |
-| [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ (mesh) | — | [8/8 cells · data PC · regions CP](./conformance.md#femap) |
+| [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ | — | [8/8 cells · data PC · regions CP](./conformance.md#femap) |
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#flac3d) |
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#flux) |
-| [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — | — |
+| [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — | [read-only](./conformance.md#frd) |
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#freefem) |
 | [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 | [8/8 cells · data PC](./conformance.md#gid) |
 | [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | — | ✓ | — | [write-only](./conformance.md#gltf) |
-| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
+| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | `gmsh` [fails](./conformance.md#gmsh) / `gmsh22` [8/8 cells · data PCF · regions C](./conformance.md#gmsh22) |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#ip) |
 | [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading needs zlib; bzip2 and compressed writing are Python-only | [8/8 cells · no data · regions CPS](./conformance.md#libmesh) |
 | [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — | [8/8 cells · no data · regions CPS](./conformance.md#lsdyna) |
-| [`lsdyna_binout`](./formats/lsdyna_binout.md) | none: the file named `binout` (or `binout0000`...) | ✓ | — | — | — |
-| [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` or `d3part` (and its `d3plot01`... family) | ✓ | — | — | — |
-| [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | — | — | — |
-| [`marc_t19`](./formats/marc.md#the-post-file) | `.t19` (formatted post file) | ✓ | — | — | — |
+| [`lsdyna_binout`](./formats/lsdyna_binout.md) | none: the file named `binout` (or `binout0000`...) | ✓ | — | — | [read-only](./conformance.md#lsdyna-binout) |
+| [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` or `d3part` (and its `d3plot01`... family) | ✓ | — | — | [read-only](./conformance.md#lsdyna-d3plot) |
+| [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | — | — | [read-only](./conformance.md#marc) |
+| [`marc_t19`](./formats/marc.md#the-post-file) | `.t19` (formatted post file) | ✓ | — | — | [read-only](./conformance.md#marc-t19) |
 | [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — | [8/8 cells · data P](./conformance.md#mdpa) |
 | [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` | [8/8 cells · data PC · regions CP](./conformance.md#med) |
 | [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — | [7/8 cells · no data](./conformance.md#medit) |
@@ -48,8 +48,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`mphbin`](./formats/mphbin.md) | `.mphbin` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#mphbin) |
 | [`mphtxt`](./formats/mphtxt.md) | `.mphtxt` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#mphtxt) |
 | [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#nastran) |
-| [`nastran_h5`](./formats/nastran_h5.md) | `.h5` | ✓ | — | `h5py` | — |
-| [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | — | — | — |
+| [`nastran_h5`](./formats/nastran_h5.md) | `.h5` | ✓ | — | `h5py` | [read-only](./conformance.md#nastran-h5) |
+| [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | — | — | [read-only](./conformance.md#nastran-op2) |
 | [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#netgen) |
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#neuroglancer) |
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#obj) |
@@ -63,13 +63,13 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#pvd) |
 | [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF](./conformance.md#pvtp) |
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#pvtu) |
-| [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | — | — | — |
-| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | — |
-| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | — |
+| [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | — | — | [read-only](./conformance.md#radioss) |
+| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
+| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-th) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
 | [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — | [write-only](./conformance.md#svg) |
-| [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | — |
+| [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | [read-only](./conformance.md#szplt) |
 | [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
 | [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — | [write-only](./conformance.md#tikz) |
@@ -78,17 +78,17 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
 | [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` | [0/8 cells · no data](./conformance.md#usd) |
 | [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — | [fails](./conformance.md#vti) |
-| [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
+| [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#vtk) |
 | [`vtkhdf`](./formats/vtkhdf.md) | `.vtkhdf`, `.hdf` | ✓ | ✓ | `h5py` | [8/8 cells · data PCF](./conformance.md#vtkhdf) |
 | [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — | [fails](./conformance.md#vts) |
 | [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — | [fails](./conformance.md#vtr) |
 | [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#vtm) |
 | [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — | [4/8 cells · data PCF](./conformance.md#vtp) |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#vtu) |
-| [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | — | ADIOS2 (a core built with it, or `adios2`) | — |
+| [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | — | ADIOS2 (a core built with it, or `adios2`) | [read-only](./conformance.md#vtx) |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#wkt) |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) | [8/8 cells · data PC](./conformance.md#xdmf) |
-| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) | — |
+| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) | [read-only](./conformance.md#xplt) |
 | [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#xyz) |
 | [`z88`](./formats/z88.md) | `z88i1.txt`, `z88structure.txt` (by file name), results `z88o2.txt`/`z88o3.txt` | ✓ | ✓ (structure file) | — | [3/8 cells · no data · regions CP](./conformance.md#z88) |
 | [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) | [1/8 cells · data PCF](./conformance.md#zarr) |
@@ -107,7 +107,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on Code_Aster meshes (`code_aster`)** (v16.0.0): Code_Aster's own ASCII mesh, read and written by both engines under the rules of Code_Aster's reader: only the first 80 columns of a line are read, records are token streams that may wrap, `%` starts a comment. `COOR_nD` gives the points, `POI1` … `HEXA27` the cell blocks (`TRIA7` as the new `triangle7`), and `GROUP_MA`/`GROUP_NO` cell and point regions without a tag. Its node order is **not** MED's: the quadratic hexahedra and wedges list the vertical mid-edges before the top ring, and the tables are pinned against Code_Aster's own gmsh and MED readers in the [node-ordering registry](./node_ordering.md). The writer keeps every line within 80 columns, names nodes and elements `N…`/`M…`, sanitises group names to 24 characters, and drops side regions and data arrays with a warning. See [Code_Aster](./formats/code_aster.md).
 
-**Note on the Patran and Femap neutral files (`patran`, `femap`)** (v16.5.0): two FEM interchange files, read and written by both engines. Patran's `.pat`/`.out` is a sequence of fixed-width `(I2,8I8)` packets: nodes, elements (shape in the header, linear or quadratic by node count, `hexahedron20`/`wedge15` with the vertical mid-edges before the top ring), and named components as point and cell regions; elements no component names are grouped by property. Femap's `.neu` is a sequence of `-1`-delimited, comma-separated blocks whose layouts change with the version, so every record is read by position and length (4.41 to 2020.1): nodes, elements in Femap's 20-slot degenerate-brick node layout, property titles, groups as regions, and output sets as steps (`time_step`) whose `451`/`1051` vectors become point or cell data. The Femap writer emits the 8.2 layout, mesh and groups only. Since v16.12.0 Patran's loads and boundary conditions (packets 06, 07, 08, 10 and 11) are read and written as `patran:` data, and Patran 2.5 result files (`.nod`/`.dis`/`.els`, text or binary) are read onto the mesh with `patran.read(path, results=...)`. Neither Patran nor Femap was available: the Patran fixtures are written from its documentation, the Femap ones are real Femap, EMSolution and MYSTRAN files, checked against FrontISTR's `neu2fstr` and femap_neutral_parser. See [Patran](./formats/patran.md) and [Femap](./formats/femap.md).
+**Note on the Patran and Femap neutral files (`patran`, `femap`)** (v16.5.0): two FEM interchange files, read and written by both engines. Patran's `.pat`/`.out` is a sequence of fixed-width `(I2,8I8)` packets: nodes, elements (shape in the header, linear or quadratic by node count, `hexahedron20`/`wedge15` with the vertical mid-edges before the top ring), and named components as point and cell regions; elements no component names are grouped by property. Femap's `.neu` is a sequence of `-1`-delimited, comma-separated blocks whose layouts change with the version, so every record is read by position and length (4.41 to 2020.1): nodes, elements in Femap's 20-slot degenerate-brick node layout, property titles, groups as regions, and output sets as steps (`time_step`) whose `451`/`1051` vectors become point or cell data. The Femap writer emits the 8.2 layout: the mesh, groups and, since v16.11.0, results as an output set. Since v16.12.0 Patran's loads and boundary conditions (packets 06, 07, 08, 10 and 11) are read and written as `patran:` data, and Patran 2.5 result files (`.nod`/`.dis`/`.els`, text or binary) are read onto the mesh with `patran.read(path, results=...)`. Neither Patran nor Femap was available: the Patran fixtures are written from its documentation, the Femap ones are real Femap, EMSolution and MYSTRAN files, checked against FrontISTR's `neu2fstr` and femap_neutral_parser. See [Patran](./formats/patran.md) and [Femap](./formats/femap.md).
 
 **Note on MFEM meshes (`mfem`)** (v16.5.0): MFEM's own `.mesh` (v1.0–v1.3, conforming) and its `.gf` grid functions, read and written by both engines. `.mesh` stays Medit's extension; a file whose first line names an MFEM mesh is read as one, by the Python reader loop and by the native resolver alike. Attributes become `mfem:attribute` and `attribute_<n>`/`boundary_<n>` regions, v1.3 attribute sets named regions. Order-2 `H1` nodes give quadratic cells whose points are MFEM's degrees of freedom in MFEM's own numbering; higher orders keep the vertices, with a warning. Grid functions (`mfem.read(path, {name: gf})`, `mfem.write(..., grid_functions=True)`) become point or cell data. Checked against MFEM 4.10 (PyMFEM) both ways. See [MFEM](./formats/mfem.md).
 

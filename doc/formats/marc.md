@@ -6,7 +6,7 @@ MSC Marc's input deck (the `.dat` file Marc Mentat writes and the solver reads) 
 |---|---|
 | **Format names** | `marc` (input deck), `marc_t19` (formatted post file) |
 | **Extensions** | `.dat` (shared with Tecplot: a `.dat` file that opens as a Marc deck is Marc's), `.t19`; both also recognised by content |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — (`marc_t19` is [read-only by design](../conformance.md#marc-t19): Marc writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | — |
 
 ## Reading

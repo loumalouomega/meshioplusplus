@@ -6,7 +6,7 @@ The binary result file [MSC Nastran](https://hexagon.com/products/product-groups
 |---|---|
 | **Format name** | `nastran_op2` |
 | **Extensions** | `.op2` |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#nastran-op2): Nastran writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | none |
 
 ## Reading
