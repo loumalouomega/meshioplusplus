@@ -25,7 +25,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -38,6 +38,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
 
@@ -146,10 +147,12 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
         for (std::size_t i = 0; i < total_coarse; ++i)
             coarse_ids[i] = static_cast<std::int64_t>(i);
     }
-    std::unordered_map<std::int64_t, std::int64_t> id_to_coarse_row;
-    id_to_coarse_row.reserve(coarse_ids.size());
-    for (std::size_t i = 0; i < coarse_ids.size(); ++i)
-        id_to_coarse_row[coarse_ids[i]] = static_cast<std::int64_t>(i);
+    // (id, row) pairs sorted -- a total order -- searched by binary search.
+    std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
+    parallel_for(coarse_ids.size(), [&](std::size_t i) {
+        id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
+    });
+    parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
 
     const std::vector<std::int64_t> coarse_level =
         ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
@@ -158,9 +161,15 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     };
 
     // --- group fine cells by parent_id --------------------------------------
-    std::unordered_map<std::int64_t, std::vector<std::int64_t>> groups_by_parent;
-    for (std::size_t g = 0; g < total_fine; ++g)
-        groups_by_parent[fine_parent[g]].push_back(static_cast<std::int64_t>(g));
+    // Sorted (parent_id, cell) pairs: each run is one sibling group, its cells
+    // ascending, and the groups come in ascending parent_id -- the same on
+    // every platform, where a hash map's iteration order was not (it decided
+    // which of several malformed groups was reported).
+    std::vector<std::pair<std::int64_t, std::int64_t>> by_parent(total_fine);
+    parallel_for(total_fine, [&](std::size_t g) {
+        by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
+    });
+    parallel_sort(by_parent.begin(), by_parent.end());
 
     // --- classify every global fine cell's role; for green groups, resolve
     // the substitution source once ------------------------------------------
@@ -170,10 +179,12 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     std::vector<std::int64_t> group_size;        // indexed by green group id
     std::int64_t next_group_id = 0;
 
-    for (auto& entry : groups_by_parent) {
-        const std::int64_t parent_id = entry.first;
-        std::vector<std::int64_t>& members = entry.second;
-        std::sort(members.begin(), members.end());
+    std::vector<std::int64_t> members;
+    for (std::size_t r0 = 0, r1 = 0; r0 < by_parent.size(); r0 = r1) {
+        const std::int64_t parent_id = by_parent[r0].first;
+        members.clear();
+        for (r1 = r0; r1 < by_parent.size() && by_parent[r1].first == parent_id; ++r1)
+            members.push_back(by_parent[r1].second);
 
         if (members.size() == 1) {
             const std::int64_t g = members.front();
@@ -186,8 +197,15 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
             continue;  // untouched: role stays Keep
         }
 
-        const auto it = id_to_coarse_row.find(parent_id);
-        if (it == id_to_coarse_row.end())
+        // The last row with this id, as the former map's overwrite kept it.
+        auto it =
+            std::upper_bound(id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
+                             [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
+                                 return v < rE.first;
+                             });
+        if (it != id_to_coarse_row.begin())
+            --it;
+        if (it == id_to_coarse_row.end() || it->first != parent_id)
             throw std::invalid_argument(
                 std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
                 " does not resolve in the coarse mesh's id space -- these two meshes are not "
