@@ -513,7 +513,10 @@ def test_read_options_and_format_are_part_of_the_key(mesh_file, count_parses):
 
 
 def test_multi_file_formats_are_not_cached(tmp_path, count_parses):
-    path = str(tmp_path / "in.xdmf")
+    # A .pvtu names its pieces in sibling files the entry file's stat cannot
+    # see (and needs no optional dependency, unlike XDMF's HDF5 without the
+    # native core).
+    path = str(tmp_path / "in.pvtu")
     meshioplusplus.write(path, _mixed_mesh())
     _tools._load(path)
     _tools._load(path)
