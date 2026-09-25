@@ -297,7 +297,9 @@ void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
                 for (std::int64_t x = key_lo[t].x; x <= key_hi[t].x; ++x)
                     *out++ = GridKey{x, y, z};
     });
-    const std::size_t nbuckets = npairs > 0 ? static_cast<std::size_t>(npairs) : 1;
+    // About four pairs per counting-sort bucket; any bucket function gives the
+    // same runs, since a run is one key.
+    const std::size_t nbuckets = static_cast<std::size_t>(npairs / 4) + 1;
     const SlotRuns runs = group_slots(
         keys, nbuckets, [nbuckets](const GridKey& rK) { return GridKeyHash{}(rK) % nbuckets; },
         [](const GridKey& rA, const GridKey& rB) {
