@@ -59,7 +59,7 @@ Packets that name an undefined node or element are skipped with a warning.
 
 ## Result files
 
-`meshioplusplus.patran.read(path, results={name: file, ...})` (C++ `read_patran(path, {{name, file}, ...})`; a list of paths is named by their stems) reads Patran 2.5 result files onto the neutral file's mesh (v16.12.0), matched by node and element id:
+`meshioplusplus.patran.read(path, results={name: file, ...})` (C++ `read_patran(path, results)` with a `std::vector<PatranResultFile>` of names and files; a list of paths is named by their stems) reads Patran 2.5 result files onto the neutral file's mesh (v16.12.0), matched by node and element id:
 
 - **Nodal** (`.nod`, and `.dis` displacements or forces): `NODID` and `NWIDTH` values per node, point data named `name`.
 - **Element** (`.els`): `ID`, shape and `NWIDTH` values per element, cell data named `name`.
