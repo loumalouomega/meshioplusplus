@@ -71512,6 +71512,8 @@ Mesh read_flac3d(const std::string& rPath) {
                 grp.mName = flac3d_read_str(in);
                 grp.mSlot = flac3d_read_str(in);
                 const std::uint32_t n = ru32(in);
+                // Four bytes per id: bounded by the file before it sizes the list.
+                detail::checked_count(n, detail::file_bytes(rPath) / 4, "FLAC3D", "group id");
                 grp.mIds.resize(n);
                 for (std::uint32_t j = 0; j < n; ++j)
                     grp.mIds[j] = static_cast<std::int64_t>(ru32(in));
@@ -84519,6 +84521,10 @@ D3Header d3_header(const D3Words& rW) {
     h.mNt3d = h.R("nt3d");
 
     const std::int64_t maxint = h.R("maxint");
+    // Integration points per shell layer, encoded in MAXINT's magnitude; a
+    // value whose magnitude does not fit is corrupt, not a layer count.
+    if (maxint < -(std::int64_t{1} << 40) || maxint > (std::int64_t{1} << 40))
+        d3_fail("the control block's MAXINT is corrupt");
     h.mElementDeletion = maxint <= -10000;
     h.mNodeDeletion = maxint > -10000 && maxint < 0;
     h.mLayers = maxint <= -10000 ? std::abs(maxint) - 10000 : std::abs(maxint);

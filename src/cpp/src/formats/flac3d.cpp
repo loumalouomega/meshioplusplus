@@ -324,6 +324,8 @@ Mesh read_flac3d(const std::string& rPath) {
                 grp.mName = flac3d_read_str(in);
                 grp.mSlot = flac3d_read_str(in);
                 const std::uint32_t n = ru32(in);
+                // Four bytes per id: bounded by the file before it sizes the list.
+                detail::checked_count(n, detail::file_bytes(rPath) / 4, "FLAC3D", "group id");
                 grp.mIds.resize(n);
                 for (std::uint32_t j = 0; j < n; ++j)
                     grp.mIds[j] = static_cast<std::int64_t>(ru32(in));
