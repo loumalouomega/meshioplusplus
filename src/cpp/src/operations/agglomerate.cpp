@@ -38,6 +38,7 @@
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
 
@@ -154,9 +155,23 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
     const NDArray& points = rMesh.Points();
     const std::size_t pdim = rMesh.PointDim();
 
+    // Every face's area, once and in parallel: the grow loop below used to
+    // recompute one each time a face was pushed.
+    std::vector<double> face_area(gf.NumFaces());
+    parallel_for(gf.NumFaces(),
+                 [&](std::size_t f) { face_area[f] = agg_face_area(gf, f, points, pdim); });
+
     // --- greedy seed-and-grow over the face dual --------------------------
     std::vector<std::int64_t> group_of(n_compact, -1);
     std::vector<std::vector<std::int64_t>> groups;
+
+    // A candidate's accumulated shared area, as dense per-cell arrays reset
+    // through the ids a seed touched -- no hash map allocated per seed. Same
+    // sums, in the same order.
+    std::vector<double> pending(n_compact, 0.0);
+    std::vector<std::uint8_t> is_pending(n_compact, 0);
+    std::vector<std::int64_t> touched;
+    std::set<FrontierKey> frontier;
 
     for (std::size_t seed = 0; seed < n_compact; ++seed) {
         if (group_of[seed] != -1)
@@ -164,9 +179,10 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
         const auto gid = static_cast<std::int64_t>(groups.size());
         std::vector<std::int64_t> members{static_cast<std::int64_t>(seed)};
         group_of[seed] = gid;
-
-        std::unordered_map<std::int64_t, double> pending;
-        std::set<FrontierKey> frontier;
+        for (std::int64_t t : touched)
+            is_pending[static_cast<std::size_t>(t)] = 0;
+        touched.clear();
+        frontier.clear();
 
         auto push_neighbours = [&](std::int64_t c) {
             const std::size_t nf = gf.NumCellFaces(static_cast<std::size_t>(c));
@@ -181,15 +197,17 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
                     continue;  // mesh boundary
                 if (group_of[static_cast<std::size_t>(other)] != -1)
                     continue;  // already claimed (by this group or would be a bug otherwise)
-                const double a = agg_face_area(gf, f, points, pdim);
-                auto it = pending.find(other);
-                if (it != pending.end()) {
-                    frontier.erase(FrontierKey{-it->second, other});
-                    it->second += a;
+                const double a = face_area[f];
+                double& acc = pending[static_cast<std::size_t>(other)];
+                if (is_pending[static_cast<std::size_t>(other)]) {
+                    frontier.erase(FrontierKey{-acc, other});
+                    acc += a;
                 } else {
-                    it = pending.emplace(other, a).first;
+                    acc = a;
+                    is_pending[static_cast<std::size_t>(other)] = 1;
+                    touched.push_back(other);
                 }
-                frontier.insert(FrontierKey{-it->second, other});
+                frontier.insert(FrontierKey{-acc, other});
             }
         };
 
@@ -199,7 +217,7 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
             const auto fit = frontier.begin();
             const std::int64_t c = fit->mId;
             frontier.erase(fit);
-            pending.erase(c);
+            is_pending[static_cast<std::size_t>(c)] = 0;
             if (group_of[static_cast<std::size_t>(c)] != -1)
                 continue;  // defensive; unreachable given the push-time check above
             group_of[static_cast<std::size_t>(c)] = gid;
