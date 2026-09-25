@@ -1,6 +1,6 @@
 # EnSight Gold (`.case` / `.geo`)
 
-The [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) format: a small `.case` index file plus a Gold geometry file (conventionally `.geo`), the de-facto exchange format for EnSight/ParaView post-processing. meshio++ handles geometry and `VARIABLE` point/cell/field data alike, in both ASCII and C-binary form.
+The [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) format: a small `.case` index file plus a Gold geometry file (conventionally `.geo`), the de-facto exchange format for EnSight/ParaView post-processing. meshio++ handles geometry and `VARIABLE` point/cell/field data alike, in ASCII, C-binary and Fortran-binary form.
 
 | | |
 |---|---|
@@ -16,9 +16,11 @@ import meshioplusplus
 
 mesh = meshioplusplus.read("out.case")          # or the .geo directly
 meshioplusplus.ensight.write("out.case", mesh, binary=True)
+meshioplusplus.ensight.write("out.case", mesh, fortran=True)   # Fortran binary
 ```
 
 - **`binary`** — write C-binary geometry (default `True`); `False` writes ASCII (`%12.5e` floats — EnSight caps usable precision at 6 significant digits).
+- **`fortran`** (v16.17.0) — write Fortran binary instead of C binary: the same records, each framed as a Fortran sequential unformatted record (a 4-byte length before and after it, in the host byte order), under a `"Fortran Binary"` first record; one record per string, count and array, each coordinate and variable component its own, the layout ParaView's `vtkEnSightGoldBinaryReader` reads. `fortran=True` with `binary=False` is a `WriteError`. From C++, `write_ensight(path, mesh, binary, fortran)`; the other surfaces write C binary.
 
 Either path (`.case` or `.geo`) selects the sibling pair on write; both files are always written. On read, a `.case` path is parsed for its `GEOMETRY`/`model:` entry (resolved relative to the case file's directory), while any other path is treated as a Gold geometry file directly.
 
@@ -26,7 +28,7 @@ Either path (`.case` or `.geo`) selects the sibling pair on write; both files ar
 
 **`.case`**: `FORMAT` (must declare `type: ensight gold`) and `GEOMETRY` (`model: [ts] [fs] <file>.geo`) are always consumed; transient wildcard geometry names (`model: name.****.geo`) are rejected. Since v11.3.0 (roadmap §1 tier B1) `TIME` and `VARIABLE` are consumed too — see [Reading transient variables](#reading-transient-variables).
 
-**`.geo`** (Gold): 2 description records, `node id <off|given|assign|ignore>`, `element id <...>`, an optional `extents` block, then per part: `part`, part number, description, `coordinates`, node count, optional node-id array, and the X, Y, Z coordinate arrays (blocked), followed by element sections (`tria3`, `tetra4`, ..., each with a count, an optional element-id array, and connectivity). Binary files start with an 80-char `"C Binary"` record; all strings are 80-char records and all numbers 32-bit ints/floats in the writer's native byte order. `"Fortran Binary"` files are rejected.
+**`.geo`** (Gold): 2 description records, `node id <off|given|assign|ignore>`, `element id <...>`, an optional `extents` block, then per part: `part`, part number, description, `coordinates`, node count, optional node-id array, and the X, Y, Z coordinate arrays (blocked), followed by element sections (`tria3`, `tetra4`, ..., each with a count, an optional element-id array, and connectivity). Binary files start with an 80-char `"C Binary"` record; all strings are 80-char records and all numbers 32-bit ints/floats in the writer's native byte order. A Fortran-binary file (v16.17.0) is the same stream with every record framed as a Fortran sequential unformatted record, the first holding `"Fortran Binary"`: the reader recognises the framing (4- or 8-byte markers, either byte order, through the shared `detail/fortran_records.hpp` / `_fortran_records.py`), joins the payloads and reads the result like C binary, taking the byte order from the markers. Both engines read Fortran-binary geometry; the C++ core reads its variable files too.
 
 Per the Gold specification, **connectivity is positional** (1-based index into the part's coordinate list); `given`/`ignore` id arrays are present in the file but skipped — the same interpretation VTK's EnSight readers use.
 
@@ -73,7 +75,7 @@ Since v15.5.0 (roadmap §1.1), `write` emits a `VARIABLE` section and one variab
 
 - `point_data`/`cell_data` with 1, 2, 3, 6 or 9 components become `scalar`/`vector`/`tensor symm`/`tensor asym` respectively (2 components pad to 3, the vector convention the geometry writer's own 2D coordinates already use); any other component count is skipped with a `log::warn` naming the array. A `cell_data` array must be present on **every** cell block — a variable file mirrors the geometry file's own part/section structure exactly (see [Reading transient variables](#reading-transient-variables)), so one missing block has nowhere to put its section — an array that does not cover every block is skipped with a `log::warn` too.
 - `field_data` holding a single scalar becomes a `constant per case: <name> <value>` line, inline in the `.case` file itself rather than a separate variable file; any other shape is skipped with a `log::warn`.
-- Variable files follow the same `binary` flag as the geometry file, with the same `"C Binary"` 80-byte marker and 32-bit records when `True`.
+- Variable files follow the geometry file's encoding (ASCII, C binary or Fortran binary) with 32-bit records, as EnSight defines them: a variable file has no format record and starts with its description. Until v16.17.0 a binary variable file began with a `"C Binary"` record as the geometry file does, which no other reader expects: VTK and ParaView read the geometry and none of the variables. Such files still read.
 - Filenames are `<name>.<ext>`, with `<ext>` naming the kind and location (`scl`/`vec`/`tsym`/`tasym` per node, `escl`/`evec`/`etsym`/`etasym` per element) — arbitrary, since only the `.case` file's own declared kind matters on read, not the extension.
 - This is a **single-part** write, like the geometry writer itself: multi-part variable write (one section per `ensight:part`/Cell-region part, mirroring a multi-part *read*) is a documented remainder, not attempted here. A transient write (one variable file per step plus a `TIME` section) is likewise not implemented — `sequence_write_supports_time("ensight")` is `false`.
 

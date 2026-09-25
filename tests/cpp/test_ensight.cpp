@@ -452,3 +452,68 @@ TEST(Ensight, VariableWriteSkipsUnsupportedComponentCountsWithAWarning) {
     std::filesystem::remove(geo, ec);
     std::filesystem::remove(dir + "ok.scl", ec);
 }
+
+TEST(Ensight, FortranBinaryRoundTripsGeometryAndVariables) {
+    // Fortran binary frames every record as a Fortran sequential unformatted
+    // record under a "Fortran Binary" header; the reader strips the markers
+    // (detail/fortran_records.hpp) for the geometry and its variable files.
+    mt::Mesh m = mt::tri_mesh();
+    m.AddPointData("temp", mt::data_array({1.0, 2.0, 3.0, 4.0}));
+    const std::string path = mt::temp_path("_fortran.case");
+    meshioplusplus::write_ensight(path, m, /*binary=*/true, /*fortran=*/true);
+    const std::string geo = path.substr(0, path.size() - 5) + ".geo";
+    std::string head(18, '\0');
+    {
+        std::ifstream in(geo, std::ios::binary);
+        in.read(head.data(), 18);
+    }
+    const std::int32_t marker = 80;
+    EXPECT_EQ(head.substr(0, 4), std::string(reinterpret_cast<const char*>(&marker), 4));
+    EXPECT_EQ(head.substr(4, 14), "Fortran Binary");
+
+    const mt::Mesh out = meshioplusplus::read_ensight(path);
+    mt::expect_mesh_eq(m, out, 1e-6);
+    ASSERT_TRUE(out.HasPointData("temp"));
+    for (std::size_t i = 0; i < 4; ++i)
+        EXPECT_NEAR(meshioplusplus::detail::read_double(out.PointData("temp"), i),
+                    static_cast<double>(i + 1), 1e-6);
+    EXPECT_THROW(meshioplusplus::write_ensight(path, m, /*binary=*/false, /*fortran=*/true),
+                 meshioplusplus::WriteError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(geo, ec);
+    std::filesystem::remove(path.substr(0, path.find_last_of("/\\") + 1) + "temp.scl", ec);
+}
+
+TEST(Ensight, BinaryVariableFilesStartWithTheirDescription) {
+    // EnSight defines no format record for a variable file; until v16.17.0 a
+    // "C Binary" one came first, and files with it still read.
+    mt::Mesh m = mt::tri_mesh();
+    m.AddPointData("temp", mt::data_array({1.0, 2.0, 3.0, 4.0}));
+    const std::string path = mt::temp_path("_cbinvar.case");
+    meshioplusplus::write_ensight(path, m, /*binary=*/true);
+    const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+    const std::string var = dir + "temp.scl";
+    std::string bytes;
+    {
+        std::ifstream in(var, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    ASSERT_GE(bytes.size(), 160u);
+    EXPECT_EQ(bytes.substr(0, 8), "variable");
+    EXPECT_EQ(bytes.substr(80, 4), "part");
+
+    std::string legacy(80, '\0');
+    legacy.replace(0, 8, "C Binary");
+    {
+        std::ofstream out(var, std::ios::binary);
+        out << legacy << bytes;
+    }
+    const mt::Mesh back = meshioplusplus::read_ensight(path);
+    ASSERT_TRUE(back.HasPointData("temp"));
+    EXPECT_NEAR(meshioplusplus::detail::read_double(back.PointData("temp"), 3), 4.0, 1e-6);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);
+    std::filesystem::remove(var, ec);
+}

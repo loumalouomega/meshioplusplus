@@ -3276,10 +3276,14 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0);
 
     // EnSight Gold writer / reader (.case/.geo pair, geometry only).
-    m.def("ensight_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_ensight(path, meshioplusplus_py::py_to_mesh(pymesh, refs), binary);
-    });
+    m.def(
+        "ensight_write",
+        [](const std::string& path, py::object pymesh, bool binary, bool fortran) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_ensight(path, meshioplusplus_py::py_to_mesh(pymesh, refs), binary,
+                                          fortran);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("fortran") = false);
     m.def("ensight_read",
           guard_read("ensight",
                      [](const std::string& path, int time_step) {
