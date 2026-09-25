@@ -1,0 +1,97 @@
+name: fuzz
+
+# Coverage-guided fuzzing of every native registry reader (doc/fuzzing.md).
+# Scheduled rather than per-PR: a campaign is minutes per format, and what it
+# finds is a new input to fix, not a regression in the change under review.
+# The regressions it has found are replayed on every PR by the cpp-tests and
+# cpp-sanitize jobs (ctest's fuzz_regression_<format> tests).
+on:
+  schedule:
+    - cron: "17 3 * * 1"  # weekly, Monday 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per format"
+        default: "60"
+  pull_request:
+    paths:
+      - "tests/fuzz/**"
+      - "tools/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Fuzz readers (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          submodules: recursive
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # Seeds come from the LFS fixtures; without them the fuzzer starts from
+      # empty inputs, which still works, only slower.
+      - name: Fetch Git LFS content
+        run: bash tools/fetch-lfs.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y clang libhdf5-dev libnetcdf-dev zlib1g-dev libbz2-dev pkg-config ninja-build
+      - name: Configure and build the fuzz targets
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMESHIOPLUSPLUS_BUILD_FUZZERS=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_WITH_BZIP2=ON
+          cmake --build build --target meshioplusplus_fuzz_read meshioplusplus_fuzz_replay
+      # The generated seeds need the Python package; the fixture seeds do not.
+      - name: Install meshio++ for the generated seeds
+        run: python -m pip install .
+      - name: Build the seed corpora
+        run: python tools/fuzz/seed_corpus.py seeds --replay build/meshioplusplus_fuzz_replay
+      - name: Fuzz
+        env:
+          SHARD: ${{ matrix.shard }}
+          NSHARDS: "4"
+          ASAN_OPTIONS: detect_leaks=1:allocator_may_return_null=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          secs="${{ github.event.inputs.seconds }}"
+          [ "${{ github.event_name }}" = pull_request ] && secs=10
+          tools/fuzz/run_campaign.sh build seeds findings "${secs:-60}"
+      - name: Job summary
+        if: always()
+        run: |
+          echo "### Fuzz shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/^/- /' findings/summary.txt >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-${{ matrix.shard }}
+          path: |
+            findings/*/crash-*
+            findings/*/leak-*
+            findings/*/timeout-*
+            findings/*/oom-*
+            findings/*/fuzz.log

@@ -34,6 +34,7 @@
 #include "meshioplusplus/formats/su2.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
@@ -136,10 +137,12 @@ void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, s
     std::set<int> types;
     for (std::size_t e = 0; e < count; ++e) {
         auto t = su2_tokens(rLines.at(rLi++));
+        detail::need_tokens(t, 1, "SU2");
         int vt = std::stoi(t[0]);
         int nn = su2_numnodes(vt);
         if (nn == 0)
             throw ReadError("SU2: unsupported element type " + t[0]);
+        detail::need_tokens(t, 1 + static_cast<std::size_t>(nn), "SU2");
         std::vector<std::int64_t> nodes(nn);
         for (int j = 0; j < nn; ++j)
             nodes[j] = std::strtoll(t[1 + j].c_str(), nullptr, 10);
@@ -206,18 +209,26 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (zoneBody.mDim != 2 && zoneBody.mDim != 3)
                 throw ReadError("SU2: invalid NDIME");
         } else if (name == "NPOIN") {
-            std::size_t npoin = static_cast<std::size_t>(std::stoll(su2_tokens(rest)[0]));
+            const auto npoin_tok = su2_tokens(rest);
+            detail::need_tokens(npoin_tok, 1, "SU2");
+            if (zoneBody.mDim == 0)
+                throw ReadError("SU2: NPOIN before NDIME");
+            // One point per line: the count cannot exceed the lines left.
+            const std::size_t npoin = detail::checked_count(std::stoll(npoin_tok[0]),
+                                                            rLines.size() - rLi, "SU2", "point");
             NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(zoneBody.mDim)});
             double* pp = pts.As<double>();
             for (std::size_t i = 0; i < npoin; ++i) {
                 auto t = su2_tokens(rLines.at(rLi++));
+                detail::need_tokens(t, static_cast<std::size_t>(zoneBody.mDim), "SU2");
                 for (int c = 0; c < zoneBody.mDim; ++c)
                     pp[i * static_cast<std::size_t>(zoneBody.mDim) + static_cast<std::size_t>(c)] =
                         detail::parse_double(t[static_cast<std::size_t>(c)]);
             }
             zoneBody.mPoints = std::move(pts);
         } else if (name == "NELEM") {
-            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
+            const std::size_t ne =
+                detail::checked_count(std::stoll(rest), rLines.size() - rLi, "SU2", "element");
             read_elem_block(rLines, rLi, ne, 0, zone, zoneBody.mBlocks);
         } else if (name == "NMARK") {
             // handled implicitly via MARKER_TAG/MARKER_ELEMS
@@ -239,7 +250,8 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (!current_tag_name.empty())
                 zoneBody.mMarkerNames[current_tag] = current_tag_name;
         } else if (name == "MARKER_ELEMS") {
-            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
+            const std::size_t ne =
+                detail::checked_count(std::stoll(rest), rLines.size() - rLi, "SU2", "element");
             read_elem_block(rLines, rLi, ne, current_tag, zone, zoneBody.mBlocks);
         }
     }
@@ -303,7 +315,10 @@ Mesh read_su2(const std::string& rPath) {
             if (eq == std::string::npos)
                 break;
             if (su2_strip(line.substr(0, eq)) == "NZONE") {
-                nzone = static_cast<std::size_t>(std::stoll(su2_tokens(su2_strip(line.substr(eq + 1)))[0]));
+                const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
+                detail::need_tokens(value, 1, "SU2");
+                // Every zone takes lines of its own: bounded by the file.
+                nzone = detail::checked_count(std::stoll(value[0]), lines.size(), "SU2", "zone");
                 multizone = true;
             }
             break;
@@ -326,9 +341,9 @@ Mesh read_su2(const std::string& rPath) {
                 break;
             std::string name = su2_strip(line.substr(0, eq));
             if (name == "NZONE" || name == "IZONE") {
+                const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
                 if (name == "IZONE" &&
-                    static_cast<std::size_t>(
-                        std::stoll(su2_tokens(su2_strip(line.substr(eq + 1)))[0])) != z + 1)
+                    (value.empty() || std::stoll(value[0]) != static_cast<long long>(z + 1)))
                     throw ReadError("SU2: IZONE out of order (expected " + std::to_string(z + 1) +
                                     ")");
                 ++li;
@@ -348,8 +363,14 @@ Mesh read_su2(const std::string& rPath) {
         // Concatenate zone points, offsetting each zone's connectivity by the
         // running point count -- zones are independent meshes, never welded.
         std::size_t total_points = 0;
-        for (const Su2ZoneBody& z : zones)
+        for (const Su2ZoneBody& z : zones) {
+            // Also catches an NDIME after NPOIN, which leaves the points sized
+            // for the earlier dimension.
+            if (z.mDim != dim || (z.mPoints.Shape().size() == 2 &&
+                                  z.mPoints.Shape()[1] != static_cast<std::size_t>(dim)))
+                throw ReadError("SU2: zones of different dimensions (NDIME)");
             total_points += z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
+        }
         NDArray pts(DType::Float64, {total_points, static_cast<std::size_t>(dim)});
         double* pp = pts.As<double>();
         std::size_t offset = 0;

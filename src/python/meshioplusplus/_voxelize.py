@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._grid import DEFAULT_MAX_CELLS, _lattice_py
 from ._mesh import Mesh
 from ._sdf import _sample_py, _soup
@@ -316,9 +317,9 @@ def voxelize(
             "spacing": res["spacing"],
             "num_occupied": res["num_occupied"],
         }
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "voxelize"):
+            raise
         out = None
 
     if out is None:

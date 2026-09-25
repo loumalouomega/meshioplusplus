@@ -55,6 +55,9 @@ std::string cell_type_for(std::size_t n) {
 NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
     std::size_t n = rRows.size();
     std::size_t nc = n ? rRows[0].size() : 0;
+    for (const auto& row : rRows)
+        if (row.size() != nc)
+            throw ReadError("OBJ: rows of one attribute with different lengths");
     NDArray a(DType::Float64, {n, nc});
     double* p = a.As<double>();
     for (std::size_t i = 0; i < n; ++i)

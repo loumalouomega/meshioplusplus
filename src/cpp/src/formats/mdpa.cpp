@@ -376,6 +376,8 @@ int mdpa_parse_data_block(
         }
         const std::vector<std::string> toks = mdpa_tokens(line);
         std::int64_t id = 0;
+        if (toks.empty())
+            continue;
         if (!mdpa_parse_int(toks[0], id)) {
             log::warn("mdpa: skipping data line with non-integer id: {}", line);
             continue;

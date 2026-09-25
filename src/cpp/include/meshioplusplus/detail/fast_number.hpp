@@ -148,7 +148,9 @@ inline bool is_c_decimal_point(const char* pDecimalPoint) noexcept {
  * locale.
  *
  * @param pFirst NUL-terminated text to parse from (only the prefix up to
- * the parsed number is read; the buffer must outlive `rEnd`).
+ * the first character that cannot continue the number is read, never the
+ * rest of the buffer, so a cursor calling this once per number over a
+ * whole file stays linear; the buffer must outlive `rEnd`).
  * @param rEnd Set to the first unparsed character.
  * @return The parsed value, or `0.0` on failure (`rEnd == pFirst`).
  */
@@ -174,8 +176,41 @@ inline double parse_double(const char* pFirst, const char*& rEnd) noexcept {
     const bool looks_like_hex_float =
         hex_check[0] == '0' && (hex_check[1] == 'x' || hex_check[1] == 'X');
     if (!looks_like_hex_float) {
+        // Bound from_chars to the span a decimal, inf or nan literal can
+        // cover (sign, digits, '.', exponent; or letters plus an optional
+        // "(n-char-seq)"). from_chars' result depends only on that span, so
+        // the value and the end are those of an unbounded parse -- while a
+        // strlen here read to the end of the buffer on every call and made
+        // every reader that parses a whole file this way quadratic.
+        const char* last = (*p == '-') ? p + 1 : p;
+        auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+        auto is_alpha = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+        if (is_alpha(*last)) {
+            while (is_alpha(*last))
+                ++last;
+            if (*last == '(') {
+                ++last;
+                while (is_alpha(*last) || is_digit(*last) || *last == '_')
+                    ++last;
+                if (*last == ')')
+                    ++last;
+            }
+        } else {
+            while (is_digit(*last))
+                ++last;
+            if (*last == '.')
+                ++last;
+            while (is_digit(*last))
+                ++last;
+            if (*last == 'e' || *last == 'E') {
+                ++last;
+                if (*last == '+' || *last == '-')
+                    ++last;
+                while (is_digit(*last))
+                    ++last;
+            }
+        }
         double value = 0.0;
-        const char* last = pFirst + std::strlen(pFirst);
         auto [ptr, ec] = std::from_chars(p, last, value);
         if (ec == std::errc()) {
             rEnd = ptr;

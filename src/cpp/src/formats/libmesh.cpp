@@ -318,6 +318,9 @@ public:
 
     bool Xdr() const { return mXdr; }
 
+    /** @brief The whole input's size: the bound on any count it declares. */
+    std::size_t Size() const { return mText.size(); }
+
     std::string String() {
         if (mXdr) {
             const std::uint32_t n = mBin.U32();
@@ -510,6 +513,12 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
 
     const std::int64_t n_elem = io.Scalar(hw);
     const std::int64_t n_nodes = io.Scalar(hw);
+    // Each element takes at least a byte of the file and each node three
+    // coordinates of at least a byte: counts beyond that are corruption, not
+    // something to reserve memory for.
+    if (n_elem < 0 || static_cast<std::uint64_t>(n_elem) > io.Size() || n_nodes < 0 ||
+        static_cast<std::uint64_t>(n_nodes) > io.Size() / 3)
+        io.Fail("element or node count larger than the file");
     const std::string bc_file = io.String();
     const std::string sid_file = io.String();
     const std::string pid_file = io.String();

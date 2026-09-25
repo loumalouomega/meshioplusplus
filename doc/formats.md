@@ -2,96 +2,96 @@
 
 ## Format table
 
-Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour).
+Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour). The **Round trip** column summarises what a write followed by a read keeps (cell types, point/cell/field data, region kinds), as checked by the [format conformance matrix](./conformance.md).
 
-| Format name | Extensions | Read | Write | Extra dependencies |
-|-------------|-----------|------|-------|--------------------|
-| [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — |
-| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | — | — |
-| [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — |
-| [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — |
-| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — |
-| [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — |
-| [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — |
-| [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — |
-| [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
-| [`code_aster`](./formats/code_aster.md) | `.mail` | ✓ | ✓ | — |
-| [`dex`](./formats/dex.md) | `.dex` | ✓ | ✓ | — |
-| [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
-| [`elmer`](./formats/elmer.md) | a directory (`mesh.header`, …) | ✓ | ✓ | — |
-| [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — |
-| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
-| [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — |
-| [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ (mesh) | — |
-| [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
-| [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
-| [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — |
-| [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — |
-| [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 |
-| [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | — | ✓ | — |
+| Format name | Extensions | Read | Write | Extra dependencies | Round trip |
+|---|---|---|---|---|---|
+| [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — | [6/8 cells · no data · regions CPS](./conformance.md#abaqus) |
+| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | — | — | — |
+| [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
+| [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansysinp) |
+| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — | — |
+| [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — | — |
+| [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#avsucd) |
+| [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#cae) |
+| [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` | [8/8 cells · data P](./conformance.md#cgns) |
+| [`code_aster`](./formats/code_aster.md) | `.mail` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#code-aster) |
+| [`dex`](./formats/dex.md) | `.dex` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#dex) |
+| [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — | [1/8 cells · data PC](./conformance.md#dolfin-xml) |
+| [`elmer`](./formats/elmer.md) | a directory (`mesh.header`, …) | ✓ | ✓ | — | [7/8 cells · no data · regions C](./conformance.md#elmer) |
+| [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#ensight) |
+| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` | [8/8 cells · data PC · regions CP](./conformance.md#exodus) |
+| [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — | [7/8 cells · data PC · regions CPS](./conformance.md#febio) |
+| [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ (mesh) | — | [8/8 cells · data PC · regions CP](./conformance.md#femap) |
+| [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#flac3d) |
+| [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#flux) |
+| [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — | — |
+| [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#freefem) |
+| [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 | [8/8 cells · data PC](./conformance.md#gid) |
+| [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | — | ✓ | — | [write-only](./conformance.md#gltf) |
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
-| [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
-| [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
-| [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — |
-| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading needs zlib; bzip2 and compressed writing are Python-only |
-| [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — |
-| [`lsdyna_binout`](./formats/lsdyna_binout.md) | none: the file named `binout` (or `binout0000`...) | ✓ | — | — |
-| [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` or `d3part` (and its `d3plot01`... family) | ✓ | — | — |
-| [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | — | — |
-| [`marc_t19`](./formats/marc.md#the-post-file) | `.t19` (formatted post file) | ✓ | — | — |
-| [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — |
-| [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` |
-| [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — |
-| [`mfem`](./formats/mfem.md) | `.mesh` (by content), `.gf` grid functions | ✓ | ✓ | — |
-| [`mff`](./formats/mff.md) | `.mff` | ✓ | ✓ | — |
-| [`mfm`](./formats/mfm.md) | `.mfm` | ✓ | ✓ | — |
-| [`mphbin`](./formats/mphbin.md) | `.mphbin` | ✓ | ✓ | — |
-| [`mphtxt`](./formats/mphtxt.md) | `.mphtxt` | ✓ | ✓ | — |
-| [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — |
-| [`nastran_h5`](./formats/nastran_h5.md) | `.h5` | ✓ | — | `h5py` |
-| [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | — | — |
-| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — |
-| [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — |
-| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
-| [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
-| [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — |
-| [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — |
-| [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — |
-| [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
-| [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
-| [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — |
-| [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — |
-| [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — |
-| [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — |
-| [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | — | — |
-| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — |
-| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — |
-| [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
-| [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — |
-| [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |
-| [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) |
-| [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — |
-| [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — |
-| [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — |
-| [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — |
-| [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — |
-| [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — |
-| [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` |
-| [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — |
+| [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
+| [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |
+| [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#ip) |
+| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading needs zlib; bzip2 and compressed writing are Python-only | [8/8 cells · no data · regions CPS](./conformance.md#libmesh) |
+| [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — | [8/8 cells · no data · regions CPS](./conformance.md#lsdyna) |
+| [`lsdyna_binout`](./formats/lsdyna_binout.md) | none: the file named `binout` (or `binout0000`...) | ✓ | — | — | — |
+| [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` or `d3part` (and its `d3plot01`... family) | ✓ | — | — | — |
+| [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | — | — | — |
+| [`marc_t19`](./formats/marc.md#the-post-file) | `.t19` (formatted post file) | ✓ | — | — | — |
+| [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — | [8/8 cells · data P](./conformance.md#mdpa) |
+| [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` | [8/8 cells · data PC · regions CP](./conformance.md#med) |
+| [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — | [7/8 cells · no data](./conformance.md#medit) |
+| [`mfem`](./formats/mfem.md) | `.mesh` (by content), `.gf` grid functions | ✓ | ✓ | — | [6/8 cells · no data · regions C](./conformance.md#mfem) |
+| [`mff`](./formats/mff.md) | `.mff` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#mff) |
+| [`mfm`](./formats/mfm.md) | `.mfm` | ✓ | ✓ | — | [fails](./conformance.md#mfm) |
+| [`mphbin`](./formats/mphbin.md) | `.mphbin` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#mphbin) |
+| [`mphtxt`](./formats/mphtxt.md) | `.mphtxt` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#mphtxt) |
+| [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#nastran) |
+| [`nastran_h5`](./formats/nastran_h5.md) | `.h5` | ✓ | — | `h5py` | — |
+| [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | — | — | — |
+| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#netgen) |
+| [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#neuroglancer) |
+| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#obj) |
+| [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#off) |
+| [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — | [4/8 cells · no data · regions CPS](./conformance.md#openfoam) |
+| [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#patran) |
+| [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#pcd) |
+| [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#permas) |
+| [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#ply) |
+| [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — | [1/8 cells · data PCF](./conformance.md#pmsh) |
+| [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#pvd) |
+| [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF](./conformance.md#pvtp) |
+| [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#pvtu) |
+| [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | — | — | — |
+| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | — |
+| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | — |
+| [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
+| [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
+| [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — | [write-only](./conformance.md#svg) |
+| [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | — |
+| [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
+| [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
+| [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — | [write-only](./conformance.md#tikz) |
+| [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
+| [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
+| [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
+| [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` | [0/8 cells · no data](./conformance.md#usd) |
+| [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — | [fails](./conformance.md#vti) |
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
-| [`vtkhdf`](./formats/vtkhdf.md) | `.vtkhdf`, `.hdf` | ✓ | ✓ | `h5py` |
-| [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — |
-| [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — |
-| [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — |
-| [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — |
-| [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
-| [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | — | ADIOS2 (a core built with it, or `adios2`) |
-| [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
-| [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
-| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) |
-| [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — |
-| [`z88`](./formats/z88.md) | `z88i1.txt`, `z88structure.txt` (by file name), results `z88o2.txt`/`z88o3.txt` | ✓ | ✓ (structure file) | — |
-| [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) |
+| [`vtkhdf`](./formats/vtkhdf.md) | `.vtkhdf`, `.hdf` | ✓ | ✓ | `h5py` | [8/8 cells · data PCF](./conformance.md#vtkhdf) |
+| [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — | [fails](./conformance.md#vts) |
+| [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — | [fails](./conformance.md#vtr) |
+| [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#vtm) |
+| [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — | [4/8 cells · data PCF](./conformance.md#vtp) |
+| [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#vtu) |
+| [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | — | ADIOS2 (a core built with it, or `adios2`) | — |
+| [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#wkt) |
+| [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) | [8/8 cells · data PC](./conformance.md#xdmf) |
+| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) | — |
+| [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#xyz) |
+| [`z88`](./formats/z88.md) | `z88i1.txt`, `z88structure.txt` (by file name), results `z88o2.txt`/`z88o3.txt` | ✓ | ✓ (structure file) | — | [3/8 cells · no data · regions CP](./conformance.md#z88) |
+| [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) | [1/8 cells · data PCF](./conformance.md#zarr) |
 
 **Note on directory formats:** [`elmer`](./formats/elmer.md), `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a write target with no extension needs an explicit `file_format=`, and none of the four can be read from or written to a buffer. **Reading sniffs a directory by the files it holds** (v16.2.0): a `mesh.header` (or a `partitioning.N` of `part.n.*` files) makes it `elmer`, and a `constant/polyMesh` or `polyMesh` with `owner` and `faces` (or a decomposed `processor0`, or a multi-region `constant/regionProperties`) makes it `openfoam`, so `read("case")` and `convert case out.vtu` need no format; a directory matching both, or neither, is not guessed. A glob over such a set — `read_sequence("out_*.pmsh")` — matches the suffixed ones, which an ordinary file glob would not; an extension-less Elmer directory has to be listed explicitly.
 
@@ -281,11 +281,20 @@ A format's Python shim asks `meshioplusplus._fallback.core_declined` what to do 
 | --- | --- | --- |
 | `ReadError` / `WriteError` | A recognised decline: a malformed file, or a construct the core deliberately does not handle | Logged at `DEBUG`, falls back to the Python reference |
 | `TypeError`, `MemoryError`, `RecursionError` | Never a decline: a stale build, a genuine user error, or retrying a huge file on the more memory-hungry twin | Propagates |
-| Anything else (`ValueError`, `IndexError`, `RuntimeError`, `AttributeError`, …) | The fast path broke on something it did not classify | Logged at `WARNING` naming the format, path and cause, then falls back |
+| Anything else (`RuntimeError`, `AttributeError`, …) | The fast path broke on something it did not classify: a bug in the core, since v16.14.0 | Logged at `WARNING` naming the format, path and cause, then falls back |
+
+Since v16.14.0 every native reader entry point (the Python `_core.*_read` bindings and the registry every flat binding reads through) rethrows a parser's `std::` exception (`std::stoll` on a bad token, `.at()` past an end) as a `ReadError` naming the format (`detail/read_guard.hpp`), so a malformed file is always the first row and the last row is left for genuine defects. The fuzz campaign holds the readers to that contract ([fuzzing](./fuzzing.md)).
 
 The fallback is also skipped where the Python twin cannot answer the same question: a non-default `time_step` (Gmsh, XDMF, MED, EnSight, CGNS) or an OpenFOAM `region` re-raises the core's error rather than quietly returning step 0 or a single region.
 
-To see the declines, enable logging (`logging.basicConfig(level=logging.DEBUG)` shows the `meshioplusplus` logger). To prove a file was really handled by the core, set `MESHIOPLUSPLUS_STRICT_CORE=1` (also `on`, `true`, `yes`): every decline then re-raises instead of falling back, and is logged at `WARNING`. The ambiguous-extension loop in `read()` still moves on to the next candidate format, since that is about format ambiguity rather than core versus Python. The operations (`clean`, `smooth`, …) are not covered yet; see the [roadmap](./roadmap.md#_2-quality-of-implementation).
+To see the declines, enable logging (`logging.basicConfig(level=logging.DEBUG)` shows the `meshioplusplus` logger). To prove a file was really handled by the core, set `MESHIOPLUSPLUS_STRICT_CORE=1` (also `on`, `true`, `yes`): every decline then re-raises instead of falling back, and is logged at `WARNING`. The ambiguous-extension loop in `read()` still moves on to the next candidate format, since that is about format ambiguity rather than core versus Python. The operations (`clean`, `smooth`, …) have their own contract, `core_op_declined`, because an operation's Python twin is a different algorithm rather than the same file read differently:
+
+| Raised by the core | Meaning | Behaviour |
+| --- | --- | --- |
+| `ImportError` (no compiled core) | A pure-Python install | The twin runs, silently |
+| `NotImplementedError` (C++ `Unsupported`), or `ReadError`/`WriteError` from handing the mesh to the core | An input the native kernel deliberately leaves to the twin, or one the numpy conversion cannot carry (a ragged block, a string array) | Logged at `DEBUG`, the twin runs |
+| `ValueError`, `TypeError`, `MemoryError`, `RecursionError` | A bad argument | Propagates: the twin never answers a question the core rejected |
+| Anything else | A bug in the core | Logged at `WARNING`, the twin runs; re-raised under `MESHIOPLUSPLUS_STRICT_CORE=1` |
 
 ---
 

@@ -18,6 +18,7 @@ here anyway because the core cannot see them across the Python boundary.
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._skin import _CELL_FACES
 from ._surface import _CELL_EDGES
@@ -408,12 +409,9 @@ def smooth(
             "max_displacement": res["max_displacement"],
             "num_skipped_inversion": res["num_skipped_inversion"],
         }
-    except (ValueError, TypeError):
-        # A genuine user error (bad method name, lambda out of range, a frozen
-        # id out of bounds) must not fall through to the numpy path and there
-        # either succeed silently or raise something less precise.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "smooth"):
+            raise
         out = None
     if out is None:
         out, report = _smooth_py(

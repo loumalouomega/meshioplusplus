@@ -388,6 +388,7 @@ public:
     }
 
     bool AtEnd() const { return mPos >= mTokens.size(); }
+    std::size_t Remaining() const { return AtEnd() ? 0 : mTokens.size() - mPos; }
     const MfToken& Peek() const { return mTokens[mPos]; }
     std::size_t Line() const { return AtEnd() ? mEndLine : mTokens[mPos].mLine; }
 
@@ -434,6 +435,8 @@ public:
         for (; i < rText.size(); ++i) {
             if (rText[i] < '0' || rText[i] > '9')
                 return false;
+            if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
+                return false;  // more digits than an int64 holds
             v = v * 10 + (rText[i] - '0');
         }
         rValue = rText[0] == '-' ? -v : v;
@@ -645,8 +648,9 @@ std::vector<MfElement> mf_read_elements(MfLexer& rLex, const char* pWhat) {
     const std::int64_t n = rLex.Int("an element count");
     if (n < 0)
         rLex.Fail(std::string("negative ") + pWhat + " count", rLex.Line());
+    // No reserve: n comes from the file, and the lexer fails at its end long
+    // before a corrupt count is reached.
     std::vector<MfElement> out;
-    out.reserve(static_cast<std::size_t>(n));
     for (std::int64_t k = 0; k < n; ++k) {
         const std::size_t line = rLex.Line();
         MfElement el;
@@ -752,6 +756,8 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
             const std::int64_t n = rLex.Int("an element count");
             if (n < 0)
                 rLex.Fail("negative element count", t.mLine);
+            if (static_cast<std::uint64_t>(n) > rLex.Remaining() / 3)
+                rLex.Fail("element count " + std::to_string(n) + " exceeds the file", t.mLine);
             elements.resize(static_cast<std::size_t>(n));
             for (NcElement& el : elements) {
                 el.mLine = rLex.Line();
@@ -798,6 +804,8 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
                 if (sd < 1 || sd > 3)
                     rLex.Fail("space dimension " + std::to_string(sd) + " (1, 2 or 3)", t.mLine);
                 sdim = static_cast<int>(sd);
+                if (top_count > rLex.Remaining() / static_cast<std::size_t>(sdim))
+                    rLex.Fail("vertex count " + std::to_string(n) + " exceeds the file", t.mLine);
                 top.assign(top_count * 3, 0.0);
                 for (std::size_t k = 0; k < top_count; ++k)
                     for (int c = 0; c < sdim; ++c)
@@ -2313,6 +2321,10 @@ std::size_t mf_interior_count(int Geom, int Q, MfSpace::Points Points = MfSpace:
 
 MfDofs mf_dofs(const MfFile& rF, const MfEntities& rEnt, int Q, MfSpace::Points Points) {
     const auto& geoms = mf_geoms();
+    // The order comes from the file's collection name (`H1_3D_P2`); an
+    // order in the millions would size point tables of gigabytes.
+    if (Q < 1 || Q > 64)
+        throw ReadError("MFEM: finite element order " + std::to_string(Q) + " is out of range");
     MfDofs d;
     d.mOrder = Q;
     d.mPoints = Points;

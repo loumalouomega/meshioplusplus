@@ -31,6 +31,7 @@ import warnings
 import numpy as np
 
 from ._data_common import location_map, normalize_location, require_key
+from ._fallback import core_op_declined
 
 
 def _components(array):
@@ -266,7 +267,7 @@ def data_condition(
     )
     try:
         from . import _core
-    except Exception:
+    except ImportError:
         return _condition_py(mesh, *args)
     try:
         out = _core.data_condition(
@@ -282,9 +283,9 @@ def data_condition(
             suffix,
             preserve_dtype,
         )
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "data_condition"):
+            raise
         return _condition_py(mesh, *args)
     for attr in ("point_sets", "cell_sets"):
         value = getattr(mesh, attr, None)

@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 16.13.0
+  VERSION 16.14.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -588,6 +588,51 @@ if(MESHIOPLUSPLUS_COVERAGE)
   message(STATUS "meshio++: coverage instrumentation ON (--coverage, -O0)")
   list(APPEND _mio_core_copts --coverage -O0 -g -fprofile-update=atomic)
   list(APPEND _mio_core_lopts --coverage)
+endif()
+
+# --------------------------------------------------------------------------
+# Sanitizers for the cpp-sanitize CI job and local triage (doc/fuzzing.md).
+# A ;-list such as "address;undefined". Applied PUBLIC like the coverage
+# flags, so the GoogleTest binary, the C API objects and the fuzz/replay
+# drivers are all instrumented. UBSan is made fatal (-fno-sanitize-recover):
+# a report that only prints would pass ctest. Python is refused: a sanitized
+# _core needs the runtime LD_PRELOADed into the interpreter, which is a
+# debugging session, not a build configuration.
+#
+# MESHIOPLUSPLUS_BUILD_FUZZERS (Clang) builds the libFuzzer reader target
+# (tests/fuzz/). It needs the *core* compiled with -fsanitize=fuzzer-no-link
+# -- coverage feedback from the harness alone would be blind to the parsers --
+# and defaults the sanitizers to address;undefined when none are named.
+# --------------------------------------------------------------------------
+set(MESHIOPLUSPLUS_SANITIZE "" CACHE STRING
+    "Sanitizers for the core, tests and C API, e.g. address;undefined (GCC/Clang)")
+option(MESHIOPLUSPLUS_BUILD_FUZZERS "Build the libFuzzer reader targets (Clang)" OFF)
+set(_mio_sanitize_list "${MESHIOPLUSPLUS_SANITIZE}")
+if(MESHIOPLUSPLUS_BUILD_FUZZERS)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_BUILD_FUZZERS needs Clang (libFuzzer), "
+                        "got ${CMAKE_CXX_COMPILER_ID}; configure with CXX=clang++")
+  endif()
+  if(NOT _mio_sanitize_list)
+    set(_mio_sanitize_list "address;undefined")
+  endif()
+  list(APPEND _mio_core_copts -fsanitize=fuzzer-no-link)
+endif()
+if(_mio_sanitize_list)
+  if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_SANITIZE needs GCC or Clang, got ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+  if(EMSCRIPTEN OR MESHIOPLUSPLUS_BUILD_PYTHON)
+    message(FATAL_ERROR "meshio++: sanitizers and fuzzers are for native C++ builds; "
+                        "configure with -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF")
+  endif()
+  string(REPLACE ";" "," _mio_sanitize "${_mio_sanitize_list}")
+  message(STATUS "meshio++: sanitizers ON (-fsanitize=${_mio_sanitize})")
+  list(APPEND _mio_core_copts -fsanitize=${_mio_sanitize} -fno-omit-frame-pointer -g)
+  list(APPEND _mio_core_lopts -fsanitize=${_mio_sanitize})
+  if(_mio_sanitize_list MATCHES "undefined")
+    list(APPEND _mio_core_copts -fno-sanitize-recover=undefined)
+  endif()
 endif()
 
 if(MESHIOPLUSPLUS_WITH_ZLIB AND EMSCRIPTEN)
@@ -1212,6 +1257,12 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
   # a stray <prefix>/meshioplusplus/_core*.so at the prefix root.
   if(DEFINED SKBUILD)
     install(TARGETS _core DESTINATION meshioplusplus)
+    # The ParaView plugin, as wheel data: it lands in
+    # <prefix>/share/meshioplusplus/paraview/, one path per environment and no
+    # ParaView version in it (doc/paraview_plugin.md). It imports ParaView, so
+    # it is not a package module.
+    install(FILES tools/paraview-meshioplusplus-plugin.py
+            DESTINATION ${SKBUILD_DATA_DIR}/share/meshioplusplus/paraview)
   endif()
 endif()
 
@@ -1498,6 +1549,37 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
 endif()
 
 # --------------------------------------------------------------------------
+# Reader fuzzing (tests/fuzz/, doc/fuzzing.md). One harness serves every
+# registry reader; the format comes from MIO_FUZZ_FORMAT, -format=<name> or
+# the binary's name (meshioplusplus_fuzz_read_<format>, for OSS-Fuzz-style
+# per-format copies). The replay driver is the same harness with a main() that
+# feeds files, so any compiler runs the committed regression inputs in ctest.
+# --------------------------------------------------------------------------
+if(MESHIOPLUSPLUS_BUILD_FUZZERS)
+  add_executable(meshioplusplus_fuzz_read tests/fuzz/fuzz_read.cpp)
+  target_link_libraries(meshioplusplus_fuzz_read PRIVATE meshioplusplus_core_obj)
+  target_compile_options(meshioplusplus_fuzz_read PRIVATE -fsanitize=fuzzer)
+  target_link_options(meshioplusplus_fuzz_read PRIVATE -fsanitize=fuzzer)
+endif()
+if(MESHIOPLUSPLUS_BUILD_TESTS OR MESHIOPLUSPLUS_BUILD_FUZZERS)
+  add_executable(meshioplusplus_fuzz_replay tests/fuzz/fuzz_read.cpp tests/fuzz/replay_main.cpp)
+  target_link_libraries(meshioplusplus_fuzz_replay PRIVATE meshioplusplus_core_obj)
+endif()
+if(MESHIOPLUSPLUS_BUILD_TESTS)
+  # One ctest per format directory of minimized crash inputs. A format this
+  # build compiled out is skipped by the driver (exit 0 with a note).
+  file(GLOB _mio_fuzz_regression_dirs LIST_DIRECTORIES true
+       ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/regressions/*)
+  foreach(_d IN LISTS _mio_fuzz_regression_dirs)
+    if(IS_DIRECTORY ${_d})
+      get_filename_component(_fmt ${_d} NAME)
+      add_test(NAME fuzz_regression_${_fmt}
+               COMMAND meshioplusplus_fuzz_replay -format=${_fmt} ${_d})
+    endif()
+  endforeach()
+endif()
+
+# --------------------------------------------------------------------------
 # C++ backend benchmark (src/cpp/benchmark/bench_backends.cpp): one binary per
 # mesh backend (the backend is a compile-time choice); benchmark/
 # bench_backends.sh builds all three variants and collates the CSV output.
@@ -1507,6 +1589,10 @@ option(MESHIOPLUSPLUS_BUILD_BENCHMARKS "Build the C++ mesh-backend benchmark bin
 if(MESHIOPLUSPLUS_BUILD_BENCHMARKS)
   add_executable(meshioplusplus_bench src/cpp/benchmark/bench_backends.cpp)
   target_link_libraries(meshioplusplus_bench PRIVATE meshioplusplus_core_obj)
+  # Operations over a size sweep (bench_ops.cpp; tools/bench_ops.sh sweeps the
+  # parallel backends and thread counts).
+  add_executable(meshioplusplus_bench_ops src/cpp/benchmark/bench_ops.cpp)
+  target_link_libraries(meshioplusplus_bench_ops PRIVATE meshioplusplus_core_obj)
 endif()
 
 # --------------------------------------------------------------------------

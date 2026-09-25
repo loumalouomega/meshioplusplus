@@ -17,7 +17,10 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <limits>
+#include <string>
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
@@ -74,16 +77,17 @@ std::string b64encode(const unsigned char* pData, std::size_t len) {
 }
 
 std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
-    static int8_t inv[256];
-    static bool init = false;
-    if (!init) {
-        for (int i = 0; i < 256; ++i)
-            inv[i] = -1;
+    // A magic static, initialised once and thread-safely ([stmt.dcl]/4): the
+    // hand-rolled "static bool init" it replaces was a data race when two
+    // threads decoded at once (C, Fortran, Julia or R callers).
+    static const std::array<int8_t, 256> inv = [] {
+        std::array<int8_t, 256> t;
+        t.fill(-1);
         const char* tbl = b64_table();
         for (int i = 0; i < 64; ++i)
-            inv[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
-        init = true;
-    }
+            t[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
+        return t;
+    }();
     std::vector<unsigned char> out;
     out.reserve(len / 4 * 3);
     int buf = 0, bits = 0;
@@ -332,6 +336,11 @@ std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsign
 
 std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
                                                       std::size_t n, std::size_t expected) {
+    // The expected size comes from the file's block header and sizes the
+    // output buffer. No codec expands a block by more than about 2^16 (zlib's
+    // ceiling is ~1032:1), so a larger claim is corruption, not an allocation.
+    if (expected > (std::size_t{1} << 16) * (n + 1) + (std::size_t{1} << 20))
+        throw ReadError("VTK compressed block declares an implausible decompressed size");
     switch (codec) {
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
         case VtkCodec::Zlib:
@@ -383,13 +392,21 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     if (len < first_chars)
         throw ReadError("VTU compressed-block header too short");
     std::vector<unsigned char> hb = b64decode(pText, first_chars);
+    if (hb.size() < hsz)
+        throw ReadError("VTU compressed-block header too short");
     std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
+    // Every block has an hsz-byte size in the header, so the count is bounded
+    // by the text (and the header size below cannot wrap).
+    if (num_blocks > len / hsz)
+        throw ReadError("VTU compressed-block header declares more blocks than it holds");
 
     std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
     std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
     if (len < num_header_chars)
         throw ReadError("VTU compressed-block header truncated");
     std::vector<unsigned char> header = b64decode(pText, num_header_chars);
+    if (header.size() < num_header_bytes)
+        throw ReadError("VTU compressed-block header truncated");
 
     std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
     std::uint64_t last_block = read_uint_le(header.data() + 2 * hsz, hsz);
@@ -404,14 +421,25 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     // output offset of block k is k*max_block per the VTU block scheme -> the
     // per-block inflate runs in parallel into a pre-sized buffer.
     std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
-    for (std::uint64_t k = 0; k < num_blocks; ++k)
-        in_off[static_cast<std::size_t>(k) + 1] =
-            in_off[static_cast<std::size_t>(k)] + static_cast<std::size_t>(comp_sizes[k]);
+    for (std::uint64_t k = 0; k < num_blocks; ++k) {
+        const std::size_t at = in_off[static_cast<std::size_t>(k)];
+        if (comp_sizes[k] > blockdata.size() - at)  // not at + size: that can wrap
+            throw ReadError("VTU compressed blocks are larger than the data that follows");
+        in_off[static_cast<std::size_t>(k) + 1] = at + static_cast<std::size_t>(comp_sizes[k]);
+    }
 
+    // No codec expands a block by more than about 2^16 (zlib's ceiling is
+    // ~1032:1); a header claiming more is corrupt, and would size `out`.
+    const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (blockdata.size() + 1) + (1u << 20);
+    if (num_blocks && (max_block > ceiling || last_block > ceiling ||
+                       (num_blocks - 1) > ceiling / std::max<std::uint64_t>(max_block, 1)))
+        throw ReadError("VTU compressed-block header declares an implausible size");
     const std::size_t total = num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
                                                    static_cast<std::size_t>(max_block) +
                                                static_cast<std::size_t>(last_block)
                                          : 0;
+    if (total > ceiling)
+        throw ReadError("VTU compressed-block header declares an implausible size");
     std::vector<unsigned char> out(total);
     parallel_for(
         static_cast<std::size_t>(num_blocks),
@@ -429,21 +457,41 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
 }
 
 std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec) {
+    return vtu_encode_binary(pData, nbytes, codec, 4);
+}
+
+std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes) {
+    return maxArrayBytes > std::numeric_limits<std::uint32_t>::max() ? 8 : 4;
+}
+
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
+                              std::size_t hsz) {
+    if (hsz != 4 && hsz != 8)
+        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(hsz));
+    // One little-endian header item of hsz bytes. A size that does not fit is
+    // refused: a UInt32 header silently truncated a 4 GiB array's byte count.
+    auto put = [hsz](std::vector<unsigned char>& rOut, std::uint64_t Value) {
+        if (hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
+            throw WriteError("VTK XML: a size of " + std::to_string(Value) +
+                             " does not fit a UInt32 header_type (the writer must choose UInt64)");
+        for (std::size_t b = 0; b < hsz; ++b)
+            rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
+    };
+
     if (codec == VtkCodec::None) {
-        std::vector<unsigned char> buf(4 + nbytes);
-        std::uint32_t header = static_cast<std::uint32_t>(nbytes);
-        std::memcpy(buf.data(), &header, 4);
+        std::vector<unsigned char> buf;
+        put(buf, nbytes);  // refuses before the payload is allocated
+        buf.reserve(hsz + nbytes);
         if (nbytes)
-            std::memcpy(buf.data() + 4, pData, nbytes);
+            buf.insert(buf.end(), pData, pData + nbytes);
         return b64encode(buf.data(), buf.size());
     }
 
     vtk_codec_require_write(codec);
-    const std::uint32_t max_block = 32768;
-    std::uint32_t num_blocks = static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
-    std::uint32_t last_block_size =
-        num_blocks ? static_cast<std::uint32_t>(nbytes - std::size_t(num_blocks - 1) * max_block)
-                   : max_block;
+    const std::size_t max_block = 32768;
+    const std::size_t num_blocks = (nbytes + max_block - 1) / max_block;
+    const std::size_t last_block_size =
+        num_blocks ? nbytes - (num_blocks - 1) * max_block : max_block;
 
     // Blocks are independent -> compress in parallel into pre-sized slots.
     std::vector<std::vector<unsigned char> > blocks(num_blocks);
@@ -456,17 +504,20 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
-    std::vector<std::uint32_t> header;
-    header.reserve(3 + num_blocks);
-    header.push_back(num_blocks);
-    header.push_back(max_block);
-    header.push_back(last_block_size);
-    for (const auto& b : blocks)
-        header.push_back(static_cast<std::uint32_t>(b.size()));
+    std::vector<unsigned char> header;
+    header.reserve((3 + num_blocks) * hsz);
+    put(header, num_blocks);
+    put(header, max_block);
+    put(header, last_block_size);
+    std::size_t total = 0;
+    for (const auto& b : blocks) {
+        put(header, b.size());
+        total += b.size();
+    }
 
-    std::string out = b64encode(reinterpret_cast<const unsigned char*>(header.data()),
-                                header.size() * sizeof(std::uint32_t));
+    std::string out = b64encode(header.data(), header.size());
     std::vector<unsigned char> concat;
+    concat.reserve(total);
     for (const auto& b : blocks)
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());

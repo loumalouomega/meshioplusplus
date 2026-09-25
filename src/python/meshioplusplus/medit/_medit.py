@@ -224,6 +224,8 @@ def read_ascii_buffer(f):
                     line = ""
                     while not line.strip():
                         line = f.readline()
+                        if not line:  # EOF: readline() returns "" for ever
+                            raise ReadError("Medit: file ends inside `Vertices`")
                     first = [float(v) for v in line.split("#")[0].split()]
                     dim = len(first) - 1
                 if dim < 1 or dim > 3:

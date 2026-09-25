@@ -151,6 +151,8 @@ Mesh read_permas(const std::string& rPath) {
                 point_gids[gid] = pindex++;
                 if (points.empty())
                     ncoord = e.size() - 1;
+                if (ncoord == 0 || e.size() - 1 != ncoord)
+                    throw ReadError("PERMAS: node rows with different coordinate counts");
                 for (std::size_t j = 1; j < e.size(); ++j)
                     points.push_back(detail::parse_double(e[j]));
                 ++pos;
@@ -192,6 +194,9 @@ Mesh read_permas(const std::string& rPath) {
                 ++pos;
             }
             std::size_t k = rows.empty() ? 0 : rows.front().size();
+            for (const auto& row : rows)
+                if (row.size() != k)
+                    throw ReadError("PERMAS: elements of one block with different node counts");
             NDArray data(DType::Int64, {rows.size(), k});
             std::int64_t* dp = data.As<std::int64_t>();
             for (std::size_t r = 0; r < rows.size(); ++r)
@@ -202,7 +207,8 @@ Mesh read_permas(const std::string& rPath) {
         // all other keywords (NSET/ESET/...) are ignored
     }
 
-    std::int64_t npoints = static_cast<std::int64_t>(point_gids.size());
+    // One point per row read (a repeated id re-points the id at its last row).
+    std::int64_t npoints = ncoord ? static_cast<std::int64_t>(points.size() / ncoord) : 0;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), ncoord});
     double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)

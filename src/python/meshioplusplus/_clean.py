@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._merge import _weld_map
 from ._mesh import Mesh
 
@@ -269,7 +270,9 @@ def clean(
             "cells_dropped_degenerate": int(res["cells_dropped_degenerate"]),
             "cells_dropped_duplicate": int(res["cells_dropped_duplicate"]),
         }
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "clean"):
+            raise
         out = None
     used_cpp = out is not None
     if out is None:

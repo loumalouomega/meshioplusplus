@@ -635,9 +635,15 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
             f.push_back(lsd_int(fields, k, where));
         if (generate) {
             for (std::size_t k = 0; k + 1 < f.size(); k += 2)
-                if (f[k] > 0 && f[k + 1] >= f[k])
+                if (f[k] > 0 && f[k + 1] >= f[k]) {
+                    // A range of 10^18 ids is a malformed card, not a set.
+                    if (static_cast<std::uint64_t>(f[k + 1] - f[k]) >= (std::uint64_t{1} << 27) ||
+                        set.mIds.size() > (std::size_t{1} << 27))
+                        throw ReadError("LS-DYNA: *SET_..._GENERATE range of more than 2^27 ids" +
+                                        where);
                     for (std::int64_t v = f[k]; v <= f[k + 1]; ++v)
                         set.mIds.push_back(v);
+                }
         } else {
             for (std::int64_t v : f)
                 if (v != 0)

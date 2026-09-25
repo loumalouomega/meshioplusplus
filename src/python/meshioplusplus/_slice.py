@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._marching import FIXED_DIRECTION, _marching_cut, _marching_prepare
 
 
@@ -105,9 +106,9 @@ def slice(
         from . import _core
 
         out = _core.slice(mesh, origin, normal, bool(record_parent_ids))
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "slice"):
+            raise
         out = None
     if out is None:
         out = _slice_py(mesh, origin, normal, record_parent_ids)

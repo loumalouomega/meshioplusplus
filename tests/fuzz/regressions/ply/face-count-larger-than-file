@@ -1,0 +1,10 @@
+ply
+format ascii 1.0
+comment zipper output
+element vertex 453
+property float end_header float y
+property float z
+property float confideÎint vertex_indices
+end_header
+-0.0312216 0.126304 423 430 
+304 423 430 

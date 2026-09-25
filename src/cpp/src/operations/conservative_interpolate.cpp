@@ -155,7 +155,7 @@ std::array<detail::Vec3, 4> cons_oriented_tet(const detail::Vec3 v[4]) {
 std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
                                          const detail::Vec3& rPlanePoint,
                                          const detail::Vec3& rPlaneNormal,
-                                         std::vector<detail::Vec3>* pNewPts) {
+                                         std::vector<detail::Vec3>* pNewPts, double EpsSide = 0.0) {
     if (rPoly.empty())
         return {};
     const std::size_t n = rPoly.size();
@@ -164,17 +164,27 @@ std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
     auto s = [&](const detail::Vec3& p) {
         return detail::vec3_dot(detail::vec3_sub(p, rPlanePoint), rPlaneNormal);
     };
+    // A vertex within EpsSide of the plane is ON it, and on-plane counts as
+    // inside. The 3D clip's capping step classifies with the same tolerance;
+    // a vertex that is on the plane up to rounding (a coordinate like 1/3)
+    // but clipped here as outside left a sliver with no cap over it.
     for (std::size_t i = 0; i < n; ++i) {
         const detail::Vec3& cur = rPoly[i];
         const detail::Vec3& prev = rPoly[(i + n - 1) % n];
         const double s_cur = s(cur);
         const double s_prev = s(prev);
-        const bool cur_in = s_cur <= 0.0;
-        const bool prev_in = s_prev <= 0.0;
+        const bool cur_in = s_cur <= EpsSide;
+        const bool prev_in = s_prev <= EpsSide;
         if (cur_in != prev_in) {
-            const double t = s_prev / (s_prev - s_cur);
+            // The inside end of the crossing edge: when it lies on the plane
+            // it IS the crossing point (interpolating would overshoot it).
+            const detail::Vec3& in_end = cur_in ? cur : prev;
+            const double s_in = cur_in ? s_cur : s_prev;
             const detail::Vec3 ip =
-                detail::vec3_add(prev, detail::vec3_scale(detail::vec3_sub(cur, prev), t));
+                std::abs(s_in) <= EpsSide
+                    ? in_end
+                    : detail::vec3_add(prev, detail::vec3_scale(detail::vec3_sub(cur, prev),
+                                                                s_prev / (s_prev - s_cur)));
             out.push_back(ip);
             if (pNewPts != nullptr)
                 pNewPts->push_back(ip);
@@ -273,18 +283,39 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
         const detail::Vec3 normal =
             detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
 
+        // Distance-like test value of a point against this plane, and the
+        // tolerance under which a point counts as lying ON it.
+        auto side = [&](const detail::Vec3& rP) {
+            return detail::vec3_dot(detail::vec3_sub(rP, p0), normal);
+        };
+        const double eps_side = 1e-12 * scale * detail::vec3_norm(normal);
+        bool cuts = false;
+        for (const auto& t : tris)
+            for (const detail::Vec3& p : t)
+                cuts = cuts || side(p) > eps_side;
+
         std::vector<std::array<detail::Vec3, 3>> kept;
         std::vector<detail::Vec3> chord;
         for (const auto& t : tris) {
             std::vector<detail::Vec3> new_pts;
             const std::vector<detail::Vec3> ring =
-                cons_clip_ring({t[0], t[1], t[2]}, p0, normal, &new_pts);
+                cons_clip_ring({t[0], t[1], t[2]}, p0, normal, &new_pts, eps_side);
             for (const detail::Vec3& p : new_pts)
                 chord.push_back(p);
             for (std::size_t i = 1; i + 1 < ring.size(); ++i)
                 kept.push_back({ring[0], ring[i], ring[i + 1]});
         }
         tris = std::move(kept);
+        if (!cuts)
+            continue;  // nothing removed: no hole, and capping would double a face
+        // The hole's boundary also runs through every kept vertex that lies ON
+        // the plane -- a corner the clip kept rather than interpolated (s == 0
+        // is "inside"), which aligned meshes produce all the time. Leaving it
+        // out of the cap shrank the cap and under-measured the overlap.
+        for (const auto& t : tris)
+            for (const detail::Vec3& p : t)
+                if (std::abs(side(p)) <= eps_side)
+                    chord.push_back(p);
 
         // Cap the new hole (if this half-space actually cut anything) with
         // the dedup'd chord, angle-sorted around the cutting plane's own 2D

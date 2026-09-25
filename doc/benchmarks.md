@@ -11,8 +11,8 @@ meshio++ moves the parsing/serialising hot loops into C++, so the win is largest
 - **VTU binary + zlib** — the zlib block compression parallelises across cores (the C++ core defaults to an **OpenMP** backend with dynamic scheduling, which also load-balances hybrid P+E-core CPUs), so this is the biggest win: **~16× write**, ~2.3× read.
 - **VTU ASCII** — the C++ number formatter and parser are several times faster than the Python/numpy text path (~7× write, ~5× read).
 - **XDMF read** — much faster on mixed-topology meshes (~10× on the bracket), roughly even on a single-block mesh.
-- **MED (HDF5)** — with the Eigen-backed Fortran↔C transpose fused with the node reorder, MED writes faster (~1.1× in `benchmark/results.csv`) but still reads slightly slower than pure Python (0.81–0.93×); closing that is a [roadmap](./roadmap.md#_3-performance) item.
-- **Gmsh binary** — the reader decodes straight from the slurped buffer into an owning array that is *moved* into the cell block (no copy), so reads are **~1.7×** faster; the writer buffers each block into one `write`, yet currently measures **0.68×** in `benchmark/results.csv` — a regression recorded in the [roadmap](./roadmap.md#_3-performance).
+- **MED (HDF5)** — with the Eigen-backed Fortran↔C transpose fused with the node reorder, MED writes faster (~1.1× in `benchmark/results.csv`) but still reads slightly slower than pure Python (0.81–0.93×); closing that is a [roadmap](./roadmap.md#_4-performance) item.
+- **Gmsh binary** — the reader decodes straight from the slurped buffer into an owning array that is *moved* into the cell block (no copy), so reads are **~1.7×** faster; the writer buffers each block into one `write`, yet currently measures **0.68×** in `benchmark/results.csv` — a regression recorded in the [roadmap](./roadmap.md#_4-performance).
 - **VTK binary** — writes at parity (fused gather+byte-swap, one `write`). Reads now **beat** pure-Python both on single-cell-type meshes (~1.45×, the connectivity `NDArray` is moved straight into the cell block) and on mixed-topology meshes (**~1.1×** on the bracket, up from ~0.4× originally): reader output buffers skip the zero-fill they immediately overwrite, and the per-type block copy is chunked across threads so its first-touch page faults are serviced concurrently. Endianness conversion uses single-instruction `bswap` intrinsics throughout.
 
 For **plain binary dumps**, pure-Python meshio streams the whole array through numpy's `fromfile`/`tofile` at C speed — a high bar — but with the redundant connectivity copies removed (the reader now *adopts* the byte-swapped buffer as the cell array in the common single-type case), meshio++'s VTK/Gmsh reads now land **at or above parity** there. HDF5 (MED, XDMF) is even-to-faster. A Python-only format (MDPA) is the ~1× control.
@@ -54,6 +54,31 @@ cd benchmark
 ```
 
 The notebook records the machine, library versions, and the inputs (the bundled `example.msh` bracket plus a synthetic tetrahedral cube and a size sweep), runs the harness, writes `results.csv`, and regenerates the plots above. Numbers are single-machine and indicative — the *shape* of the result is the point, not the exact factors.
+
+## Every format
+
+`benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
+
+```sh
+python benchmark/bench.py --sizes S,M --out results_all.csv            # every format
+python benchmark/bench.py --sizes L --formats vtu,gmsh22,xdmf,med      # a subset
+```
+
+The sizes are 6·(n−1)³ tetrahedra for n = 16, 36 and 56 points per edge (about 20k, 250k and 1M). Legacy meshio is optional here: with `MESHIO_LEGACY_SRC` pointing at a source checkout's `src`, or `meshio` installed, the curated comparison above fills its legacy columns; without it only the meshio++ columns are written.
+
+## Operations
+
+`meshioplusplus_bench_ops` (built with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`, `src/cpp/benchmark/bench_ops.cpp`) times nine operations on the same cube: `extract_surface`, `smooth`, `refine`, `merge` (welding a mesh onto itself), `clean`, `compute_sdf` (48³ grid), `decimate` (half the surface), `partition` (8 parts) and `reorder`. Tiers S, M and L are about 10k, 160k and 750k tetrahedra; `--tier XL` (about 10M) is opt-in. Output is one CSV row per tier and operation: `backend,threads,op,cells,median_s,runs`.
+
+The parallel backend is a compile-time choice, so `tools/bench_ops.sh` configures one tree per backend (SEQ, OpenMP, TBB; one that fails to configure is skipped) and sweeps `OMP_NUM_THREADS`, which the benchmark also applies to TBB:
+
+```sh
+CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4 8" -- --tier S --tier M
+```
+
+## In CI
+
+The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads. It uploads the CSVs as artifacts and prints them in the job summary, and it never fails a build — a hosted runner is noisy, so the numbers are for trends across runs, not for gating one change. Every [performance](./roadmap.md#_4-performance) item on the roadmap is expected to show its before and after with these tools.
 
 ## Mesh-backend benchmarks
 

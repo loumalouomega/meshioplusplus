@@ -167,5 +167,13 @@ MESHIOPLUSPLUS_API DType vtu_disk_dtype(const std::string& rName, DType Dt);
 MESHIOPLUSPLUS_API void vtu_write_field_array(std::ostream& rOs, const std::string& rName,
                                               const NDArray& rArray, bool Binary, VtkCodec Codec);
 
+/**
+ * @brief As above, with the file's `header_type` item size for a binary body
+ * (4 or 8; see `vtu_encode_binary`). The five-argument form passes 4.
+ */
+MESHIOPLUSPLUS_API void vtu_write_field_array(std::ostream& rOs, const std::string& rName,
+                                              const NDArray& rArray, bool Binary, VtkCodec Codec,
+                                              std::size_t Hsz);
+
 }  // namespace detail
 }  // namespace meshioplusplus

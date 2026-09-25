@@ -921,6 +921,14 @@ void unv_parse_result(const UnvDataset& rDs, UnvFile& rFile) {
     }
     if (ndv == 0)
         return;
+    // Each value is at least a character of the dataset: a larger count per
+    // entity is corruption, and it would size every entity's value vector.
+    std::size_t chars_left = 0;
+    for (std::size_t j = k; j < lines.size(); ++j)
+        chars_left += lines[j].size();
+    if (ndv > chars_left)
+        throw ReadError("UNV: dataset " + std::to_string(rDs.mId) +
+                        " declares more values per entity than it holds");
     res.mComplex = data_type == 5 || data_type == 6;
     res.mNumComps = ndv;
     const std::size_t width = res.mComplex ? 2 : 1;
@@ -931,9 +939,12 @@ void unv_parse_result(const UnvDataset& rDs, UnvFile& rFile) {
             continue;
         }
         auto rec = unv_ints(lines[k++]);
+        if (rec.empty())
+            throw ReadError("UNV: dataset " + std::to_string(rDs.mId) +
+                            " has a data record without an entity number");
         std::size_t count = ndv;
         if (res.mLocation == 2 && rec.size() >= 2 && rec[1] > 0)
-            count = static_cast<std::size_t>(rec[1]);  // NDVAL of this element
+            count = std::min(static_cast<std::size_t>(rec[1]), chars_left);  // NDVAL
         auto vals = unv_take_reals(lines, k, count * width);
         if (count != ndv) {
             if (!warned_layers)

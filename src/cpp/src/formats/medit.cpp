@@ -29,6 +29,7 @@
 // Project includes
 #include "meshioplusplus/formats/medit.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -89,6 +90,13 @@ struct Tokenizer {
         return mBuf.substr(start, mPos - start);
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
+    // A section's entry count: every entry takes at least a byte of the file,
+    // so a count beyond its size (or a negative one) is corruption rather than
+    // something to allocate or loop over.
+    std::int64_t next_count() {
+        return static_cast<std::int64_t>(
+            detail::checked_count(next_int(), mBuf.size(), "Medit", "entry"));
+    }
     double next_double() { return detail::parse_double(next()); }
     // Tokens on the line of the next token, without consuming anything.
     std::size_t tokens_on_next_line() {
@@ -176,7 +184,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
         } else if (kw == "Dimension") {
             dim = static_cast<int>(tok.next_int());
         } else if (kw == "Vertices") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             // No `Dimension` keyword (FEconv writes none): a vertex row holds
             // the coordinates and a reference.
             if (dim <= 0)
@@ -188,7 +196,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
             for (std::int64_t i = 0; i < n; ++i) {
                 for (int c = 0; c < dim; ++c)
                     store_coord(pts, i * dim + c, tok.next_double());
-                point_ref[i] = static_cast<std::int64_t>(tok.next_double());
+                point_ref[i] = detail::checked_integer<std::int64_t>(tok.next_double(), "Medit");
             }
             mesh.AssignPoints(std::move(pts));
             have_points = true;
@@ -196,7 +204,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
             const auto& info = e2m.at(kw);
             const std::string& type = info.first;
             int k = info.second;
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             NDArray data(DType::Int64, {static_cast<std::size_t>(n), static_cast<std::size_t>(k)});
             NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
             std::int64_t* dp = data.As<std::int64_t>();
@@ -209,38 +217,38 @@ Mesh read_medit_ascii(const std::string& rPath) {
             mesh.AddCellBlock(type, std::move(data));
             mesh.AppendCellData("medit:ref", std::move(ref));
         } else if (kw == "Corners") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n; ++i)
                 tok.next();
         } else if (kw == "Normals") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * dim; ++i)
                 tok.next();
         } else if (kw == "NormalAtVertices") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 2; ++i)
                 tok.next();
         } else if (kw == "SubDomainFromMesh") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 4; ++i)
                 tok.next();
         } else if (kw == "VertexOnGeometricVertex") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 2; ++i)
                 tok.next();
         } else if (kw == "VertexOnGeometricEdge") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 3; ++i)
                 tok.next();
         } else if (kw == "EdgeOnGeometricEdge") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * 2; ++i)
                 tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
         } else if (kw == "RequiredVertices" || kw == "TangentAtVertices" || kw == "Tangents" ||
                    kw == "Ridges") {
-            std::int64_t n = tok.next_int();
+            std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n; ++i)
                 tok.next();
         } else if (kw == "End") {

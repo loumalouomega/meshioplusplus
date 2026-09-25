@@ -28,6 +28,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -69,6 +70,10 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         total_cells += cb.NumCells();
 
     const char* fmt = binary ? "binary" : "ascii";
+    // UInt64 size headers only where an uncompressed array could pass 4 GiB
+    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
+    const std::size_t hsz =
+        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
 
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
@@ -77,7 +82,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -85,6 +90,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
           "byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    if (hsz == 8)
+        os << " header_type=\"UInt64\"";
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<UnstructuredGrid>\n";
@@ -94,7 +101,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "<FieldData>\n";
         for (const auto& name : rMesh.FieldDataNames())
             detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
-                                          binary ? codec : detail::VtkCodec::None);
+                                          binary ? codec : detail::VtkCodec::None, hsz);
         os << "</FieldData>\n";
     }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells

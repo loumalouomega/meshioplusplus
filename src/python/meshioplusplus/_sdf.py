@@ -45,6 +45,7 @@ import warnings
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._regions import block_bases
 
@@ -145,10 +146,9 @@ def surface_watertight_check(surface):
         from . import _core
 
         return _core.surface_watertight_check(surface)
-    except (ValueError, TypeError):
-        raise
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "surface_watertight_check"):
+            raise
     return _watertight_py(surface)
 
 
@@ -416,10 +416,9 @@ def sample_distance(
             float(grid_cell_size),
             float(max_winding_work),
         )
-    except (ValueError, TypeError):
-        raise
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "sample_distance"):
+            raise
     return _sample_py(surface, queries, sign, weight, float(band))[0]
 
 
@@ -462,9 +461,9 @@ def distance_to_surface(
         )
         out = res["mesh"]
         report = {"num_banded": res["num_banded"], "quality": res["quality"]}
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "distance_to_surface"):
+            raise
         out = None
 
     if out is None:
@@ -756,9 +755,9 @@ def compute_sdf(
             float(grid_cell_size),
             float(max_winding_work),
         )
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "compute_sdf"):
+            raise
         res = None
 
     if res is None:

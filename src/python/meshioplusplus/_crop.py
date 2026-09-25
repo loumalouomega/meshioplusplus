@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 
 
@@ -331,7 +332,9 @@ def crop(
         out = res["mesh"]
         point_map = np.asarray(res["point_map"])
         cell_maps = [np.asarray(a) for a in res["cell_maps"]]
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "crop"):
+            raise
         out = None
     used_cpp = out is not None
     if out is None:

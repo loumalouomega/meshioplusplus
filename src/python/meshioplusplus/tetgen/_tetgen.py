@@ -13,6 +13,19 @@ from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
 
 
+def _header_line(f):
+    """The first line that is neither blank nor a comment; ReadError at EOF."""
+    # readline, not `for raw in f`: iterating a text file disables tell(),
+    # which np.fromfile needs to pick up where the header ended.
+    while True:
+        raw = f.readline()
+        if not raw:
+            raise ReadError(f"TetGen: {f.name} has no header line")
+        line = raw.strip()
+        if line and line[0] != "#":
+            return line
+
+
 def read(filename):
     filename = pathlib.Path(filename)
     if filename.suffix == ".node":
@@ -29,9 +42,7 @@ def read(filename):
 
     # read nodes
     with open(node_filename) as f:
-        line = f.readline().strip()
-        while len(line) == 0 or line[0] == "#":
-            line = f.readline().strip()
+        line = _header_line(f)
 
         num_points, dim, num_attrs, num_bmarkers = (
             int(item) for item in line.split(" ") if item != ""
@@ -62,9 +73,7 @@ def read(filename):
 
     # read elements
     with open(ele_filename.as_posix()) as f:
-        line = f.readline().strip()
-        while len(line) == 0 or line[0] == "#":
-            line = f.readline().strip()
+        line = _header_line(f)
 
         num_tets, num_points_per_tet, num_attrs = (
             int(item) for item in line.strip().split(" ") if item != ""

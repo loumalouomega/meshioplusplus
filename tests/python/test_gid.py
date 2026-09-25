@@ -1127,6 +1127,48 @@ def test_fan_in_changed_mesh_emits_groups_and_round_trips(tmp_path):
 
 
 @needs_writer
+def test_a_streamed_series_keeps_each_step_alive_until_it_is_written(tmp_path):
+    """The series writer pulls a step and writes it after the pull returns.
+
+    The core borrows each step's arrays, and it copies non-contiguous ones.
+    Those arrays, and the copies, used to be released when the pull returned,
+    so a generator that builds every step afresh and keeps no reference of its
+    own had its data freed before it was written (a crash, or garbage).
+    """
+    n = 60_000
+
+    def make(i):
+        # The same geometry every step, built afresh; a field per step.
+        base = np.random.default_rng(0).random((n, 3))
+        field = np.random.default_rng(i + 1).random((n, 2))
+        tri = np.arange(n - n % 3, dtype=np.int64).reshape(-1, 3)
+        return meshioplusplus.Mesh(
+            np.asfortranarray(base),  # non-contiguous: copied by the core
+            [("triangle", tri)],
+            point_data={"T": field[:, 1]},  # a strided column: copied too
+        )
+
+    def steps():
+        for i in range(3):
+            yield float(i), make(i)
+            # Churn the allocator between steps, so freed buffers get reused.
+            np.full(4 * n, -1.0).sum()
+
+    path = tmp_path / "streamed.post.msh"
+    meshioplusplus.write_sequence(path, steps())
+
+    ts = meshioplusplus.TimeSeries(path)
+    assert len(ts) == 3
+    points = np.random.default_rng(0).random((n, 3))
+    for i in range(3):
+        _, mesh = ts[i]
+        # GiD's text keeps nine significant digits.
+        assert np.allclose(mesh.points, points, rtol=0, atol=1e-9)
+        field = np.random.default_rng(i + 1).random((n, 2))
+        assert np.allclose(mesh.point_data["T"], field[:, 1], rtol=0, atol=1e-9)
+
+
+@needs_writer
 def test_a_format_that_cannot_hold_a_series_still_refuses_by_name(tmp_path):
     """gid joining the series writers must not weaken the guard for the rest."""
     pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])

@@ -13,6 +13,7 @@ import re
 import struct
 from pathlib import Path
 
+from ._fallback import core_declined
 from ._files import is_d3plot_filename, is_z88_filename
 
 # Dataset numbers that open an I-DEAS universal file (see sniff.cpp's kUnvIds).
@@ -454,8 +455,13 @@ def sniff_format(path) -> str:
     """Guess a mesh file's format from its contents (``""`` if unsure)."""
     try:
         from . import _core
-
+    except ImportError:
+        return _sniff_format_py(Path(path))
+    try:
         return _core.sniff_format(str(path))
-    except Exception:
-        pass
+    except Exception as exc:
+        # Sniffing is a read: an unrecognised file is the core's ReadError, a
+        # decline like any reader's, not an operation's bad argument.
+        if not core_declined(exc, "sniff", "read", path):
+            raise
     return _sniff_format_py(Path(path))

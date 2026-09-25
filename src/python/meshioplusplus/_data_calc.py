@@ -31,6 +31,7 @@ import copy
 import numpy as np
 
 from ._data_common import available_keys, location_map, normalize_location
+from ._fallback import core_op_declined
 
 MAX_COMPONENTS = 16
 MAX_DEPTH = 64
@@ -383,13 +384,13 @@ def data_calc(
     loc = normalize_location(location)
     try:
         from . import _core
-    except Exception:
+    except ImportError:
         return _calc_py(mesh, expression, loc, output, overwrite)
     try:
         out = _core.data_calc(mesh, expression, loc, output, overwrite)
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "data_calc"):
+            raise
         return _calc_py(mesh, expression, loc, output, overwrite)
     for attr in ("point_sets", "cell_sets"):
         value = getattr(mesh, attr, None)

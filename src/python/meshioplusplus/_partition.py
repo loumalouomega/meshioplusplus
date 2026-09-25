@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh, topological_dimension
 
 _SFC_BITS = 21
@@ -462,7 +463,7 @@ def _use_python_kahip(method):
 
         if getattr(_core, "__has_kahip__", False):
             return False
-    except Exception:
+    except ImportError:
         pass  # no _core at all: the fallback handles every method anyway
     return _pip_kahip_available()
 
@@ -547,10 +548,9 @@ def partition_labels(
                     weights or "",
                 )
             ]
-        except ValueError:
-            raise
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_op_declined(exc, "partition_labels"):
+                raise
     flat = _labels_py(mesh, int(nparts), method, imbalance, mode, seed, weights)
     return _split_flat_labels(mesh, flat)
 
@@ -635,9 +635,9 @@ def partition(
                 )
                 for p in raw
             ]
-        except ValueError:
-            raise
-        except Exception:
+        except Exception as exc:
+            if not core_op_declined(exc, "partition"):
+                raise
             pieces = None
     used_cpp = pieces is not None
     if pieces is None:

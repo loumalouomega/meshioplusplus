@@ -209,3 +209,43 @@ def test_ragged_polyhedron_source_and_target_are_accepted():
 def test_conservative_interpolate_is_exported():
     assert "conservative_interpolate" in meshioplusplus.__all__
     assert meshioplusplus.conservative_interpolate is conservative_interpolate
+
+
+def _tet_volumes(mesh):
+    p = np.asarray(mesh.points, dtype=float)
+    c = p[np.concatenate([np.asarray(b.data) for b in mesh.cells])]
+    cross = np.cross(c[:, 1] - c[:, 0], c[:, 2] - c[:, 0])
+    return np.einsum("ij,ij->i", cross, c[:, 3] - c[:, 0]) / 6.0
+
+
+@pytest.mark.parametrize(
+    "height, depth, layers",
+    [(1.05928007, 1.0, 2), (1.0, 1.0, 2), (0.3, 1.0, 2), (1.0, 1.5, 3)],
+)
+def test_aligned_lattices_conserve_mass_exactly(height, depth, layers):
+    # Found by tests/python/test_properties.py: two simplexified lattices of
+    # one box whose tetrahedra share cutting planes. A source corner lying ON
+    # a target face plane was left out of the clip's capping polygon, so one
+    # overlap came out ~6% small and the transferred mass 0.7% short. Then a
+    # corner on a target plane only up to rounding (a layer at z = 1/3) was
+    # clipped as outside but capped as on-plane, losing a sliver.
+    src = meshioplusplus.convert_cells(
+        meshioplusplus.grid((1, 1, 1), spacing=(1.0, depth, height)), "simplexify"
+    )
+    if layers == 2:
+        tgt_grid = meshioplusplus.grid((1, 2, 1), spacing=(1.0, depth / 2, height))
+    else:
+        tgt_grid = meshioplusplus.grid(
+            (1, 1, layers), spacing=(1.0, depth, height / layers)
+        )
+    tgt = meshioplusplus.convert_cells(tgt_grid, "simplexify")
+    src = meshioplusplus.Mesh(src.points, [(b.type, b.data) for b in src.cells])
+    tgt = meshioplusplus.Mesh(tgt.points, [(b.type, b.data) for b in tgt.cells])
+    values = np.array(
+        [6.4059207, 2.77088847, 0.50563789, 0.26362359, 8.15137537, 9.13628022]
+    )
+    src.cell_data["m"] = [values]
+    out = conservative_interpolate(src, tgt, arrays=["m"])
+    mass_in = float(values @ _tet_volumes(src))
+    mass_out = float(np.concatenate(out.cell_data["m"]) @ _tet_volumes(out))
+    assert mass_out == pytest.approx(mass_in, rel=1e-12)

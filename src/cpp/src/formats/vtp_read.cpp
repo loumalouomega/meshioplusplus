@@ -316,6 +316,7 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     vtp_build_types(lines, 1, conn, offsets, types);
     vtp_build_types(polys, 2, conn, offsets, types);
 
+    detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
     return mesh;
 }

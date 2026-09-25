@@ -1997,6 +1997,10 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
         std::size_t width = 0;
         for (std::size_t col : e.mCol)
             width = std::max(width, col + 1);
+        // Columns are plies, stations or element nodes: a column index far
+        // beyond the values read is a corrupt record, not a width to allocate.
+        if (width > e.mValue.size() + 4096)
+            op2_fail("a multi-valued element table names column " + std::to_string(width - 1));
         std::vector<NDArray> per_block;
         for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
             NDArray a(DType::Float64, {model.mSizes[b], width});

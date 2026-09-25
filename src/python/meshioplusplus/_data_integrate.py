@@ -46,6 +46,7 @@ from __future__ import annotations
 import numpy as np
 
 from ._data_average import _cell_measures
+from ._fallback import core_op_declined
 
 __all__ = ["data_integrate"]
 
@@ -262,10 +263,7 @@ def data_integrate(mesh, arrays=None):
         from . import _core
 
         return _core.data_integrate(mesh, names)
-    except (ValueError, TypeError):
-        # A genuine user error must not fall through to the numpy path, which
-        # would either raise something less helpful or silently succeed
-        # differently.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "data_integrate"):
+            raise
         return _data_integrate_py(mesh, names)

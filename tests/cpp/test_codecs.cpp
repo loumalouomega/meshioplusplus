@@ -19,13 +19,18 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
+#include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
@@ -197,6 +202,65 @@ TEST(Codecs, EveryCodecDecodesToTheSameBytes) {
         EXPECT_LT(encoded.size(), raw.size())
             << "codec " << detail::vtk_codec_name(codec) << " did not compress";
     }
+}
+
+TEST(Codecs, UInt64HeadersRoundTripAndUInt32KeepsItsBytes) {
+    std::string payload(70000, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<char>(i * 17 + (i >> 5));
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(payload.data());
+    const std::vector<unsigned char> expected(bytes, bytes + payload.size());
+
+    for (VtkCodec codec : {VtkCodec::None, VtkCodec::Zlib}) {
+        if (codec != VtkCodec::None && !detail::vtk_codec_available(codec))
+            continue;
+        // header_type="UInt64": every size in the header is 8 bytes wide.
+        const std::string wide = detail::vtu_encode_binary(bytes, payload.size(), codec, 8);
+        const std::vector<unsigned char> decoded =
+            codec == VtkCodec::None
+                ? detail::vtu_decode_uncompressed(wide.c_str(), wide.size(), 8)
+                : detail::vtu_decode_blocks(wide.c_str(), wide.size(), 8, codec);
+        EXPECT_EQ(decoded, expected) << detail::vtk_codec_name(codec);
+        // The UInt32 overload writes exactly what the three-argument form did.
+        EXPECT_EQ(detail::vtu_encode_binary(bytes, payload.size(), codec, 4),
+                  detail::vtu_encode_binary(bytes, payload.size(), codec))
+            << detail::vtk_codec_name(codec);
+    }
+}
+
+TEST(Codecs, HeaderTypeWidensOnlyPastThirtyTwoBits) {
+    constexpr std::uint64_t kMax32 = std::numeric_limits<std::uint32_t>::max();
+    EXPECT_EQ(detail::vtu_header_bytes_for(0), 4u);
+    EXPECT_EQ(detail::vtu_header_bytes_for(kMax32), 4u);
+    EXPECT_EQ(detail::vtu_header_bytes_for(kMax32 + 1), 8u);
+    // A small mesh keeps UInt32, so its files keep their bytes.
+    EXPECT_EQ(detail::vtk_xml_header_bytes(mt::tet_mesh()), 4u);
+
+    // An uncompressed array of 4 GiB under a UInt32 header is refused, not
+    // truncated -- checked before the payload is read or allocated.
+    const unsigned char byte = 0;
+    EXPECT_THROW(detail::vtu_encode_binary(&byte, std::size_t{kMax32} + 1, VtkCodec::None, 4),
+                 WriteError);
+    EXPECT_THROW(detail::vtu_encode_binary(&byte, 1, VtkCodec::None, 2), WriteError);
+}
+
+TEST(Codecs, Base64DecodesIdenticallyFromManyThreads) {
+    std::string payload(50000, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<char>(i * 7 + 3);
+    const std::string text =
+        detail::b64encode(reinterpret_cast<const unsigned char*>(payload.data()), payload.size());
+    // Its inverse table is built on first use, once and thread-safely: calls
+    // racing to be first must agree.
+    std::vector<std::vector<unsigned char>> results(8);
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < results.size(); ++t)
+        threads.emplace_back([&, t] { results[t] = detail::b64decode(text.c_str(), text.size()); });
+    for (auto& th : threads)
+        th.join();
+    const std::vector<unsigned char> expected(payload.begin(), payload.end());
+    for (const auto& r : results)
+        EXPECT_EQ(r, expected);
 }
 
 TEST(Codecs, ReadingAFileNeedingAnAbsentCodecReportsTheOption) {

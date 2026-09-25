@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._sdf import _closest_points, _normal_tables, _soup, _watertight_py
 
@@ -286,9 +287,9 @@ def shrinkwrap(
         )
         out = res.pop("mesh")
         report = res
-    except (ValueError, TypeError):
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "shrinkwrap"):
+            raise
         out = None
     if out is None:
         out, report = _shrinkwrap_py(

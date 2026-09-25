@@ -228,11 +228,11 @@ def write(filename, mesh, add_global_ids=True, compression="gzip", compression_o
         "triangle": {"name": "Tri3", "type": 2},
         "tetra": {"name": "Tet4", "type": 5},
     }
-    for cell_block in mesh.cells:
+    for block_index, cell_block in enumerate(mesh.cells):
         key = cell_block.type
         data = cell_block.data
         if key not in meshio_to_h5m_type:
-            warn("Unsupported H5M element type '%s'. Skipping.", key)
+            warn(f"Unsupported H5M element type '{key}'. Skipping.")
             continue
         this_type = meshio_to_h5m_type[key]
         elem_group = elements.create_group(this_type["name"])
@@ -247,14 +247,14 @@ def write(filename, mesh, add_global_ids=True, compression="gzip", compression_o
         conn.attrs.create("start_id", global_id)
         global_id += len(data)
 
-    # add cell data
-    for cell_type, cd in mesh.cell_data.items():
-        if cd:
+        # cell data: `cell_data` is {name: one array per block}, so this
+        # block's slice goes under its own element group
+        if mesh.cell_data:
             tags = elem_group.create_group("tags")
-            for key, value in cd.items():
+            for name, arrays in mesh.cell_data.items():
                 tags.create_dataset(
-                    key,
-                    data=value,
+                    name,
+                    data=arrays[block_index],
                     compression=compression,
                     compression_opts=compression_opts,
                 )

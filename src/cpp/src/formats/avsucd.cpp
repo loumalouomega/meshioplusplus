@@ -34,6 +34,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
@@ -116,8 +117,13 @@ Mesh read_avsucd(const std::string& rPath) {
     std::size_t li = 0;
 
     auto hdr = avsucd_tokens(lines.at(li++));
-    long long num_nodes = std::stoll(hdr[0]);
-    long long num_cells = std::stoll(hdr[1]);
+    detail::need_tokens(hdr, 4, "AVS-UCD");
+    // Each node and each cell is one line of the file, so the header's counts
+    // are bounded by what follows it.
+    const auto num_nodes = static_cast<long long>(
+        detail::checked_count(std::stoll(hdr[0]), lines.size() - li, "AVS-UCD", "node"));
+    const auto num_cells = static_cast<long long>(detail::checked_count(
+        std::stoll(hdr[1]), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
     long long num_node_data = std::stoll(hdr[2]);
     long long num_cell_data = std::stoll(hdr[3]);
 
@@ -127,6 +133,7 @@ Mesh read_avsucd(const std::string& rPath) {
     double* pp = pts.As<double>();
     for (long long i = 0; i < num_nodes; ++i) {
         auto t = avsucd_tokens(lines.at(li++));
+        detail::need_tokens(t, 4, "AVS-UCD");
         point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
         for (int c = 0; c < 3; ++c)
             pp[i * 3 + c] = detail::parse_double(t[1 + c]);
@@ -145,6 +152,7 @@ Mesh read_avsucd(const std::string& rPath) {
     std::vector<Blk> blocks;
     for (long long c = 0; c < num_cells; ++c) {
         auto t = avsucd_tokens(lines.at(li++));
+        detail::need_tokens(t, 4, "AVS-UCD");
         std::int64_t cid = std::strtoll(t[0].c_str(), nullptr, 10);
         std::int64_t mat = std::strtoll(t[1].c_str(), nullptr, 10);
         auto it = avsucd_to_meshio_type().find(t[2]);
@@ -152,6 +160,12 @@ Mesh read_avsucd(const std::string& rPath) {
             throw ReadError("AVS-UCD: unknown cell type '" + t[2] + "'");
         const std::string& mtype = it->second;
         int n = static_cast<int>(t.size()) - 3;
+        const std::vector<int>& order = avsucd_to_meshio_order(mtype);
+        if (!order.empty() && static_cast<std::size_t>(n) != order.size())
+            throw ReadError("AVS-UCD: a '" + t[2] + "' cell needs " + std::to_string(order.size()) +
+                            " nodes, got " + std::to_string(n));
+        if (!blocks.empty() && blocks.back().mType == mtype && blocks.back().mN != n)
+            throw ReadError("AVS-UCD: '" + t[2] + "' cells with different node counts");
         if (blocks.empty() || blocks.back().mType != mtype) {
             Blk b;
             b.mType = mtype;
@@ -189,10 +203,24 @@ Mesh read_avsucd(const std::string& rPath) {
                          const std::unordered_map<std::int64_t, std::int64_t>& ids,
                          std::vector<std::string>& names, std::vector<NDArray>& arrays) {
         auto h = avsucd_tokens(lines.at(li++));
-        int narr = std::stoi(h[0]);
+        detail::need_tokens(h, 1, "AVS-UCD");
+        const int narr = static_cast<int>(
+            detail::checked_count(std::stoi(h[0]), h.size() - 1, "AVS-UCD", "data array"));
         std::vector<int> sizes(narr);
-        for (int i = 0; i < narr; ++i)
+        std::size_t width = 0;
+        for (int i = 0; i < narr; ++i) {
             sizes[i] = std::stoi(h[1 + i]);
+            if (sizes[i] < 1)
+                throw ReadError("AVS-UCD: a data array needs at least one component");
+            width += static_cast<std::size_t>(sizes[i]);
+        }
+        // Every entity row holds its id and `width` values; the first row
+        // bounds the widths before they size any allocation.
+        if (num_entities > 0) {
+            if (li + static_cast<std::size_t>(narr) >= lines.size())
+                throw ReadError("AVS-UCD: the file ends before its data rows");
+            detail::need_tokens(avsucd_tokens(lines[li + narr]), 1 + width, "AVS-UCD");
+        }
         for (int i = 0; i < narr; ++i) {
             std::string lbl = lines.at(li++);
             std::size_t comma = lbl.find(',');
@@ -213,6 +241,7 @@ Mesh read_avsucd(const std::string& rPath) {
         }
         for (long long e = 0; e < num_entities; ++e) {
             auto t = avsucd_tokens(lines.at(li++));
+            detail::need_tokens(t, 1 + width, "AVS-UCD");
             std::int64_t eid = ids.at(std::strtoll(t[0].c_str(), nullptr, 10));
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {

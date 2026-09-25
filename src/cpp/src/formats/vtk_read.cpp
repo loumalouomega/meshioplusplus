@@ -16,11 +16,13 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -33,6 +35,7 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
@@ -137,8 +140,14 @@ struct VtkCursor {
 
     // Read `count` values of dtype `dt`, ascii or big-endian binary.
     NDArray ReadValues(DType dt, std::size_t count, bool is_ascii) {
-        NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         const std::size_t isz = dtype_size(dt);
+        // A header count is checked against the bytes left before it sizes
+        // anything: an ASCII value takes at least one byte, a binary one isz.
+        const std::size_t left = mBuf.size() - std::min(mPos, mBuf.size());
+        if (count > left / (is_ascii ? 1 : isz))
+            throw ReadError("VTK: an array of " + std::to_string(count) +
+                            " values is larger than the rest of the file");
+        NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
             // strtod/strtoll scan for a terminator: a buffered source is a
@@ -250,25 +259,33 @@ Mesh read_vtk(const std::string& rPath) {
             if (tok.size() < 2 || vtk_upper(tok[1]) != "UNSTRUCTURED_GRID")
                 throw ReadError("C++ VTK reader only handles UNSTRUCTURED_GRID");
         } else if (section == "POINTS") {
+            detail::need_tokens(tok, 3, "VTK");
             std::size_t n = std::stoull(tok[1]);
+            if (n > std::numeric_limits<std::size_t>::max() / 3)
+                throw ReadError("VTK: point count overflows");
             DType dt = dtype_from_vtk_token(tok[2]);
             NDArray pts = cur.ReadValues(dt, n * 3, is_ascii);
             pts.Reshape({n, 3});
             mesh.AssignPoints(std::move(pts));
         } else if (section == "CELLS") {
+            detail::need_tokens(tok, 3, "VTK");
             if (is_v5) {
                 std::size_t num_off = std::stoull(tok[1]);
                 std::size_t num_idx = std::stoull(tok[2]);
                 std::string l = cur.ReadLine();
                 if (vtk_upper(l).rfind("OFFSETS", 0) != 0)
                     throw ReadError("Expected OFFSETS (VTK 5.1 layout)");
-                DType odt = dtype_from_vtk_token(split(l)[1]);
+                const std::vector<std::string> otok = split(l);
+                detail::need_tokens(otok, 2, "VTK");
+                DType odt = dtype_from_vtk_token(otok[1]);
                 std::vector<std::int64_t> off_all =
                     vtk_to_int64(cur.ReadValues(odt, num_off, is_ascii));
                 l = cur.ReadLine();
                 if (vtk_upper(l).rfind("CONNECTIVITY", 0) != 0)
                     throw ReadError("Expected CONNECTIVITY");
-                DType cdt = dtype_from_vtk_token(split(l)[1]);
+                const std::vector<std::string> ctok = split(l);
+                detail::need_tokens(ctok, 2, "VTK");
+                DType cdt = dtype_from_vtk_token(ctok[1]);
                 conn_nd = cur.ReadValues(cdt, num_idx, is_ascii);
                 if (conn_nd.Dtype() == DType::Int64) {
                     // Already int64 (vtktypeint64) -> read the buffer directly.
@@ -279,19 +296,26 @@ Mesh read_vtk(const std::string& rPath) {
                     conn_ptr = conn.data();
                 }
                 // off_all has a leading 0; end-offsets are the remainder.
-                offsets.assign(off_all.begin() + 1, off_all.end());
+                if (!off_all.empty())
+                    offsets.assign(off_all.begin() + 1, off_all.end());
             } else {
                 // Version 4.2: interleaved [count, nodes...]; int32 values.
                 std::size_t num_cells = std::stoull(tok[1]);
                 std::size_t total = std::stoull(tok[2]);
                 DType dt = is_ascii ? DType::Int64 : DType::Int32;
                 std::vector<std::int64_t> raw = vtk_to_int64(cur.ReadValues(dt, total, is_ascii));
+                if (num_cells > total)
+                    throw ReadError("VTK: more cells than CELLS entries");
                 conn.reserve(total - num_cells);
                 offsets.reserve(num_cells);
                 std::size_t p = 0;
                 std::int64_t running = 0;
                 for (std::size_t i = 0; i < num_cells; ++i) {
+                    if (p >= raw.size())
+                        throw ReadError("VTK: CELLS list ends early");
                     std::int64_t n = raw[p++];
+                    if (n < 0 || static_cast<std::uint64_t>(n) > raw.size() - p)
+                        throw ReadError("VTK: a cell's node count overruns the CELLS list");
                     for (std::int64_t j = 0; j < n; ++j)
                         conn.push_back(raw[p++]);
                     running += n;
@@ -300,6 +324,7 @@ Mesh read_vtk(const std::string& rPath) {
                 conn_ptr = conn.data();
             }
         } else if (section == "CELL_TYPES") {
+            detail::need_tokens(tok, 2, "VTK");
             std::size_t n = std::stoull(tok[1]);
             DType dt = is_ascii ? DType::Int64 : DType::Int32;
             types = vtk_to_int64(cur.ReadValues(dt, n, is_ascii));
@@ -308,6 +333,7 @@ Mesh read_vtk(const std::string& rPath) {
         } else if (section == "CELL_DATA") {
             active = "CELL_DATA";
         } else if (section == "FIELD") {
+            detail::need_tokens(tok, 3, "VTK");
             std::size_t k = std::stoull(tok[2]);
             for (std::size_t fi = 0; fi < k; ++fi) {
                 std::vector<std::string> ft = split(cur.ReadLine());
@@ -323,9 +349,12 @@ Mesh read_vtk(const std::string& rPath) {
                     }
                     ft = split(cur.ReadLine());
                 }
+                detail::need_tokens(ft, 4, "VTK");
                 std::string name = ft[0];
                 std::size_t ncomp = std::stoull(ft[1]);
                 std::size_t ntuples = std::stoull(ft[2]);
+                if (ncomp != 0 && ntuples > std::numeric_limits<std::size_t>::max() / ncomp)
+                    throw ReadError("VTK: field array size overflows");
                 DType dt = dtype_from_vtk_token(ft[3]);
                 NDArray arr = cur.ReadValues(dt, ncomp * ntuples, is_ascii);
                 if (ncomp != 1)
@@ -386,8 +415,11 @@ Mesh read_vtk(const std::string& rPath) {
             }
         }
     }
-    if (!moved)
+    if (!moved) {
+        detail::check_vtk_cell_arrays(conn_owned ? conn_nd.Size() : conn.size(), offsets, types,
+                                      cell_data_raw);
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
+    }
     return mesh;
 }
 

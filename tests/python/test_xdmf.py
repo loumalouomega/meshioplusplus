@@ -131,3 +131,69 @@ def test_xdmf_wrong_root_tag_raises(tmp_path):
     p.write_text('<?xml version="1.0"?><Nonsense/>')
     with pytest.raises(meshioplusplus.ReadError):
         meshioplusplus.read(p, file_format="xdmf")
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_mixed_topology_with_vertices_round_trips(tmp_path, engine):
+    # Both writers give a Polyvertex its node count (XDMF requires it); both
+    # readers skipped the count only for Polyline, so every mixed topology
+    # holding a vertex was misread.
+    from meshioplusplus.xdmf.main import XdmfReader
+
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        [
+            ("vertex", [[3]]),
+            ("line", [[0, 1]]),
+            ("triangle", [[0, 1, 2]]),
+            ("tetra", [[0, 1, 2, 3]]),
+        ],
+    )
+    path = tmp_path / "mixed.xdmf"
+    meshioplusplus.write(path, mesh, data_format="XML")
+    if engine == "core":
+        from meshioplusplus import _core
+
+        back = _core.xdmf_read(str(path))
+        blocks = [(b.type, np.asarray(b.data).tolist()) for b in back.cells]
+    else:
+        back = XdmfReader(path).read()
+        blocks = [(b.type, np.asarray(b.data).tolist()) for b in back.cells]
+    assert blocks == [(b.type, b.data.tolist()) for b in mesh.cells]
+
+
+def test_truncated_mixed_topology_is_a_read_error():
+    from meshioplusplus.xdmf.common import translate_mixed_cells
+
+    with pytest.raises(meshioplusplus.ReadError, match="ends inside"):
+        translate_mixed_cells(np.array([6, 0, 1, 2]))
+
+
+def test_python_reader_reads_quadratic_cells_in_a_mixed_topology(tmp_path):
+    # The Python twin's node-count table lacked the quadratic types the C++
+    # reader has, so a mixed topology holding one failed with a KeyError on
+    # any platform whose core has no HDF5 (the Windows CI legs).
+    from meshioplusplus.xdmf.main import XdmfReader
+
+    mesh = meshioplusplus.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [2, 0, 0],
+                [2, 2, 0],
+                [0, 2, 0],
+                [1, 0, 0],
+                [2, 1, 0],
+                [1, 2, 0],
+                [0, 1, 0],
+            ],
+            dtype=float,
+        ),
+        [("triangle", [[0, 1, 2]]), ("quad8", [[0, 1, 2, 3, 4, 5, 6, 7]])],
+    )
+    path = tmp_path / "quadratic.xdmf"
+    meshioplusplus.write(path, mesh, data_format="XML")
+    back = XdmfReader(path).read()
+    assert [(b.type, np.asarray(b.data).tolist()) for b in back.cells] == [
+        (b.type, b.data.tolist()) for b in mesh.cells
+    ]

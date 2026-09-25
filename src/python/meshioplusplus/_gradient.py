@@ -62,6 +62,7 @@ import numpy as np
 from ._convert_cells import _LINEAR_BASE, _NUM_CORNERS
 from ._data_average import cell_data_to_point_data
 from ._data_manage import data_drop
+from ._fallback import core_op_declined
 from ._mesh import topological_dimension
 from ._skin import _CELL_FACES
 
@@ -772,12 +773,9 @@ def gradient(
             "num_skipped": res["num_skipped"],
             "num_fallback": res["num_fallback"],
         }
-    except (ValueError, TypeError):
-        # A genuine user error (an unknown array, a cell_data name, a bad
-        # component) must not fall through to the numpy path, which would either
-        # raise something less helpful or silently succeed differently.
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "gradient"):
+            raise
         out = None
 
     if out is None:

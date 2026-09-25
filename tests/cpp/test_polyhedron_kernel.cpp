@@ -884,3 +884,36 @@ TEST(PolyhedronSimplexify, SliceAndIsosurfaceWorkOnPolyhedraViaMarching) {
         iso_cells += cb.NumCells();
     EXPECT_GT(iso_cells, 0u) << "isosurface produced nothing on a polyhedral mesh";
 }
+
+// Two tetrahedra touching only along the edge 0-1, stored as ONE polyhedron:
+// the edge is used four times. agglomerate grows groups like this, and the
+// cell is a closed, consistently oriented surface all the same, so its volume
+// is defined -- found by tests/python/test_properties.py.
+namespace {
+const std::vector<std::vector<double>> kTwoLobePts = {{0, 0, 0}, {1, 0, 0},  {0, 1, 0},
+                                                      {0, 0, 1}, {0, -1, 0}, {0, 0, -1}};
+const Faces kTwoLobeOutward = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {0, 3, 2},
+                               {0, 4, 1}, {0, 1, 5}, {1, 4, 5}, {0, 5, 4}};
+}  // namespace
+
+TEST(PolyhedronKernel, LobesSharingAnEdgeKeepTheirStoredWinding) {
+    Cell c = make_cell(kTwoLobePts, kTwoLobeOutward);
+    ASSERT_TRUE(c.mOk);
+    EXPECT_EQ(orient_rings(c.mRings, c.mCoords.data()), RingOrientation::Consistent);
+    EXPECT_NEAR(poly_measure(c.mRings, c.mCoords.data()).mVolume, 1.0 / 3.0, 1e-14);
+
+    Cell inward = make_cell(kTwoLobePts, reversed_all(kTwoLobeOutward));
+    ASSERT_TRUE(inward.mOk);
+    EXPECT_EQ(orient_rings(inward.mRings, inward.mCoords.data()), RingOrientation::Repaired);
+    EXPECT_NEAR(poly_measure(inward.mRings, inward.mCoords.data()).mVolume, 1.0 / 3.0, 1e-14);
+}
+
+TEST(PolyhedronKernel, LobesSharingAnEdgeWithAnUnbalancedWindingAreRefused) {
+    // With no unique face pairing along the shared edge there is nothing to
+    // repair from: one flipped face makes the stored winding unbalanced.
+    Faces faces = kTwoLobeOutward;
+    std::reverse(faces[1].begin(), faces[1].end());
+    Cell c = make_cell(kTwoLobePts, faces);
+    ASSERT_TRUE(c.mOk);
+    EXPECT_EQ(orient_rings(c.mRings, c.mCoords.data()), RingOrientation::Unorientable);
+}

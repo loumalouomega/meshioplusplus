@@ -226,13 +226,17 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         int xt = static_cast<int>(detail::read_int(rFlat, r));
         types.push_back(xt);
         offsets.push_back(r);
-        if (xt == 2) {  // polyline: next value is point count, must be 2
-            if (detail::read_int(rFlat, r + 1) != 2)
-                throw ReadError("XDMF: only 2-point lines supported");
-            r += 1;
-        }
-        r += 1;
-        r += static_cast<std::size_t>(xdmf_idx_num_nodes(xt));
+        const auto nn = static_cast<std::size_t>(xdmf_idx_num_nodes(xt));
+        // Polyvertex (1) and Polyline (2) carry their node count after the
+        // type -- the writers emit it for both; reading it only for lines
+        // misparsed every mixed topology holding a vertex.
+        const std::size_t head = (xt == 1 || xt == 2) ? 2 : 1;
+        if (r + head + nn > n)
+            throw ReadError("XDMF: mixed topology ends inside a cell");
+        if (head == 2 && static_cast<std::size_t>(detail::read_int(rFlat, r + 1)) != nn)
+            throw ReadError(xt == 1 ? "XDMF: only 1-point polyvertices supported"
+                                    : "XDMF: only 2-point lines supported");
+        r += head + nn;
     }
     // group consecutive equal types
     std::size_t start = 0;
@@ -246,7 +250,7 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         NDArray data(DType::Int64, {nrows, static_cast<std::size_t>(nn)});
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t b = 0; b < nrows; ++b) {
-            std::size_t base = offsets[start + b] + (xt == 2 ? 2 : 1);
+            std::size_t base = offsets[start + b] + ((xt == 1 || xt == 2) ? 2 : 1);
             for (int j = 0; j < nn; ++j)
                 dp[b * nn + j] = detail::read_int(rFlat, base + j);
         }

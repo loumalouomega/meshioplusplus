@@ -290,3 +290,27 @@ def test_faceoffsets_after_an_ordinary_block_end_at_the_stream(tmp_path):
     assert faceoffsets[1] == 1 + 4 * 4  # one tetrahedron: count + 4 x (3 + 1)
     out = _vtu.read(p)
     assert [c.type for c in out.cells] == [c.type for c in mesh.cells]
+
+
+def test_uint64_above_int64_max_survives_an_ascii_round_trip(tmp_path):
+    """Both C++ halves went through int64: the writer printed a UInt64 value
+    above INT64_MAX as a negative number, and the reader clamped one."""
+    from meshioplusplus import _core
+
+    values = np.array([0, 2**63 + 5, 2**64 - 1], dtype=np.uint64)
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        [("triangle", np.array([[0, 1, 2]]))],
+        point_data={"u": values},
+    )
+    cpp_path = tmp_path / "cpp.vtu"
+    _core.vtu_write_codec(str(cpp_path), mesh, False, "none")
+    assert str(2**64 - 1) in cpp_path.read_text()
+    py_path = tmp_path / "py.vtu"
+    _vtu.write(py_path, mesh, binary=False)
+
+    for path in (cpp_path, py_path):
+        for read in (lambda p: _core.vtu_read(str(p)), _vtu.read):
+            got = np.asarray(read(path).point_data["u"])
+            assert got.dtype == np.uint64
+            np.testing.assert_array_equal(got, values)

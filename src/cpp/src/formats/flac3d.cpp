@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -280,7 +281,10 @@ Mesh read_flac3d(const std::string& rPath) {
         char hdr[8];
         in.read(hdr, 8);  // unknown header
         std::uint32_t num_nodes = ru32(in);
-        points.reserve(num_nodes * 3);
+        // A binary node record is 28 bytes: bound the count by the file
+        // before it sizes the reservation.
+        detail::checked_count(num_nodes, detail::file_bytes(rPath) / 28, "FLAC3D", "node");
+        points.reserve(static_cast<std::size_t>(num_nodes) * 3);
         for (std::uint32_t i = 0; i < num_nodes; ++i) {
             std::uint32_t pid = ru32(in);
             double x = rf64(in), y = rf64(in), z = rf64(in);
@@ -298,6 +302,8 @@ Mesh read_flac3d(const std::string& rPath) {
             for (std::uint32_t k = 0; k < num_cells; ++k) {
                 std::uint32_t cid = ru32(in);
                 std::uint32_t nv = ru32(in);
+                if (nv > 8)  // FLAC3D zones and faces have at most eight corners
+                    throw ReadError("FLAC3D: a cell with " + std::to_string(nv) + " nodes");
                 std::vector<std::int64_t> cell(nv);
                 for (std::uint32_t j = 0; j < nv; ++j)
                     cell[j] = point_ids.at(ru32(in));
@@ -318,6 +324,8 @@ Mesh read_flac3d(const std::string& rPath) {
                 grp.mName = flac3d_read_str(in);
                 grp.mSlot = flac3d_read_str(in);
                 const std::uint32_t n = ru32(in);
+                // Four bytes per id: bounded by the file before it sizes the list.
+                detail::checked_count(n, detail::file_bytes(rPath) / 4, "FLAC3D", "group id");
                 grp.mIds.resize(n);
                 for (std::uint32_t j = 0; j < n; ++j)
                     grp.mIds[j] = static_cast<std::int64_t>(ru32(in));
@@ -351,12 +359,14 @@ Mesh read_flac3d(const std::string& rPath) {
             }
             active = std::string::npos;
             if (s[0] == "G") {
+                detail::need_tokens(s, 2, "FLAC3D");
                 std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
                 for (std::size_t j = 2; j < s.size(); ++j)
                     points.push_back(detail::parse_double(s[j]));
             } else if (s[0] == "Z" || s[0] == "F") {
                 int dim = (s[0] == "Z") ? 3 : 2;
+                detail::need_tokens(s, 3, "FLAC3D");
                 std::int64_t cid = std::strtoll(s[2].c_str(), nullptr, 10);
                 bool is_b7 = (s[1] == "B7");
                 std::vector<std::int64_t> cell;
@@ -382,9 +392,12 @@ Mesh read_flac3d(const std::string& rPath) {
 
     // Assemble: faces first, then zones (matching the Python reader).
     Mesh mesh;
+    if (points.size() % 3 != 0)
+        throw ReadError("FLAC3D: a grid point without three coordinates");
     const std::int64_t npoints = static_cast<std::int64_t>(points.size() / 3);
     NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), 3});
-    std::memcpy(pts.Data(), points.data(), points.size() * sizeof(double));
+    if (!points.empty())  // memcpy from/to a null pointer is undefined even for 0 bytes
+        std::memcpy(pts.Data(), points.data(), points.size() * sizeof(double));
     mesh.AssignPoints(std::move(pts));
 
     std::vector<std::size_t> block_sizes;

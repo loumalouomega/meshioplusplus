@@ -1,0 +1,94 @@
+name: benchmark
+
+# Records performance; never gates (roadmap §3/§4). Every read/write format at
+# the M size through benchmark/bench.py, and the operations over a size sweep
+# for the SEQ, OpenMP and TBB backends through tools/bench_ops.sh. CSVs are
+# uploaded as artifacts and summarised in the job summary; comparing two runs
+# is a download away. A hosted runner is noisy: read trends, not single rows.
+on:
+  schedule:
+    - cron: "41 4 * * 0"  # weekly, Sunday 04:41 UTC
+  workflow_dispatch:
+    inputs:
+      sizes:
+        description: "bench.py sizes (S, M, L)"
+        default: "M"
+      tiers:
+        description: "bench_ops tiers (space-separated --tier values)"
+        default: "S M L"
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  formats:
+    name: Read/write, every format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev
+      - name: Install meshio++
+        run: python -m pip install ".[all]"
+      - name: Time every format
+        run: |
+          cd benchmark
+          python bench.py --sizes "${{ github.event.inputs.sizes || 'M' }}" --out results_all.csv
+      - name: Job summary
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import csv
+          rows = list(csv.DictReader(open("benchmark/results_all.csv")))
+          print("### Read/write, every format\n")
+          print("| size | format | input | cells | write ms | read ms |")
+          print("|---|---|---|---:|---:|---:|")
+          for r in rows:
+              print(f"| {r['size']} | {r['format']} | {r['input']} | {r['cells']} | "
+                    f"{float(r['write_s']) * 1e3:.1f} | {float(r['read_s']) * 1e3:.1f} |")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-formats
+          path: benchmark/results_all.csv
+
+  operations:
+    name: Operations, per parallel backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y libtbb-dev ninja-build
+      - name: Time the operations
+        run: |
+          args=""
+          for t in ${{ github.event.inputs.tiers || 'S M L' }}; do args="$args --tier $t"; done
+          tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4" -- $args
+      - name: Job summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import csv
+          rows = list(csv.DictReader(open("benchmark/results_ops.csv")))
+          print("### Operations\n")
+          print("| backend | threads | op | cells | median s |")
+          print("|---|---:|---|---:|---:|")
+          for r in rows:
+              print(f"| {r['backend']} | {r['threads']} | {r['op']} | {r['cells']} | {r['median_s']} |")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-operations
+          path: benchmark/results_ops.csv

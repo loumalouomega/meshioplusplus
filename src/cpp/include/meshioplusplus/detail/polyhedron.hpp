@@ -166,9 +166,13 @@ enum class RingOrientation : std::uint8_t {
  * signed volume came out negative -- so on return the normals point *out*.
  *
  * BFS over the faces' shared-edge dual: two faces sharing an undirected edge
- * agree iff they traverse it in *opposite* directions. Returns `Unorientable`
- * (leaving @p rRings untouched) when some undirected edge is not used exactly
- * twice, which is what an open or non-manifold face set looks like.
+ * agree iff they traverse it in *opposite* directions. An edge used 4, 6, ...
+ * times (two lobes of the cell touching along it) has no unique pairing to
+ * repair, so such a face set is accepted only as stored: when every
+ * undirected edge is traversed equally often in each direction it is a closed
+ * oriented surface, and only the global flip is decided. Returns
+ * `Unorientable` (leaving @p rRings untouched) for an open face set, and for a
+ * non-manifold one whose stored winding is not balanced.
  */
 MESHIOPLUSPLUS_API RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords);
 

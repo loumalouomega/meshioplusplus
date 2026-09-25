@@ -26,6 +26,7 @@ import copy
 import numpy as np
 
 from ._data_common import normalize_location, require_key
+from ._fallback import core_op_declined
 
 #: Outward-wound corner-only face tables, transcribed verbatim (winding
 #: included) from `detail/cell_faces.cpp`'s C++ tables -- the authoritative,
@@ -300,7 +301,7 @@ def point_data_to_cell_data(
     names = list(keys) if keys else []
     try:
         from . import _core
-    except Exception:
+    except ImportError:
         return _to_cell_py(
             mesh, names, prefix, suffix, overwrite, nan_policy, nan_replacement
         )
@@ -308,9 +309,9 @@ def point_data_to_cell_data(
         out = _core.point_data_to_cell_data(
             mesh, names, prefix, suffix, overwrite, nan_policy, nan_replacement
         )
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "point_data_to_cell_data"):
+            raise
         return _to_cell_py(
             mesh, names, prefix, suffix, overwrite, nan_policy, nan_replacement
         )
@@ -350,7 +351,7 @@ def cell_data_to_point_data(
     weight = "measure" if weighted else "uniform"
     try:
         from . import _core
-    except Exception:
+    except ImportError:
         return _to_point_py(
             mesh, names, weight, prefix, suffix, overwrite, nan_policy, nan_replacement
         )
@@ -358,9 +359,9 @@ def cell_data_to_point_data(
         out = _core.cell_data_to_point_data(
             mesh, names, weight, prefix, suffix, overwrite, nan_policy, nan_replacement
         )
-    except ValueError:
-        raise
-    except Exception:
+    except Exception as exc:
+        if not core_op_declined(exc, "cell_data_to_point_data"):
+            raise
         return _to_point_py(
             mesh, names, weight, prefix, suffix, overwrite, nan_policy, nan_replacement
         )

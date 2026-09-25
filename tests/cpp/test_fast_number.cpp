@@ -23,6 +23,7 @@
 #include <clocale>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -131,6 +132,49 @@ TEST(FastNumber, HandlesHexFloatsAndInfNan) {
         EXPECT_EQ(end - text, strtod_end - text) << text;
     }
 }
+
+TEST(FastNumber, EndsWhereStrtodEndsNextToADelimiter) {
+    LcNumericGuard guard;
+    std::setlocale(LC_NUMERIC, "C");
+
+    // The from_chars tier bounds its input to the span a literal can cover;
+    // the value and the end must still be exactly strtod's.
+    const char* cases[] = {"1.5,2",      "2.0)", "1e5x",   "1e+",      "1e-7;",
+                           "-.5e-3z",    ".5 ",  "5. ",    "-inf ",    "infinity2",
+                           "nan(abc_1)", "nan(", "1a2a3a", "-0.0e0\n", "12345678901234567890"};
+    for (const char* text : cases) {
+        const char* end = nullptr;
+        double got = parse_double(text, end);
+        char* strtod_end = nullptr;
+        double want = std::strtod(text, &strtod_end);
+        if (std::isnan(want)) {
+            EXPECT_TRUE(std::isnan(got)) << text;
+        } else {
+            EXPECT_EQ(std::signbit(got), std::signbit(want)) << text;
+            EXPECT_EQ(got, want) << text;
+        }
+        EXPECT_EQ(end - text, strtod_end - text) << text;
+    }
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS
+TEST(FastNumber, ReadsOnlyThePrefixItParsesNotTheRestOfTheBuffer) {
+    LcNumericGuard guard;
+    std::setlocale(LC_NUMERIC, "C");
+
+    // A buffer with no NUL terminator: parsing its first number must read
+    // no further than the delimiter after it. A parser that measured the
+    // rest of the buffer (strlen) on every call -- once made every reader
+    // parsing a whole file this way quadratic -- overruns this allocation,
+    // which the sanitizer leg reports.
+    const char text[] = {'1', '.', '5', ' ', '9', '9'};
+    std::unique_ptr<char[]> buf(new char[sizeof(text)]);
+    std::memcpy(buf.get(), text, sizeof(text));
+    const char* end = nullptr;
+    EXPECT_EQ(parse_double(buf.get(), end), 1.5);
+    EXPECT_EQ(end, buf.get() + 3);
+}
+#endif
 
 TEST(FastNumber, StringOverloadMatchesCStringOverload) {
     LcNumericGuard guard;

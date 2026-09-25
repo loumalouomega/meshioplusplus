@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/triangle.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -61,6 +62,12 @@ struct TriangleTokens {
         if (end == t.c_str())
             throw ReadError(std::string("Triangle: expected an integer for ") + pWhat);
         return v;
+    }
+
+    // A count of rows, each at least one token: bounded by what is left.
+    std::int64_t NextCount(const char* pWhat) {
+        return static_cast<std::int64_t>(
+            detail::checked_count(NextInt(pWhat), mToks.size() - mPos, "Triangle", pWhat));
     }
 
     double NextDouble(const char* pWhat) {
@@ -125,6 +132,16 @@ TriangleNodes triangle_read_node_section(TriangleTokens& rTokens) {
         throw ReadError("Triangle: need 2D points");
     if (out.mNumPoints < 0 || nattr < 0 || nmark < 0)
         throw ReadError("Triangle: malformed vertex header");
+    // Each vertex row is at least three tokens; the counts cannot exceed what
+    // is left of the token stream before they size anything.
+    const std::size_t left = rTokens.mToks.size() - rTokens.mPos;
+    detail::checked_count(out.mNumPoints, left / 3, "Triangle", "vertex");
+    detail::checked_count(nattr, left, "Triangle", "attribute");
+    detail::checked_count(nmark, left, "Triangle", "marker");
+    // One token per vertex per attribute or marker, too.
+    if (out.mNumPoints > 0 && static_cast<std::uint64_t>(nattr + nmark) >
+                                  left / static_cast<std::uint64_t>(out.mNumPoints))
+        throw ReadError("Triangle: more vertex attributes than the file holds");
 
     out.mXY.resize(static_cast<std::size_t>(out.mNumPoints) * 2);
     out.mAttrs.assign(static_cast<std::size_t>(nattr),
@@ -136,7 +153,9 @@ TriangleNodes triangle_read_node_section(TriangleTokens& rTokens) {
         const std::int64_t idx = rTokens.NextInt("vertex index");
         if (i == 0)
             out.mBase = idx;
-        if (idx != out.mBase + i)
+        // Compared in unsigned (modular) arithmetic, which cannot overflow.
+        if (static_cast<std::uint64_t>(idx) - static_cast<std::uint64_t>(i) !=
+            static_cast<std::uint64_t>(out.mBase))
             throw ReadError("Triangle: vertices not numbered consecutively");
         out.mXY[static_cast<std::size_t>(i) * 2] = rTokens.NextDouble("x coordinate");
         out.mXY[static_cast<std::size_t>(i) * 2 + 1] = rTokens.NextDouble("y coordinate");
@@ -184,7 +203,7 @@ Mesh triangle_read_node_ele(const std::string& rStem) {
     if (!have_ele)
         return mesh;
 
-    const std::int64_t ne = ele_tokens.NextInt("triangle count");
+    const std::int64_t ne = ele_tokens.NextCount("triangle count");
     const std::int64_t npc = ele_tokens.NextInt("nodes per triangle");
     const std::int64_t nattr = ele_tokens.NextInt("attribute count");
     if (npc != 3 && npc != 6)
@@ -200,7 +219,10 @@ Mesh triangle_read_node_ele(const std::string& rStem) {
     for (std::int64_t i = 0; i < ne; ++i) {
         ele_tokens.NextInt("triangle index");
         for (std::int64_t c = 0; c < npc; ++c) {
-            const std::int64_t v = ele_tokens.NextInt("triangle connectivity") - nodes.mBase;
+            // Modular subtraction: a corrupt id far from the base must not overflow.
+            const auto v = static_cast<std::int64_t>(
+                static_cast<std::uint64_t>(ele_tokens.NextInt("triangle connectivity")) -
+                static_cast<std::uint64_t>(nodes.mBase));
             if (v < 0 || v >= nodes.mNumPoints)
                 throw ReadError("Triangle: connectivity index out of range");
             cp[i * npc + c] = v;
@@ -251,7 +273,7 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
     triangle_apply_nodes(mesh, nodes);
 
     // Segment section -> one "line" cell block (+ optional marker cell_data).
-    const std::int64_t ns = tokens.NextInt("segment count");
+    const std::int64_t ns = tokens.NextCount("segment count");
     const std::int64_t nmark = tokens.NextInt("segment marker count");
     if (ns < 0 || nmark < 0 || nmark > 1)
         throw ReadError("Triangle: malformed segment header");
@@ -261,7 +283,10 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
     for (std::int64_t i = 0; i < ns; ++i) {
         tokens.NextInt("segment index");
         for (int c = 0; c < 2; ++c) {
-            const std::int64_t v = tokens.NextInt("segment endpoint") - nodes.mBase;
+            // Modular subtraction: a corrupt id far from the base must not overflow.
+            const auto v = static_cast<std::int64_t>(
+                static_cast<std::uint64_t>(tokens.NextInt("segment endpoint")) -
+                static_cast<std::uint64_t>(nodes.mBase));
             if (v < 0 || v >= nodes.mNumPoints)
                 throw ReadError("Triangle: segment endpoint out of range");
             cp[i * 2 + c] = v;
@@ -280,14 +305,14 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
 
     // Holes (and optional regional attributes) are not representable — skip.
     if (!tokens.AtEnd()) {
-        const std::int64_t nh = tokens.NextInt("hole count");
+        const std::int64_t nh = tokens.NextCount("hole count");
         if (nh > 0)
             log::warn("Triangle: skipping {} hole(s) in {}", nh, rPath);
         for (std::int64_t i = 0; i < nh * 3; ++i)
             tokens.NextDouble("hole entry");
     }
     if (!tokens.AtEnd()) {
-        const std::int64_t nr = tokens.NextInt("region count");
+        const std::int64_t nr = tokens.NextCount("region count");
         if (nr > 0)
             log::warn("Triangle: skipping {} regional attribute(s) in {}", nr, rPath);
     }

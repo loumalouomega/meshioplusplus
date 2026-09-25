@@ -960,12 +960,11 @@ def roadmap_map():
         (
             "§3 quality",
             [
-                ("sanitizer CI leg", "S"),
-                ("fuzzing the 43 readers", "M"),
-                ("format conformance matrix", "M"),
-                ("Hypothesis · benchmark CI", "M"),
+                ("OSS-Fuzz submission", "S"),
+                ("fuzz the HDF5/netCDF readers", "M"),
+                ("benchmark trend store", "S"),
             ],
-            [(0, 1)],
+            [],
         ),
         (
             "§4 performance",

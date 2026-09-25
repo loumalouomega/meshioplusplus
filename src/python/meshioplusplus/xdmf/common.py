@@ -115,6 +115,9 @@ def translate_mixed_cells(data):
 
     # https://xdmf.org/index.php/XDMF_Model_and_Format#Arbitrary
     # https://gitlab.kitware.com/xdmf/xdmf/blob/master/XdmfTopologyType.hpp#L394
+    # The C++ reader's table (xdmf.cpp's xdmf_idx_num_nodes): the quadratic
+    # types were missing here, so a mixed topology holding any of them could
+    # only be read by the core.
     xdmf_idx_to_num_nodes = {
         1: 1,  # vertex
         2: 2,  # line
@@ -124,7 +127,17 @@ def translate_mixed_cells(data):
         7: 5,  # pyramid
         8: 6,  # wedge
         9: 8,  # hex
-        11: 6,  # triangle6
+        0x22: 3,  # line3
+        0x23: 9,  # quad9
+        0x24: 6,  # triangle6
+        0x25: 8,  # quad8
+        0x26: 10,  # tetra10
+        0x27: 13,  # pyramid13
+        0x28: 15,  # wedge15
+        0x29: 18,  # wedge18
+        0x30: 20,  # hexahedron20
+        0x31: 24,  # hexahedron24
+        0x32: 27,  # hexahedron27
     }
 
     # collect types and offsets
@@ -132,15 +145,22 @@ def translate_mixed_cells(data):
     offsets = []
     r = 0
     while r < len(data):
-        xdmf_type = data[r]
+        xdmf_type = int(data[r])
+        if xdmf_type not in xdmf_idx_to_num_nodes:
+            raise ReadError(f"XDMF reader: unknown mixed topology index {xdmf_type}")
         types.append(xdmf_type)
         offsets.append(r)
-        if xdmf_type == 2:  # line
-            if data[r + 1] != 2:  # polyline
-                raise ReadError("XDMF reader: Only supports 2-point lines for now")
-            r += 1
-        r += 1
-        r += xdmf_idx_to_num_nodes[xdmf_type]
+        num_nodes = xdmf_idx_to_num_nodes[xdmf_type]
+        # Polyvertex (1) and Polyline (2) carry their node count after the
+        # type; both writers emit it, so both must be skipped here.
+        head = 2 if xdmf_type in (1, 2) else 1
+        if r + head + num_nodes > len(data):
+            raise ReadError("XDMF reader: mixed topology ends inside a cell")
+        if head == 2 and data[r + 1] != num_nodes:
+            raise ReadError(
+                "XDMF reader: Only supports 1-point vertices and 2-point lines for now"
+            )
+        r += head + num_nodes
 
     types = np.array(types)
     offsets = np.array(offsets)
@@ -150,7 +170,7 @@ def translate_mixed_cells(data):
     for start, end in zip(b[:-1], b[1:]):
         meshio_type = xdmf_idx_to_meshio_type[types[start]]
         n = xdmf_idx_to_num_nodes[types[start]]
-        point_offsets = offsets[start:end] + (2 if types[start] == 2 else 1)
+        point_offsets = offsets[start:end] + (2 if types[start] in (1, 2) else 1)
         indices = np.array([np.arange(n) + o for o in point_offsets])
         cells.append(CellBlock(meshio_type, data[indices]))
 

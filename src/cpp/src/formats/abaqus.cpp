@@ -40,6 +40,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
@@ -182,9 +183,23 @@ void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
             throw ReadError("Abaqus: GENERATE needs first, last, step");
         const std::int64_t first = rIds[0], last = rIds[1];
         const std::int64_t step = rIds[2] == 0 ? 1 : rIds[2];
-        std::vector<std::int64_t> gen;
-        for (std::int64_t v = first; step > 0 ? v <= last : v >= last; v += step)
-            gen.push_back(v);
+        // Size the range in unsigned 64-bit arithmetic: `v += step` past
+        // INT64_MAX is undefined, and a range of 10^18 ids is a malformed
+        // file, not a set to build.
+        const auto ufirst = static_cast<std::uint64_t>(first);
+        const auto ulast = static_cast<std::uint64_t>(last);
+        const std::uint64_t ustep = step > 0 ? static_cast<std::uint64_t>(step)
+                                             : static_cast<std::uint64_t>(-(step + 1)) + 1;
+        std::uint64_t count = 0;
+        if (step > 0 && last >= first)
+            count = (ulast - ufirst) / ustep + 1;
+        else if (step < 0 && last <= first)
+            count = (ufirst - ulast) / ustep + 1;
+        if (count > (std::uint64_t{1} << 27))
+            throw ReadError("Abaqus: GENERATE range of more than 2^27 ids");
+        std::vector<std::int64_t> gen(static_cast<std::size_t>(count));
+        for (std::size_t k = 0; k < gen.size(); ++k)  // modular, then two's complement
+            gen[k] = static_cast<std::int64_t>(ufirst + static_cast<std::uint64_t>(step) * k);
         rIds = std::move(gen);
     }
 }
@@ -199,7 +214,12 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             ++i;
             continue;
         }
-        std::string kw = abaqus_upper(abaqus_trim(split(line, ',')[0]));
+        const std::vector<std::string> head = split(line, ',');
+        if (head.empty()) {  // a line of nothing but separators' whitespace
+            ++i;
+            continue;
+        }
+        std::string kw = abaqus_upper(abaqus_trim(head[0]));
         if (!kw.empty() && kw[0] == '*')
             kw = kw.substr(1);
         const std::unordered_map<std::string, std::string> params = abq_param_map(line);
@@ -208,6 +228,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             ++i;
             for (const std::string& row : abq_data_lines(rLines, i)) {
                 const std::vector<std::string> tok = split(row, ',');
+                detail::need_tokens(tok, 1, "Abaqus");
                 const std::int64_t id = std::strtoll(tok[0].c_str(), nullptr, 10);
                 rOut.mPointIds[id] = static_cast<std::int64_t>(rOut.mPoints.size());
                 std::vector<double> c;

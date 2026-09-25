@@ -34,6 +34,7 @@
 #include "meshioplusplus/formats/radioss_anim.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -50,7 +51,7 @@ public:
     AnimCursor(const std::string& rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
 
     const char* Take(std::size_t N) {
-        if (mPos + N > mData.size())
+        if (N > mData.size() - mPos)  // not mPos + N: that wraps for a huge N
             throw ReadError("Radioss animation: '" + mPath + "' is truncated (needs " +
                             std::to_string(N) + " more bytes at offset " + std::to_string(mPos) +
                             " of " + std::to_string(mData.size()) + ")");
@@ -62,6 +63,8 @@ public:
     std::vector<std::int64_t> Ints(std::int64_t N) {
         if (N < 0)
             throw ReadError("Radioss animation: '" + mPath + "' has a negative count");
+        if (static_cast<std::uint64_t>(N) > (mData.size() - mPos) / 4)
+            Take(mData.size() - mPos + 1);  // reports the truncation
         const unsigned char* p =
             reinterpret_cast<const unsigned char*>(Take(4 * static_cast<std::size_t>(N)));
         std::vector<std::int64_t> out(static_cast<std::size_t>(N));
@@ -79,6 +82,8 @@ public:
     std::vector<double> Floats(std::int64_t N) {
         if (N < 0)
             throw ReadError("Radioss animation: '" + mPath + "' has a negative count");
+        if (static_cast<std::uint64_t>(N) > (mData.size() - mPos) / 4)
+            Take(mData.size() - mPos + 1);  // reports the truncation
         const unsigned char* p =
             reinterpret_cast<const unsigned char*>(Take(4 * static_cast<std::size_t>(N)));
         std::vector<double> out(static_cast<std::size_t>(N));
@@ -232,6 +237,10 @@ Mesh read_radioss_anim(const std::string& rPath) {
     const std::vector<std::int64_t> counts = c.Ints(8);
     const std::int64_t nn = counts[0], nf = counts[1], np2 = counts[2], nfun = counts[3],
                        nefun = counts[4], nvec = counts[5], nten = counts[6], nskew = counts[7];
+    // Every count sizes records of at least one byte per entry, so none can
+    // exceed the file; this also keeps the products below inside int64.
+    for (const std::int64_t n : counts)
+        detail::checked_count(n, data.size(), "Radioss animation", "header");
     c.Take(static_cast<std::size_t>(2 * 6 * std::max<std::int64_t>(nskew, 0)));
     const std::vector<double> coords = c.Floats(3 * nn);
 

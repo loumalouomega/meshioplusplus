@@ -47,6 +47,10 @@ The Python [CLI](./cli.md) and the Python-free native CLI mirror each other verb
 
 **A single owner for anything two places could compute.** The block-major cell index (`detail/cell_index.hpp`), the remapping of regions through an operation (`detail/region_remap.hpp`), the refinement templates, the marching cutter, the provenance credit line and the pipeline step dispatch each live in exactly one place and are reused by every consumer, including the numpy twins on the Python side, which are pinned byte-for-byte against the C++ path by tests. Where a second implementation would have to reproduce a discrete branch on a sign (a winding repair, a flip acceptance, a warp), the operation is C++-core only and says so by name.
 
+## What keeps it honest
+
+Four checks run over the whole of it rather than one feature. The C++ suite runs under ASan and UBSan on every pull request, and a libFuzzer campaign over every native reader runs weekly, its findings replayed on every pull request as regression inputs ([fuzzing and sanitizers](./fuzzing.md)). Every writable format round-trips one canonical mesh against a declaration of what it keeps ([format conformance](./conformance.md)). Property-based tests hold the operations to the invariants their pages state — volume and mass conservation, conformity, determinism, map composition (`tests/python/test_properties.py`). A benchmark harness records every format's read and write and the main operations per parallel backend, without gating ([benchmarks](./benchmarks.md)).
+
 ## Where to go next
 
 Start with the [quickstart](./quickstart.md), then the [format table](./formats.md) and the [CLI reference](./cli.md). The [roadmap](./roadmap.md) lists what is not built yet.

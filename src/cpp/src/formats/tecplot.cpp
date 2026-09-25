@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -292,7 +293,8 @@ struct TecplotZone {
         return !mVarShareZone.count(Var) && !mPassiveVars.count(Var);
     }
     std::size_t DataLength(std::size_t Var) const {
-        return mCellCentered[Var] ? mNumCells : mNumNodes;
+        // A zone read before VARIABLES has no per-variable table yet.
+        return Var < mCellCentered.size() && mCellCentered[Var] ? mNumCells : mNumNodes;
     }
     // Node and cell counts of an ordered zone: lines, quads or hexahedra over
     // the dimensions longer than one; a single point is one vertex.
@@ -586,7 +588,13 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
 
         TecplotZone z;
         std::string joined = rLines[i];
-        while (i + 1 < rLines.size() && !is_float_token(tecplot_tokens(rLines[i + 1])[0]))
+        // A header continues until the first line that starts with a number
+        // (a blank line has no first token, so it continues too).
+        auto continues = [&](const std::string& rLine) {
+            const std::vector<std::string> t = tecplot_tokens(rLine);
+            return t.empty() || !is_float_token(t[0]);
+        };
+        while (i + 1 < rLines.size() && continues(rLines[i + 1]))
             joined += " " + rLines[++i];
         z.mDataStart = i + 1;
 
@@ -795,7 +803,7 @@ public:
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
             for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = std::strtoll(t[j].c_str(), nullptr, 10) - 1;
+                cp[c * nn + j] = detail::zero_based(std::strtoll(t[j].c_str(), nullptr, 10));
         }
     }
 
@@ -1702,8 +1710,14 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     TecplotDecoder decoder(rZones, rVariables.size(), rSource);
     std::vector<const TecplotDecodedZone*> decoded;
     decoded.reserve(rZoneIdxs.size());
-    for (std::size_t idx : rZoneIdxs)
+    for (std::size_t idx : rZoneIdxs) {
         decoded.push_back(&decoder.Zone(idx));
+        // A zone parsed before a later VARIABLES line redefined the list has
+        // per-variable tables of the old length.
+        if (decoded.back()->mCellCentered.size() != rVariables.size())
+            throw ReadError("Tecplot: zone " + std::to_string(idx + 1) +
+                            " was read against a different variable list");
+    }
 
     std::vector<std::size_t> point_offset;
     std::vector<bool> owns_points;
@@ -1718,6 +1732,14 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
             continue;
         const TecplotDecodedZone& d = *decoded[k];
         const std::size_t poff = point_offset[k];
+        // A coordinate given cell-centred, or cut short, has fewer values
+        // than the zone has nodes.
+        for (const int c : {xi, yi, zi})
+            if (c >= 0 && d.mCols[static_cast<std::size_t>(c)].size() < d.mNumNodes)
+                throw ReadError("Tecplot: zone " + std::to_string(rZoneIdxs[k] + 1) +
+                                " has fewer coordinate values than nodes");
+        if (poff + d.mNumNodes > total_points)
+            throw ReadError("Tecplot: zones hold more nodes than the point layout");
         for (std::size_t r = 0; r < d.mNumNodes; ++r) {
             pp[(poff + r) * ndim + 0] = d.mCols[static_cast<std::size_t>(xi)][r];
             pp[(poff + r) * ndim + 1] = d.mCols[static_cast<std::size_t>(yi)][r];
@@ -1790,8 +1812,10 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
                 NDArray arr(DType::Float64, {ref.mNumCells});
                 double* ap = arr.As<double>();
                 if (d.mCellCentered[k])
-                    for (std::size_t r = 0; r < ref.mNumCells; ++r)
-                        ap[r] = d.mCols[k][zone_cell(ref, r)];
+                    for (std::size_t r = 0; r < ref.mNumCells; ++r) {
+                        const std::size_t at = zone_cell(ref, r);
+                        ap[r] = at < d.mCols[k].size() ? d.mCols[k][at] : nan;
+                    }
                 else
                     std::fill(ap, ap + ref.mNumCells, nan);
                 blk.push_back(std::move(arr));
@@ -1803,9 +1827,13 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
             double* ap = arr.As<double>();
             std::fill(ap, ap + total_points, nan);
             for (std::size_t z = 0; z < decoded.size(); ++z)
-                if (owns_points[z] && !decoded[z]->mCellCentered[k])
-                    std::memcpy(ap + point_offset[z], decoded[z]->mCols[k].data(),
-                                decoded[z]->mNumNodes * sizeof(double));
+                if (owns_points[z] && !decoded[z]->mCellCentered[k]) {
+                    // A column shorter than the zone (cut short, or absent)
+                    // leaves the rest NaN rather than reading past it.
+                    const auto& col = decoded[z]->mCols[k];
+                    std::copy_n(col.begin(), std::min(col.size(), decoded[z]->mNumNodes),
+                                ap + point_offset[z]);
+                }
             mesh.AddPointData(rVariables[k], std::move(arr));
         }
     }

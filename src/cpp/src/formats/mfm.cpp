@@ -28,6 +28,7 @@
 // Project includes
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -90,10 +91,16 @@ Mesh read_mfm(const std::string& rPath) {
             throw ReadError("MFM: unexpected end of file");
     };
 
-    NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
+    // Sizes from the header are checked against the tokens that follow before
+    // any of them sizes an allocation.
+    if (nel < 0 || lnv < 1 || nver < 0 || dim < 1 || dim > 3 ||
+        static_cast<unsigned long long>(nel) > tok.size() / static_cast<std::size_t>(lnv))
+        throw ReadError("MFM: header counts do not match the file");
     need(static_cast<std::size_t>(nel) * lnv);
+    NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
     for (long long i = 0; i < nel * lnv; ++i)
-        data.As<std::int64_t>()[i] = std::strtoll(tok[pos++].c_str(), nullptr, 10) - 1;
+        data.As<std::int64_t>()[i] =
+            detail::zero_based(std::strtoll(tok[pos++].c_str(), nullptr, 10));
 
     // reference arrays (discarded): nrc (dim==3), nra (dim>=2), nrv
     if (dim == 3) {
@@ -108,8 +115,10 @@ Mesh read_mfm(const std::string& rPath) {
     pos += nel * lnv;
 
     Mesh mesh;
-    NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
+    if (static_cast<unsigned long long>(nver) > tok.size())
+        throw ReadError("MFM: vertex count larger than the file");
     need(static_cast<std::size_t>(nver) * dim);
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     for (long long i = 0; i < nver * dim; ++i)
         pts.As<double>()[i] = detail::parse_double(tok[pos++]);
     mesh.AssignPoints(std::move(pts));

@@ -217,9 +217,33 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
             uses[poly_undirected(a, b)].push_back({f, a < b});
         }
     }
+    bool manifold = true;
     for (const auto& kv : uses)
         if (kv.second.size() != 2)
-            return RingOrientation::Unorientable;
+            manifold = false;
+    if (!manifold) {
+        // An edge used 4, 6, ... times: two lobes of one cell touching along
+        // it (agglomerate's grown groups produce exactly this). There is no
+        // unique face pairing to BFS over, but if every undirected edge is
+        // traversed as often forwards as backwards, the stored rings already
+        // form a closed, consistently oriented surface, and the divergence
+        // theorem gives its volume. Keep them as stored; only the global
+        // inward/outward flip below remains to decide.
+        for (const auto& kv : uses) {
+            std::size_t fwd = 0;
+            for (const EdgeUse& u : kv.second)
+                fwd += u.mForward ? 1 : 0;
+            if (2 * fwd != kv.second.size())
+                return RingOrientation::Unorientable;
+        }
+        if (poly_measure(rRings, pCoords).mVolume >= 0.0)
+            return RingOrientation::Consistent;
+        for (std::size_t f = 0; f < nf; ++f) {
+            std::uint32_t* ring = rRings.FaceMutable(f);
+            std::reverse(ring, ring + rRings.FaceSize(f));
+        }
+        return RingOrientation::Repaired;
+    }
 
     // BFS the face dual. Two faces sharing an undirected edge are consistently
     // wound iff they traverse it in OPPOSITE directions, so an equal

@@ -150,6 +150,9 @@ Mesh read_flux(const std::string& rPath) {
             groups.push_back({mtype, {}, {}});
             it = gindex.find(mtype);
         }
+        if (!groups[it->second].mRows.empty() &&
+            groups[it->second].mRows.front().size() != nodes.size())
+            throw ReadError("pf3: '" + mtype + "' elements with different node counts");
         groups[it->second].mRows.push_back(std::move(nodes));
         groups[it->second].mRef.push_back(ref);
     }

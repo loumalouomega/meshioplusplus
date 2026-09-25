@@ -61,6 +61,8 @@ if /I "%~1"=="--fortran"        set "FORTRAN=ON" & set "C_API=ON" & shift & goto
 if /I "%~1"=="--install-cpp"    set "INSTALL_CPP=ON" & shift & goto parse
 if /I "%~1"=="--cpp-backends"   set "CPP_BACKENDS=%~2" & set "INSTALL_CPP=ON" & shift & shift & goto parse
 if /I "%~1"=="--cli"            set "CLI=ON" & shift & goto parse
+if /I "%~1"=="--sanitize"       goto nosanitize
+if /I "%~1"=="--fuzzers"        goto nosanitize
 if /I "%~1"=="--build"          set "DO_BUILD=yes" & shift & goto parse
 if /I "%~1"=="--python"         set "PYTHON_EXE=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tbb-dir"        set "TBB_DIR=%~2" & shift & shift & goto parse
@@ -68,6 +70,12 @@ if /I "%~1"=="-h" goto usage
 if /I "%~1"=="--help" goto usage
 echo Unknown option: %~1
 goto usage
+
+:nosanitize
+rem ASan/UBSan and libFuzzer builds are GCC/Clang only; use build/configure.sh
+rem on Linux or macOS (doc/fuzzing.md).
+echo error: %~1 needs GCC or Clang; use build/configure.sh on Linux or macOS.
+exit /b 1
 
 rem gidpostInt.h includes <zlib.h> unconditionally and the binary flavour is
 rem always deflated, so the GiD writer cannot be built without zlib.

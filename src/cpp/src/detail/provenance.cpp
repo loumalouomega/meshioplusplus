@@ -114,6 +114,10 @@ ProvenanceScope::ProvenanceScope(ProvenanceMode mode, ProvenanceRecord record)
     // so the thread-local pointer stays valid across the constructor's
     // return; every note()/set_* call afterwards mutates it in place rather
     // than copying.
+    // The enclosing scope's record was copied into mPrevious above and is
+    // re-created from it on exit, so the heap copy it owned is released here
+    // (a nested scope leaked it before).
+    delete g_active_record;
     g_active_record = new ProvenanceRecord(std::move(record));
     g_active_mode = mode;
 }

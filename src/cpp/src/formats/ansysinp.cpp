@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -89,7 +90,7 @@ std::optional<std::int64_t> ans_int(const std::string& rText) {
     const double v = detail::parse_double(rText.c_str(), end);
     if (end != rText.c_str() + rText.size())
         return std::nullopt;
-    return static_cast<std::int64_t>(v);
+    return detail::checked_integer<std::int64_t>(v, "Ansys .cdb");
 }
 
 // An element type given by number (`186`) or name (`SOLID186`): the routine.

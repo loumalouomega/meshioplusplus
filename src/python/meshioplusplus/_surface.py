@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 
 from ._common import warn
+from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._skin import _CELL_FACES, _is_volume_type
 
@@ -190,8 +191,7 @@ def extract_surface(mesh, record_parent_ids: bool = False) -> Mesh:
         from . import _core
 
         return _core.extract_surface(mesh, record_parent_ids)
-    except ValueError:
-        raise
-    except Exception:
-        pass
+    except Exception as exc:
+        if not core_op_declined(exc, "extract_surface"):
+            raise
     return _extract_surface_py(mesh, record_parent_ids)
