@@ -41,6 +41,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/surface_edge_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -168,23 +169,27 @@ RvolLattice rvol_build_lattice(const detail::LatticeSpec& rSpec) {
             for (std::int64_t k = 0; k < naz; ++k)
                 lat.mPoints[static_cast<std::size_t>(a_id(i, j, k))] =
                     Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
-                        o[2] + static_cast<double>(k) * h[2]};
+                         o[2] + static_cast<double>(k) * h[2]};
     for (std::int64_t i = 0; i < nx; ++i)
         for (std::int64_t j = 0; j < ny; ++j)
             for (std::int64_t k = 0; k < nz; ++k)
                 lat.mPoints[static_cast<std::size_t>(b_id(i, j, k))] =
                     Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
-                        o[1] + (static_cast<double>(j) + 0.5) * h[1],
-                        o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+                         o[1] + (static_cast<double>(j) + 0.5) * h[1],
+                         o[2] + (static_cast<double>(k) + 0.5) * h[2]};
 
     lat.mTets.reserve(static_cast<std::size_t>(numB) * 12);
     for (std::int64_t i = 0; i < nx; ++i)
         for (std::int64_t j = 0; j < ny; ++j)
             for (std::int64_t k = 0; k < nz; ++k) {
-                const std::int64_t corner[8] = {
-                    a_id(i, j, k),         a_id(i + 1, j, k),         a_id(i + 1, j + 1, k),
-                    a_id(i, j + 1, k),     a_id(i, j, k + 1),         a_id(i + 1, j, k + 1),
-                    a_id(i + 1, j + 1, k + 1), a_id(i, j + 1, k + 1)};
+                const std::int64_t corner[8] = {a_id(i, j, k),
+                                                a_id(i + 1, j, k),
+                                                a_id(i + 1, j + 1, k),
+                                                a_id(i, j + 1, k),
+                                                a_id(i, j, k + 1),
+                                                a_id(i + 1, j, k + 1),
+                                                a_id(i + 1, j + 1, k + 1),
+                                                a_id(i, j + 1, k + 1)};
                 const std::int64_t centre = b_id(i, j, k);
                 for (const auto& t : kBccLocalTets)
                     lat.mTets.push_back({centre, corner[t[0]], corner[t[1]], corner[t[2]]});
@@ -313,7 +318,7 @@ public:
             const Vec3& pu = mrLattice.mPoints[static_cast<std::size_t>(Inside)];
             const Vec3& pv = mrLattice.mPoints[static_cast<std::size_t>(Outside)];
             np = {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]),
-                 pu[2] + t * (pv[2] - pu[2])};
+                  pu[2] + t * (pv[2] - pu[2])};
         }
         const std::int64_t id = NewPoint(np);
         mEdgeToNew.emplace(key, id);
@@ -327,8 +332,8 @@ public:
     // point this resolver created.
     const Vec3& PositionOf(std::int64_t Id) const {
         return Id < mrLattice.mNumLatticeIds()
-                  ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
-                  : mNewPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
+                   ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
+                   : mNewPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
     }
 
 private:
@@ -341,8 +346,7 @@ private:
 
     const RvolLattice& mrLattice;
     const RvolClassification& mrClass;
-    std::unordered_map<detail::SurfaceEdgeKey, std::int64_t, detail::SurfaceEdgeKeyHash>
-        mEdgeToNew;
+    std::unordered_map<detail::SurfaceEdgeKey, std::int64_t, detail::SurfaceEdgeKeyHash> mEdgeToNew;
     std::vector<Vec3> mNewPositions;
 };
 
@@ -533,7 +537,8 @@ bool rvol_has_volume_cells(const Mesh& rMesh) {
 
 RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& rOptions) {
     if (!(rOptions.mWarpFraction >= 0.0))
-        throw std::invalid_argument(std::string(kRvolPrefix) + "warp_fraction must not be "
+        throw std::invalid_argument(std::string(kRvolPrefix) +
+                                    "warp_fraction must not be "
                                     "negative, got " +
                                     std::to_string(rOptions.mWarpFraction));
 
@@ -562,9 +567,9 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
         const double tol = 1e-9 * (h0 > 0.0 ? h0 : 1.0);
         if (std::fabs(spec.mSpacing[1] - h0) > tol || std::fabs(spec.mSpacing[2] - h0) > tol)
             throw std::invalid_argument(
-                std::string(kRvolPrefix) +
-                "the resolved lattice cell is not cubic (spacing " + std::to_string(spec.mSpacing[0]) +
-                ", " + std::to_string(spec.mSpacing[1]) + ", " + std::to_string(spec.mSpacing[2]) +
+                std::string(kRvolPrefix) + "the resolved lattice cell is not cubic (spacing " +
+                std::to_string(spec.mSpacing[0]) + ", " + std::to_string(spec.mSpacing[1]) + ", " +
+                std::to_string(spec.mSpacing[2]) +
                 ") -- a per-axis resolution over a non-cube bounding box does not fit this "
                 "operation's fixed BCC cell; use cell_size instead");
     }
@@ -572,27 +577,32 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
     detail::warn_regions_dropped(rMesh, "remesh_volume");
 
     RemeshVolumeResult result;
-    result.mQuality = detail::soup_quality(soup);
-    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error && !result.mQuality.mWatertight)
-        throw std::invalid_argument(std::string(kRvolPrefix) + "the surface is not watertight "
-                                    "(boundary_edges=" +
-                                    std::to_string(result.mQuality.mBoundaryEdges) +
-                                    ", non_manifold_edges=" +
-                                    std::to_string(result.mQuality.mNonManifoldEdges) +
-                                    ", inconsistent_pairs=" +
-                                    std::to_string(result.mQuality.mInconsistentPairs) + ")");
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
+    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error &&
+        !result.mQuality.mWatertight)
+        throw std::invalid_argument(
+            std::string(kRvolPrefix) +
+            "the surface is not watertight "
+            "(boundary_edges=" +
+            std::to_string(result.mQuality.mBoundaryEdges) +
+            ", non_manifold_edges=" + std::to_string(result.mQuality.mNonManifoldEdges) +
+            ", inconsistent_pairs=" + std::to_string(result.mQuality.mInconsistentPairs) + ")");
     else if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Warn &&
-            !result.mQuality.mWatertight)
-        log::warn("remesh_volume: the surface is not watertight; signs may be unreliable "
-                  "near the defect");
+             !result.mQuality.mWatertight)
+        log::warn(
+            "remesh_volume: the surface is not watertight; signs may be unreliable "
+            "near the defect");
 
-    const detail::DistanceQuery query = detail::build_distance_query(soup, rOptions.mDistance);
+    const detail::DistanceQuery query =
+        detail::build_distance_query_from_runs(soup, rOptions.mDistance, edge_runs);
     const RvolLattice lattice = rvol_build_lattice(spec);
 
     const double h = spec.mSpacing[0];
     std::int64_t num_warped = 0;
-    const RvolClassification cls = rvol_classify_and_warp(
-        lattice, query, rOptions.mDistance, rOptions.mWarpFraction * h, num_warped);
+    const RvolClassification cls = rvol_classify_and_warp(lattice, query, rOptions.mDistance,
+                                                          rOptions.mWarpFraction * h, num_warped);
     result.mNumVerticesWarped = num_warped;
 
     // --- cut: SERIAL, ascending root-tet order -- see rvol_build_lattice's
@@ -696,7 +706,8 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
         double* dst = pts.As<double>();
         for (std::size_t i = 0; i < out_points.size(); ++i)
             for (int d = 0; d < 3; ++d)
-                dst[i * 3 + static_cast<std::size_t>(d)] = out_points[i][static_cast<std::size_t>(d)];
+                dst[i * 3 + static_cast<std::size_t>(d)] =
+                    out_points[i][static_cast<std::size_t>(d)];
         out.AssignPoints(std::move(pts));
     }
     {
@@ -704,7 +715,8 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
         std::int64_t* dst = conn.As<std::int64_t>();
         for (std::size_t i = 0; i < raw_tets.size(); ++i)
             for (int c = 0; c < 4; ++c)
-                dst[i * 4 + static_cast<std::size_t>(c)] = final_id(raw_tets[i][static_cast<std::size_t>(c)]);
+                dst[i * 4 + static_cast<std::size_t>(c)] =
+                    final_id(raw_tets[i][static_cast<std::size_t>(c)]);
         if (!raw_tets.empty())
             out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
     }
@@ -716,7 +728,8 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
     // RemeshVolumeResult::mNumNonManifoldEdges' doc comment). Skipped for an
     // empty result, which extract_surface refuses.
     if (!raw_tets.empty())
-        result.mNumNonManifoldEdges = surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
+        result.mNumNonManifoldEdges =
+            surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
 
     return result;
 }

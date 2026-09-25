@@ -41,6 +41,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/surface_edge_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -255,9 +256,14 @@ NDArray sample_distance(const Mesh& rSurface, const NDArray& rPoints,
 
     const detail::TriangleSoup soup =
         detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
-    sdfop_report_quality(detail::soup_quality(soup), rOptions.mWatertightCheck);
+    // One edge grouping for both the quality report and the query's edge
+    // normals (surface_edge_runs.hpp).
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    sdfop_report_quality(
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs)),
+        rOptions.mWatertightCheck);
 
-    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    detail::DistanceQuery query = detail::build_distance_query_from_runs(soup, rOptions, edge_runs);
     std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
 
     NDArray out = NDArray::Uninit(DType::Float64, {n});
@@ -275,11 +281,13 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
 
     const detail::TriangleSoup soup =
         detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
-    result.mQuality = detail::soup_quality(soup);
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
     sdfop_report_quality(result.mQuality, rOptions.mWatertightCheck);
 
     const std::vector<detail::Vec3> queries = sdfop_query_points(rQuery, rOptions.mLocation);
-    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    detail::DistanceQuery query = detail::build_distance_query_from_runs(soup, rOptions, edge_runs);
     const std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
     const std::size_t n = hits.size();
 

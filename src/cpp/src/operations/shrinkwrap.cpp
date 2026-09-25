@@ -38,6 +38,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/surface_edge_runs.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -109,7 +110,9 @@ ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
                                     "target: the surface has no triangles to project onto");
 
     ShrinkwrapResult result;
-    result.mQuality = detail::soup_quality(soup);
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
     if (!result.mQuality.mWatertight)
         log::warn(
             "{}the target is not watertight: {} boundary edge(s), {} non-manifold edge(s), {} "
@@ -121,7 +124,8 @@ ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
     SurfaceDistanceOptions sd_opts;
     sd_opts.mWeight = rOptions.mNormalWeight;
     sd_opts.mGridCellSize = rOptions.mGridCellSize;
-    const detail::DistanceQuery query = detail::build_distance_query(soup, sd_opts);
+    const detail::DistanceQuery query =
+        detail::build_distance_query_from_runs(soup, sd_opts, edge_runs);
 
     // --- the source: coordinates and the selection ---------------------------
     const std::vector<double> w = swrap_weights(rMesh, rOptions.mWeights, n);

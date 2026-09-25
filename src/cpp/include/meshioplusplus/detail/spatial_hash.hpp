@@ -64,6 +64,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace meshioplusplus {
@@ -94,8 +95,9 @@ inline std::int64_t grid_quantize(double coord, double cell) {
 }
 
 /// The bucket grid: cell key -> ids in insertion order. Callers insert ids in
-/// ascending order from a serial pass, so every bucket vector is ascending and
-/// every scan over it is deterministic.
+/// ascending order from a serial pass, or group them in parallel and hand each
+/// bucket over ascending (`AssignBuckets`), so every bucket vector is
+/// ascending and every scan over it is deterministic.
 class SpatialGrid {
 public:
     explicit SpatialGrid(double cellSize) : mCell(cellSize) {}
@@ -121,6 +123,25 @@ public:
             for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
                 for (std::int64_t x = rLo.x; x <= rHi.x; ++x)
                     mCells[GridKey{x, y, z}].push_back(id);
+        Cover(rLo);
+        Cover(rHi);
+    }
+
+    /// The bulk form of `Insert`/`InsertBox` (v16.18.0), for a caller that
+    /// grouped its (key, id) pairs itself -- in parallel -- with each bucket's
+    /// ids already in the order serial inserts would have appended them:
+    /// `Ids[i]` is appended to the cell at `Keys[i]`, and the occupied box
+    /// grows to cover `[rLo, rHi]`, the bounds of every box inserted.
+    void AssignBuckets(std::vector<GridKey> Keys, std::vector<std::vector<std::int64_t>> Ids,
+                       const GridKey& rLo, const GridKey& rHi) {
+        mCells.reserve(mCells.size() + Keys.size());
+        for (std::size_t i = 0; i < Keys.size(); ++i) {
+            std::vector<std::int64_t>& r_bucket = mCells[Keys[i]];
+            if (r_bucket.empty())
+                r_bucket = std::move(Ids[i]);
+            else
+                r_bucket.insert(r_bucket.end(), Ids[i].begin(), Ids[i].end());
+        }
         Cover(rLo);
         Cover(rHi);
     }
