@@ -43,6 +43,8 @@
 #include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/formats/radioss_anim.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
+#include "meshioplusplus/formats/vtx.hpp"
+#include "meshioplusplus/formats/szplt.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -331,6 +333,16 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_bzip2__") = true;
 #else
     m.attr("__has_bzip2__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+    m.attr("__has_adios2__") = true;
+#else
+    m.attr("__has_adios2__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+    m.attr("__has_tecio__") = true;
+#else
+    m.attr("__has_tecio__") = false;
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
     m.attr("__has_lz4__") = true;
@@ -2994,6 +3006,35 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0);
     m.def("radioss_th_time_values",
           [](const std::string& path) { return meshioplusplus::radioss_th_time_values(path); });
+
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+    // DOLFINx VTX (.bp directory) reader; ADIOS2 builds only.
+    m.def(
+        "vtx_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step,
+           const std::string& ghosts) {
+            meshioplusplus::ReadOptions opts = core_read_options(points_only, arrays, time_step);
+            opts.mGhosts = core_ghost_policy(ghosts);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtx(path, opts));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0, py::arg("ghosts") = "keep");
+    m.def("vtx_time_values",
+          [](const std::string& path) { return meshioplusplus::vtx_time_values(path); });
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+    // Tecplot .szplt through a user-installed TecIO; TecIO builds only.
+    m.def(
+        "szplt_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_szplt(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("szplt_time_values",
+          [](const std::string& path) { return meshioplusplus::szplt_time_values(path); });
+#endif
 
     m.def("radioss_anim_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));

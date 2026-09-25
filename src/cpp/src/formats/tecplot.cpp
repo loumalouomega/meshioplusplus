@@ -34,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/tecplot.hpp"
+#include "meshioplusplus/formats/szplt.hpp"
 #include "meshioplusplus/detail/binary_stream.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
@@ -45,6 +46,11 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+// External includes
+#include "TECIO.h"
+#endif
 
 namespace meshioplusplus {
 
@@ -1898,6 +1904,237 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
     rFile.mSource = std::make_unique<TecplotPltSource>(data, size, big_endian, rFile.mZones);
 }
 
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+// --- SZL (.szplt), through a user-installed TecIO ---------------------------------
+
+// TecIO calls return 0 on success.
+void tecplot_szl_check(std::int32_t Status, const char* pWhat) {
+    if (Status != 0)
+        throw ReadError(std::string("Tecplot .szplt: TecIO failed in ") + pWhat);
+}
+
+std::string tecplot_szl_string(char* pText) {
+    std::string out = pText ? pText : "";
+    if (pText)
+        tecStringFree(&pText);
+    return out;
+}
+
+/// Owns a TecIO reader handle.
+class TecplotSzlHandle {
+public:
+    explicit TecplotSzlHandle(const std::string& rPath) {
+        if (tecFileReaderOpen(rPath.c_str(), &mpHandle) != 0 || !mpHandle)
+            throw ReadError("Tecplot .szplt: TecIO cannot open '" + rPath + "'");
+    }
+    ~TecplotSzlHandle() {
+        if (mpHandle)
+            tecFileReaderClose(&mpHandle);
+    }
+    TecplotSzlHandle(const TecplotSzlHandle&) = delete;
+    TecplotSzlHandle& operator=(const TecplotSzlHandle&) = delete;
+    void* Get() const { return mpHandle; }
+
+private:
+    void* mpHandle = nullptr;
+};
+
+class TecplotSzlSource final : public TecplotSource {
+public:
+    TecplotSzlSource(std::shared_ptr<TecplotSzlHandle> pHandle,
+                     const std::vector<TecplotZone>& rZones)
+        : mpHandle(std::move(pHandle)), mrZones(rZones) {}
+
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols, NDArray& rConn,
+                 TecplotFaceMap& /*rFaces*/) const override {
+        const TecplotZone& z = mrZones[ZoneIdx];
+        void* h = mpHandle->Get();
+        const auto zone = static_cast<std::int32_t>(ZoneIdx + 1);
+        for (std::size_t v = 0; v < rCols.size(); ++v) {
+            if (!z.Owns(v))
+                continue;
+            const auto var = static_cast<std::int32_t>(v + 1);
+            std::int64_t n = 0;
+            tecplot_szl_check(tecZoneVarGetNumValues(h, zone, var, &n), "tecZoneVarGetNumValues");
+            std::vector<double> raw(static_cast<std::size_t>(n));
+            std::int32_t type = 0;
+            tecplot_szl_check(tecZoneVarGetType(h, zone, var, &type), "tecZoneVarGetType");
+            if (n > 0) {
+                switch (type) {
+                    case 1: {  // float
+                        std::vector<float> f(raw.size());
+                        tecplot_szl_check(tecZoneVarGetFloatValues(h, zone, var, 1, n, f.data()),
+                                          "tecZoneVarGetFloatValues");
+                        std::copy(f.begin(), f.end(), raw.begin());
+                        break;
+                    }
+                    case 2:
+                        tecplot_szl_check(tecZoneVarGetDoubleValues(h, zone, var, 1, n, raw.data()),
+                                          "tecZoneVarGetDoubleValues");
+                        break;
+                    case 3: {
+                        std::vector<std::int32_t> f(raw.size());
+                        tecplot_szl_check(tecZoneVarGetInt32Values(h, zone, var, 1, n, f.data()),
+                                          "tecZoneVarGetInt32Values");
+                        std::copy(f.begin(), f.end(), raw.begin());
+                        break;
+                    }
+                    case 4: {
+                        std::vector<std::int16_t> f(raw.size());
+                        tecplot_szl_check(tecZoneVarGetInt16Values(h, zone, var, 1, n, f.data()),
+                                          "tecZoneVarGetInt16Values");
+                        std::copy(f.begin(), f.end(), raw.begin());
+                        break;
+                    }
+                    case 5: {
+                        std::vector<std::uint8_t> f(raw.size());
+                        tecplot_szl_check(tecZoneVarGetUInt8Values(h, zone, var, 1, n, f.data()),
+                                          "tecZoneVarGetUInt8Values");
+                        std::copy(f.begin(), f.end(), raw.begin());
+                        break;
+                    }
+                    default:
+                        throw ReadError("Tecplot .szplt: variable " + std::to_string(var) +
+                                        " has the unknown data type " + std::to_string(type));
+                }
+            }
+            if (raw.size() == z.DataLength(v)) {
+                rCols[v] = std::move(raw);
+                continue;
+            }
+            // An ordered zone's cell-centred values over the full I x J x K
+            // index space, as a .plt stores them: keep i < I-1, j < J-1, k < K-1.
+            if (!(z.mOrdered && z.mCellCentered[v] && raw.size() == z.mI * z.mJ * z.mK))
+                throw ReadError("Tecplot .szplt: zone " + std::to_string(zone) + " variable " +
+                                std::to_string(var) + " holds " + std::to_string(raw.size()) +
+                                " values");
+            const std::size_t keep_i = z.mI > 1 ? z.mI - 1 : 1;
+            const std::size_t keep_j = z.mJ > 1 ? z.mJ - 1 : 1;
+            const std::size_t keep_k = z.mK > 1 ? z.mK - 1 : 1;
+            std::vector<double>& col = rCols[v];
+            col.clear();
+            col.reserve(z.mNumCells);
+            for (std::size_t k = 0; k < keep_k; ++k)
+                for (std::size_t j = 0; j < keep_j; ++j)
+                    for (std::size_t i = 0; i < keep_i; ++i)
+                        col.push_back(raw[i + z.mI * (j + z.mJ * k)]);
+        }
+        if (!z.mHasConn)
+            return;
+        const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
+        std::int64_t count = 0;
+        tecplot_szl_check(
+            tecZoneNodeMapGetNumValues(h, zone, static_cast<std::int64_t>(z.mNumCells), &count),
+            "tecZoneNodeMapGetNumValues");
+        if (static_cast<std::size_t>(count) != z.mNumCells * nn)
+            throw ReadError("Tecplot .szplt: zone " + std::to_string(zone) + " node map holds " +
+                            std::to_string(count) + " values, not " +
+                            std::to_string(z.mNumCells * nn));
+        rConn = NDArray(DType::Int64, {z.mNumCells, nn});
+        std::int64_t* cp = rConn.As<std::int64_t>();
+        std::int32_t is64 = 0;
+        tecplot_szl_check(tecZoneNodeMapIs64Bit(h, zone, &is64), "tecZoneNodeMapIs64Bit");
+        const auto cells = static_cast<std::int64_t>(z.mNumCells);
+        if (is64) {
+            tecplot_szl_check(tecZoneNodeMapGet64(h, zone, 1, cells, cp), "tecZoneNodeMapGet64");
+        } else {
+            std::vector<std::int32_t> map(static_cast<std::size_t>(count));
+            tecplot_szl_check(tecZoneNodeMapGet(h, zone, 1, cells, map.data()),
+                              "tecZoneNodeMapGet");
+            std::copy(map.begin(), map.end(), cp);
+        }
+        // TecIO hands the node map back 1-based.
+        for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
+            cp[r] -= 1;
+    }
+
+private:
+    std::shared_ptr<TecplotSzlHandle> mpHandle;
+    const std::vector<TecplotZone>& mrZones;
+};
+
+// The SZL file's header, through TecIO's reader, into the shared zone model.
+void tecplot_szl_open(const std::string& rPath, TecplotFile& rFile) {
+    auto handle = std::make_shared<TecplotSzlHandle>(rPath);
+    void* h = handle->Get();
+    std::int32_t nvar = 0;
+    std::int32_t nzone = 0;
+    tecplot_szl_check(tecDataSetGetNumVars(h, &nvar), "tecDataSetGetNumVars");
+    tecplot_szl_check(tecDataSetGetNumZones(h, &nzone), "tecDataSetGetNumZones");
+    for (std::int32_t v = 1; v <= nvar; ++v) {
+        char* name = nullptr;
+        tecplot_szl_check(tecVarGetName(h, v, &name), "tecVarGetName");
+        rFile.mVariables.push_back(tecplot_szl_string(name));
+    }
+    if (nzone < 1)
+        throw ReadError("Tecplot .szplt: no zone");
+    static const char* const kTypes[] = {"ORDERED",         "FELINESEG",     "FETRIANGLE",
+                                         "FEQUADRILATERAL", "FETETRAHEDRON", "FEBRICK",
+                                         "FEPOLYGON",       "FEPOLYHEDRON"};
+    for (std::int32_t zi = 1; zi <= nzone; ++zi) {
+        TecplotZone z;
+        std::int32_t type = 0;
+        tecplot_szl_check(tecZoneGetType(h, zi, &type), "tecZoneGetType");
+        if (type < 0 || type > 7)
+            throw ReadError("Tecplot .szplt: zone " + std::to_string(zi) + " has type " +
+                            std::to_string(type));
+        z.mTypeName = kTypes[type];
+        if (z.IsPoly())
+            throw ReadError("Tecplot .szplt: " + z.mTypeName +
+                            " zones are not read; save the file as .plt in Tecplot");
+        z.mOrdered = type == 0;
+        char* title = nullptr;
+        tecplot_szl_check(tecZoneGetTitle(h, zi, &title), "tecZoneGetTitle");
+        z.mTitle = tecplot_szl_string(title);
+        std::int64_t i = 0, j = 0, k = 0;
+        tecplot_szl_check(tecZoneGetIJK(h, zi, &i, &j, &k), "tecZoneGetIJK");
+        if (z.mOrdered) {
+            z.mI = static_cast<std::size_t>(std::max<std::int64_t>(i, 1));
+            z.mJ = static_cast<std::size_t>(std::max<std::int64_t>(j, 1));
+            z.mK = static_cast<std::size_t>(std::max<std::int64_t>(k, 1));
+            z.FinishOrdered();
+        } else {
+            // An FE zone's I is its node count, J its cell count.
+            z.mNumNodes = static_cast<std::size_t>(i);
+            z.mNumCells = static_cast<std::size_t>(j);
+        }
+        z.mCellCentered.assign(static_cast<std::size_t>(nvar), 0);
+        for (std::int32_t v = 1; v <= nvar; ++v) {
+            const std::size_t vi = static_cast<std::size_t>(v - 1);
+            std::int32_t location = 1;
+            std::int32_t passive = 0;
+            std::int32_t shared = 0;
+            tecplot_szl_check(tecZoneVarGetValueLocation(h, zi, v, &location),
+                              "tecZoneVarGetValueLocation");
+            tecplot_szl_check(tecZoneVarIsPassive(h, zi, v, &passive), "tecZoneVarIsPassive");
+            tecplot_szl_check(tecZoneVarGetSharedZone(h, zi, v, &shared),
+                              "tecZoneVarGetSharedZone");
+            z.mCellCentered[vi] = location == 0 ? 1 : 0;  // 0 cell-centred, 1 nodal
+            if (passive)
+                z.mPassiveVars.insert(vi);
+            else if (shared > 0)
+                z.mVarShareZone[vi] = static_cast<std::size_t>(shared - 1);
+        }
+        std::int32_t conn_share = 0;
+        tecplot_szl_check(tecZoneConnectivityGetSharedZone(h, zi, &conn_share),
+                          "tecZoneConnectivityGetSharedZone");
+        z.mConnShareZone = conn_share > 0 ? conn_share - 1 : -1;
+        z.mHasConn = !z.mOrdered && z.mConnShareZone < 0;
+        double time = 0.0;
+        std::int32_t strand = 0;
+        tecplot_szl_check(tecZoneGetSolutionTime(h, zi, &time), "tecZoneGetSolutionTime");
+        tecplot_szl_check(tecZoneGetStrandID(h, zi, &strand), "tecZoneGetStrandID");
+        // TecIO's strands are 1-based (0 static), like the ASCII STRANDID.
+        z.mHasSolutionTime = strand != 0 || time != 0.0;
+        z.mSolutionTime = time;
+        z.mHasStrandId = strand > 0;
+        z.mStrandId = strand;
+        rFile.mZones.push_back(std::move(z));
+    }
+    rFile.mSource = std::make_unique<TecplotSzlSource>(handle, rFile.mZones);
+}
+#endif  // MESHIOPLUSPLUS_HAS_TECIO
+
 }  // namespace
 
 MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& rOptions) {
@@ -1949,6 +2186,37 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
 Mesh read_tecplot(const std::string& rPath) {
     return read_tecplot(rPath, ReadOptions{});
 }
+
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+Mesh read_szplt(const std::string& rPath, const ReadOptions& rOptions) {
+    TecplotFile file;
+    tecplot_szl_open(rPath, file);
+    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(file.mZones);
+    const std::size_t step = rOptions.ResolveTimeStep(timeline.size());
+    return tecplot_build_step_mesh(timeline[step], file.mZones, file.mVariables, *file.mSource);
+}
+
+std::vector<double> szplt_time_values(const std::string& rPath) {
+    TecplotFile file;
+    tecplot_szl_open(rPath, file);
+    std::vector<double> out;
+    if (file.mZones[0].mHasSolutionTime)
+        for (const std::vector<std::size_t>& step : tecplot_timeline(file.mZones))
+            out.push_back(file.mZones[step[0]].mSolutionTime);
+    return out;
+}
+
+MeshMetadata read_szplt_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    ReadOptions options = rOptions;
+    options.mPointsOnly = true;
+    options.mTimeStep = 0;
+    MeshMetadata meta = metadata_from_mesh(read_szplt(rPath, options));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "szplt";
+    meta.mTimeValues = szplt_time_values(rPath);
+    return meta;
+}
+#endif  // MESHIOPLUSPLUS_HAS_TECIO
 
 namespace {
 

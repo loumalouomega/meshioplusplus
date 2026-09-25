@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 16.12.0
+  VERSION 16.13.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -239,6 +239,32 @@ if(MESHIOPLUSPLUS_WITH_CGNSLIB)
     find_path(CGNS_INCLUDE_DIR cgnslib.h HINTS "${CGNS_ROOT}/include")
     find_library(CGNS_LIBRARY NAMES cgns HINTS "${CGNS_ROOT}/lib")
   endif()
+endif()
+
+# ADIOS2 (v16.13.0): DOLFINx's VTXWriter output, a `.bp` directory read as a
+# time sequence (the `vtx` format). OFF by default and bring-your-own like
+# cgnslib: ADIOS2 is a heavy dependency for one consumer, so it is never a
+# default and never in the release wheels. ADIOS2 ships its own CMake config
+# (target adios2::cxx11); point ADIOS2_DIR or CMAKE_PREFIX_PATH at an install.
+# A serial or an MPI build both work: the reader opens files with a serial
+# adios2::ADIOS.
+option(MESHIOPLUSPLUS_WITH_ADIOS2 "Build the ADIOS2-backed DOLFINx VTX (.bp) reader" OFF)
+if(MESHIOPLUSPLUS_WITH_ADIOS2 AND NOT EMSCRIPTEN)
+  find_package(ADIOS2 CONFIG QUIET COMPONENTS CXX11)
+endif()
+
+# TecIO (v16.13.0): Tecplot's own library, the only reader of `.szplt` (SZL)
+# files (the `szplt` format). OFF by default and bring-your-own: meshio++ never
+# redistributes vendor libraries. TecIO has no CMake config; point TECIO_ROOT at
+# a directory holding TECIO.h and libtecio (a Tecplot 360 install, or a build of
+# the TecIO source Tecplot distributes). A static libtecio needs pthread.
+option(MESHIOPLUSPLUS_WITH_TECIO "Build the TecIO-backed Tecplot .szplt reader" OFF)
+if(MESHIOPLUSPLUS_WITH_TECIO AND NOT EMSCRIPTEN)
+  find_path(TECIO_INCLUDE_DIR TECIO.h HINTS "${TECIO_ROOT}" "${TECIO_ROOT}/include"
+            PATH_SUFFIXES tecio)
+  find_library(TECIO_LIBRARY NAMES tecio libtecio
+               HINTS "${TECIO_ROOT}" "${TECIO_ROOT}/lib" "${TECIO_ROOT}/bin")
+  find_package(Threads QUIET)
 endif()
 
 # Optional heavy dependencies. When absent, the corresponding format sources
@@ -595,6 +621,28 @@ if(MESHIOPLUSPLUS_WITH_BZIP2 AND BZIP2_FOUND)
   list(APPEND _mio_core_libs BZip2::BZip2)
 elseif(MESHIOPLUSPLUS_WITH_BZIP2)
   message(STATUS "meshio++: bzip2 requested but not found - .bz2 files fall back to Python")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_ADIOS2 AND TARGET adios2::cxx11)
+  message(STATUS "meshio++: ADIOS2 enabled (DOLFINx VTX .bp, ADIOS2 ${ADIOS2_VERSION})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ADIOS2)
+  list(APPEND _mio_core_libs adios2::cxx11)
+elseif(MESHIOPLUSPLUS_WITH_ADIOS2)
+  message(STATUS "meshio++: ADIOS2 requested but not found (set ADIOS2_DIR) - "
+                 ".bp directories fall back to Python's adios2 package")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_TECIO AND TECIO_INCLUDE_DIR AND TECIO_LIBRARY)
+  message(STATUS "meshio++: TecIO enabled (Tecplot .szplt, ${TECIO_LIBRARY})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_TECIO)
+  list(APPEND _mio_core_incs ${TECIO_INCLUDE_DIR})
+  list(APPEND _mio_core_libs ${TECIO_LIBRARY})
+  if(TARGET Threads::Threads)
+    list(APPEND _mio_core_libs Threads::Threads)
+  endif()
+elseif(MESHIOPLUSPLUS_WITH_TECIO)
+  message(STATUS "meshio++: TecIO requested but not found (set TECIO_ROOT) - "
+                 ".szplt files fall back to Python's ctypes path")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
@@ -1065,7 +1113,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB)
+foreach(_f ZLIB ZSTD LZ4 BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()
@@ -1121,6 +1169,12 @@ if(_mio_has_BZIP2)
 endif()
 if(_mio_has_KAHIP)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
+endif()
+if(_mio_has_ADIOS2)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -ladios2_cxx11 -ladios2_core")
+endif()
+if(_mio_has_TECIO)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -ltecio")
 endif()
 
 if(MESHIOPLUSPLUS_BUILD_PYTHON)

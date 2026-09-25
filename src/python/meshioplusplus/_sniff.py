@@ -243,8 +243,11 @@ def _has_polymesh(poly: Path) -> bool:
 
 
 def _sniff_directory(path: Path) -> str:
-    """An Elmer mesh directory or an OpenFOAM case, by the files the readers
-    look for; a directory that looks like both, or like neither, is ``""``."""
+    """A DOLFINx VTX ``.bp`` (an ADIOS2 index and data file), an Elmer mesh
+    directory or an OpenFOAM case, by the files the readers look for; a
+    directory that looks like both of the last two, or like none, is ``""``."""
+    if (path / "md.idx").is_file() and (path / "data.0").is_file():
+        return "vtx"
 
     def is_partitioning(p):
         return p.name.startswith("partitioning.") and (p / "part.1.header").is_file()
@@ -292,6 +295,9 @@ def _sniff_format_py(path) -> str:
     # Tecplot binary (.plt): "#!TDV" and a three-character version.
     if head[:5] == b"#!TDV":
         return "tecplot"
+    # Tecplot SZL (.szplt): "#!SZPLT", read through TecIO.
+    if head[:7] == b"#!SZPLT":
+        return "szplt"
     # OpenRadioss animation file: the big-endian magic 0x542C.
     if head[:4] == b"\x00\x00T,":
         return "radioss_anim"

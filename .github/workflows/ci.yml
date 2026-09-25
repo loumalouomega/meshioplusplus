@@ -560,6 +560,93 @@ jobs:
           python -c "from meshioplusplus import _core; assert not _core.__has_kahip__"
           python -m pytest tests/python/test_partition.py -v
 
+  # The two read-only formats behind a library that is never a default
+  # (v16.13.0): DOLFINx VTX `.bp` through ADIOS2 (Ubuntu's serial package) and
+  # Tecplot SZL through TecIO (the redistributable TecIO source SU2 vendors,
+  # built here from a pinned commit into a cached prefix -- never committed).
+  # First the native readers (gtest + Python), then a plain wheel with the
+  # Python twins: the `adios2` package and a shared TecIO through ctypes.
+  optional-readers:
+    name: ADIOS2 (DOLFINx .bp) and TecIO (.szplt) readers
+    needs: [lint]
+    runs-on: ubuntu-latest
+    env:
+      SU2_TECIO_COMMIT: bc15466602a687d6fb796d5df7a12ce3fde0949a
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config libadios2-serial-c++11-dev
+          # Debian installs the serial flavour's CMake config under a
+          # subdirectory find_package does not search by itself.
+          echo "ADIOS2_DIR=$(dirname "$(dpkg -L libadios2-serial-c++11-dev libadios2-serial-core-dev | grep -m1 'adios2-config.cmake$')")" >> "$GITHUB_ENV"
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
+      - name: Cache the TecIO build
+        id: tecio-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/tecio
+          key: tecio-su2-${{ env.SU2_TECIO_COMMIT }}-${{ runner.os }}
+      - name: Build TecIO (static and shared) from SU2's vendored source
+        if: steps.tecio-cache.outputs.cache-hit != 'true'
+        run: |
+          git init /tmp/su2 && cd /tmp/su2
+          git remote add origin https://github.com/su2code/SU2.git
+          git sparse-checkout set externals/tecio
+          git fetch --depth 1 origin "$SU2_TECIO_COMMIT" && git checkout FETCH_HEAD
+          cd externals/tecio
+          mkdir boost && tar xzf boost.tar.gz -C boost
+          # The shared library for the ctypes reader needs default visibility.
+          sed -i 's/add_library(tecio STATIC/add_library(tecio ${TECIO_LIB_TYPE}/; s/ -fvisibility=hidden//' teciosrc/CMakeLists.txt
+          for kind in STATIC SHARED; do
+            cmake -S teciosrc -B build-$kind -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              -DTECIO_LIB_TYPE=$kind -DBoost_INCLUDE_DIR="$PWD/boost" -DBOOST_ROOT="$PWD/boost"
+            cmake --build build-$kind --target tecio
+          done
+          mkdir -p ~/tecio/include ~/tecio/lib ~/tecio/shared
+          cp teciosrc/TECIO.h teciosrc/tecio_Exports.h teciosrc/StandardIntegralTypes.h ~/tecio/include/
+          cp build-STATIC/libtecio.a ~/tecio/lib/
+          cp build-SHARED/libtecio.so ~/tecio/shared/
+      - name: Configure C++ tests with ADIOS2 and TecIO
+        run: >-
+          cmake -S . -B build-optional -G Ninja
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_WITH_ADIOS2=ON
+          -DMESHIOPLUSPLUS_WITH_TECIO=ON
+          -DTECIO_ROOT=$HOME/tecio
+      - name: Build
+        run: cmake --build build-optional
+      - name: Run the VTX, SZL, sequence and registry suites
+        run: ctest --test-dir build-optional -R "Vtx|Szplt|Sequence|Registry|Sniff" --output-on-failure
+      - name: Install meshioplusplus with ADIOS2 and TecIO
+        run: >-
+          CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_ADIOS2=ON -DMESHIOPLUSPLUS_WITH_TECIO=ON -DTECIO_ROOT=$HOME/tecio"
+          pip install . -v
+      - name: Run the Python suites (native readers)
+        run: |
+          python -c "from meshioplusplus import _core; assert _core.__has_adios2__ and _core.__has_tecio__"
+          pip install h5py pyvista
+          python -m pytest tests/python/test_vtx.py tests/python/test_szplt.py tests/python/test_contrib_routes.py -v
+      # A plain wheel: the adios2 package and a shared TecIO through ctypes.
+      - name: Run them again through the Python twins
+        run: |
+          pip uninstall -y meshioplusplus
+          pip install . adios2
+          python -c "from meshioplusplus import _core; assert not _core.__has_adios2__"
+          MESHIOPLUSPLUS_TECIO_LIBRARY=$HOME/tecio/shared/libtecio.so \
+            python -m pytest tests/python/test_vtx.py tests/python/test_szplt.py -v
+
   # The Kokkos parallel backend (host execution space) -- bring-your-own like
   # KaHIP, never picked by AUTO. Source-built from the pinned release into a
   # cached prefix; the full gtest suite doubles as the byte-identity pin (its
@@ -785,6 +872,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-codeblocks h5py netCDF4 foamlib
+          # The DOLFINx VTX reader's Python twin; best effort, since the
+          # adios2 wheels do not cover every platform and Python here.
+          pip install adios2 || echo "no adios2 wheel: the vtx tests skip"
           pip install . --verbose
 
       # Coverage is not collected here -- the dedicated `coverage` job below

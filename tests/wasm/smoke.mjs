@@ -2398,6 +2398,10 @@ step('availableFormats reports what this build can read and write', () => {
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
+    // DOLFINx VTX and Tecplot SZL (v16.13.0) need ADIOS2 and TecIO, which the
+    // Emscripten build never links: compiled out, like KaHIP.
+    for (const fmt of ['vtx', 'szplt'])
+        assert.ok(!readers.includes(fmt) && !writers.includes(fmt), `unexpected format: ${fmt}`);
 });
 
 step('.h5 is MSC Nastran HDF5: another HDF5 file under that name is refused, not misread', () => {

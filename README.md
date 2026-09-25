@@ -26,6 +26,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [CAE sample layout](https://docs.nvidia.com/physicsnemo/) (`.npz`, what PhysicsNeMo's DoMINO/Transolver datapipes read),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
 > [DOLFIN XML](https://manpages.ubuntu.com/manpages/jammy/en/man1/dolfin-convert.1.html) (`.xml`),
+> [DOLFINx VTX](https://docs.fenicsproject.org/dolfinx/main/python/generated/dolfinx.io.html) (`.bp`, an ADIOS2 directory, read-only; each step a mesh, with an optional ADIOS2 build or the `adios2` package),
 > [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`, text or ElmerGrid's binary; bodies and boundaries as named regions, ElmerGrid partitions merged, `partition:part` written as `partitioning.N`, recognised by content),
@@ -70,7 +71,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [PhysicsNeMo mesh](https://developer.nvidia.com/physicsnemo) (`.pmsh`, memory-mapped),
 > [PLY](<https://en.wikipedia.org/wiki/PLY_(file_format)>) (`.ply`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
-> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones),
+> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones; `.szplt` read-only through a TecIO you supply),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
 > [Triangle .node/.ele/.poly](https://www.cs.cmu.edu/~quake/triangle.html),
 > [SVG](https://www.w3.org/TR/SVG/) (output only; 2D direct, 3D via skin projection) (`.svg`),
@@ -87,6 +88,8 @@ There are various mesh formats available for representing unstructured meshes. m
 > XYZ point clouds (headerless ASCII: `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt`),
 > [Z88](https://z88.de/) (`z88i1.txt`, recognised by its file name, with its `z88o2.txt` displacements and `z88o3.txt` stresses),
 > [Zarr](https://zarr.dev/) (`.zarr`, the PhysicsNeMo mesh layout).
+
+Files only their vendor's software can read — Abaqus `.odb`, MSC Marc `.t16`, Femap `.modfem`, and Ansys results beyond the native `.rst` reader — have [vendor-runtime routes](https://loumalouomega.github.io/meshioplusplus/vendor_routes): scripts under [`contrib/`](contrib/) that run in the vendor's own Python and write a series meshio++ reads.
 
 <p align="center">
   <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/logo/logo-icon-square.png" width="64">
@@ -1046,7 +1049,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.12.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.13.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

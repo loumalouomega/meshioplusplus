@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "16.12.0",
+  "version": "16.13.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -62,6 +62,12 @@
       "description": "VTK XML zstd block compression (meshio++ extension; ParaView cannot read it)",
       "dependencies": [
         "zstd"
+      ]
+    },
+    "adios2": {
+      "description": "DOLFINx VTX output (ADIOS2 .bp directories) read natively as a time sequence",
+      "dependencies": [
+        "adios2"
       ]
     },
     "bzip2": {

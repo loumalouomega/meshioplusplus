@@ -16,13 +16,16 @@ operation in ``meshioplusplus.__all__`` fails here until it is claimed by a
 tool's ``wraps`` (or consciously exempted in ``_NOT_TOOLS``).
 """
 
+import importlib.util
 import json
 import os
+import pathlib
 
 import numpy as np
 import pytest
 
 import meshioplusplus
+from meshioplusplus import _core
 from meshioplusplus.mcp import TOOL_REGISTRY, _tools
 
 from . import helpers
@@ -1975,6 +1978,25 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     th = str(meshes / "radioss_th" / "column" / "columnT01")
     assert _dump(_tools.tool_sniff(th))["format"] == "radioss_th"
     assert _dump(_tools.tool_info(th))["num_points"] == 0
+
+
+def test_vtx_and_szplt_formats():
+    """DOLFINx VTX (.bp directories) and Tecplot SZL (v16.13.0): read-only, each
+    behind an optional library, sniffed without it."""
+    meshes = pathlib.Path(__file__).parent / "meshes"
+    out = _dump(_tools.tool_formats())
+    for fmt in ("vtx", "szplt"):
+        assert fmt in out["readable"] and fmt not in out["writable"]
+    bp = str(meshes / "vtx" / "heat.bp")
+    assert _dump(_tools.tool_sniff(bp))["format"] == "vtx"
+    szl = str(meshes / "szplt" / "transient.szplt")
+    assert _dump(_tools.tool_sniff(szl))["format"] == "szplt"
+    if getattr(_core, "__has_adios2__", False) or importlib.util.find_spec("adios2"):
+        info = _dump(_tools.tool_info(bp))
+        assert info["num_points"] == 25
+        assert info["time_values"] == pytest.approx([0.0, 0.01, 0.02])
+    if getattr(_core, "__has_tecio__", False):
+        assert _dump(_tools.tool_info(szl))["time_values"] == [0.0, 0.5, 1.0]
 
 
 def test_d3plot_and_op2_formats(tmp_path):

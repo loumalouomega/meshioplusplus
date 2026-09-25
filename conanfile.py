@@ -34,7 +34,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "16.12.0"
+    version = "16.13.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -54,6 +54,8 @@ class MeshioplusplusConan(ConanFile):
         "with_bzip2": [True, False],
         "with_kahip": [True, False],
         "with_cgnslib": [True, False],
+        "with_adios2": [True, False],
+        "with_tecio": [True, False],
         "with_gidpost": [True, False],
         "with_eigen": [True, False],
         "with_json": [True, False],
@@ -81,6 +83,11 @@ class MeshioplusplusConan(ConanFile):
         # same policy as the CMake build). Off by default.
         "with_kahip": False,
         "with_cgnslib": False,
+        # ADIOS2 (DOLFINx .bp) is not on ConanCenter and TecIO (.szplt) is a
+        # vendor library: both are bring-your-own like KaHIP -- the options only
+        # flip the CMake flag (ADIOS2_DIR / TECIO_ROOT). Off by default.
+        "with_adios2": False,
+        "with_tecio": False,
         # Unlike with_eigen/with_json (submodules, off by default), gidpost is
         # a vendored hardcopy that IS in exports_sources, so this defaults True
         # like with_hdf5/with_netcdf/with_zlib -- consistent with the CMake
@@ -169,6 +176,10 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_CGNSLIB"] = bool(
             self.options.with_cgnslib
         )
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_ADIOS2"] = bool(
+            self.options.with_adios2
+        )
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_TECIO"] = bool(self.options.with_tecio)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_GIDPOST"] = bool(
             self.options.with_gidpost
         )

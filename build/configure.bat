@@ -25,6 +25,10 @@ set "WITH_HDF5=OFF"
 set "WITH_NETCDF=OFF"
 set "WITH_ZLIB=OFF"
 set "WITH_GIDPOST=ON"
+set "WITH_BZIP2=OFF"
+set "WITH_ADIOS2=OFF"
+set "WITH_TECIO=OFF"
+set "TECIO_ROOT_DIR="
 set "TESTS=OFF"
 set "C_API=OFF"
 set "FORTRAN=OFF"
@@ -48,6 +52,9 @@ if /I "%~1"=="--with-zlib"      set "WITH_ZLIB=ON" & shift & goto parse
 if /I "%~1"=="--without-zlib"   set "WITH_ZLIB=OFF" & shift & goto parse
 if /I "%~1"=="--with-gidpost"   set "WITH_GIDPOST=ON" & shift & goto parse
 if /I "%~1"=="--without-gidpost" set "WITH_GIDPOST=OFF" & shift & goto parse
+if /I "%~1"=="--with-bzip2"     set "WITH_BZIP2=ON" & shift & goto parse
+if /I "%~1"=="--with-adios2"    set "WITH_ADIOS2=ON" & shift & goto parse
+if /I "%~1"=="--with-tecio"     set "WITH_TECIO=ON" & set "TECIO_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
 if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
 if /I "%~1"=="--fortran"        set "FORTRAN=ON" & set "C_API=ON" & shift & goto parse
@@ -94,6 +101,7 @@ set "BUILD_DIR=%SCRIPT_DIR%cpp-%BUILD_TYPE%%TREE_SUFFIX%"
 set "EXTRA="
 for /f "delims=" %%P in ('"%PYTHON_EXE%" -c "import pybind11; print(pybind11.get_cmake_dir())" 2^>nul') do set "EXTRA=-Dpybind11_DIR=%%P"
 if not "%TBB_DIR%"=="" set "EXTRA=%EXTRA% -DTBB_DIR=%TBB_DIR%"
+if not "%TECIO_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DTECIO_ROOT=%TECIO_ROOT_DIR%"
 rem Commas become the semicolons CMake lists want. cmd splits UNQUOTED batch
 rem parameters on both , and ; so a multi-backend list must be quoted either
 rem way: --cpp-backends "MESHIO,KRATOS". Only passed when given, so the CMake
@@ -108,6 +116,7 @@ echo   backend:   %BACKEND%
 echo   mesh:      %MESH_BACKEND% (Python extension: %BUILD_PYTHON%)
 echo   HDF5:      %WITH_HDF5%   netCDF: %WITH_NETCDF%   zlib: %WITH_ZLIB%
 echo   gidpost:   %WITH_GIDPOST%  (GiD postprocess writer)
+echo   bzip2:     %WITH_BZIP2%   ADIOS2: %WITH_ADIOS2%   TecIO: %WITH_TECIO%
 echo   tests:     %TESTS%
 echo   C API:     %C_API%   Fortran: %FORTRAN%
 echo   C++ API:   %INSTALL_CPP%
@@ -123,6 +132,9 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_NETCDF=%WITH_NETCDF% ^
     -DMESHIOPLUSPLUS_WITH_ZLIB=%WITH_ZLIB% ^
     -DMESHIOPLUSPLUS_WITH_GIDPOST=%WITH_GIDPOST% ^
+    -DMESHIOPLUSPLUS_WITH_BZIP2=%WITH_BZIP2% ^
+    -DMESHIOPLUSPLUS_WITH_ADIOS2=%WITH_ADIOS2% ^
+    -DMESHIOPLUSPLUS_WITH_TECIO=%WITH_TECIO% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
     -DMESHIOPLUSPLUS_BUILD_C_API=%C_API% ^
     -DMESHIOPLUSPLUS_INSTALL_CPP=%INSTALL_CPP% ^
@@ -160,6 +172,10 @@ echo   --with-hdf5 / --without-hdf5     HDF5-backed formats (default: off on Win
 echo   --with-netcdf / --without-netcdf
 echo   --with-zlib / --without-zlib
 echo   --with-gidpost / --without-gidpost  GiD postprocess writer (default: on; needs zlib)
+echo   --with-bzip2                     native bzip2 (libMesh .bz2 meshes; default: off)
+echo   --with-adios2                    ADIOS2-backed DOLFINx VTX .bp reader (default: off)
+echo   --with-tecio ^<dir^>               TecIO-backed Tecplot .szplt reader (default: off;
+echo                                    ^<dir^> holds TECIO.h and tecio.lib)
 echo   --tests                          also build the GoogleTest suite (CTest)
 echo   --c-api                          build the installable libmeshioplusplus C API
 echo   --fortran                        build the Fortran module (implies --c-api;

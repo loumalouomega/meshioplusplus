@@ -49,6 +49,8 @@ _MULTIFILE_FORMATS = (
     "pvd",
     "pvtu",
     "pvtp",
+    # A DOLFINx VTX `.bp` is a directory ADIOS2 opens itself.
+    "vtx",
 )
 
 

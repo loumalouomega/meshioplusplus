@@ -104,7 +104,7 @@ Since v16.12.0 the older binary versions are read too: `#!TDV71` and `#!TDV75` (
 
 Verified: 71 and 75 (both byte orders, block and point packing, ordered and FE zones, text and geometry records), 106, 107 and 108 read in full, and every file with an ASCII twin reads as it does. Versions 100 to 105 and 109 to 111 had no sample: they are read as the rules above say.
 
-`.szplt` (SZL) files are a different, undocumented format and are not read; save them as `.plt` in Tecplot. The Python reference reader (`meshioplusplus.tecplot`) reads `.plt` too, value for value like the core.
+`.szplt` (SZL) files are a different, undocumented format, read through TecIO by the [`szplt`](./szplt.md) format (v16.13.0), or saved as `.plt` in Tecplot ([route](../routes/tecplot_szplt.md)). The Python reference reader (`meshioplusplus.tecplot`) reads `.plt` too, value for value like the core.
 
 ## Data mapping
 

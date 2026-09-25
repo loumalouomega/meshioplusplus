@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v16.11.0** — 72 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 16).
+Status at time of writing: **v16.13.0** — 76 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 16).
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -24,48 +24,24 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 *Admission: a format a simulation or physics-ML workflow actually exchanges, or the missing half of a shipped one. "Exchanges" means a file that crosses a tool boundary in a real pipeline (mesher → solver, solver → post-processor, solver → training set), not a format that merely exists. Every item names the consumer on the other side of the file.*
 
-Sizes: **S** ≈ days, **M** ≈ two weeks, **L** ≈ a month or more, including tests, docs page and CLI wiring. Sizes assume the shared infrastructure in §1.3 exists; the first format that needs a component pays for it.
+Sizes: **S** ≈ days, **M** ≈ two weeks, **L** ≈ a month or more, including tests, docs page and CLI wiring. Sizes assume the shared infrastructure in §1.1 exists; the first format that needs a component pays for it.
 
 Link legend: unmarked links were opened or returned by a search while this section was written (September 2026); links marked † are quoted from memory and must be checked before relying on them. Vendor documentation portals move often — when a link is dead, search the document title.
 
 ---
 
-### Formats that need a vendor runtime or a heavy optional dependency
+Every format this section queued is now read: the native FEM interchange, solver input and result-file readers of v16.5.0 to v16.12.0 (Tecplot, Femap, MFEM, Patran, Abaqus `.fil`, Radioss, Z88, libMesh, Marc, Ansys `.rst`, LS-DYNA and OP2), DOLFINx's ADIOS2 `.bp` ([`vtx`](./formats/vtx.md)) and Tecplot SZL through TecIO ([`szplt`](./formats/szplt.md)) of v16.13.0, and the [vendor-runtime routes](./vendor_routes.md) for the files only a vendor's software reads (Abaqus `.odb`, Marc `.t16`, Femap `.modfem`, Ansys results beyond the native reader). What they still lack is a check against a run of the vendor tool, listed under [Awaiting a licensed run](#awaiting-a-licensed-run), and the shared components below.
 
-The native FEM interchange, solver input and result-file readers of v16.5.0 to v16.12.0 (Tecplot, Femap, MFEM, Patran, Abaqus `.fil`, Radioss, Z88, libMesh, Marc, Ansys `.rst`, LS-DYNA and OP2) are complete; what they still lack is a check against a run of the vendor tool, listed under [Awaiting a licensed run](#awaiting-a-licensed-run).
-
-### 1.1 DOLFINx ADIOS2 `.bp` (read; optional ADIOS2 build) — **M**
-
-`VTXWriter` output: an ADIOS2 BP4/BP5 directory with a `vtk.xml` schema attribute and step-wise `geometry`, `connectivity`, `types`, `NumberOfNodes`, `NumberOfEntities` plus field variables. ADIOS2 is a heavy dependency for one consumer, so this is an opt-in build flag, never a default. `adios4dolfinx` checkpoints and Fides output are different layouts — out of scope.
-
-- **Done when.** A DOLFINx demo's `.bp` reads as a sequence matching ParaView's VTX reader.
-- **References.** [DOLFINx](https://github.com/FEniCS/dolfinx) † · [ADIOS2 documentation](https://adios2.readthedocs.io/) † · [VTK ADIOS2 module (VTX schema reader)](https://docs.vtk.org/en/latest/modules/vtk-modules/IO/ADIOS2/README.html) · [VTX reader changes in VTK 9.4](https://docs.vtk.org/en/latest/release_details/9.4/adios2-vtx-reader-changes.html) · [adios4dolfinx](https://github.com/jorgensd/adios4dolfinx) †
-
-### 1.2 Vendor-runtime routes (exporter scripts and optional plugins, no native parser) — **M** in total
-
-For these, the deliverable is a documented, tested route — a script that runs inside the vendor's own Python and writes VTKHDF/XDMF, or a plugin compiled against an SDK the user already owns. meshio++ never redistributes vendor libraries.
-
-- **Abaqus `.odb`.** No public specification; readable only through the ODB API on a licensed install, version-locked (`abaqus upgrade -odb`). Ship an `abaqus python` exporter script (instances → regions, steps/frames → sequence, field outputs by position) and document it; an optional C++ plugin against the ODB API comes only if a user asks. Where no licence is available, the `.fil` results file ([Abaqus `.fil`](./formats/abaqus_fil.md), v16.7.0) is the fallback. — [ODB2VTK (reference exporter)](https://github.com/Arris-Composites/ODB2VTK) · [abqpy](https://github.com/haiiliin/abqpy) †
-- **MSC Marc `.t16`.** Read through PyPost (`py_post`), shipped with Marc/Mentat. Ship an exporter script; the formatted `.t19` is read natively ([Marc](./formats/marc.md), v16.8.0).
-- **Femap `.modfem`.** COM API on Windows only. The route is "export a neutral file", which meshio++ reads ([Femap](./formats/femap.md)).
-- **Tecplot `.szplt`.** Undocumented; TecIO only. Optional link against a user-installed TecIO, or "re-save as `.plt`", which is read natively ([Tecplot](./formats/tecplot.md), v16.10.0). — [TecIO](https://tecplot.com/products/tecio-library/) †
-- **ANSYS results beyond the native reader** ([Ansys results](./formats/ansys_rst.md)). Document the PyDPF export route.
-- **Done when.** Each route has a docs page, a script under `contrib/`, and one manual test recorded with the vendor version used.
-
----
-
-### 1.3 Shared infrastructure worth building once
+### 1.1 Shared infrastructure worth building once
 
 - **Fixed-width card tokenizer, remaining adoption.** `detail/keyword_card.hpp` (v15.2.0, built for LS-DYNA) splits a card into standard, long, I10 and free layouts per line, parses real fields with Fortran spellings and, since v16.3.0, parses a Fortran format line such as `(3i9,6e21.13e3)` into the fields `split_fixed` cuts (the ANSYS `.cdb` reader's). The Nastran/OptiStruct (v16.1.0) and Patran (v16.5.0) readers use it too, and the Radioss (v16.7.0) and Marc (v16.8.0) readers its field converters (their column widths follow the deck: Radioss's input version, Marc's `EXTENDED`); UNV should adopt it instead of growing its own (the `.frd` reader of v15.3.0 slices its own columns: the layout is fixed by the record key, not by a format line).
 - **Node-ordering permutation registry, remaining half.** `detail/node_order.hpp` and `_node_order.py` (v16.0.0, built for Code_Aster `.mail`) hold the MED, Code_Aster, `.frd`, UNV, COMSOL, Elmer, FEBio, FLUX, Patran, libMesh, Radioss and Z88 tables in both directions, with a self-test that maps a reference element through every table and checks midpoints and a positive Jacobian ([node ordering](./node_ordering.md)). What remains: the gmsh, CGNS, GiD, Exodus and Kratos tables still live inside their readers and should move in when those formats are next touched (Marc, v16.8.0, needs no entry: every Marc element type read is in meshio++'s node order but the 3-node rebar lines, whose swap lives in the reader; ANSYS's degenerate shapes and Femap's 20-slot brick layout are slot maps, not permutations, and live in their readers; MFEM needs none, since its order-2 nodes are placed by the entity they sit on).
 - **Fortran unformatted-record reader, remaining adoption.** `detail/fortran_records.hpp` (v16.7.0, built for Abaqus `.fil`) sniffs 4/8-byte markers in either byte order and splits a file into its records, and `detail/binary_stream.hpp` reads values in a chosen byte order (libMesh `.xdr`). The OP2 reader (v16.9.0) builds on it, and the Python twins share `_fortran_records.py`; EnSight Fortran binary should too. The ANSYS `.rst` reader addresses records by pointer and keeps its own view, and `d3plot` (v16.9.0) is word-addressed, not record-framed.
-- **Directory-as-format support, remaining half.** Reading sniffs a directory by its files since v16.2.0 (Elmer, OpenFOAM). What remains: sequence globs keep only suffixed directories (`.pmsh`, `.zarr`), so an Elmer directory must be listed explicitly, and ADIOS2 `.bp` (§1.1) will need its own rule.
-- **Optional-plugin mechanism and a `contrib/` script convention** — §1.1, §1.2.
+- **Directory-as-format support, remaining half.** Reading sniffs a directory by its files since v16.2.0 (Elmer, OpenFOAM, and a DOLFINx `.bp` since v16.13.0), and sequence globs keep suffixed directories (`.pmsh`, `.zarr`, and `.bp` in both engines). What remains: an Elmer directory has no suffix, so a glob cannot find it and it must be listed explicitly.
 
-### 1.4 Suggested order
+### 1.2 Suggested order
 
-1. **Routes:** §1.2 scripts as users ask; §1.1 when a FEniCSx user asks.
-2. **Checks against the vendor tools:** each item under [Awaiting a licensed run](#awaiting-a-licensed-run) as soon as a licence, or a file the tool wrote, is in hand.
+1. **Checks against the vendor tools:** each item under [Awaiting a licensed run](#awaiting-a-licensed-run) as soon as a licence, or a file the tool wrote, is in hand.
 
 ### Considered, not queued
 
@@ -81,13 +57,23 @@ Revisit any of them when a consumer asks with a file in hand — a real deck or 
 
 ### Open verification items before coding
 
-- Every link marked †.
+- Every link marked †. The Femap `feFileWriteNeutral` argument list and the Tecplot macro's `$!READDATASET` form in `contrib/` were taken from the vendor references, not from a run.
 - Ansys `.rst` records flagged both bit-sparse and windowed-sparse (three files of Ansys' DPF example data): their layout is neither form's, and pymapdl-reader misreads them too.
 - MFEM NURBS meshes with non-conforming patches (`patch_topology` with hanging knots) are refused; no user has asked.
 
 #### Awaiting a licensed run
 
 Checks that need the vendor tool itself, or a file it wrote that no public source has. Each reader works from the vendor's documentation and every public file found (September 2026); what remains is one probe per line.
+
+The [vendor-runtime routes](./vendor_routes.md) of v16.13.0 are tested against stand-ins of the vendor APIs only. Each needs one recorded run, with the vendor version written into its page; what to install for it:
+
+- **Abaqus `.odb`.** Abaqus 2020 or later (its `abaqus python`, whose bundled numpy the script needs; 2023 and before run Python 2.7, 2024 and later Python 3). Run `contrib/abaqus_odb/odb_to_vtu.py` on a job with shells, C3D20R and an assembly-level set, and compare its nodal `U` and centroidal `S` against the same job's `.fil` read natively ([route](./routes/abaqus_odb.md)).
+- **Marc `.t16`.** Marc/Mentat 2020 or later with PyPost (`py_post`, run with Mentat's Python). Run `contrib/marc_t16/t16_to_vtu.py` on a job that writes both `.t16` and `.t19`, and compare against the `.t19` read natively; confirm that post file position 0 holds the model ([route](./routes/marc_t16.md)).
+- **Ansys results via PyDPF.** A DPF Server (Ansys 2021 R1 or later, or the standalone DPF Server 2024 R2 or later) and `pip install ansys-dpf-core pyvista meshioplusplus[h5py]`. Run `contrib/ansys_dpf/rst_to_vtkhdf.py` on a structural `.rst` and compare against the native `.rst` reader; then on a `/FCOMP,RST,1` file, which the native reader refuses ([route](./routes/ansys_dpf.md)).
+- **Femap `.modfem`.** Femap 2301 or later on Windows, and `pip install pywin32`. Run `contrib/femap/export_neutral.py`, check `feFileWriteNeutral`'s argument list against that version's API help, and read the neutral file back ([route](./routes/femap_modfem.md)).
+- **Tecplot `.szplt`.** Tecplot 360 2023 or later, and `pip install pytecplot`. Save a data set as `.szplt` and as `.plt` from Tecplot itself and read both (the TecIO-backed reader against the native one); run `contrib/tecplot/szplt_to_plt.py` and the macro `contrib/tecplot/szplt_to_plt.mcr`; and point `MESHIOPLUSPLUS_TECIO_LIBRARY` at Tecplot's own shared `libtecio` for the ctypes reader ([route](./routes/tecplot_szplt.md)).
+
+The readers:
 
 - **Tecplot.** A `.plt` written by `preplot` from the ASCII fixtures (`#!TDV112`), read identically to its `.dat`; binary files of versions 100–105 and 109–111, of which no sample was found (the VisIt suite covers 71, 75, 106–108).
 - **Femap.** Element (404) and group (408) records written by Femap 10 and by 12 or later (the public 2401 files hold none); the slot layout of the 13-node pyramid (topology 19); a file meshio++ writes, imported into Femap.
@@ -297,7 +283,7 @@ Recorded so they are not re-proposed as gaps.
 
 Open work only; what shipped is in `CHANGELOG.md`.
 
-1. **Format reach ([§1](#_1-format-reach))** — the remaining halves as users ask.
+1. **Format reach ([§1](#_1-format-reach))** — the shared components as formats need them, and the checks against the vendor tools as licences appear.
 2. **Spack package upkeep ([§2](#_2-spack-package-upkeep))** — a small, mechanical catch-up (recipes, variants, one release-checklist line) that unblocks HPC users on the current release; then a checklist step, so it stays current.
 3. **Sanitizer leg, then fuzzing ([§3](#_3-quality-of-implementation))** — a parallel track from day one; it does not compete for the same attention as features.
 4. **Performance ([§4](#_4-performance))** — the harness and the measured regressions first, then the isolated wins (`b64decode`, the lazy CLI import, `optimize_volume`), then the shared facet table.
