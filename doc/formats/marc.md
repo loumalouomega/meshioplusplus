@@ -38,7 +38,8 @@ A deck has three sections: parameters, up to `END`; the model definition, up to 
 
 - **`COORDINATES`**: a header (coordinates per node, node count), then a node number and its coordinates per line. Nodes need not be numbered in order; a node defined twice keeps its last definition. Decks with two coordinates per node (plane and axisymmetric models) get `z = 0`.
 - **`CONNECTIVITY`**: a header, then per element its number, its Marc element type and its nodes; an element with more than 14 nodes continues on the next lines.
-- **`DEFINE ELEMENT SET`** and **`DEFINE NODE SET`** (and their ordered `ELSQ`/`NDSQ` forms): see [Sets](#sets).
+- **`DEFINE ELEMENT SET`** and **`DEFINE NODE SET`** (and their ordered `ELSQ`/`NDSQ` forms), **`DEFINE EDGE SET`** and **`DEFINE FACE SET`**: see [Sets](#sets).
+- **`INCLUDE`** (v16.12.0): the line `INCLUDE file` (a blank or a comma before the name) is replaced by the lines of the file it names, relative to the including file, anywhere in the deck and recursively (a chain deeper than 16 is refused as a cycle). A missing file is an error.
 
 Every other option is skipped, its data lines with it. Fields are read in any of Marc's three layouts, which a deck may mix line by line:
 
@@ -54,17 +55,19 @@ Every Marc element type meshio++ maps lists its nodes in meshio++'s order (corne
 
 | meshio++ cell | Marc element types |
 |---|---|
-| `line` | 9, 31, 52, 98 |
-| `line3` | 64 |
-| `triangle` | 2, 6, 138, 158, 201 |
-| `triangle6` | 124, 125, 126, 128, 200 |
-| `quad` | 3, 10, 11, 18, 75, 139, 140 |
-| `quad8` | 22, 26, 27, 28, 30, 53, 54, 55 |
-| `tetra` | 134, 135, 157 (its fifth node, a bubble, is dropped) |
-| `tetra10` | 127, 130, 133 |
+| `line` | 9, 31, 52, 98; rebar 165, 166, 167 |
+| `line3` | 64; rebar 168, 169, 170 (which list their middle node second) |
+| `triangle` | 2, 6, 138, 158, 201; Herrmann 155, 156 (their fourth node, a centroid bubble, is dropped) |
+| `triangle6` | 124, 125, 126, 200; Herrmann 128, 129 |
+| `quad` | 3, 10, 11, 18, 75, 139, 140; rebar 143, 144, 145, 147; composite 151, 152; Herrmann 80, 82, 83, 118, 119 (their fifth node, the pressure node, is dropped) and 81 (also its two generalized plane strain nodes) |
+| `quad8` | 22, 26, 27, 28, 30, 53, 54, 55; Herrmann 32, 33, 58, 59, 63, 66, and 34, 60 (their two generalized plane strain nodes dropped); rebar 46, 48, 142, 148, and 47 (as 34); composite 153, 154 |
+| `tetra` | 134, 135; Herrmann 157 (its fifth node, a bubble, is dropped) |
+| `tetra10` | 127, 133; Herrmann 130 |
 | `wedge` | 136, 137 |
-| `hexahedron` | 7, 43, 117, 123; with repeated nodes a wedge, pyramid or tetrahedron, as LS-DYNA's and Radioss's bricks |
-| `hexahedron20` | 21, 44, 57 (with repeated corners, kept as is with a warning) |
+| `hexahedron` | 7, 43, 117, 123; rebar 146; composite 149; Herrmann 84, 120 (their ninth node, the pressure node, is dropped); with repeated nodes a wedge, pyramid or tetrahedron, as LS-DYNA's and Radioss's bricks |
+| `hexahedron20` | 21, 44, 57; Herrmann 35, 61; rebar 23; composite 150 (with repeated corners, kept as is with a warning) |
+
+The Herrmann (mixed displacement–pressure), rebar and composite types (v16.12.0) are read from Volume B (2000 to 2005 editions): the ones whose pressure unknown sits at the corners, and the rebar and composite elements, list the nodes of their plain twins; the others add a pressure node (without coordinates, so it need not be defined), a centroid bubble node or generalized plane strain nodes after the geometric nodes, which are dropped. Marc's element library up to 2005 has no interface, gasket or cohesive element and no 15-node pentahedron (its "15-node" solid is a collapsed 20-node brick).
 
 Elements of other types are skipped with one warning listing them; their node count must be known to read a deck whose elements continue on further lines, so an element of an unknown type with more than 14 nodes is refused. `cell_data["marc:element"]` holds each cell's element number and `cell_data["marc:type"]` its Marc type.
 
@@ -77,7 +80,9 @@ Elements of other types are skipped with one warning listing them; their node co
 - `AND` (the default), `EXCEPT` and `INTERSECT` combining what follows with what came before;
 - a line ending in `C` (or `CONTINUE`) continues on the next.
 
-A member element with no cell (a skipped type) drops out of the region; a member number the deck never defines is an error. Edge, face, integration-point and other set kinds are skipped with a warning.
+A member element with no cell (a skipped type) drops out of the region; a member number the deck never defines is an error.
+
+`DEFINE EDGE SET name` and `DEFINE FACE SET name` (v16.12.0) list `element:number` members. Marc numbers an element's edges and faces its own way (Volume A, which was not available), so they are not mapped to meshio++ facets: each set is `field_data["marc:edge_set:<name>"]` or `["marc:face_set:<name>"]`, one row per member, `(cell, Marc edge or face number)`, the cell −1 for an element with no cell. Integration-point and other set kinds are skipped with a warning.
 
 ## The post file
 
@@ -87,6 +92,7 @@ The formatted post file (post file revision 9 or later, Volume D's PLDUMP2000) i
 |---|---|
 | element connectivities (507), nodal coordinates (508) | points and cells, with the element types above |
 | sets (513): element and node sets | `cell` and `point` regions |
+| sets (513): edge (12) and face (13, and the ordered 18, 19) sets | `field_data["marc:edge_set:<name>"]`, `["marc:face_set:<name>"]` as for the deck |
 | an increment's time; its frequency (modal, harmonic) or buckling factor | `field_data["meshio:time"]` |
 | the increment and sub-increment numbers (517) | `field_data["marc:increment"]`, `"marc:subincrement"` |
 | each nodal vector (524): `Displacement`, `Reaction Force`, `Temperature` ... | point data under the file's name, `(points, components)` or `(points,)` |
@@ -95,7 +101,7 @@ The formatted post file (post file revision 9 or later, Volume D's PLDUMP2000) i
 
 **Element post codes.** Each code is named by its label in the file, or else by its meaning in Volume C's Table 3-3 (`Equivalent Von Mises Stress` for 17, `Temperature` for 9 ...), or `post code <n>`. A tensor (codes 301 total strain, 311 stress, 321 plastic strain, 341 Cauchy stress, 401 elastic strain, 411 global stress ... written as six consecutive codes) becomes one six-component array, components 11 22 33 12 23 31, that is `xx yy zz xy yz zx`; the order is checked on a real Marc post file, whose von Mises stress (code 17) matches its stress tensor's. A code of layer `n` (code + 1000 n) gets the suffix `@layer<n>`. A cell whose element has no cell (a skipped type) drops its values.
 
-An increment that remeshes the model (block 519) is refused. Contact bodies, springs, distributed loads, tyings and global variables are skipped.
+An increment that remeshes the model (v16.12.0; its remeshing flag set in block 517, the model blocks 502 to 514 repeated after its block 519) brings its own mesh: its step, and every later one until the next remeshing, is built on that model, with its own sets; element post codes carry over when the new model does not repeat them. Post files of revision 8 or earlier (Marc K7 and before, Volume D's PLDUMP layout, without block markers) are refused: no such file was found to check a reader against. Contact bodies, springs, distributed loads, tyings and global variables are skipped.
 
 ## Validation
 
@@ -103,14 +109,13 @@ No Marc licence was available. The readers are checked against:
 
 - **Real Marc Mentat 2020 decks**: the twelve decks of [DAMASK](https://github.com/damask-multiphysics/DAMASK)'s Marc element library tests (element types 6, 7, 11, 21, 27, 54, 57, 117, 125, 127, 134 and 136, extended format), not committed (they are AGPL). Every cell is positively oriented, every mid-edge node sits at its edge's midpoint, and the element and node sets resolve (the grain sets partition the elements).
 - **A real `.t19`** written by Marc (two 8-node bricks, from the FEDES project's examples), not committed: its mesh, sets, loads and stress tensor read as the file describes them.
-- **Fixtures written from the manuals**, in `tests/python/meshes/marc/` by `tools/gen_marc_fixtures.py`: the same model in fixed and extended format, a free-format deck with a collapsed brick and an unknown type, a plane-strain deck, and a two-increment post file.
+- **Fixtures written from the manuals**, in `tests/python/meshes/marc/` by `tools/gen_marc_fixtures.py`: the same model in fixed and extended format, a free-format deck with a collapsed brick and an unknown type, a plane-strain deck, a deck that INCLUDEs its coordinates and sets (nested, with Herrmann, rebar and composite elements and edge and face sets), a two-increment post file, and a post file whose second increment remeshes.
 
 The C++ and Python readers agree bit for bit on all of them.
 
 ## Not read
 
 - The history definition (load cases, boundary conditions, loads), and model definition options other than the three above (materials, geometry properties, boundary conditions, tables).
-- Edge and face sets (`DEFINE EDGE SET`, `FACE SET`, `elem:face` members), and the post file's edge and face sets.
+- The mapping of edge and face sets to facets (their numbering is Volume A's), which are kept as field data instead.
 - The binary post file `.t16`, and post files of revision 8 or earlier.
-- Marc element types not in the table above (Herrmann, interface, gasket, rebar, the 15-node wedge, whose element number was not confirmed).
-- `INCLUDE` files of a deck.
+- Marc element types not in the table above, and element types added after 2005.

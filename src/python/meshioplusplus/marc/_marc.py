@@ -13,13 +13,14 @@ per increment between ``****`` and ``----``. The layouts follow Marc Volume C
 
 from __future__ import annotations
 
+import os
 import re
 
 import numpy as np
 
-from .._common import warn
+from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError
-from .._files import open_file
+from .._files import is_buffer, open_file
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region
 from ..lsdyna._lsdyna import _collapse_solid
@@ -34,28 +35,46 @@ _T19 = "Marc .t19"
 # element, then mid-edge nodes bottom ring, top ring, verticals), so no
 # permutation applies.
 TYPES = {}
-for _t in (3, 10, 11, 18, 75, 139, 140):
+# Plain types, and (v16.12.0) the Herrmann (mixed) types whose pressure sits at
+# the corners, the rebar and the composite types, all with the node lists of
+# their plain twins.
+for _t in (3, 10, 11, 18, 75, 139, 140, 143, 144, 145, 147, 151, 152):
     TYPES[_t] = ("quad", 4)
 for _t in (2, 6, 138, 158, 201):
     TYPES[_t] = ("triangle", 3)
-for _t in (22, 26, 27, 28, 30, 53, 54, 55):
+for _t in (22, 26, 27, 28, 30, 32, 33, 46, 48, 53, 54, 55, 58, 59, 63, 66, 142, 148):
     TYPES[_t] = ("quad8", 8)
-for _t in (124, 125, 126, 128, 200):
+for _t in (153, 154):
+    TYPES[_t] = ("quad8", 8)
+for _t in (124, 125, 126, 128, 129, 200):
     TYPES[_t] = ("triangle6", 6)
-for _t in (7, 43, 117, 123):
+for _t in (7, 43, 117, 123, 146, 149):
     TYPES[_t] = ("hexahedron", 8)
-for _t in (21, 44, 57):
+for _t in (21, 23, 35, 44, 57, 61, 150):
     TYPES[_t] = ("hexahedron20", 20)
 for _t in (134, 135):
     TYPES[_t] = ("tetra", 4)
-TYPES[157] = ("tetra", 5)  # four corners and a bubble node
 for _t in (127, 130, 133):
     TYPES[_t] = ("tetra10", 10)
 for _t in (136, 137):
     TYPES[_t] = ("wedge", 6)
-for _t in (9, 31, 52, 98):
+for _t in (9, 31, 52, 98, 165, 166, 167):
     TYPES[_t] = ("line", 2)
-TYPES[64] = ("line3", 3)
+for _t in (64, 168, 169, 170):
+    TYPES[_t] = ("line3", 3)
+# Elements with more nodes than their cell keeps: the leading geometric nodes
+# are the cell, the rest (a Herrmann pressure node, a centroid bubble node,
+# generalized plane strain nodes) are dropped.
+for _t in (80, 82, 83, 118, 119):
+    TYPES[_t] = ("quad", 5)
+TYPES[81] = ("quad", 7)
+for _t in (34, 47, 60):
+    TYPES[_t] = ("quad8", 10)
+for _t in (84, 120):
+    TYPES[_t] = ("hexahedron", 9)
+for _t in (155, 156):
+    TYPES[_t] = ("triangle", 4)
+TYPES[157] = ("tetra", 5)
 del _t
 
 # The first word of a line that can open a deck (a parameter), and the model
@@ -347,6 +366,10 @@ def _set_tokens(text, width):
     return out
 
 
+def _is_integer(text):
+    return text.lstrip("+-").isdigit()
+
+
 def _parse_define(deck, lines, i, words):
     where = f"line {i + 1}"
     raw = [w for w in re.split(r"[\s,]+", lines[i].strip()) if w]
@@ -373,7 +396,20 @@ def _parse_define(deck, lines, i, words):
         if tokens[-1] not in ("c", "continue"):
             break
         tokens.pop()
-    if kind in ("element", "elsq", "node", "ndsq"):
+    if kind in ("edge", "face"):
+        # `elem:number` members.
+        pairs = []
+        for t in tokens:
+            a, colon, b = t.partition(":")
+            if not colon or not _is_integer(a) or not _is_integer(b):
+                warn(
+                    f"{_DAT}: DEFINE {kind.upper()} SET '{name}': '{t}' is not an "
+                    f"element:number pair ({where})"
+                )
+                continue
+            pairs.append((int(a), int(b)))
+        deck.sets.append((name, kind, pairs, where))
+    elif kind in ("element", "elsq", "node", "ndsq"):
         family = "element" if kind in ("element", "elsq") else "node"
         deck.sets.append((name, family, tokens, where))
     else:
@@ -458,9 +494,10 @@ def _build(label, node_ids, coords, elements, sets):
             locs.append(None)
             continue
         cell_type, _ = known
-        nodes = list(nodes)
-        if etype == 157:
-            nodes = nodes[:4]
+        nodes = list(nodes)[: num_nodes_per_cell[cell_type]]
+        # The 3-node rebar lines list their middle node second.
+        if 168 <= etype <= 170 and len(nodes) == 3:
+            nodes = [nodes[0], nodes[2], nodes[1]]
         for v in nodes:
             if v not in index:
                 _fail(label, f"element {ident} names undefined node {v}")
@@ -512,6 +549,19 @@ def _build(label, node_ids, coords, elements, sets):
     regions = []
     seen = set()
     for name, family, members in sets:
+        if family in ("edge", "face"):
+            # (cell or -1, Marc edge/face number): Marc numbers an element's
+            # edges and faces its own way (Volume A), not mapped to facets.
+            rows = []
+            for m, number in members:
+                loc = element_cell.get(m)
+                rows.append(
+                    [-1 if loc is None else int(starts[loc[0]]) + loc[1], number]
+                )
+            mesh.field_data[f"marc:{family}_set:{name}"] = np.array(
+                rows, dtype=np.int64
+            ).reshape(-1, 2)
+            continue
         if family == "element":
             entries, dim = [], -1
             for m in members:
@@ -542,18 +592,56 @@ def _build(label, node_ids, coords, elements, sets):
     return mesh, locs
 
 
+def _include_target(line):
+    """An ``INCLUDE`` option line (the keyword at the start of the line, then
+    the file name after a blank or comma): the file it names, else None."""
+    if len(line) < 7 or line[:7].lower() != "include":
+        return None
+    if len(line) > 7 and line[7] not in " \t,":
+        return None
+    name = line[7:].lstrip(" \t,").strip()
+    if len(name) >= 2 and name[0] in "\"'" and name[-1] == name[0]:
+        name = name[1:-1]
+    return name or None
+
+
+def _deck_lines(text, directory, depth=0):
+    """The deck's lines with every ``INCLUDE`` replaced by the lines of the
+    file it names (relative to the including file), recursively."""
+    if depth > 16:
+        _fail(_DAT, "INCLUDE files nest more than 16 deep (a cycle?)")
+    out = []
+    for line in text.splitlines():
+        target = _include_target(line.rstrip("\r"))
+        if target is None:
+            out.append(line)
+            continue
+        path = target if os.path.isabs(target) else os.path.join(directory, target)
+        if not os.path.isfile(path):
+            _fail(_DAT, f"INCLUDE names {path}, which does not exist")
+        with open_file(path, "r") as f:
+            out += _deck_lines(f.read(), os.path.dirname(path), depth + 1)
+    return out
+
+
 def read(filename):
-    """Read an MSC Marc input deck (``.dat``)."""
+    """Read an MSC Marc input deck (``.dat``), following its ``INCLUDE`` files."""
     with open_file(filename, "r") as f:
         text = f.read()
     if not is_marc_deck(text[:65536]):
         _fail(_DAT, "not a Marc input deck (no Marc parameter opens the file)")
-    deck = _parse_deck(text.splitlines())
+    directory = (
+        "." if is_buffer(filename, "r") else os.path.dirname(os.fspath(filename))
+    )
+    deck = _parse_deck(_deck_lines(text, directory))
     if not deck.nodes and not deck.elements:
         _fail(_DAT, "no COORDINATES or CONNECTIVITY found")
     known = {}
     sets = []
     for name, family, tokens, where in deck.sets:
+        if family in ("edge", "face"):
+            sets.append((name, family, tokens))  # members already read
+            continue
         refs = {k: v for (f, k), v in known.items() if f == family}
         members = _expand(tokens, name, refs, _DAT)
         known[(family, name.lower())] = members
@@ -706,10 +794,12 @@ class _Post:
     def reader(self, block):
         return _Reader(self.lines, block[2], block[3])
 
-    def header(self):
+    def header(self, blocks=None):
+        """The model header (block 502) and element post codes (506) of
+        ``blocks``, else of the model before the first increment."""
         lm = [0] * 30
         codes = []
-        for b in self.model:
+        for b in self.model if blocks is None else blocks:
             family = b[1] // 100
             if family == 502:
                 values = self.reader(b).ints(30)
@@ -721,10 +811,10 @@ class _Post:
                     codes.append((int(line[:_W]), line[_W : _W + 24].strip()))
         return lm, codes
 
-    def mesh(self, lm):
+    def mesh(self, lm, blocks=None):
         numnp, numel, ncrd, nnodmx, postrv = lm[1], lm[2], lm[8], lm[9], lm[13]
         node_ids, coords, elements, sets = [], [], [], []
-        for b in self.model:
+        for b in self.model if blocks is None else blocks:
             family = b[1] // 100
             r = self.reader(b)
             if family == 507:
@@ -753,9 +843,11 @@ class _Post:
                     name = r.line()[:width].strip()
                     isetn, isett = r.ints(2)
                     members = r.ints(isetn) if isetn else []
-                    if isett in (12, 13, 18, 19) and isetn:
-                        r.ints(isetn)  # the edge or face numbers
-                    if isett == 0:
+                    if isett in (12, 13, 18, 19):
+                        numbers = r.ints(isetn) if isetn else []
+                        family = "edge" if isett == 12 else "face"
+                        sets.append((name, family, list(zip(members, numbers))))
+                    elif isett == 0:
                         sets.append((name, "element", members))
                     elif isett == 1:
                         sets.append((name, "node", members))
@@ -764,7 +856,7 @@ class _Post:
         return node_ids, coords, elements, sets
 
     def increment_info(self, blocks):
-        """``(time, inc, subinc, jantyp, ihresp)`` of an increment."""
+        """``(time, inc, subinc, jantyp, ihresp, newmo)`` of an increment."""
         lm = [0] * 12
         xlm = [0.0] * 6
         for b in blocks:
@@ -778,13 +870,9 @@ class _Post:
                 r = self.reader(b)
                 nw = r.ints(1)[0]
                 xlm = r.reals(nw) + [0.0] * 6
-            elif family == 519 and lm[0]:
-                _fail(_T19, "increments that remesh the model are not supported")
         newmo, inc, incsub, jantyp, _, _, ihresp = lm[:7]
-        if newmo:
-            _fail(_T19, "increments that remesh the model are not supported")
         time = xlm[1] if ihresp in (1, 2, 3, 4) else xlm[0]
-        return time, inc, incsub, jantyp, ihresp
+        return time, inc, incsub, jantyp, ihresp, newmo
 
     def times(self):
         return [self.increment_info(inc)[0] for inc in self.increments]
@@ -821,11 +909,27 @@ def _element_arrays(codes, values, nstres):
 def read_t19(filename, points_only=False, arrays=None, time_step=0):
     """Read one increment of an MSC Marc formatted post file (``.t19``)."""
     post = _Post(filename)
-    lm, codes = post.header()
-    npost, numnp, numel, nstres = lm[0], lm[1], lm[2], max(lm[4], 1)
-    node_ids, coords, elements, sets = post.mesh(lm)
-    mesh, locs = _build(_T19, node_ids, coords, elements, sets)
     n = len(post.increments)
+    index = time_step + n if time_step < 0 else time_step
+    if n and not 0 <= index < n:
+        raise ReadError(
+            f"time step {time_step} is out of range: the file has {n} step(s)"
+        )
+    # An increment that remeshes (newmo, BLOCK 517) repeats the model blocks
+    # 502 to 514 (BLOCK 519): a step's mesh is the latest model at or before it.
+    remeshed = None
+    for k in range(index + 1 if n else 0):
+        if post.increment_info(post.increments[k])[5]:
+            remeshed = [b for b in post.increments[k] if 502 <= b[1] // 100 <= 514]
+    lm, codes = post.header()
+    if remeshed and any(b[1] // 100 == 502 for b in remeshed):
+        # A remeshed model repeats the header; the post codes stay the
+        # first's when it does not repeat them.
+        lm, codes2 = post.header(remeshed)
+        codes = codes2 or codes
+    npost, numnp, numel, nstres = lm[0], lm[1], lm[2], max(lm[4], 1)
+    node_ids, coords, elements, sets = post.mesh(lm, remeshed or None)
+    mesh, locs = _build(_T19, node_ids, coords, elements, sets)
     mesh.time_values = post.times()
     if not n:
         if time_step not in (0, -1):
@@ -834,13 +938,8 @@ def read_t19(filename, points_only=False, arrays=None, time_step=0):
                 f"time step {time_step} is out of range: the file has no increments",
             )
         return mesh
-    index = time_step + n if time_step < 0 else time_step
-    if not 0 <= index < n:
-        raise ReadError(
-            f"time step {time_step} is out of range: the file has {n} step(s)"
-        )
     blocks = post.increments[index]
-    time, inc, incsub, jantyp, _ = post.increment_info(blocks)
+    time, inc, incsub, jantyp, _, _ = post.increment_info(blocks)
     mesh.field_data["meshio:time"] = np.array([time], dtype=np.float64)
     mesh.field_data["marc:increment"] = np.array([inc], dtype=np.int64)
     mesh.field_data["marc:subincrement"] = np.array([incsub], dtype=np.int64)

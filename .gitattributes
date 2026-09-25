@@ -99,6 +99,10 @@ tests/python/meshes/nastran_op2/*.npz binary
 # files without an extension, in LFS; lasso-python's frozen reading a plain binary.
 tests/python/meshes/lsdyna_d3plot/**/d3plot* filter=lfs diff=lfs merge=lfs -text
 tests/python/meshes/lsdyna_d3plot/*.npz binary
+# LS-DYNA binout (LSDA) files: one LS-DYNA wrote and a subset of another rewritten by
+# tools/gen_binout_reference.py (Ansys' example data, MIT; see README.md): binary, in LFS.
+tests/python/meshes/lsdyna_binout/**/binout* filter=lfs diff=lfs merge=lfs -text
+tests/python/meshes/lsdyna_binout/*.npz binary
 # COMSOL fixtures written by tools/gen_comsol_fixtures.py: small text kept out of LFS
 # like the ones above, and one small binary .mphbin twin.
 tests/python/meshes/comsol/** -filter -diff -merge text
@@ -122,6 +126,10 @@ tests/python/meshes/febio/xplt/*.xplt binary
 # does not match these .dat files.
 tests/python/meshes/tecplot/plt/*.plt binary
 tests/python/meshes/tecplot/plt/*.dat -filter -diff -merge text
+# Older-version Tecplot files from VisIt's test data (see that directory's README.md):
+# at most a few tens of KB, kept out of LFS like the ones above.
+tests/python/meshes/tecplot/visit/*.plt binary
+tests/python/meshes/tecplot/visit/*.tec -filter -diff -merge text
 # Ansys .cdb decks from mapdl-archive (see that directory's README.md): small text kept
 # out of LFS like the ones above, and byte-for-byte (-text), since two carry the CRLF
 # line endings their writers produced and the reader must handle.
@@ -134,11 +142,14 @@ tests/python/meshes/ansys/rst/dist_static/*.rst filter=lfs diff=lfs merge=lfs -t
 # Patran 2 neutral fixtures written by tools/gen_patran_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/patran/** -filter -diff -merge text
+# WARP3D wrote these Patran 2.5 result files as Fortran unformatted binary.
+tests/python/meshes/patran/real/*.webs* binary
+tests/python/meshes/patran/real/*.wnbd* binary
 # MFEM sample meshes (BSD-3-Clause, see that directory's README.md) and the grid
 # functions and reference tools/gen_mfem_fixtures.py writes with PyMFEM: small, kept
 # out of LFS like the ones above.
 tests/python/meshes/mfem/** -filter -diff -merge text
-tests/python/meshes/mfem/*.npz binary
+tests/python/meshes/mfem/**/*.npz binary
 # Femap neutral files from FrontISTR, ems_file_format_converter and femap_neutral_parser
 # (MIT, see that directory's README.md), assembled by tools/gen_femap_fixtures.py: small
 # text kept out of LFS like the ones above.
@@ -156,9 +167,18 @@ tests/python/meshes/z88/** -filter -diff -merge text
 tests/python/meshes/abaqus_fil/** -filter -diff -merge text
 tests/python/meshes/abaqus_fil/model_le.fil binary
 tests/python/meshes/abaqus_fil/model_be.fil binary
+# Real Abaqus runs (MIT, see README.md): TenBarArea's binary .fil is small; the
+# buckling strip's (1 MB) is in LFS.
+tests/python/meshes/abaqus_fil/cjekel/* -text
+tests/python/meshes/abaqus_fil/extras_le.fil binary
+tests/python/meshes/abaqus_fil/bertoldi/*.fil filter=lfs diff=lfs merge=lfs -text
 # OpenRadioss starter decks written by tools/gen_radioss_fixtures.py: small text kept
 # out of LFS like the ones above.
 tests/python/meshes/radioss/** -filter -diff -merge text
+# A real OpenRadioss run of a meshio++ deck (see radioss_th/column/README.md): the
+# time-history and animation files as bytes, out of LFS.
+tests/python/meshes/radioss_th/column/columnT01 binary
+tests/python/meshes/radioss_th/column/columnA00* binary
 # MSC Marc decks and a formatted post file written by tools/gen_marc_fixtures.py:
 # small text kept out of LFS, like the other generated deck fixtures.
 tests/python/meshes/marc/** -filter -diff -merge text

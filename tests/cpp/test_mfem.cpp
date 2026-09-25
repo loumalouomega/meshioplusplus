@@ -273,10 +273,12 @@ TEST(Mfem, NonConformingMeshReadsAsItsLeaves) {
     EXPECT_EQ(mesh.Cells(0).Type(), "quad");
     EXPECT_EQ(mesh.Cells(0).NumCells(), 4u);
     ASSERT_EQ(mesh.NumPoints(), 9u);
-    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8), 1.0);  // the centre
-    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 8 + 1), 1.0);
-    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5), 2.0);  // midpoint of 1-2
+    // MFEM's vertex numbers: the top-level vertices 0-3, then the others as the
+    // leaves (in Hilbert order) meet them: 4, 8, 7 in the first leaf, 5, then 6.
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5), 1.0);  // the centre, node 8
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 5 + 1), 1.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 7), 2.0);  // node 5, midpoint of 1-2
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.Points(), 2 * 7 + 1), 1.0);
 }
 
 namespace {
@@ -345,4 +347,102 @@ TEST(Mfem, ParallelRanksMergeIntoOneMesh) {
         one.mPiece = 2;
         EXPECT_THROW(meshioplusplus::read_mfem(path, {}, one), ReadError);
     }
+}
+
+// A quarter annulus, radii 1 and 2, as one order-2 x order-1 NURBS patch in
+// MFEM's global form: the four corners, then the one interior control point
+// of each curved edge (weight 1/sqrt 2) -- edges numbered as listed.
+TEST(Mfem, NurbsPatchSampledAtItsLattice) {
+    const std::string w = "0.70710678118654757";
+    const std::string mesh_path = write_file(
+        "MFEM NURBS mesh v1.0\n"
+        "dimension\n2\n"
+        "elements\n1\n5 3 0 1 2 3\n"
+        "boundary\n0\n"
+        "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\n"
+        "vertices\n4\n"
+        "knotvectors\n2\n2 3 0 0 0 1 1 1\n1 2 0 0 1 1\n"
+        "weights\n1\n1\n1\n1\n" +
+        w + "\n" + w +
+        "\n"
+        "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+        "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n");
+    // u = the control points' x, as a NURBS field on the same space
+    const std::string gf = write_file(
+        "MFEM FiniteElementSpace v1.0\nFiniteElementCollection: NURBS2\nVDim: 1\nOrdering: 0\n"
+        "End: MFEM FiniteElementSpace v1.0\n\n1\n0\n0\n2\n1\n2\n",
+        ".gf");
+    const Mesh mesh = meshioplusplus::read_mfem(mesh_path, {{"u", gf}});
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);
+    ASSERT_EQ(mesh.Cells(0).Type(), "quad9");
+    EXPECT_EQ(mesh.Cells(1).Type(), "line3");
+    EXPECT_EQ(mesh.Cells(1).NumCells(), 4u);  // the boundary MFEM builds
+    EXPECT_EQ(mesh.NumPoints(), 9u);
+    const auto& q = mesh.Cells(0).Conn();
+    // the mid-node of edge (0,1) lies on the unit circle at 45 degrees, the
+    // centre halfway out at 45 degrees; u is x there (the same rational map)
+    const auto n01 = detail::read_int(q, 4);
+    const auto centre = detail::read_int(q, 8);
+    const double s = std::sqrt(0.5);
+    EXPECT_NEAR(coord(mesh, n01, 0), s, 1e-15);
+    EXPECT_NEAR(coord(mesh, n01, 1), s, 1e-15);
+    EXPECT_NEAR(coord(mesh, centre, 0), 1.5 * s, 1e-15);
+    EXPECT_NEAR(coord(mesh, centre, 1), 1.5 * s, 1e-15);
+    EXPECT_NEAR(detail::read_double(mesh.PointData("u"), static_cast<std::size_t>(centre)), 1.5 * s,
+                1e-15);
+    EXPECT_EQ(detail::read_int(mesh.CellData("mfem:attribute", 0), 0), 5);
+    EXPECT_THROW(meshioplusplus::read_mfem(write_file("MFEM NURBS NC-patch mesh v1.0\n")),
+                 ReadError);
+}
+
+// One unit square with order-2 nodes whose bottom edge is pulled down, in
+// MFEM's Bernstein (H1Pos) and serendipity (H1Ser) spaces: their degrees of
+// freedom are coefficients, so the mid-edge and centre nodes are what the
+// basis makes of them, not the stored values.
+TEST(Mfem, BernsteinAndSerendipityNodesAreCoefficients) {
+    const std::string head =
+        "MFEM mesh v1.0\ndimension\n2\nelements\n1\n1 3 0 1 2 3\nboundary\n0\n"
+        "vertices\n4\n\nnodes\nFiniteElementSpace\nFiniteElementCollection: ";
+    const std::string corners = "0 0\n1 0\n1 1\n0 1\n";
+    // Bernstein: the bottom edge coefficient (0.5, -0.2) weighs 1/2 at the
+    // edge midpoint and 1/8 at the centre; the rest reproduce the square.
+    const Mesh pos =
+        meshioplusplus::read_mfem(write_file(head + "H1Pos_2D_P2\nVDim: 2\nOrdering: 1\n" +
+                                             corners + "0.5 -0.2\n1 0.5\n0.5 1\n0 0.5\n0.5 0.5\n"));
+    ASSERT_EQ(pos.Cells(0).Type(), "quad9");
+    const auto& q = pos.Cells(0).Conn();
+    EXPECT_NEAR(coord(pos, detail::read_int(q, 4), 1), -0.1, 1e-15);
+    EXPECT_NEAR(coord(pos, detail::read_int(q, 8), 1), 0.475, 1e-15);
+    // Serendipity: the edge value is nodal; its shape function is 1/2 at the
+    // centre. No interior dof at order 2.
+    const Mesh ser =
+        meshioplusplus::read_mfem(write_file(head + "H1Ser_2D_P2\nVDim: 2\nOrdering: 1\n" +
+                                             corners + "0.5 -0.1\n1 0.5\n0.5 1\n0 0.5\n"));
+    const auto& s = ser.Cells(0).Conn();
+    EXPECT_NEAR(coord(ser, detail::read_int(s, 4), 1), -0.1, 1e-15);
+    EXPECT_NEAR(coord(ser, detail::read_int(s, 8), 1), 0.45, 1e-15);
+}
+
+// Two unit squares over two ranks as ParMesh::ParPrint writes a non-conforming
+// mesh: each rank's refinement tree, its own leaf and the other's as a ghost,
+// every boundary edge listed by both. The leaves merge at their shared edge.
+TEST(Mfem, ParallelNonConformingRanksMerge) {
+    const std::string dir = mt::temp_path("_pncmesh");
+    std::filesystem::create_directories(dir);
+    for (int r = 0; r < 2; ++r)
+        std::ofstream(dir + "/m.00000" + std::to_string(r))
+            << "MFEM NC mesh v1.0\ndimension\n2\nrank\n"
+            << r
+            << "\nelements\n2\n0 1 3 0 0 1 4 3\n1 2 3 0 1 2 5 4\n"
+               "boundary\n6\n1 1 0 1\n1 1 1 2\n2 1 2 5\n1 1 5 4\n1 1 4 3\n3 1 3 0\n"
+               "coordinates\n6\n2\n0 0\n1 0\n2 0\n0 1\n1 1\n2 1\n";
+    const Mesh mesh = meshioplusplus::read_mfem(dir + "/m.000000");
+    EXPECT_EQ(mesh.NumPoints(), 6u);
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);
+    EXPECT_EQ(mesh.Cells(0).NumCells(), 2u);
+    EXPECT_EQ(mesh.Cells(1).NumCells(), 6u);  // each rank's own boundary, once
+    const auto& parts = mesh.CellData("partition:part", 0);
+    EXPECT_EQ(detail::read_int(parts, 0), 0);
+    EXPECT_EQ(detail::read_int(parts, 1), 1);
+    std::filesystem::remove_all(dir);
 }

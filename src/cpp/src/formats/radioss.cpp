@@ -40,6 +40,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
@@ -239,6 +240,33 @@ struct RadBox {
     std::vector<std::int64_t> mChildren;
 };
 
+// `/SKEW/FIX`: a fixed frame, its origin and the X and Y axes as given.
+struct RadSkew {
+    std::array<double, 3> mOrigin{}, mX{}, mY{};
+};
+
+// The unit axes of a fixed skew (X, Z = X x Y, Y = Z x X), as the rows of a
+// rotation into the skew frame; false when X and Y are parallel or zero.
+bool rad_skew_axes(const RadSkew& rSkew, std::array<std::array<double, 3>, 3>& rAxes) {
+    const auto cross = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+        return std::array<double, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                     a[0] * b[1] - a[1] * b[0]};
+    };
+    const auto unit = [](std::array<double, 3> a) {
+        const double n = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+        if (n > 0.0)
+            for (double& x : a)
+                x /= n;
+        return std::make_pair(a, n > 0.0);
+    };
+    const auto [x, okx] = unit(rSkew.mX);
+    const auto [z, okz] = unit(cross(x, rSkew.mY));
+    if (!okx || !okz)
+        return false;
+    rAxes = {x, cross(z, x), z};
+    return true;
+}
+
 struct RadSubset {
     std::string mTitle;
     std::vector<std::int64_t> mChildren;
@@ -289,11 +317,87 @@ NDArray rad_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride = 1) {
     return a;
 }
 
+// The input version on a `#RADIOSS STARTER` line (`41` in
+// `#RADIOSS STARTER      41BAR2V41B`), 0 if none.
+int rad_header_version(const std::string& rHead) {
+    const std::string up = rad_upper(rHead);
+    const std::size_t at = up.find("#RADIOSS STARTER");
+    if (at == std::string::npos)
+        return 0;
+    std::size_t k = at + 16;
+    const std::size_t eol = up.find('\n', k);
+    while (k < up.size() && k < eol && (up[k] == ' ' || up[k] == '\t'))
+        ++k;
+    int v = 0;
+    std::size_t digits = 0;
+    for (; k < up.size() && k < eol && up[k] >= '0' && up[k] <= '9' && digits < 4; ++k, ++digits)
+        v = v * 10 + (up[k] - '0');
+    return v;
+}
+
+// An engine deck (`<run>_0001.rad`): every keyword and the numbers of its
+// lines, as `radioss:engine:<keyword>` field data (`/RUN/<name>/1` holds the
+// end time, `/ANIM/DT` start and interval, `/TFILE` the history interval; an
+// output request such as `/ANIM/ELEM/SIGX` is an empty array).
+std::vector<std::pair<std::string, std::vector<double>>> rad_engine_fields(
+    const std::string& rPath) {
+    std::vector<RadLine> lines;
+    bool ended = false;
+    rad_collect(fs::path(rPath), 0, lines, ended);
+    std::vector<std::pair<std::string, std::vector<double>>> out;
+    for (const RadLine& ln : lines) {
+        const std::string t = rad_trim(ln.mText);
+        if (t.empty())
+            continue;
+        if (t[0] == '/') {
+            out.emplace_back("radioss:engine:" + t.substr(1), std::vector<double>{});
+            continue;
+        }
+        if (out.empty())
+            continue;
+        auto iss = detail::make_classic_istringstream(t);
+        std::string tok;
+        while (iss >> tok) {
+            const char* e = nullptr;
+            const double v = detail::parse_double(tok.c_str(), e);
+            if (e == tok.c_str() + tok.size())
+                out.back().second.push_back(v);
+        }
+    }
+    return out;
+}
+
+void rad_add_engine_fields(Mesh& rMesh, const std::string& rPath) {
+    for (const auto& [name, values] : rad_engine_fields(rPath)) {
+        std::vector<double> all = values;
+        if (rMesh.HasFieldData(name)) {  // a repeated keyword: its numbers appended
+            const NDArray& prev = rMesh.FieldData(name);
+            std::vector<double> joined(prev.Size());
+            for (std::size_t k = 0; k < joined.size(); ++k)
+                joined[k] = detail::read_double(prev, k);
+            joined.insert(joined.end(), all.begin(), all.end());
+            all = std::move(joined);
+        }
+        NDArray a(DType::Float64, {all.size()});
+        std::copy(all.begin(), all.end(), a.As<double>());
+        rMesh.AddFieldData(name, std::move(a));
+    }
+}
+
+// An engine deck read on its own: no mesh, its run controls.
+Mesh rad_engine_mesh(const std::string& rPath) {
+    Mesh mesh;
+    mesh.AssignPoints(NDArray(DType::Float64, {0, 3}));
+    rad_add_engine_fields(mesh, rPath);
+    return mesh;
+}
+
 }  // namespace
 
 Mesh read_radioss(const std::string& rPath) {
     std::vector<RadLine> lines;
     bool ended = false;
+    int header_version = 0;
     {
         auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
         if (!in)
@@ -302,13 +406,22 @@ Mesh read_radioss(const std::string& rPath) {
         in.read(head.data(), static_cast<std::streamsize>(head.size()));
         head.resize(static_cast<std::size_t>(in.gcount()));
         if (rad_upper(head).find("#RADIOSS ENGINE") != std::string::npos)
-            throw ReadError("Radioss: " + rPath +
-                            " is an engine deck (_0001.rad); read the starter deck (_0000.rad)");
+            return rad_engine_mesh(rPath);
+        header_version = rad_header_version(head);
     }
     rad_collect(fs::path(rPath), 0, lines, ended);
 
     int version = 2019;
     int iw = 10, rw = 20;
+    // Before input version 5.1 (4.1, 4.4) there is no /BEGIN: the version is
+    // on the #RADIOSS STARTER line, fields are 8 and 16 columns wide, and a
+    // title is the keyword's last part rather than a line of its own.
+    bool titles_in_path = header_version > 0 && header_version < 51;
+    if (titles_in_path) {
+        version = header_version;
+        iw = 8;
+        rw = 16;
+    }
     std::vector<std::int64_t> node_ids;
     std::vector<double> coords;
     std::vector<RadElement> elements;
@@ -318,7 +431,29 @@ Mesh read_radioss(const std::string& rPath) {
     std::vector<RadSurface> surfaces;
     std::map<std::int64_t, RadSubset> subsets;
     std::map<std::int64_t, RadBox> boxes;
+    std::map<std::int64_t, RadSkew> skews;
+    std::vector<std::pair<std::string, std::vector<double>>> analytic;  // /SURF/PLANE, /ELLIPS
+    std::map<std::int64_t, std::array<double, 3>> ellipsoid_skew;       // surf -> skew, n, -
     double length_scale = 1.0;
+    double work_length = 0.0;  // the work length unit in metres, 0 if /BEGIN names none
+    // /UNIT/<id>: the local length units in metres, read first (a keyword can
+    // name a unit defined further down).
+    std::map<std::int64_t, double> unit_length;
+    for (std::size_t k = 0; k + 2 < lines.size(); ++k) {
+        const std::string t = rad_upper(rad_trim(lines[k].mText));
+        if (t.rfind("/UNIT/", 0) != 0)
+            continue;
+        const std::string id = rad_trim(std::string_view(t).substr(6));
+        if (id.empty() || id.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        const std::vector<std::string> f = rad_fields(lines[k + 2].mText, 20, 3);
+        const double len = f.size() > 1 ? rad_length_unit(f[1]) : 0.0;
+        if (len > 0.0)
+            unit_length[std::stoll(id)] = len;
+        else
+            log::warn("Radioss: /UNIT/{} has no length unit meshio++ knows; ignored", id);
+    }
+    std::set<std::int64_t> warned_units;
     std::set<std::string> skipped_keywords;
     std::size_t zero_springs = 0, linear_bric20 = 0;
 
@@ -336,14 +471,15 @@ Mesh read_radioss(const std::string& rPath) {
             ++i;
             continue;
         }
-        std::vector<std::string> path;
+        std::vector<std::string> path, raw_path;
         {
             std::string kw = rad_trim(head.mText);
             std::size_t start = 1;
             while (start <= kw.size()) {
                 const std::size_t k = kw.find('/', start);
-                path.push_back(rad_upper(rad_trim(std::string_view(kw).substr(
-                    start, k == std::string::npos ? std::string::npos : k - start))));
+                raw_path.push_back(rad_trim(std::string_view(kw).substr(
+                    start, k == std::string::npos ? std::string::npos : k - start)));
+                path.push_back(rad_upper(raw_path.back()));
                 if (k == std::string::npos)
                     break;
                 start = k + 1;
@@ -361,9 +497,51 @@ Mesh read_radioss(const std::string& rPath) {
                     return rad_int(path[k], rLine);
             return path.size() >= 2 ? rad_int(path.back(), rLine) : 0;
         };
+        // The unit system a keyword names: the integer after its option id
+        // (`/BOX/RECTA/3/1`), or its only integer when it has none (`/NODE/1`).
+        auto unit_of = [&](bool OptionId) -> std::int64_t {
+            std::vector<std::int64_t> ints;
+            for (std::size_t k = 1; k < path.size(); ++k)
+                if (!path[k].empty() &&
+                    path[k].find_first_not_of("+-0123456789") == std::string::npos)
+                    ints.push_back(rad_int(path[k], head));
+            const std::size_t at = OptionId ? 1 : 0;
+            return ints.size() > at ? ints[at] : 0;
+        };
+        // Lengths of this keyword into the work units: its /UNIT's, else /BEGIN's.
+        auto scale_of = [&](std::int64_t Unit) {
+            if (Unit == 0)
+                return length_scale;
+            const auto it = unit_length.find(Unit);
+            if (it == unit_length.end() || work_length <= 0.0) {
+                if (warned_units.insert(Unit).second)
+                    log::warn(
+                        "Radioss: unit system {} is {}; its lengths are read in the input "
+                        "units",
+                        Unit,
+                        it == unit_length.end() ? "not defined" : "used without /BEGIN units");
+                return length_scale;
+            }
+            return it->second / work_length;
+        };
+        // A keyword's title: its own line from input version 5.1 on; before,
+        // the keyword's last part (`/PART/1/CUIVRE`), the data then starting on
+        // the next line.
+        auto title_of = [&](std::size_t& rK) -> std::string {
+            if (titles_in_path) {
+                const std::string& last = raw_path.back();
+                return raw_path.size() >= 3 &&
+                               last.find_first_not_of("+-0123456789") != std::string::npos
+                           ? last
+                           : std::string();
+            }
+            return rK < end ? rad_trim(lines[rK++].mText) : std::string();
+        };
 
         if (key == "BEGIN") {
-            // run name; Invers Irun; two unit lines.
+            // run name; Invers Irun; two unit lines. A deck with /BEGIN has its
+            // titles on lines of their own, whatever its input version.
+            titles_in_path = false;
             if (body + 1 < end) {
                 const std::vector<std::string> f = rad_fields(lines[body + 1].mText, 10, 2);
                 if (!f.empty() && !f[0].empty())
@@ -381,6 +559,7 @@ Mesh read_radioss(const std::string& rPath) {
                 const std::string li = in.size() > 1 ? in[1] : std::string();
                 const std::string lw = work.size() > 1 && !work[1].empty() ? work[1] : li;
                 const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
+                work_length = fw;
                 if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
                     log::warn(
                         "Radioss: unknown length unit '{}' in /BEGIN; lengths are read "
@@ -392,16 +571,17 @@ Mesh read_radioss(const std::string& rPath) {
         } else if (key == "BOX" && path.size() >= 3) {
             RadBox b;
             b.mKind = path[1];
-            std::size_t k = body + 1;  // past the title
+            std::size_t k = body;
+            title_of(k);
+            const double box_scale = scale_of(unit_of(true));
             auto real3 = [&](std::size_t Line) {
                 std::array<double, 3> p{};
                 if (Line >= end)
                     return p;
                 const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
                 for (std::size_t d = 0; d < 3; ++d)
-                    p[d] = d < f.size() && !f[d].empty()
-                               ? rad_real(f[d], lines[Line]) * length_scale
-                               : 0.0;
+                    p[d] = d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * box_scale
+                                                         : 0.0;
                 return p;
             };
             auto int_at = [&](std::size_t Line, std::size_t Field) -> std::int64_t {
@@ -418,7 +598,7 @@ Mesh read_radioss(const std::string& rPath) {
                 const std::string t =
                     rad_slice(lines[Line].mText, 3 * static_cast<std::size_t>(iw),
                               static_cast<std::size_t>(rw), b.mKind == "SPHER" ? 2 : 3);
-                return t.empty() ? 0.0 : rad_real(t, lines[Line]) * length_scale;
+                return t.empty() ? 0.0 : rad_real(t, lines[Line]) * box_scale;
             };
             if (b.mKind == "RECTA") {
                 b.mNode1 = int_at(k, 0);
@@ -445,7 +625,63 @@ Mesh read_radioss(const std::string& rPath) {
                 skipped_keywords.insert("/BOX/" + b.mKind);
             }
             boxes[last_id(head)] = std::move(b);
+        } else if (key == "SKEW" && path.size() >= 3 && path[1] == "FIX") {
+            // origin (from 5.1), X axis, Y axis
+            RadSkew sk;
+            std::size_t k = body;
+            title_of(k);
+            const double sk_scale = scale_of(unit_of(true));
+            auto vec = [&](std::size_t Line, double Scale) {
+                std::array<double, 3> v{};
+                if (Line >= end)
+                    return v;
+                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                for (std::size_t d = 0; d < 3; ++d)
+                    v[d] =
+                        d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * Scale : 0.0;
+                return v;
+            };
+            if (!titles_in_path)  // 4.x skews have no origin line
+                sk.mOrigin = vec(k++, sk_scale);
+            sk.mX = vec(k, 1.0);
+            sk.mY = vec(k + 1, 1.0);
+            skews[last_id(head)] = sk;
+        } else if (key == "SURF" && path.size() >= 3 &&
+                   (path[1] == "PLANE" || path[1] == "ELLIPS")) {
+            // Analytical surfaces: no segments, their definition as field data.
+            const std::int64_t id = last_id(head);
+            std::size_t k = body;
+            title_of(k);
+            const double sc = scale_of(unit_of(true));
+            auto reals = [&](std::size_t Line, std::size_t Count) {
+                std::vector<double> v(Count, 0.0);
+                if (Line >= end)
+                    return v;
+                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, Count);
+                for (std::size_t d = 0; d < Count; ++d)
+                    v[d] = d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * sc : 0.0;
+                return v;
+            };
+            if (path[1] == "PLANE") {
+                std::vector<double> v = reals(k, 3);
+                const std::vector<double> m1 = reals(k + 1, 3);
+                v.insert(v.end(), m1.begin(), m1.end());
+                analytic.emplace_back("radioss:surf_plane:" + std::to_string(id), std::move(v));
+            } else {
+                const std::vector<std::string> f =
+                    k < end ? rad_fields(lines[k].mText, iw, 2) : std::vector<std::string>{};
+                const std::int64_t skew = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
+                const std::int64_t degree =
+                    f.size() > 1 && !f[1].empty() ? rad_int(f[1], lines[k]) : 2;
+                std::vector<double> v = {static_cast<double>(degree < 2 ? 2 : degree)};
+                const std::vector<double> centre = reals(k + 1, 3), axes = reals(k + 2, 3);
+                v.insert(v.end(), centre.begin(), centre.end());
+                v.insert(v.end(), axes.begin(), axes.end());
+                ellipsoid_skew[id] = {static_cast<double>(skew), 0.0, 0.0};
+                analytic.emplace_back("radioss:surf_ellips:" + std::to_string(id), std::move(v));
+            }
         } else if (key == "NODE") {
+            const double node_scale = scale_of(unit_of(false));
             for (std::size_t k = body; k < end; ++k) {
                 const RadLine& ln = lines[k];
                 std::vector<std::string> f;
@@ -467,7 +703,8 @@ Mesh read_radioss(const std::string& rPath) {
                     continue;
                 node_ids.push_back(rad_int(f[0], ln));
                 for (std::size_t d = 1; d <= 3; ++d)
-                    coords.push_back(d < f.size() && !f[d].empty() ? rad_real(f[d], ln) : 0.0);
+                    coords.push_back(d < f.size() && !f[d].empty() ? rad_real(f[d], ln) * node_scale
+                                                                   : 0.0);
             }
         } else if (const RadElementKind* kind = rad_element_kind(key)) {
             const std::int64_t part = last_id(head);
@@ -541,8 +778,7 @@ Mesh read_radioss(const std::string& rPath) {
             const std::int64_t id = last_id(head);
             RadPart part;
             std::size_t k = body;
-            if (k < end)
-                part.mTitle = rad_trim(lines[k++].mText);
+            part.mTitle = title_of(k);
             if (k < end) {
                 const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 3);
                 part.mProperty = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
@@ -554,8 +790,7 @@ Mesh read_radioss(const std::string& rPath) {
         } else if (rad_group_family(key) && path.size() >= 3) {
             RadGroup g{key, path[1], {}, last_id(head), {}};
             std::size_t k = body;
-            if (k < end)
-                g.mTitle = rad_trim(lines[k++].mText);
+            g.mTitle = title_of(k);
             for (; k < end; ++k)
                 for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
@@ -565,8 +800,7 @@ Mesh read_radioss(const std::string& rPath) {
             RadSurface s;
             s.mId = last_id(head);
             std::size_t k = body;
-            if (k < end)
-                s.mTitle = rad_trim(lines[k++].mText);
+            s.mTitle = title_of(k);
             for (; k < end; ++k) {
                 const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 5);
                 std::array<std::int64_t, 4> seg{0, 0, 0, 0};
@@ -580,15 +814,15 @@ Mesh read_radioss(const std::string& rPath) {
         } else if (key == "SURF" && path.size() >= 3 &&
                    (path[1] == "PART" || path[1] == "SUBSET" || path[1] == "MAT" ||
                     path[1] == "PROP" || path[1] == "GRBRIC" || path[1] == "GRSHEL" ||
-                    path[1] == "GRSH3N" || path[1] == "GRTRIA" || path[1] == "SURF")) {
+                    path[1] == "GRSH3N" || path[1] == "GRTRIA" || path[1] == "SURF" ||
+                    path[1] == "BOX" || path[1] == "BOX2")) {
             RadSurface s;
             s.mId = last_id(head);
             s.mKind = path[1];
-            if (path.size() >= 4)
+            if (path.size() >= 4 && (path[2] == "EXT" || path[2] == "ALL" || path[2] == "FREE"))
                 s.mMode = path[2];
             std::size_t k = body;
-            if (k < end)
-                s.mTitle = rad_trim(lines[k++].mText);
+            s.mTitle = title_of(k);
             for (; k < end; ++k)
                 for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
@@ -599,8 +833,7 @@ Mesh read_radioss(const std::string& rPath) {
         } else if (key == "SUBSET") {
             RadSubset s;
             std::size_t k = body;
-            if (k < end)
-                s.mTitle = rad_trim(lines[k++].mText);
+            s.mTitle = title_of(k);
             for (; k < end; ++k)
                 for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
@@ -633,9 +866,6 @@ Mesh read_radioss(const std::string& rPath) {
     for (std::size_t p = 0; p < node_ids.size(); ++p)
         if (!node_index.emplace(node_ids[p], static_cast<std::int64_t>(p)).second)
             throw ReadError("Radioss: node " + std::to_string(node_ids[p]) + " is defined twice");
-    if (length_scale != 1.0)
-        for (double& c : coords)
-            c *= length_scale;
     NDArray points(DType::Float64, {node_ids.size(), 3});
     std::copy(coords.begin(), coords.end(), points.As<double>());
     mesh.AssignPoints(std::move(points));
@@ -850,11 +1080,25 @@ Mesh read_radioss(const std::string& rPath) {
                     in = false;
             return in;
         }
-        if (b.mSkew) {
-            skewed_boxes.insert(Id);
-            return false;
-        }
         const std::array<double, 3> p1 = point_of(b.mNode1, b.mP1);
+        if (b.mSkew && b.mKind == "RECTA") {
+            // Edges along the skew's axes: compare in the skew frame.
+            const auto sk = skews.find(b.mSkew);
+            std::array<std::array<double, 3>, 3> axes;
+            if (sk == skews.end() || !rad_skew_axes(sk->second, axes)) {
+                skewed_boxes.insert(Id);
+                return false;
+            }
+            const std::array<double, 3> p2 = point_of(b.mNode2, b.mP2);
+            for (const auto& a : axes) {
+                const double x = a[0] * pX[0] + a[1] * pX[1] + a[2] * pX[2];
+                const double u = a[0] * p1[0] + a[1] * p1[1] + a[2] * p1[2];
+                const double v = a[0] * p2[0] + a[1] * p2[1] + a[2] * p2[2];
+                if (x < std::min(u, v) || x > std::max(u, v))
+                    return false;
+            }
+            return true;
+        }
         if (b.mKind == "SPHER") {
             double d2 = 0.0;
             for (std::size_t d = 0; d < 3; ++d)
@@ -1071,6 +1315,36 @@ Mesh read_radioss(const std::string& rPath) {
                 }
                 for (const auto& e : minus)
                     out.erase(e);
+            } else if (s.mKind == "BOX" || s.mKind == "BOX2") {
+                // Shell faces with all (BOX) or any (BOX2) node in the box;
+                // with EXT the model's external solid faces, with ALL every
+                // solid face, likewise.
+                const bool any = s.mKind == "BOX2";
+                const std::int64_t box = s.mIds.empty() ? 0 : s.mIds[0];
+                auto inside = [&](const std::vector<std::int64_t>& rPts) {
+                    std::size_t n = 0;
+                    for (std::int64_t p : rPts)
+                        n += in_box(box, &coords[3 * static_cast<std::size_t>(p)], 0) ? 1 : 0;
+                    return any ? n > 0 : n == rPts.size();
+                };
+                if (s.mMode == "EXT" && !counted) {
+                    for (std::size_t c = 0; c < cell_dim.size(); ++c)
+                        if (cell_dim[c] == 3)
+                            for (const auto& [f, key] : solid_faces(static_cast<std::int64_t>(c)))
+                                ++model_faces[key];
+                    counted = true;
+                }
+                for (std::size_t c = 0; c < cell_conn.size(); ++c) {
+                    const std::string& fam = cell_family[c];
+                    if (fam == "SHEL" || fam == "SH3N" || fam == "TRIA") {
+                        if (inside(cell_conn[c]))
+                            out.emplace(static_cast<std::int64_t>(c), 0);
+                    } else if (cell_dim[c] == 3 && !s.mMode.empty()) {
+                        for (const auto& [f, key] : solid_faces(static_cast<std::int64_t>(c)))
+                            if ((s.mMode == "ALL" || model_faces[key] == 1) && inside(key))
+                                out.emplace(static_cast<std::int64_t>(c), f);
+                    }
+                }
             } else if (s.mKind == "SEG") {
                 for (const auto& seg : s.mSegments) {
                     std::array<std::int64_t, 4> idx{};
@@ -1169,7 +1443,28 @@ Mesh read_radioss(const std::string& rPath) {
         }
     }
     for (std::int64_t id : skewed_boxes)
-        log::warn("Radioss: skewed /BOX {} is not supported; it contains nothing", id);
+        log::warn("Radioss: /BOX {} names a skew that is not a /SKEW/FIX; it contains nothing", id);
+    for (auto& [name, values] : analytic) {
+        // An ellipsoid's orientation: its skew's axes (the identity without one).
+        const std::int64_t id = std::stoll(name.substr(name.rfind(':') + 1));
+        const auto es = name.rfind("radioss:surf_ellips:", 0) == 0 ? ellipsoid_skew.find(id)
+                                                                   : ellipsoid_skew.end();
+        if (es != ellipsoid_skew.end()) {
+            std::array<std::array<double, 3>, 3> axes = {
+                std::array<double, 3>{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            const auto skew = static_cast<std::int64_t>(es->second[0]);
+            if (skew) {
+                const auto sk = skews.find(skew);
+                if (sk == skews.end() || !rad_skew_axes(sk->second, axes))
+                    log::warn("Radioss: /SURF/ELLIPS {} names a skew that is not a /SKEW/FIX", id);
+            }
+            for (const auto& a : axes)
+                values.insert(values.end(), a.begin(), a.end());
+        }
+        NDArray a(DType::Float64, {values.size()});
+        std::copy(values.begin(), values.end(), a.As<double>());
+        mesh.AddFieldData(name, std::move(a));
+    }
     for (std::int64_t id : missing_boxes)
         log::warn("Radioss: /BOX {} is not defined; it contains nothing", id);
     if (dropped)
@@ -1177,6 +1472,19 @@ Mesh read_radioss(const std::string& rPath) {
             "Radioss: {} group or surface entries name undefined ids or no cell facet and "
             "were dropped",
             dropped);
+    // A starter deck `<run>_0000.rad`: its engine deck `<run>_0001.rad`'s controls.
+    {
+        const fs::path starter(rPath);
+        const std::string stem = starter.stem().string();
+        if (stem.size() > 5 && stem.compare(stem.size() - 5, 5, "_0000") == 0) {
+            const fs::path engine =
+                starter.parent_path() /
+                (stem.substr(0, stem.size() - 5) + "_0001" + starter.extension().string());
+            std::error_code ec;
+            if (fs::is_regular_file(engine, ec))
+                rad_add_engine_fields(mesh, engine.string());
+        }
+    }
     return mesh;
 }
 

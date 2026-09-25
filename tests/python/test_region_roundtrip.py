@@ -244,13 +244,30 @@ MATRIX = [
         "no facet form, so side regions are dropped.",
         id="ansysInp",
     ),
+    pytest.param(
+        "z88",
+        "",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "Z88Aurora's z88sets.txt (written since v16.12.0): element sets and "
+        "node sets, each with an id, so a positive tag survives, but a region "
+        "without one is numbered. No set names facets of the structure file's "
+        "elements, so side regions are dropped. The file name is fixed "
+        "(z88i1.txt).",
+        id="z88",
+    ),
 ]
+
+
+def _path(tmp_path, fmt, suffix, stem="regions"):
+    """Z88's structure file has a fixed name."""
+    return tmp_path / ("z88i1.txt" if fmt == "z88" else stem + suffix)
 
 
 @pytest.mark.parametrize("fmt, suffix, survives, carries, why", MATRIX)
 def test_region_round_trip(fmt, suffix, survives, carries, why, tmp_path):
     mesh = fixture_mesh()
-    path = tmp_path / ("regions" + suffix)
+    path = _path(tmp_path, fmt, suffix)
     meshioplusplus.write(path, mesh, file_format=fmt)
     back = meshioplusplus.read(path)
 
@@ -299,7 +316,7 @@ def test_geometry_is_unaffected_by_regions(
 ):
     """Carrying regions must not perturb points or connectivity."""
     mesh = fixture_mesh()
-    path = tmp_path / ("regions" + suffix)
+    path = _path(tmp_path, fmt, suffix)
     meshioplusplus.write(path, mesh, file_format=fmt)
     back = meshioplusplus.read(path)
 
@@ -387,7 +404,6 @@ def test_side_regions_are_the_new_capability():
 PHASE_2 = {
     "xdmf": "XDMF Sets",
     "vtu": "no native set concept — a convention has to be chosen, not invented silently",
-    "z88": "a Z88 structure file has no groups at all (materials are element ranges in z88mat.txt)",
 }
 
 
@@ -461,7 +477,7 @@ def test_namespaced_region_formats_keep_membership(fmt, tmp_path):
     """Membership survives exactly; the name is rewritten, then stable."""
     suffix, renamed, why = NAMESPACED_REGIONS[fmt]
     mesh = fixture_mesh()
-    path = tmp_path / ("regions" + suffix)
+    path = _path(tmp_path, fmt, suffix)
     meshioplusplus.write(path, mesh, file_format=fmt)
     back = meshioplusplus.read(path)
 

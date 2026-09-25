@@ -2383,8 +2383,9 @@ step('availableFormats reports what this build can read and write', () => {
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // Abaqus .fil and OpenRadioss (v16.7.0) read-only; Z88 and libMesh (its
     // writer is v16.11.0) both ways.
-    // OpenRadioss animation files (v16.11.0) read-only too.
-    for (const fmt of ['abaqus_fil', 'radioss', 'radioss_anim'])
+    // OpenRadioss animation files (v16.11.0), time-history files and LS-DYNA
+    // binouts (v16.12.0) read-only too.
+    for (const fmt of ['abaqus_fil', 'radioss', 'radioss_anim', 'radioss_th', 'lsdyna_binout'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     for (const fmt of ['z88', 'libmesh'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);

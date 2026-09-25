@@ -88,9 +88,9 @@ std::vector<Record> records() {
     return r;
 }
 
-std::string ascii() {
+std::string ascii(const std::vector<Record>& rRecords) {
     std::string flat;
-    for (const Record& rec : records()) {
+    for (const Record& rec : rRecords) {
         flat += '*';
         Record full{static_cast<long long>(rec.size() + 1)};
         full.insert(full.end(), rec.begin(), rec.end());
@@ -117,6 +117,45 @@ std::string ascii() {
     for (std::size_t k = 0; k < flat.size(); k += 80)
         out += flat.substr(k, 80) + "\n";
     return out;
+}
+
+std::string ascii() {
+    return ascii(records());
+}
+
+// The model of records() with what no public file carries: a contact surface
+// on the hexahedron's face S1, an eigenfrequency step of two modes, then a
+// modal dynamic increment with generalized displacements, total energies, a
+// rebar's stress and contact tractions at node 3.
+std::vector<Record> extra_records() {
+    std::vector<Record> r;
+    for (const Record& rec : records()) {
+        const long long key = std::get<long long>(rec[0]);
+        if (key == 2000)
+            break;
+        r.push_back(rec);
+    }
+    r.push_back({1501LL, std::string("CSURF"), 3LL, 1LL, 1LL, 0LL});
+    r.push_back({1502LL, 1LL, 1LL, 4LL, 1LL, 2LL, 3LL, 4LL});
+    r.push_back({2000LL, 0.0, 0.0, 0.0, 0.0, 41LL, 1LL, 1LL, 0LL, 0.0, 0.0, 0.0});
+    for (long long mode = 1; mode <= 2; ++mode) {
+        r.push_back({1980LL, mode, 50.0 * static_cast<double>(mode), 2.0, 0.0, 0.5, 0.25});
+        r.push_back({1911LL, 1LL, std::string("")});
+        for (long long n = 1; n <= 8; ++n)
+            r.push_back({101LL, n, static_cast<double>(mode), 0.0, 0.0});
+    }
+    r.push_back({2001LL});
+    r.push_back({2000LL, 1.0, 1.0, 0.0, 0.0, 92LL, 2LL, 1LL, 0LL, 0.0, 0.0, 0.1});
+    r.push_back({301LL, 0.25, -0.5});
+    r.push_back({1999LL, 1.0, 2.0, 3.0});
+    r.push_back({1911LL, 0LL, std::string(""), std::string("")});
+    r.push_back({1LL, 1LL, 1LL, 0LL, 3LL, std::string("RB1"), 1LL, 0LL, 0LL, 0LL});
+    r.push_back({11LL, 123.0});
+    r.push_back({1503LL, 0LL, std::string("CSURF"), std::string("MASTER"), std::string("")});
+    r.push_back({1504LL, 3LL, 3LL});
+    r.push_back({1511LL, 7.0, 0.5, 0.25});
+    r.push_back({2001LL});
+    return r;
 }
 
 void put_word(std::string& rOut, std::uint64_t Raw, bool Big) {
@@ -220,4 +259,22 @@ TEST(AbaqusFil, TruncatedFilesAreRefused) {
     EXPECT_THROW(meshioplusplus::read_abaqus_fil(write_file(bin.substr(0, 3000))), ReadError);
     const std::string text = ascii();
     EXPECT_THROW(meshioplusplus::read_abaqus_fil(write_file(text.substr(0, 200))), ReadError);
+}
+
+TEST(AbaqusFil, ModesContactEnergiesAndRebar) {
+    const std::string path = write_file(ascii(extra_records()));
+    EXPECT_EQ(meshioplusplus::abaqus_fil_time_values(path).size(), 3u);  // two modes, one increment
+    const Mesh mode2 = meshioplusplus::read_abaqus_fil(path, step(1));
+    EXPECT_EQ(detail::read_int(mode2.FieldData("abaqus:mode"), 0), 2);
+    EXPECT_DOUBLE_EQ(detail::read_double(mode2.FieldData("abaqus:eigenvalue"), 0), 100.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mode2.FieldData("abaqus:effective_mass"), 0), 0.25);
+    EXPECT_DOUBLE_EQ(detail::read_double(mode2.PointData("U"), 0), 2.0);
+    const std::size_t surf = mode2.FindRegion("CSURF", RegionKind::Side);
+    ASSERT_NE(surf, Mesh::npos);
+    EXPECT_EQ(mode2.Region(surf).Entries()[1], 4);  // S1 of a hexahedron: meshio++ facet 4
+    const Mesh dyn = meshioplusplus::read_abaqus_fil(path, step(2));
+    EXPECT_DOUBLE_EQ(detail::read_double(dyn.FieldData("abaqus:GU"), 1), -0.5);
+    EXPECT_DOUBLE_EQ(detail::read_double(dyn.FieldData("abaqus:ALLWK"), 0), 3.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(dyn.CellData("S@rebar:RB1", 0), 0), 123.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(dyn.PointData("CSTRESS"), 2 * 3), 7.0);
 }

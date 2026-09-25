@@ -136,6 +136,12 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 #
 # **`radioss_anim` joined in v16.11.0.** One step per animation file (`runA001`,
 # `runA002`...), its time read from the file rather than the name's number.
+#
+# **`lsdyna_binout` joined in v16.12.0.** Its steps are the `nodout` outputs of
+# an LS-DYNA binout (else the first database's).
+#
+# **`radioss_th` joined in v16.12.0.** Its steps are the outputs of an
+# OpenRadioss time-history file (`runT01`).
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -161,6 +167,8 @@ _TIME_CAPABLE_READERS = (
     "lsdyna_d3plot",
     "nastran_op2",
     "radioss_anim",
+    "lsdyna_binout",
+    "radioss_th",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which

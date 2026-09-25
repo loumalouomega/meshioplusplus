@@ -19,6 +19,7 @@ geometry vertex...``), ``boundary``, ``vertices`` and, in v1.3, named
 - Every geometry, the prism included, is in meshio++'s node order.
 """
 
+import math
 import os
 import pathlib
 
@@ -31,6 +32,7 @@ from .._facets import facet_nodes
 from .._files import open_file
 from .._mesh import Mesh
 from .._regions import Region
+from . import _nurbs
 
 __all__ = ["read", "write"]
 
@@ -331,7 +333,10 @@ class _Space:
         self.collection = name
         self.kind = "other"
         # an H1 space's nodes: "gll" (the default), "uniform" (H1@U) or "cubic"
-        # (the legacy Cubic collection: equispaced, its own hex interior)
+        # (the legacy Cubic collection: equispaced, its own hex interior);
+        # "bernstein" (H1Pos: Bernstein coefficients on the uniform lattice)
+        # and "serendipity" (H1Ser: MFEM's serendipity quadrilaterals) are
+        # modal and evaluated through their own basis
         self.points = "gll"
         self.order = -1
         self.vdim = 1
@@ -358,7 +363,15 @@ class _Space:
             self.kind = "h1" if self.order >= 1 and nodal else "h1-other"
         elif name.startswith(("H1Pos_", "H1Ser_")):
             self.order = order_after_p()
-            self.kind = "h1" if self.order == 1 else "h1-other"
+            self.kind = "h1" if self.order >= 1 else "h1-other"
+            if self.order >= 2:
+                self.points = "bernstein" if name[2] == "P" else "serendipity"
+        elif name.startswith("NURBS"):
+            # NURBS<p>, or NURBS alone for the orders of the mesh's knot vectors
+            self.kind = "nurbs"
+            self.order = _parse_int(name[5:]) if len(name) > 5 else -1
+            if self.order is None:
+                self.kind = "other"
         elif name.startswith("L2_T1_"):
             self.order = order_after_p()
             self.kind = "l2t1"
@@ -491,12 +504,96 @@ def _read_groups(lex, f):
             lex.fail(f"unexpected '{text}' in the communication groups", tline)
 
 
+# MFEM's Hilbert-curve child orders and states (mesh/ncmesh_tables.hpp)
+_QUAD_HILBERT_ORDER = [
+    (0, 1, 2, 3),
+    (0, 3, 2, 1),
+    (1, 2, 3, 0),
+    (1, 0, 3, 2),
+    (2, 3, 0, 1),
+    (2, 1, 0, 3),
+    (3, 0, 1, 2),
+    (3, 2, 1, 0),
+]
+_QUAD_HILBERT_STATE = [
+    (1, 0, 0, 5),
+    (0, 1, 1, 4),
+    (3, 2, 2, 7),
+    (2, 3, 3, 6),
+    (5, 4, 4, 1),
+    (4, 5, 5, 0),
+    (7, 6, 6, 3),
+    (6, 7, 7, 2),
+]
+_HEX_HILBERT_ORDER = [
+    (0, 1, 2, 3, 7, 6, 5, 4),
+    (0, 3, 7, 4, 5, 6, 2, 1),
+    (0, 4, 5, 1, 2, 6, 7, 3),
+    (1, 0, 3, 2, 6, 7, 4, 5),
+    (1, 2, 6, 5, 4, 7, 3, 0),
+    (1, 5, 4, 0, 3, 7, 6, 2),
+    (2, 1, 5, 6, 7, 4, 0, 3),
+    (2, 3, 0, 1, 5, 4, 7, 6),
+    (2, 6, 7, 3, 0, 4, 5, 1),
+    (3, 0, 4, 7, 6, 5, 1, 2),
+    (3, 2, 1, 0, 4, 5, 6, 7),
+    (3, 7, 6, 2, 1, 5, 4, 0),
+    (4, 0, 1, 5, 6, 2, 3, 7),
+    (4, 5, 6, 7, 3, 2, 1, 0),
+    (4, 7, 3, 0, 1, 2, 6, 5),
+    (5, 1, 0, 4, 7, 3, 2, 6),
+    (5, 4, 7, 6, 2, 3, 0, 1),
+    (5, 6, 2, 1, 0, 3, 7, 4),
+    (6, 2, 3, 7, 4, 0, 1, 5),
+    (6, 5, 1, 2, 3, 0, 4, 7),
+    (6, 7, 4, 5, 1, 0, 3, 2),
+    (7, 3, 2, 6, 5, 1, 0, 4),
+    (7, 4, 0, 3, 2, 1, 5, 6),
+    (7, 6, 5, 4, 0, 1, 2, 3),
+]
+_HEX_HILBERT_STATE = [
+    (1, 2, 2, 7, 7, 21, 21, 17),
+    (2, 0, 0, 22, 22, 16, 16, 8),
+    (0, 1, 1, 15, 15, 6, 6, 23),
+    (4, 5, 5, 10, 10, 18, 18, 14),
+    (5, 3, 3, 19, 19, 13, 13, 11),
+    (3, 4, 4, 12, 12, 9, 9, 20),
+    (8, 7, 7, 17, 17, 23, 23, 2),
+    (6, 8, 8, 0, 0, 15, 15, 22),
+    (7, 6, 6, 21, 21, 1, 1, 16),
+    (11, 10, 10, 14, 14, 20, 20, 5),
+    (9, 11, 11, 3, 3, 12, 12, 19),
+    (10, 9, 9, 18, 18, 4, 4, 13),
+    (13, 14, 14, 5, 5, 19, 19, 10),
+    (14, 12, 12, 20, 20, 11, 11, 4),
+    (12, 13, 13, 9, 9, 3, 3, 18),
+    (16, 17, 17, 2, 2, 22, 22, 7),
+    (17, 15, 15, 23, 23, 8, 8, 1),
+    (15, 16, 16, 6, 6, 0, 0, 21),
+    (20, 19, 19, 11, 11, 14, 14, 3),
+    (18, 20, 20, 4, 4, 10, 10, 12),
+    (19, 18, 18, 13, 13, 5, 5, 9),
+    (23, 22, 22, 8, 8, 17, 17, 0),
+    (21, 23, 23, 1, 1, 7, 7, 15),
+    (22, 21, 21, 16, 16, 2, 2, 6),
+]
+
+
+def _facets(geom):
+    """The local vertex lists of an element's facets (edges in 2-D, faces in
+    3-D; the vertices of a segment)."""
+    if geom == 1:
+        return [(0,), (1,)]
+    return list(_GEOMS[geom][4 if _GEOMS[geom][2] == 2 else 5])
+
+
 def _parse_nc(lex, filename, scaled):
     """An ``MFEM NC mesh`` (``mf_parse_nc``): the refinement tree read as its
     leaves; top-level vertices from ``coordinates``, the rest between their
     ``vertex_parents``; only the leaves of the file's own rank."""
     f = {
         "nc": True,
+        "interface": [],
         "parallel": False,
         "rank": 0,
         "groups": [],
@@ -513,6 +610,7 @@ def _parse_nc(lex, filename, scaled):
         "nodes": None,
     }
     elements = []  # (rank, attr, geom, ref_type, ids, line); geom None when unused
+    root_states = []
     parents = {}
     top = []
     my_rank = 0
@@ -559,8 +657,9 @@ def _parse_nc(lex, filename, scaled):
                 p2 = lex.int("a parent")
                 parents[vid] = (p1, p2, lex.real("a scale") if scaled else 0.5)
         elif text == "root_state":
-            for _ in range(lex.int("a root count")):
-                lex.int("a root state")
+            root_states = [
+                lex.int("a root state") for _ in range(lex.int("a root count"))
+            ]
         elif text == "coordinates":
             n = lex.int("a vertex count")
             if n < 0:
@@ -597,38 +696,82 @@ def _parse_nc(lex, filename, scaled):
                         f"MFEM mesh: child element {c} out of range (line {row_line})"
                     )
                 is_child[c] = True
-    leaves, ghosts = [], 0
+    # MFEM's leaf order (NCMesh::CollectLeafElements): the roots in order,
+    # children along its Hilbert curve for quadrilaterals refined in both
+    # directions and hexahedra in all three, else in child order; a file's
+    # roots start in their root_state (0 by default).
+    ordered, ghosts = [], 0
+    roots = [r for r in range(len(elements)) if elements[r][2] and not is_child[r]]
     stack = [
-        r
-        for r in range(len(elements) - 1, -1, -1)
-        if elements[r][2] and not is_child[r]
+        (r, root_states[k] if k < len(root_states) else 0)
+        for k, r in reversed(list(enumerate(roots)))
     ]
     seen = [False] * len(elements)
     while stack:
-        e = stack.pop()
+        e, state = stack.pop()
         if seen[e]:
             raise ReadError(
                 f"MFEM mesh: element {e} is reached twice in the refinement tree"
             )
         seen[e] = True
-        rank, _, _, ref, ids, _ = elements[e]
+        rank, _, geom, ref, ids, _ = elements[e]
         if ref == 0:
-            if rank == my_rank:
-                leaves.append(e)
-            else:
-                ghosts += 1
+            if rank >= 0:
+                ordered.append(e)
             continue
-        stack.extend(reversed(ids))
+        if geom == 3 and ref == 3 and 0 <= state < 8:
+            kids = [
+                (ids[_QUAD_HILBERT_ORDER[state][i]], _QUAD_HILBERT_STATE[state][i])
+                for i in range(4)
+            ]
+        elif geom == 5 and ref == 7 and 0 <= state < 24:
+            kids = [
+                (ids[_HEX_HILBERT_ORDER[state][i]], _HEX_HILBERT_STATE[state][i])
+                for i in range(8)
+            ]
+        else:
+            kids = [(c, state) for c in ids]
+        stack.extend(reversed(kids))
+    leaves = [e for e in ordered if elements[e][0] == my_rank]
+    ghosts = len(ordered) - len(leaves)
     if ghosts:
         warn(
             f"MFEM mesh: {ghosts} ghost element(s) of other ranks in {filename} dropped"
         )
-    used = set()
+    if ghosts:  # a rank of a parallel mesh: only the boundary of its own leaves
+        faces = set()
+        for e in leaves:
+            geom, ids = elements[e][2], elements[e][4]
+            for fv in _facets(geom):
+                faces.add(tuple(sorted(ids[k] for k in fv)))
+        f["boundary"] = [b for b in f["boundary"] if tuple(sorted(b[2])) in faces]
+    # MFEM's vertex numbers (NCMesh::UpdateVertices): the top-level vertices
+    # of the rank's leaves by node id, then the others as the leaves (ghosts
+    # included) meet them
+    local = {}
     for e in leaves:
-        used.update(elements[e][4])
+        for v in elements[e][4]:
+            local[v] = local.get(v, False) or v not in parents
+    order = sorted(v for v, top_level in local.items() if top_level)
+    numbered = set(order)
+    for e in ordered:
+        for v in elements[e][4]:
+            if v in local and v not in numbered:
+                numbered.add(v)
+                order.append(v)
     for b in f["boundary"]:
-        used.update(b[2])
-    index = {vid: k for k, vid in enumerate(sorted(used))}
+        for v in b[2]:
+            if v not in numbered:
+                numbered.add(v)
+                order.append(v)
+    index = {vid: k for k, vid in enumerate(order)}
+    # A rank of a parallel mesh: the vertices its ghosts share with it (where it
+    # meets its neighbours).
+    ghost_ids = {
+        v for e in ordered if elements[e][0] != my_rank for v in elements[e][4]
+    }
+    f["interface"] = sorted(index[v] for v in ghost_ids if v in local)
+    f["rank"] = my_rank
     pos = {}
 
     def position(vid, visiting=()):
@@ -653,7 +796,7 @@ def _parse_nc(lex, filename, scaled):
 
     f["sdim"] = sdim if sdim else f["dim"]
     f["nv"] = len(index)
-    for vid in sorted(used):
+    for vid in order:
         f["coords"].extend(position(vid)[: f["sdim"]])
     f["elements"] = [
         (
@@ -683,6 +826,8 @@ def _parse(filename):
         lex.fail(
             f"non-conforming mesh version '{header}' is not supported", lex.header_line
         )
+    if header in ("MFEM NURBS mesh v1.0", "MFEM NURBS mesh v1.1"):
+        return {"nurbs": _nurbs.Nurbs(lex, filename, header), "parallel": False}
     if header.startswith(("MFEM NURBS", "MFEM INLINE")):
         lex.fail(f"'{header}' meshes are not supported", lex.header_line)
     if header not in (
@@ -782,14 +927,30 @@ def _parse(filename):
     return f
 
 
+def _read_space_end(lex):
+    """The ``End: MFEM FiniteElementSpace v1.0`` closing the versioned header
+    MFEM writes for NURBS spaces (its variable-order element lists are not
+    read)."""
+    text, line, _ = lex.next("'End:'")
+    if text != "End:":
+        lex.fail(f"'{text}' in a versioned FiniteElementSpace (not supported)", line)
+    for word in ("MFEM", "FiniteElementSpace", "v1.0"):
+        text, line, _ = lex.next(f"'{word}'")
+        if text != word:
+            lex.fail(f"expected '{word}', found '{text}'", line)
+
+
 def _parse_gf(name, path):
     lex = _Lexer("MFEM grid function", "\n" + _read_text(path))
-    if lex.header != "FiniteElementSpace":
+    versioned = lex.header == "MFEM FiniteElementSpace v1.0"
+    if lex.header != "FiniteElementSpace" and not versioned:
         raise ReadError(
             f"MFEM grid function: '{path}' does not start with FiniteElementSpace "
-            "(NURBS and variable-order spaces are not supported)"
+            "(variable-order spaces are not supported)"
         )
     space = _read_space_body(lex, 1)
+    if versioned and space is not None:
+        _read_space_end(lex)
     if space is None:
         raise ReadError(
             f"MFEM grid function: '{path}' names no FiniteElementCollection"
@@ -822,6 +983,12 @@ def _rank_siblings(path):
 
 def read(filename, grid_functions=None, piece=None):
     f = _parse(filename)
+    if f.get("nurbs") is not None:
+        if piece not in (None, 0):
+            raise ReadError(
+                f"MFEM mesh: {filename} is not parallel; its only piece is 0"
+            )
+        return _read_nurbs(f["nurbs"], grid_functions, filename)
     if f["parallel"] or _rank_siblings(filename):
         return _read_parallel(filename, f, grid_functions, piece)
     if piece not in (None, 0):
@@ -836,6 +1003,9 @@ def read(filename, grid_functions=None, piece=None):
     node_dofs = 0
     nspace = f["nodes_space"]
     nodes = f["nodes"]
+    serendipity_ok = dim == 2 and all(el[1] == 3 for el in elements)
+    if nspace is not None and nspace.points == "serendipity" and not serendipity_ok:
+        nspace.kind = "h1-other"  # MFEM's serendipity elements are quadrilaterals
     if nspace is not None:
         if len(nodes) % nspace.vdim:
             raise ReadError(
@@ -871,12 +1041,6 @@ def read(filename, grid_functions=None, piece=None):
         gf_items = list(grid_functions.items())
     else:
         gf_items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
-    if f["nc"] and gf_items:
-        warn(
-            f"MFEM mesh: grid functions on the non-conforming mesh {filename} follow "
-            "MFEM's space-filling-curve numbering of its leaves, which is not read; skipped"
-        )
-        gf_items = []
     for name, path in gf_items:
         name, space, values = _parse_gf(str(name), str(path))
         h1 = space.kind == "h1"
@@ -885,6 +1049,12 @@ def read(filename, grid_functions=None, piece=None):
             warn(
                 f"MFEM grid function '{path}': the '{space.collection}' space is not "
                 "supported; skipped"
+            )
+            continue
+        if h1 and space.points == "serendipity" and not serendipity_ok:
+            warn(
+                f"MFEM grid function '{path}': serendipity fields are read on "
+                "quadrilateral meshes only; skipped"
             )
             continue
         if h1 and space.order >= 2 and (coords == "dg" or has_pyramid):
@@ -906,7 +1076,13 @@ def read(filename, grid_functions=None, piece=None):
         order = 1
         if coords == "h1" and mesh_order >= 2:
             coords = "corners"
-    if order >= 3:
+    # Bernstein and serendipity coefficients are no nodal values: every order
+    # of them goes through the interpolating reader
+    modal = [s for s in [nspace if coords == "h1" else None] + [g[1] for g in gfs] if s]
+    modal = any(
+        s.kind == "h1" and s.points in ("bernstein", "serendipity") for s in modal
+    )
+    if order >= 3 or (order == 2 and modal):
         if coords == "vertices":
             vxyz = np.array(f["coords"], dtype=np.float64).reshape(nv, sdim)
         else:
@@ -1257,7 +1433,9 @@ def _entities(elements, dim):
     return edges, faces, face_vertices
 
 
-def _interior_count(geom, q):
+def _interior_count(geom, q, points="gll"):
+    if points == "serendipity" and geom == 3:
+        return (q - 2) * (q - 3) // 2  # MFEM's bubbles from order 4
     return {
         1: q - 1,
         2: (q - 1) * (q - 2) // 2,
@@ -1275,7 +1453,9 @@ class _Dofs:
         edges, _, face_vertices = ent
         self.order, self.points = q, points
         self.cp = (
-            _lagrange.gll_points(q) if points == "gll" else _lagrange.uniform_points(q)
+            _lagrange.gll_points(q)
+            if points in ("gll", "serendipity")
+            else _lagrange.uniform_points(q)
         )
         nxt = f["nv"]
         self.edge_base = nxt
@@ -1288,7 +1468,7 @@ class _Dofs:
         for _, geom, _, _ in f["elements"]:
             self.interior_offset.append(nxt)
             if _GEOMS[geom][2] == f["dim"]:
-                nxt += _interior_count(geom, q)
+                nxt += _interior_count(geom, q, points)
         self.size = nxt
 
 
@@ -1370,6 +1550,11 @@ def _element_dofs(geom, verts, dim, ent, d, element):
             interior = [(x, y, 0.0) for x, y in tri]
         else:
             interior = [(x, y, cp[k]) for k in range(1, q) for x, y in tri]
+    elif geom == 3 and d.points == "serendipity":
+        # non-nodal bubbles: positions outside the element only name them
+        interior = [
+            (-1.0 - n, -1.0, 0.0) for n in range(_interior_count(3, q, d.points))
+        ]
     elif geom == 3:
         interior = [(cp[i], cp[j], 0.0) for j in range(1, q) for i in range(1, q)]
     elif geom == 4:
@@ -1425,6 +1610,129 @@ def _cell_order(geom, num_nodes):
         q += 1
 
 
+def _bernstein_matrix(shape, q, nodes, targets):
+    """MFEM's positive (Bernstein) basis at ``targets``: the coefficient at
+    lattice point ``a / q`` weighs the Bernstein polynomial of multi-index
+    ``a``, a tensor product on quadrilaterals and hexahedra, barycentric on
+    simplices, a triangle times a segment on prisms."""
+    fact = [math.factorial(k) for k in range(q + 1)]
+
+    def b1(a, x):
+        return fact[q] / (fact[a] * fact[q - a]) * x**a * (1 - x) ** (q - a)
+
+    def bs(alpha, lam):
+        v = float(fact[q])
+        for a, x in zip(alpha, lam):
+            v *= x**a / fact[a]
+        return v
+
+    out = np.zeros((len(targets), len(nodes)))
+    for c, node in enumerate(nodes):
+        a = [int(round(x * q)) for x in node]
+        for t, x in enumerate(targets):
+            if shape == "line":
+                v = b1(a[0], x[0])
+            elif shape in ("quad", "hexahedron"):
+                v = 1.0
+                for d in range(2 if shape == "quad" else 3):
+                    v *= b1(a[d], x[d])
+            elif shape == "triangle":
+                v = bs((q - a[0] - a[1], a[0], a[1]), (1 - x[0] - x[1], x[0], x[1]))
+            elif shape == "tetra":
+                v = bs(
+                    (q - a[0] - a[1] - a[2], a[0], a[1], a[2]),
+                    (1 - x[0] - x[1] - x[2], x[0], x[1], x[2]),
+                )
+            else:  # wedge
+                v = bs((q - a[0] - a[1], a[0], a[1]), (1 - x[0] - x[1], x[0], x[1]))
+                v *= b1(a[2], x[2])
+            out[t, c] = v
+    return out
+
+
+def _serendipity_shape(p, cp, x, y):
+    """``H1Ser_QuadrilateralElement::CalcShape`` (MFEM fe_ser.cpp): nodal
+    Gauss-Lobatto edge functions times the linear function vanishing on the
+    opposite edge, bilinear vertex functions corrected by them, and Legendre
+    bubbles from order 4; in MFEM's local order."""
+
+    def lag(t):
+        out = np.ones(p + 1)
+        for i in range(p + 1):
+            for j in range(p + 1):
+                if j != i:
+                    out[i] *= (t - cp[j]) / (cp[i] - cp[j])
+        return out
+
+    nx, ny = lag(x), lag(y)
+    n = 4 + 4 * (p - 1) + (p - 2) * (p - 3) // 2
+    shape = np.zeros(n)
+    for i in range(p - 1):
+        shape[4 + 0 * (p - 1) + i] = nx[i + 1] * (1 - y)
+        shape[4 + 1 * (p - 1) + i] = ny[i + 1] * x
+        shape[4 + 3 * (p - 1) - i - 1] = nx[i + 1] * y
+        shape[4 + 4 * (p - 1) - i - 1] = ny[i + 1] * (1 - x)
+    bil = [(1 - x) * (1 - y), x * (1 - y), x * y, (1 - x) * y]
+    fix = [0.0] * 4
+    for i in range(p - 1):
+        w = 1 - cp[i + 1]
+        fix[0] += w * (shape[4 + i] + shape[4 + 4 * (p - 1) - i - 1])
+        fix[1] += w * (shape[4 + 1 * (p - 1) + i] + shape[4 + (p - 2) - i])
+        fix[2] += w * (shape[4 + 2 * (p - 1) + i] + shape[1 + 2 * p - i])
+        fix[3] += w * (shape[4 + 3 * (p - 1) + i] + shape[3 * p - i])
+    for v in range(4):
+        shape[v] = bil[v] - fix[v]
+    if p > 3:
+
+        def leg(t):
+            u = [1.0, 2 * t - 1]
+            for k in range(1, p - 2):
+                u.append(((2 * k + 1) * (2 * t - 1) * u[k] - k * u[k - 1]) / (k + 1))
+            return u
+
+        lx, ly = leg(x), leg(y)
+        m = 0
+        for j in range(4, p + 1):
+            for k in range(j - 3):
+                shape[4 + 4 * (p - 1) + m] = (
+                    lx[k] * ly[j - 4 - k] * x * (1 - x) * y * (1 - y)
+                )
+                m += 1
+    return shape
+
+
+def _serendipity_matrix(p, cp, nodes, targets):
+    """MFEM's serendipity basis at ``targets``, one column per canonical node:
+    the vertex, edge (by position) and bubble (by index) functions."""
+    local = []
+    for x, y, _ in nodes:
+        if x < 0:  # a bubble, named by its index
+            local.append(4 + 4 * (p - 1) + int(round(-1.0 - x)))
+            continue
+        corner = {(0, 0): 0, (1, 0): 1, (1, 1): 2, (0, 1): 3}.get(
+            (round(x, 12), round(y, 12))
+        )
+        if corner is not None:
+            local.append(corner)
+            continue
+        on = [
+            k for k in range(1, p) if abs(cp[k] - (x if y in (0.0, 1.0) else y)) < 1e-12
+        ]
+        i = on[0] - 1
+        if abs(y) < 1e-12:
+            local.append(4 + i)
+        elif abs(x - 1) < 1e-12:
+            local.append(4 + (p - 1) + i)
+        elif abs(y - 1) < 1e-12:
+            local.append(4 + 3 * (p - 1) - i - 1)
+        else:
+            local.append(4 + 4 * (p - 1) - i - 1)
+    out = np.zeros((len(targets), len(nodes)))
+    for t, (x, y, _) in enumerate(targets):
+        out[t] = _serendipity_shape(p, cp, x, y)[local]
+    return out
+
+
 class _Interp:
     """One (geometry, space) pair's canonical nodes and its matrix to the VTK
     Lagrange nodes of the output order."""
@@ -1444,7 +1752,12 @@ class _Interp:
             (i / order, j / order, k / order)
             for i, j, k in _lagrange.vtk_lattice(shape, order)
         ]
-        self.matrix = _lagrange.interpolation_matrix(shape, d.order, pos, targets)
+        if d.points == "bernstein":
+            self.matrix = _bernstein_matrix(shape, d.order, pos, targets)
+        elif d.points == "serendipity":
+            self.matrix = _serendipity_matrix(d.order, d.cp, pos, targets)
+        else:
+            self.matrix = _lagrange.interpolation_matrix(shape, d.order, pos, targets)
 
     def find(self, pos):
         return _find_node(self.index, pos)
@@ -1480,7 +1793,9 @@ def _read_parts(parts, nvertices, order, labels, filename):
     first = parts[0]["f"]
     dim, sdim = first["dim"], first["sdim"]
     point_gfs = [
-        g for g, (_, space, _) in enumerate(parts[0]["gfs"]) if space.kind == "h1"
+        g
+        for g, (_, space, _) in enumerate(parts[0]["gfs"])
+        if space.kind in ("h1", "nurbs")
     ]
     ents, fields = [], []
     for part in parts:
@@ -1498,6 +1813,9 @@ def _read_parts(parts, nvertices, order, labels, filename):
         ent = _entities(f["elements"], dim)
         ents.append(ent)
         mine = []
+        if "eval" in part:  # values come from the part itself (NURBS)
+            fields.append([(None, np.empty((0, c))) for c in part["ncomp"]])
+            continue
         if part["nodes_h1"]:
             s = f["nodes_space"]
             d = _Dofs(f, ent, s.order, s.points)
@@ -1566,6 +1884,11 @@ def _read_parts(parts, nvertices, order, labels, filename):
             fresh = [t for t, i in enumerate(ids) if not known[i]]
             if not fresh:
                 continue
+            if "eval" in part:
+                for k, vals in enumerate(part["eval"](e)):
+                    values[k][[ids[t] for t in fresh]] = vals[fresh]
+                known[ids] = True
+                continue
             if geom == 7:  # a linear pyramid: its vertices
                 for k, (_, table) in enumerate(fields[q]):
                     values[k][ids] = table[verts]
@@ -1587,6 +1910,8 @@ def _read_parts(parts, nvertices, order, labels, filename):
                 values[k][[ids[t] for t in fresh]] = interp.matrix[fresh] @ table[perm]
             known[ids] = True
     for part in parts:
+        if "eval" in part:
+            continue
         for v, g in enumerate(part["global"]):
             if not known[g]:
                 values[0][g] = part["vxyz"][v]
@@ -1652,7 +1977,7 @@ def _read_parts(parts, nvertices, order, labels, filename):
         mesh.point_data[name] = data[:, 0].copy() if data.shape[1] == 1 else data
     ncells = len(cell_attr)
     for g, (name, space, _) in enumerate(parts[0]["gfs"]):
-        if space.kind == "h1":
+        if space.kind in ("h1", "nurbs"):
             continue
         vdim = space.vdim
         per_cell = np.full((ncells, vdim), np.nan)
@@ -1677,6 +2002,63 @@ def _read_parts(parts, nvertices, order, labels, filename):
         mesh.cell_data[name] = out
     mesh.regions = _regions(first, cell_attr, cell_is_boundary)
     return mesh
+
+
+def _read_nurbs(n, grid_functions, filename):
+    """A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear
+    and quadratic ones) of the highest knot-vector order, their nodes the
+    rational patch geometry at the cell's lattice; NURBS grid functions on
+    the mesh's own space the same way, element-wise ones as cell data."""
+    elements = n.elements()
+    boundary = n.boundary()
+    weights, xyz = n.control_points()
+    order = max([1] + [kv.order for row in n.compr for kv in row])
+    if isinstance(grid_functions, dict):
+        gf_items = list(grid_functions.items())
+    else:
+        gf_items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
+    gfs, tables = [], []
+    for name, path in gf_items:
+        name, space, values = _parse_gf(str(name), str(path))
+        if space.kind == "nurbs" and len(values) == n.num_dofs * space.vdim:
+            gfs.append((name, space, values))
+            tables.append(_field_table(values, space))
+        elif space.kind in ("l2", "l2t1") and space.order == 0:
+            gfs.append((name, space, values))
+        else:
+            warn(
+                f"MFEM grid function '{path}': the '{space.collection}' space is not "
+                f"the NURBS mesh's own nor element-wise; skipped"
+            )
+    f = {
+        "dim": n.dim,
+        "sdim": xyz.shape[1],
+        "elements": [el[:4] for el in elements],
+        "boundary": boundary,
+        "nv": n.num_vertices,
+        "rank": 0,
+        "sets": [],
+        "bdr_sets": [],
+    }
+    shape = _SHAPES[_nurbs.GEOM_OF_DIM[n.dim]]
+    refs = [
+        tuple(c / order for c in ijk[: n.dim])
+        for ijk in _lagrange.vtk_lattice(shape, order)
+    ]
+
+    def evaluate(e):
+        return [n.evaluate(weights, xyz, elements[e], refs)] + [
+            n.evaluate(weights, t, elements[e], refs) for t in tables
+        ]
+
+    part = {
+        "f": f,
+        "gfs": gfs,
+        "global": list(range(n.num_vertices)),
+        "eval": evaluate,
+        "ncomp": [xyz.shape[1]] + [t.shape[1] for t in tables],
+    }
+    return _read_parts([part], n.num_vertices, order, False, filename)
 
 
 def _read_high_order(f, gfs, nodes_h1, vxyz, order, filename):
@@ -1719,11 +2101,6 @@ def _read_parallel(filename, first, grid_functions, piece):
     files = []
     for r in selected:
         f = first if paths[r] == str(filename) else _parse(paths[r])
-        if f["nc"]:
-            raise ReadError(
-                f"MFEM mesh: {paths[r]} is a non-conforming rank; parallel "
-                "non-conforming meshes are not read"
-            )
         if f["parallel"] and len(paths) > 1 and f["rank"] != r:
             raise ReadError(f"MFEM mesh: {paths[r]} holds rank {f['rank']}")
         if not f["parallel"]:
@@ -1783,6 +2160,10 @@ def _read_parallel(filename, first, grid_functions, piece):
                         nglobal += 1
                         global_xyz.append(None)
                     glob[v] = by_group[key]
+        elif f["nc"]:
+            # a non-conforming rank (ParPrint): the vertices its ghosts share
+            for v in f["interface"]:
+                candidate[v] = True
         else:
             for _, _, verts, _ in f["boundary"]:
                 for v in verts:

@@ -149,10 +149,6 @@ def test_old_format_columns(read):
 
 
 def test_errors(read, tmp_path):
-    engine = tmp_path / "run_0001.rad"
-    engine.write_text("#RADIOSS ENGINE\n/RUN/run/1\n10.0\n/END\n")
-    with pytest.raises(meshioplusplus.ReadError, match="engine"):
-        read(engine)
     deck = tmp_path / "bad_0000.rad"
     deck.write_text(
         "#RADIOSS STARTER\n/BEGIN\nbad\n      2019         0\n\n\n"
@@ -284,3 +280,96 @@ def test_units_boxes_generators_and_surfaces(read, tmp_path):
     assert faces("first brick free") == 5  # the face shared with brick 102 is not
     assert faces("second brick free") == 5
     assert faces("material 6") == 2
+
+
+def _more_deck():
+    """The two bricks and shells of the features deck, plus a /UNIT'd node block
+    in metres, a fixed skew turned 45 degrees about z, a box aligned with it,
+    box surfaces and the two analytical surfaces."""
+    i10 = lambda *v: "".join(f"{x:10d}" for x in v)  # noqa: E731
+    r20 = lambda *v: "".join(f"{x:20.6f}" for x in v)  # noqa: E731
+    lines = _features_deck().splitlines()[:-1]  # without /END
+    lines += ["/UNIT/7", "metres", f"{'kg':>20}{'m':>20}{'s':>20}"]
+    lines += ["/NODE/7", f"{13:10d}" + r20(0.5, 0.5, 2.0)]
+    lines += ["/SKEW/FIX/3", "turned", r20(0, 0, 0), r20(1, 1, 0), r20(-1, 1, 0)]
+    lines += ["/BOX/RECTA/5", "along the skew", i10(0, 0, 3)]
+    lines += [r20(100.0, -300.0, -100.0), r20(0.0, 2500.0, 1500.0)]
+    lines += ["/GRNOD/BOX/30", "in the skewed box", i10(5)]
+    lines += ["/SURF/BOX/31", "shells in box 1", i10(1)]
+    lines += ["/SURF/BOX2/32", "shells touching box 1", i10(1)]
+    lines += ["/SURF/BOX/EXT/33", "outside in box 1", i10(1)]
+    lines += ["/SURF/BOX/ALL/34", "all in box 1", i10(1)]
+    lines += ["/SURF/PLANE/35", "floor", r20(0, 0, 1000.0), r20(0, 0, 2000.0)]
+    lines += ["/SURF/ELLIPS/36", "egg", i10(3, 4), r20(1000.0, 0, 0)]
+    lines += [r20(100.0, 200.0, 300.0)]
+    lines.append("/END")
+    return "\n".join(lines) + "\n"
+
+
+def test_units_skews_box_surfaces_and_engine_deck(read, tmp_path):
+    deck = tmp_path / "more_0000.rad"
+    deck.write_text(_more_deck())
+    (tmp_path / "more_0001.rad").write_text(
+        "#RADIOSS ENGINE\n/RUN/more/1\n                10.0\n/ANIM/DT\n0.0 0.5\n"
+        "/ANIM/ELEM/SIGX\n/TFILE/4\n0.01\n/END\n"
+    )
+    mesh = read(deck)
+    points = np.asarray(mesh.points)
+    # /NODE/7 is in metres (/UNIT/7), the rest in millimetres
+    np.testing.assert_allclose(points[-1], [0.5, 0.5, 2.0])
+    assert points[:-1].max() == pytest.approx(2.0)
+    # the box along the skew: the nodes with y >= x and x + y <= 2.5
+    inside = np.asarray(_region(mesh, "point", "in the skewed box").entries)
+    assert len(inside) == 6
+    assert np.all(points[inside][:, 1] >= points[inside][:, 0])
+
+    def faces(name):
+        return len(np.asarray(_region(mesh, "side", name).entries))
+
+    assert faces("shells in box 1") == 1
+    assert faces("shells touching box 1") == 2
+    assert faces("outside in box 1") == 6  # a shell and five faces of brick 101
+    assert faces("all in box 1") == 8  # and brick 101's inner face, from both sides
+    np.testing.assert_allclose(
+        mesh.field_data["radioss:surf_plane:35"], [0, 0, 1, 0, 0, 2]
+    )
+    egg = mesh.field_data["radioss:surf_ellips:36"]
+    s = 0.5**0.5
+    np.testing.assert_allclose(
+        egg, [4, 1, 0, 0, 0.1, 0.2, 0.3, s, s, 0, -s, s, 0, 0, 0, 1], atol=1e-15
+    )
+    # the engine deck beside the starter
+    fd = mesh.field_data
+    np.testing.assert_array_equal(fd["radioss:engine:RUN/more/1"], [10.0])
+    np.testing.assert_array_equal(fd["radioss:engine:ANIM/DT"], [0.0, 0.5])
+    assert fd["radioss:engine:ANIM/ELEM/SIGX"].size == 0
+    np.testing.assert_array_equal(fd["radioss:engine:TFILE/4"], [0.01])
+    engine = read(tmp_path / "more_0001.rad")
+    assert len(engine.points) == 0 and not engine.cells
+    np.testing.assert_array_equal(
+        engine.field_data["radioss:engine:ANIM/DT"], [0.0, 0.5]
+    )
+
+
+def test_version_4_decks_title_their_keywords(read, tmp_path):
+    """A 4.x deck (the version on the #RADIOSS STARTER line, no /BEGIN): 8 and
+    16 column fields and titles in the keyword, as OpenRadioss's BAR2V41BD02."""
+    i8 = lambda *v: "".join(f"{x:8d}" for x in v)  # noqa: E731
+    r16 = lambda *v: "".join(f"{x:16.9f}" for x in v)  # noqa: E731
+    lines = ["#RADIOSS STARTER      41QUAD4X                0", "/TITLE", "a 4.1 deck"]
+    lines.append("/NODE")
+    for k, (x, y) in enumerate([(0, 0), (1, 0), (1, 1), (0, 1), (2, 0), (2, 1)], 1):
+        lines.append(i8(k) + r16(0.0, x, y))
+    lines += ["/QUAD/1", i8(1, 1, 2, 3, 4), i8(2, 2, 5, 6, 3)]
+    lines += ["/PART/1/COPPER", i8(1, 1)]
+    lines += ["/GRNOD/NODE/2/FIXED_NODES", i8(1, 4)]
+    lines += ["/SKEW/FIX/1/turned", r16(0, 1, 0), r16(0, 0, 1)]
+    lines.append("/END")
+    deck = tmp_path / "old41_0000.rad"
+    deck.write_text("\n".join(lines) + "\n")
+    mesh = read(deck)
+    assert int(mesh.field_data["radioss:version"]) == 41
+    assert [(c.type, len(c.data)) for c in mesh.cells] == [("quad", 2)]
+    assert np.asarray(mesh.points)[4].tolist() == [0.0, 2.0, 0.0]
+    assert sorted(_region(mesh, "point", "FIXED_NODES").entries.tolist()) == [0, 3]
+    assert len(_region(mesh, "cell", "COPPER").entries) == 2

@@ -34,7 +34,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "16.11.0"
+    version = "16.12.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -51,6 +51,7 @@ class MeshioplusplusConan(ConanFile):
         "with_zlib": [True, False],
         "with_zstd": [True, False],
         "with_lz4": [True, False],
+        "with_bzip2": [True, False],
         "with_kahip": [True, False],
         "with_cgnslib": [True, False],
         "with_gidpost": [True, False],
@@ -73,6 +74,8 @@ class MeshioplusplusConan(ConanFile):
         # so a package without these reads and writes exactly what it always did.
         "with_zstd": False,
         "with_lz4": False,
+        # libMesh's .bz2 meshes natively (else through Python's bz2). Off by default.
+        "with_bzip2": False,
         # KaHIP is not on ConanCenter: no requirement is added -- the consumer
         # supplies an install and points KAHIP_ROOT at it (find_package prefix,
         # same policy as the CMake build). Off by default.
@@ -128,6 +131,8 @@ class MeshioplusplusConan(ConanFile):
             self.requires("zstd/[>=1.5 <2]")
         if self.options.with_lz4:
             self.requires("lz4/[>=1.9 <2]")
+        if self.options.with_bzip2:
+            self.requires("bzip2/[>=1.0.8 <2]")
         if self.options.with_netcdf:
             self.requires("netcdf/[>=4.8 <5]")
         if self.options.with_hdf5:
@@ -157,6 +162,7 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZLIB"] = bool(self.options.with_zlib)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZSTD"] = bool(self.options.with_zstd)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZ4"] = bool(self.options.with_lz4)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_BZIP2"] = bool(self.options.with_bzip2)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
         # cgnslib is not on ConanCenter, so like KaHIP it is bring-your-own:
         # this only flips the CMake flag and the consumer supplies CGNS_ROOT.
@@ -236,6 +242,8 @@ class MeshioplusplusConan(ConanFile):
             cxx_requires.append("zstd::zstd")
         if self.options.with_lz4:
             cxx_requires.append("lz4::lz4")
+        if self.options.with_bzip2:
+            cxx_requires.append("bzip2::bzip2")
         if self.options.with_hdf5:
             cxx_requires.append("hdf5::hdf5")
         if self.options.with_netcdf:

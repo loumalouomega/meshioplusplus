@@ -182,13 +182,96 @@ TEST(TecplotPlt, RefusesWhatItCannotRead) {
     // An FEPOLYGON zone whose header announces a face map the file lacks.
     const std::string poly = write_bytes(tri_plt(2, false, 6));
     EXPECT_THROW(meshioplusplus::read_tecplot(poly), meshioplusplus::ReadError);
-    const std::string old = write_bytes(tri_plt(2, false, 2, "102"));
+    const std::string old = write_bytes(tri_plt(2, false, 2, "99 "));
     EXPECT_THROW(meshioplusplus::read_tecplot(old), meshioplusplus::ReadError);
     const std::string good = tri_plt(2, false);
     const std::string cut = write_bytes(good.substr(0, good.size() - 10));
     EXPECT_THROW(meshioplusplus::read_tecplot(cut), meshioplusplus::ReadError);
     for (const std::string& p : {bit, poly, old, cut})
         remove_file(p);
+}
+
+// A Tecplot 7.5 file (the layout VisIt's test files show): no FileType, a
+// 2-D text and a circle in the Tecplot 7 record layouts, an FE-point zone
+// (kind 3) whose element type follows its sizes, one extra word before the
+// formats and before the 1-based connectivity, no min/max pairs.
+TEST(TecplotPlt, Tecplot7PointPackedFeZone) {
+    for (bool big : {false, true}) {
+        PltWriter w(big);
+        w.Raw("#!TDV75 ");
+        w.I32(1);
+        w.Str("old");
+        w.I32(3);
+        w.Str("X(M)");  // unit suffixes still name the coordinates
+        w.Str("Y(M)");
+        w.Str("P");
+        w.F32(499.0F);  // text
+        w.I32(1);
+        w.I32(1);
+        w.F64(40.0);
+        w.F64(2.5);
+        w.I32(0);
+        w.I32(1);
+        w.F64(3.0);
+        w.I32(0);
+        w.F64(15.0);
+        w.F64(0.1);
+        w.I32(0);
+        w.I32(7);
+        w.F64(90.0);
+        w.F64(1.5);
+        for (int v : {0, 0, -1, 0})
+            w.I32(v);
+        w.Str("label");
+        w.F32(399.0F);  // a circle
+        w.I32(0);
+        w.I32(1);
+        w.F64(1.0);
+        w.F64(2.0);
+        for (int v : {0, 0, -1, 0, 7, 0})
+            w.I32(v);
+        w.I32(3);  // circle
+        w.I32(0);  // line pattern
+        w.F64(2.0);
+        w.F64(0.1);
+        w.I32(72);
+        w.I32(0);
+        w.I32(0);
+        w.F64(1.0);
+        w.F64(15.0);
+        w.Str("");
+        w.I32(1);  // float
+        w.F32(0.5F);
+        w.F32(299.0F);
+        w.Str("zone");
+        w.I32(3);  // FE point
+        w.I32(-1);
+        w.I32(4);  // nodes
+        w.I32(2);  // elements
+        w.I32(1);  // quadrilateral
+        w.F32(357.0F);
+        w.F32(299.0F);
+        w.I32(0);
+        for (int k = 0; k < 3; ++k)
+            w.I32(1);
+        const float xyz[4][3] = {{0, 0, 1}, {1, 0, 2}, {1, 1, 3}, {0, 1, 4}};
+        for (const auto& r : xyz)
+            for (float v : r)
+                w.F32(v);
+        w.I32(0);
+        for (int v : {1, 2, 3, 4, 1, 3, 4, 2})
+            w.I32(v);
+        const std::string path = write_bytes(w.Bytes());
+        const mt::Mesh m = meshioplusplus::read_tecplot(path);
+        ASSERT_EQ(m.NumCellBlocks(), 1u);
+        EXPECT_EQ(m.Cells(0).Type(), "quad");
+        const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+        EXPECT_EQ(c[0], 0);
+        EXPECT_EQ(c[7], 1);
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(m.Points(), 4), 1.0);  // y of node 2
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(m.PointData("P"), 3), 4.0);
+        remove_file(path);
+    }
 }
 
 TEST(TecplotPlt, OrderedZonesCellCentredGhostsAndTimeSteps) {

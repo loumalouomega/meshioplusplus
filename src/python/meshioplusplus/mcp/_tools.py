@@ -576,14 +576,31 @@ def tool_convert(
     grid_functions=None,
     write_grid_functions=False,
     elmer_halo=False,
+    patran_results=None,
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
 
     ``grid_functions`` (``{name: path}``) reads MFEM ``.gf`` files onto an MFEM
-    input mesh; ``write_grid_functions`` writes the data of an MFEM output as
+    input mesh; ``patran_results`` (``{name: path}``) reads Patran 2.5 result
+    files onto a Patran neutral input; ``write_grid_functions`` writes the data of an MFEM output as
     ``.gf`` files beside it. ``elmer_halo`` adds ElmerGrid's ``-halo`` layer to
     the partitioning an Elmer output writes from ``partition:part``."""
-    if grid_functions:
+    if grid_functions and patran_results:
+        raise ValueError(
+            "meshio++: mcp: grid_functions (MFEM) and patran_results (Patran) "
+            "cannot be combined"
+        )
+    if patran_results:
+        from .. import patran as _patran
+
+        mesh = _patran.read(
+            _resolve(input_path, must_exist=True),
+            {
+                str(name): str(_resolve(path, must_exist=True))
+                for name, path in patran_results.items()
+            },
+        )
+    elif grid_functions:
         from .. import mfem as _mfem
 
         mesh = _mfem.read(

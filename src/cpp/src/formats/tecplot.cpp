@@ -62,9 +62,11 @@ std::string tecplot_strip(const std::string& rS) {
     std::size_t e = rS.find_last_not_of(" \t\r\n");
     return rS.substr(b, e - b + 1);
 }
-std::vector<std::string> tecplot_tokens(const std::string& rS) {
+/// Data tokens: Tecplot separates values by blanks or commas.
+std::vector<std::string> tecplot_tokens(std::string S) {
+    std::replace(S.begin(), S.end(), ',', ' ');
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    auto iss = detail::make_classic_istringstream(S);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -258,7 +260,12 @@ struct TecplotZone {
     std::size_t mDataStart = 0;
     // Binary: where each owned variable's values start and their data format
     // (1 float, 2 double, 3 int32, 4 int16, 5 byte), and the connectivity.
+    // A point-packed zone (Tecplot 7 and before 112) interleaves the owned
+    // variables per node: each offset is then its first value, the record
+    // mRecordSize bytes long. mVersion is the file's #!TDV version.
     std::map<std::size_t, std::pair<std::size_t, int>> mVarData;
+    std::size_t mRecordSize = 0;
+    int mVersion = 112;
     std::size_t mConnOffset = 0;
     bool mHasConn = false;
     int mRawFaceNeighbors = 0;
@@ -795,6 +802,9 @@ private:
 // --- binary (.plt) --------------------------------------------------------------
 //
 // Appendix A of the Data Format Guide ("Binary Data File Format"), #!TDV112.
+// Older versions (#!TDV71/75 of Tecplot 7, 100-111) follow VisIt's
+// TecplotFile.C (BSD) and the files VisIt tests with: see
+// tecplot_plt_zone_record and tecplot_plt_scan_data for what changes.
 // Facts checked against files TecIO (the library preplot is built on) wrote,
 // in both byte orders:
 // * every header string is int32 per character, 0-terminated;
@@ -823,6 +833,29 @@ bool tecplot_is_plt(const char* pData, std::size_t Size) {
     return Size >= 5 && std::memcmp(pData, "#!TDV", 5) == 0;
 }
 
+bool tecplot_plt_v7(int Version) {
+    return Version == 71 || Version == 75;
+}
+
+/// The #!TDVnnn version: 71 and 75 (Tecplot 7), 100-113.
+int tecplot_plt_version(const char* pData, std::size_t Size) {
+    const std::string tag = Size >= 8 ? std::string(pData + 5, 3) : std::string();
+    int version = 0;
+    for (char c : tag) {
+        if (c == ' ')
+            break;
+        if (c < '0' || c > '9') {
+            version = 0;
+            break;
+        }
+        version = version * 10 + (c - '0');
+    }
+    if (!tecplot_plt_v7(version) && (version < 100 || version > 113))
+        throw ReadError("Tecplot .plt: version '" + tag +
+                        "' is not supported (#!TDV71, 75 and 100-113 are read)");
+    return version;
+}
+
 std::string tecplot_plt_string(detail::ByteCursor& rCur) {
     std::string s;
     for (std::int32_t c = rCur.I32(); c != 0; c = rCur.I32())
@@ -830,11 +863,17 @@ std::string tecplot_plt_string(detail::ByteCursor& rCur) {
     return s;
 }
 
-void tecplot_plt_skip_geometry(detail::ByteCursor& rCur) {
+void tecplot_plt_skip_geometry(detail::ByteCursor& rCur, int Version) {
     const std::int32_t coord_sys = rCur.I32();  // 4 = Grid3D: polylines carry Z too
-    rCur.Skip(2 * 4);                           // scope, draw order
-    rCur.Skip(3 * 8);                           // anchor
-    rCur.Skip(4 * 4);                           // zone, color, fill color, is filled
+    if (tecplot_plt_v7(Version)) {
+        // Tecplot 7: a 2-D anchor, three zone-attachment words, no clipping
+        rCur.Skip(4 + 2 * 8);  // scope, anchor
+        rCur.Skip(6 * 4);      // zone attachment (3), color, fill color, is filled
+    } else {
+        rCur.Skip(2 * 4);  // scope, draw order
+        rCur.Skip(3 * 8);  // anchor
+        rCur.Skip(4 * 4);  // zone, color, fill color, is filled
+    }
     const std::int32_t gtype = rCur.I32();
     rCur.Skip(4);              // line pattern
     rCur.Skip(2 * 8);          // pattern length, line thickness
@@ -842,7 +881,8 @@ void tecplot_plt_skip_geometry(detail::ByteCursor& rCur) {
     rCur.Skip(2 * 8);          // arrowhead size and angle
     tecplot_plt_string(rCur);  // macro function command
     const std::size_t width = rCur.I32() == 2 ? 8 : 4;
-    rCur.Skip(4);  // clipping
+    if (!tecplot_plt_v7(Version))
+        rCur.Skip(4);  // clipping
     if (gtype == 0) {
         const std::int32_t lines = rCur.I32();
         for (std::int32_t l = 0; l < lines; ++l) {
@@ -858,7 +898,18 @@ void tecplot_plt_skip_geometry(detail::ByteCursor& rCur) {
     }
 }
 
-void tecplot_plt_skip_text(detail::ByteCursor& rCur) {
+void tecplot_plt_skip_text(detail::ByteCursor& rCur, int Version) {
+    if (tecplot_plt_v7(Version)) {
+        // Tecplot 7: a 2-D anchor; anchor, two zone-attachment words and the
+        // color then the text, no macro command or clipping
+        rCur.Skip(2 * 4 + 2 * 8);  // coordinate system, scope, anchor
+        rCur.Skip(2 * 4 + 8);      // font, height units, height
+        rCur.Skip(4 + 2 * 8);      // box type, margin, line width
+        rCur.Skip(2 * 4 + 2 * 8);  // box colors, angle, line spacing
+        rCur.Skip(4 * 4);
+        tecplot_plt_string(rCur);
+        return;
+    }
     rCur.Skip(2 * 4);          // coordinate system, scope
     rCur.Skip(3 * 8);          // anchor
     rCur.Skip(2 * 4);          // font, height units
@@ -873,10 +924,130 @@ void tecplot_plt_skip_text(detail::ByteCursor& rCur) {
     tecplot_plt_string(rCur);  // the text
 }
 
+// One 299.0 zone record of the header. Versions differ (VisIt's
+// TecplotFile.C is the map, the VisIt test files the check): Tecplot 7 files
+// keep only the zone kind (0 block / 1 point ordered, 2 FE block / 3 FE
+// point), an unused word and the sizes, the FE element type last; up to 102
+// the zone type follows an unused -1; from 103 strand, solution time and color
+// come first, the point/block packing word follows the type until 112, the
+// parent zone appears from 107 and the user face-neighbour words from 108.
+TecplotZone tecplot_plt_zone_record(detail::ByteCursor& rCur, int Version, std::size_t NumVars) {
+    static const char* const kTypes[] = {"ORDERED",         "FELINESEG",     "FETRIANGLE",
+                                         "FEQUADRILATERAL", "FETETRAHEDRON", "FEBRICK",
+                                         "FEPOLYGON",       "FEPOLYHEDRON"};
+    TecplotZone z;
+    z.mVersion = Version;
+    z.mTitle = tecplot_plt_string(rCur);
+    z.mCellCentered.assign(NumVars, 0);
+    std::int32_t strand = -1, ztype = 0;
+    double time = 0.0;
+    std::int32_t ijk[3] = {1, 1, 1};
+    std::int32_t pts = 0, elems = 0;
+    if (tecplot_plt_v7(Version)) {
+        const std::int32_t kind = rCur.I32();
+        rCur.Skip(4);  // color
+        if (kind < 0 || kind > 3)
+            throw ReadError("Tecplot .plt: unknown Tecplot 7 zone kind " + std::to_string(kind));
+        z.mBlock = kind % 2 == 0;
+        if (kind < 2) {
+            for (std::int32_t& d : ijk)
+                d = rCur.I32();
+        } else {
+            pts = rCur.I32();
+            elems = rCur.I32();
+            const std::int32_t et = rCur.I32();  // triangle, quadrilateral, tetrahedron, brick
+            if (et < 0 || et > 3)
+                throw ReadError("Tecplot .plt: unknown Tecplot 7 element type " +
+                                std::to_string(et));
+            ztype = et + 2;
+        }
+    } else {
+        if (Version > 106)
+            rCur.Skip(4);  // parent zone
+        if (Version <= 102) {
+            rCur.Skip(4);  // not used (-1)
+            ztype = rCur.I32();
+        } else {
+            strand = rCur.I32();
+            time = rCur.F64();
+            rCur.Skip(4);  // color (-1)
+            ztype = rCur.I32();
+            if (Version < 112)
+                z.mBlock = rCur.I32() == 0;
+        }
+        if (ztype < 0 || ztype > 7)
+            throw ReadError("Tecplot .plt: unknown zone type " + std::to_string(ztype));
+        if (rCur.I32() == 1)
+            for (std::size_t v = 0; v < NumVars; ++v)
+                z.mCellCentered[v] = rCur.I32() == 1 ? 1 : 0;
+        z.mRawFaceNeighbors = rCur.I32();
+        if (Version > 107) {
+            z.mMiscFaceNeighbors = rCur.I32();
+            if (z.mMiscFaceNeighbors != 0) {
+                z.mFaceNeighborMode = rCur.I32();
+                if (ztype != 0)
+                    rCur.Skip(4);  // FE face neighbours completely specified
+            }
+        }
+        if (ztype == 0) {
+            for (std::int32_t& d : ijk)
+                d = rCur.I32();
+        } else {
+            pts = rCur.I32();
+            if (ztype == 6 || ztype == 7) {
+                // faces, face nodes, boundary faces (+1 when any) and connections
+                std::int32_t counts[4];
+                for (std::int32_t& c : counts) {
+                    c = rCur.I32();
+                    if (c < 0)
+                        throw ReadError("Tecplot .plt: negative face map size");
+                }
+                z.mNumFaces = static_cast<std::size_t>(counts[0]);
+                z.mTotalFaceNodes = static_cast<std::size_t>(counts[1]);
+                z.mNumBoundaryFaces = static_cast<std::size_t>(counts[2]);
+                z.mNumBoundaryConns = static_cast<std::size_t>(counts[3]);
+            }
+            elems = rCur.I32();
+            rCur.Skip(3 * 4);  // I/J/K cell dimensions, unused
+        }
+        while (rCur.I32() == 1) {  // auxiliary name/value pairs
+            tecplot_plt_string(rCur);
+            rCur.Skip(4);
+            tecplot_plt_string(rCur);
+        }
+    }
+    z.mTypeName = kTypes[ztype];
+    z.mOrdered = ztype == 0;
+    if (z.mOrdered) {
+        if (ijk[0] < 1 || ijk[1] < 1 || ijk[2] < 1)
+            throw ReadError("Tecplot .plt: bad I/J/K in an ordered zone");
+        z.mI = static_cast<std::size_t>(ijk[0]);
+        z.mJ = static_cast<std::size_t>(ijk[1]);
+        z.mK = static_cast<std::size_t>(ijk[2]);
+        z.FinishOrdered();
+    } else {
+        if (pts < 0 || elems < 0)
+            throw ReadError("Tecplot .plt: negative node or element count");
+        z.mNumNodes = static_cast<std::size_t>(pts);
+        z.mNumCells = static_cast<std::size_t>(elems);
+    }
+    if (!z.mBlock && (z.IsPoly() || std::any_of(z.mCellCentered.begin(), z.mCellCentered.end(),
+                                                [](int c) { return c != 0; })))
+        throw ReadError("Tecplot .plt: point packing with cell-centred or polytope data");
+    // The file's strands are 0-based (-1 static); only the grouping by
+    // strand matters, so the ASCII STRANDID's 1-based numbering is moot.
+    z.mHasSolutionTime = strand != -1 || time != 0.0;
+    z.mSolutionTime = time;
+    z.mHasStrandId = strand >= 0;
+    z.mStrandId = strand;
+    return z;
+}
+
 // The header section: variables and every zone record, up to the 357.0 marker.
-std::vector<TecplotZone> tecplot_plt_header(detail::ByteCursor& rCur,
+std::vector<TecplotZone> tecplot_plt_header(detail::ByteCursor& rCur, int Version,
                                             std::vector<std::string>& rVariables) {
-    rCur.Skip(4);              // FileType: full, grid or solution -- all read the same way
+    if (Version >= 111)
+        rCur.Skip(4);          // FileType: full, grid or solution -- all read the same way
     tecplot_plt_string(rCur);  // title
     const std::int32_t nvar = rCur.I32();
     if (nvar <= 0)
@@ -885,81 +1056,15 @@ std::vector<TecplotZone> tecplot_plt_header(detail::ByteCursor& rCur,
         rVariables.push_back(tecplot_plt_string(rCur));
     const std::size_t nv = rVariables.size();
 
-    static const char* const kTypes[] = {"ORDERED",         "FELINESEG",     "FETRIANGLE",
-                                         "FEQUADRILATERAL", "FETETRAHEDRON", "FEBRICK",
-                                         "FEPOLYGON",       "FEPOLYHEDRON"};
     std::vector<TecplotZone> zones;
     for (;;) {
         const float marker = rCur.F32();
         if (marker == kTecplotZoneMarker) {
-            TecplotZone z;
-            z.mTitle = tecplot_plt_string(rCur);
-            rCur.Skip(4);  // parent zone
-            const std::int32_t strand = rCur.I32();
-            const double time = rCur.F64();
-            rCur.Skip(4);  // not used (-1)
-            const std::int32_t ztype = rCur.I32();
-            if (ztype < 0 || ztype > 7)
-                throw ReadError("Tecplot .plt: unknown zone type " + std::to_string(ztype));
-            z.mTypeName = kTypes[ztype];
-            z.mOrdered = ztype == 0;
-            z.mCellCentered.assign(nv, 0);
-            if (rCur.I32() == 1)
-                for (std::size_t v = 0; v < nv; ++v)
-                    z.mCellCentered[v] = rCur.I32() == 1 ? 1 : 0;
-            z.mRawFaceNeighbors = rCur.I32();
-            z.mMiscFaceNeighbors = rCur.I32();
-            if (z.mMiscFaceNeighbors != 0) {
-                z.mFaceNeighborMode = rCur.I32();
-                if (!z.mOrdered)
-                    rCur.Skip(4);  // FE face neighbours completely specified
-            }
-            if (z.mOrdered) {
-                const std::int32_t I = rCur.I32(), J = rCur.I32(), K = rCur.I32();
-                if (I < 1 || J < 1 || K < 1)
-                    throw ReadError("Tecplot .plt: bad I/J/K in an ordered zone");
-                z.mI = static_cast<std::size_t>(I);
-                z.mJ = static_cast<std::size_t>(J);
-                z.mK = static_cast<std::size_t>(K);
-                z.FinishOrdered();
-            } else {
-                const std::int32_t pts = rCur.I32();
-                if (ztype == 6 || ztype == 7) {
-                    // faces, face nodes, boundary faces (+1 when any) and connections
-                    std::int32_t counts[4];
-                    for (std::int32_t& c : counts) {
-                        c = rCur.I32();
-                        if (c < 0)
-                            throw ReadError("Tecplot .plt: negative face map size");
-                    }
-                    z.mNumFaces = static_cast<std::size_t>(counts[0]);
-                    z.mTotalFaceNodes = static_cast<std::size_t>(counts[1]);
-                    z.mNumBoundaryFaces = static_cast<std::size_t>(counts[2]);
-                    z.mNumBoundaryConns = static_cast<std::size_t>(counts[3]);
-                }
-                const std::int32_t elems = rCur.I32();
-                if (pts < 0 || elems < 0)
-                    throw ReadError("Tecplot .plt: negative node or element count");
-                z.mNumNodes = static_cast<std::size_t>(pts);
-                z.mNumCells = static_cast<std::size_t>(elems);
-                rCur.Skip(3 * 4);  // I/J/K cell dimensions, unused
-            }
-            while (rCur.I32() == 1) {  // auxiliary name/value pairs
-                tecplot_plt_string(rCur);
-                rCur.Skip(4);
-                tecplot_plt_string(rCur);
-            }
-            // The file's strands are 0-based (-1 static); only the grouping by
-            // strand matters, so the ASCII STRANDID's 1-based numbering is moot.
-            z.mHasSolutionTime = strand != -1 || time != 0.0;
-            z.mSolutionTime = time;
-            z.mHasStrandId = strand >= 0;
-            z.mStrandId = strand;
-            zones.push_back(std::move(z));
+            zones.push_back(tecplot_plt_zone_record(rCur, Version, nv));
         } else if (marker == kTecplotGeometryMarker) {
-            tecplot_plt_skip_geometry(rCur);
+            tecplot_plt_skip_geometry(rCur, Version);
         } else if (marker == kTecplotTextMarker) {
-            tecplot_plt_skip_text(rCur);
+            tecplot_plt_skip_text(rCur, Version);
         } else if (marker == kTecplotLabelMarker) {
             const std::int32_t n = rCur.I32();
             for (std::int32_t l = 0; l < n; ++l)
@@ -1004,10 +1109,11 @@ std::size_t tecplot_plt_format_width(int Format) {
 }
 
 /// The stored dimensions (and length) of an ordered zone's cell-centred
-/// variable: the node dimensions with the last one longer than 1 shortened.
+/// variable: the node dimensions with the last one longer than 1 shortened
+/// from version 104 (before, it keeps its ghost too: TecIO's tecxxx.cpp).
 std::size_t tecplot_plt_ordered_cc_stored(const TecplotZone& rZ, std::size_t* pStored) {
     std::size_t dims[3] = {rZ.mI, rZ.mJ, rZ.mK};
-    for (int a = 2; a >= 0; --a) {
+    for (int a = 2; a >= 0 && rZ.mVersion >= 104; --a) {
         if (dims[a] > 1) {
             --dims[a];
             break;
@@ -1045,44 +1151,68 @@ void tecplot_plt_skip_face_neighbors(detail::ByteCursor& rCur, const TecplotZone
 
 // Walks every zone's data section, recording where each owned variable and the
 // connectivity start, and the sharing a binary file keeps here, not in the
-// header.
-void tecplot_plt_scan_data(detail::ByteCursor& rCur, const std::vector<std::string>& rVariables,
+// header. Tecplot 7 files have one extra word before the formats (and before
+// FE connectivity) and neither passive, sharing nor min/max lists; before 103
+// the min/max pairs and the passive list are absent too.
+void tecplot_plt_scan_data(detail::ByteCursor& rCur, int Version,
+                           const std::vector<std::string>& rVariables,
                            std::vector<TecplotZone>& rZones) {
     const std::size_t nv = rVariables.size();
+    const bool v7 = tecplot_plt_v7(Version);
     for (std::size_t zi = 0; zi < rZones.size(); ++zi) {
         TecplotZone& z = rZones[zi];
         const float marker = rCur.F32();
         if (marker != kTecplotZoneMarker)
             throw ReadError("Tecplot .plt: expected the data marker of zone " +
                             std::to_string(zi + 1) + ", got " + std::to_string(marker));
+        if (v7)
+            rCur.Skip(4);  // repeat flag
         std::vector<int> formats(nv);
         for (std::size_t v = 0; v < nv; ++v)
             formats[v] = rCur.I32();
-        if (rCur.I32() != 0)
-            for (std::size_t v = 0; v < nv; ++v)
-                if (rCur.I32() != 0)
-                    z.mPassiveVars.insert(v);
-        if (rCur.I32() != 0) {
-            for (std::size_t v = 0; v < nv; ++v) {
-                const std::int32_t src = rCur.I32();
-                if (src >= 0)
-                    z.mVarShareZone[v] = static_cast<std::size_t>(src);
+        if (!v7) {
+            if (Version > 102 && rCur.I32() != 0)
+                for (std::size_t v = 0; v < nv; ++v)
+                    if (rCur.I32() != 0)
+                        z.mPassiveVars.insert(v);
+            if (rCur.I32() != 0) {
+                for (std::size_t v = 0; v < nv; ++v) {
+                    const std::int32_t src = rCur.I32();
+                    if (src >= 0)
+                        z.mVarShareZone[v] = static_cast<std::size_t>(src);
+                }
             }
+            z.mConnShareZone = rCur.I32();
         }
-        z.mConnShareZone = rCur.I32();
         std::size_t owned = 0;
         for (std::size_t v = 0; v < nv; ++v)
             owned += z.Owns(v) ? 1 : 0;
-        rCur.Skip(owned * 2 * 8);  // min/max pairs
+        if (Version > 102)
+            rCur.Skip(owned * 2 * 8);  // min/max pairs
         for (std::size_t v = 0; v < nv; ++v) {
             if (!z.Owns(v))
                 continue;
             if (formats[v] == 6)
                 throw ReadError("Tecplot .plt: variable '" + rVariables[v] +
                                 "' is BIT-packed, which is not supported");
-            const std::size_t width = tecplot_plt_format_width(formats[v]);
-            if (width == 0)
+            if (tecplot_plt_format_width(formats[v]) == 0)
                 throw ReadError("Tecplot .plt: unknown data format " + std::to_string(formats[v]));
+        }
+        if (!z.mBlock) {
+            // point packing: one record of every owned variable per node
+            const std::size_t base = rCur.Offset();
+            for (std::size_t v = 0; v < nv; ++v) {
+                if (!z.Owns(v))
+                    continue;
+                z.mVarData[v] = {base + z.mRecordSize, formats[v]};
+                z.mRecordSize += tecplot_plt_format_width(formats[v]);
+            }
+            rCur.Skip(z.mRecordSize * z.mNumNodes);
+        }
+        for (std::size_t v = 0; v < nv && z.mBlock; ++v) {
+            if (!z.Owns(v))
+                continue;
+            const std::size_t width = tecplot_plt_format_width(formats[v]);
             std::size_t n = z.DataLength(v);
             if (z.mOrdered && z.mCellCentered[v]) {
                 std::size_t stored[3];
@@ -1115,6 +1245,8 @@ void tecplot_plt_scan_data(detail::ByteCursor& rCur, const std::vector<std::stri
         if (z.mConnShareZone < 0) {
             static const std::map<std::string, std::size_t> kFaces = {
                 {"line", 0}, {"triangle", 3}, {"quad", 4}, {"tetra", 4}, {"hexahedron", 6}};
+            if (v7)
+                rCur.Skip(4);  // repeat flag of the connectivity
             z.mHasConn = true;
             z.mConnOffset = rCur.Offset();
             rCur.Skip(tecplot_nodes_per_cell(mtype) * z.mNumCells * 4);
@@ -1146,6 +1278,8 @@ public:
             std::vector<double> raw(n);
             cur.Seek(offset);
             for (std::size_t r = 0; r < n; ++r) {
+                if (!z.mBlock)
+                    cur.Seek(offset + r * z.mRecordSize);
                 switch (format) {
                     case 1:
                         raw[r] = cur.F32();
@@ -1215,8 +1349,9 @@ public:
         const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
+        const std::int64_t base = tecplot_plt_v7(z.mVersion) ? 1 : 0;  // Tecplot 7 is 1-based
         for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
-            cp[r] = cur.I32();
+            cp[r] = cur.I32() - base;
     }
 
 private:
@@ -1489,17 +1624,26 @@ std::size_t tecplot_points_origin_zone(std::size_t ZoneIdx, const std::vector<Te
 
 /// The 0-based (X, Y, Z) variable indices, Z absent (-1) for a 2D file. The
 /// same three variables for every zone in the file: VARIABLES is per-file.
+/// An exact name wins; otherwise a name with a unit suffix counts ("X(M)",
+/// "X [m]", the way old Tecplot files label their axes).
 void tecplot_xyz_indices(const std::vector<std::string>& rVariables, int& rXi, int& rYi, int& rZi) {
-    rXi = rYi = rZi = -1;
+    int exact[3] = {-1, -1, -1}, stem[3] = {-1, -1, -1};
     for (std::size_t k = 0; k < rVariables.size(); ++k) {
         const std::string v = tecplot_upper(rVariables[k]);
-        if (v == "X")
-            rXi = static_cast<int>(k);
-        else if (v == "Y")
-            rYi = static_cast<int>(k);
-        else if (v == "Z")
-            rZi = static_cast<int>(k);
+        std::string s = v.substr(0, v.find_first_of("(["));
+        while (!s.empty() && s.back() == ' ')
+            s.pop_back();
+        for (int a = 0; a < 3; ++a) {
+            const std::string axis(1, static_cast<char>('X' + a));
+            if (v == axis)
+                exact[a] = static_cast<int>(k);
+            else if (s == axis && s.size() < v.size() && stem[a] < 0)
+                stem[a] = static_cast<int>(k);
+        }
     }
+    rXi = exact[0] >= 0 ? exact[0] : stem[0];
+    rYi = exact[1] >= 0 ? exact[1] : stem[1];
+    rZi = exact[2] >= 0 ? exact[2] : stem[2];
 }
 
 /// Per zone of a step: its point offset and whether it owns its points (a zone
@@ -1733,11 +1877,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
     rFile.mRaw = std::make_unique<detail::FileSource>(rPath, rOptions.mMmap);
     const char* data = rFile.mRaw->Data();
     const std::size_t size = rFile.mRaw->Size();
-    const std::string version = size >= 8 ? std::string(data + 5, 3) : std::string();
-    if (version != "112")
-        throw ReadError("Tecplot .plt: version '" + version +
-                        "' is not supported (only #!TDV112, written by Tecplot 360 2009 and "
-                        "later, is read)");
+    const int version = tecplot_plt_version(data, size);
     // The int32 1 after the magic fixes the byte order.
     bool big_endian = false;
     {
@@ -1753,8 +1893,8 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
     }
     detail::ByteCursor cur(data, size, big_endian, "Tecplot .plt");
     cur.Seek(12);
-    rFile.mZones = tecplot_plt_header(cur, rFile.mVariables);
-    tecplot_plt_scan_data(cur, rFile.mVariables, rFile.mZones);
+    rFile.mZones = tecplot_plt_header(cur, version, rFile.mVariables);
+    tecplot_plt_scan_data(cur, version, rFile.mVariables, rFile.mZones);
     rFile.mSource = std::make_unique<TecplotPltSource>(data, size, big_endian, rFile.mZones);
 }
 

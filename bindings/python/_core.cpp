@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/patran.hpp"
@@ -41,6 +42,7 @@
 #include "meshioplusplus/formats/z88.hpp"
 #include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/formats/radioss_anim.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -324,6 +326,11 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_zstd__") = true;
 #else
     m.attr("__has_zstd__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+    m.attr("__has_bzip2__") = true;
+#else
+    m.attr("__has_bzip2__") = false;
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
     m.attr("__has_lz4__") = true;
@@ -2934,6 +2941,18 @@ PYBIND11_MODULE(_core, m) {
     m.def("lsdyna_d3plot_time_values",
           [](const std::string& path) { return meshioplusplus::lsdyna_d3plot_time_values(path); });
 
+    // LS-DYNA binout (LSDA) reader.
+    m.def(
+        "lsdyna_binout_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_binout(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("lsdyna_binout_time_values",
+          [](const std::string& path) { return meshioplusplus::lsdyna_binout_time_values(path); });
+
     // libMesh .xda/.xdr reader.
     m.def("libmesh_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_libmesh(path));
@@ -2964,6 +2983,18 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
     });
     // OpenRadioss animation file (A001...) reader.
+    // OpenRadioss time-history (T01) reader.
+    m.def(
+        "radioss_th_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_th(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("radioss_th_time_values",
+          [](const std::string& path) { return meshioplusplus::radioss_th_time_values(path); });
+
     m.def("radioss_anim_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss_anim(path));
     });
@@ -2988,9 +3019,16 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_patran(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("patran_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_patran(path));
-    });
+    m.def(
+        "patran_read",
+        [](const std::string& path,
+           const std::vector<std::pair<std::string, std::string>>& results) {
+            std::vector<meshioplusplus::PatranResultFile> files;
+            for (const auto& [name, file] : results)
+                files.push_back({name, file});
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_patran(path, files));
+        },
+        py::arg("path"), py::arg("results") = std::vector<std::pair<std::string, std::string>>{});
 
     // Elmer mesh directory writer / reader.
     m.def(
@@ -3668,8 +3706,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // (same tier) select a time directory and which of its fields to attach.
     m.def(
         "openfoam_read",
-        [](const std::string& path, const std::string& region, bool points_only,
-           py::object arrays, int time_step) {
+        [](const std::string& path, const std::string& region, bool points_only, py::object arrays,
+           int time_step) {
             meshioplusplus::OpenFoamInfo info;
             info.mRegion = region;
             const meshioplusplus::ReadOptions opts =
@@ -3717,8 +3755,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             meshioplusplus::write_openfoam(path, cpp, info, wopts);
         },
         py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
-        py::arg("patch_types") = py::dict(), py::arg("binary") = false,
-        py::arg("label_bits") = 32, py::arg("scalar_bits") = 64);
+        py::arg("patch_types") = py::dict(), py::arg("binary") = false, py::arg("label_bits") = 32,
+        py::arg("scalar_bits") = 64);
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {
@@ -3769,9 +3807,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     m.def(
         "gltf_write",
         [](const std::string& path, py::object pymesh, const std::string& container,
-           const std::string& up_axis, const std::string& normal_weight, bool normals,
-           bool fields, bool recenter, bool by_region, bool unlit, double split_angle,
-           double scale, const std::string& color_by, const std::optional<int>& component,
+           const std::string& up_axis, const std::string& normal_weight, bool normals, bool fields,
+           bool recenter, bool by_region, bool unlit, double split_angle, double scale,
+           const std::string& color_by, const std::optional<int>& component,
            const std::string& cmap, const std::optional<double>& vmin,
            const std::optional<double>& vmax, const std::string& nan_color) {
             meshioplusplus_py::PyMeshRefs refs;
@@ -3797,11 +3835,11 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             meshioplusplus::write_gltf(path, cpp, options);
         },
         py::arg("path"), py::arg("mesh"), py::arg("container") = "auto",
-        py::arg("up_axis") = "auto", py::arg("normal_weight") = "angle",
-        py::arg("normals") = true, py::arg("fields") = true, py::arg("recenter") = true,
-        py::arg("by_region") = true, py::arg("unlit") = true, py::arg("split_angle") = 30.0,
-        py::arg("scale") = 1.0, py::arg("color_by") = "", py::arg("component") = std::nullopt,
-        py::arg("cmap") = "viridis", py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
+        py::arg("up_axis") = "auto", py::arg("normal_weight") = "angle", py::arg("normals") = true,
+        py::arg("fields") = true, py::arg("recenter") = true, py::arg("by_region") = true,
+        py::arg("unlit") = true, py::arg("split_angle") = 30.0, py::arg("scale") = 1.0,
+        py::arg("color_by") = "", py::arg("component") = std::nullopt, py::arg("cmap") = "viridis",
+        py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "#808080");
 
     // SVG writer (write-only visualization; 3D input renders the projected

@@ -45,9 +45,11 @@ def _same(a, b, rtol=0.0):
     for name in a.cell_data:
         for x, y in zip(a.cell_data[name], b.cell_data[name]):
             eq(x, y)
-    assert sorted(
-        (r.kind, r.name, r.dim, tuple(r.entries)) for r in a.regions
-    ) == sorted((r.kind, r.name, r.dim, tuple(r.entries)) for r in b.regions)
+
+    def key(r):
+        return (r.kind, r.name, r.dim, tuple(np.asarray(r.entries).ravel()))
+
+    assert sorted(map(key, a.regions)) == sorted(map(key, b.regions))
 
 
 @pytest.mark.parametrize("path", FIXTURES, ids=[p.name for p in FIXTURES])
@@ -203,3 +205,121 @@ def test_sniffed_without_the_extension(tmp_path, name):
     shutil.copy(MESHES / name, path)
     assert meshioplusplus.sniff_format(path) == "abaqus_fil"
     assert _core.sniff_format(str(path)) == "abaqus_fil"
+
+
+# --- modes, energies, contact, element matrices, rebar (extras.fil) -------------------------
+
+
+@pytest.mark.parametrize("name", ["extras.fil", "extras_le.fil"])
+def test_eigenvalue_modes_are_steps(engine, name):
+    """A frequency step's two modes (1980) are two steps with their modal
+    quantities, then the modal dynamic and Explicit increments."""
+    assert meshioplusplus.read_metadata(str(MESHES / name))["time_values"] == [
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+    ]
+    for mode in (1, 2):
+        mesh = engine.read(MESHES / name, time_step=mode - 1)
+        fd = mesh.field_data
+        assert int(fd["abaqus:mode"]) == mode
+        assert float(fd["abaqus:eigenvalue"]) == 100.0 * mode
+        assert float(fd["abaqus:generalized_mass"]) == 2.0 * mode
+        pf = [0.1 * mode * c for c in range(1, 7)]
+        np.testing.assert_allclose(fd["abaqus:participation_factor"], pf)
+        np.testing.assert_allclose(fd["abaqus:effective_mass"], np.square(pf))
+        np.testing.assert_allclose(
+            mesh.point_data["U"][0], [mode, mode + 0.1, mode + 0.2]
+        )
+
+
+@pytest.mark.parametrize("name", ["extras.fil", "extras_le.fil"])
+def test_modal_dynamics_energies_contact_and_rebar(engine, name):
+    mesh = engine.read(MESHES / name, time_step=2)
+    fd = mesh.field_data
+    np.testing.assert_array_equal(fd["abaqus:GU"], [0.25, -0.5])
+    np.testing.assert_array_equal(fd["abaqus:GV"], [1.25, -1.5])
+    np.testing.assert_array_equal(fd["abaqus:BM"], [3, 0, 9.81, 0, 0, 0, 0])
+    np.testing.assert_array_equal(fd["abaqus:SNE"], [4.0, 8.0])
+    for k, e in enumerate(["ALLKE", "ALLSE", "ALLWK", "ALLPD"]):
+        assert float(fd["abaqus:" + e]) == k + 1
+    assert float(fd["abaqus:ALLDMD"]) == 16.0
+    # contact output at nodes 5 and 6 of the slave surface
+    np.testing.assert_array_equal(mesh.point_data["CSTRESS"][4], [1.0, 0.1, 0.2])
+    np.testing.assert_array_equal(mesh.point_data["CDISP"][5], [-2.0, 0.0, 0.0])
+    assert np.isnan(mesh.point_data["CSTRESS"][0]).all()
+    # a rebar's stress at the C3D20R's first point; a whole element's ELEN
+    rebar = mesh.cell_data["S@rebar:RB1"]
+    assert rebar[0][0] == 123.0
+    assert mesh.cell_data["ELEN"][1][0] == 0.75
+    # the Explicit increment names its energies and key 79 its own way
+    exp = engine.read(MESHES / name, time_step=3)
+    assert float(exp.field_data["abaqus:ALLDC"]) == 18.0
+    assert float(exp.field_data["abaqus:DMASS"]) == 24.0
+    assert "ALLKL" not in {
+        k.split(":")[1] for k in exp.field_data if k.startswith("abaqus:")
+    }
+    assert exp.cell_data["ERV"][1][0] == 0.5
+
+
+@pytest.mark.parametrize("name", ["extras.fil", "extras_le.fil"])
+def test_contact_surface_and_element_matrices(engine, name):
+    mesh = engine.read(MESHES / name)
+    surf = next(r for r in mesh.regions if r.kind == "side")
+    assert surf.name == "CSURF"
+    # S2 of the C3D20R (cell 0) and S6 of the C3D8R (cell 1), meshio++ facets
+    np.testing.assert_array_equal(surf.entries, [[0, 5], [1, 0]])
+    fd = mesh.field_data
+    np.testing.assert_array_equal(fd["abaqus:stiffness:index"], [[2, 0, 300, 1]])
+    np.testing.assert_array_equal(fd["abaqus:stiffness"], np.arange(1, 301))
+    np.testing.assert_array_equal(fd["abaqus:mass:index"], [[2, 0, 36, 1]])
+    np.testing.assert_array_equal(fd["abaqus:load:index"], [[2, 0, 24, 1]])
+    np.testing.assert_array_equal(fd["abaqus:load"], -np.arange(24.0))
+    np.testing.assert_array_equal(fd["abaqus:matrix_dofs"], [1, 2, 3])
+
+
+def test_real_buckling_modes(engine):
+    """A real Abaqus 6.23 buckling run (see README.md): five modes, five steps."""
+    path = MESHES / "bertoldi" / "job-strip-angle-buckle-45.fil"
+    if path.read_bytes()[:24].startswith(b"version https://git-lfs"):
+        pytest.skip("Git LFS fixture not fetched")
+    eig = [
+        float(engine.read(path, time_step=k).field_data["abaqus:eigenvalue"])
+        for k in range(5)
+    ]
+    np.testing.assert_allclose(
+        eig, [2.10294, 2.10302, 3.95568, 3.96096, 6.77967], rtol=1e-5
+    )
+
+
+def test_real_binary_run_matches_its_dat_printout(engine):
+    """TenBarArea (Abaqus 6.14, T2D2 trusses, see README.md): U and S11 of the
+    binary .fil are the values its .dat printout rounds."""
+    mesh = engine.read(MESHES / "cjekel" / "TenBarArea.fil")
+    dat = (MESHES / "cjekel" / "TenBarArea.dat").read_text().splitlines()
+    start = next(k for k, ln in enumerate(dat) if "NODE FOOT-  U1" in ln)
+    printed_u = {}
+    for ln in dat[start + 1 :]:
+        f = ln.split()
+        if len(f) == 3 and f[0].isdigit():
+            printed_u[int(f[0])] = [float(f[1]), float(f[2])]
+        elif printed_u and ln.strip().startswith("MAXIMUM"):
+            break
+    ids = list(mesh.point_data["abaqus:id"])
+    for label, u in printed_u.items():
+        np.testing.assert_allclose(mesh.point_data["U"][ids.index(label)], u, rtol=5e-8)
+    start = next(k for k, ln in enumerate(dat) if "ELEMENT  PT FOOT-       S11" in ln)
+    printed_s = {}
+    for ln in dat[start + 1 :]:
+        f = ln.split()
+        if len(f) == 3 and f[0].isdigit():
+            printed_s[int(f[0])] = float(f[2])
+        elif printed_s and ln.strip().startswith("MAXIMUM"):
+            break
+    assert len(printed_s) == 10
+    eids = list(mesh.cell_data["abaqus:id"][0])
+    for label, s11 in printed_s.items():
+        np.testing.assert_allclose(
+            mesh.cell_data["S"][0][eids.index(label)], s11, rtol=5e-5
+        )

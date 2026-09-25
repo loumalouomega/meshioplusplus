@@ -8,20 +8,29 @@ The d3plot fixtures under ``tests/python/meshes/lsdyna_d3plot/`` are of two kind
   ``D3plot.write_d3plot`` -- a shell + solid + beam model whose shells and solids
   yield and are then deleted, with its states in ``d3plot01`` (``shell_solid``),
   one per file (``shell_solid_split``) and in double precision
-  (``shell_solid_double``).
+  (``shell_solid_double``); and a 20-node and a 27-node hexahedron with a
+  moving rigid body (``quadratic_rigid``), for which lasso-python's writer
+  needs the patches below;
+* ``dyna/<name>/``: LS-DYNA families from Ansys' example data (MIT), trimmed
+  to a few of their files: ``bird_strike`` (SPH particles and composite
+  shells; the base file and the first state of ``d3plot01``) and
+  ``projectile`` (element erosion; its ``d3plot``, ``d3plot03`` and
+  ``d3plot16`` as ``d3plot``, ``d3plot01``, ``d3plot02``).
 
 For every family the script reads each state back with lasso-python and stores
 what it reads in ``lasso_reference.npz``: the tests compare meshio++ against that
 file, so they need neither lasso-python nor LS-DYNA. Run it in a throwaway
 environment with ``pip install lasso-python`` (tested with 2.0.4)::
 
-    python tools/gen_d3plot_reference.py <lasso-python checkout>/test/test_data
+    python tools/gen_d3plot_reference.py <lasso-python checkout>/test/test_data \
+        [<ansys example-data checkout>/result_files]
 """
 
 import os
 import shutil
 import sys
 
+import lasso.dyna.d3plot as _lasso_d3plot
 import numpy as np
 from lasso.dyna import ArrayType as A
 from lasso.dyna import D3plot
@@ -188,12 +197,187 @@ def _write(folder, arrays, double=False, single_file=True):
     plot.write_d3plot(os.path.join(folder, "d3plot"), single_file=single_file)
 
 
+# lasso-python 2.0.4's writer fails on these sections (it concatenates 1-D
+# arrays along axis 1, reaches the road writer for NDIM 8, and sizes the rigid
+# body states wrong): each is written as the database manual lays it out.
+def _extra_nodes(self, fp, settings):
+    """The 20-node solids' rows (index, 12 extra nodes) and the 27-node ones'
+    (index, 19 extra nodes: QUADR = 0), 1-based."""
+    n = 0
+    for index, extra in (
+        (
+            A.element_solid_node20_element_index,
+            A.element_solid_node20_extra_node_indexes,
+        ),
+        (
+            A.element_solid_node27_element_index,
+            A.element_solid_node27_extra_node_indexes,
+        ),
+    ):
+        if index in self.arrays:
+            rows = np.column_stack((self.arrays[index] + 1, self.arrays[extra] + 1))
+            n += fp.write(settings.pack(rows, dtype_hint=np.integer))
+    return n
+
+
+_road = _lasso_d3plot.D3plot._write_geom_rigid_road_surface
+
+
+def _no_road(self, fp, settings):
+    if A.rigid_road_segment_node_ids not in self.arrays:
+        return 0
+    return _road(self, fp, settings)
+
+
+def _rigid_states(self, fp, i_timestep, settings):
+    """Per rigid body 24 words: coordinates, rotation matrix, velocity,
+    rotational velocity, acceleration, rotational acceleration."""
+    if not 8 <= settings.header["ndim"] <= 9:
+        return 0
+    names = [
+        A.rigid_body_coordinates,
+        A.rigid_body_rotation_matrix,
+        A.rigid_body_velocity,
+        A.rigid_body_rot_velocity,
+        A.rigid_body_acceleration,
+        A.rigid_body_rot_acceleration,
+    ]
+    rows = np.concatenate([self.arrays[n][i_timestep] for n in names], axis=1)
+    return fp.write(settings.pack(rows, dtype_hint=np.floating))
+
+
+def _quadratic_rigid(nstates=3):
+    """A 20-node hexahedron (nodes 0-19) and a 27-node one (20-46) in VTK's node
+    order (LS-DYNA's), and six more nodes a rigid body (part 20) holds."""
+    rng = np.random.default_rng(3)
+    corners = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        float,
+    )
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4)]
+    edges += [(0, 4), (1, 5), (2, 6), (3, 7)]
+    faces = [
+        (0, 3, 7, 4),
+        (1, 2, 6, 5),
+        (0, 1, 5, 4),
+        (3, 2, 6, 7),
+        (0, 1, 2, 3),
+        (4, 5, 6, 7),
+    ]
+    h20 = np.vstack([corners] + [(corners[a] + corners[b]) / 2 for a, b in edges])
+    h27 = np.vstack(
+        [h20]
+        + [corners[list(f)].mean(0) for f in faces]
+        + [corners.mean(0, keepdims=True)]
+    ) + [2, 0, 0]
+    extra = np.array([[5 + 0.2 * i, 0, 0] for i in range(6)], float)
+    coords = np.vstack([h20, h27, extra]).astype(np.float32)
+    nn = len(coords)
+    arrays = {
+        A.node_coordinates: coords,
+        A.node_ids: np.arange(1, nn + 1, dtype=np.int32),
+        A.element_solid_node_indexes: np.array([range(8), range(20, 28)], np.int32),
+        A.element_solid_part_indexes: np.array([0, 0], np.int32),
+        A.element_solid_ids: np.array([7, 8], np.int32),
+        A.element_solid_node20_element_index: np.array([0], np.int32),
+        A.element_solid_node20_extra_node_indexes: np.arange(8, 20, dtype=np.int32)[
+            None, :
+        ],
+        A.element_solid_node27_element_index: np.array([1], np.int32),
+        A.element_solid_node27_extra_node_indexes: np.arange(28, 47, dtype=np.int32)[
+            None, :
+        ],
+        A.part_ids: np.array([10, 20], np.int32),
+        A.global_timesteps: np.linspace(0, 1e-3, nstates).astype(np.float32),
+        A.node_displacement: np.repeat(coords[None], nstates, 0),
+        A.element_solid_stress: rng.standard_normal((nstates, 2, 1, 6)).astype(
+            np.float32
+        ),
+        A.element_solid_effective_plastic_strain: rng.random((nstates, 2, 1)).astype(
+            np.float32
+        ),
+        A.rigid_body_part_indexes: np.array([1], np.int32),
+        A.rigid_body_n_nodes: np.array([6], np.int32),
+        A.rigid_body_node_indexes_list: [np.arange(47, 53, dtype=np.int32)],
+        A.rigid_body_n_active_nodes: np.array([2], np.int32),
+        A.rigid_body_active_node_indexes_list: [np.array([47, 48], np.int32)],
+    }
+    for name, width in (
+        (A.rigid_body_coordinates, 3),
+        (A.rigid_body_rotation_matrix, 9),
+        (A.rigid_body_velocity, 3),
+        (A.rigid_body_rot_velocity, 3),
+        (A.rigid_body_acceleration, 3),
+        (A.rigid_body_rot_acceleration, 3),
+    ):
+        arrays[name] = rng.random((nstates, 1, width)).astype(np.float32)
+    return arrays
+
+
+def _write_patched(folder, arrays):
+    saved = (
+        _lasso_d3plot.D3plot._write_geom_extra_node_data,
+        _lasso_d3plot.D3plot._write_geom_rigid_road_surface,
+        _lasso_d3plot.D3plot._write_states_rigid_bodies,
+    )
+    _lasso_d3plot.D3plot._write_geom_extra_node_data = _extra_nodes
+    _lasso_d3plot.D3plot._write_geom_rigid_road_surface = _no_road
+    _lasso_d3plot.D3plot._write_states_rigid_bodies = _rigid_states
+    try:
+        _write(folder, arrays)
+    finally:
+        (
+            _lasso_d3plot.D3plot._write_geom_extra_node_data,
+            _lasso_d3plot.D3plot._write_geom_rigid_road_surface,
+            _lasso_d3plot.D3plot._write_states_rigid_bodies,
+        ) = saved
+
+
+def copy_dyna(src):
+    """The trimmed LS-DYNA families from Ansys' example data (``result_files``)."""
+    dyna = os.path.join(OUT, "dyna")
+    bird = os.path.join(dyna, "bird_strike")
+    projectile = os.path.join(dyna, "projectile")
+    for folder in (bird, projectile):
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+        os.makedirs(folder)
+    base = os.path.join(src, "lsdyna_bird_strike")
+    shutil.copyfile(os.path.join(base, "d3plot"), os.path.join(bird, "d3plot"))
+    # d3plot01 holds two states: the first is kept
+    one_state = D3plot(os.path.join(base, "d3plot"))._compute_n_bytes_per_state()
+    data = open(os.path.join(base, "d3plot01"), "rb").read()
+    with open(os.path.join(bird, "d3plot01"), "wb") as f:
+        f.write(data[:one_state])
+    shutil.copyfile(
+        os.path.join(base, "EXAMPLE_DATA_LICENSE"), os.path.join(dyna, "LICENSE")
+    )
+    base = os.path.join(src, "d3plot_projectile")
+    # renumbered without gaps, which lasso-python stops at
+    for name, target in (
+        ("d3plot", "d3plot"),
+        ("d3plot03", "d3plot01"),
+        ("d3plot16", "d3plot02"),
+    ):
+        shutil.copyfile(os.path.join(base, name), os.path.join(projectile, target))
+
+
 def generate():
     gen = os.path.join(OUT, "generated")
     arrays = _model()
     _write(os.path.join(gen, "shell_solid"), arrays)
     _write(os.path.join(gen, "shell_solid_double"), arrays, double=True)
     _write(os.path.join(gen, "shell_solid_split"), arrays, single_file=False)
+    _write_patched(os.path.join(gen, "quadratic_rigid"), _quadratic_rigid())
 
 
 # -- the reference ---------------------------------------------------------------------
@@ -215,6 +399,23 @@ _STATE_ARRAYS = {
     "beam_alive": A.element_beam_is_alive,
     "tshell_stress": A.element_tshell_stress,
     "kinetic_energy": A.global_kinetic_energy,
+    "sph_deletion": A.sph_deletion,
+    "sph_radius": A.sph_radius,
+    "sph_pressure": A.sph_pressure,
+    "sph_stress": A.sph_stress,
+    "sph_eps": A.sph_effective_plastic_strain,
+    "sph_density": A.sph_density,
+    "sph_internal_energy": A.sph_internal_energy,
+    "sph_neighbors": A.sph_n_neighbors,
+    "sph_strain": A.sph_strain,
+    "sph_strainrate": A.sph_strainrate,
+    "sph_mass": A.sph_mass,
+    "rigid_coordinates": A.rigid_body_coordinates,
+    "rigid_rotation": A.rigid_body_rotation_matrix,
+    "rigid_velocity": A.rigid_body_velocity,
+    "rigid_rot_velocity": A.rigid_body_rot_velocity,
+    "rigid_acceleration": A.rigid_body_acceleration,
+    "rigid_rot_acceleration": A.rigid_body_rot_acceleration,
 }
 _STATIC_ARRAYS = {
     "coords": A.node_coordinates,
@@ -223,20 +424,28 @@ _STATIC_ARRAYS = {
     "shell_ids": A.element_shell_ids,
     "beam_ids": A.element_beam_ids,
     "times": A.global_timesteps,
+    "sph_nodes": A.sph_node_indexes,
+    "sph_material": A.sph_node_material_index,
+    "rigid_part": A.rigid_body_part_indexes,
+    "node20": A.element_solid_node20_extra_node_indexes,
 }
 
 
 def freeze():
     out = {}
-    for kind in ("lasso", "generated"):
+    for kind in ("lasso", "generated", "dyna"):
         root = os.path.join(OUT, kind)
         for name in sorted(os.listdir(root)):
             path = os.path.join(root, name, "d3plot")
+            if not os.path.isfile(path):
+                continue
             plot = D3plot(path)
             key = f"{kind}/{name}"
             for short, array_type in {**_STATIC_ARRAYS, **_STATE_ARRAYS}.items():
                 if array_type in plot.arrays:
-                    out[f"{key}:{short}"] = np.asarray(plot.arrays[array_type])
+                    value = plot.arrays[array_type]
+                    if isinstance(value, np.ndarray) and value.dtype != object:
+                        out[f"{key}:{short}"] = np.asarray(value)
             print(key, plot.n_timesteps, "states")
     np.savez_compressed(os.path.join(OUT, "lasso_reference.npz"), **out)
 
@@ -249,6 +458,8 @@ def main():
             if os.path.isdir(dst):
                 shutil.rmtree(dst)
             shutil.copytree(os.path.join(src, name), dst)
+    if len(sys.argv) > 2:
+        copy_dyna(sys.argv[2])
     generate()
     freeze()
 

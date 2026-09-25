@@ -356,14 +356,35 @@ def test_non_conforming_mesh_reads_as_its_leaves(engine, capfd):
         assert sorted(got[part]) == sorted(want)
 
 
-def test_non_conforming_mesh_skips_grid_functions(engine, tmp_path, capfd):
-    gf = tmp_path / "e.gf"
-    gf.write_text(
-        "FiniteElementSpace\nFiniteElementCollection: L2_2D_P0\nVDim: 1\nOrdering: 0\n\n1\n"
+NC_REF = np.load(MESHES / "reference_nc.npz")
+
+
+@pytest.mark.parametrize(
+    "name, cell_type", [("amr-quad", "quad"), ("amr-hex", "hexahedron")]
+)
+def test_non_conforming_mesh_follows_mfem_numbering(engine, name, cell_type):
+    """The leaves come in MFEM's space-filling-curve order and the points in
+    MFEM's vertex order, so MFEM's grid functions on the mesh apply: an H1
+    field at every VTK Lagrange node and an L2 one per leaf (frozen in
+    reference_nc.npz)."""
+    gfs = {g: str(MESHES / f"{name}.{g}.gf") for g in ("u", "e")}
+    mesh = engine.read(MESHES / f"{name}.mesh", gfs)
+    order = int(NC_REF[f"{name}:order"])
+    want_type = {2: f"{cell_type}{9 if cell_type == 'quad' else 27}"}.get(
+        order, _VTK_LAGRANGE[70 if cell_type == "quad" else 72]
     )
-    mesh = engine.read(MESHES / "amr-quad.mesh", {"e": str(gf)})
-    assert "e" not in mesh.cell_data
-    assert "space-filling-curve" in " ".join(capfd.readouterr().err.split())
+    block = next(b for b in mesh.cells if b.type == want_type)
+    cells = np.asarray(block.data)
+    verts = NC_REF[f"{name}:element_vertices"]
+    np.testing.assert_array_equal(cells[:, : verts.shape[1]], verts)
+    np.testing.assert_array_equal(
+        mesh.points[: len(NC_REF[f"{name}:vertices"])], NC_REF[f"{name}:vertices"]
+    )
+    np.testing.assert_allclose(
+        mesh.point_data["u"][cells], NC_REF[f"{name}:u"], rtol=0, atol=1e-13
+    )
+    k = [b.type for b in mesh.cells].index(want_type)
+    np.testing.assert_allclose(mesh.cell_data["e"][k], NC_REF[f"{name}:e"], atol=1e-14)
 
 
 @pytest.mark.parametrize("name", CONFORMING)
@@ -508,7 +529,11 @@ def test_mesh_extension_is_shared_with_medit(tmp_path):
             "curved non-conforming",
         ),
         ("MFEM NC mesh v2.0\n", "not supported"),
-        ("MFEM NURBS mesh v1.0\n", "not supported"),
+        ("MFEM NURBS NC-patch mesh v1.0\n", "not supported"),
+        (
+            "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n0\nbogus\n",
+            "expected 'boundary'",
+        ),
         (
             "MFEM mesh v1.0\ndimension\n2\nelements\n0\nboundary\n0\nvertices\n0\n\nnodes\nFiniteElementSpace\nFiniteElementCollection: RT_2D_P1\nVDim: 2\nOrdering: 0\n",
             "not supported",
@@ -540,7 +565,7 @@ def test_grid_function_mismatch_is_an_error(engine, tmp_path):
 PARALLEL = MESHES / "parallel"
 PARALLEL_REFERENCE = np.load(PARALLEL / "reference.npz")
 # case -> (ranks, merged point count of the conforming mesh)
-PARALLEL_CASES = {"star-p2": (4, 361), "beam-tet": (3, 153)}
+PARALLEL_CASES = {"star-p2": (4, 361), "beam-tet": (3, 153), "star-nc": (3, 1355)}
 # MFEM's VTK cell type -> ours (it writes order-1 and order-2 cells as VTK
 # Lagrange too)
 _PARALLEL_TYPES = {
@@ -589,8 +614,12 @@ def test_parallel_mesh_merges_its_ranks(engine, name, layout):
             )
     # the interface faces a ParMesh::Save rank lists as boundary are gone
     boundary = sum(len(b.data) for b in mesh.cells if b.dim < mesh.cells[0].dim)
-    # (serial MFEM: star 40, beam-tet 272 boundary elements once refined)
-    serial_boundary = {"star-p2": 40, "beam-tet": 272}[name]
+    # (serial MFEM: star 40, beam-tet 272 boundary elements once refined; the
+    # non-conforming star 74 -- but where a Save rank's interface is
+    # non-conforming, its pieces match no other rank's and stay: 30 of them)
+    serial_boundary = {"star-p2": 40, "beam-tet": 272, "star-nc": 74}[name]
+    if name == "star-nc" and layout == "mesh":
+        serial_boundary += 30
     assert boundary == serial_boundary
 
 
@@ -628,3 +657,169 @@ def test_parallel_grid_function_must_be_a_rank_file(engine, tmp_path):
     )
     with pytest.raises(meshioplusplus.ReadError, match="rank files"):
         engine.read(PARALLEL / "star-p2.mesh.000000", {"u": str(gf)})
+
+
+# --- NURBS meshes ----------------------------------------------------------------------------
+
+NURBS = [
+    "ball-nurbs",
+    "pipe-nurbs",
+    "square-disc-nurbs-patch",
+    "nurbs-segments2d-patches",
+    "beam-quad-nurbs-sf",
+    "cube-nurbs",
+]
+NURBS_REF = np.load(MESHES / "nurbs" / "reference_nurbs.npz")
+
+
+def _nurbs(engine, name):
+    path = MESHES / "nurbs" / f"{name}.mesh"
+    return engine.read(path, {"u": str(MESHES / "nurbs" / f"{name}.u.gf")})
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_nurbs_matches_mfem(engine, name):
+    """Every knot-span element is MFEM's, in MFEM's order; every node of its
+    cell sits where MFEM's element transformation puts it and u has MFEM's
+    value there (frozen in nurbs/reference_nurbs.npz)."""
+    mesh = _nurbs(engine, name)
+    q = int(NURBS_REF[f"{name}:order"])
+    want_x, want_u = NURBS_REF[f"{name}:x"], NURBS_REF[f"{name}:u"]
+    dim = {2: 1, 4: 2, 8: 3}[NURBS_REF[f"{name}:elements"].shape[1]]
+    block = mesh.cells[0]
+    cells = np.asarray(block.data)
+    assert len(cells) == len(want_x)
+    shape = {1: "line", 2: "quad", 3: "hexahedron"}[dim]
+    lex = [
+        i + (q + 1) * (j + (q + 1) * k)
+        for i, j, k in py_mfem._lagrange.vtk_lattice(shape, q)
+    ]
+    np.testing.assert_allclose(
+        mesh.points[cells], want_x[:, lex, :], rtol=0, atol=1e-13 * np.abs(want_x).max()
+    )
+    np.testing.assert_allclose(
+        mesh.point_data["u"][cells], want_u[:, lex], rtol=0, atol=1e-12
+    )
+    # MFEM's knot-span vertices are the cells' corners (the first nodes)
+    elements = NURBS_REF[f"{name}:elements"]
+    corners = cells[:, : elements.shape[1]]
+    ids = {}
+    for mine, theirs in zip(corners.ravel(), elements.ravel()):
+        assert ids.setdefault(int(theirs), int(mine)) == int(mine)
+    boundary = NURBS_REF[f"{name}:boundary"]
+    bdr = [b for b in mesh.cells[1:]]
+    got = np.concatenate([np.asarray(b.data)[:, : boundary.shape[1]] for b in bdr])
+    np.testing.assert_array_equal(got, np.vectorize(ids.get)(boundary))
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_nurbs_engines_agree(name):
+    _same(_nurbs(meshioplusplus.mfem, name), _nurbs(py_mfem, name))
+
+
+def test_nurbs_cells_and_attributes(engine):
+    mesh = _nurbs(engine, "pipe-nurbs")
+    # order-2 NURBS hexahedra sampled as complete quadratic cells; the boundary
+    # MFEM builds for a file without one, attribute 1
+    assert [(b.type, len(b.data)) for b in mesh.cells] == [
+        ("hexahedron27", 8),
+        ("quad9", 24),
+    ]
+    assert [r.name for r in mesh.regions] == [
+        f"attribute_{a}" for a in (1, 2, 3, 4)
+    ] + ["boundary_1"]
+    ball = _nurbs(engine, "ball-nurbs")
+    assert [b.type for b in ball.cells] == [
+        "VTK_LAGRANGE_HEXAHEDRON",
+        "VTK_LAGRANGE_QUADRILATERAL",
+    ]
+
+
+def test_nurbs_skips_other_grid_functions(engine, tmp_path, capfd):
+    gf = tmp_path / "p.gf"
+    gf.write_text(
+        "FiniteElementSpace\nFiniteElementCollection: H1_2D_P1\nVDim: 1\nOrdering: 0\n\n1\n"
+    )
+    mesh = engine.read(MESHES / "nurbs" / "cube-nurbs.mesh", {"p": str(gf)})
+    assert "p" not in mesh.point_data
+    # the warning may be wrapped (long temporary paths on macOS)
+    assert "not the NURBS mesh's own" in " ".join(capfd.readouterr().err.split())
+
+
+# --- Bernstein and serendipity spaces ------------------------------------------------------
+
+MODAL = [
+    "pos-quad-p3",
+    "pos-tri-p4",
+    "pos-tet-p3",
+    "pos-hex-p3",
+    "pos-wedge-p3",
+    "pos-seg-p4",
+    "ser-quad-p3",
+    "ser-quad-p5",
+]
+MODAL_REF = np.load(MESHES / "modal" / "reference_modal.npz")
+_MODAL_TYPES = {
+    1: ("line3", "VTK_LAGRANGE_CURVE"),
+    2: ("triangle6", "VTK_LAGRANGE_TRIANGLE"),
+    3: ("quad9", "VTK_LAGRANGE_QUADRILATERAL"),
+    4: ("tetra10", "VTK_LAGRANGE_TETRAHEDRON"),
+    5: ("hexahedron27", "VTK_LAGRANGE_HEXAHEDRON"),
+    6: ("wedge18", "VTK_LAGRANGE_WEDGE"),
+}
+
+
+def _modal(engine, name):
+    return engine.read(
+        MESHES / "modal" / f"{name}.mesh",
+        {"u": str(MESHES / "modal" / f"{name}.u.gf")},
+    )
+
+
+@pytest.mark.parametrize("name", MODAL)
+def test_modal_spaces_match_mfem(engine, name):
+    """Bernstein (H1Pos) and serendipity (H1Ser) nodes and fields are
+    coefficients, not values: every VTK Lagrange node of every cell sits where
+    MFEM's element transformation puts it, and u has MFEM's value there
+    (frozen in modal/reference_modal.npz)."""
+    mesh = _modal(engine, name)
+    q = int(MODAL_REF[f"{name}:order"])
+    geoms = sorted(
+        {
+            int(k.split(":")[1])
+            for k in MODAL_REF.files
+            if k.startswith(name + ":") and k.count(":") == 2
+        }
+    )
+    for geom in geoms:
+        want_x = MODAL_REF[f"{name}:{geom}:x"]
+        want_u = MODAL_REF[f"{name}:{geom}:u"]
+        cell_type = _MODAL_TYPES[geom][0 if q == 2 else 1]
+        cells = np.asarray(next(b.data for b in mesh.cells if b.type == cell_type))
+        assert len(cells) == len(want_x)
+        np.testing.assert_allclose(
+            mesh.points[cells], want_x, rtol=0, atol=1e-13 * np.abs(want_x).max()
+        )
+        np.testing.assert_allclose(
+            mesh.point_data["u"][cells], want_u, rtol=0, atol=1e-12
+        )
+
+
+@pytest.mark.parametrize("name", MODAL)
+def test_modal_spaces_engines_agree(name):
+    a, b = _modal(meshioplusplus.mfem, name), _modal(py_mfem, name)
+    np.testing.assert_allclose(a.points, b.points, rtol=0, atol=1e-13)
+    assert [(t, x.tolist()) for t, x in _blocks(a)] == [
+        (t, x.tolist()) for t, x in _blocks(b)
+    ]
+    np.testing.assert_allclose(a.point_data["u"], b.point_data["u"], atol=1e-13)
+
+
+def test_serendipity_needs_quadrilaterals(engine, capfd):
+    # a serendipity field on a mesh of other cells is skipped
+    mesh = engine.read(
+        MESHES / "modal" / "pos-tri-p4.mesh",
+        {"u": str(MESHES / "modal" / "ser-quad-p3.u.gf")},
+    )
+    assert "u" not in mesh.point_data
+    assert "quadrilateral meshes only" in " ".join(capfd.readouterr().err.split())

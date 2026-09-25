@@ -39,7 +39,7 @@ A big-endian binary file with the magic `0x542C`: the time, three titles and ten
 | time history | flag 6 | the nodes and elements saved for time history (skipped) |
 | SPH | flag 8 | particles with scalars and tensors |
 
-The layout is the one OpenRadioss's `anim_to_vtk` converter reads (MIT); no code is copied. Older layouts (another magic number) are refused.
+The layout is the one OpenRadioss's `anim_to_vtk` converter reads (MIT); no code is copied. Older layouts (magic numbers `0x5426` to `0x542B`, from Radioss before OpenRadioss) are refused: neither `anim_to_vtk` nor OpenRadioss's own readers document them, and no such file has been found. Every file OpenRadioss writes, including the test suite's own run (`tests/python/meshes/radioss_th/column`), is `0x542C`.
 
 ## The mesh
 

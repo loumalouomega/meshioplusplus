@@ -17,8 +17,18 @@ They come unmodified from the [pyNastran](https://github.com/SteveDoyle2/pyNastr
 | `time_thermal_elements_sort2_nx.op2` | `elements/time_thermal_elements_sort2_nx.op2` | NX | SORT2 tables (skipped) beside SORT1 ones |
 | `static_elements.op2` | `elements/static_elements.op2` | MSC | every element card, partial mid-side nodes, PCOMP/PCOMPG, springs and dampers |
 | `ctetra10.op2` | `unit/pload4/ctetra10.op2` | MSC | a ten-node tetrahedron |
+| `freq_elements2.op2` | `elements/freq_elements2.op2` | NX 10.1 | SOL 111 frequency response, magnitude/phase: complex nodal results, forces, stresses and strains of every element family, NX's von Mises variants |
+| `modes_complex_elements.op2` | `elements/modes_complex_elements.op2` | NX 10.1 | SOL 107 complex modes, CLAMA |
+| `test_vba.op2` | `nx/test_vba/test_vba.op2` | NX 2206 | random response: PSD, RMS and NO tables; acoustic GRIDs (CD = -1) |
+| `cbush.op2` | `unit/cbush/cbush.op2` | NX | CBUSH forces, stresses and strains, strain energies |
+| `cbush_2021.op2` | `msc/cbush_2021/cbush_test.op2` | MSC 2021 | real CBUSH stress; GRIDs with a non-basic CD |
+| `sdbush01.op2` | `other/sdbush01.op2` | MSC | complex CBUSH results |
+| `cc188b.op2` | `other/cc188b.op2` | MSC | CGAP forces; every GRID's CD is 1000 |
+| `rms_tri_oesrmx1.op2` | `random/rms_tri_oesrmx1.op2` | MSC | random element tables (PSD, CRM) and complex strain energies |
 
 `solid_bending_no_geom.op2` is `solid_bending.op2` with its `GEOM*` and `EPT*` tables removed (every other byte unchanged), and `solid_bending_no_geom.bdf` a copy of its deck: the reader's sibling-deck route.
+
+`static_elements_bgpdt.op2` and `sol401_tstep1_bgpdt.op2` are their files with the `GEOM1` table removed (every other byte unchanged), and `time_thermal_elements_sort2_only.op2` is `time_thermal_elements_sort2_nx.op2` without its SORT1 result tables (`OUGV1`, `OPG1`, `OEF1X`): the basic-grid-point-table and SORT2 routes. `tools/gen_nastran_op2_reference.py` writes all three.
 
 `static_solid_shell_bar_cord.op2` is `static_solid_shell_bar.op2` with the CP and CD words of its GRID record set to the file's own CORD2R/C/S systems (every other byte unchanged), and `cord_reference.npz` pyNastran's basic positions and subcase-1 displacements of it; `tools/gen_nastran_cord_reference.py` writes both (see its docstring for why the displacements use upstream pyNastran's rotation matrices rather than 1.4.1's).
 

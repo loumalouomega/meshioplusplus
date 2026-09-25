@@ -200,6 +200,51 @@ def write_mixed_free(path):
     path.write_text("\n".join(out) + "\n")
 
 
+def write_include(directory):
+    """``include_main.dat`` INCLUDEs its coordinates (``include_nodes.inc``,
+    which INCLUDEs its sets, ``include/sets.inc``, relative to itself), with
+    types from Volume B read since v16.12.0: a Herrmann brick (84: eight corners
+    and a pressure node, 100, with no coordinates), a Herrmann quad (80, the
+    pressure node 101), a composite brick (149) and a 3-node rebar line (168,
+    its middle node second); and an edge and a face set."""
+    (directory / "include").mkdir(parents=True, exist_ok=True)
+    main = [
+        "title,include deck",
+        "sizing,0,4,12,0",
+        "end",
+        "connectivity",
+        "7,",
+        "1,84,1,2,3,4,5,6,7,8,100",
+        "2,149,2,9,10,3,6,11,12,7",
+        "3,168,5,13,6",
+        "4,80,5,6,7,8,101",
+        "include include_nodes.inc",
+        "end option",
+    ]
+    coords = {
+        1: (0, 0, 0), 2: (1, 0, 0), 3: (1, 1, 0), 4: (0, 1, 0),
+        5: (0, 0, 1), 6: (1, 0, 1), 7: (1, 1, 1), 8: (0, 1, 1),
+        9: (2, 0, 0), 10: (2, 1, 0), 11: (2, 0, 1), 12: (2, 1, 1),
+        13: (0.5, 0, 1),
+    }  # fmt: skip
+    nodes = ["coordinates", f"3,{len(coords)},0,1"]
+    for ident in sorted(coords):
+        x, y, z = coords[ident]
+        nodes.append(f"{ident},{float(x)},{float(y)},{float(z)}")
+    nodes.append("include,include/sets.inc")
+    sets = [
+        "define,element,set,bricks",
+        "1,2",
+        "define,edge,set,rim",
+        "4:1 4:3",
+        "define,face,set,top",
+        "1:2 2:2",
+    ]
+    (directory / "include_main.dat").write_text("\n".join(main) + "\n")
+    (directory / "include_nodes.inc").write_text("\n".join(nodes) + "\n")
+    (directory / "include" / "sets.inc").write_text("\n".join(sets) + "\n")
+
+
 def write_plane_quad8(path):
     """Two 8-node plane-strain quads (type 27), x-y coordinates only."""
     corner = {1: (0, 0), 2: (1, 0), 3: (2, 0), 4: (0, 1), 5: (1, 1), 6: (2, 1)}
@@ -290,13 +335,13 @@ def t19_displacement(inc, node):
     return [0.001 * (inc + 1) * node, -0.0005 * node, 0.0]
 
 
-def write_t19(path):
-    numnp, numel, nstres = len(T19_NODES), len(T19_ELEMENTS), 8
-    codes = [17, 311, 312, 313, 314, 315, 316]
+def _t19_model(nodes, elements, sets, codes, nstres):
+    """Blocks 502 to 515 of a post file's model (repeated by a remeshing
+    increment); ``sets`` are (name, type, members[, face or edge numbers])."""
+    numnp, numel = len(nodes), len(elements)
     lm = [len(codes), numnp, numel, 3, nstres, 9, 1, 0, 3, 8, 2, 0, 0, 12, 0, 3, 0, 0]
     lm += [0] * 12
     out = []
-    out += _block(50100, "Analysis Title", ["          generated".ljust(70)])
     out += _block(50200, "Analysis Verification Data", _ints_block(lm))
     out += _block(50400, "Dummy", _ints_block([0]))
     out += _block(50500, "Domain Decomposition Information", _ints_block([0, 0]))
@@ -304,68 +349,112 @@ def write_t19(path):
         50600, "Element Variable Postcodes", [f"{c:13d}".ljust(37) for c in codes]
     )
     body = []
-    for ident, etype, nodes in T19_ELEMENTS:
-        body += _ints_block([ident, etype, len(nodes)] + nodes)
+    for ident, etype, conn in elements:
+        body += _ints_block([ident, etype, len(conn)] + conn)
     out += _block(50700, "Element Connectivities", body)
     body = [
-        f"{ident:13d}" + "".join(_e13(float(v)) for v in xyz)
-        for ident, xyz in T19_NODES
+        f"{ident:13d}" + "".join(_e13(float(v)) for v in xyz) for ident, xyz in nodes
     ]
     out += _block(50800, "Nodal Coordinates", body)
     out += _block(51000, "Nodal Codes and Transformation ID", _ints_block([3] * numnp))
-    body = _ints_block([3])
-    for name, kind, members in (
-        ("fixed", 1, [1, 4, 5, 8]),
-        ("loaded", 1, [9, 10, 11, 12]),
-        ("second", 0, [2]),
-    ):
+    body = _ints_block([len(sets)])
+    for name, kind, members, *numbers in sets:
         body.append(name.ljust(32))
         body += _ints_block([len(members), kind])
         body += _ints_block(members)
+        if numbers:
+            body += _ints_block(numbers[0])
     out += _block(51301, "Set Definitions", body)
     out += _block(51501, "Flow Line Data", _ints_block([0] * 6))
+    return out
+
+
+def _t19_increment(inc, time, numnp, numel, nstres, newmo=0, model=()):
+    out = ["****"]
+    out += _block(51600, "Loadcase Title", ["          pull".ljust(70)])
+    out += _block(
+        51701,
+        "Integer Increment Verification Data",
+        _ints_block([newmo, inc + 1, 0, 102, 2, 0, 0, 1, 0, 0, 0, 0]),
+    )
+    xlm = [time] + [0.0] * 23
+    out += _block(
+        51801, "Real Increment Verification Data", _ints_block([24]) + _reals_block(xlm)
+    )
+    out += list(model)
+    body = []
+    for e in range(numel):
+        for ip in range(nstres):
+            t = t19_stress(inc, e + 1, ip)
+            body += _reals_block([mises(t)] + t)
+    out += _block(52300, "Element Integration Point Values", body)
+    body = _ints_block([2, 6])
+    for name, ident, values in (
+        (
+            "Displacement",
+            1,
+            [v for n in range(numnp) for v in t19_displacement(inc, n + 1)],
+        ),
+        (
+            "Reaction Force",
+            5,
+            [
+                (-1.0 if n in (0, 3, 4, 7) else 0.0) * (inc + 1) * (d + 1)
+                for n in range(numnp)
+                for d in range(3)
+            ],
+        ),
+    ):
+        body.append(name.ljust(48))
+        body += _ints_block([ident, 0, 0, 3, 0, 0, -1, 0, 0, 0, 0, 0])
+        body += _reals_block(values)
+    out += _block(52401, "Nodal Results", body)
+    out.append("----")
+    return out
+
+
+T19_CODES = [17, 311, 312, 313, 314, 315, 316]
+T19_SETS = [
+    ("fixed", 1, [1, 4, 5, 8]),
+    ("loaded", 1, [9, 10, 11, 12]),
+    ("second", 0, [2]),
+]
+
+
+def write_t19(path):
+    numnp, numel, nstres = len(T19_NODES), len(T19_ELEMENTS), 8
+    out = _block(50100, "Analysis Title", ["          generated".ljust(70)])
+    out += _t19_model(T19_NODES, T19_ELEMENTS, T19_SETS, T19_CODES, nstres)
     for inc, time in enumerate(T19_TIMES):
-        out.append("****")
-        out += _block(51600, "Loadcase Title", ["          pull".ljust(70)])
-        out += _block(
-            51701,
-            "Integer Increment Verification Data",
-            _ints_block([0, inc + 1, 0, 102, 2, 0, 0, 1, 0, 0, 0, 0]),
-        )
-        xlm = [time] + [0.0] * 23
-        out += _block(
-            51801,
-            "Real Increment Verification Data",
-            _ints_block([24]) + _reals_block(xlm),
-        )
-        body = []
-        for e in range(numel):
-            for ip in range(nstres):
-                t = t19_stress(inc, e + 1, ip)
-                body += _reals_block([mises(t)] + t)
-        out += _block(52300, "Element Integration Point Values", body)
-        body = _ints_block([2, 6])
-        for name, ident, values in (
-            (
-                "Displacement",
-                1,
-                [v for n in range(numnp) for v in t19_displacement(inc, n + 1)],
-            ),
-            (
-                "Reaction Force",
-                5,
-                [
-                    (-1.0 if n in (0, 3, 4, 7) else 0.0) * (inc + 1) * (d + 1)
-                    for n in range(numnp)
-                    for d in range(3)
-                ],
-            ),
-        ):
-            body.append(name.ljust(48))
-            body += _ints_block([ident, 0, 0, 3, 0, 0, -1, 0, 0, 0, 0, 0])
-            body += _reals_block(values)
-        out += _block(52401, "Nodal Results", body)
-        out.append("----")
+        out += _t19_increment(inc, time, numnp, numel, nstres)
+    out.append("++++")
+    path.write_text("\n".join(out) + "\n")
+
+
+def write_t19_remesh(path):
+    """The model of ``results.t19`` for one increment; the second remeshes
+    (newmo = 1, the model blocks repeated in the increment): the second brick
+    split into two, with an edge set (type 12) and a face set (type 13)."""
+    nstres = 8
+    nodes = T19_NODES + [
+        (13, (1.5, 0, 0)), (14, (1.5, 1, 0)), (15, (1.5, 0, 1)), (16, (1.5, 1, 1)),
+    ]  # fmt: skip
+    elements = [
+        T19_ELEMENTS[0],
+        (2, 7, [2, 13, 14, 3, 6, 15, 16, 7]),
+        (3, 7, [13, 9, 10, 14, 15, 11, 12, 16]),
+    ]
+    sets = T19_SETS + [
+        ("tip_edges", 12, [3, 3], [2, 5]),
+        ("tip_face", 13, [3], [4]),
+    ]
+    out = _block(50100, "Analysis Title", ["          generated".ljust(70)])
+    out += _t19_model(T19_NODES, T19_ELEMENTS, T19_SETS, T19_CODES, nstres)
+    out += _t19_increment(0, 0.5, len(T19_NODES), len(T19_ELEMENTS), nstres)
+    model = _block(51900, "New Model", []) + _t19_model(
+        nodes, elements, sets, T19_CODES, nstres
+    )
+    out += _t19_increment(1, 1.0, len(nodes), len(elements), nstres, 1, model)
     out.append("++++")
     path.write_text("\n".join(out) + "\n")
 
@@ -377,6 +466,8 @@ def main():
     write_mixed_free(OUT / "mixed_free.dat")
     write_plane_quad8(OUT / "plane_quad8.dat")
     write_t19(OUT / "results.t19")
+    write_include(OUT)
+    write_t19_remesh(OUT / "remesh.t19")
     print(f"wrote the Marc fixtures to {OUT}")
 
 

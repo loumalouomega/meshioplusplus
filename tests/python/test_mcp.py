@@ -235,6 +235,31 @@ def test_mfem_grid_functions_convert_both_ways(tmp_path):
         _tools.tool_convert(target, str(tmp_path / "x.vtu"), write_grid_functions=True)
 
 
+def test_patran_results_convert(tmp_path):
+    import pathlib
+
+    real = pathlib.Path(__file__).parent / "meshes" / "patran" / "real"
+    target = str(tmp_path / "ssy.vtu")
+    _tools.tool_convert(
+        str(real / "warp3d_ssy.out"),
+        target,
+        patran_results={
+            "disp": str(real / "warp3d_ssy.wnbd00001"),
+            "stress": str(real / "warp3d_ssy.webs00001"),
+        },
+    )
+    vtu = meshioplusplus.read(target)
+    assert vtu.point_data["disp"].shape == (164, 3)
+    assert vtu.cell_data["stress"][0].shape == (40, 26)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _tools.tool_convert(
+            str(real / "warp3d_ssy.out"),
+            target,
+            patran_results={"d": str(real / "warp3d_ssy.wnbd00001")},
+            grid_functions={"u": "x.gf"},
+        )
+
+
 def test_elmer_directory_converts_both_ways(tmp_path):
     import pathlib
 
@@ -1945,6 +1970,11 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     anim = str(meshes / "radioss_anim" / "cubeA002")
     assert _dump(_tools.tool_sniff(anim))["format"] == "radioss_anim"
     assert _dump(_tools.tool_info(anim))["num_points"] == 15
+    # ... and their time-history files (v16.12.0): read-only, no points.
+    assert "radioss_th" in out["readable"] and "radioss_th" not in out["writable"]
+    th = str(meshes / "radioss_th" / "column" / "columnT01")
+    assert _dump(_tools.tool_sniff(th))["format"] == "radioss_th"
+    assert _dump(_tools.tool_info(th))["num_points"] == 0
 
 
 def test_d3plot_and_op2_formats(tmp_path):

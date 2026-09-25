@@ -27,6 +27,7 @@
 
 // System includes
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -121,7 +122,8 @@ struct Op2 {
     }
     std::string Key(int A, int B, int C) const { return Int(A) + Int(B) + Int(C); }
     // A 146-word result header.
-    std::string Header(int Approach, int TCode, int EType, int NumWide, int SCode) const {
+    std::string Header(int Approach, int TCode, int EType, int NumWide, int SCode, int W5 = 1,
+                       int Format = 1) const {
         std::string h;
         for (int i = 0; i < 146; ++i) {
             std::int64_t v = 0;
@@ -134,9 +136,9 @@ struct Op2 {
             if (i == 3)
                 v = 1;  // subcase
             if (i == 4)
-                v = 1;  // load set
+                v = W5;  // load set, or a SORT2 table's id * 10 + device
             if (i == 8)
-                v = 1;  // format: real
+                v = Format;  // 1 real, 2 real/imaginary, 3 magnitude/phase
             if (i == 9)
                 v = NumWide;
             if (i == 10)
@@ -187,6 +189,51 @@ std::string op2(int Ws, bool Big, bool Geometry) {
     for (int k = 1; k < 17; ++k)
         stress += o.Real(100.0 + k);
     o.Table("OES1X1", {o.Header(11, 5, 33, 17, 1), stress});
+    return o.mBytes;
+}
+
+// A static step with a spring (CELAS1 20 between GRIDs 1 and 2) and its force,
+// an energy table (word 5 = 0), a frequency response (magnitude/phase) and a
+// transient SORT2 table; the header's POST,-1 block optional.
+std::string op2_more(bool Header) {
+    Op2 o{4, false, {}};
+    if (Header) {
+        o.Marker(3);
+        o.Block(o.Int(9) + o.Int(24) + o.Int(26));
+        o.Marker(7);
+        o.Block(std::string("NASTRAN FORT TAPE ID CODE - "));
+        o.Record(o.Text("NX2019.2"));
+        o.Marker(-1);
+        o.Marker(0);
+    }
+    std::string grids = o.Key(4501, 45, 1);
+    for (int n = 0; n < 2; ++n)
+        grids += o.Int(n + 1) + o.Int(0) + o.Real(n) + o.Real(0.0) + o.Real(0.0) + o.Int(0) +
+                 o.Int(0) + o.Int(0);
+    o.Table("GEOM1S", {grids, o.Key(65535, 65535, 65535)});
+    const std::string spring =
+        o.Key(601, 6, 73) + o.Int(20) + o.Int(3) + o.Int(1) + o.Int(2) + o.Int(1) + o.Int(1);
+    o.Table("GEOM2S", {spring, o.Key(65535, 65535, 65535)});
+    o.Table("OEF1X", {o.Header(11, 4, 11, 2, 0), o.Int(201) + o.Real(5.5)});
+    o.Table("ONRGY1",
+            {o.Header(11, 18, 0, 4, 0, 0), o.Int(201) + o.Real(2.0) + o.Real(100.0) + o.Real(0.5)});
+    // Frequency response at 10 Hz: T1 = 2 at 90 degrees (real 0, imaginary 2).
+    std::string cplx = o.Int(11) + o.Int(1) + o.Real(2.0);
+    for (int c = 1; c < 6; ++c)
+        cplx += o.Real(0.0);
+    cplx += o.Real(90.0);
+    for (int c = 1; c < 6; ++c)
+        cplx += o.Real(0.0);
+    const int ten = static_cast<int>(std::bit_cast<std::uint32_t>(10.0f));
+    o.Table("OUGV1", {o.Header(51, 1001, 0, 14, 0, ten, 3), cplx});
+    // SORT2: GRID 2 over two times, rows led by the time.
+    std::string sort2;
+    for (float t : {0.5f, 1.5f}) {
+        sort2 += o.Real(t) + o.Int(1) + o.Real(3.0 * t);
+        for (int c = 1; c < 6; ++c)
+            sort2 += o.Real(0.0);
+    }
+    o.Table("OUGV2", {o.Header(61, 2001, 0, 8, 0, 21), sort2});
     return o.mBytes;
 }
 
@@ -260,4 +307,29 @@ TEST(NastranOp2, ResolvedSniffedAndNarrowed) {
     EXPECT_THROW(meshioplusplus::read_nastran_op2(path, late), ReadError);
     EXPECT_THROW(meshioplusplus::read_nastran_op2(write_file(op2(4, false, true).substr(0, 400))),
                  ReadError);
+}
+
+TEST(NastranOp2, SpringsEnergiesComplexAndSort2) {
+    const std::string path = write_file(op2_more(true));
+    const auto times = meshioplusplus::nastran_op2_time_values(path);
+    ASSERT_EQ(times, (std::vector<double>{0.0, 10.0, 0.5, 1.5}));
+    const Mesh s = meshioplusplus::read_nastran_op2(path);
+    ASSERT_EQ(s.NumCellBlocks(), 1u);
+    EXPECT_EQ(s.Cells(0).Type(), "line");  // the spring
+    EXPECT_NEAR(s.CellData("ELEMENT_FORCE:F", 0).As<double>()[0], 5.5, 1e-6);
+    EXPECT_NEAR(s.CellData("ENERGY:ENERGY", 0).As<double>()[0], 2.0, 1e-6);  // joined the step
+    ReadOptions freq;
+    freq.mTimeStep = 1;
+    const Mesh f = meshioplusplus::read_nastran_op2(path, freq);
+    EXPECT_NEAR(f.PointData("DISPLACEMENT_real").As<double>()[0], 0.0, 1e-6);
+    EXPECT_NEAR(f.PointData("DISPLACEMENT_imag").As<double>()[0], 2.0, 1e-6);
+    ReadOptions last;
+    last.mTimeStep = -1;
+    const Mesh t = meshioplusplus::read_nastran_op2(path, last);
+    EXPECT_NEAR(t.PointData("DISPLACEMENT").As<double>()[3], 4.5, 1e-6);  // GRID 2, T1
+    EXPECT_TRUE(std::isnan(t.PointData("DISPLACEMENT").As<double>()[0]));
+    // PARAM,POST,-2: no header, sniffed by the first table's name.
+    const std::string post2 = write_file(op2_more(false), "post2.bin");
+    EXPECT_EQ(meshioplusplus::sniff_format(post2), "nastran_op2");
+    EXPECT_EQ(meshioplusplus::nastran_op2_time_values(post2), times);
 }

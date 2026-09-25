@@ -22,18 +22,25 @@ cells against meshio++'s own edge tables.
 Two files:
 
 * ``mixed_linear.pat``: one hex, wedge, tet and pyramid, two quads and a bar,
-  with gaps in the node and element ids, a title and summary, packets the reader
-  skips (04 property, 06 load, 10 a nodal temperature), and three components:
+  with gaps in the node and element ids, a title and summary, a property
+  packet the reader skips (04), a pressure on a hex face (06) and a nodal
+  temperature (10), and three components:
   ``SOLIDS`` (the four solids), ``FIXED`` (four nodes) and ``MIXED`` (a quad
   and two nodes). The quads and bar are in no component, so they fall back to
   ``property_<pid>`` regions.
 * ``quadratic.pat``: one element of each quadratic shape, each in its own
   property, with no components.
 
-    python tools/gen_patran_fixtures.py
+    python tools/gen_patran_fixtures.py [warp3d/pat2exii_test]
+
+With WARP3D's ``pat2exii_test`` directory (NCSA licence), also writes
+``real/warp3d_ssy.*``: its neutral file and four of the Patran 2.5 result
+files WARP3D wrote for it (nodal and element, text and binary), trimmed to
+the first 40 elements and their nodes.
 """
 
 import pathlib
+import sys
 
 OUT = (
     pathlib.Path(__file__).resolve().parent.parent
@@ -148,16 +155,20 @@ def mixed_linear():
     q2 = m.solid("quad", 2, (1, 3, 0))
     bar = m.solid("bar", 3, (0, 5, 0))
     first = m.nodes[0][0]
-    # Packets the reader skips: a material-less property (04), a distributed
-    # load on the hex (06) and a nodal temperature (10).
+    # A material-less property (04, skipped), a uniform pressure on face 6 of
+    # the hex (06: surface load, its value at the centroid, component 1) and a
+    # nodal temperature (10, data flag 1).
     extra = (
         header(4, 1, 5, 1)
         + "PSOLID      \n"
-        + header(6, hexa, 1, 2, 1, 0)
-        + "   0\n"
+        + header(6, hexa, 1, 2)
+        + "110"
+        + "100000"
+        + "00000000"
+        + " 6\n"
         + e16(1.0)
         + "\n"
-        + header(10, first, 1, 1)
+        + header(10, first, 1, 1, 1)
         + e16(300.0)
         + "\n"
     )
@@ -179,10 +190,92 @@ def quadratic():
     return m.text("quadratic fixture for meshio++")
 
 
+def _packets(lines):
+    """(first line, card count, header fields) of every packet of a neutral file."""
+    out, i = [], 0
+    while i < len(lines):
+        head = [int(lines[i][0:2])] + [
+            int(lines[i][2 + 8 * k : 10 + 8 * k] or 0) for k in range(8)
+        ]
+        out.append((i, head[3], head))
+        if head[0] == 99:
+            break
+        i += 1 + head[3]
+    return out
+
+
+def warp3d_results(src, keep=40):
+    """Trims WARP3D's ``pat2exii_test`` (a neutral file and the Patran 2.5
+    result files WARP3D wrote for it) to its first ``keep`` elements and their
+    nodes: the kept packets and result records are copied as they are, the
+    binary records byte for byte."""
+    import struct
+
+    out = OUT / "real"
+    lines = (src / "patneut.out").read_text().split("\n")
+    packets = _packets(lines)
+    elements = [p for p in packets if p[2][0] == 2][:keep]
+    kept_elems = {p[2][1] for p in elements}
+    nodes = set()
+    for first, kc, _ in elements:
+        for ln in lines[first + 2 : first + 1 + kc]:
+            nodes.update(int(ln[k : k + 8]) for k in range(0, len(ln.rstrip()), 8))
+    body = []
+    for first, kc, head in packets:
+        it, ident = head[0], head[1]
+        if it == 26:
+            card = lines[first]
+            card = card[:26] + f"{len(nodes):8d}{len(kept_elems):8d}" + card[42:]
+            body += [card] + lines[first + 1 : first + 1 + kc]
+        elif (
+            it in (25, 99)
+            or (it in (1, 8) and ident in nodes)
+            or (it == 2 and ident in kept_elems)
+        ):
+            body += lines[first : first + 1 + kc]
+    (out / "warp3d_ssy.out").write_text("\n".join(body) + "\n", newline="\n")
+
+    def text_result(name, nodal):
+        rows = (src / name).read_text().split("\n")
+        head, records, i = rows[:4], [], 4
+        per = 5 if nodal else 6
+        width = int(head[1].split()[-1]) if nodal else int(head[1][:5])
+        while i < len(rows) and rows[i].strip():
+            first = rows[i]
+            got = len([k for k in range(5) if first[8 + 13 * k : 21 + 13 * k].strip()])
+            got = got if nodal else 0
+            n = 1 + (width - got + per - 1) // per
+            ident = int(first[:8])
+            if ident in (nodes if nodal else kept_elems):
+                records += rows[i : i + n]
+            i += n
+        if nodal:
+            head[1] = f"{len(nodes):9d}" + head[1][9:]
+        return "\n".join(head + records) + "\n"
+
+    def binary_result(name, nodal):
+        raw = (src / name).read_bytes()
+        pos, recs = 0, []
+        while pos + 4 <= len(raw):
+            size = struct.unpack_from("<i", raw, pos)[0]
+            recs.append(raw[pos : pos + 8 + size])
+            pos += 8 + size
+        keep_ids = nodes if nodal else kept_elems
+        data = [r for r in recs[3:] if struct.unpack_from("<i", r, 4)[0] in keep_ids]
+        return b"".join(recs[:3] + data)
+
+    for name, nodal in (("wnfr00001", True), ("wefe00001", False)):
+        (out / f"warp3d_ssy.{name}").write_text(text_result(name, nodal), newline="\n")
+    for name, nodal in (("wnbd00001", True), ("webs00001", False)):
+        (out / f"warp3d_ssy.{name}").write_bytes(binary_result(name, nodal))
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "mixed_linear.pat").write_text(mixed_linear(), newline="\n")
     (OUT / "quadratic.pat").write_text(quadratic(), newline="\n")
+    if len(sys.argv) > 1:  # WARP3D's pat2exii_test directory
+        warp3d_results(pathlib.Path(sys.argv[1]))
 
 
 if __name__ == "__main__":

@@ -45,7 +45,8 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
 > [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, also gzip/bzip2; active cells of refined meshes, subdomains, side, edge, shell-face and node sets as named regions, written back in the 1.8.0 layout),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
-> [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask),
+> [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
+> [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output, read-only; `nodout` outputs are steps, the other databases field data),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`),
@@ -61,7 +62,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
-> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed) and animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence),
+> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed) animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`, read-only; each output a step of field data),
 > [MSC Marc](https://hexagon.com/products/marc) input deck and formatted post file (`.dat`, `.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
@@ -1045,7 +1046,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.11.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.12.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

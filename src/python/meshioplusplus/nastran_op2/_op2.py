@@ -15,6 +15,7 @@ record layouts follow the MSC/NX DMAP manuals as pyNastran reads them. See
 """
 
 import bisect
+import math
 import os
 
 import numpy as np
@@ -171,6 +172,10 @@ _ELEMENTS = {
     (2408, 24): ("CBAR", (16,), 2, 2, 1),
     (5408, 54): ("CBEAM", (18,), 2, 2, 1),
     (2608, 26): ("CBUSH", (14,), 2, 2, 1),
+    (201, 2): ("CDAMP1", (6,), 2, 2, 1),
+    (301, 3): ("CDAMP2", (6,), 2, 2, None),
+    (601, 6): ("CELAS1", (6,), 2, 2, 1),
+    (701, 7): ("CELAS2", (8,), 2, 2, None),
     (1501, 15): ("CONM2", (13,), 1, 1, None),
     (1601, 16): ("CONROD", (8,), 1, 2, None),
     (4108, 41): ("CPENTA", (17,), 2, 15, 1),
@@ -196,12 +201,8 @@ _ELEMENTS = {
 
 # Element records without a cell type, named in the warning.
 _NAMED_ELEMENT_KEYS = {
-    (601, 6): "CELAS1",
-    (701, 7): "CELAS2",
     (801, 8): "CELAS3",
     (901, 9): "CELAS4",
-    (201, 2): "CDAMP1",
-    (301, 3): "CDAMP2",
     (401, 4): "CDAMP3",
     (501, 5): "CDAMP4",
     (1001, 10): "CMASS1",
@@ -319,13 +320,14 @@ def _grid_rows(s, raw, k3):
             )
         rows = np.frombuffer(body, dt, n)
         gid = rows["id"].astype(np.int64)
-        if np.any(gid <= 0) or np.any(np.diff(gid) <= 0) or np.any(rows["cd"] < 0):
+        # A fluid (acoustic) GRID's CD is -1: it has no output system.
+        if np.any(gid <= 0) or np.any(np.diff(gid) <= 0) or np.any(rows["cd"] < -1):
             continue
         return (
             gid.tolist(),
             rows["cp"].astype(np.int64).tolist(),
             rows["x"].astype(np.float64).tolist(),
-            rows["cd"].astype(np.int64).tolist(),
+            np.maximum(rows["cd"].astype(np.int64), 0).tolist(),
         )
     return None
 
@@ -405,6 +407,79 @@ def _read_grids(s, tables):
     return ids, xyz, cp, cd, spoints, cords
 
 
+def _table_record(tables, prefix, mark):
+    """The first record of mark ``mark`` of the first table whose name starts
+    with ``prefix``, or ``None``."""
+    for name, records in tables:
+        if not name.startswith(prefix):
+            continue
+        for m, raw in records:
+            if m == mark:
+                return raw
+        return None
+    return None
+
+
+def _bgpdt_grids(s, tables):
+    """``(ids, xyz, cd, spoints)`` of a file without GEOM1, from its basic grid
+    point table (BGPDT/BGPDTS), or ``None``.
+
+    BGPDTS rows are ``cd, x, y, z`` in internal order, named by EQEXIN (pairs
+    ``id, internal sequence`` and ``id, 10 * sil + type``: type 2 is a scalar
+    point); NX's BGPDT rows carry the id: ``cd, sil, id, 61, ps, 0, x, y, z``
+    with the coordinates as doubles.
+    """
+    ws = s.ws
+    header = _table_record(tables, "BGPDT", -1)
+    data = _table_record(tables, "BGPDT", -3)
+    if header is None or data is None or len(header) < 2 * ws:
+        return None
+    n = int(_ints(s, header)[1])
+    if n <= 0 or len(data) % n:
+        return None
+    row = len(data) // n
+    ids = [0] * n
+    scalar = [False] * n
+    if row == 4 * ws:
+        order = _table_record(tables, "EQEXIN", -3)
+        kinds = _table_record(tables, "EQEXIN", -4)
+        if order is None or kinds is None:
+            return None
+        seq = _ints(s, order).tolist()
+        typ = _ints(s, kinds).tolist()
+        type_of = {typ[i]: typ[i + 1] % 10 for i in range(0, len(typ) - 1, 2)}
+        for i in range(0, len(seq) - 1, 2):
+            k = seq[i + 1] - 1
+            if not 0 <= k < n:
+                return None
+            ids[k] = seq[i]
+            scalar[k] = type_of.get(seq[i]) == 2
+    elif row != 12 * 4 and not (ws == 8 and row == 9 * 8):
+        return None
+    out_ids, xyz, cd, spoints = [], [], [], set()
+    doubles = np.dtype(s.order + "f8")
+    for k in range(n):
+        e = data[k * row : (k + 1) * row]
+        words = _ints(s, e)
+        ident = ids[k] if row == 4 * ws else int(words[2])
+        if ident <= 0:
+            return None
+        if scalar[k]:
+            spoints.add(ident)
+            continue
+        out_ids.append(ident)
+        cd.append(max(int(words[0]), 0))
+        if row == 4 * ws:
+            xyz.extend(float(v) for v in _floats(s, e)[1:4])
+        else:
+            xyz.extend(
+                float(v) for v in np.frombuffer(e[6 * ws : 6 * ws + 24], doubles)
+            )
+    if not out_ids:
+        return None
+    return out_ids, xyz, cd, spoints
+
+
 def _read_elements(s, tables, grids):
     cards = {}
     skipped = []
@@ -421,12 +496,15 @@ def _read_elements(s, tables, grids):
             continue
         card, sizes, first, count, pid_word = spec
         words = _ints(s, raw)[3:]
+        # A spring or damper's ends may be scalar points, or 0 (grounded).
+        scalar_ends = card.startswith(("CELAS", "CDAMP"))
+        corners = 0 if scalar_ends else CARDS[card][1]
         rows = None
         for size in sizes:
             if len(words) % size:
                 continue
             candidate = words.reshape(-1, size)
-            if _valid_elements(candidate, first, CARDS[card][1], grid_array):
+            if _valid_elements(candidate, first, corners, grid_array):
                 rows = candidate
                 break
         if rows is None:
@@ -534,7 +612,7 @@ def _read_properties(s, tables):
 # -- results ---------------------------------------------------------------------------
 
 _NODAL_PREFIXES = ("OUG", "BOUG", "OQG", "OQMG", "OPG")
-_ELEMENT_PREFIXES = ("OES", "OSTR")
+_ELEMENT_PREFIXES = ("OES", "OSTR", "OEF", "HOEF", "ONRGY", "OEKE")
 
 # table code -> point data name
 _NODAL_NAMES = {
@@ -557,12 +635,20 @@ _ELEMENT_TYPE_NAMES = {
     12: "CELAS2",
     13: "CELAS3",
     14: "CELAS4",
+    20: "CDAMP1",
+    21: "CDAMP2",
+    22: "CDAMP3",
+    23: "CDAMP4",
+    24: "CVISC",
     33: "CQUAD4",
     34: "CBAR",
+    38: "CGAP",
     39: "CTETRA",
+    53: "CTRIAX6",
     64: "CQUAD8",
     67: "CHEXA",
     68: "CPENTA",
+    69: "CBEND",
     70: "CTRIAR",
     74: "CTRIA3",
     75: "CTRIA6",
@@ -573,8 +659,22 @@ _ELEMENT_TYPE_NAMES = {
     98: "CTRIA6 composite",
     100: "CBAR stations",
     102: "CBUSH",
+    107: "CHBDYE",
+    108: "CHBDYG",
+    109: "CHBDYP",
+    110: "CONV",
+    126: "CFAST",
     144: "CQUAD4 corner",
+    227: "CTRIAR",
+    228: "CQUADR",
+    232: "CQUADR composite",
+    233: "CTRIAR composite",
     255: "CPYRAM",
+    280: "CBEAR",
+    300: "CHEXA",
+    301: "CPENTA",
+    302: "CTETRA",
+    303: "CPYRAM",
 }
 
 _PLATE_NAMES = ["FD1", "X1", "Y1", "TXY1", "ANGLE1", "MAJOR1", "MINOR1", None,
@@ -596,17 +696,45 @@ _BAR_NAMES = ["X1A", "X2A", "X3A", "X4A", "AX", "MAXA", "MINA", "MST",
               "X1B", "X2B", "X3B", "X4B", "MAXB", "MINB", "MSC"]  # fmt: skip
 _SOLID_NODES = {39: 5, 67: 9, 68: 7, 255: 6}  # centre + corners
 _CORNER_PLATE_NODES = {64: 5, 70: 4, 75: 4, 82: 5, 144: 5}
+_NX_SOLID_CORNERS = {300: 8, 301: 6, 302: 4, 303: 5}  # no centre block
+_SHELL_FORCE = ["MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"]
+_BUSH_FORCE = ["FX", "FY", "FZ", "MX", "MY", "MZ"]
+_TENSOR = ["X", "Y", "Z", "TXY", "TYZ", "TZX"]
+_PLY = ["X1", "Y1", "T1", "L1", "L2"]
+_BUSH_STRESS = ["TX", "TY", "TZ", "RX", "RY", "RZ"]
+_FLUX = ["XGRAD", "YGRAD", "ZGRAD", "XFLUX", "YFLUX", "ZFLUX"]
 
 
-def _element_layout(etype, num_wide, s_code):
+# A member is (word, imaginary part's word or None, name): the word within the
+# entry, or within a node block (whose GRID is word 0).
+def _real(names, first):
+    """Real members ``names`` at words first, first + 1 ..."""
+    return [(first + k, None, n) for k, n in enumerate(names)]
+
+
+def _block(names, first):
+    """Complex members: all real parts from ``first``, then all imaginary parts."""
+    return [(first + k, first + len(names) + k, n) for k, n in enumerate(names)]
+
+
+def _pairs(names, first):
+    """Complex members as (real, imaginary) pairs from ``first``."""
+    return [(first + 2 * k, first + 2 * k + 1, n) for k, n in enumerate(names)]
+
+
+def _element_layout(family, etype, num_wide, s_code, complex_=False, random=False):
     """How an element table's entries hold their values (``op2_element_layout``):
     ``kind`` row (members at fixed words), ply (one entry per ply, word 1 the
     ply), station (one entry per CBAR station, in order) or blocks (node blocks
     led by their GRID: the centre then the corners, or a beam's stations);
-    ``None`` when the table is not read."""
+    ``None`` when the table is not read. ``family`` is ``stress`` (OES, OSTR),
+    ``force`` (OEF), ``flux`` (a heat-transfer OEF) or ``energy`` (ONRGY,
+    OEKE)."""
     vm = "VON_MISES" if s_code & 1 else "MAX_SHEAR"
 
-    def layout(members, kind="row", first=0, block=0, blocks=1, stations=False):
+    def layout(
+        members, kind="row", first=0, block=0, blocks=1, stations=False, centre=True
+    ):
         return {
             "kind": kind,
             "members": members,
@@ -614,44 +742,218 @@ def _element_layout(etype, num_wide, s_code):
             "block": block,
             "blocks": blocks,
             "stations": stations,
+            "centre": centre,
         }
 
+    cn = _CORNER_PLATE_NODES.get(etype, 0)
+    sn = _SOLID_NODES.get(etype, 0)
+    if family == "energy":
+        if not complex_ and num_wide == 4:
+            return layout(_real(["ENERGY", "PCT", "DEN"], 1))
+        if complex_ and num_wide == 5:
+            return layout([(1, 2, "ENERGY")] + _real(["PCT", "DEN"], 3))
+        return None
+    if family == "flux":
+        if etype in (1, 2, 3, 10, 34, 69, 33, 53, 64, 74, 75) and num_wide == 9:
+            return layout(_real(_FLUX, 3))
+        if etype in (39, 67, 68) and num_wide == 10:
+            return layout(_real(_FLUX, 3))
+        if etype in (107, 108, 109) and num_wide == 8:
+            names = ["FAPPLIED", "FREECONV", "FORCECONV", "FRAD", "FTOTAL"]
+            return layout(_real(names, 3))
+        if etype == 110 and num_wide == 4:
+            return layout([(1, None, "FREECONV"), (3, None, "FREECONVK")])
+        return None
+    if family == "force":
+        # Random force tables use the real layouts.
+        def real_or_complex(names, real_wide):
+            if not complex_ and num_wide == real_wide:
+                return layout(_real(names, 1))
+            if complex_ and num_wide == 1 + 2 * len(names):
+                return layout(_block(names, 1))
+            return None
+
+        if etype in (1, 3, 10, 24):
+            return real_or_complex(["AF", "TRQ"], 3)
+        if etype in (11, 12, 13, 14, 20, 21, 22, 23):
+            return real_or_complex(["F"], 2)
+        if etype == 34:
+            bar = ["BM1A", "BM2A", "BM1B", "BM2B", "TS1", "TS2", "AF", "TRQ"]
+            return real_or_complex(bar, 9)
+        if etype == 100 and not complex_ and num_wide == 8:
+            names = ["SD", "BM1", "BM2", "TS1", "TS2", "AF", "TRQ"]
+            return layout(_real(names, 1), "station")
+        if etype == 4:
+            forces = ["F41", "F21", "F12", "F32", "F23", "F43", "F34", "F14"]
+            kicks = ["KF1", "S12", "KF2", "S23", "KF3", "S34", "KF4", "S41"]
+            if not complex_ and num_wide == 17:
+                return layout(_real(forces, 1) + _real(kicks, 9))
+            # The forces' real then imaginary parts, then the kick forces' and
+            # shear flows' (pyNastran pairs words 1-16 with 17-32 instead).
+            if complex_ and num_wide == 33:
+                return layout(_block(forces, 1) + _block(kicks, 17))
+            return None
+        if etype in (33, 74, 227, 228):
+            return real_or_complex(_SHELL_FORCE, 9)
+        if etype in (102, 126, 280):
+            return real_or_complex(_BUSH_FORCE, 7)
+        if etype == 38 and not complex_ and num_wide == 9:
+            return layout(_real(["FX", "SFY", "SFZ", "U", "V", "W", "SV", "SW"], 1))
+        if etype == 2:
+            beam = ["BM1", "BM2", "TS1", "TS2", "AF", "TTRQ", "WTRQ"]
+            sd = [(1, None, "SD")]
+            if not complex_ and num_wide == 100:
+                return layout(sd + _real(beam, 2), "blocks", 1, 9, 11, True)
+            if complex_ and num_wide == 177:
+                return layout(sd + _block(beam, 2), "blocks", 1, 16, 11, True)
+            return None
+        if cn and not complex_ and num_wide == 2 + 9 * cn:
+            return layout(_real(_SHELL_FORCE, 1), "blocks", 2, 9, cn)
+        if cn and complex_ and num_wide == 2 + 17 * cn:
+            return layout(_block(_SHELL_FORCE, 1), "blocks", 2, 17, cn)
+        return None
+
+    # Stresses and strains.
+    plate_c = (
+        [(1, None, "FD1")]
+        + _pairs(["X1", "Y1", "TXY1"], 2)
+        + [(8, None, "FD2")]
+        + _pairs(["X2", "Y2", "TXY2"], 9)
+    )
+    plate_cvm = (
+        [(1, None, "FD1")]
+        + _pairs(["X1", "Y1", "TXY1"], 2)
+        + [(8, None, "VON_MISES1"), (9, None, "FD2")]
+        + _pairs(["X2", "Y2", "TXY2"], 10)
+        + [(16, None, "VON_MISES2")]
+    )
+    if random:
+        # Magnitudes only (PSD, RMS ...): pyNastran's random layouts.
+        rp = ["FD1", "X1", "Y1", "TXY1", "FD2", "X2", "Y2", "TXY2"]
+        rpvm = ["FD1", "X1", "Y1", "TXY1", "VON_MISES1"]
+        rpvm += ["FD2", "X2", "Y2", "TXY2", "VON_MISES2"]
+        if etype in (1, 10) and num_wide == 3:
+            return layout(_real(["A", "T"], 1))
+        if etype == 3 and num_wide == 3:
+            return layout(_real(["AS", "TS"], 1))
+        if etype == 4 and num_wide == 3:
+            return layout(_real(["TMAX", "TAVG"], 1))
+        if etype == 34 and num_wide == 10:
+            names = ["X1A", "X2A", "X3A", "X4A", "AX", "X1B", "X2B", "X3B", "X4B"]
+            return layout(_real(names, 1))
+        if etype == 2 and num_wide == 67:
+            names = ["SD", "XC", "XD", "XE", "XF"]
+            return layout(_real(names, 1), "blocks", 1, 6, 11, True)
+        if etype in (33, 74, 227, 228) and num_wide == 9:
+            return layout(_real(rp, 1))
+        if etype in (33, 74, 227, 228) and num_wide == 11:
+            return layout(_real(rpvm, 1))
+        if cn and num_wide == 2 + 9 * cn:
+            return layout(_real(rp, 1), "blocks", 2, 9, cn)
+        if cn and num_wide == 2 + 11 * cn:
+            return layout(_real(rpvm, 1), "blocks", 2, 11, cn)
+        if sn and num_wide == 4 + 7 * sn:
+            return layout(_real(_TENSOR, 1), "blocks", 4, 7, sn)
+        if sn and num_wide == 4 + 8 * sn:
+            members = _real(_TENSOR, 1) + [(7, None, "VON_MISES")]
+            return layout(members, "blocks", 4, 8, sn)
+        if etype in (95, 96, 97, 98, 232, 233) and num_wide in (7, 8):
+            members = _real(_PLY, 2)
+            if num_wide == 8:
+                members.append((7, None, "VON_MISES"))
+            return layout(members, "ply")
+        if etype == 102 and num_wide == 7:
+            return layout(_real(_BUSH_STRESS, 1))
+        return None
+    if complex_:
+        if etype in (1, 10) and num_wide == 5:
+            return layout(_pairs(["A", "T"], 1))
+        if etype == 3 and num_wide == 5:
+            return layout(_pairs(["AS", "TS"], 1))
+        if etype in (11, 12, 13, 14) and num_wide == 3:
+            return layout([(1, 2, "S")])
+        if etype == 4 and num_wide == 5:
+            return layout(_pairs(["TMAX", "TAVG"], 1))
+        if etype == 34 and num_wide == 19:
+            return layout(
+                _block(["X1A", "X2A", "X3A", "X4A", "AX"], 1)
+                + _block(["X1B", "X2B", "X3B", "X4B"], 11)
+            )
+        if etype == 2 and num_wide == 111:
+            members = [(1, None, "SD")] + _block(["XC", "XD", "XE", "XF"], 2)
+            return layout(members, "blocks", 1, 10, 11, True)
+        if etype in (33, 74, 227, 228) and num_wide == 15:
+            return layout(plate_c)
+        if etype in (33, 74, 227, 228) and num_wide == 17:
+            return layout(plate_cvm)
+        if cn and num_wide == 2 + 15 * cn:
+            return layout(plate_c, "blocks", 2, 15, cn)
+        if cn and num_wide == 2 + 17 * cn:
+            return layout(plate_cvm, "blocks", 2, 17, cn)
+        if sn and num_wide == 4 + 13 * sn:
+            return layout(_block(_TENSOR, 1), "blocks", 4, 13, sn)
+        if sn and num_wide == 4 + 14 * sn:
+            members = _block(_TENSOR, 1) + [(13, None, "VON_MISES")]
+            return layout(members, "blocks", 4, 14, sn)
+        if etype in (95, 96, 97, 98, 232, 233) and num_wide in (12, 13):
+            members = _block(_PLY, 2)
+            if num_wide == 13:
+                members.append((12, None, "VON_MISES"))
+            return layout(members, "ply")
+        if etype == 102 and num_wide == 13:
+            return layout(_block(_BUSH_STRESS, 1))
+        return None
     plate = [
-        (1 + k, n if n else vm + str(1 + k // 8)) for k, n in enumerate(_PLATE_NAMES)
+        (1 + k, None, n if n else vm + str(1 + k // 8))
+        for k, n in enumerate(_PLATE_NAMES)
     ]
     if etype in (1, 10) and num_wide == 5:
-        return layout([(1, "A"), (2, "MSA"), (3, "T"), (4, "MST")])
+        return layout(_real(["A", "MSA", "T", "MST"], 1))
     if etype == 3 and num_wide == 5:
-        return layout([(1, "AS"), (2, "MSA"), (3, "TS"), (4, "MST")])
+        return layout(_real(["AS", "MSA", "TS", "MST"], 1))
     if etype == 4 and num_wide == 4:
-        return layout([(1, "TMAX"), (2, "TAVG"), (3, "MS")])
+        return layout(_real(["TMAX", "TAVG", "MS"], 1))
+    if etype in (11, 12, 13, 14) and num_wide == 2:
+        return layout(_real(["S"], 1))
+    if etype == 102 and num_wide == 7:
+        return layout(_real(_BUSH_STRESS, 1))
     if etype == 34 and num_wide == 16:
-        return layout([(1 + k, n) for k, n in enumerate(_BAR_NAMES)])
+        return layout(_real(_BAR_NAMES, 1))
     if etype == 100 and num_wide == 10:  # CBAR stations
         names = ["SD", "XC", "XD", "XE", "XF", "AX", "MAX", "MIN", "MS"]
-        return layout([(1 + k, n) for k, n in enumerate(names)], "station")
+        return layout(_real(names, 1), "station")
     if etype in (95, 96, 97, 98, 232, 233) and num_wide == 11:  # composite plies
         names = ["X1", "Y1", "T1", "L1", "L2", "ANGLE", "MAJOR", "MINOR", vm]
-        return layout([(2 + k, n) for k, n in enumerate(names)], "ply")
+        return layout(_real(names, 2), "ply")
     if etype == 2 and num_wide == 111:  # CBEAM: 11 stations
         names = ["SD", "XC", "XD", "XE", "XF", "MAX", "MIN", "MST", "MSC"]
-        return layout(
-            [(1 + k, n) for k, n in enumerate(names)],
-            "blocks",
-            1,
-            10,
-            11,
-            stations=True,
-        )
+        return layout(_real(names, 1), "blocks", 1, 10, 11, stations=True)
     if etype in (33, 74) and num_wide == 17:
         return layout(plate)
-    if etype in _CORNER_PLATE_NODES and num_wide == 2 + 17 * _CORNER_PLATE_NODES[etype]:
-        return layout(plate, "blocks", 2, 17, _CORNER_PLATE_NODES[etype])
-    if etype in _SOLID_NODES and num_wide == 4 + 21 * _SOLID_NODES[etype]:
+    if cn and num_wide == 2 + 17 * cn:
+        return layout(plate, "blocks", 2, 17, cn)
+    if sn and num_wide == 4 + 21 * sn:
         octa = "VON_MISES" if s_code & 1 else "OCT_SHEAR"
-        members = [(k, n if n else octa) for k, n in sorted(_SOLID_NAMES.items())]
-        return layout(members, "blocks", 4, 21, _SOLID_NODES[etype])
+        members = [(k, None, n if n else octa) for k, n in sorted(_SOLID_NAMES.items())]
+        return layout(members, "blocks", 4, 21, sn)
+    # NX's newer solids (CHEXA 300, CPENTA 301, CTETRA 302, CPYRAM 303): the
+    # corners only, no centre.
+    nx = _NX_SOLID_CORNERS.get(etype, 0)
+    if nx and num_wide == 3 + 8 * nx:
+        members = _real(_TENSOR, 1) + [(7, None, "VON_MISES")]
+        return layout(members, "blocks", 3, 8, nx, centre=False)
     return None
+
+
+_DEGREE = 3.14159265358979323846 / 180.0
+
+
+def _complex(a, b, mag_phase):
+    """A complex value's real and imaginary parts from its two words:
+    themselves, or a magnitude and a phase in degrees."""
+    if not mag_phase:
+        return a, b
+    return a * math.cos(b * _DEGREE), a * math.sin(b * _DEGREE)
 
 
 def _time_of(analysis, w5_int, w5_float, w6_float):
@@ -682,6 +984,19 @@ class _File:
         self.blocks = []  # (step, kind, name info, data bytes)
         skipped = []
         deferred = []
+        # Complex eigenvalues (CLAMA): mode -> (real, imaginary part); rows are
+        # ``mode, order, eigr, eigi, frequency, damping``.
+        clama = {}
+        for name, records in self.tables:
+            if not name.startswith("CLAMA"):
+                continue
+            for mark, raw in records:
+                if mark > -3 or len(raw) == 146 * ws or len(raw) % (6 * ws):
+                    continue
+                rows_i = _ints(s, raw).reshape(-1, 6)
+                rows_f = _floats(s, raw).reshape(-1, 6)
+                for ri, rf in zip(rows_i.tolist(), rows_f.tolist()):
+                    clama.setdefault(int(ri[0]), (float(rf[2]), float(rf[3])))
 
         def skip(reason):
             if reason not in skipped:
@@ -711,79 +1026,155 @@ class _File:
                 analysis = (approach - device) // 10
                 table_code = tcode % 1000
                 sort_code = tcode // 1000
+                format_code = int(h[8])
                 num_wide = int(h[9])
                 s_code = int(h[10])
                 thermal = int(h[22])
-                if sort_code & 1:
+                complex_ = bool(sort_code & 1)
+                sort2 = bool(sort_code & 2)
+                # Random tables: the hundreds of the table code name the
+                # quantity (5 CRM, 6 PSD, 7 ATO, 8 RMS, 9 NO), the rest what.
+                random = bool(sort_code & 4) or table_code >= 500
+                what = table_code
+                suffix = ""
+                if random:
+                    kind = table_code // 100
+                    if not 5 <= kind <= 9 or complex_ or grid_force:
+                        skip(f"{name} (random)")
+                        continue
+                    suffix = ("_CRM", "_PSD", "_ATO", "_RMS", "_NO")[kind - 5]
+                    what = table_code % 100
+                if complex_ and grid_force:
                     skip(f"{name} (complex)")
                     continue
-                if sort_code & 4:
-                    skip(f"{name} (random)")
-                    continue
-                if sort_code & 2:
-                    skip(f"{name} (SORT2)")
-                    continue
+                extra = {
+                    "complex": complex_,
+                    "mag_phase": complex_ and format_code == 3,
+                    "suffix": suffix,
+                }
                 if grid_force:
                     if table_code != 19 or num_wide != 10:
                         skip(f"{name} (table code {table_code}, {num_wide} words)")
                         continue
                     info = ("gpf", "GRID_FORCE")
                 elif nodal:
-                    base = _NODAL_NAMES.get(table_code)
+                    base = _NODAL_NAMES.get(what)
                     # MPC forces share the SPC forces' table code; the name tells.
-                    if name.startswith("OQMG") and table_code in (3, 39):
+                    if name.startswith("OQMG") and what in (3, 39):
                         base = "MPC_FORCE"
                     if base is None:
                         skip(f"{name} (table code {table_code})")
                         continue
-                    if num_wide != 8:
+                    if num_wide != (14 if complex_ else 8):
                         skip(f"{name} ({num_wide} words per node)")
                         continue
                     if thermal == 1:
-                        if table_code != 1:
+                        if what != 1 or complex_:
                             skip(f"{name} (thermal table code {table_code})")
                             continue
                         base = "TEMPERATURE"
-                    info = ("nodal", base, name.startswith("BOUG"))
+                    info = ("nodal", base, name.startswith("BOUG"), num_wide)
                 else:
-                    if table_code != 5:
+                    if what == 5:
+                        family = "stress"
+                        group = "STRAIN" if s_code & 8 else "STRESS"
+                    elif what == 4:
+                        family = "flux" if thermal == 1 else "force"
+                        group = "HEAT_FLUX" if thermal == 1 else "ELEMENT_FORCE"
+                    elif what in (18, 36):
+                        family = "energy"
+                        group = "ENERGY" if what == 18 else "KINETIC_ENERGY"
+                    else:
                         skip(f"{name} (table code {table_code})")
                         continue
-                    layout = _element_layout(etype, num_wide, s_code)
+                    layout = _element_layout(
+                        family,
+                        etype,
+                        num_wide,
+                        s_code,
+                        complex_,
+                        random and family == "stress",
+                    )
                     if layout is None:
-                        ename = _ELEMENT_TYPE_NAMES.get(etype, f"type {etype}")
-                        skip(f"{name} {ename}")
+                        # An energy table's word 3 is the total energy, not a type.
+                        ename = (
+                            "energy"
+                            if family == "energy"
+                            else _ELEMENT_TYPE_NAMES.get(etype, f"type {etype}")
+                        )
+                        cplx = " complex" if complex_ else ""
+                        skip(f"{name} {ename}{cplx} ({num_wide} words)")
                         continue
-                    group = "STRAIN" if s_code & 8 else "STRESS"
                     info = ("element", group, layout, num_wide)
                 w5 = int(h[4])
+                moded = analysis in (2, 8, 9)
+                if sort2:
+                    if grid_force:
+                        skip(f"{name} (SORT2)")
+                        continue
+                    # Every row makes (or joins) the step its first word names.
+                    width = (info[3] if nodal else num_wide) * ws
+                    if not width or len(raw) % width:
+                        _fail(f"a SORT2 {name} record is not a whole number of rows")
+                    firsts = _ints(s, raw)[:: width // ws].tolist()
+                    times = _floats(s, raw)[:: width // ws].tolist()
+                    for key5, t in zip(firsts, times):
+                        key = (subcase, analysis, key5)
+                        if key in step_index:
+                            continue
+                        step_index[key] = len(self.steps)
+                        self.steps.append(
+                            {
+                                "subcase": subcase,
+                                "analysis": analysis,
+                                "mode": key5 if moded else 0,
+                                "time": _time_of(analysis, key5, t, t),
+                                "w5": key5,
+                            }
+                        )
+                    extra["sort2"] = (subcase, analysis, header[4 * ws : 5 * ws], width)
+                    self.blocks.append((None, info, raw, extra))
+                    continue
                 key = (subcase, analysis, w5)
+                own = {
+                    "subcase": subcase,
+                    "analysis": analysis,
+                    "mode": w5 if moded else 0,
+                    "time": _time_of(analysis, w5, float(f[4]), float(f[5])),
+                    "w5": w5,
+                }
                 if grid_force:
-                    deferred.append((key, info, raw, name))
+                    deferred.append((key, info, raw, name, extra, None))
+                    continue
+                # Energies too: ONRGY writes 0 in word 5 where the other tables
+                # of a static step write the load set.
+                if info[0] == "element" and info[1] in ("ENERGY", "KINETIC_ENERGY"):
+                    deferred.append((key, info, raw, name, extra, own))
                     continue
                 if key not in step_index:
                     step_index[key] = len(self.steps)
-                    self.steps.append(
-                        {
-                            "subcase": subcase,
-                            "analysis": analysis,
-                            "mode": w5 if analysis in (2, 8, 9) else 0,
-                            "time": _time_of(analysis, w5, float(f[4]), float(f[5])),
-                        }
-                    )
-                self.blocks.append((step_index[key], info, raw))
+                    self.steps.append(own)
+                self.blocks.append((step_index[key], info, raw, extra))
         # Grid point forces join a step the other tables made, never a new one:
         # MSC writes 0 in their word 5 where the other tables of a static step
         # write the load set, and a buckling run's forces carry analysis 2.
-        for key, info, raw, name in deferred:
+        for key, info, raw, name, extra, own in deferred:
             index = step_index.get(key)
             if index is None:
                 same = [i for k, i in sorted(step_index.items()) if k[:2] == key[:2]]
-                if len(same) != 1:
+                if not same and own is not None:
+                    index = step_index[key] = len(self.steps)
+                    self.steps.append(dict(own))
+                elif len(same) != 1:
                     skip(f"{name} (no matching step)")
                     continue
-                index = same[0]
-            self.blocks.append((index, info, raw))
+                else:
+                    index = same[0]
+            self.blocks.append((index, info, raw, extra))
+        for st in self.steps:
+            st["eigi"] = 0.0
+            if st["analysis"] == 9 and st["mode"] in clama:
+                st["time"], st["eigi"] = clama[st["mode"]]
         self.skipped = skipped
 
 
@@ -832,17 +1223,47 @@ def _build_mesh(nf):
     ids, xyz, cp, cd, spoints, cords = _read_grids(s, nf.tables)
     if not ids:
         deck, tried = _sibling_deck(nf.path)
-        if deck is None:
+        bgpdt = _bgpdt_grids(s, nf.tables) if deck is None else None
+        if deck is None and bgpdt is None:
             _fail(
-                "the file has no GEOM1 GRID records (rerun with PARAM,POST,-1 or "
-                "provide the input deck beside it); looked for " + ", ".join(tried)
+                "the file has no GEOM1 GRID records and no basic grid point table "
+                "(rerun with PARAM,POST,-1 or provide the input deck beside it); "
+                "looked for " + ", ".join(tried)
             )
-        return _mesh_from_deck(deck) + (CoordSystems(), None)
+        if deck is not None:
+            return _mesh_from_deck(deck) + (CoordSystems(), None)
+        ids, xyz, cd, more = bgpdt
+        spoints |= more
+        cp = [0] * len(ids)
+        warn(
+            f"{WHO}: no GEOM1 table and no input deck beside the file; the "
+            f"{len(ids)} points come from the basic grid point table (BGPDT)"
+        )
+        if any(c > 0 for c in cd):
+            warn(
+                f"{WHO}: without GEOM1 the output coordinate systems are unknown; "
+                "results stay in them"
+            )
+        cd = [0] * len(ids)
+    # A file can repeat a GRID in a second GEOM1 table (a restart's): kept
+    # once when both definitions agree.
     grid_index = {}
+    keep = []
     for i, g in enumerate(ids):
-        if g in grid_index:
-            _fail(f"GRID {g} is defined twice")
-        grid_index[g] = i
+        j = grid_index.get(g)
+        if j is not None:
+            k = keep[j]
+            same = cp[i] == cp[k] and cd[i] == cd[k]
+            if not same or list(np.ravel(xyz[i])) != list(np.ravel(xyz[k])):
+                _fail(f"GRID {g} is defined twice")
+            continue
+        grid_index[g] = len(keep)
+        keep.append(i)
+    if len(keep) != len(ids):
+        ids = [ids[i] for i in keep]
+        cp = [cp[i] for i in keep]
+        cd = [cd[i] for i in keep]
+        xyz = [xyz[i] for i in keep]
     points = np.asarray(xyz, dtype=np.float64).reshape(len(ids), 3)
     point_data = {}
     systems = apply_frames(points, point_data, cords, ids, cp, cd, WHO)
@@ -877,6 +1298,8 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     mesh.field_data[TIME_KEY] = np.array([step["time"]], dtype=np.float64)
     for key in ("subcase", "analysis", "mode"):
         mesh.field_data["nastran:" + key] = np.array([step[key]], dtype=np.int64)
+    if step["analysis"] == 9:
+        mesh.field_data["nastran:eigi"] = np.array([step["eigi"]], dtype=np.float64)
     if nf.skipped:
         warn(f"{WHO}: result tables not read: " + ", ".join(nf.skipped))
     if points_only:
@@ -899,25 +1322,47 @@ def read(filename, points_only=False, arrays=None, time_step=0):
         n = width * s.ws
         return [raw[i : i + n] for i in range(0, len(raw), n)]
 
-    for step_id, info, raw in nf.blocks:
-        if step_id != index:
+    for step_id, info, raw, extra in nf.blocks:
+        if "sort2" in extra:
+            # This step's rows of the entity, rewritten as SORT1 rows.
+            subcase, analysis, entity, width = extra["sort2"]
+            if (subcase, analysis) != (step["subcase"], step["analysis"]):
+                continue
+            firsts = _ints(s, raw)[:: width // s.ws].tolist()
+            raw = b"".join(
+                entity + raw[r * width + s.ws : (r + 1) * width]
+                for r, first in enumerate(firsts)
+                if first == step["w5"]
+            )
+            if not raw:
+                continue
+        elif step_id != index:
             continue
         ints = _ints(s, raw)
         floats = _floats(s, raw)
         if info[0] == "nodal":
-            base = info[1]
-            if len(ints) % 8:
+            base, nw = info[1], info[3]
+            if len(ints) % nw:
                 _fail(f"a {base} record is not a whole number of rows")
-            rows_i = ints.reshape(-1, 8)
-            rows_f = floats.reshape(-1, 8)
+            rows_i = ints.reshape(-1, nw)
+            rows_f = floats.reshape(-1, nw)
             nid = rows_i[:, 0] // 10
             targets = [(r, grid_index.get(int(g))) for r, g in enumerate(nid.tolist())]
-            outputs = (
-                [(base, 2, 1)]
-                if base == "TEMPERATURE"
-                else [(base, 2, 3), (base + "_ROT", 5, 3)]
-            )
-            for name, c0, nc in outputs:
+            sfx = extra["suffix"]
+            # (name, first word of the value or real part, of the imaginary part,
+            # components, part: 0 the value, 1 the real, 2 the imaginary)
+            if base == "TEMPERATURE":
+                outputs = [(base + sfx, 2, 0, 1, 0)]
+            elif extra["complex"]:
+                outputs = [
+                    (base + "_real", 2, 8, 3, 1),
+                    (base + "_imag", 2, 8, 3, 2),
+                    (base + "_ROT_real", 5, 11, 3, 1),
+                    (base + "_ROT_imag", 5, 11, 3, 2),
+                ]
+            else:
+                outputs = [(base + sfx, 2, 0, 3, 0), (base + "_ROT" + sfx, 5, 0, 3, 0)]
+            for name, c0, c1, nc, part in outputs:
                 if not wants(name):
                     continue
                 values = point_arrays.get(name)
@@ -926,8 +1371,17 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                 for r, p in targets:
                     if p is not None and np.isnan(values[p, 0]):
                         v = rows_f[r, c0 : c0 + nc].tolist()
-                        # Results are in the GRID's output system (CD) unless the table is BOUG*.
-                        if nc == 3 and not info[2] and cd is not None:
+                        if part:
+                            im = rows_f[r, c1 : c1 + nc].tolist()
+                            pairs = [
+                                _complex(a, b, extra["mag_phase"])
+                                for a, b in zip(v, im)
+                            ]
+                            v = [z[part - 1] for z in pairs]
+                        # Results are in the GRID's output system (CD) unless the
+                        # table is BOUG*; random ones (spectral densities, RMS
+                        # ...) are not vectors and stay there.
+                        if nc == 3 and not info[2] and cd is not None and not sfx:
                             rotate_to_basic(systems, cd[p], mesh.points[p].tolist(), v)
                         values[p] = v
         elif info[0] == "gpf":
@@ -977,6 +1431,24 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             rows_i = ints.reshape(-1, num_wide)
             rows_f = floats.reshape(-1, num_wide)
             kind = layout["kind"]
+            members = layout["members"]
+            sfx = extra["suffix"]
+            mag_phase = extra["mag_phase"]
+
+            def member_values(row_f, at):
+                """(member, value) of each member at word ``at``: itself (with a
+                random table's suffix), or its real and imaginary parts."""
+                out = []
+                for word, imag, member in members:
+                    a = float(row_f[at + word])
+                    if imag is None:
+                        out.append((member + sfx, a))
+                        continue
+                    re, im = _complex(a, float(row_f[at + imag]), mag_phase)
+                    out.append((member + "_real", re))
+                    out.append((member + "_imag", im))
+                return out
+
             stations = {}
             for r in range(len(rows_i)):
                 eid = int(rows_i[r, 0]) // 10
@@ -994,26 +1466,29 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                         continue
                     col = ply - 1 if kind == "ply" else station
                     suffix = "@ply" if kind == "ply" else "@station"
-                    for word, member in layout["members"]:
+                    for member, value in member_values(row_f, 0):
                         name = f"{group}:{member}{suffix}"
                         if wants(name):
-                            push(name, c, col, float(row_f[word]))
+                            push(name, c, col, value)
                     continue
                 # row: the values; blocks: the first block's (centre, or end A)
-                first = layout["first"] if kind == "blocks" else 0
-                for word, member in layout["members"]:
-                    name = f"{group}:{member}"
-                    if not wants(name):
-                        continue
-                    values = cell_arrays.get(name)
-                    if values is None:
-                        values = cell_arrays[name] = np.full(ncells, _NAN)
-                    if np.isnan(values[c]):
-                        values[c] = row_f[first + word]
+                if kind != "blocks" or layout["centre"]:
+                    first = layout["first"] if kind == "blocks" else 0
+                    for member, value in member_values(row_f, first):
+                        name = f"{group}:{member}"
+                        if not wants(name):
+                            continue
+                        values = cell_arrays.get(name)
+                        if values is None:
+                            values = cell_arrays[name] = np.full(ncells, _NAN)
+                        if np.isnan(values[c]):
+                            values[c] = value
                 if kind != "blocks":
                     continue
                 beam = layout["stations"]
-                for k in range(0 if beam else 1, layout["blocks"]):
+                for k in range(
+                    0 if beam or not layout["centre"] else 1, layout["blocks"]
+                ):
                     at = layout["first"] + k * layout["block"]
                     col = k
                     # a beam station with no GRID and no distance was not output
@@ -1032,10 +1507,10 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                         if col is None:
                             continue
                     suffix = "@station" if beam else "@corner"
-                    for word, member in layout["members"]:
+                    for member, value in member_values(row_f, at):
                         name = f"{group}:{member}{suffix}"
                         if wants(name):
-                            push(name, c, col, float(row_f[at + word]))
+                            push(name, c, col, value)
     for name, values in point_arrays.items():
         mesh.point_data[name] = values[:, 0] if values.shape[1] == 1 else values
     for name, values in cell_arrays.items():

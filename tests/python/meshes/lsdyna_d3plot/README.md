@@ -1,7 +1,7 @@
 <!--pytest-codeblocks:skipfile-->
 # LS-DYNA d3plot reference fixtures
 
-Two kinds of family, each in its own folder with its `d3plot` and numbered members:
+Three kinds of family, each in its own folder with its `d3plot` and numbered members:
 
 - **`lasso/`**: [lasso-python](https://github.com/open-lasso-python/lasso-python)'s own test data (`test/test_data/` at commit `723b9303`, BSD 3-Clause, notice below), real LS-DYNA output copied unmodified:
 
@@ -14,6 +14,15 @@ Two kinds of family, each in its own folder with its `d3plot` and numbered membe
 | `order_d3plot` | members numbered up to `d3plot100`, read in numeric order |
 
 - **`generated/`**: families `tools/gen_d3plot_reference.py` writes with lasso-python's `D3plot.write_d3plot`: a hexahedron, a wedge and a tetrahedron (degenerate 8-node solids), five quads and a triangle (a degenerate quad), two beams and three parts with titles, over four states in which the plate bends, plastic strain grows, three shells and the tetrahedron are deleted. `shell_solid` holds its states in `d3plot01`, `shell_solid_split` one per file, `shell_solid_double` is the same model in double precision.
+
+  `quadratic_rigid` holds a 20-node and a 27-node hexahedron and a moving rigid body over three states; lasso-python's writer fails on those sections, so the script patches in the database manual's layout for them.
+
+- **`dyna/`**: LS-DYNA families from Ansys' [example data](https://github.com/ansys/example-data) (`result_files/`, MIT, notice in `dyna/LICENSE`), trimmed by `tools/gen_d3plot_reference.py`:
+
+| Folder | What it exercises |
+|---|---|
+| `bird_strike` | 701 SPH particles on 2304 composite shells (10 layers): the base file and the first of `d3plot01`'s two states |
+| `projectile` | LSTC's projectile penetrating a plate, 5664 bricks, element erosion: its `d3plot` (the geometry) and the states of `d3plot03` and `d3plot16` (18 and 614 elements deleted), renumbered `d3plot01`, `d3plot02` |
 
 `lasso_reference.npz` freezes lasso-python 2.0.4's reading of every family and state (coordinates, ids, times, displacement, velocity, temperature, solid and shell stress, plastic strain and deletion flags). `test_lsdyna_d3plot.py` compares against it without lasso-python installed; `tools/gen_d3plot_reference.py` regenerates it (and the `generated/` families).
 

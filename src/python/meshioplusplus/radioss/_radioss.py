@@ -11,6 +11,7 @@ commas. Nodes and elements make the mesh; parts, subsets, groups and ``/SURF/SEG
 surfaces become regions.
 """
 
+import math
 import os
 
 import numpy as np
@@ -58,6 +59,8 @@ _GROUPS = {
 _UNREAD = ("TSHELL", "TSH3N", "SHEL16", "SPHCEL", "RIVET", "XELEM")
 
 _SURF_KINDS = (
+    "BOX",
+    "BOX2",
     "PART",
     "SUBSET",
     "MAT",
@@ -221,10 +224,21 @@ def _in_box(boxes, ident, x, node_point, skewed, missing, depth=0):
         ):
             inside = False
         return inside
-    if b["skew"]:
-        skewed.add(ident)
-        return False
     p1 = node_point(b["n1"], b["p1"])
+    if b["skew"] and kind == "RECTA":
+        # Edges along the skew's axes: compare in the skew frame.
+        axes = b.get("axes")
+        if axes is None:
+            skewed.add(ident)
+            return False
+        p2 = node_point(b["n2"], b["p2"])
+        for a in axes:
+            v = a[0] * x[0] + a[1] * x[1] + a[2] * x[2]
+            u1 = a[0] * p1[0] + a[1] * p1[1] + a[2] * p1[2]
+            u2 = a[0] * p2[0] + a[1] * p2[1] + a[2] * p2[2]
+            if v < min(u1, u2) or v > max(u1, u2):
+                return False
+        return True
     if kind == "SPHER":
         return sum((x[d] - p1[d]) ** 2 for d in range(3)) <= 0.25 * b["diameter"] ** 2
     p2 = node_point(b["n2"], b["p2"])
@@ -242,6 +256,74 @@ def _in_box(boxes, ident, x, node_point, skewed, missing, depth=0):
     return False
 
 
+def _header_version(head):
+    """The input version on a ``#RADIOSS STARTER`` line (41 in
+    ``#RADIOSS STARTER      41BAR2V41B``), 0 if none."""
+    at = head.find("#RADIOSS STARTER")
+    if at < 0:
+        return 0
+    rest = head[at + 16 :].split("\n", 1)[0].lstrip(" \t")
+    digits = ""
+    for ch in rest[:4]:
+        if not ch.isdigit():
+            break
+        digits += ch
+    return int(digits) if digits else 0
+
+
+def _engine_fields(path):
+    """An engine deck's keywords and the numbers of their lines, as
+    ``radioss:engine:<keyword>`` field data (an output request is empty)."""
+    lines = []
+    _collect(path, 0, lines)
+    out = []
+    for text, _ in lines:
+        t = text.strip(" \t\r")
+        if not t:
+            continue
+        if t[0] == "/":
+            out.append(("radioss:engine:" + t[1:], []))
+            continue
+        if not out:
+            continue
+        for tok in t.split():
+            try:
+                out[-1][1].append(float(tok.replace("D", "E").replace("d", "e")))
+            except ValueError:
+                pass
+    return out
+
+
+def _add_engine_fields(field_data, path):
+    for name, values in _engine_fields(path):
+        if name in field_data:  # a repeated keyword: its numbers appended
+            values = list(np.asarray(field_data[name]).ravel()) + values
+        field_data[name] = np.array(values, dtype=np.float64)
+
+
+def _cross(a, b):
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+
+
+def _unit(a):
+    n = math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+    return ([x / n for x in a] if n > 0.0 else list(a)), n > 0.0
+
+
+def _skew_axes(skew):
+    """The unit axes of a fixed skew (X, Z = X x Y, Y = Z x X), as the rows
+    of a rotation into the skew frame; None when X and Y are parallel."""
+    x, okx = _unit(skew["x"])
+    z, okz = _unit(_cross(x, skew["y"]))
+    if not okx or not okz:
+        return None
+    return [x, _cross(z, x), z]
+
+
 def read(filename):
     path = os.fspath(filename)
     try:
@@ -250,15 +332,22 @@ def read(filename):
     except OSError:
         raise ReadError(f"Radioss: cannot open {path}")
     if "#RADIOSS ENGINE" in head:
-        raise ReadError(
-            f"Radioss: {path} is an engine deck (_0001.rad); read the starter deck "
-            "(_0000.rad)"
-        )
+        mesh = Mesh(np.zeros((0, 3)), [])
+        _add_engine_fields(mesh.field_data, path)
+        return mesh
+    header_version = _header_version(head)
     lines = []
     _collect(path, 0, lines)
 
     version = 2019
     iw, rw = 10, 20
+    # Before input version 5.1 (4.1, 4.4) there is no /BEGIN: the version is on
+    # the #RADIOSS STARTER line, fields are 8 and 16 columns wide, and a title
+    # is the keyword's last part rather than a line of its own.
+    titles_in_path = 0 < header_version < 51
+    if titles_in_path:
+        version = header_version
+        iw, rw = 8, 16
     node_ids, coords = [], []
     elements = []  # (family, id, part, type, nodes, where)
     parts = {}
@@ -269,7 +358,28 @@ def read(filename):
     surfaces = []
     subsets = {}
     boxes = {}
+    skews = {}
+    analytic = []  # (name, values) of /SURF/PLANE and /SURF/ELLIPS
+    ellipsoid_skew = {}
     length_scale = 1.0
+    work_length = 0.0  # the work length unit in metres, 0 if /BEGIN names none
+    # /UNIT/<id>: the local length units in metres, read first (a keyword can
+    # name a unit defined further down).
+    unit_length = {}
+    for k in range(len(lines) - 2):
+        t = lines[k][0].strip(" \t\r").upper()
+        if not t.startswith("/UNIT/"):
+            continue
+        uid = t[6:].strip()
+        if not uid.isdigit():
+            continue
+        f = _fields(lines[k + 2][0], 20, 3)
+        length = _length_unit(f[1]) if len(f) > 1 else 0.0
+        if length > 0.0:
+            unit_length[int(uid)] = length
+        else:
+            warn(f"Radioss: /UNIT/{uid} has no length unit meshio++ knows; ignored")
+    warned_units = set()
     skipped_keywords = set()
     zero_springs = linear_bric20 = 0
 
@@ -280,7 +390,8 @@ def read(filename):
         if not text or text[0] != "/":
             i += 1
             continue
-        path_ = [p.strip(" \t\r").upper() for p in text.strip(" \t\r")[1:].split("/")]
+        raw_path = [p.strip(" \t\r") for p in text.strip(" \t\r")[1:].split("/")]
+        path_ = [p.upper() for p in raw_path]
         key = path_[0]
         body = i + 1
         end = body
@@ -295,7 +406,52 @@ def read(filename):
                     return _int(part, where)
             return _int(path_[-1], where) if len(path_) >= 2 else 0
 
+        # The unit system a keyword names: the integer after its option id
+        # (`/BOX/RECTA/3/1`), or its only integer when it has none (`/NODE/1`).
+        def unit_of(option_id):
+            ints = [
+                _int(part, where)
+                for part in path_[1:]
+                if part and all(ch in "+-0123456789" for ch in part)
+            ]
+            at = 1 if option_id else 0
+            return ints[at] if len(ints) > at else 0
+
+        # Lengths of this keyword into the work units: its /UNIT's, else /BEGIN's.
+        def scale_of(unit):
+            if unit == 0:
+                return length_scale
+            if unit not in unit_length or work_length <= 0.0:
+                if unit not in warned_units:
+                    warned_units.add(unit)
+                    why = (
+                        "not defined"
+                        if unit not in unit_length
+                        else "used without /BEGIN units"
+                    )
+                    warn(
+                        f"Radioss: unit system {unit} is {why}; its lengths are read in "
+                        "the input units"
+                    )
+                return length_scale
+            return unit_length[unit] / work_length
+
+        # A keyword's title: its own line from input version 5.1 on; before,
+        # the keyword's last part (`/PART/1/CUIVRE`), the data then starting on
+        # the next line. Returns (title, first data line).
+        def title_of(k):
+            if titles_in_path:
+                last = raw_path[-1]
+                named = len(raw_path) >= 3 and not all(
+                    ch in "+-0123456789" for ch in last
+                )
+                return (last if named else ""), k
+            return (lines[k][0].strip(" \t\r") if k < end else ""), k + 1
+
         if key == "BEGIN":
+            # A deck with /BEGIN has its titles on lines of their own, whatever
+            # its input version.
+            titles_in_path = False
             if body + 1 < end:
                 f = _fields(lines[body + 1][0], 10, 2)
                 if f and f[0]:
@@ -309,6 +465,7 @@ def read(filename):
                 li = unit_in[1] if len(unit_in) > 1 else ""
                 lw = work[1] if len(work) > 1 and work[1] else li
                 fi, fw = _length_unit(li), _length_unit(lw)
+                work_length = fw
                 if li and (fi <= 0.0 or fw <= 0.0):
                     warn(
                         f"Radioss: unknown length unit '{li if fi <= 0.0 else lw}' in "
@@ -328,7 +485,8 @@ def read(filename):
                 "diameter": 0.0,
                 "children": [],
             }
-            k = body + 1  # past the title
+            _, k = title_of(body)
+            box_scale = scale_of(unit_of(True))
 
             def real3(line_no):
                 if line_no >= end:
@@ -336,7 +494,7 @@ def read(filename):
                 f = _fields(lines[line_no][0], rw, 3)
                 return [
                     (
-                        _real(f[d], lines[line_no][1]) * length_scale
+                        _real(f[d], lines[line_no][1]) * box_scale
                         if d < len(f) and f[d]
                         else 0.0
                     )
@@ -353,7 +511,7 @@ def read(filename):
                 if line_no >= end:
                     return 0.0
                 t = _slice(lines[line_no][0], 3 * iw, rw, 2 if kind == "SPHER" else 3)
-                return _real(t, lines[line_no][1]) * length_scale if t else 0.0
+                return _real(t, lines[line_no][1]) * box_scale if t else 0.0
 
             if kind == "RECTA":
                 b["n1"], b["n2"], b["skew"] = int_at(k, 0), int_at(k, 1), int_at(k, 2)
@@ -376,7 +534,63 @@ def read(filename):
             else:
                 skipped_keywords.add(f"/BOX/{kind}")
             boxes[last_id()] = b
+        elif key == "SKEW" and len(path_) >= 3 and path_[1] == "FIX":
+            # origin (from 5.1), X axis, Y axis
+            _, k = title_of(body)
+            sk_scale = scale_of(unit_of(True))
+
+            def vec(line_no, scale):
+                if line_no >= end:
+                    return [0.0] * 3
+                f = _fields(lines[line_no][0], rw, 3)
+                w = lines[line_no][1]
+                return [
+                    _real(f[d], w) * scale if d < len(f) and f[d] else 0.0
+                    for d in range(3)
+                ]
+
+            origin = [0.0] * 3
+            if not titles_in_path:  # 4.x skews have no origin line
+                origin = vec(k, sk_scale)
+                k += 1
+            skews[last_id()] = {
+                "origin": origin,
+                "x": vec(k, 1.0),
+                "y": vec(k + 1, 1.0),
+            }
+        elif key == "SURF" and len(path_) >= 3 and path_[1] in ("PLANE", "ELLIPS"):
+            # Analytical surfaces: no segments, their definition as field data.
+            sid = last_id()
+            _, k = title_of(body)
+            sc = scale_of(unit_of(True))
+
+            def reals(line_no, count):
+                if line_no >= end:
+                    return [0.0] * count
+                f = _fields(lines[line_no][0], rw, count)
+                w = lines[line_no][1]
+                return [
+                    _real(f[d], w) * sc if d < len(f) and f[d] else 0.0
+                    for d in range(count)
+                ]
+
+            if path_[1] == "PLANE":
+                analytic.append(
+                    (f"radioss:surf_plane:{sid}", reals(k, 3) + reals(k + 1, 3))
+                )
+            else:
+                f = _fields(lines[k][0], iw, 2) if k < end else []
+                skew = _int(f[0], lines[k][1]) if f and f[0] else 0
+                degree = _int(f[1], lines[k][1]) if len(f) > 1 and f[1] else 2
+                ellipsoid_skew[sid] = skew
+                analytic.append(
+                    (
+                        f"radioss:surf_ellips:{sid}",
+                        [float(max(degree, 2))] + reals(k + 1, 3) + reals(k + 2, 3),
+                    )
+                )
         elif key == "NODE":
+            node_scale = scale_of(unit_of(False))
             for k in range(body, end):
                 ln, w = lines[k]
                 if "," in ln:
@@ -389,7 +603,10 @@ def read(filename):
                     continue
                 node_ids.append(_int(f[0], w))
                 coords.append(
-                    [_real(f[d], w) if d < len(f) else 0.0 for d in (1, 2, 3)]
+                    [
+                        _real(f[d], w) * node_scale if d < len(f) else 0.0
+                        for d in (1, 2, 3)
+                    ]
                 )
         elif key in _ELEMENTS:
             family, count, ctype = _ELEMENTS[key]
@@ -451,11 +668,8 @@ def read(filename):
                 )
         elif key == "PART":
             pid = last_id()
-            title, prop, mat, subset = "", 0, 0, 0
-            k = body
-            if k < end:
-                title = lines[k][0].strip(" \t\r")
-                k += 1
+            prop, mat, subset = 0, 0, 0
+            title, k = title_of(body)
             if k < end:
                 f = _fields(lines[k][0], iw, 3)
                 w = lines[k][1]
@@ -466,11 +680,7 @@ def read(filename):
                 parts[pid] = (title, prop, mat, subset)
                 part_order.append(pid)
         elif key in _GROUPS and len(path_) >= 3:
-            k = body
-            title = ""
-            if k < end:
-                title = lines[k][0].strip(" \t\r")
-                k += 1
+            title, k = title_of(body)
             ids = []
             for kk in range(k, end):
                 for f in _fields(lines[kk][0], iw, 10):
@@ -478,11 +688,7 @@ def read(filename):
                         ids.append(_int(f, lines[kk][1]))
             groups.append((key, path_[1], title, last_id(), ids))
         elif key == "SURF" and len(path_) >= 3 and path_[1] == "SEG":
-            k = body
-            title = ""
-            if k < end:
-                title = lines[k][0].strip(" \t\r")
-                k += 1
+            title, k = title_of(body)
             segs = []
             for kk in range(k, end):
                 f = _fields(lines[kk][0], iw, 5)
@@ -504,11 +710,7 @@ def read(filename):
                 }
             )
         elif key == "SURF" and len(path_) >= 3 and path_[1] in _SURF_KINDS:
-            k = body
-            title = ""
-            if k < end:
-                title = lines[k][0].strip(" \t\r")
-                k += 1
+            title, k = title_of(body)
             ids = []
             for kk in range(k, end):
                 for f in _fields(lines[kk][0], iw, 10):
@@ -520,18 +722,18 @@ def read(filename):
                     "title": title,
                     "segs": [],
                     "kind": path_[1],
-                    "mode": path_[2] if len(path_) >= 4 else "",
+                    "mode": (
+                        path_[2]
+                        if len(path_) >= 4 and path_[2] in ("EXT", "ALL", "FREE")
+                        else ""
+                    ),
                     "ids": ids,
                 }
             )
         elif key == "SURF":
             skipped_keywords.add("/SURF/" + (path_[1] if len(path_) > 1 else ""))
         elif key == "SUBSET":
-            k = body
-            title = ""
-            if k < end:
-                title = lines[k][0].strip(" \t\r")
-                k += 1
+            title, k = title_of(body)
             children = []
             for kk in range(k, end):
                 for f in _fields(lines[kk][0], iw, 10):
@@ -551,12 +753,16 @@ def read(filename):
             "read as hexahedra"
         )
 
+    for b in boxes.values():
+        if b["skew"]:
+            b["axes"] = _skew_axes(skews[b["skew"]]) if b["skew"] in skews else None
+
     node_index = {}
     for p, nid in enumerate(node_ids):
         if nid in node_index:
             raise ReadError(f"Radioss: node {nid} is defined twice")
         node_index[nid] = p
-    points = np.array(coords, dtype=np.float64).reshape(-1, 3) * length_scale
+    points = np.array(coords, dtype=np.float64).reshape(-1, 3)
 
     # Tetrahedra come in either winding (every /TETRA4 of OpenRadioss's INT_25 QA
     # deck is inverted, gmsh writes them positive): an inverted one is mirrored.
@@ -839,6 +1045,42 @@ def read(filename):
                         continue
                     (minus if raw < 0 else out).update(side_set(sub, depth + 1))
                 out -= minus
+            elif kind in ("BOX", "BOX2"):
+                # Shell faces with all (BOX) or any (BOX2) node in the box; with
+                # EXT the model's external solid faces, with ALL every solid
+                # face, likewise.
+                box = surf["ids"][0] if surf["ids"] else 0
+
+                def inside(pts):
+                    n = sum(
+                        1
+                        for p in pts
+                        if _in_box(
+                            boxes,
+                            box,
+                            points[p],
+                            node_point,
+                            skewed_boxes,
+                            missing_boxes,
+                        )
+                    )
+                    return n > 0 if kind == "BOX2" else n == len(pts)
+
+                mode = surf["mode"]
+                if mode == "EXT" and model_faces is None:
+                    model_faces = {}
+                    for c in range(len(cell_dim)):
+                        if cell_dim[c] == 3:
+                            for _, key in solid_faces(c):
+                                model_faces[key] = model_faces.get(key, 0) + 1
+                for c in range(len(cell_conn)):
+                    if cell_family[c] in ("SHEL", "SH3N", "TRIA"):
+                        if inside(cell_conn[c]):
+                            out.add((c, 0))
+                    elif cell_dim[c] == 3 and mode:
+                        for f, key in solid_faces(c):
+                            if (mode == "ALL" or model_faces[key] == 1) and inside(key):
+                                out.add((c, f))
             elif kind == "SEG":
                 for seg in surf["segs"]:
                     # 2 nodes in a 2-D analysis, 3 for a triangle (n4 blank or n3).
@@ -920,8 +1162,26 @@ def read(filename):
                 "SURF",
                 entries,
             )
+    for name, values in analytic:
+        # An ellipsoid's orientation: its skew's axes (the identity without one).
+        sid = int(name.rsplit(":", 1)[1])
+        if name.startswith("radioss:surf_ellips:"):
+            axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            skew = ellipsoid_skew.get(sid, 0)
+            if skew:
+                got = _skew_axes(skews[skew]) if skew in skews else None
+                if got is None:
+                    warn(
+                        f"Radioss: /SURF/ELLIPS {sid} names a skew that is not a /SKEW/FIX"
+                    )
+                else:
+                    axes = got
+            values = values + [x for a in axes for x in a]
+        mesh.field_data[name] = np.array(values, dtype=np.float64)
     for t in sorted(skewed_boxes):
-        warn(f"Radioss: skewed /BOX {t} is not supported; it contains nothing")
+        warn(
+            f"Radioss: /BOX {t} names a skew that is not a /SKEW/FIX; it contains nothing"
+        )
     for t in sorted(missing_boxes):
         warn(f"Radioss: /BOX {t} is not defined; it contains nothing")
     if dropped:
@@ -930,4 +1190,10 @@ def read(filename):
             "facet and were dropped"
         )
     mesh.regions = regions
+    # A starter deck `<run>_0000.rad`: its engine deck `<run>_0001.rad`'s controls.
+    stem, ext = os.path.splitext(path)
+    if stem.endswith("_0000"):
+        engine = stem[:-5] + "_0001" + ext
+        if os.path.isfile(engine):
+            _add_engine_fields(mesh.field_data, engine)
     return mesh

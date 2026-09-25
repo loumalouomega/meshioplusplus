@@ -69,6 +69,7 @@
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
@@ -184,6 +185,10 @@ MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
 // above. Three POD fields, no pointer/std::string member, so it is 4-aligned
 // rather than the 8 most options structs here get.
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamWriteOptions, 12, 4);
+// `PatranResultFile` (v16.12.0) is a pure addition, pinned from the release
+// that introduces it: two `std::string`s (the data name and the file), passed
+// in a vector to the new `read_patran` overload.
+MIO_ABI_LAYOUT(meshioplusplus::PatranResultFile, 64, 8);
 
 // `PvdSeriesWriter` (v15.0.0) is a pimpl handle, one pointer, pinned from the
 // release that introduces it -- the `OpenFoamInfo` lesson above.
@@ -381,6 +386,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::MeshMetadata>("MeshMetadata");
     report<meshioplusplus::OpenFoamInfo>("OpenFoamInfo");
     report<meshioplusplus::OpenFoamWriteOptions>("OpenFoamWriteOptions");
+    report<meshioplusplus::PatranResultFile>("PatranResultFile");
     report<meshioplusplus::GmshInfo>("GmshInfo");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::PcdReadOptions>("PcdReadOptions");

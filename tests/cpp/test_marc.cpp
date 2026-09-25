@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -272,13 +273,50 @@ TEST(Marc, PostFile) {
     options.mTimeStep = 1;
     EXPECT_THROW(meshioplusplus::read_marc_t19(path, options), meshioplusplus::ReadError);
 
-    // A remeshing increment is refused.
+    // A remeshing flag with no model blocks repeated keeps the model.
     std::string text = kPost;
     const std::string head = "(Integer Increment Verification Data)\n";
     const std::size_t at = text.find(head) + head.size();
     text.replace(at, 13, "            1");
     const std::string remesh = write_temp(text, ".t19");
-    EXPECT_THROW(meshioplusplus::read_marc_t19(remesh), meshioplusplus::ReadError);
+    EXPECT_EQ(meshioplusplus::read_marc_t19(remesh).NumPoints(), 8u);
     std::remove(remesh.c_str());
     std::remove(path.c_str());
+}
+
+TEST(Marc, IncludeFilesVolumeBTypesAndSideSets) {
+    // The deck INCLUDEs its coordinates, which INCLUDE its sets (relative to
+    // the including file).
+    const std::filesystem::path dir =
+        std::filesystem::path(mt::temp_path("_marc_include")) / "deck";
+    std::filesystem::create_directories(dir / "sub");
+    std::ofstream(dir / "main.dat") << "title,include\nsizing,0,3,9,0\nend\nconnectivity\n7,\n"
+                                       "1,84,1,2,3,4,5,6,7,8,100\n"  // pressure node 100
+                                       "2,168,5,9,6\n"               // middle node second
+                                       "3,80,5,6,7,8,101\n"
+                                       "include nodes.inc\nend option\n";
+    std::ofstream(dir / "nodes.inc")
+        << "coordinates\n3,9,0,1\n1,0,0,0\n2,1,0,0\n3,1,1,0\n4,0,1,0\n5,0,0,1\n6,1,0,1\n"
+           "7,1,1,1\n8,0,1,1\n9,0.5,0,1\ninclude,sub/sets.inc\n";
+    std::ofstream(dir / "sub" / "sets.inc")
+        << "define,element,set,brick\n1\ndefine,face,set,top\n1:2 3:1\n"
+           "define,edge,set,rim\n3:4\n";
+    const meshioplusplus::Mesh mesh = meshioplusplus::read_marc((dir / "main.dat").string());
+    ASSERT_EQ(mesh.NumCellBlocks(), 3u);
+    EXPECT_EQ(mesh.Cells(0).Type(), "hexahedron");
+    EXPECT_EQ(mesh.Cells(1).Type(), "line3");
+    EXPECT_EQ(mesh.Cells(2).Type(), "quad");
+    const auto& line = mesh.Cells(1).Conn();
+    EXPECT_EQ(meshioplusplus::detail::read_int(line, 1), 5);  // node 6: an end
+    EXPECT_EQ(meshioplusplus::detail::read_int(line, 2), 8);  // node 9: the middle
+    const auto& top = mesh.FieldData("marc:face_set:top");
+    ASSERT_EQ(top.Shape(), (std::vector<std::size_t>{2, 2}));
+    EXPECT_EQ(meshioplusplus::detail::read_int(top, 2), 2);  // element 3 is cell 2
+    EXPECT_EQ(meshioplusplus::detail::read_int(top, 3), 1);
+    EXPECT_TRUE(mesh.HasFieldData("marc:edge_set:rim"));
+    EXPECT_NE(mesh.FindRegion("brick", meshioplusplus::RegionKind::Cell),
+              meshioplusplus::Mesh::npos);
+    std::ofstream(dir / "loop.dat") << "title,loop\nend\ninclude loop.dat\n";
+    EXPECT_THROW(meshioplusplus::read_marc((dir / "loop.dat").string()), meshioplusplus::ReadError);
+    std::filesystem::remove_all(dir.parent_path());
 }

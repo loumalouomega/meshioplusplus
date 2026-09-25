@@ -118,7 +118,9 @@ _FIL_KEYS = (1921, 1922, 1900, 1901, 2000)
 def _is_op2(head):
     """Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers,
     either byte order) holding a one-word 3, a 3-word date, a one-word 7 and the
-    7-word tape code, in 4- or 8-byte words."""
+    7-word tape code, in 4- or 8-byte words. With PARAM,POST,-2 there is no such
+    header: the first table's name follows at once, as a one-word 2, the
+    8-character name (two words) and a one-word -1."""
     for order in ("<", ">"):
         blocks = []
         pos = 0
@@ -153,7 +155,31 @@ def _is_op2(head):
             and blocks[3][1] == 7 * ws
         ):
             return True
+        if (
+            word(0) == 2
+            and blocks[1][1] == 2 * ws
+            and blocks[2][1] == ws
+            and word(2) == -1
+        ):
+            # An upper-case table name, blank- (or, in 8-byte words, space-) padded.
+            name = head[blocks[1][0] : blocks[1][0] + 8]
+            if name[:1].isupper() and all(
+                c in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _" for c in name
+            ):
+                return True
     return False
+
+
+def _is_radioss_th(head):
+    from .radioss_th._th import is_radioss_th
+
+    return is_radioss_th(head)
+
+
+def _is_binout(head):
+    from .lsdyna_binout._binout import is_binout
+
+    return len(head) >= 16 and is_binout(head)
 
 
 def _is_d3plot(head):
@@ -269,6 +295,9 @@ def _sniff_format_py(path) -> str:
     # OpenRadioss animation file: the big-endian magic 0x542C.
     if head[:4] == b"\x00\x00T,":
         return "radioss_anim"
+    # OpenRadioss time history: an 84-byte big-endian title record.
+    if _is_radioss_th(head):
+        return "radioss_th"
     # FEBio plot file: the magic 0x00464542, in either byte order.
     if head[:4] in (b"BEF\x00", b"\x00FEB"):
         return "xplt"
@@ -288,6 +317,9 @@ def _sniff_format_py(path) -> str:
     # LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
     if _is_d3plot(head):
         return "lsdyna_d3plot"
+    # LS-DYNA binout: the LSDA header and its symbol-table offset command.
+    if _is_binout(head):
+        return "lsdyna_binout"
     # FEBio input: XML whose root is <febio_spec>.
     if b"<febio_spec" in head:
         return "febio"

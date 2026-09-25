@@ -286,7 +286,10 @@ class TestRealFiles:
             "vertex",
         } == set(types)
         eids = np.concatenate(mesh.cell_data["nastran:eid"])
-        assert len(eids) == sum(len(c.data) for c in mesh.cells) == 34
+        # 34 structural elements and 10 springs and dampers (CELAS1/2,
+        # CDAMP1/2: lines, or vertices when grounded); CELAS3/4 and CDAMP3/4
+        # join scalar points and are skipped.
+        assert len(eids) == sum(len(c.data) for c in mesh.cells) == 44
         pids = np.concatenate(mesh.cell_data["nastran:pid"])
         assert (pids[types_of(mesh) == "vertex"] == -1).all()  # CONM2 has no property
 

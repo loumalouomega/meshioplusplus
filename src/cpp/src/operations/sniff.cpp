@@ -37,6 +37,8 @@
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/formats/marc.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
@@ -169,7 +171,9 @@ bool sniff_is_patran(const std::string& rHead) {
 
 // Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers, either
 // byte order) holding a one-word 3, a 3-word date, a one-word 7 and the 7-word
-// tape code, in 4- or 8-byte words.
+// tape code, in 4- or 8-byte words. With PARAM,POST,-2 there is no such header:
+// the first table's name follows at once, as a one-word 2, the 8-character name
+// (two words) and a one-word -1.
 bool sniff_is_op2(const std::string& rHead) {
     for (bool big : {false, true}) {
         const auto u32 = [&](std::size_t At) -> std::int64_t {
@@ -208,6 +212,16 @@ bool sniff_is_op2(const std::string& rHead) {
         if (word(0) == 3 && blocks[1].second == 3 * ws && blocks[2].second == ws && word(2) == 7 &&
             blocks[3].second == 7 * ws)
             return true;
+        if (word(0) == 2 && blocks[1].second == 2 * ws && blocks[2].second == ws && word(2) == -1) {
+            // An upper-case table name, blank- (or, in 8-byte words, space-) padded.
+            const char* name = rHead.data() + blocks[1].first;
+            bool ok = name[0] >= 'A' && name[0] <= 'Z';
+            for (std::int64_t k = 0; k < 8 && ok; ++k)
+                ok = (name[k] >= 'A' && name[k] <= 'Z') || (name[k] >= '0' && name[k] <= '9') ||
+                     name[k] == ' ' || name[k] == '_';
+            if (ok)
+                return true;
+        }
     }
     return false;
 }
@@ -339,6 +353,8 @@ std::string sniff_format(const std::string& rPath) {
             return "z88";
         if (is_d3plot_filename(rPath) && fs::is_regular_file(path, ec))
             return "lsdyna_d3plot";
+        if (is_binout_filename(rPath) && fs::is_regular_file(path, ec))
+            return "lsdyna_binout";
     }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -359,6 +375,9 @@ std::string sniff_format(const std::string& rPath) {
     // OpenRadioss animation file: the big-endian magic 0x542C.
     if (head.size() >= 4 && head.compare(0, 4, std::string("\0\0T,", 4)) == 0)
         return "radioss_anim";
+    // OpenRadioss time history: an 84-byte big-endian title record.
+    if (is_radioss_th_head(head.data(), head.size()))
+        return "radioss_th";
     // FEBio plot file: the magic 0x00464542, in either byte order.
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))
@@ -381,6 +400,9 @@ std::string sniff_format(const std::string& rPath) {
     // LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
     if (is_d3plot_head(head.data(), head.size()))
         return "lsdyna_d3plot";
+    // LS-DYNA binout: the LSDA header and its symbol-table offset command.
+    if (head.size() >= 16 && is_binout_head(head.data(), head.size()))
+        return "lsdyna_binout";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";

@@ -162,6 +162,11 @@ def _wsparse(raw, dtype, ptr):
     return out
 
 
+def _close(a, b):
+    """numpy.isclose's default tolerances: how mode pairs are recognised."""
+    return abs(a - b) <= 1e-8 + 1e-5 * abs(b)
+
+
 def _pointer(header, lo, hi, fallback=None):
     """A 64-bit word pointer split over ``header[lo]`` (low, unsigned) and
     ``header[hi]``; an older file's shorter header has only the 32-bit
@@ -213,6 +218,21 @@ _TENSORS = (
 )
 _TOP = "@top"  # the top surface of a layered shell (the bottom one is unsuffixed)
 
+# Element records read as they are written, one row per element (NaN-padded to
+# the longest): their items depend on the element type (the element's
+# documentation, "Element Output Definitions").
+_RAW_RECORDS = (
+    ("EMS", 0),
+    ("ENG", 3),
+    ("EGR", 4),
+    ("EFX", 10),
+    ("EMN", 12),
+    ("ENL", 14),
+    ("EPT", 16),
+    ("ECT", 20),
+    ("ESV", 23),
+)
+
 # Reaction names by DOF code: vector triples, else ``RF_<DOF label>``.
 _REACTION_VECTORS = {"RF": (1, 2, 3), "RMOM": (4, 5, 6)}
 _DOF_LABELS = {1: "UX", 2: "UY", 3: "UZ", 4: "ROTX", 5: "ROTY", 6: "ROTZ"}
@@ -257,6 +277,18 @@ class _Results:
                 step = tuple(int(v) for v in lsp[3 * i : 3 * i + 3])
                 self.sets.append((lo | hi << 32, float(tim[i]), step))
         self.geometry = _pointer(h, 15, 46)
+        # A cyclic model's harmonic index per set; before v18 the second set of
+        # a mode pair repeats the positive index: negated, as later versions
+        # write it.
+        self.harmonic = []
+        ptr_cyc = _pointer(h, 16, 43)
+        if ptr_cyc and nsets:
+            cyc = f.ints(ptr_cyc)
+            self.harmonic = [int(v) for v in cyc[: len(self.sets)]]
+            if not any(v < -1 for v in self.harmonic):
+                for k in range(len(self.harmonic) - 1):
+                    if _close(self.sets[k][1], self.sets[k + 1][1]):
+                        self.harmonic[k + 1] = -self.harmonic[k + 1]
 
     def global_nodes(self):
         """The node numbers of the whole distributed model (main file only)."""
@@ -692,6 +724,8 @@ class _Model:
             if wanted is None or k[0] in wanted or k[0] + _TOP in wanted
         ]
         want_enf = wanted is None or "ENF" in wanted
+        raw_kinds = [k for k in _RAW_RECORDS if wanted is None or k[0] in wanted]
+        raw = {}
         # Every array is (cells, nodes, components) with the widest block's node
         # count, NaN-padded; flattened point-major below so any writer holds it.
         npc = max((blk.data.shape[1] for blk in blocks), default=0)
@@ -710,11 +744,18 @@ class _Model:
                 if pos >= len(elements) or off == 0 or self.locs[pos] is None:
                     continue
                 b, row, slots = self.locs[pos]
+                table = base + int(off)
+                for name, entry in raw_kinds:
+                    values = r.element_record(table, entry)
+                    if values is None or len(values) == 0:
+                        continue
+                    values = np.array(values, dtype=np.float64)
+                    values[np.abs(values) == _UNDEFINED] = np.nan
+                    raw.setdefault(name, [[] for _ in blocks])[b].append((row, values))
                 if blocks[b].type in _NO_RESULT_CELLS:
                     continue
                 e = elements[pos]
                 nodfor, nodstr, layers = layout.get(e["slot"], (0, 0, 1))
-                table = base + int(off)
                 rotation = None
                 for name, entry, items, stress in kinds:
                     if entry == _ENS and not r.sparse_ens:
@@ -788,6 +829,16 @@ class _Model:
             mesh.cell_data["ENF"] = [a.reshape(len(a), -1) for a in enf_cells]
             width = enf_cells[0].shape[2]
             mesh.field_data["ansys:layout:ENF"] = np.array([npc, width], dtype=np.int64)
+        for name in sorted(raw):
+            per_block = raw[name]
+            width = max(len(v) for rows in per_block for _, v in rows)
+            arrays = []
+            for blk, rows in zip(blocks, per_block):
+                a = np.full((len(blk.data), width), np.nan)
+                for row, v in rows:
+                    a[row, : len(v)] = v
+                arrays.append(a)
+            mesh.cell_data[name] = arrays
 
 
 def _rotate(vec, angles):
@@ -867,10 +918,73 @@ def _axis_rotation(axis, theta):
     ]
 
 
-def _expand_cyclic(model, dofs):
+_RAW_NAMES = {name for name, _ in _RAW_RECORDS}
+
+
+def _modal(filename, model, index, wanted, lenient):
+    """The other half of modal set ``index`` of a cyclic model, as ``(harmonic
+    index, point arrays, cell arrays)``: its mode pair (the neighbouring set of
+    the same frequency), else the duplicate sector (nodes past csNds and
+    elements past csEls, paired with the base sector's in number order), else
+    nothing."""
+    r = model.files[0]
+    harmonic = r.harmonic[index] if index < len(r.harmonic) else 0
+    sets = r.sets
+    pair = None
+    if len(sets) > 1:
+        before, after = (index - 1) % len(sets), (index + 1) % len(sets)
+        if _close(sets[index][1], sets[before][1]):
+            pair = before
+        elif _close(sets[index][1], sets[after][1]):
+            pair = after
+    mesh = model.mesh
+    if pair is not None:
+        other = _Model(_open(filename), lenient)
+        other.solution(pair, wanted)
+        other.reactions(pair, wanted)
+        other.elements(pair, wanted)
+        return harmonic, dict(other.mesh.point_data), dict(other.mesh.cell_data)
+    base = sorted((n, p) for n, p in model.node_index.items() if n <= r.cs_nds)
+    dup = sorted((n, p) for n, p in model.node_index.items() if n > r.cs_nds)
+    if not dup or len(dup) != len(base):
+        return harmonic, {}, {}
+    base_pts = np.array([p for _, p in base], dtype=np.int64)
+    dup_pts = np.array([p for _, p in dup], dtype=np.int64)
+    points = {}
+    for name, values in mesh.point_data.items():
+        if values.dtype != np.float64:
+            continue
+        pair_values = np.zeros_like(values)
+        pair_values[base_pts] = values[dup_pts]
+        points[name] = pair_values
+    base_cells, dup_cells = [], []
+    for e, loc in zip(model.deck["elements"], model.locs):
+        if loc is not None:
+            (base_cells if e["id"] <= r.cs_els else dup_cells).append(
+                (e["id"], loc[0], loc[1])
+            )
+    if len(base_cells) != len(dup_cells):
+        return harmonic, points, {}
+    base_cells.sort()
+    dup_cells.sort()
+    cells = {}
+    for name, per_block in mesh.cell_data.items():
+        if any(a.dtype != np.float64 for a in per_block):
+            continue
+        pair_blocks = [np.zeros_like(a) for a in per_block]
+        for (_, bb, br), (_, db, dr) in zip(base_cells, dup_cells):
+            if per_block[db][dr].shape == pair_blocks[bb][br].shape:
+                pair_blocks[bb][br] = per_block[db][dr]
+        cells[name] = pair_blocks
+    return harmonic, points, cells
+
+
+def _expand_cyclic(model, dofs, modal=None):
     """The full rotor: the base sector's cells (element numbers up to csEls)
     and their points repeated round the cyclic axis, results rotated with them.
-    Coincident nodes on the sector boundaries are not merged."""
+    Coincident nodes on the sector boundaries are not merged. A modal set
+    (``modal``) is combined with its other half per sector first, as MAPDL's
+    /CYCEXPAND does: scale * (x cos(h theta) - x' sin(h theta))."""
     r = model.files[0]
     mesh = model.mesh
     n = r.n_sectors
@@ -905,6 +1019,20 @@ def _expand_cyclic(model, dofs):
             old_cell.append(starts[bi] + np.nonzero(k)[0])
     pi = math.acos(-1.0)
     rotations = [_axis_rotation(axis, 2.0 * pi * i / n) for i in range(n)]
+    weight, weight_pair = [1.0] * n, [0.0] * n
+    if modal is not None:
+        h = modal[0]
+        single = h == 0 or 2 * abs(h) == n
+        scale = 1.0 / math.sqrt(n) if single else 1.0 / math.sqrt(n / 2.0)
+        for i in range(n):
+            phase = 2.0 * pi * h * i / n
+            weight[i] = scale * math.cos(phase)
+            weight_pair[i] = -scale * math.sin(phase)
+
+    def combine(values, pair, i):
+        if pair is None:
+            return weight[i] * values + 0.0
+        return weight[i] * values + weight_pair[i] * pair
 
     base = mesh.points[used] - origin
     copies = []
@@ -920,6 +1048,8 @@ def _expand_cyclic(model, dofs):
     out = Mesh(points, cells)
     out.field_data = dict(mesh.field_data)
     out.field_data["ansys:sectors"] = np.array([n], dtype=np.int64)
+    if modal is not None:
+        out.field_data["ansys:harmonic_index"] = np.array([modal[0]], dtype=np.int64)
 
     def spin(values, name, i, last_axis_dofs=None):
         q = rotations[i]
@@ -941,7 +1071,13 @@ def _expand_cyclic(model, dofs):
 
     for name, values in mesh.point_data.items():
         part = values[used]
-        out.point_data[name] = np.concatenate([spin(part, name, i) for i in range(n)])
+        if modal is not None and values.dtype == np.float64 and name not in _RAW_NAMES:
+            pair = modal[1].get(name)
+            pair = None if pair is None else pair[used]
+            copies = [spin(combine(part, pair, i), name, i) for i in range(n)]
+        else:
+            copies = [spin(part, name, i) for i in range(n)]
+        out.point_data[name] = np.concatenate(copies)
     for name, per_block in mesh.cell_data.items():
         merged = []
         for bi, _, _ in blocks:
@@ -951,9 +1087,21 @@ def _expand_cyclic(model, dofs):
                 merged.append(np.concatenate([part] * n))
             else:
                 dofs_axis = dofs if name == "ENF" else None
-                merged.append(
-                    np.concatenate([spin(part, name, i, dofs_axis) for i in range(n)])
+                modal_part = (
+                    modal is not None
+                    and part.dtype == np.float64
+                    and name not in _RAW_NAMES
                 )
+                if modal_part:
+                    pair = modal[2].get(name)
+                    pair = None if pair is None else pair[bi][k]
+                    copies = [
+                        spin(combine(part, pair, i), name, i, dofs_axis)
+                        for i in range(n)
+                    ]
+                else:
+                    copies = [spin(part, name, i, dofs_axis) for i in range(n)]
+                merged.append(np.concatenate(copies))
         out.cell_data[name] = merged
     out.cell_data["ansys:sector"] = [
         np.repeat(np.arange(n, dtype=np.int64), len(conn)) for _, _, conn in blocks
@@ -1006,15 +1154,16 @@ def read(
     if cyclic:
         if main.n_sectors <= 1:
             _fail("not a cyclic-symmetry model; read it as ansys_rst")
-        if main.kan != 0:
+        if main.kan not in (0, 2):
             _fail(
-                "only static cyclic-symmetry results can be expanded (this is "
-                f"analysis type {main.kan}); read the base sector as ansys_rst"
+                "only static and modal cyclic-symmetry results can be expanded "
+                f"(this is analysis type {main.kan}); read the base sector as "
+                "ansys_rst"
             )
     elif main.n_sectors > 1:
         warn(
             f"{_LABEL}: a cyclic-symmetry model ({main.n_sectors} sectors); only "
-            "the base sector is read (ansys_rst_cyclic expands a static one)"
+            "the base sector is read (ansys_rst_cyclic expands it)"
         )
     model = _Model(files, lenient)
     mesh = model.mesh
@@ -1039,7 +1188,14 @@ def read(
         model.solution(index, wanted)
         model.reactions(index, wanted)
         model.elements(index, wanted)
-    if cyclic:
+    if cyclic and main.kan == 2:
+        modal = (
+            (main.harmonic[index] if index < len(main.harmonic) else 0, {}, {})
+            if points_only
+            else _modal(str(filename), model, index, wanted, lenient)
+        )
+        mesh = _expand_cyclic(model, dofs, modal)
+    elif cyclic:
         mesh = _expand_cyclic(model, dofs)
     mesh.time_values = [t for _, t, _ in main.sets]
     return mesh

@@ -940,10 +940,10 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("d3plot · OP2 halves", "S"),
-                ("Marc · .rst halves", "S"),
-                ("Femap · MFEM NURBS halves", "M"),
-                (".fil · Radioss · Z88 checks", "S"),
+                ("DOLFINx ADIOS2 .bp", "M"),
+                ("vendor routes (.odb · .t16)", "M"),
+                ("shared infrastructure", "S"),
+                ("checks awaiting a licence", "S"),
             ],
             [],
         ),

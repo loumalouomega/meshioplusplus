@@ -246,16 +246,20 @@ def timeline(zones):
 
 
 def xyz_indices(variables):
-    xi = yi = zi = -1
+    """An exact X/Y/Z name wins; otherwise a name with a unit suffix counts
+    ("X(M)", "X [m]", the way old Tecplot files label their axes)."""
+    exact = [-1, -1, -1]
+    stem = [-1, -1, -1]
     for k, v in enumerate(variables):
         u = v.upper()
-        if u == "X":
-            xi = k
-        elif u == "Y":
-            yi = k
-        elif u == "Z":
-            zi = k
-    return xi, yi, zi
+        cut = min((i for i in (u.find("("), u.find("[")) if i >= 0), default=len(u))
+        s = u[:cut].rstrip(" ")
+        for a, axis in enumerate("XYZ"):
+            if u == axis:
+                exact[a] = k
+            elif s == axis and len(s) < len(u) and stem[a] < 0:
+                stem[a] = k
+    return tuple(e if e >= 0 else t for e, t in zip(exact, stem))
 
 
 def _points_origin(idx, zones, xi, yi, zi):

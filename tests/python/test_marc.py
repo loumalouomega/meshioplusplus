@@ -142,7 +142,8 @@ def test_free_format_mixed_deck(engine, capfd):
     mesh = engine.read(MARC / "mixed_free.dat")
     err = capfd.readouterr().err
     assert "116" in err and "skipped" in err  # the unknown element type
-    assert "FACE SET 'skin'" in err
+    # a face set: (cell, Marc face number), not mapped to facets
+    np.testing.assert_array_equal(mesh.field_data["marc:face_set:skin"], [[0, 1]])
     assert [b.type for b in mesh.cells] == [
         "hexahedron",
         "wedge",
@@ -288,11 +289,64 @@ def test_refusals(engine, tmp_path):
     at = text.index(head)
     line = text.index("\n", at) + 1
     remesh.write_text(text[:line] + f"{1:13d}" + text[line + 13 :])
-    with pytest.raises(meshioplusplus.ReadError, match="remesh"):
-        engine.read_t19(remesh)
+    # remeshing flagged, but no model blocks repeated: the model stays
+    assert len(engine.read_t19(remesh, time_step=0).points) == 12
     junk = tmp_path / "junk.t19"
     junk.write_text("hello\n")
     with pytest.raises(
         meshioplusplus.ReadError, match="not a Marc formatted post file"
     ):
         engine.read_t19(junk)
+
+
+def test_include_files_volume_b_types_and_side_sets(engine):
+    """include_main.dat INCLUDEs its coordinates, which INCLUDE its sets from a
+    subdirectory; a Herrmann brick and quad keep their corners (the pressure
+    nodes have no coordinates), a composite brick reads as one, and a 3-node
+    rebar line lists its middle node second."""
+    mesh = engine.read(MARC / "include_main.dat")
+    assert [(b.type, len(b.data)) for b in mesh.cells] == [
+        ("hexahedron", 2),
+        ("line3", 1),
+        ("quad", 1),
+    ]
+    pts = np.asarray(mesh.points)
+    line = mesh.cells[1].data[0]
+    np.testing.assert_array_equal(pts[line[2]], [0.5, 0.0, 1.0])  # the middle
+    np.testing.assert_array_equal(
+        mesh.field_data["marc:edge_set:rim"], [[3, 1], [3, 3]]
+    )
+    np.testing.assert_array_equal(
+        mesh.field_data["marc:face_set:top"], [[0, 2], [1, 2]]
+    )
+    assert [(r.kind, r.name, r.entries.tolist()) for r in mesh.regions] == [
+        ("cell", "bricks", [0, 1])
+    ]
+
+
+def test_remeshing_increment_brings_its_mesh(engine):
+    """The second increment of remesh.t19 remeshes: its step is the new model
+    (three bricks, with an edge and a face set), the first keeps the old."""
+    before = engine.read_t19(MARC / "remesh.t19", time_step=0)
+    after = engine.read_t19(MARC / "remesh.t19", time_step=1)
+    assert [len(b.data) for b in before.cells] == [2]
+    assert [len(b.data) for b in after.cells] == [3]
+    assert len(after.points) == 16
+    assert after.point_data["Displacement"].shape == (16, 3)
+    np.testing.assert_array_equal(
+        after.field_data["marc:edge_set:tip_edges"], [[2, 2], [2, 5]]
+    )
+    np.testing.assert_array_equal(after.field_data["marc:face_set:tip_face"], [[2, 4]])
+    assert "marc:edge_set:tip_edges" not in before.field_data
+
+
+def test_include_and_remesh_engines_agree():
+    _same(
+        meshioplusplus.marc.read(MARC / "include_main.dat"),
+        _Python.read(MARC / "include_main.dat"),
+    )
+    for step in (0, 1):
+        _same(
+            meshioplusplus.marc.read_t19(MARC / "remesh.t19", time_step=step),
+            _Python.read_t19(MARC / "remesh.t19", time_step=step),
+        )

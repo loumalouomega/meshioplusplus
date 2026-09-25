@@ -227,10 +227,13 @@ def _register_conversion(server: FastMCP) -> None:
         grid_functions: Optional[Dict[str, str]] = None,
         write_grid_functions: bool = False,
         elmer_halo: bool = False,
+        patran_results: Optional[Dict[str, str]] = None,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
-        an MFEM .mesh input; write_grid_functions writes the data of an MFEM
+        an MFEM .mesh input; patran_results ({name: path}) reads Patran 2.5
+        result files (.nod/.dis nodal, .els element) onto a Patran neutral
+        input; write_grid_functions writes the data of an MFEM
         output as <stem>.<name>.gf files beside it; elmer_halo adds ElmerGrid's
         -halo layer to the partitioning an Elmer output writes from
         partition:part. points_only/arrays/time_step narrow the read; piece
@@ -256,6 +259,7 @@ def _register_conversion(server: FastMCP) -> None:
             grid_functions=grid_functions,
             write_grid_functions=write_grid_functions,
             elmer_halo=elmer_halo,
+            patran_results=patran_results,
         )
 
     @server.tool()

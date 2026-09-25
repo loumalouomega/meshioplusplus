@@ -35,6 +35,24 @@ It does four things, none of which uses meshio++:
    in ``reference_lagrange.npz``: per case and cell type, each cell's nodes in
    VTK order and ``u`` at them. For ``amr-quad`` it stores the attribute and
    sorted corner coordinates of every leaf and boundary element MFEM builds.
+5. Copies six NURBS meshes into ``nurbs/``, projects a field ``u`` onto each
+   mesh's own NURBS space (``<name>.u.gf``) and freezes MFEM's evaluation in
+   ``nurbs/reference_nurbs.npz``: per mesh the vertices of every knot-span
+   element and boundary element MFEM builds, and the point and ``u`` MFEM's
+   element transformation gives at a lexicographic (Q+1)^d grid of reference
+   points of every element, Q the highest knot-vector order.
+6. Curves small meshes of every shape into Bernstein (``H1Pos``) and
+   serendipity (``H1Ser``, quadrilaterals) spaces, with a field ``u`` in the
+   same kind of space, into ``modal/``, and freezes in
+   ``modal/reference_modal.npz`` the point and ``u`` MFEM gives at the VTK
+   Lagrange lattice of every element. MFEM cannot project into a serendipity
+   space: those nodes copy the vertex and edge values of a Gauss-Lobatto
+   projection (the same degrees of freedom) with small random bubbles, and
+   their ``u`` is random.
+7. Saves an ``H1`` field ``u`` and an ``L2`` order-0 field ``e`` on the
+   non-conforming ``amr-quad`` and ``amr-hex`` (copied too), and freezes in
+   ``reference_nc.npz`` MFEM's vertex numbers of every leaf in MFEM's order,
+   its vertex coordinates, ``u`` at the VTK lattice of every leaf and ``e``.
 """
 
 import pathlib
@@ -362,6 +380,249 @@ def non_conforming(name, arrays):
         arrays[f"{name}:{part}:attributes"] = attrs
 
 
+# NURBS meshes: 3-D order 4 on seven patches; 3-D order 2 with no boundary
+# section (MFEM builds it) and the boundary orientation fix; the per-patch
+# control point form; 1-D patches of orders 1-3 (homogeneous control points);
+# v1.1 spacing formulas; one cube whose boundary MFEM turns.
+NURBS = [
+    "ball-nurbs",
+    "pipe-nurbs",
+    "square-disc-nurbs-patch",
+    "nurbs-segments2d-patches",
+    "beam-quad-nurbs-sf",
+    "cube-nurbs",
+]
+
+
+def _knot_order(path):
+    lines = [ln.split("#")[0].strip() for ln in open(path)]
+    lines = [ln for ln in lines if ln]
+    q = 1
+    for i, ln in enumerate(lines):
+        if ln == "knotvectors":
+            for k in range(int(lines[i + 1])):
+                q = max(q, int(lines[i + 2 + k].split()[0]))
+    return q
+
+
+def nurbs(data):
+    out = OUT / "nurbs"
+    out.mkdir(exist_ok=True)
+    arrays = {}
+    for name in NURBS:
+        shutil.copyfile(data / f"{name}.mesh", out / f"{name}.mesh")
+        mesh = mfem.Mesh(str(out / f"{name}.mesh"), 1, 1)
+        dim, sdim = mesh.Dimension(), mesh.SpaceDimension()
+        fes = mfem.FiniteElementSpace(mesh, mesh.GetNodes().FESpace().FEColl(), 1)
+        u = mfem.GridFunction(fes)
+        u.ProjectCoefficient(Scalar(lambda x: 1.0 + x[0] ** 2 + 0.5 * x[-1]))
+        u.Save(str(out / f"{name}.u.gf"), 17)
+        q = _knot_order(out / f"{name}.mesh")
+        t = np.linspace(0.0, 1.0, q + 1)
+        grid = [(a, 0.0, 0.0) for a in t]
+        if dim >= 2:
+            grid = [(a, b, 0.0) for b in t for a in t]
+        if dim == 3:
+            grid = [(a, b, c) for c in t for b in t for a in t]
+        xs, us = [], []
+        for e in range(mesh.GetNE()):
+            tr = mesh.GetElementTransformation(e)
+            xe, ue = [], []
+            for r in grid:
+                ip = mfem.IntegrationPoint()
+                ip.Set3(*r)
+                tr.SetIntPoint(ip)
+                xe.append(np.asarray(tr.Transform(ip))[:sdim])
+                ue.append(u.GetValue(e, ip))
+            xs.append(xe)
+            us.append(ue)
+        arrays[f"{name}:order"] = np.array(q)
+        arrays[f"{name}:x"] = np.array(xs)
+        arrays[f"{name}:u"] = np.array(us)
+        arrays[f"{name}:elements"] = np.array(
+            [list(mesh.GetElementVertices(e)) for e in range(mesh.GetNE())]
+        )
+        arrays[f"{name}:boundary"] = np.array(
+            [list(mesh.GetBdrElementVertices(b)) for b in range(mesh.GetNBE())]
+        )
+        print(name, mesh.GetNE(), "knot-span elements, order", q)
+    np.savez_compressed(out / "reference_nurbs.npz", **arrays)
+
+
+class Warp(mfem.VectorPyCoefficient):
+    def __init__(self, dim):
+        super().__init__(dim)
+
+    def EvalValue(self, x):
+        y = np.array(x, dtype=float)
+        y[0] += 0.05 * np.sin(1.3 * x[0] + 0.7 * (x[1] if len(x) > 1 else 0))
+        if len(x) > 1:
+            y[1] += 0.04 * np.cos(0.9 * x[0] - 1.1 * x[1])
+        return y
+
+
+# name, source (an MFEM data mesh or a Cartesian mesh), basis, nodes order, u order
+MODAL = [
+    ("pos-quad-p3", "star.mesh", "pos", 3, 3),
+    ("pos-tri-p4", (2, 2, "tri"), "pos", 4, 3),
+    ("pos-tet-p3", "escher.mesh", "pos", 3, 2),
+    ("pos-hex-p3", "fichera.mesh", "pos", 3, 3),
+    ("pos-wedge-p3", (2, 1, 1, "wedge"), "pos", 3, 3),
+    ("pos-seg-p4", "inline-segment.mesh", "pos", 4, 4),
+    ("ser-quad-p3", "star.mesh", "ser", 3, 5),
+    ("ser-quad-p5", "inline-quad.mesh", "ser", 5, 3),
+]
+
+
+def _lattice():
+    """meshio++'s VTK lattice (``_lagrange.vtk_lattice``), loaded by path so
+    this runs where meshio++ is not installed."""
+    import importlib.util
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    path = root / "src" / "python" / "meshioplusplus" / "_lagrange.py"
+    spec = importlib.util.spec_from_file_location("_lagrange", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.vtk_lattice
+
+
+def _modal_mesh(data, src):
+    if isinstance(src, str):
+        return mfem.Mesh(str(data / src), 1, 1)
+    if src[-1] == "tri":
+        return mfem.Mesh.MakeCartesian2D(
+            src[0], src[1], mfem.Element.TRIANGLE, True, 1.0, 1.0
+        )
+    return mfem.Mesh.MakeCartesian3D(
+        src[0], src[1], src[2], mfem.Element.WEDGE, 1.0, 1.0, 1.0
+    )
+
+
+def modal(data):
+    out = OUT / "modal"
+    out.mkdir(exist_ok=True)
+    lattice = _lattice()
+    shapes = {1: "line", 2: "triangle", 3: "quad", 4: "tetra", 5: "hexahedron"}
+    shapes[6] = "wedge"
+    bases = {"pos": mfem.BasisType.Positive, "ser": mfem.BasisType.Serendipity}
+    arrays = {}
+    for name, src, basis, p, pu in MODAL:
+        mesh = _modal_mesh(data, src)
+        dim, sdim = mesh.Dimension(), mesh.SpaceDimension()
+        fec = mfem.H1_FECollection(p, dim, bases[basis])
+        rng = np.random.default_rng(len(name))
+        if basis == "ser":
+            fecg = mfem.H1_FECollection(p, dim)  # referenced while in use
+            fesg = mfem.FiniteElementSpace(mesh, fecg, sdim, mfem.Ordering.byNODES)
+            mesh.SetNodalFESpace(fesg)
+            mesh.GetNodes().ProjectCoefficient(Warp(sdim))
+            g = mesh.GetNodes().GetDataArray().copy()
+            ng = fesg.GetNDofs()
+            fes = mfem.FiniteElementSpace(mesh, fec, sdim, mfem.Ordering.byNODES)
+            ns = fes.GetNDofs()
+            shared = mesh.GetNV() + mesh.GetNEdges() * (p - 1)
+            vals = np.zeros(ns * sdim)
+            for c in range(sdim):
+                vals[c * ns : c * ns + shared] = g[c * ng : c * ng + shared]
+                vals[c * ns + shared : (c + 1) * ns] = 0.01 * rng.standard_normal(
+                    ns - shared
+                )
+            gf = mfem.GridFunction(fes)
+            gf.Assign(mfem.Vector(vals))
+            mesh.NewNodes(gf, False)
+            gf.thisown = False
+        else:
+            fes = mfem.FiniteElementSpace(mesh, fec, sdim, mfem.Ordering.byVDIM)
+            mesh.SetNodalFESpace(fes)
+            mesh.GetNodes().ProjectCoefficient(Warp(sdim))
+        mesh.Print(str(out / f"{name}.mesh"), 17)
+        # read back: MFEM may re-mark simplices on loading; the reference is
+        # of the element frames it then prints
+        mesh = mfem.Mesh(str(out / f"{name}.mesh"), 1, 1)
+        mesh.Print(str(out / f"{name}.mesh"), 17)
+        fecu = mfem.H1_FECollection(pu, dim, bases[basis])
+        fesu = mfem.FiniteElementSpace(mesh, fecu)
+        u = mfem.GridFunction(fesu)
+        if basis == "ser":
+            u.Assign(mfem.Vector(rng.standard_normal(fesu.GetNDofs())))
+        else:
+            u.ProjectCoefficient(
+                Scalar(lambda x: 1.0 + np.sin(x[0]) * (1.5 + x[-1]) + x[-1] ** 2)
+            )
+        u.Save(str(out / f"{name}.u.gf"), 17)
+        q = max(p, pu)
+        rows = {}
+        for e in range(mesh.GetNE()):
+            geom = mesh.GetElementBaseGeometry(e)
+            tr = mesh.GetElementTransformation(e)
+            xe, ue = [], []
+            for ijk in lattice(shapes[geom], q):
+                ip = mfem.IntegrationPoint()
+                ip.Set3(*(c / q for c in ijk))
+                tr.SetIntPoint(ip)
+                xe.append(np.asarray(tr.Transform(ip))[:sdim])
+                ue.append(u.GetValue(e, ip))
+            rows.setdefault(geom, ([], []))
+            rows[geom][0].append(xe)
+            rows[geom][1].append(ue)
+        arrays[f"{name}:order"] = np.array(q)
+        for geom, (xs, us) in rows.items():
+            arrays[f"{name}:{geom}:x"] = np.array(xs)
+            arrays[f"{name}:{geom}:u"] = np.array(us)
+        print(name, mesh.GetNE(), "elements, order", q, fec.Name())
+    np.savez_compressed(out / "reference_modal.npz", **arrays)
+
+
+# Non-conforming meshes with fields: MFEM's own leaf order and vertex numbers
+# (space-filling curve) decide which value is whose.
+NC_FIELDS = [("amr-quad", 3), ("amr-hex", 2)]
+
+
+def nc_fields(data):
+    lattice = _lattice()
+    shapes = {3: "quad", 5: "hexahedron"}
+    arrays = {}
+    for name, p in NC_FIELDS:
+        if not (OUT / f"{name}.mesh").exists():
+            shutil.copyfile(data / f"{name}.mesh", OUT / f"{name}.mesh")
+        mesh = mfem.Mesh(str(OUT / f"{name}.mesh"), 1, 1)
+        dim, sdim = mesh.Dimension(), mesh.SpaceDimension()
+        # PyMFEM: keep every collection and space referenced while in use
+        fec, fec0 = mfem.H1_FECollection(p, dim), mfem.L2_FECollection(0, dim)
+        fes, fes0 = mfem.FiniteElementSpace(mesh, fec), mfem.FiniteElementSpace(
+            mesh, fec0
+        )
+        u = mfem.GridFunction(fes)
+        u.ProjectCoefficient(
+            Scalar(lambda x: 1.0 + np.sin(2 * x[0]) * np.cos(x[1]) + 0.5 * x[-1])
+        )
+        u.Save(str(OUT / f"{name}.u.gf"), 17)
+        e = mfem.GridFunction(fes0)
+        e.ProjectCoefficient(Scalar(lambda x: x[0] - 2.0 * x[1]))
+        e.Save(str(OUT / f"{name}.e.gf"), 17)
+        us, verts = [], []
+        for k in range(mesh.GetNE()):
+            tr = mesh.GetElementTransformation(k)
+            uk = []
+            for ijk in lattice(shapes[mesh.GetElementBaseGeometry(k)], p):
+                ip = mfem.IntegrationPoint()
+                ip.Set3(*(c / p for c in ijk))
+                tr.SetIntPoint(ip)
+                uk.append(u.GetValue(k, ip))
+            us.append(uk)
+            verts.append(list(mesh.GetElementVertices(k)))
+        arrays[f"{name}:order"] = np.array(p)
+        arrays[f"{name}:u"] = np.array(us)
+        arrays[f"{name}:e"] = np.array([e[k] for k in range(mesh.GetNE())])
+        arrays[f"{name}:element_vertices"] = np.array(verts)
+        arrays[f"{name}:vertices"] = np.array(
+            [mesh.GetVertexArray(v)[:sdim] for v in range(mesh.GetNV())]
+        )
+        print(name, mesh.GetNE(), "leaves, u of order", p)
+    np.savez_compressed(OUT / "reference_nc.npz", **arrays)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -382,6 +643,9 @@ def main():
         high_order(data, *case, lagrange)
     non_conforming("amr-quad", lagrange)
     np.savez_compressed(OUT / "reference_lagrange.npz", **lagrange)
+    nurbs(data)
+    modal(data)
+    nc_fields(data)
 
 
 if __name__ == "__main__":

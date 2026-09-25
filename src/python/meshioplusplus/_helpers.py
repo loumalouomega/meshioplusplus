@@ -10,10 +10,12 @@ from numpy.typing import ArrayLike
 from ._common import num_nodes_per_cell
 from ._exceptions import ReadError, WriteError
 from ._files import (
+    is_binout_filename,
     is_buffer,
     is_d3plot_filename,
     is_d3plot_member,
     is_radioss_anim_filename,
+    is_radioss_th_filename,
     is_z88_filename,
 )
 from ._mesh import CellBlock, Mesh
@@ -125,9 +127,15 @@ def _filetypes_from_path(path: Path) -> list[str]:
         is_d3plot_filename(path) or is_d3plot_member(path)
     ) and "lsdyna_d3plot" not in out:
         out = ["lsdyna_d3plot"] + out
+    # LS-DYNA's binary output database: ``binout``, no extension.
+    if is_binout_filename(path) and "lsdyna_binout" not in out:
+        out = ["lsdyna_binout"] + out
     # OpenRadioss animation files: `<run>A001`..., no extension.
     if not out and is_radioss_anim_filename(path):
         out = ["radioss_anim"]
+    # ... and their time-history files: `<run>T01`..., no extension.
+    if not out and is_radioss_th_filename(path):
+        out = ["radioss_th"]
     if not out:
         raise ReadError(f"Could not deduce file format from path '{path}'.")
     return out

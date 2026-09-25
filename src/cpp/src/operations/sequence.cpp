@@ -224,12 +224,15 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // of its result tables.
     // radioss_anim joined in v16.11.0: one step per animation file, its time
     // taken from the file rather than from the number in its name.
+    // lsdyna_binout joined in v16.12.0: its steps are nodout's outputs.
+    // radioss_th joined in v16.12.0: its steps are the time-history outputs.
     return rFormat == "frd" || rFormat == "abaqus_fil" || rFormat == "lsdyna_d3plot" ||
-           rFormat == "radioss_anim" || rFormat == "nastran_op2" || rFormat == "unv" ||
-           rFormat == "nastran_h5" || rFormat == "xplt" || rFormat == "ansys_rst" ||
-           rFormat == "ansys_rst_cyclic" || rFormat == "marc_t19" || rFormat == "femap" ||
-           rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "lsdyna_binout" || rFormat == "radioss_th" || rFormat == "radioss_anim" ||
+           rFormat == "nastran_op2" || rFormat == "unv" || rFormat == "nastran_h5" ||
+           rFormat == "xplt" || rFormat == "ansys_rst" || rFormat == "ansys_rst_cyclic" ||
+           rFormat == "marc_t19" || rFormat == "femap" || rFormat == "xdmf" ||
+           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
+           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
            rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 

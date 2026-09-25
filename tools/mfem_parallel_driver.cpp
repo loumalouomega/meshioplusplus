@@ -2,7 +2,12 @@
 // by tools/gen_mfem_parallel_fixtures.py (not part of meshio++; needs MFEM built
 // with MPI and hypre, both BSD/MIT-style licensed).
 //
-//   mfem_parallel_driver <serial mesh> <out prefix> <curve order (0 = none)> <u order>
+//   mfem_parallel_driver <serial mesh> <out prefix> <curve order (0 = none)> <u order> [nc]
+//
+// With `nc`, the parallel mesh is then made non-conforming and refined twice
+// more where the centroid's x lies in alternating bands, so the ranks' files are
+// leaf meshes with hanging nodes from ParMesh::Save and `MFEM NC mesh` files (each
+// rank's refinement tree, ghosts included) from ParMesh::ParPrint.
 //
 // Refines the mesh once, partitions it by element centroid x over the MPI ranks
 // and writes, per rank: <out>.mesh.%06d (ParMesh::Save, the files GLVis reads),
@@ -58,7 +63,22 @@ int main(int argc, char* argv[]) {
     }
     for (int e = 0; e < serial.GetNE(); ++e)
         part[e] = std::min(np - 1, int((cx[e] - lo) / (hi - lo + 1e-12) * np));
+    const bool nc = argc > 5 && std::string(argv[5]) == "nc";
+    if (nc)
+        serial.EnsureNCMesh();  // a ParMesh cannot become non-conforming itself
     ParMesh pmesh(MPI_COMM_WORLD, serial, part.GetData());
+    if (nc) {
+        for (int pass = 0; pass < 2; ++pass) {
+            Array<int> marked;
+            for (int e = 0; e < pmesh.GetNE(); ++e) {
+                Vector c;
+                pmesh.GetElementCenter(e, c);
+                if (std::sin(7.0 * c(0) + 3.0 * pass) > 0.2)
+                    marked.Append(e);
+            }
+            pmesh.GeneralRefinement(marked, 1, 0);
+        }
+    }
     if (curve > 0) {
         pmesh.SetCurvature(curve, false, -1, Ordering::byVDIM);
         VectorFunctionCoefficient w(pmesh.SpaceDimension(), warp);

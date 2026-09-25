@@ -1,0 +1,69 @@
+#RADIOSS STARTER
+# meshio++ time-history fixture: two bricks, one end fixed, the other end pushed
+/BEGIN
+column
+      2017         0
+                  kg                  mm                  ms
+                  kg                  mm                  ms
+/NODE
+         1                 0.0                 0.0                 0.0
+         2                 1.0                 0.0                 0.0
+         3                 1.0                 1.0                 0.0
+         4                 0.0                 1.0                 0.0
+         5                 0.0                 0.0                 1.0
+         6                 1.0                 0.0                 1.0
+         7                 1.0                 1.0                 1.0
+         8                 0.0                 1.0                 1.0
+         9                 0.0                 0.0                 2.0
+        10                 1.0                 0.0                 2.0
+        11                 1.0                 1.0                 2.0
+        12                 0.0                 1.0                 2.0
+/PART/1
+column
+         1         1         0
+/MAT/LAW1/1
+steel
+#              RHO_I
+             7.8e-06
+#                  E                  Nu
+               210.0                 0.3
+/PROP/SOLID/1
+solid
+#   Isolid    Ismstr               Icpre               Inpts    Itetra    Iframe                  Dn
+        17         0                   0                   0         0         0                 0.0
+#                 qa                  qb                   h              Lambda                  Mu
+
+#         deltaT_min   Istrain      Ihkt
+                 0.0         0         0
+/BRICK/1
+         1         1         2         3         4         5         6         7         8
+         2         5         6         7         8         9        10        11        12
+/GRNOD/NODE/1
+bottom
+         1         2         3         4
+/GRNOD/NODE/2
+top
+         9        10        11        12
+/BCS/1
+fixed
+#  Trarot   Skew_ID   grnd_ID
+   111 000         0         1
+/INIVEL/TRA/1
+push
+                 0.0                 0.0                -1.0         2         0
+/TH/NODE/1
+top nodes
+        DX        DY        DZ        VX        VY        VZ
+         1         0
+         9         0
+        12         0
+/TH/BRIC/2
+bricks
+        SX        SY        SZ
+         1
+         2
+/TH/PART/3
+part
+        IE        KE      MASS
+         1
+/END

@@ -51,6 +51,11 @@ constexpr NastranCardSpec kNmCards[] = {
     {"CBAR", "line", 2, nullptr, 0, nullptr},
     {"CBEAM", "line", 2, nullptr, 0, nullptr},
     {"CBUSH", "line", 2, nullptr, 0, nullptr},
+    // Springs and dampers between two points, or grounded (the second is 0).
+    {"CDAMP1", "vertex", 1, "line", 2, nullptr},
+    {"CDAMP2", "vertex", 1, "line", 2, nullptr},
+    {"CELAS1", "vertex", 1, "line", 2, nullptr},
+    {"CELAS2", "vertex", 1, "line", 2, nullptr},
     {"CHEXA", "hexahedron", 8, "hexahedron20", 20, kNmHexa20},
     {"CONM2", "vertex", 1, nullptr, 0, nullptr},
     {"CONROD", "line", 2, nullptr, 0, nullptr},
@@ -113,8 +118,14 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             card.mCard, spec->mQuadratic ? spec->mQuadratic : "", spec->mQuadraticNodes, {}, {},
             {}};
         std::size_t partial = 0;
+        // A spring or damper grounded at its first end: the other end leads.
+        const bool grounded_first =
+            spec->mLinearNodes == 1 && spec->mQuadraticNodes == 2 && width >= 2;
         for (std::size_t i = 0; i < n; ++i) {
             const std::int64_t* row = card.mNodes.data() + i * width;
+            const std::int64_t swapped[2] = {grounded_first ? row[1] : 0, 0};
+            if (grounded_first && row[0] == 0)
+                row = swapped;
             bool quad = false;
             if (spec->mQuadratic != nullptr && width >= spec->mQuadraticNodes) {
                 std::size_t given = 0;
