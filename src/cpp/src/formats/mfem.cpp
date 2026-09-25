@@ -388,6 +388,7 @@ public:
     }
 
     bool AtEnd() const { return mPos >= mTokens.size(); }
+    std::size_t Remaining() const { return AtEnd() ? 0 : mTokens.size() - mPos; }
     const MfToken& Peek() const { return mTokens[mPos]; }
     std::size_t Line() const { return AtEnd() ? mEndLine : mTokens[mPos].mLine; }
 
@@ -755,6 +756,8 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
             const std::int64_t n = rLex.Int("an element count");
             if (n < 0)
                 rLex.Fail("negative element count", t.mLine);
+            if (static_cast<std::uint64_t>(n) > rLex.Remaining() / 3)
+                rLex.Fail("element count " + std::to_string(n) + " exceeds the file", t.mLine);
             elements.resize(static_cast<std::size_t>(n));
             for (NcElement& el : elements) {
                 el.mLine = rLex.Line();
@@ -801,6 +804,8 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
                 if (sd < 1 || sd > 3)
                     rLex.Fail("space dimension " + std::to_string(sd) + " (1, 2 or 3)", t.mLine);
                 sdim = static_cast<int>(sd);
+                if (top_count > rLex.Remaining() / static_cast<std::size_t>(sdim))
+                    rLex.Fail("vertex count " + std::to_string(n) + " exceeds the file", t.mLine);
                 top.assign(top_count * 3, 0.0);
                 for (std::size_t k = 0; k < top_count; ++k)
                     for (int c = 0; c < sdim; ++c)
