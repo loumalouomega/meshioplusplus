@@ -67,18 +67,19 @@ def split_card(line, layout, mode):
     return out
 
 
-def to_int(text, where=""):
-    """An integer field; blank is 0."""
+def to_int(text, where="", fmt="LS-DYNA"):
+    """An integer field; blank is 0. ``fmt`` names the format in the error."""
     if not text:
         return 0
     try:
         return int(text)
     except ValueError:
-        raise ReadError(f"LS-DYNA: invalid integer field {text!r}{where}") from None
+        raise ReadError(f"{fmt}: invalid integer field {text!r}{where}") from None
 
 
-def to_float(text, where=""):
-    """A real field; blank is 0. Accepts ``D`` exponents and ``1.5-3`` (no letter)."""
+def to_float(text, where="", fmt="LS-DYNA"):
+    """A real field; blank is 0. Accepts ``D`` exponents and ``1.5-3`` (no letter).
+    ``fmt`` names the format in the error."""
     if not text:
         return 0.0
     s = text.replace("D", "E").replace("d", "e")
@@ -88,7 +89,7 @@ def to_float(text, where=""):
     try:
         return float(s)
     except ValueError:
-        raise ReadError(f"LS-DYNA: invalid real field {text!r}{where}") from None
+        raise ReadError(f"{fmt}: invalid real field {text!r}{where}") from None
 
 
 def format_real16(x):

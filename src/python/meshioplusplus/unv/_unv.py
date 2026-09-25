@@ -11,6 +11,7 @@ steps of a sequence. See ``doc/formats/unv.md``.
 """
 
 import math
+import re
 import struct
 
 import numpy as np
@@ -22,6 +23,7 @@ from .._files import open_file
 from .._mesh import CellBlock, Mesh
 from .._node_order import node_order, node_order_keys
 from .._regions import Region
+from ..lsdyna._cards import parse_fortran_format, split_fixed, to_float, to_int
 
 __all__ = ["read", "write", "time_values"]
 
@@ -208,10 +210,10 @@ def _int(tok):
         raise ReadError(f"UNV: expected an integer, got '{tok}'") from None
 
 
-def _ints(line):
+def _ints_free(tokens):
     # Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1").
     out = []
-    for t in line.split():
+    for t in tokens:
         if t.startswith("%"):
             break
         out.append(_int(t))
@@ -239,10 +241,89 @@ def _reals(line):
     return out
 
 
-def _take_reals(lines, k, count):
+# ---------------------------------------------------------------------------
+# Fixed columns. A UNV record is Fortran-formatted (I10 integers, E13.5 and
+# D25.16 reals), so neighbouring values may touch: a 10-digit label fills its
+# whole field, as does a negative real. Splitting on whitespace is exact for
+# right-aligned fields unless two values touch, which always leaves a token
+# longer than a field; such a line is cut in its columns with the shared card
+# tokenizer (lsdyna/_cards.py, twin of detail/keyword_card.hpp). A line that
+# does not fit them (a free-format writer, Code_Aster's `%` comments, a field
+# holding two values) keeps the whitespace split.
+# ---------------------------------------------------------------------------
+
+_I10 = parse_fortran_format("(8I10)")
+_E13 = parse_fortran_format("(6E13.5)")
+_D25 = parse_fortran_format("(3D25.16)")
+_REC6 = parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)")
+_INT_TEXT = re.compile(r"[+-]?[0-9]+\Z")
+_REAL_TEXT = re.compile(r"[0-9+\-.EeDd]*[0-9][0-9+\-.EeDd]*\Z")
+
+
+def _fixed_fields(line, layout):
+    """The fields ``layout`` cuts from ``line``, or ``None`` when the line runs past
+    its columns or a numeric field does not hold one value; a blank field is ``""``."""
+    width = sum(w for _, w in layout)
+    kinds = [kind for kind, _ in layout if kind != "x"]
+    body = line.rstrip(" \t\r\n")
+    if len(body) > width:
+        return None
+    fields = split_fixed(body, layout)
+    for kind, t in zip(kinds, fields):
+        if not t or kind == "a":
+            continue
+        if not (_INT_TEXT if kind == "i" else _REAL_TEXT).match(t):
+            return None
+    return fields
+
+
+def _fixed_values(line, layout, convert):
+    fields = _fixed_fields(line, layout)
+    if fields is None:
+        return None
+    # A blank field between two values falls back too: the whitespace split has
+    # always skipped it.
+    values = list(fields)
+    while values and not values[-1]:
+        values.pop()
+    if any(not t for t in values):
+        return None
+    return [convert(t, " in a UNV record", "UNV") for t in values]
+
+
+def _has_wide_token(tokens, width):
+    """Whether a token (before a Code_Aster ``%`` comment) is wider than ``width``."""
+    for t in tokens:
+        if t.startswith("%"):
+            return False
+        if len(t) > width:
+            return True
+    return False
+
+
+def _ints(line):
+    """The integers of an I10 record."""
+    tokens = line.split()
+    if not _has_wide_token(tokens, 10):
+        return _ints_free(tokens)
+    out = _fixed_values(line, _I10, to_int)
+    return _ints_free(tokens) if out is None else out
+
+
+def _reals_fixed(line, width):
+    """The reals of a record of E13.5 (``width`` 13) or D25.16 (25) fields."""
+    if not _has_wide_token(line.split(), width):
+        return _reals(line)
+    out = _fixed_values(line, _E13 if width == 13 else _D25, to_float)
+    return _reals(line) if out is None else out
+
+
+def _take_reals(lines, k, count, width=0):
+    # `width` is the record's real field width when it is fixed (D25.16), else 0:
+    # the data records of datasets 2414 and 58 are E13.5 or E20.12 by precision.
     vals = []
     while len(vals) < count and k < len(lines):
-        vals += _reals(lines[k])
+        vals += _reals_fixed(lines[k], width) if width else _reals(lines[k])
         k += 1
     if len(vals) < count:
         raise ReadError("UNV: dataset ends inside a data record")
@@ -395,16 +476,16 @@ def _parse_nodes(ds, f):
         if ds.id == 15:
             line = lines[k]
             k += 1
-            ints = line[:40].split()
+            ints = _ints(line[:40])
             if len(ints) < 2:
                 raise ReadError("UNV: malformed dataset-15 node record")
-            xs = _reals(line[40:]) if len(line) > 40 else []
-            f.nodes.append((_int(ints[0]), _int(ints[1]), xs[:3]))
+            xs = _reals_fixed(line[40:], 13) if len(line) > 40 else []
+            f.nodes.append((ints[0], ints[1], xs[:3]))
         else:
             r1 = _ints(lines[k])
             if not r1 or k + 1 >= len(lines):
                 raise ReadError(f"UNV: malformed node record in dataset {ds.id}")
-            xs = _reals(lines[k + 1])
+            xs = _reals_fixed(lines[k + 1], 25)  # 1P3D25.16
             f.nodes.append((r1[0], r1[1] if len(r1) > 1 else 0, xs[:3]))
             k += 2
 
@@ -470,7 +551,7 @@ def _parse_units(ds, f):
     factors = []
     k = 1
     while k < len(ds.lines) and len(factors) < 4:
-        factors += _reals(ds.lines[k])
+        factors += _reals_fixed(ds.lines[k], 25)  # 3D25.17
         k += 1
     factors = (factors + [0.0] * 4)[:4]
     # Record 1 is I10, 20A1, I10: the description may touch the code ("5mm").
@@ -487,7 +568,7 @@ def _parse_cs(ds, f):
         r3 = _ints(lines[k])
         if len(r3) < 2 or k + 2 >= len(lines):
             break
-        m, k = _take_reals(lines, k + 2, 12)
+        m, k = _take_reals(lines, k + 2, 12, 25)  # 1P3D25.16
         f.cs[r3[0]] = (r3[1], np.array(m).reshape(4, 3))
 
 
@@ -630,16 +711,22 @@ def _parse_function(ds, f):
     lines = ds.lines
     if len(lines) < 11:
         raise ReadError("UNV: dataset 58 has a truncated header")
+    # Record 6: Format(2(I5,I10),2(1X,10A1,I10,I4)); names may hold spaces, so a
+    # full-width record is cut in its columns.
     rec6 = lines[5]
+    fields = _fixed_fields(rec6, _REC6) if len(rec6) >= 80 else None
+    if fields is not None:
 
-    def fld(a, n):
-        s = rec6[a : a + n].strip()
-        return _int(s) if s else 0
+        def fld(i):
+            return (
+                to_int(fields[i], " in dataset 58 record 6", "UNV")
+                if i < len(fields)
+                else 0
+            )
 
-    if len(rec6) >= 80:
-        ftype, load_case = fld(0, 5), fld(20, 10)
-        rsp_node, rsp_dir = fld(41, 10), fld(51, 4)
-        ref_node, ref_dir = fld(66, 10), fld(76, 4)
+        ftype, load_case = fld(0), fld(3)
+        rsp_node, rsp_dir = fld(5), fld(6)
+        ref_node, ref_dir = fld(8), fld(9)
     else:
         t = rec6.split()
         if len(t) < 10:

@@ -28,6 +28,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -44,6 +45,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -321,9 +323,9 @@ std::int64_t unv_int(std::string_view t) {
     return v;
 }
 
-std::vector<std::int64_t> unv_ints(std::string_view line) {
+std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTokens) {
     std::vector<std::int64_t> out;
-    for (auto t : unv_split(line)) {
+    for (auto t : rTokens) {
         // Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1").
         if (t.front() == '%')
             break;
@@ -347,9 +349,9 @@ double unv_real(std::string_view t) {
 // Real tokens of a line. Fixed-width fields (E13.5 and friends) run together when a
 // value is negative and fills its field, so a sign that does not follow an exponent
 // letter also starts a new number.
-std::vector<double> unv_reals(std::string_view line) {
+std::vector<double> unv_reals(const std::vector<std::string_view>& rTokens) {
     std::vector<double> out;
-    for (auto t : unv_split(line)) {
+    for (auto t : rTokens) {
         std::size_t start = 0;
         for (std::size_t k = 1; k < t.size(); ++k) {
             const char c = t[k];
@@ -362,6 +364,134 @@ std::vector<double> unv_reals(std::string_view line) {
         out.push_back(unv_real(t.substr(start)));
     }
     return out;
+}
+
+std::vector<double> unv_reals(std::string_view line) {
+    return unv_reals(unv_split(line));
+}
+
+// ---------------------------------------------------------------------------
+// Fixed columns. A UNV record is Fortran-formatted (I10 integers, E13.5 and
+// D25.16 reals), so neighbouring values may touch: a 10-digit label fills its
+// whole field, as does a negative real. Splitting on whitespace is exact for
+// right-aligned fields unless two values touch, which always leaves a token
+// longer than a field; such a line is cut in its columns with the shared card
+// tokenizer (detail/keyword_card.hpp). A line that does not fit them (a
+// free-format writer, Code_Aster's `%` comments, a field holding two values)
+// keeps the whitespace split above.
+// ---------------------------------------------------------------------------
+
+/// Whether a token (before a Code_Aster `%` comment) is wider than `Width`.
+bool unv_has_wide_token(const std::vector<std::string_view>& rTokens, std::size_t Width) {
+    for (const std::string_view t : rTokens) {
+        if (t.front() == '%')
+            return false;
+        if (t.size() > Width)
+            return true;
+    }
+    return false;
+}
+
+bool unv_is_int_text(const std::string& rText) {
+    std::size_t i = (!rText.empty() && (rText[0] == '+' || rText[0] == '-')) ? 1 : 0;
+    if (i == rText.size())
+        return false;
+    for (; i < rText.size(); ++i)
+        if (!std::isdigit(static_cast<unsigned char>(rText[i])))
+            return false;
+    return true;
+}
+
+bool unv_is_real_text(const std::string& rText) {
+    bool digit = false;
+    for (const char c : rText) {
+        if (std::isdigit(static_cast<unsigned char>(c)))
+            digit = true;
+        else if (c == '\0' || !std::strchr("+-.EeDd", c))
+            return false;
+    }
+    return digit;
+}
+
+/// The fields `rLayout` cuts from `Line`, or nothing when the line runs past its
+/// columns or a numeric field does not hold one value. A blank field is `""`.
+std::optional<std::vector<std::string>> unv_fixed_fields(
+    std::string_view Line, const std::vector<detail::CardField>& rLayout) {
+    std::size_t width = 0;
+    std::vector<char> kinds;
+    for (const detail::CardField& f : rLayout) {
+        width += static_cast<std::size_t>(f.mWidth);
+        if (f.mKind != 'x')
+            kinds.push_back(f.mKind);
+    }
+    const std::size_t last = Line.find_last_not_of(" \t\r\n");
+    if (last == std::string_view::npos)
+        return std::vector<std::string>{};
+    if (last >= width)
+        return std::nullopt;
+    std::vector<std::string> fields = detail::split_fixed(Line.substr(0, last + 1), rLayout);
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        const std::string& t = fields[i];
+        if (t.empty() || kinds[i] == 'a')
+            continue;
+        if (kinds[i] == 'i' ? !unv_is_int_text(t) : !unv_is_real_text(t))
+            return std::nullopt;
+    }
+    return fields;
+}
+
+/// The integers of an I10 record. A blank field between two values falls back
+/// too: the whitespace split has always skipped it.
+std::vector<std::int64_t> unv_ints(std::string_view line) {
+    static const std::vector<detail::CardField> kLayout = detail::parse_fortran_format("(8I10)");
+    const std::vector<std::string_view> tokens = unv_split(line);
+    if (!unv_has_wide_token(tokens, 10))
+        return unv_ints_free(tokens);
+    if (const auto fields = unv_fixed_fields(line, kLayout)) {
+        std::vector<std::int64_t> out;
+        bool gap = false;
+        bool ok = true;
+        for (const std::string& t : *fields) {
+            if (t.empty()) {
+                gap = true;
+            } else if (gap) {
+                ok = false;
+                break;
+            } else {
+                out.push_back(detail::card_to_int(t, " in a UNV record", "UNV"));
+            }
+        }
+        if (ok)
+            return out;
+    }
+    return unv_ints_free(tokens);
+}
+
+/// The reals of a record of E13.5 (`Width` 13) or D25.16 (25) fields.
+std::vector<double> unv_reals_fixed(std::string_view line, int Width) {
+    static const std::vector<detail::CardField> kE13 = detail::parse_fortran_format("(6E13.5)");
+    static const std::vector<detail::CardField> kD25 = detail::parse_fortran_format("(3D25.16)");
+    const std::vector<std::string_view> tokens = unv_split(line);
+    if (!unv_has_wide_token(tokens, static_cast<std::size_t>(Width)))
+        return unv_reals(tokens);
+    if (const auto fields = unv_fixed_fields(line, Width == 13 ? kE13 : kD25)) {
+        std::vector<double> out;
+        bool gap = false;
+        bool ok = true;
+        for (const std::string& t : *fields) {
+            if (t.empty()) {
+                gap = true;
+            } else if (gap) {
+                ok = false;
+                break;
+            } else {
+                out.push_back(detail::card_to_real(t, " in a UNV record", "UNV"));
+            }
+        }
+        if (ok)
+            return out;
+    }
+    return unv_reals(line);
 }
 
 std::string unv_name(std::string_view s) {
@@ -584,11 +714,13 @@ struct UnvFile {
 };
 
 // Gather `Count` reals starting at line `rK` (advancing it).
+// `Width` is the record's real field width when it is fixed (D25.16), else 0:
+// the data records of datasets 2414 and 58 are E13.5 or E20.12 by precision.
 std::vector<double> unv_take_reals(const std::vector<std::string_view>& rLines, std::size_t& rK,
-                                   std::size_t Count) {
+                                   std::size_t Count, int Width = 0) {
     std::vector<double> vals;
     while (vals.size() < Count && rK < rLines.size()) {
-        for (double v : unv_reals(rLines[rK]))
+        for (double v : Width > 0 ? unv_reals_fixed(rLines[rK], Width) : unv_reals(rLines[rK]))
             vals.push_back(v);
         ++rK;
     }
@@ -624,12 +756,13 @@ void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
         if (rDs.mId == 15) {
             // 4I10,1P3E13.5 on one line.
             const std::string_view line = lines[k++];
-            auto ints = unv_split(line.substr(0, std::min<std::size_t>(40, line.size())));
+            auto ints = unv_ints(line.substr(0, std::min<std::size_t>(40, line.size())));
             if (ints.size() < 2)
                 throw ReadError("UNV: malformed dataset-15 node record");
-            node.mLabel = unv_int(ints[0]);
-            node.mCs = unv_int(ints[1]);
-            auto xs = line.size() > 40 ? unv_reals(line.substr(40)) : std::vector<double>{};
+            node.mLabel = ints[0];
+            node.mCs = ints[1];
+            auto xs =
+                line.size() > 40 ? unv_reals_fixed(line.substr(40), 13) : std::vector<double>{};
             node.mNumCoords = std::min<std::size_t>(3, xs.size());
             for (std::size_t c = 0; c < node.mNumCoords; ++c)
                 node.mX[c] = xs[c];
@@ -640,7 +773,7 @@ void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
                 throw ReadError("UNV: malformed node record in dataset " + std::to_string(rDs.mId));
             node.mLabel = r1[0];
             node.mCs = r1.size() > 1 ? r1[1] : 0;
-            auto xs = unv_reals(lines[k + 1]);
+            auto xs = unv_reals_fixed(lines[k + 1], 25);  // 1P3D25.16
             node.mNumCoords = std::min<std::size_t>(3, xs.size());
             for (std::size_t c = 0; c < node.mNumCoords; ++c)
                 node.mX[c] = xs[c];
@@ -732,7 +865,7 @@ void unv_parse_units(const UnvDataset& rDs, UnvFile& rFile) {
     std::size_t k = 1;
     rFile.mUnitFactors.clear();
     while (k < rDs.mLines.size() && rFile.mUnitFactors.size() < 4) {
-        for (double v : unv_reals(rDs.mLines[k]))
+        for (double v : unv_reals_fixed(rDs.mLines[k], 25))  // 3D25.17
             rFile.mUnitFactors.push_back(v);
         ++k;
     }
@@ -753,7 +886,7 @@ void unv_parse_cs(const UnvDataset& rDs, UnvFile& rFile) {
         UnvCs cs;
         cs.mType = static_cast<int>(r3[1]);
         std::size_t j = k + 2;
-        auto m = unv_take_reals(lines, j, 12);
+        auto m = unv_take_reals(lines, j, 12, 25);  // 1P3D25.16
         for (int r = 0; r < 4; ++r)
             for (int c = 0; c < 3; ++c)
                 cs.mM[r][c] = m[r * 3 + c];
@@ -965,23 +1098,25 @@ void unv_parse_function(const UnvDataset& rDs, UnvFile& rFile) {
     if (lines.size() < 11)
         throw ReadError("UNV: dataset 58 has a truncated header");
     UnvFunction fn;
-    // Record 6: Format(2(I5,I10),2(1X,10A1,I10,I4)); names may hold spaces, so slice.
-    const std::string rec6(lines[5]);
-    auto field = [&](std::size_t a, std::size_t n) {
-        return a < rec6.size() ? unv_strip(std::string_view(rec6).substr(a, n))
-                               : std::string_view();
-    };
-    auto int_field = [&](std::size_t a, std::size_t n) {
-        auto f = field(a, n);
-        return f.empty() ? std::int64_t{0} : unv_int(f);
-    };
-    if (rec6.size() >= 80) {
-        fn.mType = static_cast<int>(int_field(0, 5));
-        fn.mLoadCase = int_field(20, 10);
-        fn.mRspNode = int_field(41, 10);
-        fn.mRspDir = static_cast<int>(int_field(51, 4));
-        fn.mRefNode = int_field(66, 10);
-        fn.mRefDir = static_cast<int>(int_field(76, 4));
+    // Record 6: Format(2(I5,I10),2(1X,10A1,I10,I4)); names may hold spaces, so a
+    // full-width record is cut in its columns.
+    static const std::vector<detail::CardField> kRec6 =
+        detail::parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)");
+    const std::string_view rec6 = lines[5];
+    const auto rec6_fields = rec6.size() >= 80 ? unv_fixed_fields(rec6, kRec6)
+                                               : std::optional<std::vector<std::string>>();
+    if (rec6_fields) {
+        const std::vector<std::string>& f = *rec6_fields;
+        auto int_field = [&](std::size_t i) {
+            return i < f.size() ? detail::card_to_int(f[i], " in dataset 58 record 6", "UNV")
+                                : std::int64_t{0};
+        };
+        fn.mType = static_cast<int>(int_field(0));
+        fn.mLoadCase = int_field(3);
+        fn.mRspNode = int_field(5);
+        fn.mRspDir = static_cast<int>(int_field(6));
+        fn.mRefNode = int_field(8);
+        fn.mRefDir = static_cast<int>(int_field(9));
     } else {
         auto t = unv_split(rec6);
         if (t.size() < 10)
