@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 
@@ -47,16 +48,13 @@ using detail::read_int;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
-}  // namespace
-
-void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    // The historical bool API, preserved exactly: zlib stays the only codec it
-    // can select, so existing callers are unaffected.
-    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
-}
-
-void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
-                     detail::VtkCodec codec) {
+// The writer behind write_vtu_codec and write_vtu_appended. `Appended` writes
+// every array as `format="appended"`: its size header and payload (or
+// block header and compressed blocks) go, unencoded, into one raw
+// `<AppendedData>` section at the end of the file, each array's `offset`
+// counted from the byte after its leading underscore.
+void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
+                    detail::VtkCodec codec, bool Appended) {
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -70,7 +68,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
 
-    const char* fmt = binary ? "binary" : "ascii";
+    const char* fmt = Appended ? "appended" : (binary ? "binary" : "ascii");
+    std::vector<unsigned char> appended;  // the raw <AppendedData> payload
     // UInt64 size headers only where an uncompressed array could pass 4 GiB
     // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
     const std::size_t hsz =
@@ -80,10 +79,17 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
         if (ncomp > 0)
             os << " NumberOfComponents=\"" << ncomp << "\"";
-        os << " format=\"" << fmt << "\">\n";
+        os << " format=\"" << fmt << "\"";
+        if (Appended)
+            os << " offset=\"" << appended.size() << "\"";
+        os << ">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        if (Appended)
+            detail::vtu_encode_raw(d, n, codec, hsz, appended);
+        else
+            os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz)
+               << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -100,9 +106,27 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
     if (rMesh.NumFieldData() != 0) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames())
-            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
-                                          binary ? codec : detail::VtkCodec::None, hsz);
+        for (const auto& name : rMesh.FieldDataNames()) {
+            const NDArray& arr = rMesh.FieldData(name);
+            if (!Appended) {
+                detail::vtu_write_field_array(os, name, arr, binary,
+                                              binary ? codec : detail::VtkCodec::None, hsz);
+                continue;
+            }
+            // vtu_write_field_array's element, with the payload appended.
+            const std::vector<std::size_t>& shape = arr.Shape();
+            os << "<DataArray type=\"" << vtu_type_str(arr.Dtype()) << "\" Name=\"" << name
+               << "\" NumberOfTuples=\"" << (shape.empty() ? 1 : shape[0]) << "\"";
+            if (shape.size() >= 2) {
+                std::size_t components = 1;
+                for (std::size_t d = 1; d < shape.size(); ++d)
+                    components *= shape[d];
+                os << " NumberOfComponents=\"" << components << "\"";
+            }
+            os << " format=\"appended\" offset=\"" << appended.size() << "\">\n";
+            emit_bin(reinterpret_cast<const unsigned char*>(arr.Data()), arr.Nbytes());
+            os << "</DataArray>\n";
+        }
         os << "</FieldData>\n";
     }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
@@ -307,7 +331,31 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "</CellData>\n";
     }
 
-    os << "</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
+    os << "</Piece>\n</UnstructuredGrid>\n";
+    if (Appended) {
+        os << "<AppendedData encoding=\"raw\">\n_";
+        os.write(reinterpret_cast<const char*>(appended.data()),
+                 static_cast<std::streamsize>(appended.size()));
+        os << "\n</AppendedData>\n";
+    }
+    os << "</VTKFile>\n";
+}
+
+}  // namespace
+
+void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    vtu_write_impl(rPath, rMesh, binary, codec, /*Appended=*/false);
+}
+
+void write_vtu_appended(const std::string& rPath, const Mesh& rMesh, detail::VtkCodec codec) {
+    vtu_write_impl(rPath, rMesh, /*binary=*/true, codec, /*Appended=*/true);
 }
 
 }  // namespace meshioplusplus

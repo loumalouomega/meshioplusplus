@@ -464,6 +464,17 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
 
+    m.def(
+        "vtu_write_appended",
+        [](const std::string& path, py::object pymesh, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/false);
+            meshioplusplus::write_vtu_appended(path, cpp, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("codec") = "zlib");
+
     m.def("vtu_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);

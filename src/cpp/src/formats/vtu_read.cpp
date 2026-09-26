@@ -23,7 +23,9 @@
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -42,6 +44,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "vtk_preflight.hpp"
 #include "../detail/vtu_decode.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -273,7 +276,8 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  */
 struct VtuSource {
     pugi::xml_document mDoc;
-    std::string mBytes;
+    std::optional<detail::FileSource> mFile;  // the file, read once
+    std::string_view mBytes;                  // its bytes: a raw payload is a view into them
     std::size_t mRawStart = 0;
     std::size_t mRawStop = 0;
     bool mIsRaw = false;
@@ -282,23 +286,19 @@ struct VtuSource {
 void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
     detail::vtk_preflight(rPath, "UnstructuredGrid",
                           "lzma-compressed VTU not supported by the C++ reader");
-    pugi::xml_parse_result res = rSource.mDoc.load_file(rPath.c_str(), ParseOptions);
-    if (res) {
-        pugi::xml_node app = rSource.mDoc.child("VTKFile").child("AppendedData");
-        if (!app || std::string(app.attribute("encoding").as_string("base64")) != "raw")
-            return;
-        // A raw payload that happened to parse as text still has to be read as bytes.
-    }
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    rSource.mBytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    const std::string& b = rSource.mBytes;
+    // The file is read once: a raw <AppendedData> payload is not XML, so only
+    // the text around it is parsed, and the payload is a view into the same
+    // bytes (it read the file twice and parsed it twice before v16.20.0).
+    rSource.mFile.emplace(detail::open_source(rPath, "Could not open file: " + rPath));
+    rSource.mBytes = rSource.mFile->View();
+    const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
-    const std::size_t tag_end = tag == std::string::npos ? tag : b.find('>', tag);
-    const bool raw = tag_end != std::string::npos &&
-                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string::npos;
+    const std::size_t tag_end = tag == std::string_view::npos ? tag : b.find('>', tag);
+    const bool raw = tag_end != std::string_view::npos &&
+                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string_view::npos;
+    pugi::xml_parse_result res;
     if (!raw) {
+        res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
         if (!res)
             throw ReadError(std::string("VTU XML parse failed: ") + res.description());
         return;
@@ -307,7 +307,8 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     const std::size_t stop = b.rfind("</AppendedData>");
     if (underscore == std::string::npos || stop == std::string::npos || stop <= underscore)
         throw ReadError("VTU: AppendedData is not closed");
-    const std::string xml = b.substr(0, tag_end + 1) + b.substr(stop);
+    std::string xml(b.substr(0, tag_end + 1));
+    xml += b.substr(stop);
     rSource.mDoc.reset();
     res = rSource.mDoc.load_buffer(xml.data(), xml.size(), ParseOptions);
     if (!res)

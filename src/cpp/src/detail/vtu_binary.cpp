@@ -613,61 +613,96 @@ std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes) {
     return maxArrayBytes > std::numeric_limits<std::uint32_t>::max() ? 8 : 4;
 }
 
-std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
-                              std::size_t hsz) {
-    if (hsz != 4 && hsz != 8)
-        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(hsz));
-    // One little-endian header item of hsz bytes. A size that does not fit is
-    // refused: a UInt32 header silently truncated a 4 GiB array's byte count.
-    auto put = [hsz](std::vector<unsigned char>& rOut, std::uint64_t Value) {
-        if (hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
-            throw WriteError("VTK XML: a size of " + std::to_string(Value) +
-                             " does not fit a UInt32 header_type (the writer must choose UInt64)");
-        for (std::size_t b = 0; b < hsz; ++b)
-            rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
-    };
+namespace {
 
-    if (codec == VtkCodec::None) {
-        std::vector<unsigned char> head;
-        put(head, nbytes);  // refuses before anything is allocated
-        return vtub_b64encode_pair(head.data(), head.size(), pData, nbytes);
-    }
+// One little-endian header item of `Hsz` bytes. A size that does not fit is
+// refused: a UInt32 header silently truncated a 4 GiB array's byte count.
+void vtub_put(std::vector<unsigned char>& rOut, std::uint64_t Value, std::size_t Hsz) {
+    if (Hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
+        throw WriteError("VTK XML: a size of " + std::to_string(Value) +
+                         " does not fit a UInt32 header_type (the writer must choose UInt64)");
+    for (std::size_t b = 0; b < Hsz; ++b)
+        rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
+}
 
-    vtk_codec_require_write(codec);
+// The VTK block scheme: `pData` cut into 32 KiB blocks, each compressed with
+// `Codec` (in parallel), and the header -- block count, block size, last block
+// size, each compressed size, as `Hsz`-byte items.
+struct VtubBlocks {
+    std::vector<unsigned char> mHeader;
+    std::vector<std::vector<unsigned char>> mBlocks;
+    std::size_t mTotal = 0;  ///< compressed bytes over every block
+};
+
+VtubBlocks vtub_compress(const unsigned char* pData, std::size_t nbytes, VtkCodec Codec,
+                         std::size_t Hsz) {
+    vtk_codec_require_write(Codec);
     const std::size_t max_block = 32768;
     const std::size_t num_blocks = (nbytes + max_block - 1) / max_block;
     const std::size_t last_block_size =
         num_blocks ? nbytes - (num_blocks - 1) * max_block : max_block;
 
+    VtubBlocks out;
     // Blocks are independent -> compress in parallel into pre-sized slots.
-    std::vector<std::vector<unsigned char> > blocks(num_blocks);
+    out.mBlocks.resize(num_blocks);
     parallel_for(
         num_blocks,
         [&](std::size_t b) {
             std::size_t off = b * max_block;
             std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
+            out.mBlocks[b] = vtk_codec_compress_block(Codec, pData + off, len);
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
-    std::vector<unsigned char> header;
-    header.reserve((3 + num_blocks) * hsz);
-    put(header, num_blocks);
-    put(header, max_block);
-    put(header, last_block_size);
-    std::size_t total = 0;
-    for (const auto& b : blocks) {
-        put(header, b.size());
-        total += b.size();
+    out.mHeader.reserve((3 + num_blocks) * Hsz);
+    vtub_put(out.mHeader, num_blocks, Hsz);
+    vtub_put(out.mHeader, max_block, Hsz);
+    vtub_put(out.mHeader, last_block_size, Hsz);
+    for (const auto& b : out.mBlocks) {
+        vtub_put(out.mHeader, b.size(), Hsz);
+        out.mTotal += b.size();
     }
+    return out;
+}
 
-    std::string out = b64encode(header.data(), header.size());
+void vtub_check_hsz(std::size_t Hsz) {
+    if (Hsz != 4 && Hsz != 8)
+        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(Hsz));
+}
+
+}  // namespace
+
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
+                              std::size_t hsz) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        std::vector<unsigned char> head;
+        vtub_put(head, nbytes, hsz);  // refuses before anything is allocated
+        return vtub_b64encode_pair(head.data(), head.size(), pData, nbytes);
+    }
+    const VtubBlocks blocks = vtub_compress(pData, nbytes, codec, hsz);
+    std::string out = b64encode(blocks.mHeader.data(), blocks.mHeader.size());
     std::vector<unsigned char> concat;
-    concat.reserve(total);
-    for (const auto& b : blocks)
+    concat.reserve(blocks.mTotal);
+    for (const auto& b : blocks.mBlocks)
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
     return out;
+}
+
+void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                    std::vector<unsigned char>& rOut) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        vtub_put(rOut, nbytes, hsz);
+        rOut.insert(rOut.end(), pData, pData + nbytes);
+        return;
+    }
+    const VtubBlocks blocks = vtub_compress(pData, nbytes, codec, hsz);
+    rOut.reserve(rOut.size() + blocks.mHeader.size() + blocks.mTotal);
+    rOut.insert(rOut.end(), blocks.mHeader.begin(), blocks.mHeader.end());
+    for (const auto& b : blocks.mBlocks)
+        rOut.insert(rOut.end(), b.begin(), b.end());
 }
 
 namespace {

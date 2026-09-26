@@ -390,6 +390,8 @@ TEST(Pipeline, OptionSpellingsAreOwnedHere) {
               meshioplusplus::WriteEncoding::Ascii);
     EXPECT_EQ(meshioplusplus::pipeline_encoding_from_name("binary"),
               meshioplusplus::WriteEncoding::Binary);
+    EXPECT_EQ(meshioplusplus::pipeline_encoding_from_name("raw_appended"),
+              meshioplusplus::WriteEncoding::RawAppended);
     EXPECT_THROW(meshioplusplus::pipeline_encoding_from_name("base64"), std::invalid_argument);
     EXPECT_EQ(meshioplusplus::pipeline_codec_from_name("zstd"),
               meshioplusplus::detail::VtkCodec::ZSTD);
