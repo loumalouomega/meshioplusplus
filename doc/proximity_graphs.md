@@ -9,7 +9,7 @@ description: Radius and k-nearest-neighbour graphs over a mesh's points, with a 
 
 It also covers the two structures a *mesh* graph needs that connectivity cannot supply. **World edges** are a proximity graph laid alongside the mesh edges, so a model can see two surfaces that touch without being connected — contact, self-collision, a fluid meeting a wall. A **bistride hierarchy** is the multiscale pooling a deep graph network needs so information crosses the mesh in a few message-passing steps instead of one element per step.
 
-Everything here is pure Python over a bucket grid, the same spatial hash [`interpolate`](interpolate.md) and [`merge`](merge.md) already use, vectorized here because a proximity graph queries every point rather than a few. There is no SciPy, no KD-tree and no cell-list library; the C++ core, the WASM build and every binding are untouched.
+The graph assembly, periodic wrap and world-edge/bistride logic stay pure Python over a bucket grid, the same spatial hash [`interpolate`](interpolate.md) and [`merge`](merge.md) already use, vectorized here because a proximity graph queries every point rather than a few. There is no SciPy, no KD-tree and no cell-list library. Since v16.18.0 the pair search itself (above 2048 points) runs in the C++ core instead — see below — with the numpy path kept as the fallback when the core is absent; the WASM build and the flat bindings do not expose it as an operation of their own.
 
 ```python
 import meshioplusplus as mio
@@ -87,6 +87,8 @@ hierarchy.edges      # 4 edge sets, each (2, E_i) in its OWN level's numbering
 hierarchy.ids        # 3 arrays: which rows of level i survive into level i + 1
 hierarchy.schema     # {"version", "num_levels", "num_nodes": [N_0 .. N_3]}
 ```
+
+`hierarchy` is a `BistrideHierarchy`: a frozen dataclass over `edges` (`num_levels + 1` sets) and `ids` (`num_levels` pooling maps) — the two lengths differ by one deliberately, since every level has edges but every *transition* has a pooling map — plus `schema`. `len(hierarchy)` is the edge-set count and `hierarchy.num_levels` is `len(hierarchy.edges) - 1`.
 
 Each level two-colours every connected component by breadth-first depth from the node nearest its centroid, keeps the smaller colour class, and joins the survivors wherever they were within two hops. A path of `N` nodes becomes a path of about `N / 2`, so a message crosses the mesh in logarithmically many steps.
 

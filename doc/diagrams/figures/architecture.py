@@ -16,7 +16,7 @@ def architecture():
     consumers = [
         (["Python CLI", "meshioplusplus"], P.PYTHON, 0),
         (["native CLI", "(no Python)"], P.CORE, 3),
-        (["MCP server", "57 tools"], P.PYTHON, 0),
+        (["MCP server", "87 tools"], P.PYTHON, 0),
         (["browser viewer +", "dataset manager"], P.WASM, 2),
         (["Polyscope", "viewer"], P.PYTHON, 0),
         (["Blender add-on", "ParaView plugin"], P.PYTHON, 0),
@@ -123,7 +123,7 @@ def architecture():
         358,
         280,
         66,
-        ["format registry: 43 readable,", "46 writable formats"],
+        ["format registry: 78 readable,", "68 writable formats"],
         color=P.FORMATS,
         sub="registry.cpp: name → reader/writer, extension → default",
         size=P.SIZE_SMALL,
@@ -133,7 +133,7 @@ def architecture():
         358,
         280,
         66,
-        ["operations layer: 34 mesh", "+ 5 data operations"],
+        ["operations layer: 39 mesh", "+ 6 data operations"],
         color=P.CORE,
         sub="uniform-mesh-API only; parallel_for hot loops",
         size=P.SIZE_SMALL,
@@ -234,8 +234,8 @@ def mesh_backends():
     )
     # left: the callers
     callers = [
-        (["format readers / writers", "46 formats, src/cpp/src/formats/"], P.FORMATS),
-        (["operations", "34 mesh + 5 data, operations/"], P.CORE),
+        (["format readers / writers", "79 formats, src/cpp/src/formats/"], P.FORMATS),
+        (["operations", "39 mesh + 6 data, operations/"], P.CORE),
         (["bindings", "pybind11 · C API · embind"], P.PYTHON),
     ]
     for k, (label, colour) in enumerate(callers):

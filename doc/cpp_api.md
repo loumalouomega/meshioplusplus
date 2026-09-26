@@ -47,7 +47,7 @@ bin/meshioplusplus                # the CLI, when BUILD_CLI=ON
 ## Consuming it
 
 ```cmake
-find_package(meshioplusplus 10.0 CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.0 CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -116,7 +116,7 @@ See [mesh backends](/cpp_backends) for `KratosMesh` and the `ModelPart` material
 
 `BUILD_SHARED_LIBS` picks the library kind, as usual. The C++ libraries are built `-fvisibility=hidden` (`VISIBILITY_INLINES_HIDDEN` too) and the public surface is annotated with `MESHIOPLUSPLUS_API` (`export.hpp`), which also drives `__declspec(dllexport/dllimport)` on Windows — so a shared build exports its documented API and nothing else, on every platform.
 
-`SOVERSION` is `0`: like the C API's, the C++ ABI is **declared unstable pre-1.0**. Pin an exact version if you ship binaries against it.
+`SOVERSION` tracks [`MESHIOPLUSPLUS_ABI_VERSION`](/abi) (18), so the SONAME becomes `libmeshioplusplus_core_<backend>.so.18` and the dynamic linker refuses an incompatible library on its own. This is unlike the C API, whose `libmeshioplusplus` keeps a flat `SOVERSION 0` — its contract is append-only option structs and pin-the-major instead, since no C consumer compiles a header that defines a layout. Pin the ABI version (or the exact release) for `COMPONENTS CXX` as below.
 
 ## Dependencies
 
@@ -201,10 +201,10 @@ The two installed components make **different** compatibility promises, and the 
 
 ### `COMPONENTS C` — pin the major
 
-`libmeshioplusplus`, the flat C ABI: `SOVERSION 0`, and the option structs (`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`) grow only into their `reserved` tails, so a binary compiled against 9.0 headers keeps running against a 9.1 `.so`.
+`libmeshioplusplus`, the flat C ABI: `SOVERSION 0`, and the option structs (`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`) grow only into their `reserved` tails, so a binary compiled against 16.0 headers keeps running against a 16.1 `.so`.
 
 ```cmake
-find_package(meshioplusplus 10 CONFIG REQUIRED COMPONENTS C)
+find_package(meshioplusplus 16 CONFIG REQUIRED COMPONENTS C)
 ```
 
 Nothing in the rest of this section applies to it: a C consumer compiles no meshio++ header that defines a type, so header layout cannot reach it.
@@ -217,16 +217,16 @@ Nothing in the rest of this section applies to it: a C consumer compiles no mesh
 
 ```cmake
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 3)
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 18)
   message(FATAL_ERROR
-    "this project needs meshio++ ABI 3, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+    "this project needs meshio++ ABI 18, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 
 The conservative pin is still fully supported, and is the right choice if you would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 16.21.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a full *string* comparison against the package version, so `9.4 EXACT` does not match an installed `9.5.0` — it fails with "no configuration file … exactly matches requested version". (Through v9.1.0 this page printed the two-component form, which could never succeed.)

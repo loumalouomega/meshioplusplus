@@ -8,8 +8,8 @@ meshio++ is one C++ core with six language surfaces on top of it and a set of to
 
 Everything compiles into a single object library, `meshioplusplus_core_obj` (C++20), and every optional dependency compiles out when it is absent, so the core is dependency-free by default. Four things live in it.
 
-- **The format registry** — [46 readable and 49 writable formats](./formats.md), each a reader and a writer over the uniform mesh API, registered in one dispatch table (`registry.cpp`: format name to reader and writer, file extension to default format). The Python binding keeps one function per format and dispatches in Python; every flat binding (C, Fortran, Julia, R, WebAssembly, the native CLI) dispatches through this table, which is why a new C++ format must be registered there to be reachable from them.
-- **The operations layer** — 34 mesh operations and 5 data operations, described below.
+- **The format registry** — [78 readable and 68 writable formats](./formats.md) (79 distinct core formats; five more are Python-only), each a reader and a writer over the uniform mesh API, registered in one dispatch table (`registry.cpp`: format name to reader and writer, file extension to default format). The Python binding keeps one function per format and dispatches in Python; every flat binding (C, Fortran, Julia, R, WebAssembly, the native CLI) dispatches through this table, which is why a new C++ format must be registered there to be reachable from them.
+- **The operations layer** — 39 mesh operations and 6 data operations, described below.
 - **The `detail/` kernels** — the shared machinery the formats and operations are built from: the face and edge tables (`cell_faces`, `cell_edges`), the single owners of cell indexing and region remapping (`cell_index`, `region_remap`), the marching-tetrahedra cutter, the spatial hash, the polyhedron kernel, the refinement templates and the provenance scope.
 - **The mesh backend** — exactly one per build, selected by `MESHIOPLUSPLUS_MESH_BACKEND`: the meshio-mirroring `MESHIO` layout the Python wheel uses, the canonical `NATIVE` layout the WebAssembly build uses, or the Kratos-style `KRATOS` ModelPart. Formats, operations and bindings never touch a backend's own members; they go through the [uniform mesh API](./cpp_backends.md), which is what lets one implementation compile under all three.
 
@@ -26,7 +26,8 @@ An operation is a computation *on* a mesh rather than a file format: it is writt
 | Remeshing and smoothing | [remesh](./remesh.md), [remesh_volume](./remesh_volume.md), [optimize_volume](./optimize_volume.md), [smooth](./smooth.md) |
 | Fields | [interpolate](./interpolate.md), [conservative_interpolate](./conservative_interpolate.md), [gradient](./gradient.md), [hessian](./hessian.md), [estimate_error](./error.md), [data_integrate](./field_integration.md) |
 | Cutting, grids and distance | [slice](./slice.md), [isosurface](./isosurface.md), [grid and voxelize](./voxelize.md), [signed distance](./sdf.md) |
-| Data operations | [manage, average, calc, condition, info](./data_operations.md) — the five that never touch geometry |
+| Geometry helpers (physics-ML) | [curvature](./curvature.md), [normals](./normals.md), [repair](./repair.md), [shrinkwrap](./shrinkwrap.md), [sobolev_deform](./sobolev_deform.md), [tessellation](./tessellation.md) |
+| Data operations | [manage, average, calc, condition, info, tensor_invariants](./data_operations.md) — the six that never touch geometry |
 
 Two things tie the operations together. Chains of them are described declaratively by the [settings pipeline](./pipeline.md), whose typed layer (`run_pipeline_steps`) is the single owner of the step dispatch on every surface, and the [sequence driver](./sequences.md) runs such a chain once per step of a transient dataset with at most one mesh alive at a time. Every write can carry a [provenance record](./provenance.md) of where the mesh came from and what was done to it.
 

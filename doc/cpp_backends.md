@@ -14,7 +14,7 @@ The C++ core has three interchangeable **in-memory mesh backends**, selected at 
 ./build/configure.sh --mesh-backend KRATOS --tests --build
 ```
 
-Every format reader/writer is written against a **uniform mesh API** (`src/cpp/include/meshioplusplus/mesh_api.hpp`), so all 46 formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
+Every format reader/writer is written against a **uniform mesh API** (`src/cpp/include/meshioplusplus/mesh_api.hpp`), so all 79 core formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
 
 ![Every reader, operation and binding calls the uniform mesh API, behind which exactly one of the MESHIO, NATIVE or KRATOS backends is compiled in](/diagrams/mesh_backends.svg)
 
@@ -27,8 +27,12 @@ Every format reader/writer is written against a **uniform mesh API** (`src/cpp/i
 ```cpp
 mesh.AssignPoints(NDArray points);                    // (n, dim), float dtype
 mesh.AddCellBlock("tetra", NDArray conn);             // (n, npc), integer dtype
-mesh.AddPolygonBlock("polygon", rows);                // 1-level ragged
-mesh.AddPolyhedronBlock("polyhedron", cells);         // 2-level ragged
+mesh.AddPolygonBlock("polygon", rows);                // 1-level ragged, nested-vector form
+mesh.AddPolyhedronBlock("polyhedron", cells);         // 2-level ragged, nested-vector form
+// CSR overloads move the flat arrays in with no per-cell/per-face allocation;
+// every mesh backend stores ragged blocks this way, MESHIO included since v16.16.0:
+mesh.AddPolygonBlock("polygon", nodes, face_offsets);
+mesh.AddPolyhedronBlock("polyhedron", nodes, face_offsets, cell_offsets);
 mesh.AddPointData("temperature", NDArray data);
 mesh.AddCellData("gmsh:physical", std::vector<NDArray> perBlock);
 mesh.AppendCellData("medit:ref", NDArray oneBlock);   // incremental variant
@@ -64,7 +68,7 @@ const auto& csr = mesh.GlobalConnectivity();              // whole-mesh CSR
 // csr.mOffsets (ncells+1), csr.mConn (flat), csr.mTypes (one per cell)
 ```
 
-Ragged blocks are stored CSR-style (flat node buffer + offset arrays) rather than nested vectors. `GlobalConnectivity()` is built lazily and cached.
+Ragged blocks are stored CSR-style (flat node buffer + offset arrays) rather than nested vectors — this is not NATIVE's own trick: since v16.16.0 MESHIO stores them the same way (it held nested vectors before). `GlobalConnectivity()` is built lazily and cached. See [polyhedra and ragged cells](./polyhedra.md) for the CSR array layout itself.
 
 ## The KRATOS backend
 

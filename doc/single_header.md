@@ -43,7 +43,7 @@ int main() {
 g++ -std=c++20 -I src/single_include main.cpp -o main
 ```
 
-The public surface is the same uniform mesh API and format [registry](https://github.com/loumalouomega/meshioplusplus/blob/main/src/cpp/include/meshioplusplus/registry.hpp) the rest of the C++ core uses: `registry_readers()` / `registry_writers()` (`name -> function`), `resolve_format(path, "")`, plus the `Mesh` type and the `ReadError` / `WriteError` exceptions.
+The public surface is the same uniform mesh API and format [registry](https://github.com/loumalouomega/meshioplusplus/blob/main/src/cpp/include/meshioplusplus/registry.hpp) the rest of the C++ core uses: `registry_readers()` / `registry_writers()` (`name -> function`), `resolve_format(path, "")` for reads (content-aware for a handful of extensions) and `resolve_write_format(path, "")` for writes (name/extension only, since v16.17.0), plus the `Mesh` type and the `ReadError` / `WriteError` exceptions.
 
 ## Configuration macros
 

@@ -46,5 +46,5 @@
 <text x="380" y="520" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">and no review row names that release and those headers. The ABI version is deliberately NOT the release version:</text>
 <text x="380" y="536" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">it moves only when already-compiled consumers stop being compatible (11 at v10.21.0), and it is the C++ variants' SOVERSION.</text>
 <text x="380" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">The C API is a separate promise: SOVERSION 0, SameMajorVersion, append-only option structs with reserved tails,</text>
-<text x="380" y="568" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">so a C consumer pins find_package(meshioplusplus 10 … COMPONENTS C) and a C++ consumer pins the exact release or the ABI number.</text>
+<text x="380" y="568" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">so a C consumer pins find_package(meshioplusplus 16 … COMPONENTS C) and a C++ consumer pins the exact release or the ABI number.</text>
 </svg>

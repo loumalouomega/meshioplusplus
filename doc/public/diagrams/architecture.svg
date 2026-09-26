@@ -12,7 +12,7 @@
 <text x="191.43" y="79.72" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">(no Python)</text>
 <rect x="254.86" y="44" width="104" height="50" rx="6" fill="#eb6834" fill-opacity="0.12" stroke="#eb6834" stroke-width="1.5"/>
 <text x="306.86" y="65.97" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">MCP server</text>
-<text x="306.86" y="79.72" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">57 tools</text>
+<text x="306.86" y="79.72" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">87 tools</text>
 <rect x="370.29" y="44" width="104" height="50" rx="6" fill="#008300" fill-opacity="0.12" stroke="#008300" stroke-width="1.5"/>
 <text x="422.29" y="65.97" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">browser viewer +</text>
 <text x="422.29" y="79.72" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">dataset manager</text>
@@ -63,12 +63,12 @@
 <rect x="24" y="320" width="912" height="288" rx="8" fill="#2a78d6" fill-opacity="0.05" stroke="#2a78d6" stroke-width="1.8"/>
 <text x="40" y="344" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="700" fill="#2a78d6">one C++ core — meshioplusplus_core_obj (C++20; every optional dependency compiles out when absent)</text>
 <rect x="44" y="358" width="280" height="66" rx="6" fill="#1baf7a" fill-opacity="0.12" stroke="#1baf7a" stroke-width="1.5"/>
-<text x="184" y="381.1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">format registry: 43 readable,</text>
-<text x="184" y="394.85" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">46 writable formats</text>
+<text x="184" y="381.1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">format registry: 78 readable,</text>
+<text x="184" y="394.85" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">68 writable formats</text>
 <text x="184" y="408.6" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">registry.cpp: name → reader/writer, extension → default</text>
 <rect x="344" y="358" width="280" height="66" rx="6" fill="#2a78d6" fill-opacity="0.12" stroke="#2a78d6" stroke-width="1.5"/>
-<text x="484" y="381.1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">operations layer: 34 mesh</text>
-<text x="484" y="394.85" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">+ 5 data operations</text>
+<text x="484" y="381.1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">operations layer: 39 mesh</text>
+<text x="484" y="394.85" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">+ 6 data operations</text>
 <text x="484" y="408.6" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" text-anchor="middle" fill="#52514e">uniform-mesh-API only; parallel_for hot loops</text>
 <rect x="644" y="358" width="272" height="66" rx="6" fill="#2a78d6" fill-opacity="0.12" stroke="#2a78d6" stroke-width="1.5"/>
 <text x="780" y="381.1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="#0b0b0b">detail/ kernels</text>

@@ -2,7 +2,7 @@ import { defineConfig } from "vitepress";
 
 const SITE = "https://loumalouomega.github.io/meshioplusplus";
 const DESCRIPTION =
-  "Read and write 43 mesh formats through one data model, run 39 mesh and data operations on them, from Python, C, Fortran, Julia, R, WebAssembly or C++.";
+  "Read and write 84 mesh formats through one data model, run 39 mesh and 6 data operations on them, from Python, C, Fortran, Julia, R, WebAssembly or C++.";
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
@@ -62,6 +62,7 @@ export default defineConfig({
           { text: "Installation", link: "/installation" },
           { text: "Quickstart", link: "/quickstart" },
           { text: "Architecture", link: "/architecture" },
+          { text: "Example notebooks", link: "/notebooks" },
         ],
       },
       {
