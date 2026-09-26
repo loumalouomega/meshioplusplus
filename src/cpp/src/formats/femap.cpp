@@ -48,7 +48,10 @@
 
 namespace meshioplusplus {
 
-namespace {
+// FnTopology and FnPlan are held by FemapSeriesWriter::Impl, a class with
+// external linkage, so they live in a named namespace rather than the
+// anonymous one (-Wsubobject-linkage in the single header).
+namespace detail::femap_writer {
 
 // Femap topology code -> meshio++ type and, per meshio++ node, the slot of the
 // 20-slot element record it comes from. The slots follow Femap's degenerate
@@ -60,6 +63,25 @@ struct FnTopology {
     std::vector<int> mSlots;
     int mDefaultType;  // Femap element type written for this topology
 };
+
+/// What the writer makes of a mesh: each cell's topology, property, type and
+/// label (0 when it is dropped).
+struct FnPlan {
+    std::size_t mPdim = 0;
+    std::size_t mNpts = 0;
+    std::vector<const FnTopology*> mTops;
+    std::vector<std::size_t> mStart{0};
+    std::size_t mNumCells = 0;
+    std::vector<std::int64_t> mProp, mType, mLabel;
+    std::int64_t mWritten = 0;
+};
+
+}  // namespace detail::femap_writer
+
+namespace {
+
+using detail::femap_writer::FnPlan;
+using detail::femap_writer::FnTopology;
 
 const std::vector<FnTopology>& fn_topologies() {
     static const std::vector<FnTopology> t = {
@@ -860,18 +882,6 @@ void fn_zero_lines(std::string& rOut, int Count, int PerLine, const char* pZero)
     }
 }
 
-/// What the writer makes of a mesh: each cell's topology, property, type and
-/// label (0 when it is dropped).
-struct FnPlan {
-    std::size_t mPdim = 0;
-    std::size_t mNpts = 0;
-    std::vector<const FnTopology*> mTops;
-    std::vector<std::size_t> mStart{0};
-    std::size_t mNumCells = 0;
-    std::vector<std::int64_t> mProp, mType, mLabel;
-    std::int64_t mWritten = 0;
-};
-
 FnPlan fn_plan(const Mesh& rMesh) {
     FnPlan plan;
     plan.mPdim = rMesh.PointDim();
@@ -1296,7 +1306,7 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
 
 struct FemapSeriesWriter::Impl {
     std::string mPath;
-    std::ofstream mOut;
+    decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
     std::optional<FnPlan> mPlan;
     std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
     std::set<std::int64_t> mSetIds;
