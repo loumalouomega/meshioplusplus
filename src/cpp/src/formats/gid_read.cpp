@@ -1248,6 +1248,9 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                 if (static_cast<int>(cols.size()) >= nnode + 1) {
                     const std::size_t n = cols[0].Size();
                     const bool has_mat = static_cast<int>(cols.size()) >= nnode + 2;
+                    block.mElemIds.reserve(block.mElemIds.size() + n);
+                    block.mConn.reserve(block.mConn.size() + n * static_cast<std::size_t>(nnode));
+                    block.mMaterial.reserve(block.mMaterial.size() + n);
                     for (std::size_t r = 0; r < n; ++r) {
                         block.mElemIds.push_back(detail::read_int(cols[0], r));
                         for (int k = 0; k < nnode; ++k)
@@ -1303,6 +1306,8 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
             if (cols.size() >= 2) {
                 res.mNumComponents = cols.size() - 1;
                 const std::size_t n = cols[0].Size();
+                res.mIds.reserve(n);
+                res.mValues.reserve(n * res.mNumComponents);
                 for (std::size_t r = 0; r < n; ++r) {
                     res.mIds.push_back(detail::read_int(cols[0], r));
                     for (std::size_t k = 0; k < res.mNumComponents; ++k)

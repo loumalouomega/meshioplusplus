@@ -54,6 +54,9 @@ enum class WriteEncoding {
     Default,  ///< the format's registry default (unchanged behaviour)
     Ascii,
     Binary,
+    /// `.vtu` only (since v16.21.0): binary, with every array in one raw
+    /// `<AppendedData>` section -- no base64 (`write_vtu_appended`).
+    RawAppended,
 };
 
 /**

@@ -1046,9 +1046,10 @@ def _write_kwargs_from(out, out_path):
     whose *expanded* name is what carries the extension.
     """
     encoding = out.get("Encoding", "default")
-    if encoding not in ("default", "ascii", "binary"):
+    if encoding not in ("default", "ascii", "binary", "raw_appended"):
         raise ValueError(
-            "meshio++: pipeline: Output.Encoding must be 'ascii' or 'binary'"
+            "meshio++: pipeline: Output.Encoding must be 'ascii', 'binary' or "
+            "'raw_appended'"
         )
     codec = out.get("Codec")
     if codec is not None and codec not in ("none", "zlib", "lz4", "zstd"):

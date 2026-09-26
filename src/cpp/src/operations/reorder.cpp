@@ -41,6 +41,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -202,6 +205,7 @@ constexpr int REORDER_SFC_BITS = detail::sfc_bits;  // 3 * 21 = 63 bits fit in a
 // REORDER_SFC_BITS per axis). `hilbert` selects Hilbert vs Morton.
 std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bool hilbert) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
     const int bits = REORDER_SFC_BITS;
@@ -222,7 +226,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
             const std::size_t stop = std::min(n, (ci + 1) * kChunk);
             for (std::size_t i = ci * kChunk; i < stop; ++i)
                 for (std::size_t d = 0; d < dim; ++d) {
-                    const double c = detail::read_double(points, i * pdim + d);
+                    const double c = points_v[i * pdim + d];
                     b[d] = std::min(b[d], c);
                     b[3 + d] = std::max(b[3 + d], c);
                 }
@@ -247,7 +251,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
     parallel_for(n, [&](std::size_t i) {
         std::uint32_t q[3] = {0, 0, 0};
         for (std::size_t d = 0; d < dim; ++d) {
-            const double c = detail::read_double(points, i * pdim + d);
+            const double c = points_v[i * pdim + d];
             double t = (c - lo[d]) * scale[d];
             std::int64_t qi = static_cast<std::int64_t>(t + 0.5);
             if (qi < 0)
@@ -329,6 +333,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             // with no per-cell node vector (out-of-range ids skipped, as
             // cell_node_ids does; a cell with none keys 0).
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
                 const T* ids = conn.As<T>();
@@ -338,7 +343,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                     for (std::size_t k = 0; k < npc; ++k) {
                         std::int64_t id;
                         if constexpr (std::is_floating_point_v<T>)
-                            id = detail::read_int(conn, c * npc + k);  // NaN-safe
+                            id = conn_v[c * npc + k];  // NaN-safe
                         else
                             id = static_cast<std::int64_t>(ids[c * npc + k]);
                         if (id < 0 || static_cast<std::size_t>(id) >= n)
@@ -404,13 +409,14 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             NDArray block = NDArray::Uninit(DType::Int64, {nc, npc});
             std::int64_t* dst = block.As<std::int64_t>();
             parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 for (std::size_t k = 0; k < npc; ++k)
-                    dst[p * npc + k] = remap(detail::read_int(conn, oc * npc + k));
+                    dst[p * npc + k] = remap(conn_v[oc * npc + k]);
             });
             out.AddCellBlock(std::string(cb.Type()), std::move(block));
         }

@@ -85,6 +85,10 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         rWhy = "format '" + rFormat + "' has no ASCII/binary variant to select";
         return false;
     }
+    if (rOptions.mEncoding == WriteEncoding::RawAppended && rFormat != "vtu") {
+        rWhy = "format '" + rFormat + "' has no raw appended encoding (only vtu does)";
+        return false;
+    }
     if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
         rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
         return false;
@@ -123,7 +127,8 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     if (!registry_write_supports(fmt, rOptions, why))
         throw WriteError("meshio++: " + why);
 
-    const bool binary = rOptions.mEncoding == WriteEncoding::Binary;
+    const bool appended = rOptions.mEncoding == WriteEncoding::RawAppended;
+    const bool binary = rOptions.mEncoding == WriteEncoding::Binary || appended;
     const std::string& r_ff =
         rOptions.mFloatFormat.empty() ? std::string(".16e") : rOptions.mFloatFormat;
 
@@ -160,7 +165,10 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         const detail::VtkCodec codec =
             rOptions.mCodecSet ? rOptions.mCodec
                                : (binary ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
-        write_vtu_codec(rPath, rMesh, binary, codec);
+        if (appended)
+            write_vtu_appended(rPath, rMesh, codec);
+        else
+            write_vtu_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "vtp") {
         const detail::VtkCodec codec =
             rOptions.mCodecSet ? rOptions.mCodec

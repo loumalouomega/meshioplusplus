@@ -28,7 +28,6 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -41,6 +40,10 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
+#include "../detail/surface_edge_runs.hpp"
 
 namespace meshioplusplus {
 
@@ -162,33 +165,49 @@ RvolLattice rvol_build_lattice(const detail::LatticeSpec& rSpec) {
         return numA + (i * ny + j) * nz + k;
     };
 
+    // Every point and tet has a closed-form index, so both fill in parallel:
+    // A point (i, j, k) at a_id, B point at b_id, and cell (i, j, k)'s twelve
+    // tets at 12 * ((i * ny + j) * nz + k), in kBccLocalTets order.
     lat.mPoints.resize(static_cast<std::size_t>(numA + numB));
-    for (std::int64_t i = 0; i < nax; ++i)
-        for (std::int64_t j = 0; j < nay; ++j)
-            for (std::int64_t k = 0; k < naz; ++k)
-                lat.mPoints[static_cast<std::size_t>(a_id(i, j, k))] =
-                    Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
-                        o[2] + static_cast<double>(k) * h[2]};
-    for (std::int64_t i = 0; i < nx; ++i)
-        for (std::int64_t j = 0; j < ny; ++j)
-            for (std::int64_t k = 0; k < nz; ++k)
-                lat.mPoints[static_cast<std::size_t>(b_id(i, j, k))] =
-                    Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
-                        o[1] + (static_cast<double>(j) + 0.5) * h[1],
-                        o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+    parallel_for(static_cast<std::size_t>(numA), [&](std::size_t id) {
+        const std::int64_t a = static_cast<std::int64_t>(id);
+        const std::int64_t k = a % naz;
+        const std::int64_t j = (a / naz) % nay;
+        const std::int64_t i = a / (naz * nay);
+        lat.mPoints[id] =
+            Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
+                 o[2] + static_cast<double>(k) * h[2]};
+    });
+    parallel_for(static_cast<std::size_t>(numB), [&](std::size_t id) {
+        const std::int64_t b = static_cast<std::int64_t>(id);
+        const std::int64_t k = b % nz;
+        const std::int64_t j = (b / nz) % ny;
+        const std::int64_t i = b / (nz * ny);
+        lat.mPoints[static_cast<std::size_t>(numA) + id] =
+            Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
+                 o[1] + (static_cast<double>(j) + 0.5) * h[1],
+                 o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+    });
 
-    lat.mTets.reserve(static_cast<std::size_t>(numB) * 12);
-    for (std::int64_t i = 0; i < nx; ++i)
-        for (std::int64_t j = 0; j < ny; ++j)
-            for (std::int64_t k = 0; k < nz; ++k) {
-                const std::int64_t corner[8] = {
-                    a_id(i, j, k),         a_id(i + 1, j, k),         a_id(i + 1, j + 1, k),
-                    a_id(i, j + 1, k),     a_id(i, j, k + 1),         a_id(i + 1, j, k + 1),
-                    a_id(i + 1, j + 1, k + 1), a_id(i, j + 1, k + 1)};
-                const std::int64_t centre = b_id(i, j, k);
-                for (const auto& t : kBccLocalTets)
-                    lat.mTets.push_back({centre, corner[t[0]], corner[t[1]], corner[t[2]]});
-            }
+    lat.mTets.resize(static_cast<std::size_t>(numB) * 12);
+    parallel_for(static_cast<std::size_t>(numB), [&](std::size_t id) {
+        const std::int64_t b = static_cast<std::int64_t>(id);
+        const std::int64_t k = b % nz;
+        const std::int64_t j = (b / nz) % ny;
+        const std::int64_t i = b / (nz * ny);
+        const std::int64_t corner[8] = {a_id(i, j, k),
+                                        a_id(i + 1, j, k),
+                                        a_id(i + 1, j + 1, k),
+                                        a_id(i, j + 1, k),
+                                        a_id(i, j, k + 1),
+                                        a_id(i + 1, j, k + 1),
+                                        a_id(i + 1, j + 1, k + 1),
+                                        a_id(i, j + 1, k + 1)};
+        const std::int64_t centre = b_id(i, j, k);
+        std::size_t out = id * 12;
+        for (const auto& t : kBccLocalTets)
+            lat.mTets[out++] = {centre, corner[t[0]], corner[t[1]], corner[t[2]]};
+    });
     return lat;
 }
 
@@ -221,24 +240,32 @@ RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
 
     const std::vector<detail::DistanceHit> hits =
         detail::query_distances(rQuery, rLattice.mPoints, rDistOpts);
-    for (std::size_t i = 0; i < n; ++i) {
+    parallel_for_bw(n, [&](std::size_t i) {
         c.mDistance[i] = hits[i].mSignedDistance;
         c.mInside[i] = hits[i].mSignedDistance <= 0.0 ? 1 : 0;
-    }
+    });
 
     if (!(WarpThreshold > 0.0))
         return c;
 
-    std::vector<std::size_t> candidates;
-    for (std::size_t i = 0; i < n; ++i)
-        if (std::fabs(c.mDistance[i]) <= WarpThreshold)
-            candidates.push_back(i);
-    if (candidates.empty())
+    // The candidates in ascending id: flags, then a scan.
+    std::vector<std::uint64_t> near(n);
+    parallel_for_bw(
+        n, [&](std::size_t i) { near[i] = std::fabs(c.mDistance[i]) <= WarpThreshold ? 1 : 0; });
+    std::vector<std::uint64_t> at(n);
+    const std::uint64_t ncand =
+        parallel_exclusive_scan(near.data(), n, at.data(), std::uint64_t{0});
+    if (ncand == 0)
         return c;
+    std::vector<std::size_t> candidates(ncand);
+    parallel_for_bw(n, [&](std::size_t i) {
+        if (near[i])
+            candidates[at[i]] = i;
+    });
 
     std::vector<Vec3> qpts(candidates.size());
-    for (std::size_t ci = 0; ci < candidates.size(); ++ci)
-        qpts[ci] = rLattice.mPoints[candidates[ci]];
+    parallel_for_bw(candidates.size(),
+                    [&](std::size_t ci) { qpts[ci] = rLattice.mPoints[candidates[ci]]; });
     const std::vector<detail::ClosestPointHit> chits = detail::query_closest_points(rQuery, qpts);
 
     std::int64_t warped = 0;
@@ -256,94 +283,88 @@ RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
 
 // --- cut: resolve one crossing edge to a point id ----------------------------
 
-// Resolves a crossing edge (one endpoint inside, one outside -- the caller's
-// contract, never checked here) to a point id in the combined id space:
-// [0, numLatticeIds) are original lattice vertices (kept whole or REUSED as a
-// cut point when warped -- see the file doc comment for why reuse is safe:
-// warping never moves a vertex past its own edges); ids at or beyond
-// numLatticeIds are fresh points, one per distinct crossing edge, deduped by
-// the sorted endpoint-id pair (the `refine.cpp`/`surface.cpp` phase-split
-// idiom's dedup key, applied here to a SERIAL pass rather than a parallel
-// fill + serial dedup, since the classify/warp pass above -- not this one --
-// is the genuinely expensive step; see the file doc comment).
-class RvolCutResolver {
+// Every crossing edge (one endpoint inside, one outside -- the caller's
+// contract, never checked here) gets exactly one FRESH point, in the combined
+// id space: [0, numLatticeIds) are original lattice vertices, ids at or beyond
+// numLatticeIds fresh points, one per distinct crossing edge, deduped by the
+// sorted endpoint-id pair -- the plain marching-tetrahedra rule, which is what
+// makes watertightness a structural consequence of global, edge-keyed dedup
+// rather than something this code has to reason about per case. Warping
+// affects only WHERE that point sits (reusing an incident endpoint's own warp
+// target when available), never WHETHER it is a distinct point --
+// deliberately a genuinely FRESH point every time, even when it coincides
+// exactly with another edge's own fresh point (both incident to the same
+// warped vertex): any scheme that instead SHARES one id across multiple edges
+// was tried and rejected here (see git history) -- sharing by the warped
+// vertex's own id collapsed a straddling tet's kept corner onto its own cut
+// point when that same vertex was both kept and a cut-point source; sharing by
+// a SEPARATE id per warped vertex avoided that but broke winding CONSISTENCY
+// between neighbouring tets instead
+// (RemeshVolume.OutputIsWatertightAndPositivelyOriented caught both, first as
+// non-manifold edges, then as inconsistently wound pairs).
+// Genuinely-coincident fresh points are instead welded AFTER every tet is
+// built (see remesh_volume's own weld pass below), which touches only WHICH id
+// a face uses, never any tet's already-decided winding.
+//
+// Fresh ids are numbered in the order a serial sweep over the root tets, in
+// ascending order and each tet's own Resolve order, first meets each edge
+// (first-seen numbering over the sort-based table, detail/slot_runs.hpp);
+// each root tet is cut independently, in parallel, against a tet-local
+// resolver whose placeholders are mapped to those ids afterwards.
+
+// Where a crossing edge's fresh point sits: a function of the edge alone.
+Vec3 rvol_fresh_position(const RvolLattice& rLattice, const RvolClassification& rClass,
+                         std::int64_t Inside, std::int64_t Outside) {
+    if (rClass.mWarped[static_cast<std::size_t>(Inside)])
+        return rClass.mFinalPosition[static_cast<std::size_t>(Inside)];
+    if (rClass.mWarped[static_cast<std::size_t>(Outside)])
+        return rClass.mFinalPosition[static_cast<std::size_t>(Outside)];
+    const double du = rClass.mDistance[static_cast<std::size_t>(Inside)];
+    const double dv = rClass.mDistance[static_cast<std::size_t>(Outside)];
+    double t = (du - dv) != 0.0 ? du / (du - dv) : 0.5;
+    if (!(t > 0.0 && t < 1.0))
+        t = 0.5;  // a near-tangent crossing: the safe interior fallback
+    const Vec3& pu = rLattice.mPoints[static_cast<std::size_t>(Inside)];
+    const Vec3& pv = rLattice.mPoints[static_cast<std::size_t>(Outside)];
+    return {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]), pu[2] + t * (pv[2] - pu[2])};
+}
+
+// One root tet's resolver: its crossing edges in first-Resolve order, as
+// placeholders numLatticeIds + k (a tet cuts at most four edges).
+class RvolLocalResolver {
 public:
-    RvolCutResolver(const RvolLattice& rLattice, const RvolClassification& rClass)
+    RvolLocalResolver(const RvolLattice& rLattice, const RvolClassification& rClass)
         : mrLattice(rLattice), mrClass(rClass) {}
 
-    // Every crossing edge gets exactly one FRESH point id, deduped by the
-    // sorted endpoint-id pair -- the plain marching-tetrahedra rule, which is
-    // what makes watertightness a structural consequence of global,
-    // edge-keyed dedup rather than something this function has to reason
-    // about per case. Warping affects only WHERE that point sits (reusing an
-    // incident endpoint's own warp target when available), never WHETHER it
-    // is a distinct point -- deliberately a genuinely FRESH point every time,
-    // even when it coincides exactly with another edge's own fresh point
-    // (both incident to the same warped vertex): any scheme that instead
-    // SHARES one id across multiple edges was tried and rejected here (see
-    // git history) -- sharing by the warped vertex's own id collapsed a
-    // straddling tet's kept corner onto its own cut point when that same
-    // vertex was both kept and a cut-point source; sharing by a SEPARATE id
-    // per warped vertex avoided that but broke winding CONSISTENCY between
-    // neighbouring tets instead (RemeshVolume.OutputIsWatertightAndPositivelyOriented
-    // caught both, first as non-manifold edges, then as inconsistently wound
-    // pairs). Genuinely-coincident fresh points are instead welded AFTER
-    // every tet is built (see remesh_volume's own weld pass below), which
-    // touches only WHICH id a face uses, never any tet's already-decided
-    // winding.
+    void Reset() { mCount = 0; }
+
     std::int64_t Resolve(std::int64_t Inside, std::int64_t Outside) {
         const std::int64_t lo = Inside < Outside ? Inside : Outside;
         const std::int64_t hi = Inside < Outside ? Outside : Inside;
         const detail::SurfaceEdgeKey key{lo, hi};
-        auto it = mEdgeToNew.find(key);
-        if (it != mEdgeToNew.end())
-            return it->second;
-
-        Vec3 np;
-        if (mrClass.mWarped[static_cast<std::size_t>(Inside)]) {
-            np = mrClass.mFinalPosition[static_cast<std::size_t>(Inside)];
-        } else if (mrClass.mWarped[static_cast<std::size_t>(Outside)]) {
-            np = mrClass.mFinalPosition[static_cast<std::size_t>(Outside)];
-        } else {
-            const double du = mrClass.mDistance[static_cast<std::size_t>(Inside)];
-            const double dv = mrClass.mDistance[static_cast<std::size_t>(Outside)];
-            double t = (du - dv) != 0.0 ? du / (du - dv) : 0.5;
-            if (!(t > 0.0 && t < 1.0))
-                t = 0.5;  // a near-tangent crossing: the safe interior fallback
-            const Vec3& pu = mrLattice.mPoints[static_cast<std::size_t>(Inside)];
-            const Vec3& pv = mrLattice.mPoints[static_cast<std::size_t>(Outside)];
-            np = {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]),
-                 pu[2] + t * (pv[2] - pu[2])};
-        }
-        const std::int64_t id = NewPoint(np);
-        mEdgeToNew.emplace(key, id);
-        return id;
+        for (std::size_t k = 0; k < mCount; ++k)
+            if (mKeys[k] == key)
+                return mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(k);
+        mKeys[mCount] = key;
+        mPositions[mCount] = rvol_fresh_position(mrLattice, mrClass, Inside, Outside);
+        return mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(mCount++);
     }
 
-    const std::vector<Vec3>& NewPositions() const { return mNewPositions; }
-
-    // The position of ANY id in the combined space: an original lattice
-    // vertex (using its current, possibly-warped position) or a fresh cut
-    // point this resolver created.
     const Vec3& PositionOf(std::int64_t Id) const {
         return Id < mrLattice.mNumLatticeIds()
-                  ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
-                  : mNewPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
+                   ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
+                   : mPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
     }
+
+    std::size_t NumKeys() const { return mCount; }
+    const detail::SurfaceEdgeKey& Key(std::size_t K) const { return mKeys[K]; }
 
 private:
-    std::int64_t NewPoint(const Vec3& rPos) {
-        const std::int64_t id =
-            mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(mNewPositions.size());
-        mNewPositions.push_back(rPos);
-        return id;
-    }
-
     const RvolLattice& mrLattice;
     const RvolClassification& mrClass;
-    std::unordered_map<detail::SurfaceEdgeKey, std::int64_t, detail::SurfaceEdgeKeyHash>
-        mEdgeToNew;
-    std::vector<Vec3> mNewPositions;
+    std::array<detail::SurfaceEdgeKey, 4> mKeys{};
+    std::array<Vec3, 4> mPositions{};
+    std::size_t mCount = 0;
 };
 
 // --- cut: the sign-mask case table -------------------------------------------
@@ -382,8 +403,9 @@ bool rvol_tet_ok(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
     return v > Eps;
 }
 
+template <class TResolver, class TOut>
 void rvol_cut_tet(const std::array<std::int64_t, 4>& rV, const RvolClassification& rClass,
-                  RvolCutResolver& rResolver, std::vector<std::array<std::int64_t, 4>>& rOut) {
+                  TResolver& rResolver, TOut& rOut) {
     bool lab[4];
     int count = 0;
     for (int i = 0; i < 4; ++i) {
@@ -533,7 +555,8 @@ bool rvol_has_volume_cells(const Mesh& rMesh) {
 
 RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& rOptions) {
     if (!(rOptions.mWarpFraction >= 0.0))
-        throw std::invalid_argument(std::string(kRvolPrefix) + "warp_fraction must not be "
+        throw std::invalid_argument(std::string(kRvolPrefix) +
+                                    "warp_fraction must not be "
                                     "negative, got " +
                                     std::to_string(rOptions.mWarpFraction));
 
@@ -562,9 +585,9 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
         const double tol = 1e-9 * (h0 > 0.0 ? h0 : 1.0);
         if (std::fabs(spec.mSpacing[1] - h0) > tol || std::fabs(spec.mSpacing[2] - h0) > tol)
             throw std::invalid_argument(
-                std::string(kRvolPrefix) +
-                "the resolved lattice cell is not cubic (spacing " + std::to_string(spec.mSpacing[0]) +
-                ", " + std::to_string(spec.mSpacing[1]) + ", " + std::to_string(spec.mSpacing[2]) +
+                std::string(kRvolPrefix) + "the resolved lattice cell is not cubic (spacing " +
+                std::to_string(spec.mSpacing[0]) + ", " + std::to_string(spec.mSpacing[1]) + ", " +
+                std::to_string(spec.mSpacing[2]) +
                 ") -- a per-axis resolution over a non-cube bounding box does not fit this "
                 "operation's fixed BCC cell; use cell_size instead");
     }
@@ -572,86 +595,165 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
     detail::warn_regions_dropped(rMesh, "remesh_volume");
 
     RemeshVolumeResult result;
-    result.mQuality = detail::soup_quality(soup);
-    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error && !result.mQuality.mWatertight)
-        throw std::invalid_argument(std::string(kRvolPrefix) + "the surface is not watertight "
-                                    "(boundary_edges=" +
-                                    std::to_string(result.mQuality.mBoundaryEdges) +
-                                    ", non_manifold_edges=" +
-                                    std::to_string(result.mQuality.mNonManifoldEdges) +
-                                    ", inconsistent_pairs=" +
-                                    std::to_string(result.mQuality.mInconsistentPairs) + ")");
+    const detail::SurfaceEdgeRuns edge_runs = detail::surface_edge_runs(soup);
+    result.mQuality =
+        detail::soup_quality(soup, detail::build_surface_edges_from_runs(soup, edge_runs));
+    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error &&
+        !result.mQuality.mWatertight)
+        throw std::invalid_argument(
+            std::string(kRvolPrefix) +
+            "the surface is not watertight "
+            "(boundary_edges=" +
+            std::to_string(result.mQuality.mBoundaryEdges) +
+            ", non_manifold_edges=" + std::to_string(result.mQuality.mNonManifoldEdges) +
+            ", inconsistent_pairs=" + std::to_string(result.mQuality.mInconsistentPairs) + ")");
     else if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Warn &&
-            !result.mQuality.mWatertight)
-        log::warn("remesh_volume: the surface is not watertight; signs may be unreliable "
-                  "near the defect");
+             !result.mQuality.mWatertight)
+        log::warn(
+            "remesh_volume: the surface is not watertight; signs may be unreliable "
+            "near the defect");
 
-    const detail::DistanceQuery query = detail::build_distance_query(soup, rOptions.mDistance);
+    const detail::DistanceQuery query =
+        detail::build_distance_query_from_runs(soup, rOptions.mDistance, edge_runs);
     const RvolLattice lattice = rvol_build_lattice(spec);
 
     const double h = spec.mSpacing[0];
     std::int64_t num_warped = 0;
-    const RvolClassification cls = rvol_classify_and_warp(
-        lattice, query, rOptions.mDistance, rOptions.mWarpFraction * h, num_warped);
+    const RvolClassification cls = rvol_classify_and_warp(lattice, query, rOptions.mDistance,
+                                                          rOptions.mWarpFraction * h, num_warped);
     result.mNumVerticesWarped = num_warped;
 
-    // --- cut: SERIAL, ascending root-tet order -- see rvol_build_lattice's
-    // doc comment above for why this pass, unlike the classify/warp one
-    // above it, does not need to be parallel.
-    RvolCutResolver resolver(lattice, cls);
-    std::vector<std::array<std::int64_t, 4>> raw_tets;
-    raw_tets.reserve(lattice.mTets.size());
-    std::int64_t num_rejected = 0;
-    // A cut tet may reference a point resolver.Resolve() has not yet created
-    // (impossible for a WHOLE tet, but possible for a cut one), so validation
-    // must happen only after every Resolve() call for that root tet has run --
-    // hence the per-root-tet scratch buffer rather than validating in place.
-    std::vector<std::array<std::int64_t, 4>> scratch;
-    auto point_at = [&](std::int64_t id) -> const Vec3& { return resolver.PositionOf(id); };
-    for (const auto& t : lattice.mTets) {
-        scratch.clear();
-        rvol_cut_tet(t, cls, resolver, scratch);
-        for (const auto& tt : scratch) {
-            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
-                            1e-15 * h * h * h))
-                raw_tets.push_back(tt);
-            else
-                ++num_rejected;
+    // --- cut: every root tet in parallel against a tet-local resolver (at
+    // most three sub-tets and four crossing edges each), then the fresh
+    // points numbered first-seen over (root tet, Resolve order) -- the ids the
+    // serial sweep handed out.
+    const std::int64_t num_lattice = lattice.mNumLatticeIds();
+    const std::size_t nroot = lattice.mTets.size();
+    struct RvolTetCut {
+        std::uint8_t mNumSub = 0;
+        std::uint8_t mNumKeys = 0;
+    };
+    struct RvolSubs {
+        std::array<std::array<std::int64_t, 4>, 3> mTet{};
+        std::size_t mCount = 0;
+        void push_back(const std::array<std::int64_t, 4>& rT) { mTet[mCount++] = rT; }
+    };
+    std::vector<RvolTetCut> per_root(nroot);
+    parallel_for(nroot, [&](std::size_t r) {
+        RvolLocalResolver local(lattice, cls);
+        RvolSubs subs;
+        rvol_cut_tet(lattice.mTets[r], cls, local, subs);
+        per_root[r].mNumSub = static_cast<std::uint8_t>(subs.mCount);
+        per_root[r].mNumKeys = static_cast<std::uint8_t>(local.NumKeys());
+    });
+    std::vector<std::uint64_t> nsub(nroot), nkey(nroot);
+    parallel_for_bw(nroot, [&](std::size_t r) {
+        nsub[r] = per_root[r].mNumSub;
+        nkey[r] = per_root[r].mNumKeys;
+    });
+    std::vector<std::uint64_t> sub_at(nroot), key_at(nroot);
+    const std::uint64_t total_sub =
+        parallel_exclusive_scan(nsub.data(), nroot, sub_at.data(), std::uint64_t{0});
+    const std::uint64_t total_key =
+        parallel_exclusive_scan(nkey.data(), nroot, key_at.data(), std::uint64_t{0});
+    std::vector<std::array<std::int64_t, 4>> sub_tets(total_sub);
+    std::vector<std::uint64_t> sub_root(total_sub);
+    std::vector<detail::SurfaceEdgeKey> keys(total_key);
+    parallel_for(nroot, [&](std::size_t r) {
+        if (nsub[r] == 0)
+            return;
+        RvolLocalResolver local(lattice, cls);
+        RvolSubs subs;
+        rvol_cut_tet(lattice.mTets[r], cls, local, subs);
+        for (std::size_t k = 0; k < local.NumKeys(); ++k)
+            keys[key_at[r] + k] = local.Key(k);
+        for (std::size_t q = 0; q < subs.mCount; ++q) {
+            sub_tets[sub_at[r] + q] = subs.mTet[q];
+            sub_root[sub_at[r] + q] = r;
         }
-    }
+    });
+    const detail::SlotRuns key_runs = detail::group_slots(
+        keys, static_cast<std::size_t>(num_lattice) + 1, [&](const detail::SurfaceEdgeKey& rK) {
+            return rK[0] >= 0 && rK[0] < num_lattice ? static_cast<std::size_t>(rK[0])
+                                                     : static_cast<std::size_t>(num_lattice);
+        });
+    const detail::FirstSeen fresh_ids = detail::number_first_seen(key_runs, total_key);
+    // Each fresh point at its edge's position (the inside endpoint is the one
+    // labelled inside: every Resolve call names it first).
+    std::vector<Vec3> fresh(fresh_ids.NumIds());
+    parallel_for(fresh.size(), [&](std::size_t f) {
+        const detail::SurfaceEdgeKey& k = keys[key_runs.Head(fresh_ids.mRunOfId[f])];
+        const bool lo_inside = cls.mInside[static_cast<std::size_t>(k[0])] != 0;
+        fresh[f] =
+            rvol_fresh_position(lattice, cls, lo_inside ? k[0] : k[1], lo_inside ? k[1] : k[0]);
+    });
+    auto point_at = [&](std::int64_t id) -> const Vec3& {
+        return id < num_lattice ? cls.mFinalPosition[static_cast<std::size_t>(id)]
+                                : fresh[static_cast<std::size_t>(id - num_lattice)];
+    };
+    // Placeholders to fresh ids, and the degenerate test, per sub-tet.
+    const double eps = 1e-15 * h * h * h;
+    std::vector<std::uint64_t> ok(total_sub);
+    parallel_for(total_sub, [&](std::size_t q) {
+        std::array<std::int64_t, 4>& tt = sub_tets[q];
+        for (std::int64_t& id : tt)
+            if (id >= num_lattice)
+                id = num_lattice + fresh_ids.mIdOfSlot[key_at[sub_root[q]] +
+                                                       static_cast<std::size_t>(id - num_lattice)];
+        ok[q] = rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]), eps)
+                    ? 1
+                    : 0;
+    });
+    // The kept sub-tets in (root tet, sub-tet) order.
+    const auto compact = [](const std::vector<std::array<std::int64_t, 4>>& rAll,
+                            const std::vector<std::uint64_t>& rKeep) {
+        std::vector<std::uint64_t> at(rAll.size());
+        const std::uint64_t nkept =
+            parallel_exclusive_scan(rKeep.data(), rAll.size(), at.data(), std::uint64_t{0});
+        std::vector<std::array<std::int64_t, 4>> kept(nkept);
+        parallel_for_bw(rAll.size(), [&](std::size_t q) {
+            if (rKeep[q])
+                kept[at[q]] = rAll[q];
+        });
+        return kept;
+    };
+    std::vector<std::array<std::int64_t, 4>> raw_tets = compact(sub_tets, ok);
+    std::int64_t num_rejected = static_cast<std::int64_t>(total_sub - raw_tets.size());
+
     // --- weld: exact-position dedup of fresh points, then re-check for any
     // tet that welding itself made degenerate (two of its own corners
     // collapsing onto one welded id) -- see RvolPosKey's own doc comment for
     // why this is the safe place to fix duplicate coincident points, and
-    // why it is exact rather than tolerance-based.
-    const std::int64_t num_lattice = lattice.mNumLatticeIds();
+    // why it is exact rather than tolerance-based. Each fresh point maps to
+    // the first fresh point at its exact position: the head of its run.
     {
-        const std::vector<Vec3>& fresh = resolver.NewPositions();
-        std::unordered_map<RvolPosKey, std::int64_t, RvolPosKeyHash> pos_to_first;
+        std::vector<RvolPosKey> pos_keys(fresh.size());
+        parallel_for_bw(fresh.size(), [&](std::size_t i) { pos_keys[i] = rvol_pos_key(fresh[i]); });
+        const std::size_t nb = fresh.size() / 4 + 1;
+        const detail::SlotRuns runs = detail::group_slots(
+            pos_keys, nb, [nb](const RvolPosKey& rK) { return RvolPosKeyHash{}(rK) % nb; },
+            [](const RvolPosKey& rA, const RvolPosKey& rB) {
+                return std::lexicographical_compare(rA.mBits, rA.mBits + 3, rB.mBits, rB.mBits + 3);
+            });
         std::vector<std::int64_t> fresh_remap(fresh.size());
-        for (std::size_t i = 0; i < fresh.size(); ++i) {
-            const RvolPosKey key = rvol_pos_key(fresh[i]);
-            auto it = pos_to_first.find(key);
-            if (it == pos_to_first.end()) {
-                pos_to_first.emplace(key, static_cast<std::int64_t>(i));
-                fresh_remap[i] = static_cast<std::int64_t>(i);
-            } else {
-                fresh_remap[i] = it->second;
-            }
-        }
-        std::vector<std::array<std::int64_t, 4>> welded;
-        welded.reserve(raw_tets.size());
-        for (const auto& t : raw_tets) {
-            std::array<std::int64_t, 4> tt = t;
+        parallel_for(runs.NumRuns(), [&](std::size_t r) {
+            const std::int64_t head = static_cast<std::int64_t>(runs.Head(r));
+            for (const std::uint64_t* q = runs.Begin(r); q != runs.End(r); ++q)
+                fresh_remap[*q] = head;
+        });
+        std::vector<std::uint64_t> keep(raw_tets.size());
+        parallel_for(raw_tets.size(), [&](std::size_t q) {
+            std::array<std::int64_t, 4>& tt = raw_tets[q];
             for (std::int64_t& id : tt)
                 if (id >= num_lattice)
                     id = num_lattice + fresh_remap[static_cast<std::size_t>(id - num_lattice)];
-            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
-                            1e-15 * h * h * h))
-                welded.push_back(tt);
-            else
-                ++num_rejected;
-        }
+            keep[q] =
+                rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]), eps)
+                    ? 1
+                    : 0;
+        });
+        std::vector<std::array<std::int64_t, 4>> welded = compact(raw_tets, keep);
+        num_rejected += static_cast<std::int64_t>(raw_tets.size() - welded.size());
         raw_tets = std::move(welded);
     }
     result.mNumTetsRejected = num_rejected;
@@ -663,28 +765,21 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
             "); coarsen the lattice or raise max_tets");
 
     // --- compact: used lattice vertices (in ascending original id) + the
-    // resolver's fresh points (already in deterministic assignment order) ---
-    std::vector<std::uint8_t> used(static_cast<std::size_t>(num_lattice), 0);
+    // fresh points (in their first-seen order) ------------------------------
+    std::vector<std::uint64_t> used(static_cast<std::size_t>(num_lattice), 0);
     for (const auto& t : raw_tets)
         for (std::int64_t id : t)
             if (id < num_lattice)
                 used[static_cast<std::size_t>(id)] = 1;
-
-    std::vector<std::int64_t> remap(static_cast<std::size_t>(num_lattice), -1);
-    std::vector<Vec3> out_points;
-    out_points.reserve(raw_tets.size());  // a reasonable-order estimate
-    for (std::int64_t i = 0; i < num_lattice; ++i)
-        if (used[static_cast<std::size_t>(i)]) {
-            remap[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(out_points.size());
-            out_points.push_back(cls.mFinalPosition[static_cast<std::size_t>(i)]);
-        }
-    const std::int64_t new_base = static_cast<std::int64_t>(out_points.size());
-    for (const Vec3& p : resolver.NewPositions())
-        out_points.push_back(p);
-
+    std::vector<std::uint64_t> used_at(static_cast<std::size_t>(num_lattice));
+    const std::uint64_t num_used = parallel_exclusive_scan(
+        used.data(), static_cast<std::size_t>(num_lattice), used_at.data(), std::uint64_t{0});
+    const std::int64_t new_base = static_cast<std::int64_t>(num_used);
     auto final_id = [&](std::int64_t id) -> std::int64_t {
         if (id < num_lattice)
-            return remap[static_cast<std::size_t>(id)];
+            return used[static_cast<std::size_t>(id)]
+                       ? static_cast<std::int64_t>(used_at[static_cast<std::size_t>(id)])
+                       : -1;
         return new_base + (id - num_lattice);
     };
 
@@ -692,19 +787,28 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 
     Mesh& out = result.mMesh;
     {
-        NDArray pts = NDArray::Uninit(DType::Float64, {out_points.size(), std::size_t{3}});
+        const std::size_t npts = static_cast<std::size_t>(num_used) + fresh.size();
+        NDArray pts = NDArray::Uninit(DType::Float64, {npts, std::size_t{3}});
         double* dst = pts.As<double>();
-        for (std::size_t i = 0; i < out_points.size(); ++i)
-            for (int d = 0; d < 3; ++d)
-                dst[i * 3 + static_cast<std::size_t>(d)] = out_points[i][static_cast<std::size_t>(d)];
+        parallel_for_bw(static_cast<std::size_t>(num_lattice), [&](std::size_t i) {
+            if (!used[i])
+                return;
+            for (std::size_t d = 0; d < 3; ++d)
+                dst[used_at[i] * 3 + d] = cls.mFinalPosition[i][d];
+        });
+        parallel_for_bw(fresh.size(), [&](std::size_t f) {
+            for (std::size_t d = 0; d < 3; ++d)
+                dst[(static_cast<std::size_t>(num_used) + f) * 3 + d] = fresh[f][d];
+        });
         out.AssignPoints(std::move(pts));
     }
     {
         NDArray conn = NDArray::Uninit(DType::Int64, {raw_tets.size(), std::size_t{4}});
         std::int64_t* dst = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < raw_tets.size(); ++i)
-            for (int c = 0; c < 4; ++c)
-                dst[i * 4 + static_cast<std::size_t>(c)] = final_id(raw_tets[i][static_cast<std::size_t>(c)]);
+        parallel_for_bw(raw_tets.size(), [&](std::size_t i) {
+            for (std::size_t c = 0; c < 4; ++c)
+                dst[i * 4 + c] = final_id(raw_tets[i][c]);
+        });
         if (!raw_tets.empty())
             out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
     }
@@ -716,7 +820,8 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
     // RemeshVolumeResult::mNumNonManifoldEdges' doc comment). Skipped for an
     // empty result, which extract_surface refuses.
     if (!raw_tets.empty())
-        result.mNumNonManifoldEdges = surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
+        result.mNumNonManifoldEdges =
+            surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
 
     return result;
 }

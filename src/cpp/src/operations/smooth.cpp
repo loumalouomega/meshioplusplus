@@ -45,6 +45,9 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
+// Project includes (private, not installed)
 #include "smooth_odt.hpp"
 #include "../detail/slot_runs.hpp"
 
@@ -146,9 +149,10 @@ std::vector<double> smooth_read_coords(const Mesh& rMesh, std::size_t n, std::si
     if (n == 0 || dim == 0)
         return xyz;
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     parallel_for_bw(n, [&](std::size_t i) {
         for (std::size_t d = 0; d < dim && d < 3; ++d)
-            xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+            xyz[i * 3 + d] = points_v[i * dim + d];
     });
     return xyz;
 }
@@ -270,14 +274,14 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
         }
 
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t nc = cb.NumCells();
         for (std::size_t c = 0; c < nc; ++c) {
             bool ok = true;
             const std::size_t first = t.mCornerNodes.size();
             for (int k = 0; k < corners; ++k) {
-                const std::int64_t id =
-                    detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
+                const std::int64_t id = conn_v[c * npc + static_cast<std::size_t>(k)];
                 if (id < 0 || static_cast<std::size_t>(id) >= n) {
                     ok = false;
                     break;
@@ -661,6 +665,7 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             continue;
         }
         const NDArray& conn = *b.mpConn;
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = b.mNpc;
         const std::size_t fpc = b.mFacets.size();
         parallel_for(b.mNumCells * fpc, [&, bi](std::size_t j) {
@@ -671,7 +676,7 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             std::array<std::int64_t, 4> ids{};
             const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
             for (std::uint8_t k = 0; k < nk; ++k)
-                ids[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
+                ids[k] = conn_v[cell * npc + fd.mNodes[k]];
             r.mKey = SmoothFacetKey(ids.data(), nk);
             r.mBlock = bi;
             r.mCell = static_cast<std::uint32_t>(cell);
@@ -1038,14 +1043,15 @@ std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdj
                     const std::size_t c =
                         static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
                     const std::int64_t cb = cells.mCornerOffset[c];
-                    const SmoothCornerReader at{&prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)],
-                                                -1, nullptr};
+                    const SmoothCornerReader at{
+                        &prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)], -1, nullptr};
                     const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
                     Vec3 cc;
                     if (!smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, cc))
                         continue;  // degenerate tet: no circumsphere, no contribution
                     const Vec3 coords[4] = {p0, p1, p2, p3};
-                    const double vol = std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
+                    const double vol =
+                        std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
                     if (vol < kOdtEps)
                         continue;
                     sum_v += vol;

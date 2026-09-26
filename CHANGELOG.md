@@ -8,6 +8,43 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.21.0 (2026-09-26)
+
+**Roadmap §4 (performance), text reading and raw appended VTU.** Every reader returns the same mesh as v16.20.0 (compared over all 724 reader fixtures), and every existing writer's output is byte-identical.
+
+- **A shared text tokenizer** (the core-private `detail/text_cursor.hpp`): `mdpa`, `su2`, `avsucd` and `tecplot` parse `string_view` lines and tokens of the mapped file instead of a `std::string` per line and per token (on the `bench.py` M meshes, su2 reads 3.5× faster, avsucd 2.9×, tecplot 2.1× and the C++ mdpa reader 3.2×). XDMF `DataItem`s and VTU ASCII arrays parse straight into their typed array, where they made a `std::string` and switched on the dtype per value. The ASCII paths of `obj`, `stl`, `ply`, `gmsh`, `openfoam`, `flac3d`, `netgen`, `permas`, `triangle`, `tetgen`, `freefem`, `flux`, `abaqus`, `dex`, `ip`, `wkt`, `vti`, `vtr` and `vts` extract through `TextStream`, a view-based replacement for `std::istringstream`. A differential test pins it against the stream, token for token, over integers, doubles, overflow and malformed input.
+- **Raw appended VTU writing:** `vtu.write(..., appended=True)` (C++ `write_vtu_appended`, `WriteEncoding::RawAppended`, C `MIO_ENCODING_RAW_APPENDED`, `"raw_appended"` for the pipeline, WASM and the MCP `convert` mode, and `--appended` in both CLIs) writes every array into one `<AppendedData encoding="raw">` section. This is the layout VTK's own writers default to: the same header and blocks as inline binary, with no base64. An uncompressed file is about a quarter smaller. On a 216,000-hexahedron grid it wrote 2.6× faster and read 6.9× faster than inline binary, and with zlib 1.6× and 1.4× faster. VTK's `vtkXMLUnstructuredGridReader` reads the files. The Python reference writer writes it too (lzma included), and every other format and the transient series writers refuse it by name. The registry default is unchanged: inline binary with zlib.
+- **The VTU reader reads a raw appended file once**, where it loaded it through pugixml and then read it whole a second time.
+- ABI 18 unchanged: `write_vtu_appended` and the appended `WriteEncoding::RawAppended`/`MIO_ENCODING_RAW_APPENDED` enumerators are additions ([ABI reviews](doc/abi_reviews.md)).
+- Docs: [VTU](doc/formats/vtu.md), [CLI](doc/cli.md), [pipeline](doc/pipeline.md), [MCP](doc/mcp.md), [C API](doc/c_api.md) and [WASM](doc/wasm.md); roadmap §4 narrowed to the tokenizer's remaining readers, and its map.
+
+## v16.20.0 (2026-09-26)
+
+**Roadmap §4 (performance), I/O:** file reading, ASCII writing and the VTK XML binary path. Every writer's output is byte-identical to v16.19.0's (compared file by file for VTU, VTP, legacy VTK 4.2 and 5.1, Medit, Tecplot, Abaqus, Ansys `.cdb`, LS-DYNA and OpenFOAM, and pinned by `test_io_baseline.py`), and every reader returns the same mesh.
+
+- **Nineteen readers read their file through `FileSource`** -- one bulk read, or a mapping above `MESHIOPLUSPLUS_MMAP_THRESHOLD` -- instead of one character at a time through `std::istreambuf_iterator`: ansys (Fluent), femap, abaqus_fil, code_aster, pcd, marc, patran, radioss, radioss_anim, radioss_th, medit, ply, wkt, lsdyna, elmer, libmesh, mphtxt, z88 and mfem. OpenFOAM's ASCII lists, Ansys `.cdb` NBLOCK/EBLOCK, UNV nodes, elements and groups, and GiD's HDF5 columns reserve from the counts they carry (capped by what the input could hold, so a wrong count changes nothing else).
+- **ASCII writers format rows in parallel chunks**, byte for byte: VTU, VTP, legacy VTK, Medit, Tecplot and OpenFOAM's points, which formatted serially, and Abaqus, Ansys `.cdb` and LS-DYNA, which built a heap string per row. They no longer call `localeconv()` inside a parallel loop (`snprintf_c` does per value, and POSIX does not require it to be thread-safe).
+- **VTK XML binary arrays decode straight into their array:** the element text is read in place, the base64 stream decodes any byte window directly, and every compressed block decompresses into its place, where a payload was copied five or six times. The writer encodes an uncompressed array without copying it to prepend the size header. A size check that could wrap on a corrupt header no longer can.
+- **VTU and Exodus** switch on the dtype once per array rather than per element, and the VTU writer's connectivity fills in parallel as its comment always claimed.
+- **Declined reads are refused before the expensive parse:** the VTK XML readers decide an lzma (or unavailable lz4/zstd) compressor from the `<VTKFile>` start tag instead of after loading the DOM, Gmsh finds `$Periodic` before parsing `$Nodes` and `$Elements`, both Fluent readers refuse a non-Fluent file from its first bytes instead of reading it whole, and an ambiguous extension tries first the candidate `sniff_format` recognises -- so a Gmsh `.msh` goes to gmsh before ansys and freefem (every candidate is still tried).
+- ABI 18 unchanged; no installed header changes.
+- Docs: roadmap §4 narrowed and its map; [formats](doc/formats.md) (candidate order, early declines).
+
+## v16.19.0 (2026-09-26)
+
+**Roadmap §4 (performance), the rest of the operation items:** every serial phase §4 listed inside an operation now runs in parallel or in gather form, byte-identical to v16.18.0 on SEQ, OpenMP and TBB at 1, 4 and 8 threads (`bench_ops --hash`), and pinned by `test_op_goldens.cpp`, which gains 15 cases whose digests were taken from the previous implementation (among them `clean` and `merge` over hexahedron, polyhedron and ragged polygon blocks, and `remesh`'s Quadric and Anisotropic metrics).
+
+- **Distance kernel:** `sample_distance`, `distance_to_surface`, `shrinkwrap` and `remesh_volume` group the surface's edges once where they grouped them twice, and `build_distance_query` inserts triangles into its bucket grid in parallel (each bucket still lists its triangles in ascending order).
+- **Duplicate cells:** `clean`'s ragged and polyhedral passes and `merge`'s `drop_duplicate_cells` find duplicates with the sort-based table in parallel instead of a string key per cell in a hash set, or a `std::map` of node vectors.
+- **The shared facet table's counting sort** is chunked across threads for large inputs (one order for any chunking).
+- **`isosurface` and `slice`** cut every simplex in parallel and number the crossing points by first-seen order over the sort-based table, where they used a serial hash map.
+- **`split`** resolves components in one ascending pass and numbers them by a scan, where it hashed every root; its union sweep and the piece extraction stay serial (a mesh is not safe to read from several threads through its lazily filled caches).
+- **`cell_data_to_point_data`** gathers each point's incident cells in parallel, adding the same terms in the order the serial scatter did; `gradient` and `hessian` at Point location use it, and `hessian` no longer copies the input's other arrays through its two gradient passes.
+- **`compute_normals`**, **`remesh_volume`** (lattice, classification, cut, weld and compaction) and **`remesh`'s setup passes** (item weights, vertex normals, curvature and metric fits) run in parallel; `remesh`'s clustering sweep stays serial by design.
+- **The per-element dtype switch** is hoisted out of the hot loops of `refine`, `convert_cells`, `interpolate`, `repair`, `partition`, `sobolev_deform`, `reorder`, `smooth` and `optimize_volume` (63 call sites).
+- ABI 18 unchanged: `detail/spatial_hash.hpp` gains one inline member, `SpatialGrid::AssignBuckets` ([ABI reviews](doc/abi_reviews.md)).
+- Docs: roadmap §4 narrowed to the items that need the next ABI bump, and its map.
+
 ## v16.18.0 (2026-09-26)
 
 **Roadmap §4 (performance), third part:** the operation items -- welding, the distance kernel's construction, a core neighbour search for `proximity_graph`, and two operations that had no parallel phase. Every operation's output is byte-identical to v16.16.0's (the `bench_ops --hash` digests, and a new golden-digest test taken from the previous implementation).

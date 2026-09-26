@@ -23,6 +23,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -39,6 +40,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -106,7 +108,7 @@ struct CaToken {
 // Splits the file into tokens: each line cut at column 80, a `%` comment
 // dropped, then split on blanks and commas. `KEY = VALUE`, `KEY= VALUE` and
 // `KEY =VALUE` are joined into one `KEY=VALUE` token.
-std::vector<CaToken> ca_tokenize(const std::string& rText) {
+std::vector<CaToken> ca_tokenize(std::string_view rText) {
     std::vector<CaToken> tokens;
     bool warned_long = false;
     std::size_t line_no = 0;
@@ -115,7 +117,7 @@ std::vector<CaToken> ca_tokenize(const std::string& rText) {
         std::size_t eol = rText.find('\n', pos);
         if (eol == std::string::npos)
             eol = rText.size();
-        std::string line = rText.substr(pos, eol - pos);
+        std::string line(rText.substr(pos, eol - pos));
         pos = eol + 1;
         ++line_no;
         if (!line.empty() && line.back() == '\r')
@@ -246,10 +248,9 @@ struct CaGroup {
 }  // namespace
 
 Mesh read_code_aster(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Code_Aster .mail: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Code_Aster .mail: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     const std::vector<CaToken> tokens = ca_tokenize(text);
 
     int point_dim = 0;

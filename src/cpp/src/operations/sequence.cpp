@@ -567,6 +567,9 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (!rOptions.mFloatFormat.empty())
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support FloatFormat");
+    if (rOptions.mEncoding == WriteEncoding::RawAppended)
+        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+                         " writer has no raw appended encoding (only vtu does)");
     if (rFormat == "femap" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "

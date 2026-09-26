@@ -374,3 +374,66 @@ TEST(Codecs, Base64DecodeMatchesTheSerialDecoderAcrossChunkSeams) {
                   codecs_b64decode_reference(noisy.substr(0, cut)))
             << cut;
 }
+
+namespace {
+
+/** @brief Every element of @p rA equals @p rB's, as doubles, with the same shape. */
+void codec_expect_same_array(const NDArray& rA, const NDArray& rB, const std::string& rName) {
+    ASSERT_EQ(rA.Shape(), rB.Shape()) << rName;
+    ASSERT_EQ(rA.Dtype(), rB.Dtype()) << rName;
+    for (std::size_t i = 0; i < rA.Size(); ++i)
+        EXPECT_EQ(detail::read_double(rA, i), detail::read_double(rB, i)) << rName << " " << i;
+}
+
+}  // namespace
+
+// Raw appended data (v16.21.0) holds the very bytes the inline binary form
+// base64-encodes, so the two must read back identical, for every codec.
+TEST(Codecs, AppendedMatchesInlineBinaryForEveryCodec) {
+    std::vector<VtkCodec> codecs = {VtkCodec::None};
+    for (VtkCodec c : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD})
+        if (detail::vtk_codec_available(c))
+            codecs.push_back(c);
+    const Mesh source = mt::data_mesh();
+    for (VtkCodec codec : codecs) {
+        const std::string inline_path = mt::temp_path("_inline.vtu");
+        const std::string appended_path = mt::temp_path("_appended.vtu");
+        write_vtu_codec(inline_path, source, /*binary=*/true, codec);
+        write_vtu_appended(appended_path, source, codec);
+
+        const std::string text = codec_slurp(appended_path);
+        EXPECT_NE(text.find("<AppendedData encoding=\"raw\">"), std::string::npos);
+        EXPECT_EQ(text.find("format=\"binary\""), std::string::npos);
+        EXPECT_EQ(text.find("format=\"ascii\""), std::string::npos);
+        EXPECT_NE(text.find("format=\"appended\""), std::string::npos);
+
+        const Mesh a = read_vtu(inline_path);
+        const Mesh b = read_vtu(appended_path);
+        mt::expect_same_geometry(a, b);
+        mt::expect_same_geometry(b, source);
+        ASSERT_EQ(a.PointDataNames(), b.PointDataNames());
+        for (const std::string& name : a.PointDataNames())
+            codec_expect_same_array(a.PointData(name), b.PointData(name), name);
+        ASSERT_EQ(a.CellDataNames(), b.CellDataNames());
+        for (const std::string& name : a.CellDataNames())
+            for (std::size_t k = 0; k < a.NumCellBlocks(); ++k)
+                codec_expect_same_array(a.CellData(name, k), b.CellData(name, k), name);
+        ASSERT_EQ(a.FieldDataNames(), b.FieldDataNames());
+        for (const std::string& name : a.FieldDataNames())
+            codec_expect_same_array(a.FieldData(name), b.FieldData(name), name);
+
+        codec_remove(inline_path);
+        codec_remove(appended_path);
+    }
+}
+
+// An empty mesh has zero-length arrays: their offsets repeat, and the file
+// still reads.
+TEST(Codecs, AppendedEmptyMeshReadsBack) {
+    Mesh empty;
+    empty.AssignPoints(NDArray(DType::Float64, {0, 3}));
+    const std::string path = mt::temp_path("_appended_empty.vtu");
+    write_vtu_appended(path, empty, VtkCodec::None);
+    EXPECT_EQ(read_vtu(path).NumPoints(), 0u);
+    codec_remove(path);
+}

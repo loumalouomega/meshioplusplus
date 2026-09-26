@@ -20,6 +20,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <ios>
@@ -43,6 +44,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -51,6 +53,9 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -173,16 +178,16 @@ bool lsd_starts_with(const std::string& rText, const char* pPrefix) {
     return rText.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> lsd_split(const std::string& rText, char Sep) {
+std::vector<std::string> lsd_split(std::string_view rText, char Sep) {
     std::vector<std::string> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t k = rText.find(Sep, start);
-        if (k == std::string::npos) {
-            out.push_back(rText.substr(start));
+        if (k == std::string_view::npos) {
+            out.emplace_back(rText.substr(start));
             return out;
         }
-        out.push_back(rText.substr(start, k - start));
+        out.emplace_back(rText.substr(start, k - start));
         start = k + 1;
     }
 }
@@ -643,17 +648,16 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
     rDeck.mSets.push_back(std::move(set));
 }
 
-void lsd_read_text(LsdDeck& rDeck, const std::string& rText, const fs::path& rBaseDir,
+void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode);
 
 void lsd_read_file(LsdDeck& rDeck, const fs::path& rPath, int Depth, CardMode Mode) {
     if (Depth > lsd_max_include_depth)
         throw ReadError("LS-DYNA: *INCLUDE nested deeper than " +
                         std::to_string(lsd_max_include_depth));
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("LS-DYNA: could not read " + rPath.string());
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath.string(), "LS-DYNA: could not read " + rPath.string());
+    const std::string_view text = text_source.View();
     std::error_code ec;
     const fs::path absolute = fs::absolute(rPath, ec);
     lsd_read_text(rDeck, text, (ec ? rPath : absolute).parent_path(), rPath.string(), Depth, Mode);
@@ -724,7 +728,7 @@ void lsd_read_includes(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
     }
 }
 
-void lsd_read_text(LsdDeck& rDeck, const std::string& rText, const fs::path& rBaseDir,
+void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode) {
     std::vector<std::string> lines = lsd_split(rText, '\n');
     for (std::string& ln : lines)
@@ -966,6 +970,26 @@ void lsd_put(std::string& rOut, const std::string& rText, std::size_t Width) {
     rOut += rText;
 }
 
+// detail::format_real16 -- the shortest "%.*e" that parses back to `Value`,
+// within 16 columns -- with the decimal point resolved once (`rNum`) rather
+// than by snprintf_c's localeconv() per call, which POSIX does not require to
+// be thread-safe: callable from a parallel loop. Byte-identical.
+std::string lsd_real16(double Value, const detail::CNumber& rNum) {
+    if (Value == 0.0)
+        return "0.0";
+    const int neg = Value < 0.0 ? 1 : 0;
+    const int e3 = (std::fabs(Value) >= 1e100 || std::fabs(Value) < 1e-99) ? 1 : 0;
+    const int pmax = 10 - neg - e3;
+    char buf[64];
+    for (int p = 1; p <= pmax; ++p) {
+        rNum.Print(buf, sizeof(buf), "%.*e", p, Value);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == Value)
+            return std::string(buf);
+    }
+    return std::string(buf);
+}
+
 void lsd_put_int(std::string& rOut, std::int64_t Value, std::size_t Width) {
     lsd_put(rOut, std::to_string(Value), Width);
 }
@@ -1168,19 +1192,19 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
     {
         const NDArray& points = rMesh.Points();
         const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
-        std::vector<std::string> rows(npts);
-        parallel_for(npts, [&](std::size_t i) {
-            std::string& row = rows[i];
-            lsd_put_int(row, static_cast<std::int64_t>(i + 1), 8);
-            for (std::size_t c = 0; c < 3; ++c)
-                lsd_put(row,
-                        c < dim ? detail::format_real16(detail::read_double(points, i * dim + c))
-                                : std::string("0.0"),
-                        16);
-            row += '\n';
-        });
-        for (const std::string& row : rows)
-            os << row;
+        // Rows formatted in parallel chunks (row_writer.hpp), each coordinate
+        // by lsd_real16: format_real16 with the decimal point resolved once.
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, npts, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    lsd_put_int(rBuf, static_cast<std::int64_t>(i + 1), 8);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        lsd_put(rBuf, c < dim ? lsd_real16(pv[i * dim + c], num) : "0.0", 16);
+                    rBuf += '\n';
+                }
+            });
     }
     {
         std::size_t g = 0;

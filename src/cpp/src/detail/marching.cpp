@@ -26,9 +26,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -39,6 +39,10 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "slot_runs.hpp"
+#include "typed_view.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -48,14 +52,6 @@ namespace {
 // simplices sharing an edge produce the same key, so the crossing point is
 // deduped to one output node (the section is watertight).
 using MarchingEdgeKey = std::pair<std::int64_t, std::int64_t>;
-
-struct MarchingEdgeKeyHash {
-    std::size_t operator()(const MarchingEdgeKey& rKey) const {
-        std::size_t h = std::hash<std::int64_t>{}(rKey.first);
-        h ^= std::hash<std::int64_t>{}(rKey.second) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
 
 // Local edges of a tetrahedron: e0=(0,1) e1=(0,2) e2=(0,3) e3=(1,2) e4=(1,3) e5=(2,3).
 constexpr std::uint8_t kTetEdge[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
@@ -188,49 +184,83 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
     const bool has_parent = simp.HasCellData("convert:parent_cell") &&
                             simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
 
-    // --- serial cut + edge-key dedup (the determinism pin) -------------------
-    // Iterated in a fixed (block, cell, ring-edge) order; node ids are handed
-    // out by a single sweep, so output is identical across backends and threads.
-    std::unordered_map<MarchingEdgeKey, std::int64_t, MarchingEdgeKeyHash> node_id;
+    // --- cut + edge-key dedup (the determinism pin) --------------------------
+    // Slots in a fixed (block, cell, ring-edge) order, and node ids handed out
+    // in the order a serial sweep over them first meets each edge: first-seen
+    // numbering over the sort-based table (slot_runs.hpp), so the output is
+    // identical across backends and threads. Each cell's corners, mask and
+    // ring are found in parallel, then every face and edge slot is written at
+    // its prefix offset.
     std::vector<MarchingEdgeKey> node_edges;
     std::vector<MarchingFace> faces;
 
     if (maxdim == 2 || maxdim == 3) {
         const CellType want = maxdim == 3 ? CellType::Tetra : CellType::Triangle;
+        const std::size_t ncorners = maxdim == 3 ? 4u : 3u;
+        const auto* edge_tbl = maxdim == 3 ? &kTetEdge[0] : &kTriEdge[0];
+        const MarchingRing* ring_tbl = maxdim == 3 ? kTetRing : kTriRing;
+        const NDArray& points = simp.Points();
+
+        struct MarchingCutBlock {
+            std::size_t mBlock;
+            std::vector<std::array<std::int64_t, 4>> mCorners;  // per cell
+            std::vector<std::uint8_t> mMask;                    // per cell
+            std::vector<std::int64_t> mWithin;                  // per cell: parent within block
+            std::size_t mFaceBase = 0;                          // first face of the block
+            std::vector<std::uint64_t> mFaceAt;                 // per cell: block-local face index
+        };
+        std::vector<MarchingCutBlock> cut;
         std::size_t bi = 0;
         for (const auto cb : simp.CellRange()) {
             const std::size_t block = bi++;
             const CellType type = cell_type_from_name(std::string(cb.Type()));
             if (type != want || cb.IsRagged())
                 continue;
-            const NDArray& conn = cb.Conn();
+            MarchingCutBlock b;
+            b.mBlock = block;
             const std::size_t npc = cb.NodesPerCell();
-            const std::size_t ncorners = maxdim == 3 ? 4u : 3u;
-            const auto* edge_tbl = maxdim == 3 ? &kTetEdge[0] : &kTriEdge[0];
-            const MarchingRing* ring_tbl = maxdim == 3 ? kTetRing : kTriRing;
-            const NDArray* parent =
-                has_parent ? &simp.CellData("convert:parent_cell", block) : nullptr;
-            const NDArray& points = simp.Points();
             const std::size_t nc = cb.NumCells();
-            for (std::size_t c = 0; c < nc; ++c) {
-                const std::size_t row = c * npc;
-                std::array<std::int64_t, 4> nid{};
+            const Int64View conn(cb.Conn());
+            std::unique_ptr<Int64View> parent;
+            if (has_parent)
+                parent = std::make_unique<Int64View>(simp.CellData("convert:parent_cell", block));
+            b.mCorners.resize(nc);
+            b.mMask.resize(nc);
+            b.mWithin.resize(nc);
+            std::vector<std::uint64_t> has_face(nc);
+            parallel_for(nc, [&](std::size_t c) {
                 unsigned mask = 0;
                 for (std::size_t k = 0; k < ncorners; ++k) {
-                    nid[k] = detail::read_int(conn, row + k);
-                    if (dist[static_cast<std::size_t>(nid[k])] < 0.0)
+                    const std::int64_t id = conn[c * npc + k];
+                    b.mCorners[c][k] = id;
+                    if (dist[static_cast<std::size_t>(id)] < 0.0)
                         mask |= (1u << k);
                 }
-                const MarchingRing& ring = ring_tbl[mask];
+                b.mMask[c] = static_cast<std::uint8_t>(mask);
+                b.mWithin[c] = parent ? (*parent)[c] : static_cast<std::int64_t>(c);
+                has_face[c] = ring_tbl[mask].mCount != 0 ? 1 : 0;
+            });
+            b.mFaceAt.resize(nc);
+            const std::uint64_t nfaces =
+                parallel_exclusive_scan(has_face.data(), nc, b.mFaceAt.data(), std::uint64_t{0});
+            b.mFaceBase = faces.size();
+            faces.resize(faces.size() + nfaces);
+            cut.push_back(std::move(b));
+        }
+
+        // Every face's edge slots, at prefix offsets over the faces.
+        const std::size_t nfaces = faces.size();
+        for (MarchingCutBlock& b : cut) {
+            const std::size_t nc = b.mMask.size();
+            parallel_for(nc, [&](std::size_t c) {
+                const MarchingRing& ring = ring_tbl[b.mMask[c]];
                 if (ring.mCount == 0)
-                    continue;
-                MarchingFace f;
+                    return;
+                MarchingFace& f = faces[b.mFaceBase + b.mFaceAt[c]];
                 f.mNumVerts = ring.mCount;
-                f.mParentBlock = block;
+                f.mParentBlock = b.mBlock;
                 f.mParentLocal = c;
-                const std::int64_t within =
-                    parent ? detail::read_int(*parent, c) : static_cast<std::int64_t>(c);
-                f.mParentGlobalCell = rInput.mOrigBlockBase[block] + within;
+                f.mParentGlobalCell = rInput.mOrigBlockBase[b.mBlock] + b.mWithin[c];
                 f.mOrientRef = {0.0, 0.0, 0.0};
                 if (field_gradient) {
                     // Reference direction = centroid(corners with d >= 0) minus
@@ -242,8 +272,8 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
                     std::size_t npos = 0;
                     std::size_t nneg = 0;
                     for (std::size_t k = 0; k < ncorners; ++k) {
-                        const Vec3 x = detail::read_point(points, dim, nid[k]);
-                        if ((mask & (1u << k)) != 0u) {
+                        const Vec3 x = detail::read_point(points, dim, b.mCorners[c][k]);
+                        if ((b.mMask[c] & (1u << k)) != 0u) {
                             neg = detail::vec3_add(neg, x);
                             ++nneg;
                         } else {
@@ -256,26 +286,41 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
                         detail::vec3_sub(detail::vec3_scale(pos, 1.0 / static_cast<double>(npos)),
                                          detail::vec3_scale(neg, 1.0 / static_cast<double>(nneg)));
                 }
+            });
+        }
+        std::vector<std::uint64_t> verts(nfaces);
+        parallel_for_bw(nfaces, [&](std::size_t f) { verts[f] = faces[f].mNumVerts; });
+        std::vector<std::uint64_t> slot_of(nfaces);
+        const std::uint64_t nslots =
+            parallel_exclusive_scan(verts.data(), nfaces, slot_of.data(), std::uint64_t{0});
+        std::vector<MarchingEdgeKey> keys(nslots);
+        for (const MarchingCutBlock& b : cut) {
+            parallel_for(b.mMask.size(), [&](std::size_t c) {
+                const MarchingRing& ring = ring_tbl[b.mMask[c]];
+                if (ring.mCount == 0)
+                    return;
+                const std::uint64_t base = slot_of[b.mFaceBase + b.mFaceAt[c]];
                 for (std::size_t e = 0; e < ring.mCount; ++e) {
                     const std::uint8_t ei = ring.mEdges[e];
-                    const std::int64_t ga = nid[edge_tbl[ei][0]];
-                    const std::int64_t gb = nid[edge_tbl[ei][1]];
-                    const MarchingEdgeKey key =
-                        ga < gb ? MarchingEdgeKey{ga, gb} : MarchingEdgeKey{gb, ga};
-                    auto it = node_id.find(key);
-                    std::int64_t id;
-                    if (it == node_id.end()) {
-                        id = static_cast<std::int64_t>(node_edges.size());
-                        node_id.emplace(key, id);
-                        node_edges.push_back(key);
-                    } else {
-                        id = it->second;
-                    }
-                    f.mNodes[e] = id;
+                    const std::int64_t ga = b.mCorners[c][edge_tbl[ei][0]];
+                    const std::int64_t gb = b.mCorners[c][edge_tbl[ei][1]];
+                    keys[base + e] = ga < gb ? MarchingEdgeKey{ga, gb} : MarchingEdgeKey{gb, ga};
                 }
-                faces.push_back(f);
-            }
+            });
         }
+        const SlotRuns runs = group_slots(keys, nnodes_in + 1, [&](const MarchingEdgeKey& rK) {
+            return rK.first >= 0 && static_cast<std::size_t>(rK.first) < nnodes_in
+                       ? static_cast<std::size_t>(rK.first)
+                       : nnodes_in;
+        });
+        const FirstSeen ids = number_first_seen(runs, nslots);
+        node_edges.resize(ids.NumIds());
+        parallel_for_bw(ids.NumIds(),
+                        [&](std::size_t i) { node_edges[i] = keys[runs.Head(ids.mRunOfId[i])]; });
+        parallel_for(nfaces, [&](std::size_t f) {
+            for (std::size_t e = 0; e < faces[f].mNumVerts; ++e)
+                faces[f].mNodes[e] = ids.mIdOfSlot[slot_of[f] + e];
+        });
     }
 
     const std::size_t nnodes = node_edges.size();

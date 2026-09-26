@@ -242,7 +242,8 @@ def _register_conversion(server: FastMCP) -> None:
         keeps one partition/block of a partitioned file (VTKHDF, .pvtu/.pvtp,
         or one part of a .pvd step) instead of the merged mesh; ghosts=drop
         removes the ghost cells (halo) of a .pvtu/.pvtp/.pvd. mode selects ascii|binary output where the format
-        supports it; compression selects zlib|lz4|zstd|lzma (VTU/VTP block
+        supports it, or raw_appended (VTU: raw binary in one <AppendedData>
+        section, no base64); compression selects zlib|lz4|zstd|lzma (VTU/VTP block
         codecs), gzip (CGNS/H5M/VTKHDF/XDMF), lzf (PCD binary_compressed) or
         'none' to decompress."""
         return _guard(

@@ -65,6 +65,9 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
@@ -249,9 +252,10 @@ std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
         for (std::size_t k = 0; k < 4; ++k)
             keys[p][k] = detail::read_int(a, p * 4 + k);
 
-    const NDArray& points = rMesh.Points();
-    const std::size_t dim = detail::cols(points);
-    NDArray scratch = NDArray::Uninit(points.Dtype(), {std::size_t{1}});
+    const NDArray& points_arr = rMesh.Points();
+    const detail::DoubleView points(points_arr);
+    const std::size_t dim = detail::cols(points_arr);
+    NDArray scratch = NDArray::Uninit(points_arr.Dtype(), {std::size_t{1}});
     for (std::size_t p = 0; p < num_points; ++p) {
         const RefineNodeKey& key = keys[p];
         if (key[3] < 0)
@@ -266,9 +270,9 @@ std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
         for (std::size_t k = 0; k < dim && ok; ++k) {
             double sum = 0.0;
             for (std::size_t c = first; c < 4; ++c)
-                sum += detail::read_double(points, static_cast<std::size_t>(key[c]) * dim + k);
+                sum += points[static_cast<std::size_t>(key[c]) * dim + k];
             detail::write_double(scratch, 0, sum * inv);
-            ok = detail::read_double(scratch, 0) == detail::read_double(points, p * dim + k);
+            ok = detail::read_double(scratch, 0) == points[p * dim + k];
         }
         if (!ok) {
             log::warn(
@@ -332,7 +336,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             const RefineBlockDesc& d = descs[bi++];
             if (d.mSlotsPerCell == 0 || d.mNumCells == 0)
                 continue;
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t npc = cb.NodesPerCell();
             const std::vector<detail::CellEdgePair>& edges = *d.mpEdges;
             const std::vector<detail::CellQuadFace>& faces = *d.mpFaces;
@@ -345,13 +349,11 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 RefineNodeKey& key = keys[d.mFirstSlot + j];
                 if (slot < nedges) {
                     const detail::CellEdgePair& e = edges[slot];
-                    key = refine_edge_key(detail::read_int(conn, row + e[0]),
-                                          detail::read_int(conn, row + e[1]));
+                    key = refine_edge_key(conn[row + e[0]], conn[row + e[1]]);
                 } else {
                     const detail::CellQuadFace& f = faces[slot - nedges];
-                    key = refine_face_key(
-                        detail::read_int(conn, row + f[0]), detail::read_int(conn, row + f[1]),
-                        detail::read_int(conn, row + f[2]), detail::read_int(conn, row + f[3]));
+                    key = refine_face_key(conn[row + f[0]], conn[row + f[1]], conn[row + f[2]],
+                                          conn[row + f[3]]);
                 }
             });
         }
@@ -425,13 +427,13 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 std::size_t bi = 0;
                 for (const auto cb : rMesh.CellRange()) {
                     const RefineBlockDesc& d = descs[bi++];
-                    const NDArray& conn = cb.Conn();
+                    const detail::Int64View conn(cb.Conn());
                     const std::size_t npc = cb.NodesPerCell();
                     for (std::size_t c = 0; c < d.mNumCells; ++c) {
                         const std::size_t g = d.mFirstCell + c;
                         const std::int64_t post = level_of(g) + (red[g] ? 1 : 0);
                         for (std::size_t n = 0; n < npc; ++n) {
-                            const std::int64_t p = detail::read_int(conn, c * npc + n);
+                            const std::int64_t p = conn[c * npc + n];
                             if (p >= 0 && p < static_cast<std::int64_t>(num_points)) {
                                 std::int64_t& m = node_max[static_cast<std::size_t>(p)];
                                 m = std::max(m, post);
@@ -444,14 +446,14 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const RefineBlockDesc& d = descs[bi++];
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t c = 0; c < d.mNumCells; ++c) {
                     const std::size_t g = d.mFirstCell + c;
                     if (red[g])
                         continue;
                     for (std::size_t n = 0; n < npc; ++n) {
-                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        const std::int64_t p = conn[c * npc + n];
                         if (p >= 0 && p < static_cast<std::int64_t>(num_points) &&
                             node_max[static_cast<std::size_t>(p)] > level_of(g) + 1) {
                             red[g] = 1;
@@ -639,10 +641,11 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // order-independent, so two neighbours sharing an entity compute
     // bit-identical coordinates from the same sorted key -- no tie-break rule.
     {
-        const NDArray& points = rMesh.Points();
-        const std::size_t dim = detail::cols(points);
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points_out, dim});
-        std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
+        const NDArray& points_arr = rMesh.Points();
+        const detail::DoubleView points(points_arr);
+        const std::size_t dim = detail::cols(points_arr);
+        NDArray new_points = NDArray::Uninit(points_arr.Dtype(), {num_points_out, dim});
+        std::memcpy(new_points.Data(), points_arr.Data(), points_arr.Nbytes());
         parallel_for_bw(new_entities.size(), [&](std::size_t i) {
             const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
@@ -650,7 +653,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             for (std::size_t k = 0; k < dim; ++k) {
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
-                    sum += detail::read_double(points, static_cast<std::size_t>(key[c]) * dim + k);
+                    sum += points[static_cast<std::size_t>(key[c]) * dim + k];
                 detail::write_double(new_points, (num_points + i) * dim + k, sum * inv);
             }
         });
@@ -661,7 +664,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 const RefineBlockDesc& d = descs[bi++];
                 if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
@@ -672,9 +675,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                     for (std::size_t k = 0; k < dim; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p =
-                                static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
-                            sum += detail::read_double(points, p * dim + k);
+                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
+                            sum += points[p * dim + k];
                         }
                         detail::write_double(new_points, static_cast<std::size_t>(body) * dim + k,
                                              sum * inv);
@@ -700,7 +702,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             const std::size_t b = bi++;
             const RefineBlockDesc& d = descs[b];
             const std::size_t out_npc = static_cast<std::size_t>(cell_type_num_nodes(d.mType));
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t npc = cb.NodesPerCell();
             const std::size_t nedges = d.mpEdges->size();
             const std::size_t nfaces = d.mpFaces->size();
@@ -724,7 +726,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 // references one, by construction of the node rules in phase 4.
                 std::int64_t local[27];
                 for (std::size_t n = 0; n < ncorners; ++n)
-                    local[n] = detail::read_int(conn, c * npc + n);
+                    local[n] = conn[c * npc + n];
                 const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
                 for (std::size_t s = 0; s < nedges + nfaces; ++s)
                     local[ncorners + s] =
@@ -768,6 +770,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
         }
+        const detail::DoubleView av(a);
         const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
         std::vector<std::size_t> shape = a.Shape();
         shape[0] = num_points_out;
@@ -780,7 +783,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             for (std::size_t k = 0; k < ncomp; ++k) {
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
-                    sum += detail::read_double(a, static_cast<std::size_t>(key[c]) * ncomp + k);
+                    sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
                 detail::write_double(b, (num_points + i) * ncomp + k, sum * inv);
             }
         });
@@ -790,7 +793,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 const RefineBlockDesc& d = descs[bi++];
                 if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
@@ -801,9 +804,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                     for (std::size_t k = 0; k < ncomp; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p =
-                                static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
-                            sum += detail::read_double(a, p * ncomp + k);
+                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
+                            sum += av[p * ncomp + k];
                         }
                         detail::write_double(b, static_cast<std::size_t>(body) * ncomp + k,
                                              sum * inv);
@@ -921,7 +923,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 const std::size_t ncells = cb.NumCells();
                 if (ncells == 0)
                     continue;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t c = 0; c < ncells; ++c) {
                     const std::size_t row = c * npc;
@@ -931,7 +933,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                             return;
                         const std::size_t node = static_cast<std::size_t>(it->second);
                         for (std::size_t n = 0; n < npc; ++n)
-                            if (detail::read_int(conn, row + n) == it->second)
+                            if (conn[row + n] == it->second)
                                 return;  // this cell references it: not hanging here
                         if (!hanging[node]) {
                             hanging[node] = 1;
@@ -939,13 +941,10 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                         }
                     };
                     for (const detail::CellEdgePair& e : edges)
-                        mark(refine_edge_key(detail::read_int(conn, row + e[0]),
-                                             detail::read_int(conn, row + e[1])));
+                        mark(refine_edge_key(conn[row + e[0]], conn[row + e[1]]));
                     for (const detail::CellQuadFace& f : faces)
-                        mark(refine_face_key(detail::read_int(conn, row + f[0]),
-                                             detail::read_int(conn, row + f[1]),
-                                             detail::read_int(conn, row + f[2]),
-                                             detail::read_int(conn, row + f[3])));
+                        mark(refine_face_key(conn[row + f[0]], conn[row + f[1]], conn[row + f[2]],
+                                             conn[row + f[3]]));
                 }
             }
         }
@@ -1215,11 +1214,11 @@ std::vector<char> refine_resolve_selection(const Mesh& rMesh, const RefineOption
                 const std::size_t base = static_cast<std::size_t>(bases[b++]);
                 if (cb.IsRagged())
                     continue;  // rejected by refine_check_block later, by name
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t c = 0; c < cb.NumCells(); ++c) {
                     for (std::size_t n = 0; n < npc; ++n) {
-                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        const std::int64_t p = conn[c * npc + n];
                         if (p >= 0 && p < static_cast<std::int64_t>(in_region.size()) &&
                             in_region[static_cast<std::size_t>(p)]) {
                             red[base + c] = 1;

@@ -50,6 +50,9 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
+// Project includes (private, not installed)
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -225,12 +228,13 @@ CcellsOutBlock ccells_stage_passthrough(const Mesh::CellView& rBlock) {
         }
     } else {
         const NDArray& conn = rBlock.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = rBlock.NodesPerCell();
         out.mNodesPerCell = npc;
         out.mConn.resize(rBlock.NumCells() * npc);
         parallel_for_bw(rBlock.NumCells(), [&](std::size_t c) {
             for (std::size_t k = 0; k < npc; ++k)
-                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+                out.mConn[c * npc + k] = conn_v[c * npc + k];
         });
     }
     return out;
@@ -358,6 +362,7 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
         const std::size_t npc_in = cb.NodesPerCell();
         const std::size_t npc_out = static_cast<std::size_t>(cell_type_num_nodes(base));
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t ncells = cb.NumCells();
 
         CcellsOutBlock out;
@@ -367,7 +372,7 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
         std::vector<std::int64_t>& dst = out.mConn;
         parallel_for_bw(ncells, [&](std::size_t c) {
             for (std::size_t k = 0; k < npc_out; ++k)
-                dst[c * npc_out + k] = detail::read_int(conn, c * npc_in + k);
+                dst[c * npc_out + k] = conn_v[c * npc_in + k];
         });
         staged.push_back(std::move(out));
     }
@@ -598,6 +603,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         const std::size_t npc_out = tpl->mNodesPerChild;
         const std::size_t per_cell = tpl->mNumChildren;
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
 
         CcellsOutBlock out;
         out.mType = cell_type_name(tpl->mChildType);
@@ -612,7 +618,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             for (std::size_t child = 0; child < per_cell; ++child) {
                 for (std::size_t k = 0; k < npc_out; ++k)
                     dst[base_out + child * npc_out + k] =
-                        detail::read_int(conn, base_in + nodes[child * npc_out + k]);
+                        conn_v[base_in + nodes[child * npc_out + k]];
                 parents[c * per_cell + child] = static_cast<std::int64_t>(c);
             }
         });
@@ -630,6 +636,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         // of its source nodes. Order-independent, so neighbouring cells that
         // share a face agree on that face's centroid bit for bit.
         const NDArray& points = mesh.Points();
+        const detail::DoubleView points_v(points);
         const std::size_t dim = detail::cols(points);
         NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
         std::memcpy(np.Data(), points.Data(), points.Nbytes());
@@ -638,7 +645,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             for (std::size_t d = 0; d < dim; ++d) {
                 double sum = 0.0;
                 for (std::int64_t nid : src)
-                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                    sum += points_v[static_cast<std::size_t>(nid) * dim + d];
                 detail::write_double(np, (num_points + i) * dim + d,
                                      sum / static_cast<double>(src.size()));
             }
@@ -652,6 +659,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     } else {
         for (const std::string& name : mesh.PointDataNames()) {
             const NDArray& a = mesh.PointData(name);
+            const detail::DoubleView a_v(a);
             if (detail::rows(a) != num_points) {
                 out.AddPointData(name, detail::data_owned_copy(a));
                 continue;  // not per-point data; copy verbatim rather than mangle
@@ -666,7 +674,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
                     for (std::int64_t nid : src)
-                        sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                        sum += a_v[static_cast<std::size_t>(nid) * ncomp + k];
                     detail::write_double(b, (num_points + i) * ncomp + k,
                                          sum / static_cast<double>(src.size()));
                 }
@@ -770,14 +778,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         if (d.mpSpec == nullptr)
             continue;
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t nedges = d.mNumEdges;
         const std::vector<std::array<std::uint8_t, 2>>& edges = d.mpSpec->mEdges;
         parallel_for(cb.NumCells() * nedges, [&](std::size_t j) {
             const std::size_t cell = j / nedges;
             const std::size_t slot = j % nedges;
-            const std::int64_t a = detail::read_int(conn, cell * npc + edges[slot][0]);
-            const std::int64_t b = detail::read_int(conn, cell * npc + edges[slot][1]);
+            const std::int64_t a = conn_v[cell * npc + edges[slot][0]];
+            const std::int64_t b = conn_v[cell * npc + edges[slot][1]];
             keys[d.mFirstSlot + j] = a < b ? CcellsEdgeKey{a, b} : CcellsEdgeKey{b, a};
         });
     }
@@ -808,6 +817,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
 
     // --- phase 3: points = originals + one midpoint per unique edge ---
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t dim = detail::cols(points);
     {
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points + new_edges.size(), dim});
@@ -816,8 +826,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             const std::size_t a = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t b = static_cast<std::size_t>(new_edges[i].second);
             for (std::size_t k = 0; k < dim; ++k) {
-                const double v = 0.5 * (detail::read_double(points, a * dim + k) +
-                                        detail::read_double(points, b * dim + k));
+                const double v = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
                 detail::write_double(new_points, (num_points + i) * dim + k, v);
             }
         });
@@ -834,6 +843,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             continue;
         }
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t npc_in = cb.NodesPerCell();
         const std::size_t ncorners = d.mpSpec->mNumCorners;
         const std::size_t nedges = d.mNumEdges;
@@ -844,7 +854,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         std::int64_t* dst = block.As<std::int64_t>();
         parallel_for_bw(ncells, [&](std::size_t c) {
             for (std::size_t k = 0; k < ncorners; ++k)
-                dst[c * npc_out + k] = detail::read_int(conn, c * npc_in + k);
+                dst[c * npc_out + k] = conn_v[c * npc_in + k];
             for (std::size_t e = 0; e < nedges; ++e)
                 dst[c * npc_out + ncorners + e] = slot_id[d.mFirstSlot + c * nedges + e];
         });
@@ -854,6 +864,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
     // --- phase 5: point_data = originals + the endpoint mean per new node ---
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
+        const detail::DoubleView a_v(a);
         if (detail::rows(a) != num_points) {
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
@@ -867,8 +878,7 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             const std::size_t p = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t q = static_cast<std::size_t>(new_edges[i].second);
             for (std::size_t k = 0; k < ncomp; ++k) {
-                const double v = 0.5 * (detail::read_double(a, p * ncomp + k) +
-                                        detail::read_double(a, q * ncomp + k));
+                const double v = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
                 detail::write_double(b, (num_points + i) * ncomp + k, v);
             }
         });

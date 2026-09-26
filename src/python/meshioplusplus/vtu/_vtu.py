@@ -5,6 +5,7 @@ I/O for VTU.
 """
 
 import base64
+import io
 import re
 import sys
 import zlib
@@ -13,7 +14,7 @@ import numpy as np
 
 from .. import _provenance
 from .._common import info, join_strings, raw_from_cell_data, replace_space, warn
-from .._exceptions import CorruptionError, ReadError
+from .._exceptions import CorruptionError, ReadError, WriteError
 from .._mesh import CellBlock, Mesh
 from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
 
@@ -886,7 +887,9 @@ def _chunk_it(array, n):
         k += 1
 
 
-def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+def write(
+    filename, mesh, binary=True, compression="zlib", header_type=None, appended=False
+):
     # Writing XML with an etree required first transforming the (potentially large)
     # arrays into string, which are much larger in memory still. This makes this writer
     # very memory hungry. See <https://stackoverflow.com/q/59272477/353337>.
@@ -904,6 +907,10 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     # carries -1 for a non-polyhedral cell. See the reader above and
     # doc/polyhedra.md; the C++ writer does the same.
 
+    if appended and not binary:
+        raise WriteError(
+            "VTU: appended data is binary; appended=True needs binary=True"
+        )
     if not binary:
         warn("VTU ASCII files are only meant for debugging.")
 
@@ -1007,6 +1014,8 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             arr = arr.reshape(arr.shape[0], -1)
         field_data[key] = arr
 
+    appended_bytes = []  # the raw <AppendedData> payload, in array order
+
     def numpy_to_xml_array(parent, name, data, field=False):
         if name == "vtkGhostType" and data.dtype != np.uint8:
             # VTK's reserved ghost-flag name: a reader only recognises it as the
@@ -1023,7 +1032,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         if len(data.shape) == 2:
             da.set("NumberOfComponents", f"{data.shape[1]}")
 
-        def text_writer_compressed(f):
+        def encoded_compressed():
             max_block_size = 32768
             data_bytes = data.tobytes()
 
@@ -1048,14 +1057,23 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
                 + [len(b) for b in compressed_blocks],
                 dtype=vtu_to_numpy_type[header_type],
             )
-            f.write(base64.b64encode(header.tobytes()).decode())
-            f.write(base64.b64encode(b"".join(compressed_blocks)).decode())
+            return header.tobytes(), b"".join(compressed_blocks)
 
-        def text_writer_uncompressed(f):
+        def encoded_uncompressed():
             data_bytes = data.tobytes()
             # collect header
             header = np.array(len(data_bytes), dtype=vtu_to_numpy_type[header_type])
-            f.write(base64.b64encode(header.tobytes() + data_bytes).decode())
+            return header.tobytes(), data_bytes
+
+        def text_writer_compressed(f):
+            # The header and the blocks are base64-encoded separately.
+            header, blocks = encoded_compressed()
+            f.write(base64.b64encode(header).decode())
+            f.write(base64.b64encode(blocks).decode())
+
+        def text_writer_uncompressed(f):
+            header, data_bytes = encoded_uncompressed()
+            f.write(base64.b64encode(header + data_bytes).decode())
 
         def text_writer_ascii(f):
             # This write() loop is the bottleneck for the write. Alternatives:
@@ -1067,7 +1085,15 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             for item in data.reshape(-1):
                 f.write((fmt + "\n").format(item))
 
-        if binary:
+        if appended:
+            # Raw bytes in the trailing <AppendedData>, at this array's offset.
+            header, payload = (
+                encoded_compressed() if compression else encoded_uncompressed()
+            )
+            da.set("format", "appended")
+            da.set("offset", f"{sum(len(b) for b in appended_bytes)}")
+            appended_bytes.extend((header, payload))
+        elif binary:
             da.set("format", "binary")
             da.text_writer = (
                 text_writer_compressed if compression else text_writer_uncompressed
@@ -1245,6 +1271,24 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         cd = ET.SubElement(piece, "CellData")
         for name, data in raw_from_cell_data(mesh.cell_data).items():
             numpy_to_xml_array(cd, name, data)
+
+    if appended:
+        # The XML has no binary text, so serialize it to a string, then splice
+        # the raw section in before the closing tag.
+        text = io.StringIO()
+        text.write('<?xml version="1.0"?>\n')
+        vtk_file.write(text)
+        head = text.getvalue()
+        closing = "</VTKFile>\n"
+        assert head.endswith(closing)
+        with open(filename, "wb") as f:
+            f.write(head[: -len(closing)].encode())
+            f.write(b'<AppendedData encoding="raw">\n_')
+            for b in appended_bytes:
+                f.write(b)
+            f.write(b"\n</AppendedData>\n")
+            f.write(closing.encode())
+        return
 
     # write_xml(filename, vtk_file, pretty_xml)
     tree = ET.ElementTree(vtk_file)

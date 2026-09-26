@@ -19,12 +19,14 @@ meshioplusplus.vtu.write("out.vtu", mesh,
     binary=True,
     compression="zlib",  # "zlib", "lzma", or None
     header_type=None,    # "UInt32" or "UInt64"
+    appended=False,      # True: raw binary in one <AppendedData> section
 )
 ```
 
 - **`binary`** — base64-encoded binary DataArrays (`True`) or ASCII.
 - **`compression`** — block compression filter for binary data (`vtkZLibDataCompressor`/`vtkLZMADataCompressor`, or none).
 - **`header_type`** — integer type used for the binary block header/sizes (default `UInt32`).
+- **`appended`** (since v16.21.0) — write every array as `format="appended"` into one `<AppendedData encoding="raw">` section at the end of the file: the same header and (compressed) blocks as `binary`, as raw bytes rather than base64, so the file is about a quarter smaller and is read without a base64 decode. VTK's own writers default to this layout. It needs `binary=True`, and either engine writes it (the C++ core for `None`/`zlib`/`lz4`/`zstd`, the Python reference for `lzma` too). The same encoding is `WriteEncoding::RawAppended` in C++ (`write_vtu_appended`), `MIO_ENCODING_RAW_APPENDED` in C, `"raw_appended"` for the [pipeline](../pipeline.md), WASM and the MCP `convert` tool's `mode`, and `--appended` in both CLIs; every other format refuses it by name.
 
 ## File structure
 

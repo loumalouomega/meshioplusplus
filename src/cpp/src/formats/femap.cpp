@@ -45,6 +45,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -280,7 +281,7 @@ struct FnFile {
     std::vector<FnVector> mVectors;
 };
 
-std::vector<FnBlock> fn_blocks(const std::string& rText, std::vector<std::string_view>& rLines) {
+std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_view>& rLines) {
     std::size_t pos = 0;
     while (pos < rText.size()) {
         std::size_t eol = rText.find('\n', pos);
@@ -580,10 +581,9 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
 }
 
 FnFile fn_parse(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Femap neutral: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Femap neutral: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     std::vector<std::string_view> lines;
     const std::vector<FnBlock> blocks = fn_blocks(text, lines);
     FnFile f;

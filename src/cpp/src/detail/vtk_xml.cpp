@@ -29,7 +29,11 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "row_writer.hpp"
+#include "vtu_decode.hpp"
+#include "typed_view.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -137,11 +141,25 @@ void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
             rOs << p[i] << '\n';
         return;
     }
-    for (std::size_t i = 0; i < n; ++i) {
-        if (flt)
-            vtu_ascii_double(rOs, read_double(rA, i));
-        else
-            rOs << read_int(rA, i) << '\n';
+    // One value per line, formatted in parallel chunks (row_writer.hpp):
+    // vtu_ascii_double's "%.11e" and ostream's integers, byte for byte.
+    if (flt) {
+        const DoubleView v(rA);
+        const CNumber num;
+        write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t i = First; i < Last; ++i) {
+                num.Append(rBuf, "%.11e", v[i]);
+                rBuf += '\n';
+            }
+        });
+    } else {
+        const Int64View v(rA);
+        write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t i = First; i < Last; ++i) {
+                append_int(rBuf, v[i]);
+                rBuf += '\n';
+            }
+        });
     }
 }
 
@@ -186,6 +204,21 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
     const char* const last = p + std::strlen(p);
+    {
+        // Tokens counted first: the values are then parsed into buffers
+        // reserved once, not grown push_back by push_back (roadmap §4).
+        std::size_t tokens = 0;
+        bool in_token = false;
+        for (const char* q = p; q < last; ++q) {
+            const bool space = std::isspace(static_cast<unsigned char>(*q)) != 0;
+            tokens += !space && !in_token ? 1 : 0;
+            in_token = !space;
+        }
+        if (isflt)
+            dv.reserve(tokens);
+        else
+            iv.reserve(tokens);
+    }
     while (*p) {
         while (*p && std::isspace(static_cast<unsigned char>(*p)))
             ++p;
@@ -217,9 +250,17 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         p = endp;
     }
     std::size_t n = isflt ? dv.size() : iv.size();
-    NDArray a(dt, {n});
-    for (std::size_t i = 0; i < n; ++i)
-        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
+    // vtu_store's conversion (a plain static_cast), the dtype switch taken once.
+    NDArray a = NDArray::Uninit(dt, {n});
+    dispatch_dtype(dt, [&]<class T>() {
+        T* out = a.As<T>();
+        if (isflt)
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(dv[i]);
+        else
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(iv[i]);
+    });
     return a;
 }
 
@@ -234,17 +275,8 @@ std::string vtu_strip(const char* pS) {
 }
 
 NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz) {
-    std::vector<unsigned char> bytes;
-    if (codec == VtkCodec::None)
-        bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
-    else
-        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
-    std::size_t isz = dtype_size(dt);
-    std::size_t n = isz ? bytes.size() / isz : 0;
-    NDArray a(dt, {n});
-    if (n)
-        std::memcpy(a.Data(), bytes.data(), n * isz);
-    return a;
+    // Decoded straight into the array (vtu_decode.hpp).
+    return vtu_decode_ndarray(rText.data(), rText.size(), hsz, codec, dt);
 }
 
 namespace {
@@ -262,8 +294,9 @@ const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, N
         return rArray;
     rScratch = NDArray::Uninit(DType::UInt8, rArray.Shape());
     std::uint8_t* out = rScratch.As<std::uint8_t>();
-    for (std::size_t i = 0; i < rArray.Size(); ++i)
-        out[i] = static_cast<std::uint8_t>(read_int(rArray, i));
+    const Int64View v(rArray);
+    parallel_for_bw(rArray.Size(),
+                    [&](std::size_t i) { out[i] = static_cast<std::uint8_t>(v[i]); });
     return rScratch;
 }
 
@@ -295,10 +328,8 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
 }
 
 std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
-    std::vector<std::int64_t> v(rA.Size());
-    for (std::size_t i = 0; i < rA.Size(); ++i)
-        v[i] = read_int(rA, i);
-    return v;
+    const Int64View view(rA);
+    return std::vector<std::int64_t>(view.Data(), view.Data() + rA.Size());
 }
 
 }  // namespace detail

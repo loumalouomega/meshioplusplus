@@ -21,7 +21,9 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -33,6 +35,11 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -62,9 +69,9 @@ const std::vector<std::pair<std::string, std::pair<std::string, int>>>& meshio_t
 
 // Whitespace/comment-skipping tokenizer over the whole file.
 struct Tokenizer {
-    const std::string& mBuf;
+    std::string_view mBuf;
     std::size_t mPos = 0;
-    explicit Tokenizer(const std::string& rB) : mBuf(rB) {}
+    explicit Tokenizer(std::string_view rB) : mBuf(rB) {}
 
     bool eof() const { return mPos >= mBuf.size(); }
 
@@ -87,7 +94,7 @@ struct Tokenizer {
         while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
                mBuf[mPos] != '#')
             ++mPos;
-        return mBuf.substr(start, mPos - start);
+        return std::string(mBuf.substr(start, mPos - start));
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
     // A section's entry count: every entry takes at least a byte of the file,
@@ -160,10 +167,9 @@ std::string pick_first_int_cell(const Mesh& rMesh) {
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource buf_source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = buf_source.View();
     Tokenizer tok(buf);
 
     int dim = 0;
@@ -284,14 +290,23 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     // Vertices
     os << "\nVertices\n" << n << "\n";
     const NDArray* vlabels = pick_first_int(rMesh);
-    char buf[64];
-    for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t c = 0; c < d; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), "%.16e ", detail::read_double(points, i * d + c));
-            os << buf;
-        }
-        std::int64_t lab = vlabels ? detail::read_int(*vlabels, i) : 1;
-        os << lab << "\n";
+    // Rows formatted in parallel chunks (row_writer.hpp), byte for byte.
+    {
+        const detail::DoubleView pv(points);
+        // Int64View is non-copyable: emplace rather than a ternary, which MSVC copies.
+        std::optional<detail::Int64View> labels;
+        if (vlabels)
+            labels.emplace(*vlabels);
+        const detail::CNumber num;
+        detail::write_row_chunks(os, n,
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         for (std::size_t c = 0; c < d; ++c)
+                                             num.Append(rBuf, "%.16e ", pv[i * d + c]);
+                                         detail::append_int(rBuf, labels ? (*labels)[i] : 1);
+                                         rBuf += '\n';
+                                     }
+                                 });
     }
 
     // Cells, grouped by medit element keyword.
@@ -309,13 +324,22 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
             const NDArray* lab = (!clabel_key.empty() && ci < rMesh.CellDataNumBlocks(clabel_key))
                                      ? &rMesh.CellData(clabel_key, ci)
                                      : nullptr;
-            const NDArray& conn = cb.Conn();
-            for (std::size_t r = 0; r < count; ++r) {
-                for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1) << " ";
-                std::int64_t l = lab ? detail::read_int(*lab, r) : 1;
-                os << l << "\n";
-            }
+            const detail::Int64View conn(cb.Conn());
+            std::optional<detail::Int64View> labels;
+            if (lab)
+                labels.emplace(*lab);
+            const std::size_t kk = static_cast<std::size_t>(k);
+            detail::write_row_chunks(os, count,
+                                     [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                         for (std::size_t r = First; r < Last; ++r) {
+                                             for (std::size_t j = 0; j < kk; ++j) {
+                                                 detail::append_int(rBuf, conn[r * kk + j] + 1);
+                                                 rBuf += ' ';
+                                             }
+                                             detail::append_int(rBuf, labels ? (*labels)[r] : 1);
+                                             rBuf += '\n';
+                                         }
+                                     });
         }
     }
 

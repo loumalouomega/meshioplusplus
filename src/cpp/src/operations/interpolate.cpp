@@ -44,6 +44,9 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -99,6 +102,7 @@ std::size_t interp_total_cells(const Mesh& rMesh) {
 // _partition.py's _centroids in step, the numpy parity test pins this).
 std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
 
@@ -118,8 +122,7 @@ std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::int64_t node : nodes)
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] +=
-                            detail::read_double(points, static_cast<std::size_t>(node) * pdim + d);
+                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
                 if (!nodes.empty())
                     for (std::size_t d = 0; d < dim; ++d)
                         out[d] /= static_cast<double>(nodes.size());
@@ -131,22 +134,21 @@ std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::size_t k = 0; k < nn; ++k)
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points,
-                                                      static_cast<std::size_t>(row[k]) * pdim + d);
+                        out[d] += points_v[static_cast<std::size_t>(row[k]) * pdim + d];
                 if (nn > 0)
                     for (std::size_t d = 0; d < dim; ++d)
                         out[d] /= static_cast<double>(nn);
             });
         } else {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             parallel_for(ncells, [&, base](std::size_t c) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node =
-                        static_cast<std::size_t>(detail::read_int(conn, c * npc + k));
+                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points, node * pdim + d);
+                        out[d] += points_v[node * pdim + d];
                 }
                 if (npc > 0)
                     for (std::size_t d = 0; d < dim; ++d)
@@ -539,11 +541,12 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 if (cb.Type() != want || cb.NumCells() == 0)
                     continue;
                 const NDArray& conn = cb.Conn();
+                const detail::Int64View conn_v(conn);
                 const std::size_t n = cb.NumCells() * nv;
                 const std::size_t base = sconn.size();
                 sconn.resize(base + n);
                 for (std::size_t j = 0; j < n; ++j)
-                    sconn[base + j] = detail::read_int(conn, j);
+                    sconn[base + j] = conn_v[j];
             }
             const std::size_t nsimp = sconn.size() / nv;
 

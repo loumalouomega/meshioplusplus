@@ -130,19 +130,18 @@ RemeshSurface remesh_build_surface(const Mesh& rMesh) {
 
     for (const auto cb : rMesh.CellRange()) {
         if (cell_type_from_name(cb.Type()) != CellType::Triangle)
-            throw std::invalid_argument(
-                "meshio++: remesh: internal error: simplexified block '" + cb.Type() +
-                "' is not a triangle block");
+            throw std::invalid_argument("meshio++: remesh: internal error: simplexified block '" +
+                                        cb.Type() + "' is not a triangle block");
         const std::size_t nc = cb.NumCells();
         const NDArray& conn = cb.Conn();
         for (std::size_t c = 0; c < nc; ++c)
             for (std::size_t k = 0; k < 3; ++k) {
                 const std::int64_t v = detail::read_int(conn, c * 3 + k);
                 if (v < 0 || static_cast<std::size_t>(v) >= s.mNumPoints)
-                    throw std::invalid_argument(
-                        "meshio++: remesh: connectivity references point " + std::to_string(v) +
-                        ", which is outside the mesh's " + std::to_string(s.mNumPoints) +
-                        " points");
+                    throw std::invalid_argument("meshio++: remesh: connectivity references point " +
+                                                std::to_string(v) +
+                                                ", which is outside the mesh's " +
+                                                std::to_string(s.mNumPoints) + " points");
                 s.mCorners.push_back(v);
             }
         s.mNumFaces += nc;
@@ -164,13 +163,16 @@ RemeshSurface remesh_build_surface(const Mesh& rMesh) {
 /// same weight-clamping idea the real ACVD reference documents for its own
 /// isotropic weighting). A perfectly flat mesh (`kappa` identically zero
 /// everywhere) leaves `rArea` untouched -- there is nothing to grade.
-void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCurvature,
-                         double Gradation, std::vector<double>& rArea,
-                         std::vector<double>& rWeighted) {
+void remesh_item_weights(const RemeshSurface& rS, const detail::DecimCsr& rVertexFaces,
+                         const std::vector<double>& rCurvature, double Gradation,
+                         std::vector<double>& rArea, std::vector<double>& rWeighted) {
     rArea.assign(rS.mNumPoints, 0.0);
     rWeighted.assign(rS.mNumPoints * 3, 0.0);
 
-    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+    // Each face's third of its area, then gathered per vertex over its faces
+    // in ascending order -- the order the serial scatter added them in.
+    std::vector<double> face_area(rS.mNumFaces);
+    parallel_for(rS.mNumFaces, [&](std::size_t f) {
         const std::int64_t i0 = rS.mCorners[f * 3];
         const std::int64_t i1 = rS.mCorners[f * 3 + 1];
         const std::int64_t i2 = rS.mCorners[f * 3 + 2];
@@ -182,12 +184,15 @@ void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCu
         const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
         const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
                              e0[0] * e1[1] - e0[1] * e1[0]};
-        const double area = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
-
-        rArea[static_cast<std::size_t>(i0)] += area;
-        rArea[static_cast<std::size_t>(i1)] += area;
-        rArea[static_cast<std::size_t>(i2)] += area;
-    }
+        face_area[f] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
+    });
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
+        double a = 0.0;
+        for (std::int64_t j = rVertexFaces.mXadj[i]; j < rVertexFaces.mXadj[i + 1]; ++j)
+            a +=
+                face_area[static_cast<std::size_t>(rVertexFaces.mAdj[static_cast<std::size_t>(j)])];
+        rArea[i] = a;
+    });
 
     if (Gradation != 0.0 && !rCurvature.empty()) {
         double kappa_max = 0.0;
@@ -195,20 +200,24 @@ void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCu
             kappa_max = std::max(kappa_max, k);
         if (kappa_max > 0.0) {
             const double kappa_floor = kappa_max * 1e-3;
-            for (std::size_t i = 0; i < rS.mNumPoints; ++i)
+            parallel_for(rS.mNumPoints, [&](std::size_t i) {
                 rArea[i] *= std::pow(std::max(rCurvature[i], kappa_floor), Gradation);
+            });
         }
     }
 
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i)
-        for (int d = 0; d < 3; ++d)
+    parallel_for_bw(rS.mNumPoints, [&](std::size_t i) {
+        for (std::size_t d = 0; d < 3; ++d)
             rWeighted[i * 3 + d] = rArea[i] * rS.mXyz[i * 3 + d];
+    });
 }
 
 /// Each vertex's own accumulated quadric (sum of its incident face planes),
 /// via `detail/decimate_common.hpp`'s existing, already-tested machinery.
 /// Empty (never computed) when `Metric == Isotropic`, which never reads it.
-std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric Metric) {
+std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS,
+                                           const detail::DecimCsr& rVertexFaces,
+                                           RemeshMetric Metric) {
     if (Metric != RemeshMetric::Quadric)
         return {};
     detail::DecimFaces faces;
@@ -216,11 +225,37 @@ std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric
     faces.mBlockBase = {0};
     faces.mNumFaces = rS.mNumFaces;
 
-    const detail::DecimCsr csr = detail::decim_vertex_faces_csr(faces, rS.mNumPoints);
     std::vector<double> quad_k;
     std::vector<double> normals;
     detail::decim_face_planes(faces, rS.mXyz, quad_k, normals);
-    return detail::decim_accumulate_quadrics(csr, rS.mNumPoints, quad_k);
+    return detail::decim_accumulate_quadrics(rVertexFaces, rS.mNumPoints, quad_k);
+}
+
+/// Every vertex's incident faces, ascending (a face once per corner at the
+/// vertex): the gather order of the per-vertex sums below.
+detail::DecimCsr remesh_vertex_faces(const RemeshSurface& rS) {
+    detail::DecimFaces faces;
+    faces.mCorners = rS.mCorners;
+    faces.mBlockBase = {0};
+    faces.mNumFaces = rS.mNumFaces;
+    return detail::decim_vertex_faces_csr(faces, rS.mNumPoints);
+}
+
+/// Each face's unnormalised normal, the cross product of its two edges from
+/// corner 0.
+std::vector<double> remesh_face_crosses(const RemeshSurface& rS) {
+    std::vector<double> cross(rS.mNumFaces * 3);
+    parallel_for(rS.mNumFaces, [&](std::size_t f) {
+        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
+        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
+        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
+        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
+        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
+        cross[f * 3] = e0[1] * e1[2] - e0[2] * e1[1];
+        cross[f * 3 + 1] = e0[2] * e1[0] - e0[0] * e1[2];
+        cross[f * 3 + 2] = e0[0] * e1[1] - e0[1] * e1[0];
+    });
+    return cross;
 }
 
 /// Each vertex's own curvature-tensor quadric (`RemeshMetric::Anisotropic`
@@ -238,7 +273,7 @@ std::vector<double> remesh_vertex_metrics(const RemeshSurface& rS,
                                           const std::vector<double>& rTensors,
                                           const std::vector<double>& rArea) {
     std::vector<double> quad(rS.mNumPoints * 10, 0.0);
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
         const double* m = rTensors.data() + i * 6;  // [xx,xy,xz,yy,yz,zz]
         const double* x = rS.mXyz.data() + i * 3;
         const double w = rArea[i];
@@ -259,36 +294,31 @@ std::vector<double> remesh_vertex_metrics(const RemeshSurface& rS,
         q[7] = w * m[5];
         q[8] = -w * mx2;
         q[9] = c_term;
-    }
+    });
     return quad;
 }
 
 /// Area-weighted unit normal at each vertex, from its incident face normals
 /// (the per-vertex analogue of `remesh_cluster_normals` below). Only computed
 /// when curvature gradation is requested.
-std::vector<double> remesh_vertex_normals(const RemeshSurface& rS) {
+std::vector<double> remesh_vertex_normals(const RemeshSurface& rS,
+                                          const detail::DecimCsr& rVertexFaces) {
+    // Each vertex gathers its faces' crosses in ascending face order -- the
+    // order the serial scatter added them in -- then normalises.
+    const std::vector<double> cross = remesh_face_crosses(rS);
     std::vector<double> nrm(rS.mNumPoints * 3, 0.0);
-    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
-        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
-        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
-        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
-        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
-        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
-        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
-                             e0[0] * e1[1] - e0[1] * e1[0]};
-        for (int k = 0; k < 3; ++k) {
-            const std::size_t vi = static_cast<std::size_t>(rS.mCorners[f * 3 + k]);
-            for (int d = 0; d < 3; ++d)
-                nrm[vi * 3 + d] += c[d];
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
+        double acc[3] = {0.0, 0.0, 0.0};
+        for (std::int64_t j = rVertexFaces.mXadj[i]; j < rVertexFaces.mXadj[i + 1]; ++j) {
+            const std::size_t f =
+                static_cast<std::size_t>(rVertexFaces.mAdj[static_cast<std::size_t>(j)]);
+            for (std::size_t d = 0; d < 3; ++d)
+                acc[d] += cross[f * 3 + d];
         }
-    }
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
-        const double len = std::sqrt(nrm[i * 3] * nrm[i * 3] + nrm[i * 3 + 1] * nrm[i * 3 + 1] +
-                                     nrm[i * 3 + 2] * nrm[i * 3 + 2]);
-        if (len > 0.0)
-            for (int d = 0; d < 3; ++d)
-                nrm[i * 3 + d] /= len;
-    }
+        const double len = std::sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
+        for (std::size_t d = 0; d < 3; ++d)
+            nrm[i * 3 + d] = len > 0.0 ? acc[d] / len : acc[d];
+    });
     return nrm;
 }
 
@@ -310,12 +340,12 @@ bool remesh_solve_sym3(double m00, double m01, double m02, double m11, double m1
     if (std::abs(det) <= 1e-12 * (scale * scale * scale))
         return false;
 
-    const double det0 = b0 * (m11 * m22 - m12 * m12) - m01 * (b1 * m22 - m12 * b2) +
-                        m02 * (b1 * m12 - m11 * b2);
-    const double det1 = m00 * (b1 * m22 - m12 * b2) - b0 * (m01 * m22 - m12 * m02) +
-                        m02 * (m01 * b2 - b1 * m02);
-    const double det2 = m00 * (m11 * b2 - b1 * m12) - m01 * (m01 * b2 - b1 * m02) +
-                        b0 * (m01 * m12 - m11 * m02);
+    const double det0 =
+        b0 * (m11 * m22 - m12 * m12) - m01 * (b1 * m22 - m12 * b2) + m02 * (b1 * m12 - m11 * b2);
+    const double det1 =
+        m00 * (b1 * m22 - m12 * b2) - b0 * (m01 * m22 - m12 * m02) + m02 * (m01 * b2 - b1 * m02);
+    const double det2 =
+        m00 * (m11 * b2 - b1 * m12) - m01 * (m01 * b2 - b1 * m02) + b0 * (m01 * m12 - m11 * m02);
     pOut[0] = det0 / det;
     pOut[1] = det1 / det;
     pOut[2] = det2 / det;
@@ -354,16 +384,17 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
         }
     }
     std::vector<double> kappa(rS.mNumPoints, 0.0);
-    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+    // Every vertex's fit reads only its own 1-ring: independent, in parallel.
+    parallel_for(rS.mNumPoints, [&](std::size_t i) {
         const std::int64_t lo = rAdj.mXadj[i];
         const std::int64_t hi = rAdj.mXadj[i + 1];
         if (hi - lo < 3)
-            continue;
+            return;
 
         const double* p0 = rS.mXyz.data() + i * 3;
         const double* n = rNormals.data() + i * 3;
         if (n[0] == 0.0 && n[1] == 0.0 && n[2] == 0.0)
-            continue;  // an unreferenced or degenerate-fan vertex
+            return;  // an unreferenced or degenerate-fan vertex
 
         // An orthonormal tangent basis (u, w) perpendicular to n: seed u from
         // whichever coordinate axis is least aligned with n (so the
@@ -376,7 +407,7 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
         double u[3] = {seed[0] - dp * n[0], seed[1] - dp * n[1], seed[2] - dp * n[2]};
         const double ulen = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
         if (ulen <= 0.0)
-            continue;
+            return;
         u[0] /= ulen;
         u[1] /= ulen;
         u[2] /= ulen;
@@ -406,7 +437,7 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
 
         double abc[3];
         if (!remesh_solve_sym3(m00, m01, m02, m11, m12, m22, b0, b1, b2, abc))
-            continue;  // ill-conditioned -> kappa stays 0
+            return;  // ill-conditioned -> kappa stays 0
 
         // Principal curvatures = eigenvalues of [[2a, b], [b, 2c]].
         const double a = abc[0], b = abc[1], c = abc[2];
@@ -467,9 +498,8 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
             // limit, not a special case grafted on.
             double ratio = 1.0;
             if (hi_kappa > 0.0)
-                ratio = (lo_kappa > 0.0)
-                            ? std::min(std::sqrt(hi_kappa / lo_kappa), MaxAnisotropy)
-                            : MaxAnisotropy;
+                ratio = (lo_kappa > 0.0) ? std::min(std::sqrt(hi_kappa / lo_kappa), MaxAnisotropy)
+                                         : MaxAnisotropy;
 
             // Unit-determinant SPD tensor: in-plane eigenvalues (lam_hi,
             // lam_lo), normal eigenvalue pinned to lam_hi (keeps clusters on
@@ -484,14 +514,14 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
 
             for (int r = 0; r < 3; ++r)
                 for (int cc = r; cc < 3; ++cc) {
-                    const double m_rc = lam_hi * (e_hi[r] * e_hi[cc] + n[r] * n[cc]) +
-                                        lam_lo * e_lo[r] * e_lo[cc];
+                    const double m_rc =
+                        lam_hi * (e_hi[r] * e_hi[cc] + n[r] * n[cc]) + lam_lo * e_lo[r] * e_lo[cc];
                     const std::size_t idx =
                         static_cast<std::size_t>(r == 0 ? cc : (r == 1 ? cc + 2 : 5));
                     (*pTensors)[i * 6 + idx] = m_rc;
                 }
         }
-    }
+    });
     return kappa;
 }
 
@@ -521,7 +551,7 @@ std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
 /// other one). `std::map` (not a hash map) is deliberate: it costs nothing
 /// here and gives a canonical, deterministic edge-visitation order for free.
 struct RemeshBoundaryInfo {
-    std::vector<std::uint8_t> mIsBoundaryVertex;  ///< size NumPoints.
+    std::vector<std::uint8_t> mIsBoundaryVertex;                        ///< size NumPoints.
     std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
 };
 
@@ -582,9 +612,8 @@ std::vector<std::int64_t> remesh_seed_order(std::size_t NumPoints,
 /// `remesh_seed_order`); this function itself has no boundary-specific logic
 /// at all -- it only ever asks "what's the next free vertex in this order."
 void remesh_seed_clusters(std::vector<std::int64_t>& rClusters, const detail::NodeAdjacency& rAdj,
-                          const std::vector<double>& rArea,
-                          const std::vector<std::int64_t>& rOrder, std::int64_t NumClusters,
-                          std::size_t NumPoints) {
+                          const std::vector<double>& rArea, const std::vector<std::int64_t>& rOrder,
+                          std::int64_t NumClusters, std::size_t NumPoints) {
     double area_remain = 0.0;
     for (std::size_t i = 0; i < NumPoints; ++i)
         area_remain += rArea[i];
@@ -697,47 +726,47 @@ double remesh_trial_badness(RemeshMetric Metric, const double* pSgamma, double S
                                new_srho;
 
     switch (Metric) {
-    case RemeshMetric::Isotropic:
-        return iso_badness;
-    case RemeshMetric::Quadric: {
-        // Quadric mode ADDS the quadric flatness error to the isotropic
-        // compactness term rather than using the quadric error alone --
-        // measured (see remesh.hpp's doc comment): pure quadric-error
-        // badness has no compactness pull at all, since a cluster confined
-        // to a common plane can grow arbitrarily thin and snake-like along a
-        // low-curvature direction without its quadric error rising, which
-        // repeatedly produced disconnected, non-manifold clusters even after
-        // every repair pass (17 of 150 clusters still split on a smooth
-        // closed sphere in gtest). The isotropic term is the SAME
-        // `-|sgamma|^2/srho` form `Isotropic` mode uses on its own -- both
-        // terms are area-weighted squared-distance-like quantities
-        // (dimensionally consistent, no free blend weight to tune), and
-        // their sum keeps the compactness pull that prevents pathological
-        // elongation while still rewarding flatness/feature alignment where
-        // a real crease or corner makes the quadric term the deciding
-        // factor.
-        double new_quad[10];
-        for (int k = 0; k < 10; ++k)
-            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
-        double centroid[3];
-        remesh_centroid_of(new_sgamma, new_srho, centroid);
-        return iso_badness + remesh_quadric_badness(new_quad, centroid);
-    }
-    case RemeshMetric::Anisotropic: {
-        // The per-vertex curvature tensor is SPD (never rank-deficient the
-        // way a flat quadric is), so unlike `Quadric` this metric's own
-        // error term already penalises spread in every direction -- just
-        // anisotropically -- and is used PURE, not additively stabilised.
-        // See remesh.hpp's doc comment and doc/remesh.md for the measurement
-        // that justified this (mNumIsolatedClusters/mNumNonManifoldVertices
-        // swept across mMaxAnisotropy on the fixtures below).
-        double new_quad[10];
-        for (int k = 0; k < 10; ++k)
-            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
-        double centroid[3];
-        remesh_centroid_of(new_sgamma, new_srho, centroid);
-        return remesh_quadric_badness(new_quad, centroid);
-    }
+        case RemeshMetric::Isotropic:
+            return iso_badness;
+        case RemeshMetric::Quadric: {
+            // Quadric mode ADDS the quadric flatness error to the isotropic
+            // compactness term rather than using the quadric error alone --
+            // measured (see remesh.hpp's doc comment): pure quadric-error
+            // badness has no compactness pull at all, since a cluster confined
+            // to a common plane can grow arbitrarily thin and snake-like along a
+            // low-curvature direction without its quadric error rising, which
+            // repeatedly produced disconnected, non-manifold clusters even after
+            // every repair pass (17 of 150 clusters still split on a smooth
+            // closed sphere in gtest). The isotropic term is the SAME
+            // `-|sgamma|^2/srho` form `Isotropic` mode uses on its own -- both
+            // terms are area-weighted squared-distance-like quantities
+            // (dimensionally consistent, no free blend weight to tune), and
+            // their sum keeps the compactness pull that prevents pathological
+            // elongation while still rewarding flatness/feature alignment where
+            // a real crease or corner makes the quadric term the deciding
+            // factor.
+            double new_quad[10];
+            for (int k = 0; k < 10; ++k)
+                new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+            double centroid[3];
+            remesh_centroid_of(new_sgamma, new_srho, centroid);
+            return iso_badness + remesh_quadric_badness(new_quad, centroid);
+        }
+        case RemeshMetric::Anisotropic: {
+            // The per-vertex curvature tensor is SPD (never rank-deficient the
+            // way a flat quadric is), so unlike `Quadric` this metric's own
+            // error term already penalises spread in every direction -- just
+            // anisotropically -- and is used PURE, not additively stabilised.
+            // See remesh.hpp's doc comment and doc/remesh.md for the measurement
+            // that justified this (mNumIsolatedClusters/mNumNonManifoldVertices
+            // swept across mMaxAnisotropy on the fixtures below).
+            double new_quad[10];
+            for (int k = 0; k < 10; ++k)
+                new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+            double centroid[3];
+            remesh_centroid_of(new_sgamma, new_srho, centroid);
+            return remesh_quadric_badness(new_quad, centroid);
+        }
     }
     // Unreachable: every RemeshMetric enumerator is handled above, and
     // -Wswitch (no `default:`) makes a future enumerator a compile error
@@ -748,10 +777,10 @@ double remesh_trial_badness(RemeshMetric Metric, const double* pSgamma, double S
 /// The accumulators one cluster carries. `mQuad` is filled and read only
 /// under `RemeshMetric::Quadric`; `Isotropic` mode never touches it.
 struct RemeshState {
-    std::vector<double> mSgamma;  ///< `3 * n_clus`, sum of weighted positions.
-    std::vector<double> mSrho;    ///< `n_clus`, sum of weights.
-    std::vector<double> mBadness; ///< `n_clus`, the metric's own badness.
-    std::vector<double> mQuad;    ///< `10 * n_clus`, quadric mode only.
+    std::vector<double> mSgamma;   ///< `3 * n_clus`, sum of weighted positions.
+    std::vector<double> mSrho;     ///< `n_clus`, sum of weights.
+    std::vector<double> mBadness;  ///< `n_clus`, the metric's own badness.
+    std::vector<double> mQuad;     ///< `10 * n_clus`, quadric mode only.
     std::vector<std::int64_t> mCount;
 };
 
@@ -792,21 +821,21 @@ RemeshState remesh_init_state(const std::vector<std::int64_t>& rClusters,
                              st.mSgamma[c * 3 + 2] * st.mSgamma[c * 3 + 2]) /
                            st.mSrho[c];
         switch (Metric) {
-        case RemeshMetric::Isotropic:
-            st.mBadness[c] = iso;
-            break;
-        case RemeshMetric::Quadric: {
-            double centroid[3];
-            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
-            st.mBadness[c] = iso + remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
-            break;
-        }
-        case RemeshMetric::Anisotropic: {
-            double centroid[3];
-            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
-            st.mBadness[c] = remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
-            break;
-        }
+            case RemeshMetric::Isotropic:
+                st.mBadness[c] = iso;
+                break;
+            case RemeshMetric::Quadric: {
+                double centroid[3];
+                remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+                st.mBadness[c] = iso + remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+                break;
+            }
+            case RemeshMetric::Anisotropic: {
+                double centroid[3];
+                remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+                st.mBadness[c] = remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+                break;
+            }
         }
     }
     return st;
@@ -832,46 +861,46 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
         rSt.mSgamma[uf * 3 + d] -= rWeighted[Item * 3 + d];
     }
     switch (Metric) {
-    case RemeshMetric::Isotropic:
-        rSt.mBadness[uf] = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
-                             rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
-                             rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
-                           rSt.mSrho[uf];
-        rSt.mBadness[ut] = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
-                             rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
-                             rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
-                           rSt.mSrho[ut];
-        break;
-    case RemeshMetric::Quadric:
-    case RemeshMetric::Anisotropic: {
-        for (int k = 0; k < 10; ++k) {
-            rSt.mQuad[ut * 10 + static_cast<std::size_t>(k)] +=
-                rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
-            rSt.mQuad[uf * 10 + static_cast<std::size_t>(k)] -=
-                rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+        case RemeshMetric::Isotropic:
+            rSt.mBadness[uf] = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                                 rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                                 rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                               rSt.mSrho[uf];
+            rSt.mBadness[ut] = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                                 rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                                 rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                               rSt.mSrho[ut];
+            break;
+        case RemeshMetric::Quadric:
+        case RemeshMetric::Anisotropic: {
+            for (int k = 0; k < 10; ++k) {
+                rSt.mQuad[ut * 10 + static_cast<std::size_t>(k)] +=
+                    rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+                rSt.mQuad[uf * 10 + static_cast<std::size_t>(k)] -=
+                    rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+            }
+            double cen_f[3], cen_t[3];
+            remesh_centroid_of(rSt.mSgamma.data() + uf * 3, rSt.mSrho[uf], cen_f);
+            remesh_centroid_of(rSt.mSgamma.data() + ut * 3, rSt.mSrho[ut], cen_t);
+            // Quadric adds the isotropic compactness term back in (see
+            // remesh_trial_badness); Anisotropic's own SPD tensor already
+            // penalises spread in every direction and uses the quadric error
+            // pure.
+            double iso_f = 0.0, iso_t = 0.0;
+            if (Metric == RemeshMetric::Quadric) {
+                iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                          rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                          rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                        rSt.mSrho[uf];
+                iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                          rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                          rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                        rSt.mSrho[ut];
+            }
+            rSt.mBadness[uf] = iso_f + remesh_quadric_badness(rSt.mQuad.data() + uf * 10, cen_f);
+            rSt.mBadness[ut] = iso_t + remesh_quadric_badness(rSt.mQuad.data() + ut * 10, cen_t);
+            break;
         }
-        double cen_f[3], cen_t[3];
-        remesh_centroid_of(rSt.mSgamma.data() + uf * 3, rSt.mSrho[uf], cen_f);
-        remesh_centroid_of(rSt.mSgamma.data() + ut * 3, rSt.mSrho[ut], cen_t);
-        // Quadric adds the isotropic compactness term back in (see
-        // remesh_trial_badness); Anisotropic's own SPD tensor already
-        // penalises spread in every direction and uses the quadric error
-        // pure.
-        double iso_f = 0.0, iso_t = 0.0;
-        if (Metric == RemeshMetric::Quadric) {
-            iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
-                     rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
-                     rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
-                   rSt.mSrho[uf];
-            iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
-                     rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
-                     rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
-                   rSt.mSrho[ut];
-        }
-        rSt.mBadness[uf] = iso_f + remesh_quadric_badness(rSt.mQuad.data() + uf * 10, cen_f);
-        rSt.mBadness[ut] = iso_t + remesh_quadric_badness(rSt.mQuad.data() + ut * 10, cen_t);
-        break;
-    }
     }
 }
 
@@ -880,8 +909,7 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
 /// the next test reads. Clusters unmodified in the previous sweep are
 /// skipped.
 std::int64_t remesh_minimize(const std::vector<std::int64_t>& rEdges,
-                             std::vector<std::int64_t>& rClusters,
-                             const std::vector<double>& rArea,
+                             std::vector<std::int64_t>& rClusters, const std::vector<double>& rArea,
                              const std::vector<double>& rWeighted,
                              const std::vector<double>& rVertexQuad, RemeshMetric Metric,
                              RemeshState& rSt, std::int64_t NumClusters, int MaxIterations) {
@@ -927,22 +955,22 @@ std::int64_t remesh_minimize(const std::vector<std::int64_t>& rEdges,
             double badness_move_b = badness_orig;  // sentinel: "no better than orig"
             if (can_move_b)
                 badness_move_b =
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca],
-                                         q_a, rWeighted.data() + pb * 3, rArea[pb], item_q_b,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca], q_a,
+                                         rWeighted.data() + pb * 3, rArea[pb], item_q_b,
                                          /*Adding=*/true) +
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb],
-                                         q_b, rWeighted.data() + pb * 3, rArea[pb], item_q_b,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb], q_b,
+                                         rWeighted.data() + pb * 3, rArea[pb], item_q_b,
                                          /*Adding=*/false);
 
             // Candidate 2: move a into b (a leaves its own cluster).
             double badness_move_a = badness_orig;
             if (can_move_a)
                 badness_move_a =
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca],
-                                         q_a, rWeighted.data() + pa * 3, rArea[pa], item_q_a,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca], q_a,
+                                         rWeighted.data() + pa * 3, rArea[pa], item_q_a,
                                          /*Adding=*/false) +
-                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb],
-                                         q_b, rWeighted.data() + pa * 3, rArea[pa], item_q_a,
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb], q_b,
+                                         rWeighted.data() + pa * 3, rArea[pa], item_q_a,
                                          /*Adding=*/true);
 
             // Accept the strictly better candidate; ties resolve toward moving
@@ -1079,23 +1107,23 @@ std::vector<double> remesh_final_positions(const std::vector<std::int64_t>& rClu
         double centroid[3];
         remesh_centroid_of(sgamma.data() + c * 3, srho[c], centroid);
         switch (Metric) {
-        case RemeshMetric::Isotropic:
-            out[c * 3] = centroid[0];
-            out[c * 3 + 1] = centroid[1];
-            out[c * 3 + 2] = centroid[2];
-            break;
-        case RemeshMetric::Quadric:
-        case RemeshMetric::Anisotropic: {
-            // Both metrics place the dual vertex at their own quadric's
-            // optimal point -- Anisotropic's quadric already encodes the
-            // curvature-tensor shape, so no separate placement rule exists.
-            double pt[3];
-            detail::decim_quadric_optimal_point(quad.data() + c * 10, centroid, pt);
-            out[c * 3] = pt[0];
-            out[c * 3 + 1] = pt[1];
-            out[c * 3 + 2] = pt[2];
-            break;
-        }
+            case RemeshMetric::Isotropic:
+                out[c * 3] = centroid[0];
+                out[c * 3 + 1] = centroid[1];
+                out[c * 3 + 2] = centroid[2];
+                break;
+            case RemeshMetric::Quadric:
+            case RemeshMetric::Anisotropic: {
+                // Both metrics place the dual vertex at their own quadric's
+                // optimal point -- Anisotropic's quadric already encodes the
+                // curvature-tensor shape, so no separate placement rule exists.
+                double pt[3];
+                detail::decim_quadric_optimal_point(quad.data() + c * 10, centroid, pt);
+                out[c * 3] = pt[0];
+                out[c * 3 + 1] = pt[1];
+                out[c * 3 + 2] = pt[2];
+                break;
+            }
         }
     }
     return out;
@@ -1117,8 +1145,8 @@ std::vector<double> remesh_cluster_normals(const RemeshSurface& rS,
         const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
                              e0[0] * e1[1] - e0[1] * e1[0]};
         for (int k = 0; k < 3; ++k) {
-            const std::size_t uc = static_cast<std::size_t>(rClusters[static_cast<std::size_t>(
-                rS.mCorners[f * 3 + k])]);
+            const std::size_t uc = static_cast<std::size_t>(
+                rClusters[static_cast<std::size_t>(rS.mCorners[f * 3 + k])]);
             for (int d = 0; d < 3; ++d)
                 nrm[uc * 3 + d] += c[d];
         }
@@ -1171,8 +1199,7 @@ std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
                                             const std::vector<std::int64_t>& rClusters,
                                             const std::vector<double>& rPositions,
                                             const std::vector<double>& rNormals) {
-    const std::vector<std::array<std::int64_t, 3>> keys =
-        remesh_dual_triangle_keys(rS, rClusters);
+    const std::vector<std::array<std::int64_t, 3>> keys = remesh_dual_triangle_keys(rS, rClusters);
 
     std::vector<std::int64_t> out;
     out.reserve(keys.size() * 3);
@@ -1341,10 +1368,9 @@ int remesh_suggest_subdivide(std::int64_t NumPoints, std::int64_t NumClusters,
 
 RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     if (rOptions.mNumClusters < 4)
-        throw std::invalid_argument(
-            "meshio++: remesh: num_clusters must be at least 4, got " +
-            std::to_string(rOptions.mNumClusters) +
-            " (fewer vertices cannot bound a closed surface)");
+        throw std::invalid_argument("meshio++: remesh: num_clusters must be at least 4, got " +
+                                    std::to_string(rOptions.mNumClusters) +
+                                    " (fewer vertices cannot bound a closed surface)");
     if (rOptions.mMaxIterations <= 0)
         throw std::invalid_argument("meshio++: remesh: max_iterations must be positive, got " +
                                     std::to_string(rOptions.mMaxIterations));
@@ -1355,9 +1381,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     if (rOptions.mSubsampleRatio <= 0.0)
         throw std::invalid_argument("meshio++: remesh: subsample_ratio must be positive");
     if (rOptions.mMetric == RemeshMetric::Anisotropic && rOptions.mMaxAnisotropy < 1.0)
-        throw std::invalid_argument(
-            "meshio++: remesh: max_anisotropy must be at least 1.0, got " +
-            std::to_string(rOptions.mMaxAnisotropy));
+        throw std::invalid_argument("meshio++: remesh: max_anisotropy must be at least 1.0, got " +
+                                    std::to_string(rOptions.mMaxAnisotropy));
     if (rOptions.mMetric != RemeshMetric::Anisotropic &&
         rOptions.mMaxAnisotropy != kRemeshDefaultMaxAnisotropy)
         throw std::invalid_argument(
@@ -1406,10 +1431,11 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         detail::build_node_adjacency(work, surf.mNumPoints, detail::NodeAdjacencyKind::Edge);
     const std::vector<std::int64_t> edges = remesh_unique_edges(adj, surf.mNumPoints);
 
+    const detail::DecimCsr vertex_faces = remesh_vertex_faces(surf);
     std::vector<double> curvature;
     std::vector<double> curvature_tensors;  // Anisotropic only, 6 doubles/vertex
     if (rOptions.mGradation != 0.0 || metric == RemeshMetric::Anisotropic) {
-        const std::vector<double> vertex_normals = remesh_vertex_normals(surf);
+        const std::vector<double> vertex_normals = remesh_vertex_normals(surf, vertex_faces);
         curvature = remesh_vertex_curvature(
             surf, adj, vertex_normals,
             metric == RemeshMetric::Anisotropic ? &curvature_tensors : nullptr,
@@ -1417,13 +1443,13 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     }
     std::vector<double> area;
     std::vector<double> weighted;
-    remesh_item_weights(surf, curvature, rOptions.mGradation, area, weighted);
+    remesh_item_weights(surf, vertex_faces, curvature, rOptions.mGradation, area, weighted);
     // Anisotropic packs its per-vertex curvature tensor into the accumulator
     // AFTER item weights exist (it needs rArea); Quadric's plain
     // face-quadric accumulation needs no weight at all.
-    const std::vector<double> vertex_quad = metric == RemeshMetric::Anisotropic
-                                                ? remesh_vertex_metrics(surf, curvature_tensors, area)
-                                                : remesh_vertex_quadrics(surf, metric);
+    const std::vector<double> vertex_quad =
+        metric == RemeshMetric::Anisotropic ? remesh_vertex_metrics(surf, curvature_tensors, area)
+                                            : remesh_vertex_quadrics(surf, vertex_faces, metric);
 
     const RemeshBoundaryInfo boundary =
         rOptions.mPreserveBoundary ? remesh_boundary_info(surf) : RemeshBoundaryInfo{};
@@ -1439,9 +1465,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
 
     RemeshState state = remesh_init_state(clusters, area, weighted, vertex_quad, metric,
                                           rOptions.mNumClusters, surf.mNumPoints);
-    result.mNumIterations =
-        remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
-                        rOptions.mNumClusters, rOptions.mMaxIterations);
+    result.mNumIterations = remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric,
+                                            state, rOptions.mNumClusters, rOptions.mMaxIterations);
 
     // Repair: a minimisation sweep can leave a cluster in two pieces, or the
     // dual can come out non-manifold at some vertex even with every cluster
@@ -1456,8 +1481,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
                 clusters[i] = -1;
     };
 
-    std::int64_t disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
-                                                          surf.mNumPoints);
+    std::int64_t disconnected =
+        remesh_split_disconnected(adj, clusters, rOptions.mNumClusters, surf.mNumPoints);
     std::vector<std::uint8_t> bad_vertices = remesh_detect_nonmanifold_vertices(
         remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
     std::int64_t nonmanifold =
@@ -1466,7 +1491,7 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         unassign_bad_clusters(bad_vertices);
 
     for (int pass = 0; pass < rOptions.mMaxRepairPasses && (disconnected > 0 || nonmanifold > 0);
-        ++pass) {
+         ++pass) {
         if (remesh_grow_null(edges, clusters))
             for (std::size_t i = 0; i < surf.mNumPoints; ++i)
                 if (clusters[i] == -1)
@@ -1476,10 +1501,10 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         result.mNumIterations +=
             remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
                             rOptions.mNumClusters, rOptions.mMaxIterations);
-        disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
-                                                 surf.mNumPoints);
-        bad_vertices = remesh_detect_nonmanifold_vertices(
-            remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
+        disconnected =
+            remesh_split_disconnected(adj, clusters, rOptions.mNumClusters, surf.mNumPoints);
+        bad_vertices = remesh_detect_nonmanifold_vertices(remesh_dual_triangle_keys(surf, clusters),
+                                                          rOptions.mNumClusters);
         nonmanifold = std::count(bad_vertices.begin(), bad_vertices.end(), std::uint8_t{1});
         if (nonmanifold > 0)
             unassign_bad_clusters(bad_vertices);
@@ -1490,20 +1515,20 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
             if (clusters[i] == -1)
                 clusters[i] = 0;
 
-    const std::int64_t n_clus =
-        remesh_renumber(clusters, rOptions.mNumClusters, surf.mNumPoints);
+    const std::int64_t n_clus = remesh_renumber(clusters, rOptions.mNumClusters, surf.mNumPoints);
     result.mNumClusters = n_clus;
     if (n_clus < rOptions.mNumClusters)
-        log::warn("remesh: produced {} clusters of the {} requested (the surface could not be "
-                  "split more finely)",
-                  n_clus, rOptions.mNumClusters);
+        log::warn(
+            "remesh: produced {} clusters of the {} requested (the surface could not be "
+            "split more finely)",
+            n_clus, rOptions.mNumClusters);
 
     // The honest, final, vertex-level manifoldness count: whatever repair
     // could not fix, checked once more on the true final (renumbered)
     // clustering -- distinct in kind from mNumIsolatedClusters, which the
     // loop above already tracks at cluster granularity.
-    const std::vector<std::uint8_t> final_bad = remesh_detect_nonmanifold_vertices(
-        remesh_dual_triangle_keys(surf, clusters), n_clus);
+    const std::vector<std::uint8_t> final_bad =
+        remesh_detect_nonmanifold_vertices(remesh_dual_triangle_keys(surf, clusters), n_clus);
     result.mNumNonManifoldVertices =
         std::count(final_bad.begin(), final_bad.end(), std::uint8_t{1});
 
@@ -1512,9 +1537,8 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     const std::vector<double> normals = remesh_cluster_normals(surf, clusters, n_clus);
     const std::vector<std::int64_t> faces = remesh_dual_faces(surf, clusters, positions, normals);
     const std::vector<std::int64_t> boundary_lines =
-        rOptions.mPreserveBoundary
-            ? remesh_dual_boundary_edges(boundary.mBoundaryEdges, clusters)
-            : std::vector<std::int64_t>{};
+        rOptions.mPreserveBoundary ? remesh_dual_boundary_edges(boundary.mBoundaryEdges, clusters)
+                                   : std::vector<std::int64_t>{};
 
     Mesh& out = result.mMesh;
     {
