@@ -8,6 +8,18 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.19.0 (2026-09-26)
+
+**Roadmap §4 (performance), I/O:** file reading, ASCII writing and the VTK XML binary path. Every writer's output is byte-identical to v16.18.0's (compared file by file for VTU, VTP, legacy VTK 4.2 and 5.1, Medit, Tecplot, Abaqus, Ansys `.cdb`, LS-DYNA and OpenFOAM, and pinned by `test_io_baseline.py`), and every reader returns the same mesh.
+
+- **Nineteen readers read their file through `FileSource`** -- one bulk read, or a mapping above `MESHIOPLUSPLUS_MMAP_THRESHOLD` -- instead of one character at a time through `std::istreambuf_iterator`: ansys (Fluent), femap, abaqus_fil, code_aster, pcd, marc, patran, radioss, radioss_anim, radioss_th, medit, ply, wkt, lsdyna, elmer, libmesh, mphtxt, z88 and mfem. OpenFOAM's ASCII lists, Ansys `.cdb` NBLOCK/EBLOCK, UNV nodes, elements and groups, and GiD's HDF5 columns reserve from the counts they carry (capped by what the input could hold, so a wrong count changes nothing else).
+- **ASCII writers format rows in parallel chunks**, byte for byte: VTU, VTP, legacy VTK, Medit, Tecplot and OpenFOAM's points, which formatted serially, and Abaqus, Ansys `.cdb` and LS-DYNA, which built a heap string per row. They no longer call `localeconv()` inside a parallel loop (`snprintf_c` does per value, and POSIX does not require it to be thread-safe).
+- **VTK XML binary arrays decode straight into their array:** the element text is read in place, the base64 stream decodes any byte window directly, and every compressed block decompresses into its place, where a payload was copied five or six times. The writer encodes an uncompressed array without copying it to prepend the size header. A size check that could wrap on a corrupt header no longer can.
+- **VTU and Exodus** switch on the dtype once per array rather than per element, and the VTU writer's connectivity fills in parallel as its comment always claimed.
+- **Declined reads are refused before the expensive parse:** the VTK XML readers decide an lzma (or unavailable lz4/zstd) compressor from the `<VTKFile>` start tag instead of after loading the DOM, Gmsh finds `$Periodic` before parsing `$Nodes` and `$Elements`, both Fluent readers refuse a non-Fluent file from its first bytes instead of reading it whole, and an ambiguous extension tries first the candidate `sniff_format` recognises -- so a Gmsh `.msh` goes to gmsh before ansys and freefem (every candidate is still tried).
+- ABI 18 unchanged; no installed header changes.
+- Docs: roadmap §4 narrowed and its map; [formats](doc/formats.md) (candidate order, early declines).
+
 ## v16.18.0 (2026-09-26)
 
 **Roadmap §4 (performance), the rest of the operation items:** every serial phase §4 listed inside an operation now runs in parallel or in gather form, byte-identical to v16.17.0 on SEQ, OpenMP and TBB at 1, 4 and 8 threads (`bench_ops --hash`), and pinned by `test_op_goldens.cpp`, which gains 15 cases whose digests were taken from the previous implementation (among them `clean` and `merge` over hexahedron, polyhedron and ragged polygon blocks, and `remesh`'s Quadric and Anisotropic metrics).
