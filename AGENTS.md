@@ -115,6 +115,7 @@ Also, in the same change:
 - Refresh the four `BASELINE_HASHES` in `tests/python/test_io_baseline.py`. First substitute the old version into newly written bytes and verify the old hashes: a version bump must not conceal an unrelated output regression.
 - Add a dated `CHANGELOG.md` entry; prefix breaking items with **Breaking:**. A bugfix release can use a short entry.
 - Regenerate the single header. Assess C++ ABI changes separately using the policy above; a release bump alone does not imply an ABI bump.
+- Bump the two Spack recipes in [`spack/spack-packages`](https://github.com/spack/spack-packages/tree/develop/repos/spack_repo/builtin/packages) (`meshioplusplus` and `py-meshioplusplus`) in the same change: after the tag, add one `version(...)` line per release worth keeping to each, with `spack checksum` (never a hand-computed hash), re-check every `when="@X:"` variant guard and `depends_on` floor against this version's `CMakeLists.txt` and `pyproject.toml`, and run `spack style`. Add a variant for any `MESHIOPLUSPLUS_WITH_*` option that post-dates the recipes and has a Spack package to depend on. Then open the PR.
 
 ## Topic references
 
