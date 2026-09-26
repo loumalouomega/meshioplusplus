@@ -29,7 +29,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "typed_view.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -137,11 +139,14 @@ void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
             rOs << p[i] << '\n';
         return;
     }
-    for (std::size_t i = 0; i < n; ++i) {
-        if (flt)
-            vtu_ascii_double(rOs, read_double(rA, i));
-        else
-            rOs << read_int(rA, i) << '\n';
+    if (flt) {
+        const DoubleView v(rA);
+        for (std::size_t i = 0; i < n; ++i)
+            vtu_ascii_double(rOs, v[i]);
+    } else {
+        const Int64View v(rA);
+        for (std::size_t i = 0; i < n; ++i)
+            rOs << v[i] << '\n';
     }
 }
 
@@ -262,8 +267,9 @@ const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, N
         return rArray;
     rScratch = NDArray::Uninit(DType::UInt8, rArray.Shape());
     std::uint8_t* out = rScratch.As<std::uint8_t>();
-    for (std::size_t i = 0; i < rArray.Size(); ++i)
-        out[i] = static_cast<std::uint8_t>(read_int(rArray, i));
+    const Int64View v(rArray);
+    parallel_for_bw(rArray.Size(),
+                    [&](std::size_t i) { out[i] = static_cast<std::uint8_t>(v[i]); });
     return rScratch;
 }
 
@@ -295,10 +301,8 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
 }
 
 std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
-    std::vector<std::int64_t> v(rA.Size());
-    for (std::size_t i = 0; i < rA.Size(); ++i)
-        v[i] = read_int(rA, i);
-    return v;
+    const Int64View view(rA);
+    return std::vector<std::int64_t>(view.Data(), view.Data() + rA.Size());
 }
 
 }  // namespace detail

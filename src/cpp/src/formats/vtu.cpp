@@ -34,6 +34,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -122,9 +123,10 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
         emit_bin(buf.data(), buf.size());
     } else {
+        const detail::DoubleView pv(points);
         for (std::size_t r = 0; r < num_points; ++r)
             for (std::size_t c = 0; c < 3; ++c)
-                vtu_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
+                vtu_ascii_double(os, (c < dim) ? pv[r * dim + c] : 0.0);
     }
     os << "</DataArray>\n</Points>\n";
 
@@ -199,16 +201,22 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             if (it == tmap.end())
                 throw WriteError("Unknown cell type for VTU: " + cb.Type());
             const std::int64_t vtk_type = it->second;
-            for (std::size_t r = 0; r < nc; ++r) {
+            // Rows are independent: each one's slots and offset are closed-form.
+            const detail::Int64View cv(conn);
+            const std::size_t cbase = connectivity.size();
+            const std::size_t rbase = offsets.size();
+            connectivity.resize(cbase + nc * k);
+            offsets.resize(rbase + nc);
+            types.resize(rbase + nc, vtk_type);
+            if (any_polyhedron)
+                face_offsets.resize(face_offsets.size() + nc, -1);
+            parallel_for_bw(nc, [&](std::size_t r) {
                 for (std::size_t j = 0; j < k; ++j) {
                     const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity.push_back(read_int(conn, r * k + col));
+                    connectivity[cbase + r * k + j] = cv[r * k + col];
                 }
-                offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
-                types.push_back(vtk_type);
-                if (any_polyhedron)
-                    face_offsets.push_back(-1);
-            }
+                offsets[rbase + r] = static_cast<std::int64_t>(cbase + (r + 1) * k);
+            });
         }
 
         auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
