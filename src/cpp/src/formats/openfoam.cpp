@@ -26,7 +26,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -53,6 +52,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "face_cells_common.hpp"
+#include "../detail/row_writer.hpp"
 
 namespace fs = std::filesystem;
 
@@ -2319,11 +2319,24 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
             f << ")\n";
         } else {
             f << np << "\n(\n";
-            f << std::setprecision(16);
-            for (std::size_t i = 0; i < np; ++i) {
-                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
-                f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
-            }
+            // `f << std::setprecision(16) << x` on this classic-locale stream,
+            // with no float field set, prints exactly printf's "%.16g"; rows are
+            // formatted that way in parallel chunks (row_writer.hpp).
+            const detail::CNumber num;
+            detail::write_row_chunks(
+                f, np, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                    for (std::size_t i = First; i < Last; ++i) {
+                        const detail::Vec3 p =
+                            detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                        rBuf += '(';
+                        num.Append(rBuf, "%.16g", p[0]);
+                        rBuf += ' ';
+                        num.Append(rBuf, "%.16g", p[1]);
+                        rBuf += ' ';
+                        num.Append(rBuf, "%.16g", p[2]);
+                        rBuf += ")\n";
+                    }
+                });
             f << ")\n";
         }
     }

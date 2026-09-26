@@ -33,6 +33,10 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -40,7 +44,6 @@ namespace {
 using detail::cols;
 using detail::read_double;
 using detail::read_int;
-using detail::vtu_ascii_double;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
@@ -149,8 +152,13 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
                      v.size() * sizeof(std::int64_t));
         } else {
-            for (std::int64_t x : v)
-                os << x << '\n';
+            detail::write_row_chunks(os, v.size(),
+                                     [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                         for (std::size_t i = First; i < Last; ++i) {
+                                             detail::append_int(rBuf, v[i]);
+                                             rBuf += '\n';
+                                         }
+                                     });
         }
         os << "</DataArray>\n";
     };
@@ -190,9 +198,16 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
         emit_bin(buf.data(), buf.size());
     } else {
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c)
-                vtu_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r)
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        num.Append(rBuf, "%.11e", (c < dim) ? pv[r * dim + c] : 0.0);
+                        rBuf += '\n';
+                    }
+            });
     }
     os << "</DataArray>\n</Points>\n";
 

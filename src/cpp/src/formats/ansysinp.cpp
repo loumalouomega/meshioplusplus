@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -48,6 +49,8 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -448,6 +451,16 @@ std::string ans_i(std::int64_t Value, int Width) {
     return buf;
 }
 
+// `ans_i` appended in place: right-aligned in `Width` columns, never cut.
+void ans_append_i(std::string& rOut, std::int64_t Value, int Width) {
+    char buf[24];
+    const auto r = std::to_chars(buf, buf + sizeof buf, Value);
+    const auto len = static_cast<std::size_t>(r.ptr - buf);
+    if (len < static_cast<std::size_t>(Width))
+        rOut.append(static_cast<std::size_t>(Width) - len, ' ');
+    rOut.append(buf, len);
+}
+
 // Block `Block` of the `Name` cell data, or null when the mesh has none.
 const NDArray* ans_cell_column(const Mesh& rMesh, const std::string& rName, std::size_t Block) {
     return rMesh.HasCellData(rName) ? &rMesh.CellData(rName, Block) : nullptr;
@@ -574,21 +587,22 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     const std::size_t pdim = rMesh.PointDim();
     out += "NBLOCK,6,SOLID," + ans_i(static_cast<std::int64_t>(npts), 9) + "," +
            ans_i(static_cast<std::int64_t>(npts), 9) + "\n(3i9,6e21.13e3)\n";
-    // Rows are formatted in parallel, then joined in order (bytes unchanged).
-    std::vector<std::string> rows(npts);
-    parallel_for(npts, [&](std::size_t p) {
-        char buf[48];
-        std::string& row = rows[p];
-        row = ans_i(static_cast<std::int64_t>(p + 1), 9) + ans_i(0, 9) + ans_i(0, 9);
-        for (std::size_t d = 0; d < 3; ++d) {
-            const double v = d < pdim ? detail::read_double(points, p * pdim + d) : 0.0;
-            detail::snprintf_c(buf, sizeof(buf), "%21.13E", v);
-            row += buf;
-        }
-        row += '\n';
-    });
-    for (const std::string& row : rows)
-        out += row;
+    // Rows formatted in parallel chunks, appended in order (row_writer.hpp).
+    {
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::append_row_chunks(
+            out, npts, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t p = First; p < Last; ++p) {
+                    ans_append_i(rBuf, static_cast<std::int64_t>(p + 1), 9);
+                    ans_append_i(rBuf, 0, 9);
+                    ans_append_i(rBuf, 0, 9);
+                    for (std::size_t d = 0; d < 3; ++d)
+                        num.Append(rBuf, "%21.13E", d < pdim ? pv[p * pdim + d] : 0.0);
+                    rBuf += '\n';
+                }
+            });
+    }
     out += "N,R5.3,LOC,       -1,\n";
 
     const std::int64_t n_cells = bases.back();
@@ -601,34 +615,42 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
         const NDArray* mat = ans_cell_column(rMesh, "ansys:mat", b);
         const NDArray* real = ans_cell_column(rMesh, "ansys:real", b);
         const NDArray* secnum = ans_cell_column(rMesh, "ansys:secnum", b);
-        rows.assign(cb.NumCells(), std::string());
-        parallel_for(cb.NumCells(), [&](std::size_t r) {
-            const auto [routine, slot] = cell_etype[b][r];
-            const std::vector<int> layout = *ans_layout(type, detail::ansys_category(routine));
-            const std::int64_t head[11] = {ans_column_int(mat, r, 1),
-                                           slot,
-                                           ans_column_int(real, r, 1),
-                                           ans_column_int(secnum, r, 1),
-                                           0,
-                                           0,
-                                           0,
-                                           0,
-                                           static_cast<std::int64_t>(layout.size()),
-                                           0,
-                                           bases[b] + static_cast<std::int64_t>(r) + 1};
-            std::string& row = rows[r];
-            for (std::int64_t v : head)
-                row += ans_i(v, 10);
-            for (std::size_t c = 0; c < layout.size(); ++c) {
-                if (c == 8)
-                    row += '\n';
-                row += ans_i(
-                    detail::read_int(conn, r * k + static_cast<std::size_t>(layout[c])) + 1, 10);
-            }
-            row += '\n';
-        });
-        for (const std::string& row : rows)
-            out += row;
+        // One layout per element category, not a vector per row.
+        std::array<std::optional<std::vector<int>>, 8> layouts;
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            const auto category = detail::ansys_category(cell_etype[b][r].first);
+            auto& slot = layouts[static_cast<std::size_t>(category)];
+            if (!slot)
+                slot = *ans_layout(type, category);
+        }
+        const detail::Int64View cv(conn);
+        detail::append_row_chunks(
+            out, cb.NumCells(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    const auto [routine, slot] = cell_etype[b][r];
+                    const std::vector<int>& layout =
+                        *layouts[static_cast<std::size_t>(detail::ansys_category(routine))];
+                    const std::int64_t head[11] = {ans_column_int(mat, r, 1),
+                                                   slot,
+                                                   ans_column_int(real, r, 1),
+                                                   ans_column_int(secnum, r, 1),
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   static_cast<std::int64_t>(layout.size()),
+                                                   0,
+                                                   bases[b] + static_cast<std::int64_t>(r) + 1};
+                    for (std::int64_t v : head)
+                        ans_append_i(rBuf, v, 10);
+                    for (std::size_t c = 0; c < layout.size(); ++c) {
+                        if (c == 8)
+                            rBuf += '\n';
+                        ans_append_i(rBuf, cv[r * k + static_cast<std::size_t>(layout[c])] + 1, 10);
+                    }
+                    rBuf += '\n';
+                }
+            });
     }
     out += "        -1\n";
 

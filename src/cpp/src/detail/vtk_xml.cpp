@@ -31,6 +31,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "row_writer.hpp"
 #include "typed_view.hpp"
 
 namespace meshioplusplus {
@@ -139,14 +140,25 @@ void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
             rOs << p[i] << '\n';
         return;
     }
+    // One value per line, formatted in parallel chunks (row_writer.hpp):
+    // vtu_ascii_double's "%.11e" and ostream's integers, byte for byte.
     if (flt) {
         const DoubleView v(rA);
-        for (std::size_t i = 0; i < n; ++i)
-            vtu_ascii_double(rOs, v[i]);
+        const CNumber num;
+        write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t i = First; i < Last; ++i) {
+                num.Append(rBuf, "%.11e", v[i]);
+                rBuf += '\n';
+            }
+        });
     } else {
         const Int64View v(rA);
-        for (std::size_t i = 0; i < n; ++i)
-            rOs << v[i] << '\n';
+        write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t i = First; i < Last; ++i) {
+                append_int(rBuf, v[i]);
+                rBuf += '\n';
+            }
+        });
     }
 }
 

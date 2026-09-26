@@ -20,6 +20,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <ios>
@@ -43,6 +44,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -52,6 +54,8 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -976,6 +980,26 @@ void lsd_put(std::string& rOut, const std::string& rText, std::size_t Width) {
     rOut += rText;
 }
 
+// detail::format_real16 -- the shortest "%.*e" that parses back to `Value`,
+// within 16 columns -- with the decimal point resolved once (`rNum`) rather
+// than by snprintf_c's localeconv() per call, which POSIX does not require to
+// be thread-safe: callable from a parallel loop. Byte-identical.
+std::string lsd_real16(double Value, const detail::CNumber& rNum) {
+    if (Value == 0.0)
+        return "0.0";
+    const int neg = Value < 0.0 ? 1 : 0;
+    const int e3 = (std::fabs(Value) >= 1e100 || std::fabs(Value) < 1e-99) ? 1 : 0;
+    const int pmax = 10 - neg - e3;
+    char buf[64];
+    for (int p = 1; p <= pmax; ++p) {
+        rNum.Print(buf, sizeof(buf), "%.*e", p, Value);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == Value)
+            return std::string(buf);
+    }
+    return std::string(buf);
+}
+
 void lsd_put_int(std::string& rOut, std::int64_t Value, std::size_t Width) {
     lsd_put(rOut, std::to_string(Value), Width);
 }
@@ -1178,19 +1202,19 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
     {
         const NDArray& points = rMesh.Points();
         const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
-        std::vector<std::string> rows(npts);
-        parallel_for(npts, [&](std::size_t i) {
-            std::string& row = rows[i];
-            lsd_put_int(row, static_cast<std::int64_t>(i + 1), 8);
-            for (std::size_t c = 0; c < 3; ++c)
-                lsd_put(row,
-                        c < dim ? detail::format_real16(detail::read_double(points, i * dim + c))
-                                : std::string("0.0"),
-                        16);
-            row += '\n';
-        });
-        for (const std::string& row : rows)
-            os << row;
+        // Rows formatted in parallel chunks (row_writer.hpp), each coordinate
+        // by lsd_real16: format_real16 with the decimal point resolved once.
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, npts, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    lsd_put_int(rBuf, static_cast<std::int64_t>(i + 1), 8);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        lsd_put(rBuf, c < dim ? lsd_real16(pv[i * dim + c], num) : "0.0", 16);
+                    rBuf += '\n';
+                }
+            });
     }
     {
         std::size_t g = 0;

@@ -48,6 +48,9 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/row_writer.hpp"
+
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
 #include "TECIO.h"
@@ -121,7 +124,7 @@ std::vector<std::string> tecplot_header_tokens(const std::string& rS) {
         } else {
             std::size_t j = i;
             while (j < n && rS[j] != ' ' && rS[j] != '\t' && rS[j] != ',' && rS[j] != '=' &&
-                  rS[j] != '"' && rS[j] != '(')
+                   rS[j] != '"' && rS[j] != '(')
                 ++j;
             out.push_back(rS.substr(i, j - i));
             i = j;
@@ -2395,12 +2398,17 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     os << "\n";
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
-    char buf[40];
+    // Twenty values per line, formatted in parallel chunks (row_writer.hpp);
+    // each separator depends on the value's own index, not the chunk's.
+    const detail::CNumber num;
     auto write_column = [&](const std::vector<double>& col) {
-        for (std::size_t i = 0; i < col.size(); ++i) {
-            detail::snprintf_c(buf, sizeof(buf), "%.17g", col[i]);
-            os << buf << ((i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ');
-        }
+        detail::write_row_chunks(
+            os, col.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    num.Append(rBuf, "%.17g", col[i]);
+                    rBuf += (i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ';
+                }
+            });
         if (col.empty())
             os << "\n";
     };
@@ -2418,8 +2426,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             const meshioplusplus::Region& reg = rMesh.Region(ri);
             if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
                 continue;
-            if (reg.NumEntries() !=
-                static_cast<std::size_t>(bases[block + 1] - bases[block]))
+            if (reg.NumEntries() != static_cast<std::size_t>(bases[block + 1] - bases[block]))
                 continue;
             const std::int64_t* e = reg.Entries();
             if (e[0] == bases[block] && e[reg.NumEntries() - 1] == bases[block + 1] - 1) {
@@ -2445,8 +2452,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             for (const auto& f : faces.mFaces)
                 total_face_nodes += f.size();
         }
-        os << "ZONE T = \"" << title << "\", NODES = " << num_nodes
-           << ", ELEMENTS = " << num_cells << ",\n";
+        os << "ZONE T = \"" << title << "\", NODES = " << num_nodes << ", ELEMENTS = " << num_cells
+           << ",\n";
         if (face_based)
             os << "FACES = " << faces.mFaces.size() << ", TOTALNUMFACENODES = " << total_face_nodes
                << ",\nNUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n";
