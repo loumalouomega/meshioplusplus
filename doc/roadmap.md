@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v16.14.0** — 76 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 17), sanitizer and fuzzing gates, and a format conformance matrix.
+Status at time of writing: **v16.21.1** — 79 core formats plus five Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 18), sanitizer and fuzzing gates, and a format conformance matrix.
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -17,12 +17,6 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 ## The map
 
 ![The roadmap at a glance: open items grouped by section, shaded by effort, with dependency arrows and the items that need a design pass or a research spike first](/diagrams/roadmap_map.svg)
-
----
-
-## 0. Update doc with latest features in the library
-
-The doc is not up-to-date, and should be updated accordingly.
 
 ---
 

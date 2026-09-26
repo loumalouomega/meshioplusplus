@@ -126,7 +126,7 @@ Reading the result merges back the input mesh with its labels, halo copies kept 
 
 ## Notes
 
-- **Not read:** `.sif` files and results. ElmerSolver writes results as VTU (`Post File = x.vtu`), but in VTK's *raw* appended encoding, which meshio++'s VTU reader does not yet read.
+- **Not read:** `.sif` files. Results are: ElmerSolver writes them as VTU (`Post File = x.vtu`), in VTK's *raw* appended encoding, which meshio++'s VTU reader reads (in one pass since v16.21.0; see [VTU](./vtu.md)).
 - An Elmer directory can be one step of a [sequence](../sequences.md) found by glob (v16.17.0): a directory matching the pattern is kept when it holds an Elmer mesh.
 - A body and a boundary share one id space in `mesh.names` only by name: the ids of bodies and of boundaries are separate, so `body_1` and `boundary_1` are different groups.
 

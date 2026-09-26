@@ -31,7 +31,7 @@ meshioplusplus.view(mesh, backend="browser")   # vtk.js, in a browser or noteboo
 pip install meshioplusplus[viewer]
 ```
 
-Without it, `view(backend="polyscope")` and `screenshot()` raise an error naming that command; everything else, including `view(backend="browser")`, works unchanged.
+Without it, `view(backend="polyscope")` and `screenshot()` raise an error naming that command; everything else, including `view(backend="browser")`, works unchanged. `has_viewer()` reports whether the polyscope backend is importable — checking it never opens a window or needs a display, so it is safe to call anywhere before deciding which backend to request.
 
 ![The example bracket in Polyscope, coloured by scaled Jacobian](/viewer/desktop-viewer.png)
 

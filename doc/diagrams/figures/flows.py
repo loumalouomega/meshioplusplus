@@ -538,8 +538,8 @@ def interop_layers():
 def data_locations():
     c = Canvas(
         900,
-        510,
-        "The three data locations, and the five data operations that act on them without ever touching geometry",
+        570,
+        "The three data locations, and the six data operations that act on them without ever touching geometry",
     )
     # geometry
     c.box(
@@ -589,7 +589,7 @@ def data_locations():
         (
             ["point_data_to_cell_data", "cell_data_to_point_data"],
             "averaging; always Float64",
-            "serial scatter, so thread-count-independent",
+            "parallel gather, same order at any thread count",
             P.CABI,
             [0, 1],
         ),
@@ -614,6 +614,13 @@ def data_locations():
             P.MUTED,
             [0, 1, 2],
         ),
+        (
+            "tensor_invariants",
+            "mises / principal / hydrostatic / deviatoric",
+            "reads a symmetric tensor, writes new scalar/vector arrays",
+            P.REGIONS,
+            [0, 1],
+        ),
     ]
     for k, (name, what, note, colour, locs) in enumerate(ops):
         y = 50 + k * 60
@@ -634,7 +641,7 @@ def data_locations():
                 550, 50 + loc * 60 + 23, 600, y + 26, stroke=colour, sw=1, opacity=0.6
             )
     c.text(
-        24, 368, "cross-cutting rules", size=P.SIZE_SMALL, anchor="start", weight="700"
+        24, 428, "cross-cutting rules", size=P.SIZE_SMALL, anchor="start", weight="700"
     )
     rules = [
         "non-finite values are always excluded from every reduction; NanPolicy (ignore / replace / fail) only decides what reaches the output",
@@ -642,10 +649,10 @@ def data_locations():
         "components = product of the trailing dims; 1-D scalars stay 1-D; point/cell sets never enter the core",
     ]
     for k, s in enumerate(rules):
-        c.label(24, 386 + 16 * k, "• " + s, anchor="start")
+        c.label(24, 446 + 16 * k, "• " + s, anchor="start")
     c.text(
         24,
-        446,
+        506,
         "not data operations, though the CLI groups them under `data`:",
         size=P.SIZE_SMALL,
         anchor="start",
@@ -653,19 +660,19 @@ def data_locations():
     )
     c.label(
         24,
-        462,
+        522,
         "gradient · hessian · estimate_error · data_integrate read geometry (face areas, cell measures, adjacency): mesh operations that happen to produce arrays",
         anchor="start",
     )
     c.label(
         24,
-        478,
+        538,
         "names may contain ':' (gmsh:physical, refine:level); the CLI splits `data rename OLD:NEW` on the LAST colon and `data calc \"NAME = EXPR\"` on the FIRST '='",
         anchor="start",
     )
     c.legend(
         24,
-        496,
+        556,
         [
             (P.INK, "geometry"),
             (P.DATA, "data locations"),
@@ -674,6 +681,7 @@ def data_locations():
             (P.FORMATS, "calc"),
             (P.PYTHON, "condition"),
             (P.MUTED, "info"),
+            (P.REGIONS, "invariants"),
         ],
     )
     return c.render()
@@ -923,7 +931,7 @@ def abi_tiers():
         "and no review row names that release and those headers. The ABI version is deliberately NOT the release version:",
         "it moves only when already-compiled consumers stop being compatible (11 at v10.21.0), and it is the C++ variants' SOVERSION.",
         "The C API is a separate promise: SOVERSION 0, SameMajorVersion, append-only option structs with reserved tails,",
-        "so a C consumer pins find_package(meshioplusplus 10 … COMPONENTS C) and a C++ consumer pins the exact release or the ABI number.",
+        "so a C consumer pins find_package(meshioplusplus 16 … COMPONENTS C) and a C++ consumer pins the exact release or the ABI number.",
     ]
     for k, s_ in enumerate(lines):
         c.label(380, 504 + 16 * k, s_)

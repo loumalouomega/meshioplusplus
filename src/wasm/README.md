@@ -1,7 +1,7 @@
 # @meshioplusplus/wasm
 
 [meshio++](https://github.com/loumalouomega/meshioplusplus) mesh I/O, compiled to
-WebAssembly. Read 46 and write 49 mesh file formats (VTK, VTU, Gmsh, STL, OBJ,
+WebAssembly. Read 76 and write 68 mesh file formats (VTK, VTU, Gmsh, STL, OBJ,
 Nastran, MED, CGNS, Exodus, and more) in the browser or Node.js — the same set
 the native library supports, with libhdf5 and libnetcdf compiled in.
 

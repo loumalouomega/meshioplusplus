@@ -49,8 +49,9 @@ The Kratos type tables (Geometries/Elements/Conditions) are large; a representat
 | `Triangle2D6`, `Element2D6N` | `triangle6` | `Hexahedra3D20` | `hexahedron20` |
 | `Quadrilateral2D4`, `Element2D4N` | `quad` | `Hexahedra3D27` | `hexahedron27` |
 | `Quadrilateral2D8` | `quad8` | `Prism3D6`, `Element3D6N` | `wedge` |
-| `Quadrilateral2D9` | `quad9` | `Element3D5N` | `pyramid` |
-| `Point2D`, `Element2D1N` | `vertex` | `Element3D13N`/`15N` | `wedge15` |
+| `Quadrilateral2D9` | `quad9` | `Element3D5N`, `Pyramid3D5` | `pyramid` |
+| `Point2D`, `Element2D1N` | `vertex` | `Prism3D15`, `Element3D15N` | `wedge15` |
+|  |  | `Pyramid3D13`, `Element3D13N` | `pyramid13` |
 
 **Quadratic node order.** A model part stores Kratos's own node order, which differs from meshio++'s for `hexahedron20`, `hexahedron27` and `wedge15` (`Prism3D15`): Kratos lists the vertical mid-edges before the top ring, and its `Hexahedra3D27` face centres run z−, y−, x+, y+, x−, z+ (`kratos/geometries/hexahedra_3d_20.h`, `hexahedra_3d_27.h`, `prism_3d_15.h`). The permutations are the `"mdpa"` entries of the [node-ordering registry](../node_ordering.md) (v16.17.0). **Fixed in v16.17.0:** the tables used before swapped mid-edge slots 9/11, 13/15 and 17/19 of a `hexahedron20` (and more of a `hexahedron27`) and left `wedge15` unpermuted, so quadratic hexahedra and wedges written by earlier versions put some mid-edge nodes on the wrong edges when Kratos read them, and quadratic Kratos meshes read wrongly the same way. The Python reader also learns the `Prism3D15`, `Pyramid3D5` and `Pyramid3D13` geometry names (a written `wedge15` read back as `triangle15`), and `Element3D13N` is a `pyramid13`.
 

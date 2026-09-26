@@ -9,7 +9,7 @@
 [![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![Julia](https://img.shields.io/badge/Julia-1.9%2B-9558b2.svg?style=flat-square&logo=julia&logoColor=white)](doc/julia.md) [![R](https://img.shields.io/badge/R-4.0%2B-276dc3.svg?style=flat-square&logo=r&logoColor=white)](doc/r.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/) [![Spack](https://img.shields.io/badge/spack-meshioplusplus-1f79c2.svg?style=flat-square)](https://packages.spack.io/package.html?name=meshioplusplus) [![Blender](https://img.shields.io/badge/Blender-4.2%2B-ea7600.svg?style=flat-square&logo=blender&logoColor=white)](doc/blender.md)
 
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
-[![GitHub release date](https://img.shields.io/github/release-date/loumalouomega/meshioplusplus?style=flat-square&label=release)](https://github.com/loumalouomega/meshioplusplus/releases/latest) [![Commits since latest release](https://img.shields.io/github/commits-since/loumalouomega/meshioplusplus/latest?style=flat-square&label=commits%20since)](https://github.com/loumalouomega/meshioplusplus/compare/v8.7.0...master) [![GitHub last commit](https://img.shields.io/github/last-commit/loumalouomega/meshioplusplus?style=flat-square&label=latest%20commit)](https://github.com/loumalouomega/meshioplusplus/commit/master)
+[![GitHub release date](https://img.shields.io/github/release-date/loumalouomega/meshioplusplus?style=flat-square&label=release)](https://github.com/loumalouomega/meshioplusplus/releases/latest) [![Commits since latest release](https://img.shields.io/github/commits-since/loumalouomega/meshioplusplus/latest?style=flat-square&label=commits%20since)](https://github.com/loumalouomega/meshioplusplus/compare/v16.21.1...master) [![GitHub last commit](https://img.shields.io/github/last-commit/loumalouomega/meshioplusplus?style=flat-square&label=latest%20commit)](https://github.com/loumalouomega/meshioplusplus/commit/master)
 
 [![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=master&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci) [![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
 
@@ -70,6 +70,9 @@ There are various mesh formats available for representing unstructured meshes. m
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
 > [PhysicsNeMo mesh](https://developer.nvidia.com/physicsnemo) (`.pmsh`, memory-mapped),
 > [PLY](<https://en.wikipedia.org/wiki/PLY_(file_format)>) (`.ply`),
+> [PVD](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvd`; a time-indexed collection of serial or parallel VTK XML files, read by ParaView),
+> [PVTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtp`; a parallel index over per-piece `.vtp` files) and
+> [PVTU](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtu`; a parallel index over per-piece `.vtu` files, ghost cells and `partition` output included),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
 > [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones; `.szplt` read-only through a TecIO you supply),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
@@ -81,8 +84,11 @@ There are various mesh formats available for representing unstructured meshes. m
 > [VTI](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (VTK XML ImageData; a regular lattice) (`.vti`),
 > [VTK](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) (`.vtk`),
 > [VTKHDF](https://docs.vtk.org/en/latest/vtk_file_formats/vtkhdf_file_format/index.html) (`.vtkhdf`; Kitware's HDF5-based VTK format: time, partitions and fields in one file, read by ParaView),
+> [VTM](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vtm`; a VTK XML multiblock index, one piece per cell block),
 > [VTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vtp`),
-> [VTU](https://vtk.org/Wiki/VTK_XML_Formats) (`.vtu`),
+> [VTR](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vtr`, VTK XML RectilinearGrid),
+> [VTS](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vts`, VTK XML StructuredGrid),
+> [VTU](https://vtk.org/Wiki/VTK_XML_Formats) (`.vtu`; `appended=True`/`--appended` writes raw appended binary, VTK's own default layout, about a quarter smaller than inline binary with no base64),
 > [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry) ([TIN](https://en.wikipedia.org/wiki/Triangulated_irregular_network)) (`.wkt`),
 > [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`),
 > XYZ point clouds (headerless ASCII: `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt`),
@@ -660,6 +666,10 @@ report[0]["domain"]["total_per_component"]   # sum(value * |measure|) -- total m
 report[0]["regions"]                         # the same, independently, per named Cell region
 ```
 
+#### Geometry helpers (curvature, normals, repair, shrinkwrap, Sobolev deformation, grids and SDF)
+
+Six operations built for the physics-ML surface, each with its own CLI verb, MCP tool, and Python-API and doc page: **`meshioplusplus.compute_curvature`** (per-vertex mean/Gaussian curvature by the angle defect and cotangent Laplace-Beltrami operator — `doc/curvature.md`), **`meshioplusplus.compute_normals`** (point/cell normals with an optional crease split — `doc/normals.md`), **`meshioplusplus.repair`** (fixes a surface's orientation, holes and pinched vertices, the defects `clean` does not touch — `doc/repair.md`), **`meshioplusplus.shrinkwrap`** (projects a mesh's points onto a target surface in one pass — `doc/shrinkwrap.md`), and **`meshioplusplus.sobolev_deform`** (moves points by a raw displacement field filtered through the mesh's own P1 operators — `doc/sobolev_deform.md`). **`meshioplusplus.voxelize`**/**`compute_sdf`** build a regular grid around or over a surface, filled by occupancy or signed distance — `doc/grids.md` and `doc/sdf.md`.
+
 #### Data operations (rename / average / calc / condition / invariants / summarize)
 
 A second bundle operates on the **data arrays** a mesh carries (`point_data` / `cell_data` / `field_data`) rather than on its geometry, which none of them ever modifies:
@@ -920,7 +930,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 84 tools itself. Tools are file-path based (optionally sandboxed with `--root DIR`), parsed inputs are cached between calls and re-read when a file changes, and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 87 tools itself. Tools are file-path based (optionally sandboxed with `--root DIR`), parsed inputs are cached between calls and re-read when a file changes, and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 </details>
 
@@ -1049,7 +1059,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.21.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -1060,7 +1070,7 @@ headers. The finer pin is `MESHIOPLUSPLUS_ABI_VERSION`, which moves only when a
 change really would break an already-compiled consumer — so a release that
 cannot affect you costs no rebuild. Either way a mismatch now fails at **link**
 time rather than corrupting memory, and the C API is the stable one — pin
-`find_package(meshioplusplus 10 … COMPONENTS C)` there. See
+`find_package(meshioplusplus 16 … COMPONENTS C)` there. See
 [ABI compatibility](https://loumalouomega.github.io/meshioplusplus/abi).
 
 ```cpp

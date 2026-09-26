@@ -60,7 +60,7 @@ With `record_parent_ids=True`, an Int64 `slice:parent_cell` `cell_data` array re
 
 ## Determinism
 
-Output is byte-identical across the three mesh backends, across thread counts, and across the C++-core / numpy-fallback boundary (pinned by `tests/python/test_slice.py::test_cpp_matches_python`): the signed-distance and coordinate/`point_data` passes are parallel, but the cut-and-dedup sweep that hands out node ids is **serial** over a fixed `(block, cell, ring-edge)` traversal, and the crossing `t` is computed from the sorted endpoint pair so both sides of a shared edge agree bit-for-bit.
+Output is byte-identical across the three mesh backends, across thread counts, and across the C++-core / numpy-fallback boundary (pinned by `tests/python/test_slice.py::test_cpp_matches_python`): the signed-distance and coordinate/`point_data` passes are parallel, and since v16.19.0 every simplex is cut in parallel too, its crossing points numbered by first-seen order over the shared sort-based facet table rather than a serial `(block, cell, ring-edge)` traversal. The crossing `t` is still computed from the sorted endpoint pair so both sides of a shared edge agree bit-for-bit.
 
 ## CLI
 

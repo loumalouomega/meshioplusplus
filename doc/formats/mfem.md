@@ -24,7 +24,7 @@ meshioplusplus.mfem.write("out.mesh", mesh, grid_functions=True)     # + out.<na
 
 Both engines (the C++ core and the pure-Python reference) read the same meshes and write the same bytes. In C++ the fields are `read_mfem(path, {{"u", "sol.gf"}})` and `write_mfem(path, mesh, true)`. The [MCP server](../mcp.md)'s `convert` takes the same `grid_functions` and `write_grid_functions` options.
 
-**`.mesh` is shared with Medit.** The Python `read` tries Medit and then MFEM. The native resolver (CLI, C, Fortran, Julia, R, WASM) looks at the first line of an existing `.mesh` file and hands an `MFEM mesh …` file to `mfem`. It is the one content-aware extension default. Writing a `.mesh` without a format still writes Medit: pass `file_format="mfem"` (CLI `--output-format mfem`).
+**`.mesh` is shared with Medit.** Since v16.20.0 the ambiguous-extension read loop tries first the candidate `sniff_format` recognises from the file's first bytes, so an MFEM file goes to `mfem` directly rather than through a Medit decline; every candidate is still tried if that guess is wrong. The native resolver (CLI, C, Fortran, Julia, R, WASM) looks at the first line of an existing `.mesh` file and hands an `MFEM mesh …` file to `mfem` the same way. `.mesh` is not the only content-aware extension default: Marc's `.dat` (v16.8.0) is read the same way, by content rather than by name. Writing a `.mesh` without a format still writes Medit, since a write resolves by name alone (`resolve_write_format`, v16.17.0): pass `file_format="mfem"` (CLI `--output-format mfem`).
 
 ## Reading
 

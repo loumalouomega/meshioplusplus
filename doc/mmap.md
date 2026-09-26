@@ -28,7 +28,7 @@ A mapped buffer behaves as if NUL-terminated only because the kernel zero-fills 
 
 ## Coverage
 
-Six whole-file readers go through `FileSource`: **gmsh** (which additionally honours an explicit `ReadOptions::mMmap`), **vtk**, **ensight**, **ugrid**'s ASCII branch, **openfoam** and **gid**'s ASCII reader. About twenty still read the whole file into a string by hand — **ply**, **medit**, **ansys** and **wkt** among them (the list is in the roadmap item) — and moving them over is a [roadmap](./roadmap.md#_4-performance) item.
+Thirty-four whole-file readers go through `FileSource` (v16.20.0 moved nineteen more over, on top of the original fifteen): **gmsh**, **tecplot**, **ansys_rst**, **xplt** and **gid**'s ASCII reader additionally honour an explicit `ReadOptions::mMmap`. The rest — **vtk**, **vtu**, **ensight**, **ugrid**'s ASCII branch, **openfoam**, **ansys** (Fluent), **femap**, **abaqus_fil**, **code_aster**, **pcd**, **marc**, **patran**, **radioss**, **radioss_anim**, **radioss_th**, **medit**, **ply**, **wkt**, **lsdyna**, **elmer**, **libmesh**, **mphtxt**, **z88**, **mfem**, **avsucd**, **su2**, **mdpa**, **lsdyna_binout**, **nastran_op2** and **unv** — read through it without an explicit mmap knob. OpenFOAM's ASCII lists, Ansys `.cdb` NBLOCK/EBLOCK, UNV nodes/elements/groups and GiD's HDF5 columns also reserve their containers from the counts they carry, capped by what the input could actually hold. The remaining allocating tokenizers are a separate, narrower [roadmap](./roadmap.md#_4-performance) item.
 
 `openfoam` gained the most: it previously slurped via `ostringstream` + `.str()`, paying for **two** extra full-file copies on top of the read, both of which are now gone.
 

@@ -54,7 +54,7 @@ The **mesh-calculus gradient layout flipped** between releases: 2.1's least-squa
 
 ## In meshio++
 
-This is the page where the two libraries overlap most, so it is worth being precise about what each is for. PhysicsNeMo's mesh package exists to make a mesh *differentiable* — every operation on it carries a gradient back to a model. meshio++'s exists to make a mesh *portable and correct* — forty-odd formats, every cell type, exact conservation, no framework. They are complements, and the honest division is: read, convert, repair and measure with meshio++; put the result on a device and differentiate it with physicsnemo.
+This is the page where the two libraries overlap most, so it is worth being precise about what each is for. PhysicsNeMo's mesh package exists to make a mesh *differentiable* — every operation on it carries a gradient back to a model. meshio++'s exists to make a mesh *portable and correct* — eighty-odd formats, every cell type, exact conservation, no framework. They are complements, and the honest division is: read, convert, repair and measure with meshio++; put the result on a device and differentiate it with physicsnemo.
 
 Where meshio++ has a direct counterpart:
 

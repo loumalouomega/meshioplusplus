@@ -125,14 +125,14 @@ See [the C++ API page](/cpp_api#versioning-what-to-pin) for the full guidance. I
 ```cmake
 # Finer, and true: pin what actually constrains you.
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 6)
-  message(FATAL_ERROR "meshio++ ABI 6 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 18)
+  message(FATAL_ERROR "meshio++ ABI 18 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 
 ```cmake
 # Conservative, and still fully supported: pin the release.
-find_package(meshioplusplus 9.12.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 Both are correct. The second is stricter than it needs to be, and that is a legitimate choice — it is one line, it needs no reasoning about tiers, and re-pinning is a small price for never thinking about this page again.

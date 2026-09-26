@@ -96,6 +96,8 @@ ps = mio.power_spectrum(array.channel("T"), spec)
 ps.wavenumber, ps.power, ps.counts     # cycles per unit length
 ```
 
+`ps` is a `PowerSpectrum`: a frozen dataclass over the bin centres (`wavenumber`), the summed power per bin (`power`, in `units`, default "cycles per unit length"), and the mode count per bin (`counts`) — the three arrays above plus the unit string, and nothing else.
+
 Three properties worth knowing. The power sums **exactly** to `mean(field**2)` (Parseval), which holds only because every mode is binned — including the ones past the isotropic Nyquist that live in the corners of the box; truncating the tail would break it, so `counts` is reported instead and a caller cuts it themselves. A vector field's components are summed, giving the energy spectrum. And an **anisotropic** lattice raises: averaging over shells is only meaningful when a shell means the same thing on every axis.
 
 ## Two-dimensional operators

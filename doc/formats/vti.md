@@ -77,7 +77,7 @@ A generated grid carries an `sdf:*` `field_data` header describing itself. **No 
 
 ## Quirks & limitations
 
-- **`<AppendedData>` is not supported** in either implementation, and raises. The VTU C++ reader declines it too, for the same reason.
+- **`<AppendedData>` is not supported** in either implementation, and raises. The VTU reader reads it (since v16.6.0, in one pass since v16.21.0; see [VTU](./vtu.md)) — VTI's own restriction is narrower, not a shared one.
 - **One `<Piece>` only**, and its `Extent` must equal the `WholeExtent`. A partial piece's arrays are sized to the *piece*, so reading them against the whole extent would be silently misaligned.
 - **A non-identity `Direction`** (a rotated lattice) raises: an axis-aligned hexahedron grid cannot express it without baking the rotation into the coordinates, which is a different mesh from the one the file describes.
 - **lzma is rejected** by both readers. Python has the module; declining it is a deliberate parity choice, so that the two readers accept the same files.

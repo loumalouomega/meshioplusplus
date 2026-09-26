@@ -19,7 +19,7 @@ PhysicsNeMo is a **PyTorch library for physics machine learning**. It is not a s
 - **a mesh representation** with calculus, generation and remeshing on it — `physicsnemo.mesh`;
 - **the parts that are not the model**: distributed training, diffusion samplers, metrics, ONNX export, symbolic PDE residuals, active learning.
 
-What it does *not* provide is the physics, and it does not provide the mesh either. Its mesh type holds simplices and nothing else, its readers expect files already shaped for training, and it has no notion of the forty-odd formats a real solve is written in. That gap is what meshio++ fills.
+What it does *not* provide is the physics, and it does not provide the mesh either. Its mesh type holds simplices and nothing else, its readers expect files already shaped for training, and it has no notion of the eighty-odd formats a real solve is written in. That gap is what meshio++ fills.
 
 ## The mental model
 

@@ -367,8 +367,9 @@ def _register_conversion(server: FastMCP) -> None:
         transient dataset. Give exactly one of input_pattern (a glob -- '*' and
         '?' only) or input_paths. A '{step}'/'{index}' token in output_path
         writes one file per step (fan-out); a plain path writes one multi-step
-        file (fan-in, XDMF only -- any other format fails by name rather than
-        silently keeping step 0). Ordering is natural-numeric, so out_9 precedes
+        file (fan-in, only for xdmf, gid, usd, vtkhdf, pvd and femap -- any
+        other format fails by name rather than silently keeping step 0).
+        Ordering is natural-numeric, so out_9 precedes
         out_10. mode optionally asserts 'sequence'/'fan-in'/'fan-out'.
         See doc/sequences.md."""
         return _guard(

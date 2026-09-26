@@ -81,6 +81,8 @@ A symmetric tensor stored as six components per point or cell uses the order **`
 | `mesh.cell_data_dict` | `dict[str, dict[str, np.ndarray]]` — same concatenation for cell data |
 | `mesh.cell_sets_dict` | `dict[str, dict[str, np.ndarray]]` — cell-set indices resolved per type |
 
+`meshioplusplus.topological_dimension` is the module-level dict backing the "dimension" every operation that groups cells by dimension (`decimate`, `gradient`, `partition`'s dual, `normals`, the SDF builder…) looks a cell type up in: `{"vertex": 0, "line": 1, "triangle": 2, "tetra": 3, ...}`, `-1` for a type it does not carry.
+
 ## Convenience methods
 
 ```python

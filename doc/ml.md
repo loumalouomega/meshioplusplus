@@ -54,6 +54,8 @@ fm.columns     # ('x', 'y', 'z', 'T', 'v_0', 'v_1', 'v_2', 'region:inlet')
 fm.schema      # JSON-serializable: version, columns, per-column sources
 ```
 
+`fm` is a `FeatureMatrix`: a frozen dataclass over exactly those three fields, so it is the whole reproducibility contract rather than a bag of extra state — `columns` (or the whole `schema`) is what to record at training time and re-assert at inference time before the model sees a row.
+
 **The column order is the whole value.** Training and inference silently disagreeing about which column is which is the classic mesh-ML failure mode, so the order is a stated, versioned rule (`FEATURE_SCHEMA_VERSION`, currently
 1) and the payload records it:
 
@@ -92,6 +94,8 @@ Two rules apply to every layout:
 
 - **The schema is strict.** The first mesh defines the column names and dtypes; a later mesh that disagrees is a named error, never a silently widened union. A dataset where every row group means the same thing is the entire point.
 - **`mesh_id` is stable.** `"stem"` (default) uses each file's stem (multi-step files append `_<step>`; duplicates are a named error), `"index"` uses the zero-padded entry index.
+
+`has_zarr()` reports whether `zarr` is installed (`pip install meshioplusplus[zarr]`), the way to check before requesting `format="zarr"` below.
 
 ### Parquet layout (`format="parquet"`, needs `[arrow]`)
 

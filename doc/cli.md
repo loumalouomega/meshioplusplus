@@ -8,7 +8,7 @@ meshioplusplus --help
 meshioplusplus <subcommand> --help
 ```
 
-The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`), or download a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page. It shares the [C API](./c_api.md)'s remaining flat-surface limitation — `convert -s/-d` is unavailable there (it lives only in the Python `Mesh`) — and has no Python fallback for formats whose C++ reader raises. Named **sets** are carried since v8.1.0: they are [regions](./regions.md) in the core, so `info` prints them and `diff` compares them. Everything below otherwise applies identically to both.
+The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`), or download a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page. It shares the [C API](./c_api.md)'s remaining flat-surface limitation — `convert -s/-d` is unavailable there (it lives only in the Python `Mesh`) — and has no Python fallback for formats whose C++ reader raises. Named **sets** are carried since v8.1.0: they are [regions](./regions.md) in the core, so `info` prints them and `diff` compares them. Everything below otherwise applies identically to both, except for the verbs each section marks **Python only**: `tessellate`, the `grid-*` family, `subsample`, `proximity-graph`, `predict`, `guard-fit`/`guard-check` and `dataset` have no native binary counterpart (the native binary does have a `surface` alias for `extract-surface`, not documented as its own section since it behaves identically).
 
 ---
 
@@ -25,7 +25,7 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--input-format FORMAT` | `-i` | Force input format (skip extension detection) |
 | `--output-format FORMAT` | `-o` | Force output format |
 | `--ascii` | `-a` | Write ASCII variant (default: binary where available) |
-| `--appended` | | Write a `.vtu`'s arrays as raw binary in one `<AppendedData>` section, no base64 (see [VTU](formats/vtu.md)); any other output format is an error |
+| `--appended` | | Write a `.vtu`'s arrays as raw binary in one `<AppendedData>` section, no base64 (see [VTU](formats/vtu.md)); any other output format is an error (a series output such as `.pvd`/`.pvtu`/`.pvtp` included, since its pieces are not named `vtu`), and it is mutually exclusive with `--ascii` |
 | `--float-format FMT` | `-f` | Float format string for ASCII output (default: `.16e`) |
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
@@ -157,6 +157,8 @@ meshioplusplus extract-surface [options] INFILE OUTFILE
 meshioplusplus extract-surface part.vtu surface.stl
 meshioplusplus extract-surface --parent-ids part.vtu surface.vtu
 ```
+
+The native binary also accepts `surface` as an alias for this verb; the Python CLI does not.
 
 ---
 
@@ -499,6 +501,34 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ---
 
+## meshioplusplus tessellate
+
+*(Python only — no native equivalent.)* Isoparametric subdivision of a mesh's five higher-order cell types onto a refinement lattice, so a curved cell becomes a set of ordinary linear ones a downstream tool can render or mesh further (see [curved tessellation](/tessellation)).
+
+```
+meshioplusplus tessellate [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--levels N` | Divisions per axis of the reference lattice (default `2`) |
+| `--no-curved` | Disable curved-cell handling entirely (a full no-op) |
+| `--no-fields` | Do not interpolate point_data/cell_data onto the output |
+| `--record-stencil` | Also attach `tessellate:stencil`/`weights` as real point_data (expensive; needed to reconstruct a `Tessellation` after a file round trip) |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+A provenance map (`Tessellation.gather`/`.scatter`/`.aggregate`) moves data between the tessellated mesh and its source; the summary reports `num_curved_source_cells`/`num_pass_through_source_cells` and whether the output is watertight.
+
+**Examples:**
+
+```sh
+meshioplusplus tessellate curved.msh flat.vtu
+meshioplusplus tessellate curved.msh flat.vtu --levels 4 --record-stencil
+```
+
+---
+
 ## meshioplusplus subdivide
 
 Polyhedrally refine a mesh: split every eligible 3D cell into one polyhedral child per face, connected to a new interior point (see [subdivide](/subdivide)). Distinct from `refine`, which is built on fixed same-type templates and raises by name on a polyhedron.
@@ -770,6 +800,37 @@ The point set is invariant, so `point_data`/`field_data` and named Point regions
 ```sh
 meshioplusplus optimize-volume volume.vtu optimized.vtu
 meshioplusplus optimize-volume volume.vtu optimized.vtu --max-iterations 20
+```
+
+---
+
+## meshioplusplus curvature
+
+Per-vertex mean and Gaussian curvature of a surface, by the angle defect and the cotangent Laplace-Beltrami operator (see [curvature](/curvature)).
+
+```
+meshioplusplus curvature [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--no-mean` | Do not attach `curvature:mean` |
+| `--no-gaussian` | Do not attach `curvature:gaussian` |
+| `--dual-area mixed-voronoi\|barycentric` | Dual area each curvature is divided by (default `mixed-voronoi`) |
+| `--include-boundary` | Compute a biased value at boundary vertices instead of leaving them NaN |
+| `--record-area` | Also attach `curvature:area`, the dual area each curvature was divided by |
+| `--record-principal` | Also attach `curvature:principal`, the `(n, 2)` pair `k1 >= k2` |
+| `--region NAME` | Restrict to this named cell region (default: every surface cell) |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Runs over no input array at all, like `quality`/`stats`. The summary reports the total angle defect against its Gauss-Bonnet expectation (`2*pi*chi`, `4*pi` for a closed genus-0 surface), the boundary/isolated/degenerate counts, and the input's surface `quality`.
+
+**Examples:**
+
+```sh
+meshioplusplus curvature scan.stl scan_k.vtu
+meshioplusplus curvature part.vtu part_k.vtu --record-principal --include-boundary
 ```
 
 ---
@@ -1324,7 +1385,7 @@ The `--input-format` and `--output-format` options accept any of the registered 
 
 `abaqus`, `abaqus_fil`, `ansys`, `ansys_rst`, `ansys_rst_cyclic`, `ansysinp`, `avsucd`, `cgns`, `code_aster`, `dolfin-xml`, `elmer`, `exodus`, `febio`, `femap`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `libmesh`, `lsdyna`, `lsdyna_binout`, `lsdyna_d3plot`, `marc`, `marc_t19`, `mdpa`, `med`, `medit`, `mfem`, `mphbin`, `mphtxt`, `nastran`, `nastran_op2`, `netgen`, `obj`, `off`, `patran`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `radioss`, `radioss_anim`, `radioss_th`, `stl`, `su2`, `svg`, `szplt` (needs TecIO), `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `vtx` (needs ADIOS2), `wkt`, `xdmf`, `xplt`, `xyz`, `z88`
 
-An input with no recognised extension is sniffed by content, a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than Medit (v16.5.0), Z88's fixed file names (`z88i1.txt`, `z88structure.txt`, `z88o2.txt`, `z88o3.txt`) are `z88` rather than xyz, as input and as output (v16.7.0), a `.dat` file that opens as an MSC Marc input deck is read as `marc` rather than Tecplot (v16.8.0), a file named `d3plot` is LS-DYNA's state database, `lsdyna_d3plot`, and its numbered members (`d3plot01`...) are refused with the base file's name (v16.9.0), a file named like `crashA001` (a stem, `A` and three or more digits) is an OpenRadioss animation file, `radioss_anim`, whose run is a sequence (`convert 'crashA*' crash.vtkhdf`, v16.11.0), a file named `binout` (or `binout0000`…) is LS-DYNA's `lsdyna_binout` and one named like `crashT01` an OpenRadioss time-history file, `radioss_th` (both v16.12.0, both also found by content), and a **directory** by the files it holds (v16.2.0): an Elmer mesh directory, an OpenFOAM case or a DOLFINx VTX `.bp` directory (v16.13.0) needs no `-i` (`meshioplusplus convert box box.vtu`). An output is never sniffed, so writing a directory format to an extension-less path needs `-o` (`meshioplusplus convert box.msh box -o elmer`). The `ascii`, `binary`, `compress` and `decompress` verbs take the format from the extension alone, so they do not accept a directory.
+An input with no recognised extension is sniffed by content, a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than Medit (v16.5.0), Z88's fixed file names (`z88i1.txt`, `z88structure.txt`, `z88o2.txt`, `z88o3.txt`) are `z88` rather than xyz, as input and as output (v16.7.0), a `.dat` file that opens as an MSC Marc input deck is read as `marc` rather than Tecplot (v16.8.0), a file named `d3plot` is LS-DYNA's state database, `lsdyna_d3plot`, and its numbered members (`d3plot01`...) are refused with the base file's name (v16.9.0), a file named like `crashA001` (a stem, `A` and three or more digits) is an OpenRadioss animation file, `radioss_anim`, whose run is a sequence (`convert 'crashA*' crash.vtkhdf`, v16.11.0), a file named `binout` (or `binout0000`…) is LS-DYNA's `lsdyna_binout` and one named like `crashT01` an OpenRadioss time-history file, `radioss_th` (both v16.12.0, both also found by content), and a **directory** by the files it holds (v16.2.0): an Elmer mesh directory, an OpenFOAM case or a DOLFINx VTX `.bp` directory (v16.13.0) needs no `-i` (`meshioplusplus convert box box.vtu`). An output is never sniffed: since v16.17.0, resolving a write goes through `resolve_write_format`, a name-and-extension-only function, so a `.dat` output is always `tecplot` (never `marc`, even though a `.dat` input can read as one) and a Marc deck needs `-o marc` explicitly; writing a directory format to an extension-less path needs `-o` the same way (`meshioplusplus convert box.msh box -o elmer`). Naming a read-only format as the output says so directly ("can be read but not written"), rather than failing as an unknown format. The `ascii`, `binary`, `compress` and `decompress` verbs take the format from the extension alone, so they do not accept a directory.
 
 ## Selective reads and fast summaries
 
@@ -1402,7 +1463,7 @@ See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
 
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
 
-The mesh-to-grid data path a convolutional or superresolution model needs.
+*(Python only — no native equivalent.)* The mesh-to-grid data path a convolutional or superresolution model needs.
 
 ```bash
 meshioplusplus grid-sample   case.vtu grid.vti --resolution 64,64,64
@@ -1430,7 +1491,7 @@ Write grids as **`.vti`**: it stores the lattice as origin/spacing/extent and re
 
 ## `subsample`
 
-Reduce a mesh to a point cloud of exactly `--count` points, so a large surface fits a transformer's token budget.
+*(Python only — no native equivalent.)* Reduce a mesh to a point cloud of exactly `--count` points, so a large surface fits a transformer's token budget.
 
 ```bash
 meshioplusplus subsample wing.stl wing_4096.vtp --count 4096                 # farthest-point sampling
@@ -1453,7 +1514,7 @@ See [`doc/grids.md`](grids.md).
 
 ## `proximity-graph`
 
-Build a graph from geometry rather than connectivity: the neighbourhoods a particle method needs, where the interaction radius and not a shared element is what links two points.
+*(Python only — no native CLI verb; the underlying pair search itself runs in the C++ core since v16.18.0, see [proximity graphs](/proximity_graphs).)* Build a graph from geometry rather than connectivity: the neighbourhoods a particle method needs, where the interaction radius and not a shared element is what links two points.
 
 ```bash
 meshioplusplus proximity-graph particles.vtu graph.vtu --radius 0.015
@@ -1472,7 +1533,7 @@ The graph is written as `line` cells over those positions with a `degree` point 
 
 ## `predict`
 
-Run a trained PhysicsNeMo checkpoint on one mesh file — no manifest, no split, no entry.
+*(Python only — no native equivalent.)* Run a trained PhysicsNeMo checkpoint on one mesh file — no manifest, no split, no entry.
 
 ```bash
 meshioplusplus predict runs/example/checkpoints/best.mdlus part.vtu part_pred.vtu
@@ -1489,7 +1550,7 @@ Everything else comes from the checkpoint's own model card, including which mode
 
 ## `guard-fit`, `guard-check`
 
-Fit a description of the shapes a dataset contains, and score a new mesh against it — the check a trained surrogate cannot make for itself.
+*(Python only — no native equivalent.)* Fit a description of the shapes a dataset contains, and score a new mesh against it — the check a trained surrogate cannot make for itself.
 
 ```bash
 meshioplusplus guard-fit dataset_manifest.json guard.json --split train --margin 1.5

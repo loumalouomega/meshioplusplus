@@ -41,7 +41,7 @@ The output is **always `float64`**, whatever the input dtype: the mean of an `in
 - Ragged polygon blocks average over the row's nodes; polyhedron blocks average over the **distinct** nodes across all of a cell's faces.
 
 ::: tip Determinism
-The cell → point direction is a scatter, and floating-point addition is not associative, so its accumulation pass runs **serially** on purpose: the result must not depend on the thread count. Only the final divide is parallelised.
+The cell → point direction is a scatter, and floating-point addition is not associative, so getting the same result at any thread count takes care: since v16.19.0 each point's incident cells are gathered in parallel, adding their terms in the same order the old serial scatter used, rather than running the accumulation itself serially.
 :::
 
 ## CLI

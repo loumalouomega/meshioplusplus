@@ -95,7 +95,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on directory formats:** [`elmer`](./formats/elmer.md), `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a write target with no extension needs an explicit `file_format=`, and none of the four can be read from or written to a buffer. **Reading sniffs a directory by the files it holds** (v16.2.0): a `mesh.header` (or a `partitioning.N` of `part.n.*` files) makes it `elmer`, and a `constant/polyMesh` or `polyMesh` with `owner` and `faces` (or a decomposed `processor0`, or a multi-region `constant/regionProperties`) makes it `openfoam`, so `read("case")` and `convert case out.vtu` need no format; a directory matching both, or neither, is not guessed. A glob over such a set — `read_sequence("out_*.pmsh")` — matches the suffixed ones, which an ordinary file glob would not; an extension-less Elmer directory has to be listed explicitly.
 
-**Note on the physics-ML formats:** [`pmsh`](./formats/pmsh.md), [`zarr`](./formats/zarr.md), [`cae`](./formats/cae.md) and [`usd`](./formats/usd.md) are **Python-only**. They are not in the shared C++ dispatch registry, so they are absent from the WASM, C, Fortran, Julia, R and native-CLI surfaces; everything else in this table is reachable from all of them. `pmsh`, `zarr` and `cae` are also *lossy by design* — each reduces a mesh to what its consumer's data model holds (one simplex kind, or a triangulated skin plus node fields) — so they are export targets rather than interchange formats.
+**Note on the physics-ML formats:** [`pmsh`](./formats/pmsh.md), [`zarr`](./formats/zarr.md), [`cae`](./formats/cae.md) and [`usd`](./formats/usd.md) are **Python-only**, along with [`neuroglancer`](./formats/neuroglancer.md). They are not in the shared C++ dispatch registry, so they are absent from the WASM, C, Fortran, Julia, R and native-CLI surfaces; everything else in this table is reachable from all of them. `pmsh`, `zarr` and `cae` are also *lossy by design* — each reduces a mesh to what its consumer's data model holds (one simplex kind, or a triangulated skin plus node fields) — so they are export targets rather than interchange formats.
 
 **Note on LS-DYNA (`lsdyna`)** (v15.2.0): a keyword deck read in full by both engines, following `*INCLUDE` and `*INCLUDE_PATH`. `*PART` becomes a cell region (title as name, `pid` as tag) and `*SET_NODE` / `*SET_SOLID`, `_SHELL`, `_BEAM`, `_PART` / `*SET_SEGMENT` become point, cell and side regions. The standard, `LONG=`, `I10=` and comma-separated card formats are read per card, so they can be mixed in one file, and the tetra, pyramid and wedge that LS-DYNA writes as hexahedra with repeated nodes are collapsed on read and expanded on write. Only geometry is read — materials, sections, contacts and loads are skipped — and the writer puts placeholder section and material ids on every part. `.k`, `.key` and `.dyn` resolve to `lsdyna` (none was claimed before). See [LS-DYNA](./formats/lsdyna.md).
 
@@ -129,7 +129,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on the point-cloud formats (`pcd`, `xyz`)** (v15.1.0): both map to the points plus one `vertex` block, exactly what [`subsample_points`](./point_budgets.md) emits, so `.pcd` → `subsample` → `proximity-graph` → `.vtu` runs from the CLI with no intermediate format. `pcd` is PCL's v0.7 layout in all three `DATA` modes (`ascii`, `binary`, `binary_compressed`), with `rgb`/`rgba` unpacked by bit-cast and `normal_x/y/z` gathered into `normals`; `xyz` is a headerless convention, so its columns are resolved from a `columns=` list, a header comment, the column count and extension, or the value ranges, and an ambiguous file is an error rather than a guess. Chemistry XYZ (atom count, comment, `element x y z`) shares the extension and is refused by name. `.txt` and `.asc` now resolve to `xyz`. LAS/LAZ and E57 are out of scope.
 
-**Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When writing without an explicit `file_format`, meshio++ picks `gmsh` if the mesh carries gmsh-native tags (`gmsh:physical`/`gmsh:geometrical`/`gmsh:dim_tags`) or MED-derived tags (`cell_tags`/`point_tags`/`med:*`), else falls back to the first registered candidate (`ansys`). When reading, meshio++ tries the registered formats in order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity either way.
+**Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When writing without an explicit `file_format`, meshio++ picks `gmsh` if the mesh carries gmsh-native tags (`gmsh:physical`/`gmsh:geometrical`/`gmsh:dim_tags`) or MED-derived tags (`cell_tags`/`point_tags`/`med:*`), else falls back to the first registered candidate (`ansys`). When reading, meshio++ tries first the candidate `sniff_format` recognises from the file's first 512 bytes (since v16.20.0), then the rest of the registered formats in order, using the first that parses the file — so a Gmsh `.msh` goes to `gmsh` before `ansys` and `freefem` without needing `file_format`. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity either way.
 
 **Note on `.post.*`:** extension resolution tries the *longest* matching suffix first, so a compound extension always wins over a shorter one that also matches — `.post.msh` resolves to `gid`, never falling through to `.msh`'s own `ansys`/`gmsh`/`freefem` candidates (even for a mesh carrying gmsh-native tags, which would otherwise steer a plain `.msh` write to `gmsh`); `.post` alone (no `.msh` suffix) still resolves to `permas`, unaffected.
 
@@ -139,7 +139,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `triangle` vs `tetgen` (`.node`/`.ele`):** both formats use `.node`/`.ele`; `tetgen` is registered first, so plain extension dispatch resolves to it. When *reading*, a 2D pair makes tetgen raise and the dispatcher falls through to `triangle` automatically; when *writing*, pass `file_format="triangle"` (or use a `.poly` path, which defaults to `triangle`). Like tetgen, the format spans multiple files and cannot use buffers.
 
-**Note on `ensight`:** EnSight Gold (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Since v11.3.0 a `.case` file's `TIME`/`VARIABLE` sections are read (`point_data`/`cell_data`/tensors, one step selected by `time_step`); since v15.5.0 they are written too (scalar/vector/tensor symm/tensor asym plus `field_data` as `constant per case`), single-part and non-transient only. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
+**Note on `ensight`:** EnSight Gold (`.case` + `.geo` sibling pair, ASCII, C-binary with byte-order auto-detection, and, since v16.17.0, Fortran unformatted binary (`fortran=True`), read through the shared Fortran record reader). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Since v11.3.0 a `.case` file's `TIME`/`VARIABLE` sections are read (`point_data`/`cell_data`/tensors, one step selected by `time_step`); since v15.5.0 they are written too (scalar/vector/tensor symm/tensor asym plus `field_data` as `constant per case`), single-part and non-transient only. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
 
 **Note on `vti`:** VTK XML ImageData is a **regular lattice**: its geometry is the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array. Reading expands the extent into explicit `hexahedron` cells; writing therefore *requires* a lattice, and a mesh that is not one — including a **partial** grid (`voxelize`'s `surface`/`inside` fills, or `compute_sdf`'s octree, whose holes ImageData cannot express) — raises `WriteError` by name. It is the only format that round-trips a generated grid's geometry, which is why [`compute_sdf`](./sdf.md) points at it.
 
@@ -321,8 +321,9 @@ Use `file_format="gmsh22"` to write version 2.2 via the generic `meshioplusplus.
 ```python
 meshioplusplus.vtu.write(filename, mesh,
     binary=True,
-    compression="zlib",   # "zlib", "lzma", or None
+    compression="zlib",   # "zlib", "lzma", "lz4", "zstd", or None
     header_type=None,     # "UInt32" or "UInt64"
+    appended=False,       # True: one <AppendedData encoding="raw"> section (v16.21.0), needs binary=True
 )
 ```
 
@@ -562,7 +563,7 @@ meshioplusplus.flac3d.write(filename, mesh,
 
 ### Femap neutral (`.neu`)
 
-`meshioplusplus.femap.write(filename, mesh)` — no extra options. The Femap 8.2 layout: properties from `femap:property`/`femap:type` and their regions, other regions as groups; results are not written. See [`femap.md`](./formats/femap.md#writing).
+`meshioplusplus.femap.write(filename, mesh)` — no extra options. The Femap 8.2 layout: properties from `femap:property`/`femap:type` and their regions, other regions as groups; since v16.11.0 results are written too, one output set (`450`) per write and one `451` vector per numeric point or cell data array. `write_sequence`/`femap.SeriesWriter` (v16.17.0) write a whole series into one file, the mesh once and one output set per step. See [`femap.md`](./formats/femap.md#writing).
 
 ### MFEM (`.mesh`)
 
@@ -586,6 +587,26 @@ Abaqus is one of the three Phase-1 [named region](./regions.md) formats (with gm
 
 `meshioplusplus.lsdyna.write(filename, mesh)` — no extra options. Cell regions with a dimension become `*PART` cards (the tag is the `pid`), every other region becomes a `*SET_*_LIST`, and each part gets placeholder section and material ids; see [`lsdyna.md`](./formats/lsdyna.md#writing).
 
+### OpenRadioss (`_0000.rad`)
+
+```python
+meshioplusplus.radioss.write(filename, mesh, stubs=False)
+```
+
+Since v16.17.0. `stubs=True` also writes placeholder `/MAT/LAW1` and `/PROP` cards so the OpenRadioss starter accepts the deck on its own (without them the deck is geometry-only); see [`radioss.md`](./formats/radioss.md#writing).
+
+### MSC Marc (`.dat`)
+
+`meshioplusplus.marc.write(filename, mesh)` — no extra options; since v16.17.0, by name (`file_format="marc"`, since a `.dat` alone writes Tecplot). Writes an `EXTENDED` deck with `CONNECTIVITY`, `COORDINATES` and `DEFINE NODE`/`ELEMENT SET`s; see [`marc.md`](./formats/marc.md#writing).
+
+### EnSight Gold (`.case`/`.geo`)
+
+```python
+meshioplusplus.ensight.write(filename, mesh, binary=True, fortran=False)
+```
+
+`fortran=True` (since v16.17.0) writes Fortran unformatted binary records instead of plain C binary, the layout VTK's EnSight reader also reads; see [`ensight.md`](./formats/ensight.md#writing).
+
 ### DOLFIN-XML (`.xml`)
 
 `meshioplusplus.dolfin.write(filename, mesh)` — no extra options. Both `point_data` (since v9.9.0, as `dim="0"` mesh functions) and `cell_data` are written to sibling `<stem>_<name>.xml` files; see [`dolfin.md`](./formats/dolfin.md#file-structure).
@@ -607,3 +628,7 @@ See [`gid.md`](./formats/gid.md). Reading takes only `time_step` (selecting one 
 ## CLI format names
 
 When using `meshioplusplus convert -o <format>`, use one of the format names from the first column of the table above (e.g. `gmsh`, `gmsh22`, `vtk`, `vtk42`, `vtu`, `xdmf`, …).
+
+## Format lists for a file dialog
+
+`meshioplusplus.formats()` returns `{"readable": [...], "writable": [...], "extensions": {".stl": ["stl"], ...}}`, backed by the public `extension_to_filetypes` dict (`{ext: [format_name, ...]}`, extension keys carrying their leading dot) that `register_format` fills as each format module imports — this is what a file dialog needs, so it is public precisely to avoid reaching into the private reader/writer maps; the Blender add-on uses it. `_core.registry_formats()` is the native registry's own version of the same shape (readable/writable lists plus the extension map), the way WASM's `availableFormats()` reports them.

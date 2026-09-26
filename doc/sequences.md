@@ -1,6 +1,6 @@
 # Sequences: multi-file and transient datasets
 
-Since v9.12.0 meshio++ can treat a **set of files** — or the steps inside one multi-step file — as one ordered logical dataset. That is how transient solver output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most of the 41 formats have to express time, since only a minority carry several steps natively.
+Since v9.12.0 meshio++ can treat a **set of files** — or the steps inside one multi-step file — as one ordered logical dataset. That is how transient solver output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most of the 84 formats have to express time, since only a minority carry several steps natively.
 
 ```bash
 # fan-in: N single-step files -> one multi-step XDMF (quote the glob!)
