@@ -40,6 +40,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/format_compat.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
 #include <cgnslib.h>
@@ -156,23 +157,6 @@ std::string cgns_mll_meshio_name(CGNS_ENUMT(ElementType_t) type) {
     }
 }
 
-/// The SIDS<->meshio node permutation for the types whose orderings differ.
-/// Self-inverse, so one table serves both directions -- the same tables
-/// cgns.cpp's cgns_type_table() carries, restated here rather than exported
-/// because that one is file-private and its shape (name + code + perm) does not
-/// fit a lookup keyed on the MLL's enum.
-const std::vector<int>* cgns_mll_perm(const std::string& rName) {
-    static const std::map<std::string, std::vector<int> > perms = {
-        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
-        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
-        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
-        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
-                          18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26}},
-    };
-    auto it = perms.find(rName);
-    return it == perms.end() ? nullptr : &it->second;
-}
-
 /// One section's raw description, gathered before anything is decoded.
 struct MllSection {
     int mIndex = 0;
@@ -200,15 +184,17 @@ void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std
 
     NDArray conn = NDArray::Uninit(DType::Int64, {ncells, static_cast<std::size_t>(npc)});
     std::int64_t* dst = conn.As<std::int64_t>();
-    const std::vector<int>* perm = cgns_mll_perm(rMeshio);
+    // The SIDS order of the types whose ordering differs lives in the
+    // node-ordering registry (detail/node_order.cpp); CGNS node ids are 1-based.
+    const detail::NodeOrder* order = detail::node_order("cgns", rMeshio);
+    const std::vector<int>* perm = order && order->mToMeshio.size() == static_cast<std::size_t>(npc)
+                                       ? &order->mToMeshio
+                                       : nullptr;
     for (std::size_t c = 0; c < ncells; ++c) {
-        for (int k = 0; k < npc; ++k) {
-            // CGNS node ids are 1-based; the permutation is self-inverse, so
-            // the same scatter serves read and write.
-            const std::int64_t v =
-                static_cast<std::int64_t>(raw[c * static_cast<std::size_t>(npc) + k]) - 1;
-            dst[c * static_cast<std::size_t>(npc) + (perm ? (*perm)[k] : k)] = v;
-        }
+        const cgsize_t* src = raw.data() + c * static_cast<std::size_t>(npc);
+        for (int k = 0; k < npc; ++k)
+            dst[c * static_cast<std::size_t>(npc) + k] =
+                static_cast<std::int64_t>(src[perm ? (*perm)[k] : k]) - 1;
     }
     rMesh.AddCellBlock(rMeshio, std::move(conn));
 }

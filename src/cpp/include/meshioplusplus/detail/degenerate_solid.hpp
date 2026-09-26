@@ -30,6 +30,7 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -54,6 +55,18 @@ struct CollapsedBrick {
  * @param rNodes The brick's eight node ids in file order.
  */
 MESHIOPLUSPLUS_API CollapsedBrick collapse_brick(const std::array<std::int64_t, 8>& rNodes);
+
+/**
+ * @brief The 8 brick nodes a `tetra`, `pyramid` or `wedge` is written as, the
+ * inverse of `collapse_brick` (`1 2 3 4 4 4 4 4`, `1 2 3 4 5 5 5 5`, and a wedge
+ * `1 3 6 4 2 2 5 5`); any other type's first eight nodes as they are. The
+ * LS-DYNA and Radioss writers share it; the Python twin is `_expand_solid` in
+ * `lsdyna/_lsdyna.py`. Since v16.17.0.
+ * @param Type The meshio++ cell type.
+ * @param pRow The cell's nodes, in meshio++ order.
+ */
+MESHIOPLUSPLUS_API std::array<std::int64_t, 8> expand_brick(std::string_view Type,
+                                                            const std::int64_t* pRow);
 
 }  // namespace detail
 }  // namespace meshioplusplus

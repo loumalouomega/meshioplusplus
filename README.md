@@ -30,9 +30,9 @@ There are various mesh formats available for representing unstructured meshes. m
 > [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`, text or ElmerGrid's binary; bodies and boundaries as named regions, ElmerGrid partitions merged, `partition:part` written as `partitioning.N`, recognised by content),
-> [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`),
+> [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`; C and Fortran binary),
 > [FEBio](https://febio.org) input (`.feb`, spec 2.5/3.0/4.0 read, 4.0 written; sets and surfaces as named regions, MeshData read and written) and plot files (`.xplt`, read-only; every state is a step, remeshed runs included, surface variables on facet blocks),
-> [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/) neutral file (`.neu`, 4.41 to 2020.1 read, 8.2 mesh written; properties and groups as named regions, every output set is a step),
+> [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/) neutral file (`.neu`, 4.41 to 2020.1 read, 8.2 mesh written; properties and groups as named regions, every output set is a step, a series written as one output set per step),
 > [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`, named cell groups),
 > [FLUX](https://www.altair.com/flux/) (mesh `.pf3`, field `.dex`),
 > [FreeFem++](https://freefem.org/) (`.msh`),
@@ -63,8 +63,8 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
-> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed) animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`, read-only; each output a step of field data),
-> [MSC Marc](https://hexagon.com/products/marc) input deck and formatted post file (`.dat`, `.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
+> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed; written with optional placeholder materials and properties), animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`, read-only; each output a step of field data),
+> [MSC Marc](https://hexagon.com/products/marc) input deck (`.dat`, written by name) and formatted post file (`.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
@@ -1049,7 +1049,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.17.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.18.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -34,6 +34,7 @@
 #include "meshioplusplus/formats/marc.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 
 namespace {
 
@@ -212,8 +213,21 @@ TEST(Marc, ExtendedDeck) {
     // Element 30 has no cell: the set keeps the other two.
     EXPECT_EQ(region("bricks", RegionKind::Cell), (std::vector<std::int64_t>{0, 1}));
     EXPECT_EQ(mesh.Region(mesh.FindRegion("bricks", RegionKind::Cell)).mDim, 3);
-    // resolve_format: an existing Marc deck named .dat is Marc's.
+    // resolve_format: an existing Marc deck named .dat is Marc's; a write to
+    // the same path is Tecplot's all the same.
     EXPECT_EQ(meshioplusplus::resolve_format(path, ""), "marc");
+    EXPECT_EQ(meshioplusplus::resolve_write_format(path, ""), "tecplot");
+    std::remove(path.c_str());
+}
+
+TEST(Marc, AWriteOverADeckWritesTecplot) {
+    // registry_write_ex resolves a write without looking at the file it
+    // replaces (until v16.17.0 it chose "marc", which has no writer).
+    const std::string path = write_temp(kDeck, ".dat");
+    meshioplusplus::registry_write_ex(path, mt::tri_mesh(), "", meshioplusplus::WriteOptions{});
+    EXPECT_EQ(meshioplusplus::resolve_format(path, ""), "tecplot");
+    mt::expect_same_geometry(mt::tri_mesh(), meshioplusplus::registry_read(
+                                                 path, "tecplot", meshioplusplus::ReadOptions{}));
     std::remove(path.c_str());
 }
 
@@ -319,4 +333,50 @@ TEST(Marc, IncludeFilesVolumeBTypesAndSideSets) {
     std::ofstream(dir / "loop.dat") << "title,loop\nend\ninclude loop.dat\n";
     EXPECT_THROW(meshioplusplus::read_marc((dir / "loop.dat").string()), meshioplusplus::ReadError);
     std::filesystem::remove_all(dir.parent_path());
+}
+
+TEST(Marc, WriterRoundTripsTheDeck) {
+    // Read -> write -> read keeps the mesh, element numbers and types, and the
+    // node and element sets (the Python twin writes the same bytes: see
+    // test_marc.py).
+    const std::string in_path = write_temp(kDeck, ".dat");
+    const meshioplusplus::Mesh in = meshioplusplus::read_marc(in_path);
+    const std::string out = mt::temp_path("_marc_out.dat");
+    meshioplusplus::write_marc(out, in);
+    const meshioplusplus::Mesh back = meshioplusplus::read_marc(out);
+    mt::expect_mesh_eq(in, back);
+    for (const char* name : {"marc:element", "marc:type"})
+        for (std::size_t b = 0; b < in.NumCellBlocks(); ++b)
+            for (std::size_t r = 0; r < in.Cells(b).NumCells(); ++r)
+                EXPECT_EQ(meshioplusplus::detail::read_int(in.CellData(name, b), r),
+                          meshioplusplus::detail::read_int(back.CellData(name, b), r))
+                    << name;
+    ASSERT_EQ(in.NumRegions(), back.NumRegions());
+    for (std::size_t k = 0; k < in.NumRegions(); ++k) {
+        const auto& a = in.Region(k);
+        const auto& b = back.Region(k);
+        EXPECT_EQ(a.mName, b.mName);
+        EXPECT_EQ(std::vector<std::int64_t>(a.Entries(), a.Entries() + a.NumEntries()),
+                  std::vector<std::int64_t>(b.Entries(), b.Entries() + b.NumEntries()))
+            << a.mName;
+    }
+    // A write is resolved by name: ".dat" alone is Tecplot's.
+    EXPECT_EQ(meshioplusplus::resolve_write_format(out, ""), "tecplot");
+    EXPECT_THROW(meshioplusplus::write_marc(out, meshioplusplus::Mesh{}),
+                 meshioplusplus::WriteError);
+    std::remove(in_path.c_str());
+    std::remove(out.c_str());
+}
+
+TEST(Marc, WriterPicksTypesForAPlanarMesh) {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0}, {1, 0}, {1, 1}, {0, 1}}));
+    m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    const std::string out = mt::temp_path("_marc_plane.dat");
+    meshioplusplus::write_marc(out, m);
+    const meshioplusplus::Mesh back = meshioplusplus::read_marc(out);
+    EXPECT_EQ(meshioplusplus::detail::read_int(back.CellData("marc:type", 0), 0), 11);
+    EXPECT_EQ(meshioplusplus::detail::read_int(back.CellData("marc:type", 1), 0), 6);
+    std::remove(out.c_str());
 }

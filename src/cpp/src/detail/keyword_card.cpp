@@ -318,13 +318,13 @@ std::vector<std::string> split_fixed(std::string_view Line, const std::vector<Ca
     return out;
 }
 
-std::string format_real16(double Value) {
+std::string format_real_fit(double Value, int Width) {
     if (Value == 0.0)
         return "0.0";
     const int neg = Value < 0.0 ? 1 : 0;
     const int e3 = (std::fabs(Value) >= 1e100 || std::fabs(Value) < 1e-99) ? 1 : 0;
-    const int pmax = 10 - neg - e3;
-    char buf[64];
+    const int pmax = Width - 6 - neg - e3;
+    char buf[64] = {};
     for (int p = 1; p <= pmax; ++p) {
         snprintf_c(buf, sizeof(buf), "%.*e", p, Value);
         const char* end = nullptr;
@@ -332,6 +332,50 @@ std::string format_real16(double Value) {
             return std::string(buf);
     }
     return std::string(buf);
+}
+
+std::string format_real16(double Value) {
+    return format_real_fit(Value, 16);
+}
+
+std::string format_real_short(double Value) {
+    if (Value == 0.0)
+        return "0.0";
+    char buf[64] = {};
+    for (int p = 0; p <= 16; ++p) {
+        snprintf_c(buf, sizeof(buf), "%.*e", p, Value);
+        const char* end = nullptr;
+        if (parse_double(buf, end) == Value)
+            break;
+    }
+    const std::string s(buf);
+    const std::size_t e_at = s.find('e');
+    const bool neg = s[0] == '-';
+    std::string digits;
+    for (std::size_t i = neg ? 1 : 0; i < e_at; ++i)
+        if (s[i] != '.')
+            digits += s[i];
+    const int e = std::atoi(s.c_str() + e_at + 1);
+    const int point = e + 1;
+    const int n = static_cast<int>(digits.size());
+    std::string body;
+    if (point > -4 && point <= 16) {
+        if (point <= 0)
+            body = "0." + std::string(static_cast<std::size_t>(-point), '0') + digits;
+        else if (point >= n)
+            body = digits + std::string(static_cast<std::size_t>(point - n), '0') + ".0";
+        else
+            body = digits.substr(0, static_cast<std::size_t>(point)) + "." +
+                   digits.substr(static_cast<std::size_t>(point));
+    } else {
+        body = digits.substr(0, 1);
+        if (n > 1)
+            body += "." + digits.substr(1);
+        char exp[16];
+        snprintf_c(exp, sizeof(exp), "e%c%02d", e < 0 ? '-' : '+', e < 0 ? -e : e);
+        body += exp;
+    }
+    return (neg ? "-" : "") + body;
 }
 
 }  // namespace detail

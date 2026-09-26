@@ -231,6 +231,28 @@ def test_femap_neutral_steps_convert(tmp_path):
     assert meshioplusplus.read(back).points.shape == last.points.shape
 
 
+def test_femap_series_through_the_sequence_tool(tmp_path):
+    # v16.17.0: a fan-in to .neu writes one output set per step.
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    paths = []
+    for k in range(3):
+        m = meshioplusplus.Mesh(
+            points,
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"u": np.full(3, float(k))},
+        )
+        paths.append(str(tmp_path / f"s_{k}.vtu"))
+        meshioplusplus.write(paths[-1], m)
+    report = _tools.tool_sequence(
+        input_paths=paths, output_path=str(tmp_path / "s.neu"), times=[0, 1, 2]
+    )
+    assert len(report["steps_plan"]) == 3
+    meta = meshioplusplus.read_metadata(report["output_path"])
+    assert list(meta["time_values"]) == [0.0, 1.0, 2.0]
+    last = meshioplusplus.read(report["output_path"], time_step=2)
+    assert np.allclose(last.point_data["u"], 2.0)
+
+
 def test_mfem_grid_functions_convert_both_ways(tmp_path):
     import pathlib
 
@@ -2045,6 +2067,11 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     assert meshioplusplus.read(xdr).cells[0].type == "hexahedron"
     rad = meshes / "radioss" / "old_0000.rad"
     assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8
+    # Written too, since v16.17.0.
+    assert "radioss" in out["writable"]
+    back_rad = str(tmp_path / "back_0000.rad")
+    _tools.tool_convert(str(rad), back_rad)
+    assert meshioplusplus.read(back_rad).cells[0].type == "hexahedron"
     # OpenRadioss animation files (v16.11.0): read-only, found by name.
     assert "radioss_anim" in out["readable"] and "radioss_anim" not in out["writable"]
     anim = str(meshes / "radioss_anim" / "cubeA002")
@@ -2106,6 +2133,9 @@ def test_marc_and_ansys_results_formats(tmp_path):
     out = _dump(_tools.tool_formats())
     for fmt in ("marc", "marc_t19", "ansys_rst_cyclic"):
         assert fmt in out["readable"], fmt
+    # The deck is written since v16.17.0 (by name: ".dat" writes Tecplot).
+    assert "marc" in out["writable"]
+    for fmt in ("marc_t19", "ansys_rst_cyclic"):
         assert fmt not in out["writable"], fmt
     assert out["extensions"][".t19"] == ["marc_t19"]
     assert out["extensions"][".dat"] == ["marc", "tecplot"]
@@ -2114,6 +2144,9 @@ def test_marc_and_ansys_results_formats(tmp_path):
     target = str(tmp_path / "hex20.vtu")
     _tools.tool_convert(str(deck), target)
     assert meshioplusplus.read(target).cells[0].type == "hexahedron20"
+    again = str(tmp_path / "again.dat")
+    _tools.tool_convert(target, again, output_format="marc")
+    assert _dump(_tools.tool_sniff(again))["format"] == "marc"
     post = str(meshes / "marc" / "results.t19")
     last = str(tmp_path / "last.vtu")
     _tools.tool_convert(post, last, time_step=-1)

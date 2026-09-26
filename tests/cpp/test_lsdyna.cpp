@@ -26,6 +26,7 @@
 #include <initializer_list>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -445,4 +446,28 @@ TEST(KeywordCard, FormatReal16FitsAndRoundTrips) {
     EXPECT_EQ(format_real16(0.1), "1.0e-01");
     EXPECT_EQ(card_to_real(format_real16(0.1), ""), 0.1);
     EXPECT_EQ(format_real16(0.0), "0.0");
+}
+
+TEST(KeywordCard, FormatRealShortIsPythonsRepr) {
+    // The spellings Python's repr gives, which the Python twin reproduces.
+    const std::pair<double, const char*> cases[] = {
+        {0.1, "0.1"},
+        {-106.644339063934, "-106.644339063934"},
+        {1e16, "1e+16"},
+        {1e15, "1000000000000000.0"},
+        {1e-5, "1e-05"},
+        {1e-4, "0.0001"},
+        {2.5, "2.5"},
+        {100.0, "100.0"},
+        {-0.0001234, "-0.0001234"},
+        {1.7976931348623157e308, "1.7976931348623157e+308"},
+        {5e-324, "5e-324"},
+        {0.0, "0.0"}};
+    for (const auto& [value, text] : cases)
+        EXPECT_EQ(meshioplusplus::detail::format_real_short(value), text) << text;
+    // format_real_fit keeps a width; format_real16 is width 16.
+    EXPECT_EQ(meshioplusplus::detail::format_real_fit(-106.644339063934, 20),
+              "-1.0664433906393e+02");
+    EXPECT_EQ(meshioplusplus::detail::format_real16(0.1),
+              meshioplusplus::detail::format_real_fit(0.1, 16));
 }

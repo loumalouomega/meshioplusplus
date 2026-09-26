@@ -940,10 +940,9 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("card tokenizer · node orders", "S"),
-                ("Fortran records · Elmer globs", "S"),
                 ("route runs (.odb · .t16 · DPF)", "S"),
-                ("checks awaiting a licence", "S"),
+                ("reader checks awaiting a licence", "S"),
+                ("writer checks (Marc · Femap)", "S"),
             ],
             [],
         ),

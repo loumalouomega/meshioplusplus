@@ -1,9 +1,12 @@
 """Render the format conformance matrix into the docs, or re-observe it.
 
 ``tests/python/conformance_spec.py`` declares what every writable format keeps
-through a write and a read (its ``SPEC``); ``test_conformance.py`` checks the
-declarations against reality. This script turns the declarations into
-``doc/conformance.md`` and the "Round trip" column of ``doc/formats.md``::
+through a write and a read (its ``SPEC``), and why every read-only format has
+no writer (its ``READ_ONLY``); ``test_conformance.py`` checks the declarations
+against reality and both registries. This script turns the declarations into
+``doc/conformance.md`` and the "Read", "Write" and "Round trip" columns of
+``doc/formats.md`` (a qualifier after a column's mark, such as ``✓ (structure
+file)``, is kept)::
 
     python tools/gen_conformance_table.py            # rewrite both pages
     python tools/gen_conformance_table.py --check    # exit 1 if either is stale
@@ -66,10 +69,12 @@ def _anchor(fmt):
 
 def summary(fmt: str) -> str:
     """The compact cell of the "Round trip" column in doc/formats.md."""
+    link = f"(./conformance.md#{_anchor(fmt)})"
+    if fmt in cs.READ_ONLY:
+        return f"[read-only]{link}"
     spec = cs.SPEC.get(fmt)
     if spec is None:
         return "—"
-    link = f"(./conformance.md#{_anchor(fmt)})"
     err = spec.get("error")
     if err == "write-only":
         return f"[write-only]{link}"
@@ -143,7 +148,67 @@ def render_conformance() -> str:
     body = head + lines
     if notes:
         body += ["", "## Notes", ""] + notes
+    body += [
+        "",
+        "## Read-only formats",
+        "",
+        "The formats meshio++ reads and does not write, each with the reason. "
+        "`test_conformance.py` fails when a format reads without writing and is "
+        "not listed here, or is listed and writes, in either the Python or the "
+        "native registry.",
+        "",
+        "| Format | Why there is no writer |",
+        "|---|---|",
+    ]
+    for fmt in sorted(cs.READ_ONLY, key=str.lower):
+        body.append(
+            f'| <span id="{_anchor(fmt)}">`{fmt}`</span> | {cs.READ_ONLY[fmt]} |'
+        )
     return "\n".join(body) + "\n"
+
+
+def _row_names(first_cell: str) -> list:
+    """The format names a formats-table row covers: every backticked name in
+    its link text (`[`gmsh` / `gmsh22`](...)` covers two)."""
+    m = re.match(r"^\[([^\]]*)\]", first_cell)
+    return re.findall(r"`([^`]+)`", m.group(1)) if m else []
+
+
+def _mark(cell: str, yes: bool) -> str:
+    """`cell` with its leading ✓/— set to `yes`, any qualifier after it kept."""
+    rest = cell
+    for symbol in ("✓", "—"):
+        if rest.startswith(symbol):
+            rest = rest[len(symbol) :]
+            break
+    else:
+        rest = f" {rest}" if rest else ""
+    return ("✓" if yes else "—") + rest
+
+
+def _row_summary(names: list) -> str:
+    """The "Round trip" cell of a row: one summary, or one per name when the
+    names of a multi-name row keep different things (`gmsh` / `gmsh22`)."""
+    declared = [n for n in names if n in cs.SPEC or n in cs.READ_ONLY]
+    labels = {n: re.sub(r"\(.*\)$", "", summary(n)) for n in declared}
+    if len(set(labels.values())) == 1:
+        return summary(declared[0])
+    return " / ".join(f"`{n}` {summary(n)}" for n in declared)
+
+
+def _read_write(names: list) -> tuple:
+    declared = [n for n in names if n in cs.SPEC or n in cs.READ_ONLY]
+    if not declared:
+        raise SystemExit(
+            f"doc/formats.md: the row for {' / '.join(names)} is declared neither in "
+            "conformance_spec.SPEC (writable) nor in conformance_spec.READ_ONLY"
+        )
+    write = any(n in cs.SPEC for n in names)
+    read = any(
+        n in cs.READ_ONLY or (n in cs.SPEC and cs.SPEC[n].get("error") != "write-only")
+        for n in names
+    )
+    return read, write
 
 
 def render_formats(text: str) -> str:
@@ -160,14 +225,17 @@ def render_formats(text: str) -> str:
             n = out[-1].count("|") - 1
             out.append("|" + "---|" * n)
             continue
-        m = re.match(r"^\| \[`([^`]+)`\]", line)
-        if m and out and _in_format_table(out):
+        if line.startswith("| [`") and out and _in_format_table(out):
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            names = _row_names(cells[0])
             width = out_header_width(out)
             cells = cells[: width - 1]
             while len(cells) < width - 1:
                 cells.append("")
-            cells.append(summary(m.group(1)))
+            read, write = _read_write(names)
+            cells[2] = _mark(cells[2], read)
+            cells[3] = _mark(cells[3], write)
+            cells.append(_row_summary(names))
             out.append("| " + " | ".join(cells) + " |")
             continue
         out.append(line)

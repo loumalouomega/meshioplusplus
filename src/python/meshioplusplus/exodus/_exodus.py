@@ -10,7 +10,7 @@ import re
 
 import numpy as np
 
-from .. import _provenance
+from .. import _node_order, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
@@ -58,8 +58,12 @@ exodus_to_meshio_type = {
     "TETRA10": "tetra10",
     "TETRA14": "tetra14",
     #
+    "PYRAMID5": "pyramid",
     "PYRAMID": "pyramid",
+    "PYRAMID13": "pyramid13",
+    "WEDGE6": "wedge",
     "WEDGE": "wedge",
+    "WEDGE15": "wedge15",
 }
 meshio_to_exodus_type = {v: k for k, v in exodus_to_meshio_type.items()}
 
@@ -272,7 +276,12 @@ def read(filename, time_step=0):  # noqa: C901
                     raise ReadError(f"Exodus: unknown element type {elem_type}")
                 meshio_type = exodus_to_meshio_type[elem_type]
                 block_keys.append(int(key[7:] or 1))
-                cells.append((meshio_type, value[:] - 1))
+                # Exodus's quadratic solids list their nodes in SEACAS's order,
+                # the "exodus" entries of the node-ordering registry.
+                conn = value[:] - 1
+                cells.append(
+                    (meshio_type, _node_order.to_meshio("exodus", meshio_type, conn))
+                )
             elif key == "coord":
                 points = nc.variables["coord"][:].T
             elif key == "coordx":
@@ -812,8 +821,10 @@ def write(filename, mesh):
             dtype = numpy_to_exodus_dtype[cell_block.data.dtype.name]
             data = rootgrp.createVariable(f"connect{k + 1}", dtype, (dim1, dim2))
             data.elem_type = meshio_to_exodus_type[cell_block.type]
-            # Exodus is 1-based
-            data[:] = cell_block.data + 1
+            # Exodus is 1-based, in SEACAS's node order
+            data[:] = (
+                _node_order.from_meshio("exodus", cell_block.type, cell_block.data) + 1
+            )
 
         _write_attributes(rootgrp, mesh)
         _write_element_variables(rootgrp, mesh)

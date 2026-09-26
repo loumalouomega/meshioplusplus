@@ -41,6 +41,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="ip">`ip`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | exact | `p_f64` float64, `p_i32` float64 | — | — | — |
 | <span id="libmesh">`libmesh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna">`lsdyna`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="marc">`marc`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="mdpa">`mdpa`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="med">`med`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point |
 | <span id="medit">`medit`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
@@ -63,6 +64,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="pvd">`pvd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
 | <span id="pvtp">`pvtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
 | <span id="pvtu">`pvtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
+| <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
 | <span id="su2">`su2`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
 | <span id="svg">`svg`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
@@ -97,11 +99,13 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`gltf`**: Written for viewers; meshio++ reads glTF only as the scene it wrote, not as a mesh round trip.
 - **`gmsh`**: The Gmsh 4.1 writer needs `gmsh:dim_tags` point data to place more than one cell type into entities, and refuses a mixed mesh without it; `gmsh22` writes the same mesh.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
+- **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
+- **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
 - **`svg`**: A 2-D drawing, write-only.
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
@@ -113,3 +117,24 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`vts`**: StructuredGrid holds one curvilinear lattice; the canonical mesh is not one.
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`zarr`**: As `pmsh`: tetrahedra only, other volume cells simplexified.
+
+## Read-only formats
+
+The formats meshio++ reads and does not write, each with the reason. `test_conformance.py` fails when a format reads without writing and is not listed here, or is listed and writes, in either the Python or the native registry.
+
+| Format | Why there is no writer |
+|---|---|
+| <span id="abaqus-fil">`abaqus_fil`</span> | Abaqus's result file: Abaqus is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="ansys-rst">`ansys_rst`</span> | Ansys's result file: Ansys is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | Not a file of its own: the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. |
+| <span id="frd">`frd`</span> | CalculiX (`ccx`)'s result file: CalculiX (`ccx`) is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="lsdyna-binout">`lsdyna_binout`</span> | LS-DYNA's result file: LS-DYNA is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | LS-DYNA's result file: LS-DYNA is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="marc-t19">`marc_t19`</span> | Marc's result file: Marc is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="nastran-h5">`nastran_h5`</span> | MSC Nastran's result file: MSC Nastran is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="nastran-op2">`nastran_op2`</span> | Nastran's result file: Nastran is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="radioss-anim">`radioss_anim`</span> | the OpenRadioss engine's result file: the OpenRadioss engine is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="radioss-th">`radioss_th`</span> | the OpenRadioss engine's result file: the OpenRadioss engine is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| <span id="szplt">`szplt`</span> | Undocumented: TecIO, Tecplot's own library, is its only reader and writer; meshio++ writes Tecplot's documented `.plt`/`.dat` instead. |
+| <span id="vtx">`vtx`</span> | DOLFINx's output, read through ADIOS2: DOLFINx is its producer and ParaView reads DOLFINx's own files; meshio++ hands a mesh to ParaView as VTKHDF, XDMF or VTU instead. |
+| <span id="xplt">`xplt`</span> | FEBio's result file: FEBio is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |

@@ -178,7 +178,7 @@ MESHIOPLUSPLUS_API SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup)
 MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
 
 /// `soup_quality` over an edge map the caller already built for @p rSoup with
-/// `build_surface_edges` (v16.17.0), so it is not built twice.
+/// `build_surface_edges` (v16.18.0), so it is not built twice.
 MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
                                                const SurfaceEdgeMap& rEdges);
 

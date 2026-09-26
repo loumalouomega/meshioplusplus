@@ -1121,7 +1121,7 @@ Mesh gid_assemble(const GidStaged& rStagedIn, const std::vector<GidResult>& rRes
         // permutation (gid_common.hpp's derivation, self-inverse): meshio++
         // slot j receives GiD file slot perm[j] -- the same table the writer
         // uses, applied in the opposite (gather) direction.
-        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn);
+        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn, true);
         for (std::size_t r = 0; r < ncells; ++r) {
             for (std::size_t j = 0; j < nn; ++j) {
                 const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;

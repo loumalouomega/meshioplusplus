@@ -61,6 +61,8 @@ A large type table; representative entries:
 | `HEX20` | `hexahedron20` | `TRI3`, `TRIANGLE` | `triangle` |
 | `HEX27` | `hexahedron27` | `TRI6` | `triangle6` |
 
+`WEDGE6`/`WEDGE15` and `PYRAMID5`/`PYRAMID13` read as `wedge`/`wedge15` and `pyramid`/`pyramid13`, and `wedge15` and `pyramid13` are written (v16.17.0). The quadratic solids list their nodes in SEACAS's order: `HEX20`, `HEX27` and `WEDGE15` put the vertical mid-edges before the top ring, and `HEX27` its body centre first (node 21), then the face centres z−, z+, x−, x+, y−, y+; the permutations are the `"exodus"` entries of the [node-ordering registry](../node_ordering.md), the same tables ParaView's `vtkExodusIIReader` applies. **Fixed in v16.17.0:** until then both engines read and wrote them in VTK's order, so ParaView placed the mid-edge nodes of a `HEX20`/`HEX27` meshio++ had written on the wrong edges, and quadratic Exodus meshes from Cubit or SEACAS read wrongly the same way.
+
 The write-side reverse map picks one canonical Exodus name per meshio++ type (e.g. `hexahedron → HEX8`, `tetra → TETRA`, `tetra4 → TET4` — a distinct entry from plain `tetra`).
 
 `SPHERE` is the one-node element particle codes use — peridynamics solvers such as [PeriLab](https://github.com/PeriHub/PeriLab.jl) write whole meshes of them — and maps to meshio++'s `vertex`. Its radius is not part of the connectivity; it lives in a per-element attribute (below).

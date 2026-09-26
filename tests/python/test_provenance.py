@@ -84,6 +84,7 @@ def _cases():
     from meshioplusplus.flux import _flux as py_flux
     from meshioplusplus.gltf import _gltf as py_gltf
     from meshioplusplus.lsdyna import _lsdyna as py_lsdyna
+    from meshioplusplus.marc import _marc as py_marc
     from meshioplusplus.mfem import _mfem as py_mfem
     from meshioplusplus.mphtxt import _mphtxt as py_mphtxt
     from meshioplusplus.nastran import _nastran as py_nastran
@@ -94,6 +95,7 @@ def _cases():
     from meshioplusplus.pcd import _pcd as py_pcd
     from meshioplusplus.permas import _permas as py_permas
     from meshioplusplus.ply import _ply as py_ply
+    from meshioplusplus.radioss import _radioss as py_radioss
     from meshioplusplus.stl import _stl as py_stl
     from meshioplusplus.tecplot import _tecplot as py_tecplot
     from meshioplusplus.tetgen import _tetgen as py_tetgen
@@ -133,6 +135,8 @@ def _cases():
         "mfem": (TRI, ".mesh", _core.mfem_write, py_mfem.write),
         # The tag ends the header line (Z88 reads its first five integers).
         "z88": (TET, ".txt", _core.z88_write, py_z88.write),
+        "radioss": (TET, ".rad", _core.radioss_write, py_radioss.write),
+        "marc": (TET, ".dat", _core.marc_write, py_marc.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

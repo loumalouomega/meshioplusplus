@@ -4114,3 +4114,26 @@ TEST(CApi, ComputeCurvatureSatisfiesGaussBonnet) {
     EXPECT_NE(std::string(mio_last_error()).find("extract_surface"), std::string::npos);
     mio_mesh_free(vol);
 }
+
+TEST(CApi, WriteToADatNeverLetsTheOldFileChoose) {
+    // A Marc deck at the path reads as Marc, but mio_write resolves the write
+    // from the extension alone: Tecplot's (until v16.17.0: "no writer for
+    // format 'marc'").
+    const std::string dat = std::string(::testing::TempDir()) + "capi_over_marc.dat";
+    {
+        std::ofstream out(dat);
+        out << "title x\nend\nconnectivity\n    1    0    1\n    1  134    1    2    3    4\n"
+               "coordinates\n    3    4    0    1\n1, 0., 0., 0.\n2, 1., 0., 0.\n3, 0., 1., 0.\n"
+               "4, 0., 0., 1.\nend option\n";
+    }
+    mio_mesh* deck = mio_read(dat.c_str(), nullptr);  // read as Marc
+    ASSERT_NE(deck, nullptr) << mio_last_error();
+    mio_mesh_free(deck);
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_EQ(mio_write(dat.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    mio_mesh* back = mio_read(dat.c_str(), "tecplot");
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    mio_mesh_free(back);
+    mio_mesh_free(m);
+    std::remove(dat.c_str());
+}

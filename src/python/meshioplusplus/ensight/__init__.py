@@ -27,16 +27,20 @@ def read(filename, time_step: int = 0):
     return _py_read(filename)
 
 
-def write(filename, mesh, binary=True):
-    """Write an EnSight Gold .case/.geo pair (C++ core for real file paths, Python fallback)."""
+def write(filename, mesh, binary=True, fortran=False):
+    """Write an EnSight Gold .case/.geo pair (C++ core for real file paths, Python fallback).
+
+    ``fortran=True`` writes Fortran binary: the C-binary records, each framed as
+    a Fortran sequential unformatted record, under a ``Fortran Binary`` header.
+    """
     if not is_buffer(filename, "w"):
         try:
-            _core.ensight_write(str(filename), mesh, binary)
+            _core.ensight_write(str(filename), mesh, binary, fortran)
             return
         except Exception as exc:
             if not core_declined(exc, "ensight", "write", filename):
                 raise
-    return _py_write(filename, mesh, binary=binary)
+    return _py_write(filename, mesh, binary=binary, fortran=fortran)
 
 
 register_format("ensight", [".case", ".geo"], read, {"ensight": write})

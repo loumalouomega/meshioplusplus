@@ -33,6 +33,7 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -990,3 +991,53 @@ TEST(SequenceJson, TheTypedDriverStillWorksWithoutAParser) {
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_JSON
+
+#ifdef MESHIOPLUSPLUS_HAS_GIDPOST
+TEST(SequenceDriver, FanInPipelineWritesAGidSeries) {
+    // gid's series writer pulls its steps; until v16.17.0 the pipeline's
+    // fan-in, unlike sequence_to_timeseries, wrote XDMF into the .post.msh.
+    SeqTempDir dir;
+    seq_write_files(dir, "in_", 3);
+
+    SequencePipeline p;
+    p.mInput.mPattern = dir / "in_*.vtu";
+    p.mInput.mTimes = {0.0, 0.5, 1.0};
+    p.mSteps.push_back({"Quality", {}});
+    p.mOutput.mPath = dir / "series.post.msh";
+    p.mMode = SequenceMode::FanIn;
+    meshioplusplus::run_sequence_pipeline(p);
+
+    SequenceInput back;
+    back.mPaths = {p.mOutput.mPath};
+    const std::vector<SequenceEntry> entries = meshioplusplus::sequence_expand(back);
+    ASSERT_EQ(entries.size(), 3u);
+    EXPECT_DOUBLE_EQ(entries[2].mTime, 1.0);
+    const Mesh last = meshioplusplus::sequence_read_step(entries, 2, "", ReadOptions{});
+    mt::expect_same_geometry(mt::tri_mesh(), last);
+}
+#endif
+
+TEST(SequenceDriver, FanInWritesAFemapSeries) {
+    // A neutral file holds one mesh and an output set per step (v16.17.0):
+    // `read_femap` gives the steps back by `mTimeStep`.
+    SeqTempDir dir;
+    seq_write_files(dir, "in_", 3);
+    SequenceInput in;
+    in.mPattern = dir / "in_*.vtu";
+    in.mTimes = {0.0, 0.5, 1.0};
+    SequenceOutput out;
+    out.mPath = dir / "series.neu";
+    meshioplusplus::sequence_to_timeseries(in, out);
+    EXPECT_EQ(meshioplusplus::femap_time_values(out.mPath), (std::vector<double>{0.0, 0.5, 1.0}));
+    ReadOptions last;
+    last.mTimeStep = -1;
+    mt::expect_same_geometry(mt::tri_mesh(), meshioplusplus::read_femap(out.mPath, last));
+
+    // The same steps through the class; a step with other cells is refused.
+    meshioplusplus::FemapSeriesWriter writer(dir / "direct.neu");
+    writer.Write(0.0, mt::tri_mesh());
+    EXPECT_THROW(writer.Write(1.0, mt::quad_mesh()), meshioplusplus::WriteError);
+    EXPECT_EQ(writer.NumSteps(), 1u);
+    writer.Finalize();
+    EXPECT_EQ(meshioplusplus::femap_time_values(dir / "direct.neu"), (std::vector<double>{0.0}));
+}

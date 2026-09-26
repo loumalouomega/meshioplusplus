@@ -256,6 +256,30 @@ MATRIX = [
         "(z88i1.txt).",
         id="z88",
     ),
+    pytest.param(
+        "radioss",
+        ".rad",
+        {"point": True, "cell": True, "side": True},
+        {"tag": False},
+        "The starter deck's /GRNOD, /GRBRIC (or a /PART, for a cell region of one "
+        "element family) and /SURF/SEG map onto the three kinds (written since "
+        "v16.17.0). Ids are the tags when positive and free, else the next free "
+        "one, so `tag` is not asserted. A segment is matched back to a (cell, "
+        "facet) by its nodes, so a face two solids share comes back on the first; "
+        "the reader adds a part region per part the writer makes.",
+        id="radioss",
+    ),
+    pytest.param(
+        "marc",
+        ".dat",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "DEFINE NODE SET and DEFINE ELEMENT SET map onto point and cell regions "
+        "(written since v16.17.0). Marc sets have names and no number, so `tag` is "
+        "lost, and Marc's own face and edge numbering is not mapped to facets, so "
+        "side regions are dropped.",
+        id="marc",
+    ),
 ]
 
 
@@ -382,6 +406,12 @@ def test_no_regions_writes_the_same_bytes(
 
     a = tmp_path / ("a" + suffix)
     b = tmp_path / ("b" + suffix)
+    if fmt == "radioss":
+        # The deck's run name is its file name: the same name, two directories.
+        a = tmp_path / "a" / ("deck" + suffix)
+        b = tmp_path / "b" / ("deck" + suffix)
+        a.parent.mkdir()
+        b.parent.mkdir()
     meshioplusplus.write(a, plain, file_format=fmt)
     meshioplusplus.write(b, stripped, file_format=fmt)
 
@@ -395,7 +425,7 @@ def test_side_regions_are_the_new_capability():
     `cell_sets` equivalent at all — it is only reachable through `.regions`.
     """
     side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
-    assert side_capable == ["abaqus", "lsdyna", "openfoam", "febio"]
+    assert side_capable == ["abaqus", "lsdyna", "openfoam", "febio", "radioss"]
 
 
 # --------------------------------------------------------------------------- #

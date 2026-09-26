@@ -781,6 +781,24 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point", "side"],
     },
+    "marc": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "A deck holds no data arrays; Marc's face and edge numbering is not "
+        "mapped to facets, so side regions are dropped; a `vertex` has no type.",
+    },
     "mdpa": {
         "cells": {
             "vertex": "exact",
@@ -1118,6 +1136,23 @@ SPEC: dict[str, dict] = {
         "field_data": True,
         "regions": [],
     },
+    "radioss": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point", "side"],
+        "note": "A starter deck holds no data arrays; a `vertex` has no element card.",
+    },
     "stl": {
         "cells": {
             "triangle": "lost",
@@ -1434,3 +1469,57 @@ SPEC: dict[str, dict] = {
         "note": "As `pmsh`: tetrahedra only, other volume cells simplexified.",
     },
 }
+
+
+# ----------------------------------------------------------------------------
+# Read-only formats, each with the reason it has no writer
+# ----------------------------------------------------------------------------
+
+# Every format that reads without writing must be declared here, with the
+# reason, and nothing else may be (test_conformance.py checks it against both
+# registries). A solver's result file has the solver as its only producer:
+# writing one is worth it only when a downstream tool asks for a synthetic one
+# (roadmap, Non-goals), and none has. The reasons render into
+# doc/conformance.md, and the formats table links each read-only row there.
+_RESULT_FILE = (
+    "{tool}'s result file: {tool} is its only producer, and no downstream tool "
+    "reads one written by anything else, so there is nothing to write back."
+)
+READ_ONLY = {
+    "abaqus_fil": _RESULT_FILE.format(tool="Abaqus"),
+    "ansys_rst": _RESULT_FILE.format(tool="Ansys"),
+    "ansys_rst_cyclic": (
+        "Not a file of its own: the full rotor that a static cyclic-symmetry "
+        "`.rst` expands to, read from `ansys_rst`'s file."
+    ),
+    "frd": _RESULT_FILE.format(tool="CalculiX (`ccx`)"),
+    "lsdyna_binout": _RESULT_FILE.format(tool="LS-DYNA"),
+    "lsdyna_d3plot": _RESULT_FILE.format(tool="LS-DYNA"),
+    "marc_t19": _RESULT_FILE.format(tool="Marc"),
+    "nastran_h5": _RESULT_FILE.format(tool="MSC Nastran"),
+    "nastran_op2": _RESULT_FILE.format(tool="Nastran"),
+    "radioss_anim": _RESULT_FILE.format(tool="the OpenRadioss engine"),
+    "radioss_th": _RESULT_FILE.format(tool="the OpenRadioss engine"),
+    "xplt": _RESULT_FILE.format(tool="FEBio"),
+    "vtx": (
+        "DOLFINx's output, read through ADIOS2: DOLFINx is its producer and "
+        "ParaView reads DOLFINx's own files; meshio++ hands a mesh to ParaView as "
+        "VTKHDF, XDMF or VTU instead."
+    ),
+    "szplt": (
+        "Undocumented: TecIO, Tecplot's own library, is its only reader and "
+        "writer; meshio++ writes Tecplot's documented `.plt`/`.dat` instead."
+    ),
+}
+
+
+def read_only_drift(readable, writable, declared=None):
+    """The formats that read without writing but are not declared read-only
+    (``undeclared``), and the declared ones that write or no longer read
+    (``stale``)."""
+    declared = READ_ONLY if declared is None else declared
+    read_only = set(readable) - set(writable)
+    return {
+        "undeclared": sorted(read_only - set(declared)),
+        "stale": sorted(set(declared) - read_only),
+    }

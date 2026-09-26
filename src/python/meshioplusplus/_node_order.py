@@ -33,6 +33,11 @@ def _inverse(table):
 
 _TO, _FROM = "to_meshio", "from_meshio"
 
+# The layout most solver formats share (CGNS, GiD, Kratos, Exodus...): the
+# vertical mid-edges come before the top ring.
+_VERTICALS_FIRST_WEDGE15 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11]
+_VERTICALS_FIRST_HEX20 = list(range(12)) + [16, 17, 18, 19, 12, 13, 14, 15]
+
 # Each table is written in the direction its source gives it (the comments in
 # detail/node_order.cpp say where each one comes from); the other is derived.
 _SOURCES = [
@@ -216,6 +221,56 @@ _SOURCES = [
         _FROM,
         [0, 8, 1, 9, 2, 10, 3, 11, 16, 17, 18, 19] + [4, 12, 5, 13, 6, 14, 7, 15],
     ),
+    ("gmsh", "tetra10", _TO, [0, 1, 2, 3, 4, 5, 6, 7, 9, 8]),
+    (
+        "gmsh",
+        "hexahedron20",
+        _TO,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15],
+    ),
+    (
+        "gmsh",
+        "hexahedron27",
+        _TO,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15]
+        + [22, 23, 21, 24, 20, 25, 26],
+    ),
+    ("gmsh", "wedge15", _TO, [0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11]),
+    (
+        "gmsh",
+        "wedge18",
+        _TO,
+        [0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16],
+    ),
+    ("gmsh", "pyramid13", _TO, [0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12]),
+    ("gmsh", "pyramid14", _TO, [0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13]),
+    ("cgns", "wedge15", _TO, _VERTICALS_FIRST_WEDGE15),
+    ("cgns", "wedge18", _TO, _VERTICALS_FIRST_WEDGE15 + [15, 16, 17]),
+    ("cgns", "hexahedron20", _TO, _VERTICALS_FIRST_HEX20),
+    (
+        "cgns",
+        "hexahedron27",
+        _TO,
+        _VERTICALS_FIRST_HEX20 + [24, 22, 21, 23, 20, 25, 26],
+    ),
+    ("gid", "wedge15", _TO, _VERTICALS_FIRST_WEDGE15),
+    ("gid", "hexahedron27", _TO, _VERTICALS_FIRST_HEX20 + [24, 22, 21, 23, 20, 25, 26]),
+    ("mdpa", "wedge15", _TO, _VERTICALS_FIRST_WEDGE15),
+    ("mdpa", "hexahedron20", _TO, _VERTICALS_FIRST_HEX20),
+    (
+        "mdpa",
+        "hexahedron27",
+        _TO,
+        _VERTICALS_FIRST_HEX20 + [24, 22, 21, 23, 20, 25, 26],
+    ),
+    ("exodus", "hexahedron20", _TO, _VERTICALS_FIRST_HEX20),
+    (
+        "exodus",
+        "hexahedron27",
+        _TO,
+        _VERTICALS_FIRST_HEX20 + [23, 24, 25, 26, 21, 22, 20],
+    ),
+    ("exodus", "wedge15", _TO, _VERTICALS_FIRST_WEDGE15),
 ]
 
 

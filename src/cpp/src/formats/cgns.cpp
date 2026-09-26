@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/format_compat.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -164,37 +165,45 @@ std::string cgns_hdf5_version_string() {
 struct CgnsTypeInfo {
     std::string mCgnsName;
     int mCode;
-    std::vector<int> mPerm;  // empty = identity
 };
 
 const std::unordered_map<std::string, CgnsTypeInfo>& cgns_type_table() {
+    // The SIDS node order of PENTA_15/18 and HEXA_20/27 differs from
+    // meshio++'s; those permutations live in the node-ordering registry
+    // (detail/node_order.cpp, format "cgns").
     static const std::unordered_map<std::string, CgnsTypeInfo> m = {
-        {"vertex", {"NODE", 2, {}}},
-        {"line", {"BAR_2", 3, {}}},
-        {"line3", {"BAR_3", 4, {}}},
-        {"triangle", {"TRI_3", 5, {}}},
-        {"triangle6", {"TRI_6", 6, {}}},
-        {"quad", {"QUAD_4", 7, {}}},
-        {"quad8", {"QUAD_8", 8, {}}},
-        {"quad9", {"QUAD_9", 9, {}}},
-        {"tetra", {"TETRA_4", 10, {}}},
-        {"tetra10", {"TETRA_10", 11, {}}},
-        {"pyramid", {"PYRA_5", 12, {}}},
-        {"pyramid14", {"PYRA_14", 13, {}}},
-        {"wedge", {"PENTA_6", 14, {}}},
-        {"wedge15", {"PENTA_15", 15, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}}},
-        {"wedge18",
-         {"PENTA_18", 16, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}}},
-        {"hexahedron", {"HEXA_8", 17, {}}},
-        {"hexahedron20",
-         {"HEXA_20", 18, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}}},
-        {"hexahedron27", {"HEXA_27", 19, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
-                                          18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26}}},
+        {"vertex", {"NODE", 2}},
+        {"line", {"BAR_2", 3}},
+        {"line3", {"BAR_3", 4}},
+        {"triangle", {"TRI_3", 5}},
+        {"triangle6", {"TRI_6", 6}},
+        {"quad", {"QUAD_4", 7}},
+        {"quad8", {"QUAD_8", 8}},
+        {"quad9", {"QUAD_9", 9}},
+        {"tetra", {"TETRA_4", 10}},
+        {"tetra10", {"TETRA_10", 11}},
+        {"pyramid", {"PYRA_5", 12}},
+        {"pyramid14", {"PYRA_14", 13}},
+        {"wedge", {"PENTA_6", 14}},
+        {"wedge15", {"PENTA_15", 15}},
+        {"wedge18", {"PENTA_18", 16}},
+        {"hexahedron", {"HEXA_8", 17}},
+        {"hexahedron20", {"HEXA_20", 18}},
+        {"hexahedron27", {"HEXA_27", 19}},
         // PYRA_13's code (21) is non-monotonic -- appended to ElementType_t
         // after MIXED in the CGNS enum -- not a typo.
-        {"pyramid13", {"PYRA_13", 21, {}}},
+        {"pyramid13", {"PYRA_13", 21}},
     };
     return m;
+}
+
+/// The gather table taking a SIDS row to meshio++'s (@p ToMeshio) or back;
+/// nullptr for the identity.
+const std::vector<int>* cgns_perm(const std::string& rMeshioType, bool ToMeshio) {
+    const detail::NodeOrder* order = detail::node_order("cgns", rMeshioType);
+    if (!order)
+        return nullptr;
+    return ToMeshio ? &order->mToMeshio : &order->mFromMeshio;
 }
 
 const std::unordered_map<int, std::string>& cgns_code_to_meshio() {
@@ -219,11 +228,11 @@ const std::unordered_map<int, std::string>& cgns_code_to_name() {
     return m;
 }
 
-// Apply an optional column permutation and additive shift to an (n, k)
-// row-major connectivity array (CGNS is element-major/row-major, unlike
-// MED's Fortran storage, so no transpose is needed -- only the permutation).
-// Self-inverse (`p == p^-1` for every table entry above), so the same `pPerm`
-// serves both write (shift=+1) and read (shift=-1).
+// Apply an optional column gather (`dst[c] = src[p[c]]`) and additive shift to
+// an (n, k) row-major connectivity array (CGNS is element-major/row-major,
+// unlike MED's Fortran storage, so no transpose is needed -- only the
+// permutation): cgns_perm(type, false) and shift=+1 write, cgns_perm(type,
+// true) and shift=-1 read.
 NDArray cgns_permute_conn(const NDArray& rConn, std::size_t n, std::size_t k, std::int64_t shift,
                           const std::vector<int>* pPerm) {
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
@@ -893,8 +902,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
             h5::write_dataset(rng, " data", rdata);
         }
 
-        const std::vector<int>* perm = info.mPerm.empty() ? nullptr : &info.mPerm;
-        NDArray conn = cgns_permute_conn(cb.Conn(), nc, npc, +1, perm);
+        NDArray conn = cgns_permute_conn(cb.Conn(), nc, npc, +1, cgns_perm(ctype, false));
         // Widen to the section's chosen dtype if it disagrees with Conn()'s.
         if (conn.Dtype() != out_dt) {
             NDArray widened(out_dt, {nc, npc});
@@ -1422,8 +1430,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                     "ElementConnectivity has {} entries",
                     sec.mName, nc, info.mCgnsName, nc * npc, flat.Size()));
 
-            const std::vector<int>* perm = info.mPerm.empty() ? nullptr : &info.mPerm;
-            NDArray out = cgns_permute_conn(flat, nc, npc, -1, perm);
+            NDArray out = cgns_permute_conn(flat, nc, npc, -1, cgns_perm(meshio_type, true));
             if (point_offset != 0) {
                 detail::dispatch_dtype(out.Dtype(), [&]<class T>() {
                     T* d = out.As<T>();

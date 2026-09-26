@@ -540,6 +540,28 @@ def _pick_best_format(file_formats, mesh):
     return file_formats[0]
 
 
+# Extensions shared by several writable formats, and the one a write picks
+# (the native registry_extension_defaults agrees): a write never lets an
+# existing file's content choose, so ".dat" is Tecplot's even over a Marc deck,
+# which is written by name.
+_WRITE_DEFAULTS = {".dat": "tecplot"}
+
+
+def _write_format_for_path(path, mesh=None) -> str:
+    """The format a write to ``path`` picks when none is named: only a
+    writable candidate of its extension, so a read-only format registered for
+    the same extension (``marc`` for ``.dat``) never shadows a writer. When no
+    candidate is writable the first is returned, and ``write`` names it."""
+    candidates = _filetypes_from_path(Path(path))
+    writable = [f for f in candidates if f in _writer_map]
+    if not writable:
+        return candidates[0]
+    default = _WRITE_DEFAULTS.get(Path(path).suffix.lower())
+    if default in writable:
+        return default
+    return _pick_best_format(writable, mesh) if mesh is not None else writable[0]
+
+
 def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
     """Writes mesh together with data to a file.
 
@@ -560,15 +582,18 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
     else:
         path = Path(filename)
         if not file_format:
-            # deduce possible file formats from extension
-            file_formats = _filetypes_from_path(path)
-            # Pick the best format when several match the extension
-            file_format = _pick_best_format(file_formats, mesh)
+            # deduce the format from the extension, among its writers
+            file_format = _write_format_for_path(path, mesh)
 
     try:
         writer = _writer_map[file_format]
     except KeyError:
         formats = sorted(list(_writer_map.keys()))
+        if file_format in reader_map:
+            raise WriteError(
+                f"Format '{file_format}' can be read but not written. "
+                f"Pick one of {formats}"
+            ) from None
         raise WriteError(f"Unknown format '{file_format}'. Pick one of {formats}")
 
     # check cells for sanity

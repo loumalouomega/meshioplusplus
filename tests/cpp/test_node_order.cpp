@@ -83,6 +83,41 @@ TEST(NodeOrder, KeepsTheTablesTheFormatsUsedToHold) {
     // mphtxt.cpp's former perm_of(): the linear tensor-order swaps.
     EXPECT_EQ(detail::node_order("mphtxt", "hexahedron")->mToMeshio,
               (std::vector<int>{0, 1, 3, 2, 4, 5, 7, 6}));
+    // gmsh.cpp's former gmsh_to_meshio_perm() and meshio_to_gmsh_perm().
+    EXPECT_EQ(
+        detail::node_order("gmsh", "hexahedron20")->mToMeshio,
+        (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15}));
+    EXPECT_EQ(
+        detail::node_order("gmsh", "hexahedron20")->mFromMeshio,
+        (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 16, 9, 17, 10, 18, 19, 12, 15, 13, 14}));
+    EXPECT_EQ(detail::node_order("gmsh", "hexahedron27")->mFromMeshio,
+              (std::vector<int>{0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 16, 9,  17, 10,
+                                18, 19, 12, 15, 13, 14, 24, 22, 20, 21, 23, 25, 26}));
+    // cgns.cpp's and cgns_mll.cpp's former CgnsTypeInfo::mPerm, and GiD's
+    // former kGidHexahedron27Perm: the same involution.
+    const std::vector<int> hex27 = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
+                                    18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26};
+    EXPECT_EQ(detail::node_order("cgns", "hexahedron27")->mToMeshio, hex27);
+    EXPECT_EQ(detail::node_order("gid", "hexahedron27")->mToMeshio, hex27);
+    EXPECT_EQ(detail::node_order("gid", "hexahedron27")->mFromMeshio, hex27);
+    EXPECT_EQ(detail::node_order("gid", "hexahedron20"), nullptr);
+    EXPECT_EQ(detail::node_order("gid", "pyramid13"), nullptr);
+}
+
+TEST(NodeOrder, KratosAndExodusFollowTheirOwnGeometry) {
+    // Kratos's Hexahedra3D20 (kratos/geometries/hexahedra_3d_20.h): slot 9 is
+    // the mid-edge of corners 1-2 and slots 12-15 the vertical edges, so a
+    // Kratos row reads into meshio++ with the verticals moved behind the top
+    // ring. (Until v16.17.0 the mdpa reader and writer swapped slots 9/11,
+    // 13/15 and 17/19 as well.)
+    EXPECT_EQ(
+        detail::node_order("mdpa", "hexahedron20")->mToMeshio,
+        (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}));
+    // SEACAS Ioss Hex27: body centre at slot 20, then z-, z+, x-, x+, y-, y+.
+    EXPECT_EQ(detail::node_order("exodus", "hexahedron27")->mToMeshio,
+              (std::vector<int>{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
+                                18, 19, 12, 13, 14, 15, 23, 24, 25, 26, 21, 22, 20}));
+    EXPECT_EQ(detail::node_order("exodus", "tetra10"), nullptr);
 }
 
 TEST(NodeOrder, ComsolMatchesPalaceComposedWithGmsh) {

@@ -67,18 +67,19 @@ def split_card(line, layout, mode):
     return out
 
 
-def to_int(text, where=""):
-    """An integer field; blank is 0."""
+def to_int(text, where="", fmt="LS-DYNA"):
+    """An integer field; blank is 0. ``fmt`` names the format in the error."""
     if not text:
         return 0
     try:
         return int(text)
     except ValueError:
-        raise ReadError(f"LS-DYNA: invalid integer field {text!r}{where}") from None
+        raise ReadError(f"{fmt}: invalid integer field {text!r}{where}") from None
 
 
-def to_float(text, where=""):
-    """A real field; blank is 0. Accepts ``D`` exponents and ``1.5-3`` (no letter)."""
+def to_float(text, where="", fmt="LS-DYNA"):
+    """A real field; blank is 0. Accepts ``D`` exponents and ``1.5-3`` (no letter).
+    ``fmt`` names the format in the error."""
     if not text:
         return 0.0
     s = text.replace("D", "E").replace("d", "e")
@@ -88,24 +89,61 @@ def to_float(text, where=""):
     try:
         return float(s)
     except ValueError:
-        raise ReadError(f"LS-DYNA: invalid real field {text!r}{where}") from None
+        raise ReadError(f"{fmt}: invalid real field {text!r}{where}") from None
 
 
-def format_real16(x):
-    """``x`` in at most 16 columns: the shortest scientific string that round-trips,
-    else as many digits as fit. Twin of ``kwc_format_real16``."""
+def format_real_fit(x, width):
+    """``x`` in at most ``width`` columns: the shortest scientific string that
+    round-trips, else as many digits as fit. Twin of ``detail::format_real_fit``."""
     x = float(x)
     if x == 0.0:
         return "0.0"
     neg = 1 if x < 0.0 else 0
     e3 = 1 if abs(x) >= 1e100 or abs(x) < 1e-99 else 0
-    pmax = 10 - neg - e3
+    pmax = width - 6 - neg - e3
     s = ""
     for p in range(1, pmax + 1):
         s = f"{x:.{p}e}"
         if float(s) == x:
             return s
     return s
+
+
+def format_real_short(x):
+    """The shortest string that reads back as ``x``, spelled as Python's
+    ``repr``: its digits from the shortest ``%.{p}e`` that round-trips, in fixed
+    notation when the decimal point falls within 16 digits of the start (and
+    after 3 leading zeros at most), else as ``1.5e-05``. Twin of
+    ``detail::format_real_short``, which spells every value the same way."""
+    x = float(x)
+    if x == 0.0:
+        return "0.0"
+    s = f"{x:.16e}"
+    for p in range(17):
+        s = f"{x:.{p}e}"
+        if float(s) == x:
+            break
+    mantissa, exponent = s.split("e")
+    neg = mantissa.startswith("-")
+    digits = mantissa.lstrip("-").replace(".", "")
+    e = int(exponent)
+    point = e + 1
+    if -4 < point <= 16:
+        if point <= 0:
+            body = "0." + "0" * (-point) + digits
+        elif point >= len(digits):
+            body = digits + "0" * (point - len(digits)) + ".0"
+        else:
+            body = digits[:point] + "." + digits[point:]
+    else:
+        body = digits[0] + ("." + digits[1:] if len(digits) > 1 else "")
+        body += f"e{'-' if e < 0 else '+'}{abs(e):02d}"
+    return ("-" if neg else "") + body
+
+
+def format_real16(x):
+    """``x`` in at most 16 columns (see :func:`format_real_fit`)."""
+    return format_real_fit(x, 16)
 
 
 def pack_card(values, layout):

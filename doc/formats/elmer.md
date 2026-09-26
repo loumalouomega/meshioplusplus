@@ -127,7 +127,7 @@ Reading the result merges back the input mesh with its labels, halo copies kept 
 ## Notes
 
 - **Not read:** `.sif` files and results. ElmerSolver writes results as VTU (`Post File = x.vtu`), but in VTK's *raw* appended encoding, which meshio++'s VTU reader does not yet read.
-- An Elmer directory cannot be one step of a [sequence](../sequences.md) found by glob: list its path explicitly.
+- An Elmer directory can be one step of a [sequence](../sequences.md) found by glob (v16.17.0): a directory matching the pattern is kept when it holds an Elmer mesh.
 - A body and a boundary share one id space in `mesh.names` only by name: the ids of bodies and of boundaries are separate, so `body_1` and `boundary_1` are different groups.
 
 The layouts above follow ElmerGrid's `SaveElmerInput`/`LoadElmerInput` (`elmergrid/src/egnative.c`) and ElmerSolver's `ReadTargetNames` (`fem/src/MeshIO.F90`) in the [elmerfem source](https://github.com/ElmerCSC/elmerfem); see also the [ElmerSolver manual](https://www.nic.funet.fi/index/elmer/doc/ElmerSolverManual.pdf) and the [ElmerGrid manual](https://www.nic.funet.fi/index/elmer/doc/ElmerGridManual.pdf).

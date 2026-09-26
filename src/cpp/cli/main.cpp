@@ -272,7 +272,7 @@ Mesh read_mesh_cli(const std::string& rPath, const std::string& rFormat,
 }
 
 void write_mesh_cli(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat) {
-    std::string fmt = meshioplusplus::resolve_format(rPath, rFormat);
+    std::string fmt = meshioplusplus::resolve_write_format(rPath, rFormat);
     const auto& writers = meshioplusplus::registry_writers();
     auto it = writers.find(fmt);
     if (it == writers.end())
@@ -697,7 +697,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     const bool gltf_flags = has_opt(p, "split-angle") || has_opt(p, "up-axis");
     std::string target_fmt;
     if (color || gltf_flags)
-        target_fmt = meshioplusplus::resolve_format(outfile, out_fmt);
+        target_fmt = meshioplusplus::resolve_write_format(outfile, out_fmt);
     if (gltf_flags && target_fmt != "gltf")
         throw std::runtime_error("--split-angle/--up-axis only apply to glTF output, not '" +
                                  target_fmt + "'");
@@ -752,7 +752,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         write_colored_variant(outfile, mesh, target_fmt, opt_value(p, "color-by"), component, cmap,
                               vmin, vmax, opt_value(p, "nan-color"), has_flag(p, "colorbar"));
     } else if (ascii) {
-        std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
+        std::string fmt = meshioplusplus::resolve_write_format(outfile, out_fmt);
         if (!write_binary_variant(outfile, mesh, fmt, /*binary=*/false, float_fmt))
             throw std::runtime_error("format '" + fmt + "' has no ASCII variant");
     } else {

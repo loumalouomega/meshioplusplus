@@ -6,7 +6,7 @@ Tecplot's subzone-loadable format, the default output of Tecplot 360 since 2016 
 |---|---|
 | **Format name** | `szplt` |
 | **Extensions** | `.szplt` (also found by content, `#!SZPLT`) |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#szplt): undocumented, TecIO is its only writer; meshio++ writes `.plt`/`.dat` instead) |
 | **Time steps** | ✓ — as [Tecplot](./tecplot.md): the distinct solution times |
 | **Extra dependencies** | TecIO: a core built with `MESHIOPLUSPLUS_WITH_TECIO=ON`, or a shared TecIO named by `MESHIOPLUSPLUS_TECIO_LIBRARY` |
 
