@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from ._femap import SeriesWriter as _PySeriesWriter
 from ._femap import read as _py_read
 from ._femap import time_values as _py_time_values
 from ._femap import write as _py_write
@@ -62,6 +63,57 @@ def write(filename, mesh):
     return _py_write(filename, mesh)
 
 
+class SeriesWriter:
+    """Write a time series into one neutral file (v16.17.0): the mesh once,
+    then an output set (450) with its vectors (451) per step, which ``read``
+    gives back by ``time_step``. A step's set id is its ``femap:set`` when
+    positive and unused, else the next free one; its value is the step's time.
+    Every step must have the first step's cells; a step whose points moved is
+    written with the first step's, with a warning. ``write_sequence(path.neu,
+    steps)`` uses it.
+
+    >>> with meshioplusplus.femap.SeriesWriter("run.neu") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+
+    The C++ core writes the file; the Python twin, which writes the same bytes,
+    when the core declines to open it.
+    """
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.FemapSeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "femap", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            if self._core.num_steps():
+                self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
 register_format("femap", [".neu"], read, {"femap": write})
 
-__all__ = ["read", "write", "time_values"]
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

@@ -20,10 +20,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <ios>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -857,39 +860,49 @@ void fn_zero_lines(std::string& rOut, int Count, int PerLine, const char* pZero)
     }
 }
 
-}  // namespace
+/// What the writer makes of a mesh: each cell's topology, property, type and
+/// label (0 when it is dropped).
+struct FnPlan {
+    std::size_t mPdim = 0;
+    std::size_t mNpts = 0;
+    std::vector<const FnTopology*> mTops;
+    std::vector<std::size_t> mStart{0};
+    std::size_t mNumCells = 0;
+    std::vector<std::int64_t> mProp, mType, mLabel;
+    std::int64_t mWritten = 0;
+};
 
-void write_femap(const std::string& rPath, const Mesh& rMesh) {
-    const std::size_t pdim = rMesh.PointDim();
-    if (pdim > 3)
-        throw WriteError("Femap neutral writer: points of dimension " + std::to_string(pdim) +
+FnPlan fn_plan(const Mesh& rMesh) {
+    FnPlan plan;
+    plan.mPdim = rMesh.PointDim();
+    if (plan.mPdim > 3)
+        throw WriteError("Femap neutral writer: points of dimension " + std::to_string(plan.mPdim) +
                          " (at most 3)");
-    const std::size_t npts = rMesh.NumPoints();
-
-    std::vector<const FnTopology*> tops(rMesh.NumCellBlocks(), nullptr);
-    std::vector<std::size_t> block_start{0};
+    plan.mNpts = rMesh.NumPoints();
+    plan.mTops.assign(rMesh.NumCellBlocks(), nullptr);
     std::set<std::string> dropped_types;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
-        tops[b] = cb.IsRagged() ? nullptr : fn_topology_of_type(cb.Type());
-        if (!tops[b] && cb.NumCells())
+        plan.mTops[b] = cb.IsRagged() ? nullptr : fn_topology_of_type(cb.Type());
+        if (!plan.mTops[b] && cb.NumCells())
             dropped_types.insert(std::string(cb.Type()));
-        block_start.push_back(block_start.back() + cb.NumCells());
+        plan.mStart.push_back(plan.mStart.back() + cb.NumCells());
     }
-    const std::size_t ncells = block_start.back();
+    plan.mNumCells = plan.mStart.back();
     const bool has_prop = rMesh.HasCellData("femap:property");
     const bool has_type = rMesh.HasCellData("femap:type");
-    std::vector<std::int64_t> prop(ncells, 1), etype(ncells, 0), label(ncells, 0);
-    std::int64_t written = 0;
+    plan.mProp.assign(plan.mNumCells, 1);
+    plan.mType.assign(plan.mNumCells, 0);
+    plan.mLabel.assign(plan.mNumCells, 0);
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
-            const std::size_t g = block_start[b] + r;
+            const std::size_t g = plan.mStart[b] + r;
             if (has_prop)
-                prop[g] = detail::read_int(rMesh.CellData("femap:property", b), r);
-            etype[g] = has_type ? detail::read_int(rMesh.CellData("femap:type", b), r)
-                                : (tops[b] ? tops[b]->mDefaultType : 0);
-            if (tops[b])
-                label[g] = ++written;
+                plan.mProp[g] = detail::read_int(rMesh.CellData("femap:property", b), r);
+            plan.mType[g] = has_type ? detail::read_int(rMesh.CellData("femap:type", b), r)
+                                     : (plan.mTops[b] ? plan.mTops[b]->mDefaultType : 0);
+            if (plan.mTops[b])
+                plan.mLabel[g] = ++plan.mWritten;
         }
     }
 
@@ -907,19 +920,27 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("regions-dropped", std::to_string(side_regions) +
                                                        " side region(s) have no Femap group");
     }
-    // Results: one output set (450) of vectors (451), a point array per
-    // component as nodal vectors, a cell array per component as elemental ones.
-    struct FnOutVector {
-        std::string mTitle;
-        int mEntity;  // 7 nodes, 8 elements
-        std::vector<std::pair<std::int64_t, double>> mValues;
-    };
+    return plan;
+}
+
+// Results: an output set (450) of vectors (451), a point array per component as
+// nodal vectors, a cell array per component as elemental ones.
+struct FnOutVector {
+    std::string mTitle;
+    int mEntity;  // 7 nodes, 8 elements
+    std::vector<std::pair<std::int64_t, double>> mValues;
+};
+
+/// The output vectors of a mesh's data, and (in @p rUnwritable) the arrays
+/// that have none.
+std::vector<FnOutVector> fn_vectors(const Mesh& rMesh, const FnPlan& rPlan,
+                                    std::vector<std::string>& rUnwritable) {
+    const std::size_t npts = rPlan.mNpts;
     std::vector<FnOutVector> vectors;
-    std::vector<std::string> unwritable;
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         if (a.Shape().size() > 2 || a.Shape().empty() || a.Shape()[0] != npts) {
-            unwritable.push_back(name);
+            rUnwritable.push_back(name);
             continue;
         }
         const std::size_t nc = a.Shape().size() == 2 ? a.Shape()[1] : 1;
@@ -946,7 +967,7 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
             nc = c;
         }
         if (!ok || nc == 0) {
-            unwritable.push_back(name);
+            rUnwritable.push_back(name);
             continue;
         }
         for (std::size_t c = 0; c < nc; ++c) {
@@ -954,33 +975,52 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
             for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
                 const NDArray& a = rMesh.CellData(name, b);
                 for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
-                    const std::size_t g = block_start[b] + r;
+                    const std::size_t g = rPlan.mStart[b] + r;
                     const double x = detail::read_double(a, r * nc + c);
-                    if (label[g] && !std::isnan(x))
-                        v.mValues.emplace_back(label[g], x);
+                    if (rPlan.mLabel[g] && !std::isnan(x))
+                        v.mValues.emplace_back(rPlan.mLabel[g], x);
                 }
             }
             vectors.push_back(std::move(v));
         }
     }
-    std::int64_t set_id = 1;
-    double set_value = 0.0;
+    return vectors;
+}
+
+/// The output set's `femap:set` and `meshio:time`, when the mesh has them;
+/// other field data goes to @p rUnwritable.
+void fn_set_fields(const Mesh& rMesh, std::optional<std::int64_t>& rSet,
+                   std::optional<double>& rValue, std::vector<std::string>& rUnwritable) {
     for (const std::string& name : rMesh.FieldDataNames()) {
         const NDArray& a = rMesh.FieldData(name);
         if (name == "femap:set" && a.Size() == 1)
-            set_id = std::max<std::int64_t>(1, detail::read_int(a, 0));
+            rSet = detail::read_int(a, 0);
         else if (name == kSequenceTimeKey && a.Size() == 1)
-            set_value = detail::read_double(a, 0);
+            rValue = detail::read_double(a, 0);
         else
-            unwritable.push_back(name);
+            rUnwritable.push_back(name);
     }
-    if (!unwritable.empty()) {
-        std::string list;
-        for (const std::string& n : unwritable)
-            list += (list.empty() ? "" : ", ") + n;
-        log::warn("Femap neutral writer: arrays with no Femap output vector dropped: {}", list);
-        detail::provenance_note("data-dropped", "arrays with no Femap output vector: " + list);
-    }
+}
+
+void fn_note_unwritable(const std::vector<std::string>& rUnwritable) {
+    if (rUnwritable.empty())
+        return;
+    std::string list;
+    for (const std::string& n : rUnwritable)
+        list += (list.empty() ? "" : ", ") + n;
+    log::warn("Femap neutral writer: arrays with no Femap output vector dropped: {}", list);
+    detail::provenance_note("data-dropped", "arrays with no Femap output vector: " + list);
+}
+
+/// Blocks 100 (header), 402 (properties), 403 (nodes), 404 (elements) and 408
+/// (groups).
+void fn_write_mesh_blocks(std::ostream& rOs, const Mesh& rMesh, const FnPlan& rPlan) {
+    const std::size_t ncells = rPlan.mNumCells;
+    const std::size_t npts = rPlan.mNpts;
+    const std::size_t pdim = rPlan.mPdim;
+    const std::vector<std::int64_t>& prop = rPlan.mProp;
+    const std::vector<std::int64_t>& etype = rPlan.mType;
+    const std::vector<std::int64_t>& label = rPlan.mLabel;
 
     // Properties: the cells of each, and a title from the cell region the reader
     // made of it (same tag, same cells).
@@ -1005,9 +1045,6 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!f)
-        throw WriteError("Could not open file for writing: " + rPath);
     std::string out;
     fn_block_open(out, 100);
     out += fn_clean_title(detail::provenance_lines(detail::SlotTier::SingleLine)[0]) + "\n8.2,\n";
@@ -1040,20 +1077,20 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         out += "0,\n";
     }
     fn_block_close(out);
-    f << out;
+    rOs << out;
     out.clear();
 
-    if (written) {
+    if (rPlan.mWritten) {
         fn_block_open(out, 404);
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const FnTopology* t = tops[b];
+            const FnTopology* t = rPlan.mTops[b];
             if (!t)
                 continue;
             const auto cb = rMesh.Cells(b);
             const NDArray& conn = cb.Conn();
             const std::size_t k = t->mSlots.size();
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-                const std::size_t g = block_start[b] + r;
+                const std::size_t g = rPlan.mStart[b] + r;
                 std::array<std::int64_t, 20> slots{};
                 for (std::size_t j = 0; j < k; ++j)
                     slots[static_cast<std::size_t>(t->mSlots[j])] =
@@ -1061,15 +1098,15 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
                 out += std::to_string(label[g]) + ",124," + std::to_string(prop[g]) + "," +
                        std::to_string(etype[g]) + "," + std::to_string(t->mCode) +
                        ",1,0,0,0,0,0,0,0,\n";
-                for (std::size_t s = 0; s < 20; ++s) {
-                    out += std::to_string(slots[s]) + ",";
-                    if (s == 9 || s == 19)
+                for (std::size_t s2 = 0; s2 < 20; ++s2) {
+                    out += std::to_string(slots[s2]) + ",";
+                    if (s2 == 9 || s2 == 19)
                         out += '\n';
                 }
                 out += "0.,0.,0.,\n0.,0.,0.,\n0.,0.,0.,\n0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\n";
             }
             if (out.size() > (1u << 20)) {
-                f << out;
+                rOs << out;
                 out.clear();
             }
         }
@@ -1140,16 +1177,22 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         }
         fn_block_close(out);
     }
+    rOs << out;
+}
 
-    if (!vectors.empty()) {
-        fn_block_open(out, 450);
-        out += std::to_string(set_id) + ",\nmeshio++\n0,1,\n";
-        fn_append_real(out, set_value);
-        out += ",\n0,\n";
-        fn_block_close(out);
+/// One output set (450) and its vectors (451); @p rIds gives each vector's id.
+void fn_write_set(std::ostream& rOs, std::int64_t SetId, double SetValue,
+                  const std::vector<FnOutVector>& rVectors, const std::vector<std::int64_t>& rIds) {
+    std::string out;
+    fn_block_open(out, 450);
+    out += std::to_string(SetId) + ",\nmeshio++\n0,1,\n";
+    fn_append_real(out, SetValue);
+    out += ",\n0,\n";
+    fn_block_close(out);
+    if (!rVectors.empty()) {
         fn_block_open(out, 451);
-        for (std::size_t k = 0; k < vectors.size(); ++k) {
-            const FnOutVector& v = vectors[k];
+        for (std::size_t k = 0; k < rVectors.size(); ++k) {
+            const FnOutVector& v = rVectors[k];
             double lo = 0.0, hi = 0.0, absmax = 0.0;
             std::int64_t id_lo = 0, id_hi = 0;
             for (std::size_t j = 0; j < v.mValues.size(); ++j) {
@@ -1164,7 +1207,7 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
                 }
                 absmax = std::max(absmax, std::fabs(x));
             }
-            out += std::to_string(set_id) + "," + std::to_string(k + 1) + ",1,\n" +
+            out += std::to_string(SetId) + "," + std::to_string(rIds[k]) + ",1,\n" +
                    fn_clean_title(v.mTitle) + "\n";
             fn_append_real(out, lo);
             out += ',';
@@ -1181,15 +1224,165 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
             }
             out += "-1,0.,\n";
             if (out.size() > (1u << 20)) {
-                f << out;
+                rOs << out;
                 out.clear();
             }
         }
         fn_block_close(out);
     }
-    f << out;
+    rOs << out;
+}
+
+/// FNV-1a over a mesh's cells (types, shapes, connectivity) and, separately,
+/// its points: what must not change between the steps of a series, kept as
+/// digests so no copy of a step is held.
+std::pair<std::uint64_t, std::uint64_t> fn_fingerprint(const Mesh& rMesh) {
+    const auto mix = [](std::uint64_t h, const void* pData, std::size_t Size) {
+        const auto* p = static_cast<const unsigned char*>(pData);
+        for (std::size_t i = 0; i < Size; ++i) {
+            h ^= p[i];
+            h *= 1099511628211ull;
+        }
+        return h;
+    };
+    std::uint64_t cells = 14695981039346656037ull;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string head = std::string(cb.Type()) + ":" + std::to_string(cb.NumCells()) +
+                                 "x" + std::to_string(cb.IsRagged() ? 0 : cb.NodesPerCell()) + ";";
+        cells = mix(cells, head.data(), head.size());
+        if (cb.IsRagged())
+            continue;
+        const NDArray& conn = cb.Conn();
+        for (std::size_t i = 0; i < conn.Size(); ++i) {
+            const std::int64_t v = detail::read_int(conn, i);
+            cells = mix(cells, &v, sizeof v);
+        }
+    }
+    std::uint64_t points = 14695981039346656037ull;
+    const NDArray& pts = rMesh.Points();
+    for (std::size_t i = 0; i < pts.Size(); ++i) {
+        const double v = detail::read_double(pts, i);
+        points = mix(points, &v, sizeof v);
+    }
+    return {cells, points};
+}
+
+}  // namespace
+
+void write_femap(const std::string& rPath, const Mesh& rMesh) {
+    const FnPlan plan = fn_plan(rMesh);
+    std::vector<std::string> unwritable;
+    const std::vector<FnOutVector> vectors = fn_vectors(rMesh, plan, unwritable);
+    std::optional<std::int64_t> set_id;
+    std::optional<double> set_value;
+    fn_set_fields(rMesh, set_id, set_value, unwritable);
+    fn_note_unwritable(unwritable);
+
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+    fn_write_mesh_blocks(f, rMesh, plan);
+    if (!vectors.empty()) {
+        std::vector<std::int64_t> ids(vectors.size());
+        for (std::size_t k = 0; k < ids.size(); ++k)
+            ids[k] = static_cast<std::int64_t>(k + 1);
+        fn_write_set(f, std::max<std::int64_t>(1, set_id.value_or(0)), set_value.value_or(0.0),
+                     vectors, ids);
+    }
     if (!f)
         throw WriteError("Femap neutral writer: failed writing " + rPath);
+}
+
+struct FemapSeriesWriter::Impl {
+    std::string mPath;
+    std::ofstream mOut;
+    std::optional<FnPlan> mPlan;
+    std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
+    std::set<std::int64_t> mSetIds;
+    std::int64_t mNextSet = 1;
+    std::map<std::pair<std::string, int>, std::int64_t> mVectorIds;
+    bool mMoved = false;
+    std::size_t mSteps = 0;
+};
+
+FemapSeriesWriter::FemapSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!mpImpl->mOut)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+FemapSeriesWriter::~FemapSeriesWriter() = default;
+FemapSeriesWriter::FemapSeriesWriter(FemapSeriesWriter&&) noexcept = default;
+FemapSeriesWriter& FemapSeriesWriter::operator=(FemapSeriesWriter&&) noexcept = default;
+
+void FemapSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("Femap series: the writer was moved from");
+    Impl& s = *mpImpl;
+    std::vector<std::string> unwritable;
+    std::vector<FnOutVector> vectors;
+    std::optional<std::int64_t> set_id;
+    std::optional<double> ignored;
+    if (!s.mPlan) {
+        s.mPlan = fn_plan(rMesh);
+        vectors = fn_vectors(rMesh, *s.mPlan, unwritable);
+        fn_set_fields(rMesh, set_id, ignored, unwritable);
+        fn_note_unwritable(unwritable);
+        fn_write_mesh_blocks(s.mOut, rMesh, *s.mPlan);
+        s.mFingerprint = fn_fingerprint(rMesh);
+    } else {
+        const auto fp = fn_fingerprint(rMesh);
+        if (fp.first != s.mFingerprint.first)
+            throw WriteError("Femap series: step " + std::to_string(s.mSteps) +
+                             "'s cells differ from the first step's; a neutral file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        if (fp.second != s.mFingerprint.second && !s.mMoved) {
+            s.mMoved = true;
+            log::warn(
+                "Femap series: points moved after the first step; written as the first "
+                "step's");
+            detail::provenance_note("points-moved",
+                                    "every output set shares the first step's points");
+        }
+        vectors = fn_vectors(rMesh, *s.mPlan, unwritable);
+        fn_set_fields(rMesh, set_id, ignored, unwritable);
+    }
+    std::int64_t id = set_id.value_or(0);
+    if (id <= 0 || s.mSetIds.count(id)) {
+        while (s.mSetIds.count(s.mNextSet))
+            ++s.mNextSet;
+        id = s.mNextSet;
+    }
+    s.mSetIds.insert(id);
+    std::vector<std::int64_t> ids;
+    for (const FnOutVector& v : vectors) {
+        const auto key = std::make_pair(v.mTitle, v.mEntity);
+        auto it = s.mVectorIds.find(key);
+        if (it == s.mVectorIds.end())
+            it =
+                s.mVectorIds.emplace(key, static_cast<std::int64_t>(s.mVectorIds.size() + 1)).first;
+        ids.push_back(it->second);
+    }
+    fn_write_set(s.mOut, id, Time, vectors, ids);
+    if (!s.mOut)
+        throw WriteError("Femap series: failed writing " + s.mPath);
+    ++s.mSteps;
+}
+
+std::size_t FemapSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void FemapSeriesWriter::Finalize() {
+    if (!mpImpl || !mpImpl->mOut.is_open())
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("Femap series: no step was written to " + mpImpl->mPath);
+    mpImpl->mOut.close();
+    if (!mpImpl->mOut)
+        throw WriteError("Femap series: failed writing " + mpImpl->mPath);
 }
 
 }  // namespace meshioplusplus

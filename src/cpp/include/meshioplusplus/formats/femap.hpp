@@ -42,6 +42,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -100,5 +102,45 @@ MESHIOPLUSPLUS_API std::vector<double> femap_time_values(const std::string& rPat
  * @throws WriteError for points of dimension above 3
  */
 MESHIOPLUSPLUS_API void write_femap(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A time series in one neutral file: the mesh once (blocks 100 to 408,
+ * from the first step), then one output set (450) with its vectors (451) per
+ * step, the steps `read_femap` reads back by `mTimeStep`. Since v16.17.0.
+ *
+ * A step's set id is its `femap:set` when positive and unused, else the next
+ * free one; its value is the step's time. A vector keeps its id across steps
+ * (by title and entity). Every step must have the first step's cells; a step
+ * whose points moved is written with the first step's, with a warning. The
+ * Python twin, `meshioplusplus.femap.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API FemapSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit FemapSeriesWriter(const std::string& rPath);
+    ~FemapSeriesWriter();
+
+    FemapSeriesWriter(const FemapSeriesWriter&) = delete;
+    FemapSeriesWriter& operator=(const FemapSeriesWriter&) = delete;
+    FemapSeriesWriter(FemapSeriesWriter&&) noexcept;
+    FemapSeriesWriter& operator=(FemapSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's cells differ from the first step's,
+     *         on a write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

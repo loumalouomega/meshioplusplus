@@ -354,3 +354,87 @@ def test_writer_writes_output_sets(engine, tmp_path):
     # a vector per component; a NaN is simply not written, and reads back NaN
     np.testing.assert_array_equal(back.point_data["vec_0"], mesh.points[:, 0])
     assert np.isnan(back.point_data["vec_2"]).all()
+
+
+# --------------------------------------------------------------------------- #
+# Series (v16.17.0): one neutral file, an output set per step                 #
+# --------------------------------------------------------------------------- #
+
+
+def _step(k):
+    points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("tetra", np.array([[0, 1, 2, 3]]))],
+        point_data={"T": np.arange(4.0) + k, "U": np.full((4, 3), float(k))},
+        cell_data={"S": [np.array([10.0 * k])]},
+    )
+    return mesh
+
+
+SERIES = {
+    "core": lambda p: _core.FemapSeriesWriter(str(p)),
+    "python": lambda p: py_femap.SeriesWriter(p),
+}
+
+
+def _write_series(engine, path, steps):
+    w = SERIES[engine](path)
+    for time, mesh in steps:
+        w.write(time, mesh)
+    (w.finalize if engine == "core" else w.close)()
+
+
+def test_a_series_reads_back_step_by_step(tmp_path):
+    times = [0.0, 0.5, 1.0]
+    out = tmp_path / "s.neu"
+    written = meshioplusplus.write_sequence(
+        out, [(t, _step(k)) for k, t in enumerate(times)]
+    )
+    assert written == [str(out)]
+    assert meshioplusplus.femap.time_values(out) == times
+    for k, t in enumerate(times):
+        mesh = meshioplusplus.read(out, time_step=k)
+        np.testing.assert_array_equal(mesh.point_data["T"], np.arange(4.0) + k)
+        np.testing.assert_array_equal(mesh.point_data["U_2"], np.full(4, float(k)))
+        np.testing.assert_array_equal(mesh.cell_data["S"][0], [10.0 * k])
+        assert float(np.asarray(mesh.field_data["meshio:time"]).ravel()[0]) == t
+    steps = list(meshioplusplus.read_sequence(out))
+    assert [t for t, _ in steps] == times
+
+
+def test_the_engines_write_the_same_series(tmp_path):
+    steps = [(0.25 * k, _step(k)) for k in range(3)]
+    for engine in SERIES:
+        (tmp_path / engine).mkdir()
+        _write_series(engine, tmp_path / engine / "s.neu", steps)
+    assert (tmp_path / "core" / "s.neu").read_bytes() == (
+        tmp_path / "python" / "s.neu"
+    ).read_bytes()
+
+
+@pytest.mark.parametrize("engine", sorted(SERIES))
+def test_a_one_step_series_is_a_plain_write(engine, tmp_path):
+    mesh = _step(0)
+    mesh.field_data["meshio:time"] = np.array(0.75)
+    meshioplusplus.femap.write(tmp_path / "plain.neu", mesh)
+    _write_series(engine, tmp_path / "series.neu", [(0.75, mesh)])
+    assert (tmp_path / "series.neu").read_bytes() == (
+        tmp_path / "plain.neu"
+    ).read_bytes()
+
+
+@pytest.mark.parametrize("engine", sorted(SERIES))
+def test_a_series_refuses_new_cells_and_warns_on_moved_points(engine, tmp_path, capfd):
+    moved = _step(1)
+    moved.points = moved.points + 1.0
+    _write_series(engine, tmp_path / "moved.neu", [(0.0, _step(0)), (1.0, moved)])
+    assert "points moved" in capfd.readouterr().err
+    back = meshioplusplus.read(tmp_path / "moved.neu", time_step=1)
+    np.testing.assert_array_equal(back.points, _step(0).points)
+    other = _step(1)
+    other.cells[0].data = np.array([[0, 2, 1, 3]])
+    w = SERIES[engine](tmp_path / "bad.neu")
+    w.write(0.0, _step(0))
+    with pytest.raises(meshioplusplus.WriteError, match="step 1's cells differ"):
+        w.write(1.0, other)

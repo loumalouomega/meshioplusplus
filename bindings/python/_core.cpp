@@ -2992,6 +2992,19 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("femap_time_values",
           [](const std::string& path) { return meshioplusplus::femap_time_values(path); });
+    // A time series in one neutral file (v16.17.0): the core half of
+    // `meshioplusplus.femap.SeriesWriter`.
+    py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::FemapSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::FemapSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::FemapSeriesWriter::Finalize);
 
     // Abaqus results file (.fil) reader.
     m.def(

@@ -6,7 +6,7 @@ The neutral file is [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/)'s
 |---|---|
 | **Format name** | `femap` |
 | **Extensions** | `.neu` (also recognised by content: a lone `-1` line, then `100`) |
-| **Read / Write** | ✓ (mesh, groups and results) / ✓ (mesh, groups and one output set of results) |
+| **Read / Write** | ✓ (mesh, groups and results) / ✓ (mesh, groups and results; a time series as one output set per step since v16.17.0) |
 | **Extra dependencies** | — |
 
 ## Reading & writing
@@ -61,6 +61,18 @@ Rigid (13, 18), multi-list (15), contact (16) and weld (17) elements are skipped
 - Coordinates are written with 17 significant digits, which round-trips a double.
 - **Results** (v16.11.0): one output set (`450`) whose id is `femap:set` (else 1) and whose value is `meshio:time` (else 0), holding one `451` vector per numeric point or cell data array, and one per component of a multi-component array (`<name>_0`, `<name>_1`, …): point arrays as nodal vectors (entity 7), cell arrays as elemental ones (entity 8). `femap:` arrays are not results; NaN values are left out of a vector, as Femap leaves out entities with no value. Reading the file back gives the same arrays, component by component; femap_neutral_parser reads every written value.
 - **Dropped, with a warning and a provenance note:** non-numeric or ragged data arrays and other field data, side regions, and cells with no Femap topology (`quad9`, `hexahedron27`, polygons…).
+- **Deliberate limit:** a multi-component array is written as one vector per component and reads back that way (`U_0`, `U_1`, `U_2`), not as one `(n, 3)` array. Femap's own files link a vector's components to a total vector (the component lines of a `451` record), which the reader leaves apart so that a Femap file reads as its vectors; writing the links would change how every Femap file reads.
+
+### Time series
+
+```python
+meshioplusplus.write_sequence("run.neu", [(0.0, m0), (0.5, m1), (1.0, m2)])
+with meshioplusplus.femap.SeriesWriter("run.neu") as w:   # the same, pushed step by step
+    for time, mesh in steps:
+        w.write(time, mesh)
+```
+
+Since v16.17.0 a series goes into one neutral file: the mesh blocks once, from the first step, then an output set (`450`) with its vectors (`451`) per step, the interleaved layout of the MYSTRAN and EMSolution files the reader already takes. `read(..., time_step=k)`, `femap.time_values` and `read_sequence` give the steps back. A step's set id is its `femap:set` when positive and unused, else the next free one; its value is the step's time; a vector keeps its id across steps (by title and entity), and a step without vectors is still an output set, so there are as many sets as steps. Every step must have the first step's cells (a `WriteError` names the step that does not; write one file per step with `{step}` instead); a step whose points moved is written with the first step's, with a warning. Only one mesh is held at a time. Both engines write the same bytes: the C++ `FemapSeriesWriter`, bound as `_core.FemapSeriesWriter`, and the Python twin the core falls back to when it declines to open the file. The native `sequence_to_timeseries` and pipeline fan-in take `.neu` too.
 
 ## Errors
 

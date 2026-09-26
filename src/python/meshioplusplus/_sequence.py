@@ -77,7 +77,10 @@ TIME_KEY = "meshio:time"
 # so a fan-in is one piece written and one index line appended per entry
 # (`pvd.SeriesWriter`, pushed like XDMF's; the index is rewritten after every
 # step so a killed run still opens).
-_SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
+# **`femap` joined in v16.17.0**: a neutral file holds one mesh and any number
+# of output sets, so a fan-in is the mesh once plus one output set per entry
+# (`femap.SeriesWriter`, pushed like XDMF's).
+_SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd", "femap")
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
 # out.Y` on one of them might silently write step 0 of many. Consulted before
@@ -782,6 +785,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
 
         # Pushed, like XDMF's: one stage, one time sample per step, topology
         # re-authored only when it changes -- so one mesh is alive at a time.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "femap":
+        from .femap import SeriesWriter
+
+        # Pushed: the mesh with the first step, then one output set per step.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)
