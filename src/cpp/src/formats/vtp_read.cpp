@@ -30,6 +30,8 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
+#include "vtk_preflight.hpp"
+#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 
@@ -47,7 +49,8 @@ NDArray vtp_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -241,6 +244,7 @@ void vtp_build_types(const VtpPiece& rSec, int kind, std::vector<std::int64_t>& 
 
 Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
     pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTP XML parse failed: ") + res.description());
@@ -325,6 +329,7 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
     // See read_vtu_metadata: parse_minimal trims text conversions, but the
     // saving that matters is skipping the array bodies below.
+    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
     pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTP XML parse failed: ") + res.description());

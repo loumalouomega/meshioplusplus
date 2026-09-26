@@ -57,7 +57,7 @@ A radius larger than half the smallest box side is **refused by name** rather th
 
 ## What it costs
 
-Both searches are `O(N + E)` in the bucket grid, and `E` is what dominates: a radius graph's edge count grows as the cube of the radius, so the honest unit is edges per second rather than points. Measured on one core over a uniform cloud at unit density:
+Both searches are `O(N + E)` in the bucket grid, and `E` is what dominates: a radius graph's edge count grows as the cube of the radius, so the honest unit is edges per second rather than points. Measured on one core over a uniform cloud at unit density with the numpy search (before v16.18.0):
 
 | points | method | edges | time |
 | --- | --- | --- | --- |
@@ -65,6 +65,8 @@ Both searches are `O(N + E)` in the bucket grid, and `E` is what dominates: a ra
 | 50 000 | knn (k=16) | 0.9 M | 4.5 s |
 | 200 000 | radius | 13.4 M | 6.4 s |
 | 200 000 | knn (k=16) | 3.6 M | 23.0 s |
+
+Since v16.18.0 the pair search above 2048 points runs in the C++ core (`neighbor_pairs`, `operations/neighbors.hpp`), in parallel, with numpy's exact answer — the same squared-distance arithmetic, an inclusive radius, k-nearest ties to the lower index, minimum images rounded half to even — and the numpy search is the fallback when the core is absent. Measured side by side on one machine at 200k points: the radius search itself is about 3× faster on one core, and `knn` (k = 16) went from 17 s to about 1 s on 16 cores. What remains in Python, and now dominates a large radius graph, is assembling the edges into canonical order (sorting and symmetrising them), which the [non-goals](roadmap.md#non-goals-and-decisions-taken) keep there.
 
 `knn` is dearer per edge because it must *rank* every candidate rather than threshold it. At or below a couple of thousand points a plain `O(N²)` route runs instead — the same answer by a shorter road, and the oracle the bucket path is tested against on every run of the suite.
 

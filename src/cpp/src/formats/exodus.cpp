@@ -41,8 +41,10 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -582,6 +584,7 @@ void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
         const std::size_t rows = att.Shape().empty() ? 0 : att.Shape()[0];
         const std::size_t cols = att.Shape().size() >= 2 ? att.Shape()[1] : 1;
         auto nit = rNames.find(rBlockKeys[b]);
+        const detail::DoubleView att_v(att);
         for (std::size_t c = 0; c < cols; ++c) {
             std::string name;
             if (nit != rNames.end() && c < nit->second.size())
@@ -592,8 +595,7 @@ void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
             if (name.empty())
                 name = "attribute" + std::to_string(c + 1);
             std::vector<double> vals(rows, 0.0);
-            for (std::size_t r = 0; r < rows; ++r)
-                vals[r] = detail::read_double(att, r * cols + c);
+            parallel_for_bw(rows, [&](std::size_t r) { vals[r] = att_v[r * cols + c]; });
             by_name[std::string(kExodusAttributePrefix) + name].emplace(b, std::move(vals));
         }
     }
@@ -618,14 +620,18 @@ void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
 NDArray column_stack(const std::vector<const NDArray*>& rCols) {
     std::size_t n = rCols.empty() || rCols[0]->Shape().empty() ? 0 : rCols[0]->Shape()[0];
     NDArray out(rCols[0]->Dtype(), {n, rCols.size()});
-    for (std::size_t c = 0; c < rCols.size(); ++c)
-        for (std::size_t i = 0; i < n; ++i) {
-            double v = detail::read_double(*rCols[c], i);
-            if (out.Dtype() == DType::Float32)
-                out.As<float>()[i * rCols.size() + c] = static_cast<float>(v);
-            else
-                out.As<double>()[i * rCols.size() + c] = v;
+    const std::size_t m = rCols.size();
+    const bool f32 = out.Dtype() == DType::Float32;
+    for (std::size_t c = 0; c < m; ++c) {
+        const detail::DoubleView col(*rCols[c]);
+        if (f32) {
+            float* dst = out.As<float>();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i * m + c] = static_cast<float>(col[i]); });
+        } else {
+            double* dst = out.As<double>();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i * m + c] = col[i]; });
         }
+    }
     return out;
 }
 
@@ -727,14 +733,20 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             if (it == exodus_to_meshio().end())
                 throw ReadError("Exodus: unknown element type " + elem_type);
             NDArray conn = read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
-            for (std::size_t i = 0; i < conn.Size(); ++i) {
+            // 1-based to 0-based, the dtype switch taken once.
+            const std::size_t nconn = conn.Size();
+            if (nconn > 0) {
                 switch (conn.Dtype()) {
-                    case DType::Int32:
-                        conn.As<std::int32_t>()[i] -= 1;
+                    case DType::Int32: {
+                        std::int32_t* p = conn.As<std::int32_t>();
+                        parallel_for_bw(nconn, [&](std::size_t i) { p[i] -= 1; });
                         break;
-                    case DType::Int64:
-                        conn.As<std::int64_t>()[i] -= 1;
+                    }
+                    case DType::Int64: {
+                        std::int64_t* p = conn.As<std::int64_t>();
+                        parallel_for_bw(nconn, [&](std::size_t i) { p[i] -= 1; });
                         break;
+                    }
                     default:
                         throw ReadError("Exodus: unexpected connectivity dtype");
                 }
@@ -750,20 +762,27 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             std::size_t d = dims.size() >= 1 ? dims[0] : 0;
             std::size_t n = dims.size() >= 2 ? dims[1] : 0;
             NDArray pts(coord.Dtype(), {n, d});
-            for (std::size_t c = 0; c < d; ++c)
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (coord.Dtype() == DType::Float32)
-                        pts.As<float>()[i * d + c] = coord.As<float>()[c * n + i];
-                    else
-                        pts.As<double>()[i * d + c] = coord.As<double>()[c * n + i];
-                }
+            // (d, n) to (n, d), the dtype switch taken once.
+            const auto transpose = [&](auto* pDst, const auto* pSrc) {
+                parallel_for_bw(n, [&](std::size_t i) {
+                    for (std::size_t c = 0; c < d; ++c)
+                        pDst[i * d + c] = pSrc[c * n + i];
+                });
+            };
+            if (coord.Dtype() == DType::Float32)
+                transpose(pts.As<float>(), coord.As<float>());
+            else
+                transpose(pts.As<double>(), coord.As<double>());
             mesh.AssignPoints(std::move(pts));
             have_coord = true;
         } else if (key == "coordx" || key == "coordy" || key == "coordz") {
             int c = key.back() - 'x';
             NDArray v = read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
-            for (std::size_t i = 0; i < num_nodes && i < v.Size(); ++i)
-                points_xyz.As<double>()[i * 3 + c] = detail::read_double(v, i);
+            const detail::DoubleView vv(v);
+            double* xyz = points_xyz.As<double>();
+            parallel_for_bw(std::min(num_nodes, v.Size()), [&](std::size_t i) {
+                xyz[i * 3 + static_cast<std::size_t>(c)] = vv[i];
+            });
         } else if (key == "name_nod_var") {
             point_data_names = read_names(ncid, varid);
         } else if (key.rfind("vals_nod_var", 0) == 0) {
@@ -1104,18 +1123,27 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
                                            ? &order->mFromMeshio
                                            : nullptr;
         const std::size_t ncols = detail::cols(conn);
-        for (std::size_t i = 0; i < conn.Size(); ++i) {
-            // Exodus is 1-based, in SEACAS's node order.
-            const std::size_t src =
-                perm ? (i / ncols) * ncols + static_cast<std::size_t>((*perm)[i % ncols]) : i;
-            std::int64_t v = detail::read_int(conn, src) + 1;
+        // Exodus is 1-based, in SEACAS's node order; the dtype switch taken once.
+        const std::size_t nconn = conn.Size();
+        if (nconn > 0) {
+            const detail::Int64View cv(conn);
+            auto src = [&](std::size_t i) {
+                return perm ? (i / ncols) * ncols + static_cast<std::size_t>((*perm)[i % ncols])
+                            : i;
+            };
             switch (shifted.Dtype()) {
-                case DType::Int32:
-                    shifted.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
+                case DType::Int32: {
+                    std::int32_t* p = shifted.As<std::int32_t>();
+                    parallel_for_bw(nconn, [&](std::size_t i) {
+                        p[i] = static_cast<std::int32_t>(cv[src(i)] + 1);
+                    });
                     break;
-                case DType::Int64:
-                    shifted.As<std::int64_t>()[i] = v;
+                }
+                case DType::Int64: {
+                    std::int64_t* p = shifted.As<std::int64_t>();
+                    parallel_for_bw(nconn, [&](std::size_t i) { p[i] = cv[src(i)] + 1; });
                     break;
+                }
                 default:
                     throw WriteError("Exodus: unexpected connectivity dtype");
             }
@@ -1178,9 +1206,11 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             std::string vname = "attrib" + std::to_string(k + 1);
             check(nc_def_var(ncid, vname.c_str(), NC_DOUBLE, 2, dims, &var), "def attrib", true);
             NDArray flat(DType::Float64, {n, names.size()});
-            for (std::size_t r = 0; r < n; ++r)
-                for (std::size_t c = 0; c < names.size(); ++c)
-                    flat.As<double>()[r * names.size() + c] = detail::read_double(*cols[c], r);
+            double* flat_d = flat.As<double>();
+            for (std::size_t c = 0; c < names.size(); ++c) {
+                const detail::DoubleView col(*cols[c]);
+                parallel_for_bw(n, [&](std::size_t r) { flat_d[r * names.size() + c] = col[r]; });
+            }
             if (flat.Size() > 0)
                 check(nc_put_var(ncid, var, flat.Data()), "attrib", true);
 

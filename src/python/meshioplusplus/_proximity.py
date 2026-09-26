@@ -83,6 +83,8 @@ from typing import Optional
 
 import numpy as np
 
+from ._fallback import core_op_declined
+
 __all__ = [
     "PROXIMITY_GRAPH_VERSION",
     "proximity_graph",
@@ -185,6 +187,28 @@ def _min_image(disp, box):
     if box is None:
         return disp
     return disp - box * np.round(disp / box)
+
+
+def _core_pairs(points, method, *, radius=0.0, k=0, box=None, cell=0.0):
+    """The pair search in the C++ core (``operations/neighbors.hpp``), or
+    ``None`` when the core is not there. Same pairs as the numpy search below,
+    in parallel: it exists because this search dominated the graph."""
+    try:
+        from . import _core
+
+        a, b = _core.neighbor_pairs(
+            points,
+            method,
+            radius=float(radius),
+            k=int(k),
+            box=[] if box is None else [float(v) for v in box],
+            cell_size=float(cell),
+        )
+        return np.asarray(a, dtype=np.int64), np.asarray(b, dtype=np.int64)
+    except Exception as exc:
+        if not core_op_declined(exc, "neighbor_pairs"):
+            raise
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -337,6 +361,9 @@ def _radius_pairs(points, radius, box):
     n = len(points)
     if n <= _BRUTE_FORCE_MAX:
         return _brute_force_radius(points, radius, box)
+    found = _core_pairs(points, "radius", radius=radius, box=box, cell=radius)
+    if found is not None:
+        return found
     prefix = "meshio++: proximity_graph: "
     buckets = _build_buckets(points, radius, box, prefix)
     r2 = radius * radius
@@ -399,6 +426,9 @@ def _knn_pairs(points, k, box):
     prefix = "meshio++: proximity_graph: "
     d = points.shape[1]
     h = _knn_cell_size(points, k, prefix)
+    found = _core_pairs(points, "knn", k=k, box=box, cell=h)
+    if found is not None:
+        return found
     buckets = _build_buckets(points, h, box, prefix)
     pending = np.arange(n, dtype=np.int64)
     out_q, out_j = [], []

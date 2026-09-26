@@ -521,6 +521,20 @@ def test_output_encoding_and_codec(settings_env):
         meshioplusplus.run_pipeline(settings)
 
 
+def test_output_raw_appended_encoding(settings_env):
+    settings = make_settings(settings_env, [])
+    settings["Output"]["Encoding"] = "raw_appended"
+    meshioplusplus.run_pipeline(settings)
+    data = pathlib.Path(settings_env["out"]).read_bytes()
+    assert b'<AppendedData encoding="raw">' in data
+    assert len(meshioplusplus.read(settings_env["out"]).points) == len(
+        helpers.tet_mesh.points
+    )
+    settings["Output"]["Path"] = str(settings_env["tmp"] / "out.vtk")
+    with pytest.raises(ValueError):
+        meshioplusplus.run_pipeline(settings)
+
+
 def test_transform_requires_exactly_one_source(settings_env):
     with pytest.raises(ValueError, match="exactly one"):
         meshioplusplus.run_pipeline(

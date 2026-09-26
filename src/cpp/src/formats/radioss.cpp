@@ -48,6 +48,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -82,17 +83,16 @@ void rad_collect(const fs::path& rPath, int Depth, std::vector<RadLine>& rOut, b
     if (Depth > kRadMaxIncludeDepth)
         throw ReadError("Radioss: #include nested deeper than " +
                         std::to_string(kRadMaxIncludeDepth));
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Radioss: cannot open " + rPath.string());
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath.string(), "Radioss: cannot open " + rPath.string());
+    const std::string_view text = text_source.View();
     const std::string label = rPath.filename().string();
     std::size_t pos = 0, number = 0;
     while (pos < text.size() && !rEnded) {
         std::size_t eol = text.find('\n', pos);
         if (eol == std::string::npos)
             eol = text.size();
-        std::string line = text.substr(pos, eol - pos);
+        std::string line(text.substr(pos, eol - pos));
         pos = eol + 1;
         ++number;
         if (!line.empty() && line.back() == '\r')

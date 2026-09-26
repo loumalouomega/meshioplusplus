@@ -25,9 +25,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 // Project includes
@@ -39,6 +38,10 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
+#include "../detail/weld.hpp"
 
 namespace meshioplusplus {
 
@@ -69,73 +72,56 @@ NDArray clean_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& 
     return out;
 }
 
-std::int64_t clean_quantize(double v, double atol) {
-    return static_cast<std::int64_t>(std::floor(v / atol));
-}
-
-struct CleanKey {
-    std::int64_t x, y, z;
-    bool operator==(const CleanKey& r) const { return x == r.x && y == r.y && z == r.z; }
-};
-
-struct CleanKeyHash {
-    std::size_t operator()(const CleanKey& k) const {
-        std::uint64_t h = 1469598103934665603ULL;
-        for (std::int64_t v : {k.x, k.y, k.z}) {
-            h ^= static_cast<std::uint64_t>(v);
-            h *= 1099511628211ULL;
-        }
-        return static_cast<std::size_t>(h);
-    }
-};
-
-// Spatial-hash weld (keep-first, deterministic). Fills rWeldRep[g] in [0, W) and
-// rRepSource[r] = the first global point that created representative r; returns W.
+// Keep-first weld (deterministic; detail/weld.hpp). Fills rWeldRep[g] in
+// [0, W) and rRepSource[r] = the first global point that created
+// representative r; returns W.
 std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_t dim, double atol,
                                   std::vector<std::int64_t>& rWeldRep,
                                   std::vector<std::int64_t>& rRepSource) {
-    rWeldRep.assign(n, 0);
-    rRepSource.clear();
     const std::size_t ddim = std::min<std::size_t>(dim, 3);
-    const double atol2 = atol * atol;
-    std::unordered_map<CleanKey, std::vector<std::int64_t>, CleanKeyHash> grid;
-    for (std::size_t g = 0; g < n; ++g) {
-        double p[3] = {0, 0, 0};
-        for (std::size_t d = 0; d < ddim; ++d)
-            p[d] = detail::read_double(rPts, g * dim + d);
-        const CleanKey k{clean_quantize(p[0], atol), clean_quantize(p[1], atol),
-                         clean_quantize(p[2], atol)};
-        std::int64_t found = -1;
-        for (std::int64_t dz = -1; dz <= 1 && found < 0; ++dz)
-            for (std::int64_t dy = -1; dy <= 1 && found < 0; ++dy)
-                for (std::int64_t dx = -1; dx <= 1 && found < 0; ++dx) {
-                    auto it = grid.find({k.x + dx, k.y + dy, k.z + dz});
-                    if (it == grid.end())
-                        continue;
-                    for (std::int64_t rep : it->second) {
-                        double q[3] = {0, 0, 0};
-                        const std::size_t rg = static_cast<std::size_t>(rRepSource[rep]);
-                        for (std::size_t d = 0; d < ddim; ++d)
-                            q[d] = detail::read_double(rPts, rg * dim + d);
-                        double d2 = 0;
-                        for (std::size_t d = 0; d < ddim; ++d)
-                            d2 += (p[d] - q[d]) * (p[d] - q[d]);
-                        if (d2 <= atol2) {
-                            found = rep;
-                            break;
-                        }
-                    }
-                }
-        if (found >= 0) {
-            rWeldRep[g] = found;
-        } else {
-            const std::int64_t r = static_cast<std::int64_t>(rRepSource.size());
-            rWeldRep[g] = r;
-            rRepSource.push_back(static_cast<std::int64_t>(g));
-            grid[k].push_back(r);
-        }
-    }
+    std::vector<double> xyz(n * 3, 0.0);
+    detail::dispatch_dtype(rPts.Dtype(), [&]<class T>() {
+        const T* src = rPts.As<T>();
+        parallel_for_bw(n, [&](std::size_t g) {
+            for (std::size_t d = 0; d < ddim; ++d)
+                xyz[g * 3 + d] = static_cast<double>(src[g * dim + d]);
+        });
+    });
+    detail::WeldMap weld = detail::weld_keep_first(xyz, n, ddim, atol);
+    rWeldRep = std::move(weld.mRepOf);
+    rRepSource = std::move(weld.mRepSource);
     return static_cast<std::int64_t>(rRepSource.size());
+}
+
+// Keep-first duplicate flags per cell: the non-degenerate cells' keys
+// (`rKeys`, empty when duplicates are kept) grouped by the sort-based table
+// (detail/slot_runs.hpp), every member of a run but its first flagged. The
+// same cells a serial sweep through a hash set of keys drops.
+std::vector<std::uint8_t> clean_later_duplicates(
+    const std::vector<std::vector<std::int64_t>>& rKeys,
+    const std::vector<std::uint8_t>& rDegenerate, std::size_t NumIds) {
+    const std::size_t nc = rDegenerate.size();
+    std::vector<std::uint8_t> duplicate(nc, 0);
+    if (rKeys.empty())
+        return duplicate;
+    std::vector<std::uint64_t> live;
+    live.reserve(nc);
+    for (std::size_t c = 0; c < nc; ++c)
+        if (!rDegenerate[c])
+            live.push_back(c);
+    const std::size_t nl = live.size();
+    std::vector<std::uint64_t> length(nl);
+    parallel_for_bw(nl, [&](std::size_t j) { length[j] = rKeys[live[j]].size(); });
+    std::vector<std::uint64_t> offset(nl + 1);
+    offset[nl] = parallel_exclusive_scan(length.data(), nl, offset.data(), std::uint64_t{0});
+    std::vector<std::int64_t> values(offset[nl]);
+    parallel_for(nl, [&](std::size_t j) {
+        std::copy(rKeys[live[j]].begin(), rKeys[live[j]].end(), values.begin() + offset[j]);
+    });
+    const detail::SlotRuns runs = detail::group_int_rows(values, offset, NumIds);
+    const std::vector<std::uint8_t> later = detail::later_duplicates(runs, nl);
+    parallel_for_bw(nl, [&](std::size_t j) { duplicate[live[j]] = later[j]; });
+    return duplicate;
 }
 
 }  // namespace
@@ -200,10 +186,17 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
             // per-face rotations still collide -- a plain sorted node list
             // could not tell a cube from a differently-connected solid on the
             // same eight nodes.
-            std::unordered_set<std::string> seen_poly;
-            for (std::size_t c = 0; c < nc; ++c) {
-                std::vector<std::vector<std::int64_t>> cell(cb.NumFaces(c));
-                bool degenerate = false;
+            //
+            // Phase A (parallel): each cell's welded faces, its degenerate
+            // test and its duplicate key -- the smallest id, the face count,
+            // then every face's length and sorted distinct ids, faces sorted.
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+            std::vector<std::uint8_t> degenerate(nc, 0);
+            std::vector<std::vector<std::int64_t>> keys(rOpts.drop_duplicate_cells ? nc : 0);
+            parallel_for(nc, [&](std::size_t c) {
+                std::vector<std::vector<std::int64_t>>& cell = cells[c];
+                cell.resize(cb.NumFaces(c));
+                bool degen = false;
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     auto face = cb.Face(c, f);
                     cell[f].reserve(face.second);
@@ -214,10 +207,10 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                         std::sort(u.begin(), u.end());
                         if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
                             3)
-                            degenerate = true;  // the face collapsed below a triangle
+                            degen = true;  // the face collapsed below a triangle
                     }
                 }
-                if (rOpts.drop_degenerate && !degenerate) {
+                if (rOpts.drop_degenerate && !degen) {
                     // Measure it through the shared kernel, on the WELDED nodes.
                     detail::CellRings rings;
                     std::vector<Vec3> coords;
@@ -239,85 +232,100 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     }
                     if (detail::orient_rings(rings, coords.data()) ==
                         detail::RingOrientation::Unorientable) {
-                        degenerate = true;
+                        degen = true;
                     } else {
                         const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
                         const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
                         if (!(std::abs(pm.mVolume) > eps * scale))
-                            degenerate = true;
+                            degen = true;
                     }
                 }
-                if (degenerate) {
+                degenerate[c] = degen ? 1 : 0;
+                if (degen || !rOpts.drop_duplicate_cells)
+                    return;
+                std::vector<std::vector<std::int64_t>> faces(cell);
+                std::int64_t smallest = std::numeric_limits<std::int64_t>::max();
+                for (std::vector<std::int64_t>& face : faces) {
+                    std::sort(face.begin(), face.end());
+                    face.erase(std::unique(face.begin(), face.end()), face.end());
+                    if (!face.empty())
+                        smallest = std::min(smallest, face.front());
+                }
+                std::sort(faces.begin(), faces.end());
+                std::vector<std::int64_t>& key = keys[c];
+                key.push_back(smallest);
+                key.push_back(static_cast<std::int64_t>(faces.size()));
+                for (const std::vector<std::int64_t>& face : faces) {
+                    key.push_back(static_cast<std::int64_t>(face.size()));
+                    key.insert(key.end(), face.begin(), face.end());
+                }
+            });
+            // Phase B: keep-first duplicates among the non-degenerate cells.
+            const std::vector<std::uint8_t> duplicate =
+                clean_later_duplicates(keys, degenerate, static_cast<std::size_t>(W));
+            // Phase C (serial, stored order): counts and the kept cells.
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (degenerate[c]) {
                     ++res.mCellsDroppedDegenerate;
                     continue;
                 }
-                if (rOpts.drop_duplicate_cells) {
-                    std::vector<std::string> face_keys;
-                    face_keys.reserve(cell.size());
-                    for (const std::vector<std::int64_t>& face : cell) {
-                        std::vector<std::int64_t> sorted(face);
-                        std::sort(sorted.begin(), sorted.end());
-                        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
-                        std::string k;
-                        for (std::int64_t v : sorted) {
-                            k.append(reinterpret_cast<const char*>(&v), sizeof(v));
-                            k.push_back(',');
-                        }
-                        face_keys.push_back(std::move(k));
-                    }
-                    std::sort(face_keys.begin(), face_keys.end());
-                    std::string key;
-                    for (const std::string& k : face_keys) {
-                        key += k;
-                        key.push_back(';');
-                    }
-                    if (!seen_poly.insert(std::move(key)).second) {
-                        ++res.mCellsDroppedDuplicate;
-                        continue;
-                    }
+                if (duplicate[c]) {
+                    ++res.mCellsDroppedDuplicate;
+                    continue;
                 }
-                for (const std::vector<std::int64_t>& face : cell)
+                for (const std::vector<std::int64_t>& face : cells[c])
                     for (std::int64_t r : face)
                         rep_used[static_cast<std::size_t>(r)] = 1;
-                bo.polyh.push_back(std::move(cell));
+                bo.polyh.push_back(std::move(cells[c]));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else if (cb.IsRagged()) {
             bo.kind = 1;
-            std::unordered_set<std::string> seen_rows;
-            for (std::size_t c = 0; c < nc; ++c) {
-                std::vector<std::int64_t> row(cb.RowSize(c));
+            // Phase A (parallel): welded rows, the degenerate test and the
+            // duplicate key (the sorted row).
+            std::vector<std::vector<std::int64_t>> rows(nc);
+            std::vector<std::uint8_t> degenerate(nc, 0);
+            std::vector<std::vector<std::int64_t>> keys(rOpts.drop_duplicate_cells ? nc : 0);
+            parallel_for(nc, [&](std::size_t c) {
+                std::vector<std::int64_t>& row = rows[c];
+                row.resize(cb.RowSize(c));
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
                 if (rOpts.drop_degenerate) {
                     std::vector<std::int64_t> u(row);
                     std::sort(u.begin(), u.end());
                     if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
-                        ++res.mCellsDroppedDegenerate;
-                        continue;  // fewer than three distinct nodes is not a polygon
+                        degenerate[c] = 1;  // fewer than three distinct nodes is not a polygon
+                        return;
                     }
                     std::vector<Vec3> coords(row.size());
                     for (std::size_t k = 0; k < row.size(); ++k)
                         coords[k] = detail::read_point(
                             points, dim, rep_source[static_cast<std::size_t>(row[k])]);
                     if (!(detail::polygon_area(coords.data(), coords.size()) > eps)) {
-                        ++res.mCellsDroppedDegenerate;
-                        continue;
+                        degenerate[c] = 1;
+                        return;
                     }
                 }
                 if (rOpts.drop_duplicate_cells) {
-                    std::vector<std::int64_t> sorted(row);
-                    std::sort(sorted.begin(), sorted.end());
-                    std::string key(reinterpret_cast<const char*>(sorted.data()),
-                                    sorted.size() * sizeof(std::int64_t));
-                    if (!seen_rows.insert(std::move(key)).second) {
-                        ++res.mCellsDroppedDuplicate;
-                        continue;
-                    }
+                    keys[c] = row;
+                    std::sort(keys[c].begin(), keys[c].end());
                 }
-                for (std::int64_t r : row)
+            });
+            const std::vector<std::uint8_t> duplicate =
+                clean_later_duplicates(keys, degenerate, static_cast<std::size_t>(W));
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (degenerate[c]) {
+                    ++res.mCellsDroppedDegenerate;
+                    continue;
+                }
+                if (duplicate[c]) {
+                    ++res.mCellsDroppedDuplicate;
+                    continue;
+                }
+                for (std::int64_t r : rows[c])
                     rep_used[static_cast<std::size_t>(r)] = 1;
-                bo.poly_rows.push_back(std::move(row));
+                bo.poly_rows.push_back(std::move(rows[c]));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else {
@@ -327,55 +335,95 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
             bo.npc = npc;
             const int corner_count = detail::cell_corner_count(ct);
             const int cdim = cell_type_dimension(ct);
-            std::unordered_set<std::string> seen;
-            std::vector<std::int64_t> row(npc);
-            for (std::size_t c = 0; c < nc; ++c) {
+
+            // Phase A (parallel): welded rows and the degenerate test, per cell.
+            std::vector<std::int64_t> rows(nc * npc);
+            std::vector<std::uint8_t> degenerate(nc, 0);
+            parallel_for(nc, [&](std::size_t c) {
+                std::int64_t* row = rows.data() + c * npc;
                 for (std::size_t k = 0; k < npc; ++k)
                     row[k] =
                         weld_rep[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))];
-
+                if (!rOpts.drop_degenerate)
+                    return;
                 // degenerate: repeated corner node, or near-zero measure.
-                bool degenerate = false;
-                if (rOpts.drop_degenerate) {
-                    const int cc = corner_count > 0 ? corner_count : static_cast<int>(npc);
-                    for (int i = 0; i < cc && !degenerate; ++i)
-                        for (int j = i + 1; j < cc; ++j)
-                            if (row[i] == row[j]) {
-                                degenerate = true;
-                                break;
-                            }
-                    if (!degenerate && corner_count > 0) {
-                        std::vector<Vec3> coords(corner_count);
-                        for (int i = 0; i < corner_count; ++i)
-                            coords[i] = detail::read_point(
-                                points, dim, rep_source[static_cast<std::size_t>(row[i])]);
-                        double measure = std::nan("");
-                        if (cdim == 2)
-                            measure = detail::polygon_area(coords.data(),
-                                                           static_cast<std::size_t>(corner_count));
-                        else if (cdim == 3)
-                            measure = std::abs(detail::cell_volume_from_corners(coords.data(), ct));
-                        if (!std::isnan(measure) && measure < eps)
-                            degenerate = true;
-                    }
+                const int cc = corner_count > 0 ? corner_count : static_cast<int>(npc);
+                for (int i = 0; i < cc; ++i)
+                    for (int j = i + 1; j < cc; ++j)
+                        if (row[i] == row[j]) {
+                            degenerate[c] = 1;
+                            return;
+                        }
+                if (corner_count > 0) {
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(static_cast<std::size_t>(corner_count));
+                    for (int i = 0; i < corner_count; ++i)
+                        coords[static_cast<std::size_t>(i)] = detail::read_point(
+                            points, dim, rep_source[static_cast<std::size_t>(row[i])]);
+                    double measure = std::nan("");
+                    if (cdim == 2)
+                        measure = detail::polygon_area(coords.data(),
+                                                       static_cast<std::size_t>(corner_count));
+                    else if (cdim == 3)
+                        measure = std::abs(detail::cell_volume_from_corners(coords.data(), ct));
+                    if (!std::isnan(measure) && measure < eps)
+                        degenerate[c] = 1;
                 }
-                if (degenerate) {
+            });
+
+            // Phase B: exact duplicates, keep-first. A kept cell is a
+            // duplicate when an earlier non-degenerate cell has the same
+            // sorted connectivity: group those cells' sorted rows
+            // (detail/slot_runs.hpp) and drop every member of a run but its
+            // first.
+            std::vector<std::uint8_t> duplicate(nc, 0);
+            if (rOpts.drop_duplicate_cells && npc > 0) {
+                std::vector<std::uint64_t> live;
+                live.reserve(nc);
+                for (std::size_t c = 0; c < nc; ++c)
+                    if (!degenerate[c])
+                        live.push_back(c);
+                std::vector<std::int64_t> sorted(live.size() * npc);
+                parallel_for(live.size(), [&](std::size_t j) {
+                    const std::int64_t* row = rows.data() + live[j] * npc;
+                    std::int64_t* out = sorted.data() + j * npc;
+                    std::copy(row, row + npc, out);
+                    std::sort(out, out + npc);
+                });
+                std::vector<std::uint64_t> slots(live.size());
+                for (std::size_t j = 0; j < live.size(); ++j)
+                    slots[j] = j;
+                const std::size_t nreps = rep_source.size();
+                const detail::SlotRuns runs = detail::group_slots(
+                    slots, nreps + 1,
+                    [&](std::uint64_t j) {
+                        const std::int64_t lo = sorted[j * npc];
+                        return lo >= 0 && static_cast<std::size_t>(lo) < nreps
+                                   ? static_cast<std::size_t>(lo)
+                                   : nreps;
+                    },
+                    [&](std::uint64_t x, std::uint64_t y) {
+                        return std::lexicographical_compare(
+                            sorted.data() + x * npc, sorted.data() + (x + 1) * npc,
+                            sorted.data() + y * npc, sorted.data() + (y + 1) * npc);
+                    });
+                parallel_for(runs.NumRuns(), [&](std::size_t r) {
+                    for (const std::uint64_t* q = runs.Begin(r) + 1; q < runs.End(r); ++q)
+                        duplicate[live[*q]] = 1;
+                });
+            }
+
+            // Phase C (serial, stored order): counts and the kept rows.
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (degenerate[c]) {
                     ++res.mCellsDroppedDegenerate;
                     continue;
                 }
-
-                // exact duplicate: identical sorted connectivity, keep-first.
-                if (rOpts.drop_duplicate_cells) {
-                    std::vector<std::int64_t> sorted(row);
-                    std::sort(sorted.begin(), sorted.end());
-                    std::string key(reinterpret_cast<const char*>(sorted.data()),
-                                    sorted.size() * sizeof(std::int64_t));
-                    if (!seen.insert(std::move(key)).second) {
-                        ++res.mCellsDroppedDuplicate;
-                        continue;
-                    }
+                if (duplicate[c]) {
+                    ++res.mCellsDroppedDuplicate;
+                    continue;
                 }
-
+                const std::int64_t* row = rows.data() + c * npc;
                 for (std::size_t k = 0; k < npc; ++k) {
                     bo.rect_conn.push_back(row[k]);
                     rep_used[static_cast<std::size_t>(row[k])] = 1;

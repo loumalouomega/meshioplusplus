@@ -613,6 +613,19 @@ def test_convert_openfoam_binary_variant(mesh_file, tmp_path):
     assert out["output_format"] == "openfoam"
 
 
+def test_convert_raw_appended_variant(mesh_file, tmp_path):
+    out = _dump(
+        _tools.tool_convert(
+            mesh_file, str(tmp_path / "a.vtu"), mode="raw_appended", compression="none"
+        )
+    )
+    data = pathlib.Path(out["output_path"]).read_bytes()
+    assert b'<AppendedData encoding="raw">' in data
+    assert b"vtkZLibDataCompressor" not in data
+    with pytest.raises(ValueError, match="has no raw_appended variant"):
+        _tools.tool_convert(mesh_file, str(tmp_path / "a.vtp"), mode="raw_appended")
+
+
 def test_convert_variant_errors(mesh_file, tmp_path):
     with pytest.raises(ValueError, match="has no ascii variant"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.obj"), mode="ascii")

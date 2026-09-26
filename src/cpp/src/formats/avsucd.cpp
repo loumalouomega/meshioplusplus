@@ -23,6 +23,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,6 +37,8 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -86,31 +89,24 @@ bool is_int_dtype(DType t) {
            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64;
 }
 
-std::vector<std::string> avsucd_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> avsucd_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
 }  // namespace
 
 Mesh read_avsucd(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
+    // The file read once; its lines are views into it (detail/text_cursor.hpp).
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    std::vector<std::string_view> lines;
+    for (std::string_view l : detail::split_lines(source.View())) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
-        std::string t = l;
-        std::size_t b = t.find_first_not_of(" \t");
-        if (b == std::string::npos)
+            l.remove_suffix(1);
+        const std::size_t b = l.find_first_not_of(" \t");
+        if (b == std::string_view::npos)
             continue;  // blank
-        if (t[b] == '#')
+        if (l[b] == '#')
             continue;  // comment
         lines.push_back(l);
     }
@@ -120,23 +116,25 @@ Mesh read_avsucd(const std::string& rPath) {
     detail::need_tokens(hdr, 4, "AVS-UCD");
     // Each node and each cell is one line of the file, so the header's counts
     // are bounded by what follows it.
-    const auto num_nodes = static_cast<long long>(
-        detail::checked_count(std::stoll(hdr[0]), lines.size() - li, "AVS-UCD", "node"));
+    const auto num_nodes = static_cast<long long>(detail::checked_count(
+        std::stoll(std::string(hdr[0])), lines.size() - li, "AVS-UCD", "node"));
     const auto num_cells = static_cast<long long>(detail::checked_count(
-        std::stoll(hdr[1]), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
-    long long num_node_data = std::stoll(hdr[2]);
-    long long num_cell_data = std::stoll(hdr[3]);
+        std::stoll(std::string(hdr[1])), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
+    long long num_node_data = std::stoll(std::string(hdr[2]));
+    long long num_cell_data = std::stoll(std::string(hdr[3]));
 
     Mesh mesh;
     std::unordered_map<std::int64_t, std::int64_t> point_ids;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
     double* pp = pts.As<double>();
+    point_ids.reserve(static_cast<std::size_t>(num_nodes));
+    std::vector<std::string_view> t;  // reused: one allocation, not a vector per row
     for (long long i = 0; i < num_nodes; ++i) {
-        auto t = avsucd_tokens(lines.at(li++));
+        detail::split_blanks(lines.at(li++), t);
         detail::need_tokens(t, 4, "AVS-UCD");
-        point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
+        point_ids[detail::strtoll_token(t[0])] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = detail::parse_double(t[1 + c]);
+            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -150,22 +148,24 @@ Mesh read_avsucd(const std::string& rPath) {
         std::size_t mCount = 0;
     };
     std::vector<Blk> blocks;
+    cell_ids.reserve(static_cast<std::size_t>(num_cells));
     for (long long c = 0; c < num_cells; ++c) {
-        auto t = avsucd_tokens(lines.at(li++));
+        detail::split_blanks(lines.at(li++), t);
         detail::need_tokens(t, 4, "AVS-UCD");
-        std::int64_t cid = std::strtoll(t[0].c_str(), nullptr, 10);
-        std::int64_t mat = std::strtoll(t[1].c_str(), nullptr, 10);
-        auto it = avsucd_to_meshio_type().find(t[2]);
+        std::int64_t cid = detail::strtoll_token(t[0]);
+        std::int64_t mat = detail::strtoll_token(t[1]);
+        const std::string type_name(t[2]);
+        auto it = avsucd_to_meshio_type().find(type_name);
         if (it == avsucd_to_meshio_type().end())
-            throw ReadError("AVS-UCD: unknown cell type '" + t[2] + "'");
+            throw ReadError("AVS-UCD: unknown cell type '" + type_name + "'");
         const std::string& mtype = it->second;
         int n = static_cast<int>(t.size()) - 3;
         const std::vector<int>& order = avsucd_to_meshio_order(mtype);
         if (!order.empty() && static_cast<std::size_t>(n) != order.size())
-            throw ReadError("AVS-UCD: a '" + t[2] + "' cell needs " + std::to_string(order.size()) +
-                            " nodes, got " + std::to_string(n));
+            throw ReadError("AVS-UCD: a '" + type_name + "' cell needs " +
+                            std::to_string(order.size()) + " nodes, got " + std::to_string(n));
         if (!blocks.empty() && blocks.back().mType == mtype && blocks.back().mN != n)
-            throw ReadError("AVS-UCD: '" + t[2] + "' cells with different node counts");
+            throw ReadError("AVS-UCD: '" + type_name + "' cells with different node counts");
         if (blocks.empty() || blocks.back().mType != mtype) {
             Blk b;
             b.mType = mtype;
@@ -174,7 +174,7 @@ Mesh read_avsucd(const std::string& rPath) {
         }
         Blk& blk = blocks.back();
         for (int j = 0; j < n; ++j)
-            blk.mConn.push_back(point_ids.at(std::strtoll(t[3 + j].c_str(), nullptr, 10)));
+            blk.mConn.push_back(point_ids.at(detail::strtoll_token(t[3 + j])));
         blk.mMat.push_back(mat);
         cell_ids[cid] = c;
         ++blk.mCount;
@@ -204,12 +204,12 @@ Mesh read_avsucd(const std::string& rPath) {
                          std::vector<std::string>& names, std::vector<NDArray>& arrays) {
         auto h = avsucd_tokens(lines.at(li++));
         detail::need_tokens(h, 1, "AVS-UCD");
-        const int narr = static_cast<int>(
-            detail::checked_count(std::stoi(h[0]), h.size() - 1, "AVS-UCD", "data array"));
+        const int narr = static_cast<int>(detail::checked_count(
+            std::stoi(std::string(h[0])), h.size() - 1, "AVS-UCD", "data array"));
         std::vector<int> sizes(narr);
         std::size_t width = 0;
         for (int i = 0; i < narr; ++i) {
-            sizes[i] = std::stoi(h[1 + i]);
+            sizes[i] = std::stoi(std::string(h[1 + i]));
             if (sizes[i] < 1)
                 throw ReadError("AVS-UCD: a data array needs at least one component");
             width += static_cast<std::size_t>(sizes[i]);
@@ -222,7 +222,7 @@ Mesh read_avsucd(const std::string& rPath) {
             detail::need_tokens(avsucd_tokens(lines[li + narr]), 1 + width, "AVS-UCD");
         }
         for (int i = 0; i < narr; ++i) {
-            std::string lbl = lines.at(li++);
+            const std::string lbl(lines.at(li++));
             std::size_t comma = lbl.find(',');
             std::string name = (comma == std::string::npos) ? lbl : lbl.substr(0, comma);
             // strip + replace spaces with underscore
@@ -239,14 +239,16 @@ Mesh read_avsucd(const std::string& rPath) {
                                               : std::vector<std::size_t>{(std::size_t)num_entities,
                                                                          (std::size_t)sizes[i]});
         }
+        std::vector<std::string_view> row;  // reused
         for (long long e = 0; e < num_entities; ++e) {
-            auto t = avsucd_tokens(lines.at(li++));
-            detail::need_tokens(t, 1 + width, "AVS-UCD");
-            std::int64_t eid = ids.at(std::strtoll(t[0].c_str(), nullptr, 10));
+            detail::split_blanks(lines.at(li++), row);
+            detail::need_tokens(row, 1 + width, "AVS-UCD");
+            std::int64_t eid = ids.at(detail::strtoll_token(row[0]));
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].As<double>()[eid * sizes[i] + c] = detail::parse_double(t[j++]);
+                    arrays[i].As<double>()[eid * sizes[i] + c] =
+                        detail::parse_double_prefix(row[j++]);
             }
         }
     };

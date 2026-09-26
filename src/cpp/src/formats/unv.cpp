@@ -602,8 +602,8 @@ std::vector<UnvDataset> unv_split_datasets(std::string_view data) {
                 // pyuff declares exactly half the size of complex data; any other
                 // mismatch deserves a warning.
                 if (2 * n_bytes == expected) {
-                    log::debug("UNV: dataset 58b declares {} bytes, record 7 describes {}",
-                               n_bytes, expected);
+                    log::debug("UNV: dataset 58b declares {} bytes, record 7 describes {}", n_bytes,
+                               expected);
                 } else if (!warned_58b_size) {
                     log::warn(
                         "UNV: dataset 58b declares {} bytes but its record 7 describes {}; "
@@ -746,6 +746,8 @@ std::vector<std::int64_t> unv_take_ints(const std::vector<std::string_view>& rLi
 
 void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
     const auto& lines = rDs.mLines;
+    // A node takes one line (dataset 15) or two: at most that many records.
+    rFile.mNodes.reserve(rFile.mNodes.size() + lines.size() / (rDs.mId == 15 ? 1 : 2));
     std::size_t k = 0;
     while (k < lines.size()) {
         if (unv_strip(lines[k]).empty()) {
@@ -785,6 +787,8 @@ void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
 
 void unv_parse_elements(const UnvDataset& rDs, UnvFile& rFile) {
     const auto& lines = rDs.mLines;
+    // An element takes at least two lines (its record, then its nodes).
+    rFile.mElements.reserve(rFile.mElements.size() + lines.size() / 2);
     std::size_t k = 0;
     while (k < lines.size()) {
         if (unv_strip(lines[k]).empty()) {
@@ -840,6 +844,12 @@ void unv_parse_groups(const UnvDataset& rDs, bool Quad, UnvFile& rFile) {
         g.mName = k < lines.size() ? unv_name(lines[k]) : std::string();
         ++k;
         auto vals = unv_take_ints(lines, k, stride * static_cast<std::size_t>(r1[7]));
+        // The record carries its size: count each kind, then fill.
+        std::size_t num_nodes = 0;
+        for (std::size_t e = 0; e < static_cast<std::size_t>(r1[7]); ++e)
+            num_nodes += vals[stride * e] == 7 ? 1 : 0;
+        g.mNodes.reserve(num_nodes);
+        g.mElements.reserve(static_cast<std::size_t>(r1[7]) - num_nodes);
         for (std::size_t e = 0; e < static_cast<std::size_t>(r1[7]); ++e) {
             const std::int64_t type = vals[stride * e];
             const std::int64_t tag = vals[stride * e + 1];

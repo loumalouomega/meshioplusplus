@@ -28,6 +28,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -98,7 +99,7 @@ Mesh read_dex(const std::string& rPath) {
 
     std::vector<std::vector<double>> rows;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::vector<double> r;
         std::string tok;
         while (iss >> tok) {

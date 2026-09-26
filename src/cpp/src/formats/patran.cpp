@@ -45,6 +45,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -96,7 +97,7 @@ bool pat_is_element_code(std::int64_t Code) {
     throw ReadError("Patran neutral: " + rWhat + " (line " + std::to_string(Line) + ")");
 }
 
-std::vector<std::string_view> pat_lines(const std::string& rText) {
+std::vector<std::string_view> pat_lines(std::string_view rText) {
     std::vector<std::string_view> lines;
     std::size_t pos = 0;
     while (pos < rText.size()) {
@@ -226,7 +227,7 @@ struct PatResult {
     std::vector<std::pair<std::int64_t, std::vector<double>>> mRows;
 };
 
-PatResult pat_parse_binary_result(const std::string& rRaw, bool BigEndian, bool Nodal,
+PatResult pat_parse_binary_result(std::string_view rRaw, bool BigEndian, bool Nodal,
                                   const std::string& rPath) {
     const bool swap = BigEndian != (std::endian::native == std::endian::big);
     const auto i4 = [&](std::size_t Pos) {
@@ -298,10 +299,9 @@ PatResult pat_parse_binary_result(const std::string& rRaw, bool BigEndian, bool 
 }
 
 PatResult pat_parse_result(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Patran results: cannot open " + rPath);
-    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource raw_source =
+        detail::open_source(rPath, "Patran results: cannot open " + rPath);
+    const std::string_view raw = raw_source.View();
     if (raw.size() >= 4) {
         for (const bool big : {false, true}) {
             std::uint32_t u;
@@ -399,10 +399,9 @@ Mesh read_patran(const std::string& rPath) {
 }
 
 Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& rResults) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Patran neutral: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Patran neutral: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     const std::vector<std::string_view> lines = pat_lines(text);
 
     static const std::vector<detail::CardField> xyz_layout =

@@ -34,7 +34,11 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -87,6 +91,14 @@ void split_visit_nodes(const Mesh::CellView& rCb, std::size_t c, F&& f) {
     }
 }
 
+// The same visit over a rectangular block whose connectivity was read once
+// (`pConn`, `npc` ids per cell).
+template <class F>
+void split_visit_rect(const std::int64_t* pConn, std::size_t npc, std::size_t c, F&& f) {
+    for (std::size_t k = 0; k < npc; ++k)
+        f(pConn[c * npc + k]);
+}
+
 std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     std::vector<SplitGroup> groups;
@@ -127,49 +139,60 @@ std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
     const std::size_t total = block_base[nblocks];
 
     std::vector<std::int64_t> parent(total);
-    for (std::size_t i = 0; i < total; ++i)
-        parent[i] = static_cast<std::int64_t>(i);
+    parallel_for_bw(total, [&](std::size_t i) { parent[i] = static_cast<std::int64_t>(i); });
 
-    // Union cells that share a node (first cell per node as the anchor).
+    // Union cells that share a node (first cell per node as the anchor). The
+    // sweep is order-dependent and stays serial; a rectangular block's
+    // connectivity is read once, not through a dtype switch per id.
     std::vector<std::int64_t> node_first(n, -1);
     bi = 0;
     for (const auto cb : rMesh.CellRange()) {
-        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+        const auto visit = [&](std::size_t c, std::int64_t node) {
             const std::int64_t gc = static_cast<std::int64_t>(block_base[bi] + c);
-            split_visit_nodes(cb, c, [&](std::int64_t node) {
-                std::int64_t& first = node_first[static_cast<std::size_t>(node)];
-                if (first < 0)
-                    first = gc;
-                else
-                    split_uf_union(parent, first, gc);
-            });
+            std::int64_t& first = node_first[static_cast<std::size_t>(node)];
+            if (first < 0)
+                first = gc;
+            else
+                split_uf_union(parent, first, gc);
+        };
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const detail::Int64View conn(cb.Conn());
+            const std::size_t npc = cb.NodesPerCell();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                split_visit_rect(conn.Data(), npc, c, [&](std::int64_t node) { visit(c, node); });
+        } else {
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                split_visit_nodes(cb, c, [&](std::int64_t node) { visit(c, node); });
         }
         ++bi;
     }
 
-    // Map component roots to piece indices in first-seen (ascending gc) order.
-    std::vector<SplitGroup> groups;
-    std::unordered_map<std::int64_t, std::size_t> root_index;
-    std::vector<std::size_t> gc_to_group(total, 0);
-    for (std::size_t gc = 0; gc < total; ++gc) {
-        const std::int64_t root = split_uf_find(parent, static_cast<std::int64_t>(gc));
-        auto it = root_index.find(root);
-        std::size_t gi;
-        if (it == root_index.end()) {
-            gi = groups.size();
-            root_index[root] = gi;
-            groups.push_back({});
-            groups.back().key = std::to_string(gi);
-            split_init_group(groups.back(), nblocks);
-        } else {
-            gi = it->second;
-        }
-        gc_to_group[gc] = gi;
-    }
+    // Every root is its component's smallest cell (a union points the larger
+    // root at the smaller) and parent[x] <= x, so one ascending pass resolves
+    // each cell's root. Pieces are numbered in first-seen (ascending gc)
+    // order: a component's first cell is its root, so the piece of a cell is
+    // the number of roots before its own -- a scan of the root flags.
+    for (std::size_t gc = 0; gc < total; ++gc)
+        parent[gc] = parent[static_cast<std::size_t>(parent[gc])];
+    std::vector<std::uint64_t> is_root(total);
+    parallel_for_bw(total, [&](std::size_t gc) {
+        is_root[gc] = parent[gc] == static_cast<std::int64_t>(gc) ? 1 : 0;
+    });
+    std::vector<std::uint64_t> piece_at(total);
+    const std::uint64_t npieces =
+        parallel_exclusive_scan(is_root.data(), total, piece_at.data(), std::uint64_t{0});
 
+    std::vector<SplitGroup> groups(npieces);
+    parallel_for(npieces, [&](std::size_t gi) {
+        groups[gi].key = std::to_string(gi);
+        split_init_group(groups[gi], nblocks);
+    });
     for (std::size_t b = 0; b < nblocks; ++b)
-        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c)
-            groups[gc_to_group[block_base[b] + c]].kept[b].push_back(static_cast<std::int64_t>(c));
+        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c) {
+            const std::size_t gc = block_base[b] + c;
+            groups[piece_at[static_cast<std::size_t>(parent[gc])]].kept[b].push_back(
+                static_cast<std::int64_t>(c));
+        }
 
     return groups;
 }
@@ -314,17 +337,22 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
     }
 
     SplitResult res;
-    res.mPieces.reserve(groups.size());
-    for (SplitGroup& g : groups) {
-        detail::SubsetResult sub =
-            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true, "split");
-        SplitPiece piece;
-        piece.mKey = std::move(g.key);
+    res.mPieces.resize(groups.size());
+    const auto extract = [&](std::size_t i) {
+        detail::SubsetResult sub = detail::build_cell_subset(rMesh, groups[i].kept, "", "",
+                                                             /*drop_empty_blocks=*/true, "split");
+        SplitPiece& piece = res.mPieces[i];
+        piece.mKey = std::move(groups[i].key);
         piece.mMesh = std::move(sub.mMesh);
         piece.mPointMap = std::move(sub.mPointMap);
         piece.mCellMaps = std::move(sub.mCellMaps);
-        res.mPieces.push_back(std::move(piece));
-    }
+    };
+    // Serial on purpose: every piece reads the input mesh's data names and
+    // arrays, and the backends fill caches lazily behind const accessors (the
+    // MESHIO name lists, the NATIVE global CSR, the KRATOS ModelPart), so one
+    // Mesh is not safe to read from several threads through them.
+    for (std::size_t i = 0; i < groups.size(); ++i)
+        extract(i);
     return res;
 }
 

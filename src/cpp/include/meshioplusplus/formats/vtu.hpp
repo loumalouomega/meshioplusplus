@@ -18,8 +18,8 @@
 
 /**
  * @file vtu.hpp
- * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer, ascii and inline
- *        binary (uncompressed or zlib), single `<Piece>` only.
+ * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer: ascii, inline
+ *        binary (uncompressed or block-compressed) and raw appended data.
  *
  * A `.vtu` file is `<VTKFile type="UnstructuredGrid" ...><UnstructuredGrid>
  * <Piece ...><Points>/<Cells>(connectivity,offsets,types[,faces,
@@ -39,15 +39,13 @@
  * `byte_order="LittleEndian"` (unlike the Python writer, which records the
  * host's native order).
  *
- * The C++ core explicitly does **not** implement several paths, each of
- * which throws ReadError/WriteError to force the Python fallback:
- * lzma compression; `<AppendedData>` (raw/appended binary, including the
- * regex-based manual XML-repair the Python reader falls back to when
- * appended raw bytes break XML parsing); polyhedron cells (both read and
- * write — they also cannot mix with other cell types, a Python-side
- * ValueError); multiple `<Piece>` elements (the Python reader concatenates
- * them, C++ requires exactly one); and any non-default `header_type` other
- * than `UInt32`.
+ * The reader also takes `<AppendedData>` (raw or base64, in either byte
+ * order), several `<Piece>` elements (concatenated), polyhedron cells mixed
+ * with other types (`faces`/`faceoffsets`, -1 for a non-polyhedral cell) and
+ * a `UInt64` `header_type`; `write_vtu_appended` writes raw appended data
+ * (since v16.21.0). What the C++ core refuses -- with a ReadError, so the
+ * Python reader takes the file -- is lzma compression, and an lz4 or zstd
+ * compressor this build was compiled without.
  */
 
 // System includes
@@ -102,6 +100,22 @@ MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rM
                      detail::VtkCodec codec);
 
 /**
+ * @brief Write a `.vtu` with its arrays in one raw `<AppendedData>` section
+ * (since v16.21.0).
+ *
+ * Every array, field data included, is `format="appended"` with an `offset`, and its bytes --
+ * the size header and payload, or with @p codec the block header and the
+ * compressed blocks -- follow the XML unencoded, after the section's leading
+ * underscore: no base64 on either side. VTK, ParaView and vtk.js read it, as
+ * does `read_vtu`. `VtkCodec::None` writes the payloads uncompressed.
+ *
+ * @throws WriteError naming the CMake option when the codec was not compiled
+ *         into this build.
+ */
+MESHIOPLUSPLUS_API void write_vtu_appended(const std::string& rPath, const Mesh& rMesh,
+                                           detail::VtkCodec codec);
+
+/**
  * @brief Read a `.vtu` file.
  *
  * Parses the single `<Piece>`'s `<Points>`/`<Cells>`/`<PointData>`/
@@ -116,10 +130,9 @@ MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rM
  *        `Name` attribute is readable before the payload is touched, so a
  *        skipped array costs neither base64 decode, inflate, nor allocation.
  * @return the read Mesh
- * @throws ReadError if the file uses lzma compression, an `<AppendedData>`
- *         section, more than one `<Piece>`, polyhedron cells, or a
- *         non-`UInt32` `header_type` — the shim then falls back to the
- *         Python reader, which supports all of these.
+ * @throws ReadError if the file uses lzma compression, or an lz4 or zstd
+ *         compressor this build lacks -- the shim then falls back to the
+ *         Python reader -- or is malformed.
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */

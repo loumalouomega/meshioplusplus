@@ -434,6 +434,8 @@ void print_usage(std::ostream& os) {
           "                            --piece=N keeps one piece of a partitioned file\n"
           "                            --lenient skips constructs the reader cannot represent\n"
           "                            --drop-ghosts removes a .pvtu/.pvd halo (vtkGhostType)\n"
+          "                            --appended writes a .vtu's arrays as raw binary in\n"
+          "                            one <AppendedData> section (no base64)\n"
           "                            'out_*.vtu' (quoted) or repeated --input fans a\n"
           "                            sequence IN; an out_{step}.vtu output fans one OUT\n"
           "                            (--times, --time-from, --sequence/--no-sequence)\n"
@@ -547,7 +549,7 @@ std::vector<std::string> data_split_names(const std::string& rValue) {
 int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
                      const std::string& rOutfile, const std::string& rInFmt,
                      const std::string& rOutFmt, const meshioplusplus::ReadOptions& rOpts,
-                     bool Ascii, const std::string& rFloatFmt,
+                     bool Ascii, bool Appended, const std::string& rFloatFmt,
                      const std::vector<std::string>& rExtraInputs) {
     meshioplusplus::SequenceInput in;
     // A pre-expanded argv (`--input a --input b`) and a quoted pattern
@@ -573,6 +575,8 @@ int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
     out.mFormat = rOutFmt;
     if (Ascii)
         out.mOptions.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+    if (Appended)
+        out.mOptions.mEncoding = meshioplusplus::WriteEncoding::RawAppended;
     out.mOptions.mFloatFormat = rFloatFmt;
 
     const std::vector<meshioplusplus::SequenceEntry> entries = meshioplusplus::sequence_expand(in);
@@ -599,6 +603,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"output-format", {"-o"}, true},
                                   {"float-format", {"-f"}, true},
                                   {"ascii", {"-a"}, false},
+                                  {"appended", {}, false},
                                   {"sets-to-int-data", {"-s"}, false},
                                   {"int-data-to-sets", {"-d"}, false},
                                   {"points-only", {}, false},
@@ -636,6 +641,9 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     std::string out_fmt = opt_value(p, "output-format");
     std::string float_fmt = opt_value(p, "float-format");
     bool ascii = has_flag(p, "ascii");
+    const bool appended = has_flag(p, "appended");
+    if (ascii && appended)
+        throw std::runtime_error("--ascii and --appended are mutually exclusive");
 
     // Selective read: --points-only drops every data array, --arrays keeps only
     // the named ones. Connectivity is kept either way, so the output is still a
@@ -687,8 +695,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
             sequence = meshioplusplus::sequence_num_steps(infile, in_fmt) > 1;
     }
     if (sequence)
-        return convert_sequence(p, infile, outfile, in_fmt, out_fmt, opts, ascii, float_fmt,
-                                extra_inputs);
+        return convert_sequence(p, infile, outfile, in_fmt, out_fmt, opts, ascii, appended,
+                                float_fmt, extra_inputs);
 
     // Data-driven colouring (svg/tikz/gltf) and the glTF-only options. Validated
     // before the read so a bad flag combination fails immediately rather than
@@ -711,8 +719,9 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         if (!cli_is_colorable_format(target_fmt))
             throw std::runtime_error(
                 "--color-by is only supported for svg/tikz/gltf output, not '" + target_fmt + "'");
-        if (ascii)
-            throw std::runtime_error("--ascii has no meaning for " + target_fmt + " output");
+        if (ascii || appended)
+            throw std::runtime_error(std::string(ascii ? "--ascii" : "--appended") +
+                                     " has no meaning for " + target_fmt + " output");
         if (target_fmt == "gltf" && has_flag(p, "colorbar"))
             throw std::runtime_error("--colorbar has no meaning for gltf output (svg/tikz only)");
     }
@@ -755,6 +764,16 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         std::string fmt = meshioplusplus::resolve_write_format(outfile, out_fmt);
         if (!write_binary_variant(outfile, mesh, fmt, /*binary=*/false, float_fmt))
             throw std::runtime_error("format '" + fmt + "' has no ASCII variant");
+    } else if (appended) {
+        std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
+        meshioplusplus::WriteOptions wopts;
+        wopts.mEncoding = meshioplusplus::WriteEncoding::RawAppended;
+        std::string why;
+        if (!meshioplusplus::registry_write_supports(fmt, wopts, why))
+            throw std::runtime_error("--appended: " + why);
+        if (!float_fmt.empty())
+            std::cerr << "note: --float-format only affects ASCII output (--ascii)\n";
+        meshioplusplus::registry_write_ex(outfile, mesh, fmt, wopts);
     } else {
         if (!float_fmt.empty())
             std::cerr << "note: --float-format only affects ASCII output (--ascii)\n";

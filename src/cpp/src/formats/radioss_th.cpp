@@ -20,7 +20,9 @@
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,6 +31,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -148,7 +151,8 @@ struct ThGroup {
 // One time-history file: its descriptions and the records of every complete
 // output.
 struct ThFile {
-    std::string mData;
+    std::optional<detail::FileSource> mSource;
+    std::string_view mData;
     std::vector<std::pair<std::size_t, std::size_t>> mRecords;  // (offset, length)
     std::size_t mNext = 0;                                      // next record to read
     std::vector<std::int64_t> mGlobals;
@@ -158,11 +162,16 @@ struct ThFile {
     std::vector<std::size_t> mOutputs;  // each output's first record
     std::vector<double> mTimes;
 
+    // mData views mSource's bytes: pinned in place.
+    ThFile(const ThFile&) = delete;
+    ThFile& operator=(const ThFile&) = delete;
     explicit ThFile(const std::string& rPath) {
-        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-        if (!in)
+        try {
+            mSource.emplace(rPath);
+        } catch (const ReadError&) {
             th_fail("cannot open '" + rPath + "'");
-        mData.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        mData = mSource->View();
         if (!is_radioss_th_head(mData.data(), mData.size()))
             th_fail("'" + rPath + "' is not a time-history file");
         // Split the records; a truncated last one ends the file.

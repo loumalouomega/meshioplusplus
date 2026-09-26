@@ -120,6 +120,7 @@
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
@@ -463,6 +464,17 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::write_vtu_codec(path, cpp, binary, core_codec_from_name(codec));
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def(
+        "vtu_write_appended",
+        [](const std::string& path, py::object pymesh, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/false);
+            meshioplusplus::write_vtu_appended(path, cpp, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("codec") = "zlib");
 
     m.def("vtu_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
         meshioplusplus_py::PyMeshRefs refs;
@@ -1586,6 +1598,33 @@ PYBIND11_MODULE(_core, m) {
 
     // Distance to a surface. `sample_distance` takes bare query points;
     // `distance_to_surface` attaches the result to a mesh as ordinary data.
+    m.def(
+        "neighbor_pairs",
+        [](py::array points, const std::string& method, double radius, std::int64_t k,
+           std::vector<double> box, double cell_size) {
+            // proximity_graph's pair search (operations/neighbors.hpp); the
+            // Python layer wraps periodic positions and assembles the graph.
+            meshioplusplus::NeighborOptions options;
+            if (method == "radius")
+                options.mMethod = meshioplusplus::NeighborMethod::Radius;
+            else if (method == "knn")
+                options.mMethod = meshioplusplus::NeighborMethod::KNearest;
+            else
+                throw std::invalid_argument("meshio++: neighbor_pairs: unknown method '" + method +
+                                            "'");
+            options.mRadius = radius;
+            options.mK = k;
+            options.mBox = std::move(box);
+            options.mCellSize = cell_size;
+            meshioplusplus_py::PyMeshRefs refs;
+            py::array contiguous = meshioplusplus_py::ensure_contiguous(points, refs);
+            meshioplusplus::NDArray pts = meshioplusplus_py::view_from_numpy(contiguous);
+            meshioplusplus::NeighborPairs pairs = meshioplusplus::neighbor_pairs(pts, options);
+            return py::make_tuple(meshioplusplus_py::numpy_from_ndarray(std::move(pairs.mSource)),
+                                  meshioplusplus_py::numpy_from_ndarray(std::move(pairs.mTarget)));
+        },
+        py::arg("points"), py::arg("method"), py::arg("radius") = 0.0, py::arg("k") = 0,
+        py::arg("box") = std::vector<double>{}, py::arg("cell_size") = 0.0);
     m.def(
         "sample_distance",
         [](py::object pysurface, py::array points, const std::string& sign,

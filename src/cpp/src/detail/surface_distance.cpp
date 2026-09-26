@@ -19,6 +19,7 @@
 // the normal tables are accumulated serially.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +40,7 @@
 
 // Project includes (private, not installed)
 #include "slot_runs.hpp"
+#include "surface_edge_runs.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -78,13 +80,24 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
     TriangleSoup soup;
     const std::size_t dim = rSurface.PointDim();
     const NDArray& points = rSurface.Points();
-    soup.mPoints.resize(rSurface.NumPoints());
-    for (std::size_t p = 0; p < rSurface.NumPoints(); ++p)
+    const std::size_t npts = rSurface.NumPoints();
+    soup.mPoints.resize(npts);
+    parallel_for_bw(npts, [&](std::size_t p) {
         soup.mPoints[p] = read_point(points, dim, static_cast<std::int64_t>(p));
+    });
 
     const std::vector<char> mask = sd_region_mask(rSurface, rRegion);
     const std::vector<std::int64_t> bases = block_bases(rSurface);
 
+    // Pass 1 (serial over blocks, parallel over cells): validate each block --
+    // in block order, so the first bad block is the one reported -- and count
+    // each cell's fan triangles.
+    struct Blk {
+        Mesh::CellView mCells;
+        std::int64_t mBase;
+        std::vector<std::int64_t> mFirstTri;  // ncells + 1 prefix
+    };
+    std::vector<Blk> blocks;
     std::size_t bi = 0;
     for (const auto cb : rSurface.CellRange()) {
         const std::int64_t base = bases[bi++];
@@ -107,84 +120,121 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
                                         "' is not a linear surface cell (linearize the mesh "
                                         "first, then run extract_surface if needed)");
         }
-
         const std::size_t ncells = cb.NumCells();
-        for (std::size_t c = 0; c < ncells; ++c) {
+        std::vector<std::int64_t> ntri(ncells + 1, 0);
+        parallel_for(ncells, [&](std::size_t c) {
             const std::int64_t global = base + static_cast<std::int64_t>(c);
             if (!mask.empty() && !mask[static_cast<std::size_t>(global)])
-                continue;
+                return;
+            const std::size_t n = cb.IsRagged() ? cb.RowSize(c) : cb.NodesPerCell();
+            ntri[c + 1] = n < 3 ? 0 : static_cast<std::int64_t>(n - 2);
+        });
+        for (std::size_t c = 0; c < ncells; ++c)
+            ntri[c + 1] += ntri[c];
+        blocks.push_back(Blk{cb, base, std::move(ntri)});
+    }
 
-            // Gather this cell's corners, ragged or not.
-            std::vector<std::int64_t> ids;
-            if (cb.IsRagged()) {
-                const std::size_t n = cb.RowSize(c);
-                const std::int64_t* row = cb.Row(c);
-                ids.assign(row, row + n);
-            } else {
-                const NDArray& conn = cb.Conn();
-                const std::size_t npc = cb.NodesPerCell();
-                ids.resize(npc);
-                for (std::size_t i = 0; i < npc; ++i)
-                    ids[i] = read_int(conn, c * npc + i);
-            }
-            if (ids.size() < 3)
-                continue;
-
+    // Pass 2: every cell writes its fan at its own offset -- the triangles
+    // come out in (block, cell, fan) order, as the serial append gave them.
+    std::size_t total = 0;
+    std::vector<std::size_t> block_first(blocks.size());
+    for (std::size_t k = 0; k < blocks.size(); ++k) {
+        block_first[k] = total;
+        total += static_cast<std::size_t>(blocks[k].mFirstTri.back());
+    }
+    soup.mVertices.resize(total);
+    soup.mSourceCell.resize(total);
+    soup.mCorners.resize(total * 3);
+    for (std::size_t k = 0; k < blocks.size(); ++k) {
+        const Blk& b = blocks[k];
+        const auto& cb = b.mCells;
+        parallel_for(cb.NumCells(), [&](std::size_t c) {
+            const std::size_t first = block_first[k] + static_cast<std::size_t>(b.mFirstTri[c]);
+            const std::size_t count = static_cast<std::size_t>(b.mFirstTri[c + 1] - b.mFirstTri[c]);
+            if (count == 0)
+                return;
             // The same fan convert_cells(Simplexify) uses: corner 0 to every
             // non-adjacent edge. Transcribing a different fan here would make
             // the two disagree about which diagonal a quad is split on.
-            for (std::size_t k = 1; k + 1 < ids.size(); ++k) {
-                const std::array<std::int64_t, 3> tri{ids[0], ids[k], ids[k + 1]};
-                soup.mVertices.push_back(tri);
-                soup.mSourceCell.push_back(global);
+            const auto id = [&](std::size_t i) -> std::int64_t {
+                const std::int64_t v =
+                    cb.IsRagged() ? cb.Row(c)[i] : read_int(cb.Conn(), c * cb.NodesPerCell() + i);
+                if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                    throw std::invalid_argument(std::string(kSdPrefix) +
+                                                "a cell references a point the mesh does not have");
+                return v;
+            };
+            const std::int64_t a = id(0);
+            for (std::size_t j = 0; j < count; ++j) {
+                const std::array<std::int64_t, 3> tri{a, id(j + 1), id(j + 2)};
+                const std::size_t t = first + j;
+                soup.mVertices[t] = tri;
+                soup.mSourceCell[t] = b.mBase + static_cast<std::int64_t>(c);
                 for (std::size_t i = 0; i < 3; ++i)
-                    soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(tri[i])]);
+                    soup.mCorners[t * 3 + i] = soup.mPoints[static_cast<std::size_t>(tri[i])];
             }
-        }
+        });
     }
     return soup;
 }
 
-SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
-    // Per undirected edge: how many triangles use it, and how many use it in the
-    // low->high direction. A consistently wound closed surface has every edge
-    // used exactly twice, once in each direction. One record per (triangle,
-    // corner), grouped by a parallel sort (slot_runs.hpp): a run is one edge,
-    // its slots in ascending (triangle, corner) order, so its head names the
-    // first triangle, as the serial map insert did.
+SurfaceEdgeRuns surface_edge_runs(const TriangleSoup& rSoup) {
+    // One record per (triangle, corner), grouped by a parallel sort
+    // (slot_runs.hpp): a run is one edge, its slots in ascending (triangle,
+    // corner) order, so its head names the first triangle, as the serial map
+    // insert did.
     const std::size_t ntri = rSoup.NumTriangles();
-    std::vector<SurfaceEdgeKey> keys(ntri * 3);
-    std::vector<std::uint8_t> forward(ntri * 3);
+    SurfaceEdgeRuns out;
+    out.mKeys.resize(ntri * 3);
     parallel_for(ntri, [&](std::size_t t) {
         const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
         for (std::size_t e = 0; e < 3; ++e) {
             const std::int64_t u = v[e];
             const std::int64_t w = v[(e + 1) % 3];
-            keys[t * 3 + e] = SurfaceEdgeKey{u < w ? u : w, u < w ? w : u};
-            forward[t * 3 + e] = u < w;
+            out.mKeys[t * 3 + e] = SurfaceEdgeKey{u < w ? u : w, u < w ? w : u};
         }
     });
     // Bucketed by the lower endpoint, the key's leading component, so the runs
-    // come out in ascending key order: the map is sorted, as documented.
+    // come out in ascending key order: the edge map is sorted, as documented.
     const std::size_t npts = rSoup.mPoints.size();
-    const SlotRuns runs = group_slots(keys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
+    out.mRuns = group_slots(out.mKeys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
         return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
                    ? static_cast<std::size_t>(rK[0])
                    : npts;
     });
+    return out;
+}
+
+SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
+    return build_surface_edges_from_runs(rSoup, surface_edge_runs(rSoup));
+}
+
+SurfaceEdgeMap build_surface_edges_from_runs(const TriangleSoup& rSoup,
+                                             const SurfaceEdgeRuns& rRuns) {
+    // Per undirected edge: how many triangles use it, and how many use it in the
+    // low->high direction. A consistently wound closed surface has every edge
+    // used exactly twice, once in each direction.
+    const SlotRuns& runs = rRuns.mRuns;
     SurfaceEdgeMap edges(runs.NumRuns());
     parallel_for(runs.NumRuns(), [&](std::size_t r) {
         SurfaceEdgeRecord rec;
         rec.mUsed = static_cast<std::int64_t>(runs.Size(r));
-        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
-            rec.mForward += forward[*p];
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            const std::array<std::int64_t, 3>& v = rSoup.mVertices[*p / 3];
+            const std::size_t e = static_cast<std::size_t>(*p % 3);
+            rec.mForward += v[e] < v[(e + 1) % 3] ? 1 : 0;
+        }
         rec.mFirstTriangle = static_cast<std::int64_t>(runs.Head(r) / 3);
-        edges[r] = {keys[runs.Head(r)], rec};
+        edges[r] = {rRuns.mKeys[runs.Head(r)], rec};
     });
     return edges;
 }
 
 SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
+    return soup_quality(rSoup, build_surface_edges(rSoup));
+}
+
+SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEdges) {
     SurfaceQuality q;
     const std::size_t ntri = rSoup.NumTriangles();
 
@@ -196,8 +246,7 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
             ++q.mDegenerateTriangles;
     }
 
-    const SurfaceEdgeMap edges = build_surface_edges(rSoup);
-    for (const auto& kv : edges) {
+    for (const auto& kv : rEdges) {
         const std::int64_t used = kv.second.mUsed;
         const std::int64_t forward = kv.second.mForward;
         if (used == 1)
@@ -212,8 +261,101 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
     return q;
 }
 
+namespace {
+
+// Grid insertion (roadmap §4): every (bucket, triangle) pair of the
+// triangles' quantized boxes, laid out in (triangle, z, y, x) order -- the
+// serial `InsertBox` loop's order -- and grouped by bucket with the
+// sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
+// Every bucket therefore lists its triangles in ascending order, exactly as
+// the serial inserts appended them, and the occupied box is the same.
+void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
+                         const std::vector<Vec3>& rHi) {
+    const std::size_t ntri = rLo.size();
+    std::vector<GridKey> key_lo(ntri);
+    std::vector<GridKey> key_hi(ntri);
+    std::vector<std::uint64_t> count(ntri);
+    parallel_for(ntri, [&](std::size_t t) {
+        key_lo[t] = rGrid.KeyOf(rLo[t].data());
+        key_hi[t] = rGrid.KeyOf(rHi[t].data());
+        const std::int64_t nx = key_hi[t].x - key_lo[t].x + 1;
+        const std::int64_t ny = key_hi[t].y - key_lo[t].y + 1;
+        const std::int64_t nz = key_hi[t].z - key_lo[t].z + 1;
+        count[t] = nx > 0 && ny > 0 && nz > 0
+                       ? static_cast<std::uint64_t>(nx) * static_cast<std::uint64_t>(ny) *
+                             static_cast<std::uint64_t>(nz)
+                       : 0;
+    });
+    std::vector<std::uint64_t> offset(ntri);
+    const std::uint64_t npairs =
+        parallel_exclusive_scan(count.data(), ntri, offset.data(), std::uint64_t{0});
+    std::vector<GridKey> keys(npairs);
+    parallel_for(ntri, [&](std::size_t t) {
+        GridKey* out = keys.data() + offset[t];
+        for (std::int64_t z = key_lo[t].z; z <= key_hi[t].z; ++z)
+            for (std::int64_t y = key_lo[t].y; y <= key_hi[t].y; ++y)
+                for (std::int64_t x = key_lo[t].x; x <= key_hi[t].x; ++x)
+                    *out++ = GridKey{x, y, z};
+    });
+    // About four pairs per counting-sort bucket; any bucket function gives the
+    // same runs, since a run is one key.
+    const std::size_t nbuckets = static_cast<std::size_t>(npairs / 4) + 1;
+    const SlotRuns runs = group_slots(
+        keys, nbuckets, [nbuckets](const GridKey& rK) { return GridKeyHash{}(rK) % nbuckets; },
+        [](const GridKey& rA, const GridKey& rB) {
+            if (rA.x != rB.x)
+                return rA.x < rB.x;
+            if (rA.y != rB.y)
+                return rA.y < rB.y;
+            return rA.z < rB.z;
+        });
+    // Slot -> triangle: the slots of triangle t are [offset[t], offset[t] + count[t]).
+    std::vector<std::int64_t> tri_of(npairs);
+    parallel_for(ntri, [&](std::size_t t) {
+        for (std::uint64_t k = 0; k < count[t]; ++k)
+            tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
+    });
+    // Buckets in first-seen order: the map is then built by the same sequence
+    // of key insertions as the serial loop, so it ends in the same state
+    // (bucket count, node order) and queries walk it as fast.
+    const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
+    std::vector<GridKey> bucket_keys(first.NumIds());
+    std::vector<std::vector<std::int64_t>> bucket_ids(first.NumIds());
+    parallel_for(first.NumIds(), [&](std::size_t b) {
+        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
+        bucket_keys[b] = keys[runs.Head(r)];
+        std::vector<std::int64_t>& ids = bucket_ids[b];
+        ids.reserve(runs.Size(r));
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
+            ids.push_back(tri_of[*p]);
+    });
+    // The occupied box: InsertBox covers every triangle's low and high key.
+    GridKey lo = key_lo[0];
+    GridKey hi = key_hi[0];
+    for (std::size_t t = 0; t < ntri; ++t) {
+        lo = GridKey{std::min(lo.x, std::min(key_lo[t].x, key_hi[t].x)),
+                     std::min(lo.y, std::min(key_lo[t].y, key_hi[t].y)),
+                     std::min(lo.z, std::min(key_lo[t].z, key_hi[t].z))};
+        hi = GridKey{std::max(hi.x, std::max(key_lo[t].x, key_hi[t].x)),
+                     std::max(hi.y, std::max(key_lo[t].y, key_hi[t].y)),
+                     std::max(hi.z, std::max(key_lo[t].z, key_hi[t].z))};
+    }
+    rGrid.AssignBuckets(std::move(bucket_keys), std::move(bucket_ids), lo, hi);
+}
+
+}  // namespace
+
 DistanceQuery build_distance_query(const TriangleSoup& rSoup,
                                    const SurfaceDistanceOptions& rOptions) {
+    if (rSoup.NumTriangles() == 0)
+        throw std::invalid_argument(std::string(kSdPrefix) +
+                                    "the surface has no triangles to measure against");
+    return build_distance_query_from_runs(rSoup, rOptions, surface_edge_runs(rSoup));
+}
+
+DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
+                                             const SurfaceDistanceOptions& rOptions,
+                                             const SurfaceEdgeRuns& rRuns) {
     const std::size_t ntri = rSoup.NumTriangles();
     if (ntri == 0)
         throw std::invalid_argument(std::string(kSdPrefix) +
@@ -238,20 +380,32 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     // root of the triangle count (roughly "one bucket per triangle's worth of
     // volume"), floored at the mean triangle so buckets never split a single
     // triangle needlessly and capped a few multiples above it.
+    // Every triangle's bounding box, in parallel: both the bucket size and the
+    // grid insertion below read them.
+    std::vector<Vec3> tri_lo(ntri);
+    std::vector<Vec3> tri_hi(ntri);
+    parallel_for(ntri, [&](std::size_t t) {
+        Vec3 tlo = rSoup.mCorners[t * 3];
+        Vec3 thi = tlo;
+        for (std::size_t i = 1; i < 3; ++i)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double v = rSoup.mCorners[t * 3 + i][k];
+                tlo[k] = tlo[k] < v ? tlo[k] : v;
+                thi[k] = thi[k] > v ? thi[k] : v;
+            }
+        tri_lo[t] = tlo;
+        tri_hi[t] = thi;
+    });
     double cell = rOptions.mGridCellSize;
     if (!(cell > 0.0)) {
+        // A serial fold in triangle order: the mean is a floating-point sum,
+        // and `mCellSize` is observable.
         Vec3 lo = rSoup.mCorners[0];
         Vec3 hi = lo;
         double sum = 0.0;
         for (std::size_t t = 0; t < ntri; ++t) {
-            Vec3 tlo = rSoup.mCorners[t * 3];
-            Vec3 thi = tlo;
-            for (std::size_t i = 1; i < 3; ++i)
-                for (std::size_t k = 0; k < 3; ++k) {
-                    const double v = rSoup.mCorners[t * 3 + i][k];
-                    tlo[k] = tlo[k] < v ? tlo[k] : v;
-                    thi[k] = thi[k] > v ? thi[k] : v;
-                }
+            const Vec3& tlo = tri_lo[t];
+            const Vec3& thi = tri_hi[t];
             for (std::size_t k = 0; k < 3; ++k) {
                 lo[k] = lo[k] < tlo[k] ? lo[k] : tlo[k];
                 hi[k] = hi[k] > thi[k] ? hi[k] : thi[k];
@@ -269,22 +423,7 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
         cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
     q.mCellSize = cell;
     q.mGrid = SpatialGrid(cell);
-
-    // Serial ascending insert. The bucket contents order is not observable given
-    // the tie-break, but keeping the insert serial costs nothing here and keeps
-    // the structure's documented determinism contract intact.
-    for (std::size_t t = 0; t < ntri; ++t) {
-        Vec3 lo = rSoup.mCorners[t * 3];
-        Vec3 hi = lo;
-        for (std::size_t i = 1; i < 3; ++i)
-            for (std::size_t k = 0; k < 3; ++k) {
-                const double v = rSoup.mCorners[t * 3 + i][k];
-                lo[k] = lo[k] < v ? lo[k] : v;
-                hi[k] = hi[k] > v ? hi[k] : v;
-            }
-        q.mGrid.InsertBox(q.mGrid.KeyOf(lo.data()), q.mGrid.KeyOf(hi.data()),
-                          static_cast<std::int64_t>(t));
-    }
+    sd_insert_triangles(q.mGrid, tri_lo, tri_hi);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -307,21 +446,7 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
         unit[t] = vec3_scale(n, 1.0 / len);
         has_unit[t] = 1;
     });
-    std::vector<SurfaceEdgeKey> keys(ntri * 3);
-    parallel_for(ntri, [&](std::size_t t) {
-        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        for (std::size_t i = 0; i < 3; ++i) {
-            const std::int64_t p = v[i];
-            const std::int64_t r = v[(i + 1) % 3];
-            keys[t * 3 + i] = SurfaceEdgeKey{p < r ? p : r, p < r ? r : p};
-        }
-    });
-    const std::size_t npts = rSoup.mPoints.size();
-    const SlotRuns runs = group_slots(keys, npts + 1, [npts](const SurfaceEdgeKey& rK) {
-        return rK[0] >= 0 && static_cast<std::size_t>(rK[0]) < npts
-                   ? static_cast<std::size_t>(rK[0])
-                   : npts;
-    });
+    const SlotRuns& runs = rRuns.mRuns;
     std::vector<std::uint8_t> used(runs.NumRuns(), 0);
     parallel_for(runs.NumRuns(), [&](std::size_t r) {
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r) && !used[r]; ++p)

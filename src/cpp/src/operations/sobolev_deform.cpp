@@ -40,6 +40,9 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
 namespace meshioplusplus {
 namespace {
 
@@ -95,10 +98,11 @@ SoboCells sobo_gather_cells(const Mesh& rMesh) {
                                         "' is ragged");
         const std::size_t nc = cb.NumCells();
         const NDArray& conn = cb.Conn();
+        const detail::Int64View conn_v(conn);
         const std::size_t base = out.mConn.size();
         out.mConn.resize(base + nc * nv);
         for (std::size_t c = 0; c < nc * nv; ++c)
-            out.mConn[base + c] = detail::read_int(conn, c);
+            out.mConn[base + c] = conn_v[c];
         out.mNumCells += nc;
     }
     return out;
@@ -391,9 +395,10 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
         std::vector<double> xyz(n * dim, 0.0);
         {
             const NDArray& points = rMesh.Points();
+            const detail::DoubleView points_v(points);
             parallel_for_bw(n, [&](std::size_t i) {
                 for (std::size_t k = 0; k < dim; ++k)
-                    xyz[i * dim + k] = detail::read_double(points, i * dim + k);
+                    xyz[i * dim + k] = points_v[i * dim + k];
             });
         }
         std::vector<double> kloc;
@@ -553,13 +558,13 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
     result.mMesh = detail::clone_mesh(rMesh);
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView points_v(points);
         NDArray moved = NDArray::Uninit(points.Dtype(), {n, dim});
         detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
             T* dst = moved.As<T>();
             parallel_for_bw(n, [&](std::size_t i) {
                 for (std::size_t kk = 0; kk < dim; ++kk)
-                    dst[i * dim + kk] =
-                        static_cast<T>(detail::read_double(points, i * dim + kk) + u[i * dim + kk]);
+                    dst[i * dim + kk] = static_cast<T>(points_v[i * dim + kk] + u[i * dim + kk]);
             });
         });
         result.mMesh.AssignPoints(std::move(moved));

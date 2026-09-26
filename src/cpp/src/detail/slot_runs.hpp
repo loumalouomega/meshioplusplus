@@ -53,6 +53,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -80,6 +81,90 @@ struct SlotRuns {
 };
 
 namespace slot_runs_impl {
+
+/// How many workers the build's backend runs `parallel_for` on right now:
+/// the chunk count of `group_slots`' counting sort, whose output does not
+/// depend on it (a stable counting sort gives one order for any chunking).
+inline std::size_t workers() {
+#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    return std::max<std::size_t>(
+        1, tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    detail::kokkos_ensure_initialized();
+    return static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency()));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
+#else
+    return 1;
+#endif
+}
+
+/**
+ * @brief The stable counting sort of slots `0 .. n-1` by `bucket(slot)`:
+ * `rOrder` receives the slots in (bucket, slot) order and `rStart` the
+ * `NumBuckets + 1` bucket offsets. Chunked over the workers when the input
+ * is large -- per-chunk histograms, each bucket's chunk offsets in chunk
+ * order, per-chunk scatters -- and serial otherwise; one result either way.
+ * The chunk count keeps `chunks x buckets` counters within twice the slots.
+ */
+template <class Bucket>
+void counting_sort(std::size_t n, std::size_t NumBuckets, Bucket bucket,
+                   std::vector<std::uint64_t>& rOrder, std::vector<std::uint64_t>& rStart) {
+    rStart.assign(NumBuckets + 1, 0);
+    rOrder.resize(n);
+    constexpr std::size_t kSerialBelow = std::size_t{1} << 15;
+    std::size_t chunks = n < kSerialBelow ? 1 : workers();
+    chunks =
+        std::min(chunks, std::max<std::size_t>(1, 2 * n / std::max<std::size_t>(1, NumBuckets)));
+    if (chunks <= 1) {
+        for (std::size_t i = 0; i < n; ++i)
+            ++rStart[bucket(i) + 1];
+        for (std::size_t b = 0; b < NumBuckets; ++b)
+            rStart[b + 1] += rStart[b];
+        std::vector<std::uint64_t> cursor(rStart.begin(), rStart.end() - 1);
+        for (std::size_t i = 0; i < n; ++i)
+            rOrder[cursor[bucket(i)]++] = i;
+        return;
+    }
+    const std::size_t per = (n + chunks - 1) / chunks;
+    // counts[c * NumBuckets + b]: chunk c's slots in bucket b, then that
+    // chunk's first position within the bucket.
+    std::vector<std::uint64_t> counts(chunks * NumBuckets, 0);
+    parallel_for(
+        chunks,
+        [&](std::size_t c) {
+            std::uint64_t* mine = counts.data() + c * NumBuckets;
+            const std::size_t end = std::min(n, (c + 1) * per);
+            for (std::size_t i = c * per; i < end; ++i)
+                ++mine[bucket(i)];
+        },
+        1);
+    std::vector<std::uint64_t> total(NumBuckets);
+    parallel_for(NumBuckets, [&](std::size_t b) {
+        std::uint64_t run = 0;
+        for (std::size_t c = 0; c < chunks; ++c) {
+            const std::uint64_t k = counts[c * NumBuckets + b];
+            counts[c * NumBuckets + b] = run;
+            run += k;
+        }
+        total[b] = run;
+    });
+    rStart[NumBuckets] =
+        parallel_exclusive_scan(total.data(), NumBuckets, rStart.data(), std::uint64_t{0});
+    parallel_for(
+        chunks,
+        [&](std::size_t c) {
+            std::uint64_t* cursor = counts.data() + c * NumBuckets;
+            const std::size_t end = std::min(n, (c + 1) * per);
+            for (std::size_t i = c * per; i < end; ++i) {
+                const std::size_t b = bucket(i);
+                rOrder[rStart[b] + cursor[b]++] = i;
+            }
+        },
+        1);
+}
 
 /// Cut an ordering of the slots in which equal keys are adjacent into runs.
 template <class Key, class Less, class SameGroup>
@@ -163,18 +248,10 @@ SlotRuns group_slots(const std::vector<Key>& rKeys, std::size_t NumBuckets, Buck
         return narrow ? bucket32[slot] : bucket64[slot];
     };
     // Stable counting sort by bucket: exact integer counts, so the order is
-    // (bucket, slot) on every backend.
-    std::vector<std::uint64_t> start(NumBuckets + 1, 0);
-    for (std::size_t i = 0; i < n; ++i)
-        ++start[bucket(i) + 1];
-    for (std::size_t b = 0; b < NumBuckets; ++b)
-        start[b + 1] += start[b];
-    std::vector<std::uint64_t> order(n);
-    {
-        std::vector<std::uint64_t> cursor(start.begin(), start.end() - 1);
-        for (std::size_t i = 0; i < n; ++i)
-            order[cursor[bucket(i)]++] = i;
-    }
+    // (bucket, slot) on every backend, chunked or not.
+    std::vector<std::uint64_t> start;
+    std::vector<std::uint64_t> order;
+    slot_runs_impl::counting_sort(n, NumBuckets, bucket, order, start);
     // Within a bucket the slots ascend already; sort them by (key, slot).
     parallel_for(
         NumBuckets,
@@ -303,6 +380,47 @@ SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::s
         keys, NumPoints + 1,
         [&](const FacetKey& rK) { return facet_bucket(rK.Data(), rK.Size(), NumPoints); },
         FacetKeyLess{});
+}
+
+/**
+ * @brief `group_slots` for variable-length integer keys stored as CSR: key
+ * `i` is `rValues[rOffsets[i] .. rOffsets[i + 1])`, and two keys are equal
+ * exactly when they have the same length and values. Bucketed by each key's
+ * first value (`NumIds` when the key is empty or that value is not in
+ * `[0, NumIds)`), so a caller whose keys are sorted rows gets the smallest
+ * id as the bucket. The keep-first rule of a duplicate filter is the run
+ * head: slots ascend within a run.
+ */
+inline SlotRuns group_int_rows(const std::vector<std::int64_t>& rValues,
+                               const std::vector<std::uint64_t>& rOffsets, std::size_t NumIds) {
+    const std::size_t n = rOffsets.empty() ? 0 : rOffsets.size() - 1;
+    std::vector<std::uint64_t> slots(n);
+    parallel_for_bw(n, [&](std::size_t i) { slots[i] = i; });
+    const std::int64_t* v = rValues.data();
+    const std::uint64_t* off = rOffsets.data();
+    return group_slots(
+        slots, NumIds + 1,
+        [&](std::uint64_t i) -> std::size_t {
+            if (off[i] == off[i + 1] || v[off[i]] < 0 ||
+                static_cast<std::size_t>(v[off[i]]) >= NumIds)
+                return NumIds;
+            return static_cast<std::size_t>(v[off[i]]);
+        },
+        [&](std::uint64_t a, std::uint64_t b) {
+            return std::lexicographical_compare(v + off[a], v + off[a + 1], v + off[b],
+                                                v + off[b + 1]);
+        });
+}
+
+/// Per slot, whether an earlier slot holds its key: every member of a run
+/// but its head (the keep-first rule).
+inline std::vector<std::uint8_t> later_duplicates(const SlotRuns& rRuns, std::size_t NumSlots) {
+    std::vector<std::uint8_t> dup(NumSlots, 0);
+    parallel_for(rRuns.NumRuns(), [&](std::size_t r) {
+        for (const std::uint64_t* p = rRuns.Begin(r) + 1; p < rRuns.End(r); ++p)
+            dup[*p] = 1;
+    });
+    return dup;
 }
 
 /// Per slot, how many slots hold its key (the count-only rule).
