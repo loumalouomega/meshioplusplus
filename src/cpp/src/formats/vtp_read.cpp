@@ -31,6 +31,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "vtk_preflight.hpp"
+#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 
@@ -48,7 +49,8 @@ NDArray vtp_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
 }
 

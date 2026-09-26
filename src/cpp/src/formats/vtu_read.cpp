@@ -41,6 +41,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "vtk_preflight.hpp"
+#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 
@@ -94,6 +95,7 @@ struct VtuByteSource {
             mPos += n;
             return;
         }
+        mPending.reserve(mPendingPos + n + 3);
         while (mPending.size() - mPendingPos < n) {
             char q[4];
             int k = 0;
@@ -163,6 +165,19 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
     std::vector<std::uint64_t> sizes(static_cast<std::size_t>(num_blocks));
     for (auto& rSize : sizes)
         rSize = next();
+    // The blocks' decompressed total, reserved when it is plausible: no codec
+    // expands a block by more than about 2^16, as vtk_codec_decompress_block
+    // enforces per block.
+    std::uint64_t comp_total = 0;
+    for (const std::uint64_t z : sizes)
+        comp_total += std::min<std::uint64_t>(z, std::uint64_t{1} << 40);
+    const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (comp_total + 1) + (1u << 20);
+    if (num_blocks > 0 && max_block <= ceiling && last_block <= ceiling &&
+        num_blocks - 1 <= ceiling / std::max<std::uint64_t>(max_block, 1)) {
+        const std::uint64_t want = (num_blocks - 1) * max_block + last_block;
+        if (want <= ceiling)
+            out.reserve(static_cast<std::size_t>(want));
+    }
     std::vector<unsigned char> comp;
     for (std::size_t k = 0; k < sizes.size(); ++k) {
         if (sizes[k] > rSrc.Remaining())
@@ -216,8 +231,8 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary") {
         if (!rCtx.mBigEndian)
-            return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, rCtx.mCodec,
-                                            rCtx.mHeaderSize);
+            return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt,
+                                               rCtx.mCodec, rCtx.mHeaderSize);
         const char* text = rDa.text().get();
         VtuByteSource src;
         src.mText = text;
@@ -574,10 +589,12 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         // One stream across pieces: node ids shift by the points before the
         // piece, offsets by the connectivity before it, face offsets by the
         // face stream before it (-1 marks a cell that is not a polyhedron).
-        for (auto& rV : p_conn)
-            rV += point_base;
-        for (auto& rV : p_offsets)
-            rV += conn_base;
+        if (point_base != 0)
+            for (auto& rV : p_conn)
+                rV += point_base;
+        if (conn_base != 0)
+            for (auto& rV : p_offsets)
+                rV += conn_base;
         for (std::size_t i = 0; i < p_faces.size();) {
             const std::int64_t num_faces = p_faces[i++];
             for (std::int64_t f = 0; f < num_faces && i < p_faces.size(); ++f) {
@@ -596,11 +613,18 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         point_base += static_cast<std::int64_t>(num_points);
         conn_base += static_cast<std::int64_t>(p_conn.size());
         face_base += static_cast<std::int64_t>(p_faces.size());
-        conn.insert(conn.end(), p_conn.begin(), p_conn.end());
-        offsets.insert(offsets.end(), p_offsets.begin(), p_offsets.end());
-        types.insert(types.end(), p_types.begin(), p_types.end());
-        faces.insert(faces.end(), p_faces.begin(), p_faces.end());
-        face_offsets.insert(face_offsets.end(), p_face_offsets.begin(), p_face_offsets.end());
+        // The first (usually the only) piece moves in; later ones append.
+        const auto append = [](std::vector<std::int64_t>& rAll, std::vector<std::int64_t>& rPart) {
+            if (rAll.empty())
+                rAll = std::move(rPart);
+            else
+                rAll.insert(rAll.end(), rPart.begin(), rPart.end());
+        };
+        append(conn, p_conn);
+        append(offsets, p_offsets);
+        append(types, p_types);
+        append(faces, p_faces);
+        append(face_offsets, p_face_offsets);
     }
 
     if (!point_parts.empty()) {

@@ -279,8 +279,17 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
             da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
-            if (binary) {
+            if (binary && nblocks == 1) {
+                // One block: its bytes go out as they are, with no copy.
+                const NDArray& blk = detail::vtu_disk_array(name, first, scratch);
+                emit_bin(reinterpret_cast<const unsigned char*>(blk.Data()), blk.Nbytes());
+            } else if (binary) {
+                std::size_t total = 0;
+                const std::size_t isz = dtype_size(detail::vtu_disk_dtype(name, first.Dtype()));
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    total += rMesh.CellData(name, bi).Size() * isz;
                 std::vector<unsigned char> buf;
+                buf.reserve(total);
                 for (std::size_t bi = 0; bi < nblocks; ++bi) {
                     const NDArray& blk =
                         detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);

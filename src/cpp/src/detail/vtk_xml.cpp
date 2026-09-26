@@ -32,6 +32,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "row_writer.hpp"
+#include "vtu_decode.hpp"
 #include "typed_view.hpp"
 
 namespace meshioplusplus {
@@ -251,17 +252,8 @@ std::string vtu_strip(const char* pS) {
 }
 
 NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz) {
-    std::vector<unsigned char> bytes;
-    if (codec == VtkCodec::None)
-        bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
-    else
-        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
-    std::size_t isz = dtype_size(dt);
-    std::size_t n = isz ? bytes.size() / isz : 0;
-    NDArray a(dt, {n});
-    if (n)
-        std::memcpy(a.Data(), bytes.data(), n * isz);
-    return a;
+    // Decoded straight into the array (vtu_decode.hpp).
+    return vtu_decode_ndarray(rText.data(), rText.size(), hsz, codec, dt);
 }
 
 namespace {

@@ -44,6 +44,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "vtk_preflight.hpp"
+#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 
@@ -144,7 +145,8 @@ NDArray vtr_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTR '" + fmt + "' data is not supported by the C++ reader");
 }
 
