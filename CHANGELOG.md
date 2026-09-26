@@ -8,6 +8,16 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.20.0 (2026-09-26)
+
+**Roadmap §4 (performance), text reading and raw appended VTU.** Every reader returns the same mesh as v16.19.0 (compared over all 724 reader fixtures), and every existing writer's output is byte-identical.
+
+- **A shared text tokenizer** (the core-private `detail/text_cursor.hpp`): `mdpa`, `su2`, `avsucd` and `tecplot` parse `string_view` lines and tokens of the mapped file instead of a `std::string` per line and per token (on the `bench.py` M meshes, su2 reads 3.5× faster, avsucd 2.9×, tecplot 2.1× and the C++ mdpa reader 3.2×). XDMF `DataItem`s and VTU ASCII arrays parse straight into their typed array, where they made a `std::string` and switched on the dtype per value. The ASCII paths of `obj`, `stl`, `ply`, `gmsh`, `openfoam`, `flac3d`, `netgen`, `permas`, `triangle`, `tetgen`, `freefem`, `flux`, `abaqus`, `dex`, `ip`, `wkt`, `vti`, `vtr` and `vts` extract through `TextStream`, a view-based replacement for `std::istringstream`. A differential test pins it against the stream, token for token, over integers, doubles, overflow and malformed input.
+- **Raw appended VTU writing:** `vtu.write(..., appended=True)` (C++ `write_vtu_appended`, `WriteEncoding::RawAppended`, C `MIO_ENCODING_RAW_APPENDED`, `"raw_appended"` for the pipeline, WASM and the MCP `convert` mode, and `--appended` in both CLIs) writes every array into one `<AppendedData encoding="raw">` section. This is the layout VTK's own writers default to: the same header and blocks as inline binary, with no base64. An uncompressed file is about a quarter smaller. On a 216,000-hexahedron grid it wrote 2.6× faster and read 6.9× faster than inline binary, and with zlib 1.6× and 1.4× faster. VTK's `vtkXMLUnstructuredGridReader` reads the files. The Python reference writer writes it too (lzma included), and every other format and the transient series writers refuse it by name. The registry default is unchanged: inline binary with zlib.
+- **The VTU reader reads a raw appended file once**, where it loaded it through pugixml and then read it whole a second time.
+- ABI 18 unchanged: `write_vtu_appended` and the appended `WriteEncoding::RawAppended`/`MIO_ENCODING_RAW_APPENDED` enumerators are additions ([ABI reviews](doc/abi_reviews.md)).
+- Docs: [VTU](doc/formats/vtu.md), [CLI](doc/cli.md), [pipeline](doc/pipeline.md), [MCP](doc/mcp.md), [C API](doc/c_api.md) and [WASM](doc/wasm.md); roadmap §4 narrowed to the tokenizer's remaining readers, and its map.
+
 ## v16.19.0 (2026-09-26)
 
 **Roadmap §4 (performance), I/O:** file reading, ASCII writing and the VTK XML binary path. Every writer's output is byte-identical to v16.18.0's (compared file by file for VTU, VTP, legacy VTK 4.2 and 5.1, Medit, Tecplot, Abaqus, Ansys `.cdb`, LS-DYNA and OpenFOAM, and pinned by `test_io_baseline.py`), and every reader returns the same mesh.

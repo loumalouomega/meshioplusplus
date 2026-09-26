@@ -149,7 +149,9 @@ def test_the_stream_guard_actually_sees_the_factories():
         factories += len(
             re.findall(r"\bmake_classic_\w+stream\(", path.read_text(encoding="utf-8"))
         )
-    assert factories >= 150, factories
+    # 150+ until v16.20.0, when readers moved from per-line `istringstream`s to
+    # the stream-free `detail/text_cursor.hpp` (TextStream, split_lines).
+    assert factories >= 120, factories
 
     for reintroduced in (
         "    std::ifstream in(rPath);",
