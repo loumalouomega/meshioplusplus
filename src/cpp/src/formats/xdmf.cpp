@@ -43,9 +43,10 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+#include "../detail/text_cursor.hpp"
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
-#include "../detail/text_cursor.hpp"
 #endif
 
 namespace fs = std::filesystem;
