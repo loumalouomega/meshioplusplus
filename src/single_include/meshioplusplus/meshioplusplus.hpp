@@ -93990,8 +93990,10 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     // Rows formatted in parallel chunks (row_writer.hpp), byte for byte.
     {
         const detail::DoubleView pv(points);
-        const std::optional<detail::Int64View> labels =
-            vlabels ? std::optional<detail::Int64View>(std::in_place, *vlabels) : std::nullopt;
+        // Int64View is non-copyable: emplace rather than a ternary, which MSVC copies.
+        std::optional<detail::Int64View> labels;
+        if (vlabels)
+            labels.emplace(*vlabels);
         const detail::CNumber num;
         detail::write_row_chunks(os, n,
                                  [&](std::size_t First, std::size_t Last, std::string& rBuf) {
@@ -94020,8 +94022,9 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
                                      ? &rMesh.CellData(clabel_key, ci)
                                      : nullptr;
             const detail::Int64View conn(cb.Conn());
-            const std::optional<detail::Int64View> labels =
-                lab ? std::optional<detail::Int64View>(std::in_place, *lab) : std::nullopt;
+            std::optional<detail::Int64View> labels;
+            if (lab)
+                labels.emplace(*lab);
             const std::size_t kk = static_cast<std::size_t>(k);
             detail::write_row_chunks(os, count,
                                      [&](std::size_t First, std::size_t Last, std::string& rBuf) {
