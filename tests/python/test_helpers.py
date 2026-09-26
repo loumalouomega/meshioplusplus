@@ -163,7 +163,8 @@ def test_ansys_twin_refuses_a_non_fluent_file_from_its_head(tmp_path):
     from meshioplusplus.ansys import _ansys
 
     gmsh_like = tmp_path / "x.msh"
-    gmsh_like.write_text("  \n$MeshFormat\n2.2 0 8\n$EndMeshFormat\n")
+    # Bytes, not text: Windows' newline translation would move the offset.
+    gmsh_like.write_bytes(b"  \n$MeshFormat\n2.2 0 8\n$EndMeshFormat\n")
     with pytest.raises(meshioplusplus.ReadError, match="expected a section at byte 3"):
         _ansys.read(str(gmsh_like))
 
