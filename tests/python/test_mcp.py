@@ -231,6 +231,28 @@ def test_femap_neutral_steps_convert(tmp_path):
     assert meshioplusplus.read(back).points.shape == last.points.shape
 
 
+def test_femap_series_through_the_sequence_tool(tmp_path):
+    # v16.17.0: a fan-in to .neu writes one output set per step.
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    paths = []
+    for k in range(3):
+        m = meshioplusplus.Mesh(
+            points,
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"u": np.full(3, float(k))},
+        )
+        paths.append(str(tmp_path / f"s_{k}.vtu"))
+        meshioplusplus.write(paths[-1], m)
+    report = _tools.tool_sequence(
+        input_paths=paths, output_path=str(tmp_path / "s.neu"), times=[0, 1, 2]
+    )
+    assert len(report["steps_plan"]) == 3
+    meta = meshioplusplus.read_metadata(report["output_path"])
+    assert list(meta["time_values"]) == [0.0, 1.0, 2.0]
+    last = meshioplusplus.read(report["output_path"], time_step=2)
+    assert np.allclose(last.point_data["u"], 2.0)
+
+
 def test_mfem_grid_functions_convert_both_ways(tmp_path):
     import pathlib
 

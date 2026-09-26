@@ -402,6 +402,44 @@ def test_series_writers_list_agrees_with_reality(steps, tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "fmt, name",
+    [
+        ("xdmf", "s.xdmf"),
+        ("vtkhdf", "s.vtkhdf"),
+        ("pvd", "s.pvd"),
+        ("femap", "s.neu"),
+        ("gid", "s.post.res"),
+        ("usd", "s.usda"),
+    ],
+)
+def test_a_pipeline_fan_in_writes_the_target_format(steps, tmp_path, fmt, name):
+    # Until v16.17.0 the pipeline's fan-in built the XDMF writer whatever the
+    # target, so s.pvd, s.neu, s.post.res and s.usda held XDMF.
+    from meshioplusplus import _core
+    from meshioplusplus._interop import _importable
+
+    if fmt == "gid" and not getattr(_core, "__has_gidpost__", False):
+        pytest.skip("no gidpost in this build")
+    if fmt == "usd" and not _importable("pxr"):
+        pytest.skip("usd-core is not installed")
+    if fmt in ("xdmf", "vtkhdf") and not getattr(_core, "__has_hdf5__", False):
+        pytest.skip("no HDF5 in this build")
+    out = tmp_path / name
+    meshioplusplus.run_sequence_pipeline(
+        {
+            "Version": 1,
+            "Input": {"Pattern": str(steps / "out_*.vtu")},
+            "Output": {"Path": str(out)},
+            "Mode": "fan-in",
+        }
+    )
+    head = out.read_bytes()[:4096].decode("latin-1")
+    assert ("<Xdmf" in head) == (fmt == "xdmf")
+    meta = meshioplusplus.read_metadata(str(out), file_format=fmt)
+    assert len(meta["time_values"]) == 12
+
+
 def test_time_capable_readers_list_agrees_with_reality(steps):
     # The twin gate for the read side: a reader that accepts `time_step` must
     # be listed, or the multi-step guard would silently skip it.

@@ -1171,9 +1171,8 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
     steps_report = []
     if resolved_mode == "fan-in":
         _check_series_target(out_path, out.get("Format"))
-        with _SeriesWriter(
-            out_path, _series_target_format(out_path, out.get("Format"))
-        ) as writer:
+
+        def _steps():
             for entry in entries:
                 # Streaming: one mesh enters scope per iteration and leaves it.
                 mesh = read(
@@ -1185,7 +1184,12 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
                 time = _resolve_time(entry, mesh, inp.get("TimeFrom", "auto"))
                 for step in steps_spec:
                     mesh = _apply_step_shim(mesh, step, steps_report, warnings)
-                writer.write(time, mesh)
+                yield time, mesh
+
+        # write_sequence picks the target's own series writer (until v16.17.0
+        # this built the XDMF one directly, so a fan-in to .gid, .pvd or .usd
+        # wrote XDMF under that name).
+        write_sequence(out_path, _steps(), file_format=out.get("Format") or None)
         return {"steps": steps_report, "warnings": warnings}
 
     jobs = [
