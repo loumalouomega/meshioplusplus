@@ -44,6 +44,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -85,8 +86,8 @@ std::string abaqus_trim(const std::string& rS) {
 std::vector<std::string> split(const std::string& rS, char sep) {
     std::vector<std::string> out;
     std::string cur;
-    auto iss = detail::make_classic_istringstream(rS);
-    while (std::getline(iss, cur, sep))
+    detail::TextStream iss(rS);
+    while (getline(iss, cur, sep))
         out.push_back(abaqus_trim(cur));
     return out;
 }

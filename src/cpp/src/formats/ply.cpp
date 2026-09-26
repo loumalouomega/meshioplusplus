@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -232,7 +233,7 @@ Mesh read_ply(const std::string& rPath) {
 
     std::string line = next_sig();
     while (line != "end_header") {
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         iss >> tok;
         if (tok == "obj_info") {
@@ -247,7 +248,7 @@ Mesh read_ply(const std::string& rPath) {
                 num_verts = count;
                 line = next_sig();
                 while (line.rfind("property", 0) == 0) {
-                    auto ps = detail::make_classic_istringstream(line);
+                    detail::TextStream ps(line);
                     std::string p, type, name;
                     ps >> p >> type >> name;
                     if (type == "list")
@@ -261,7 +262,7 @@ Mesh read_ply(const std::string& rPath) {
                 line = next_sig();
                 bool got_list = false;
                 while (line.rfind("property", 0) == 0) {
-                    auto ps = detail::make_classic_istringstream(line);
+                    detail::TextStream ps(line);
                     std::string p, kind;
                     ps >> p >> kind;
                     if (kind == "list") {
@@ -318,7 +319,7 @@ Mesh read_ply(const std::string& rPath) {
     } else {
         for (std::size_t i = 0; i < num_verts; ++i) {
             std::string row = read_line();
-            auto rs = detail::make_classic_istringstream(row);
+            detail::TextStream rs(row);
             for (std::size_t c = 0; c < vprops.size(); ++c) {
                 std::string t;
                 rs >> t;
@@ -387,7 +388,7 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                auto rs = detail::make_classic_istringstream(read_line());
+                detail::TextStream rs(read_line());
                 long long cnt;
                 if (!(rs >> cnt))
                     throw ReadError("PLY: a face row without a vertex count");

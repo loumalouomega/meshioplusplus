@@ -53,6 +53,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "face_cells_common.hpp"
 #include "../detail/row_writer.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace fs = std::filesystem;
 
@@ -160,11 +161,11 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    auto ss = detail::make_classic_istringstream(out);
+    detail::TextStream ss(out);
     std::string line, result;
     bool in_header = false;
     int depth = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.find("FoamFile") != std::string::npos)
             in_header = true;
@@ -201,11 +202,11 @@ std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
 
 std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
     std::vector<std::array<double, 3>> pts;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false;
     bool have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -226,7 +227,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ns = detail::make_classic_istringstream(t);
+            detail::TextStream ns(t);
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -237,10 +238,10 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
 
 std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     std::vector<Face> faces;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -262,7 +263,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             if (lp == std::string::npos || rp == std::string::npos)
                 continue;
             std::string inside = s.substr(lp + 1, rp - lp - 1);
-            auto ns = detail::make_classic_istringstream(inside);
+            detail::TextStream ns(inside);
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -275,10 +276,10 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
 
 std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
     std::vector<std::int64_t> out;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -294,7 +295,7 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
         if (s == ")")
             break;
         if (in_block) {
-            auto ns = detail::make_classic_istringstream(s);
+            detail::TextStream ns(s);
             std::int64_t v;
             while (ns >> v)
                 out.push_back(v);
@@ -455,7 +456,7 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
         ++rp;
     }
     const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
-    auto ss = detail::make_classic_istringstream(inside);
+    detail::TextStream ss(inside);
     std::vector<std::int64_t> out;
     std::int64_t v;
     while (ss >> v)
@@ -943,7 +944,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    auto ss = detail::make_classic_istringstream(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -957,11 +958,11 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
     const std::string text_owned(rText);
-    auto ss = detail::make_classic_istringstream(text_owned);
+    detail::TextStream ss(text_owned);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -977,7 +978,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     }
     out.mCount = n;
     out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
-    for (std::int64_t i = 0; i < n && std::getline(ss, line);) {
+    for (std::int64_t i = 0; i < n && getline(ss, line);) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -987,7 +988,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             for (char& c : s)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ls = detail::make_classic_istringstream(s);
+            detail::TextStream ls(s);
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);

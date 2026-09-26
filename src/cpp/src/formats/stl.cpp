@@ -38,6 +38,7 @@
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -126,7 +127,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         std::string s = lstrip(line);
         if (s.empty() || is_comment_line(s))
             continue;
-        auto iss = detail::make_classic_istringstream(s);
+        detail::TextStream iss(s);
         std::vector<std::string> tok;
         std::string t;
         while (iss >> t)
