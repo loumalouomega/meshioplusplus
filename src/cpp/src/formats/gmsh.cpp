@@ -1314,6 +1314,28 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     }
     return std::vector<double>(times.begin(), times.end());
 }
+/// Whether the file has a `$Periodic` section: the header on a line of its own,
+/// found by one search of the buffer before `$Nodes` and `$Elements` are
+/// parsed only to be refused (roadmap §4). `$` is rare in mesh data, so the
+/// search runs at memchr speed; a match inside binary data only declines a
+/// read the Python reader then takes, which is what a real `$Periodic` does.
+bool gmsh_has_periodic(std::string_view rBuf) {
+    constexpr std::string_view kTag = "$Periodic";
+    std::size_t at = 0;
+    while ((at = rBuf.find(kTag, at)) != std::string_view::npos) {
+        const bool line_start = at == 0 || rBuf[at - 1] == '\n';
+        std::size_t after = at + kTag.size();
+        const std::size_t next = after;
+        while (after < rBuf.size() && (rBuf[after] == ' ' || rBuf[after] == '\t'))
+            ++after;  // the section parser trims the header line
+        const bool line_end = after == rBuf.size() || rBuf[after] == '\n' || rBuf[after] == '\r';
+        if (line_start && line_end)
+            return true;
+        at = next;
+    }
+    return false;
+}
+
 }  // namespace
 
 Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
@@ -1345,6 +1367,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             ++cur.mPos;
     }
     cur.skip_to_end("MeshFormat");
+    if (gmsh_has_periodic(buf))
+        throw ReadError("Gmsh $Periodic not supported by the C++ reader");
 
     // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
     // against the sorted union of every $NodeData/$ElementData section's time

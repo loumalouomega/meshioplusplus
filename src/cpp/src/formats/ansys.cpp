@@ -105,6 +105,29 @@ bool fluent_is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
+// A Fluent file opens with a section: '(' and its index. Any other file is
+// refused from its first bytes, with the message the full read gives, before
+// it is read whole -- every `.msh` a Gmsh or FreeFEM file is is offered to this
+// reader first (roadmap §4). Undecided while the head is all blanks.
+void fluent_refuse_early(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return;  // the full read reports it
+    char head[256];
+    in.read(head, sizeof head);
+    const std::size_t n = static_cast<std::size_t>(in.gcount());
+    std::size_t p = 0;
+    while (p < n && fluent_is_space(head[p]))
+        ++p;
+    if (p == n)
+        return;
+    std::size_t q = p + 1;
+    while (q < n && fluent_is_space(head[q]))
+        ++q;
+    if (head[p] != '(' || (q < n && !std::isdigit(static_cast<unsigned char>(head[q]))))
+        throw ReadError("Fluent: expected a section at byte " + std::to_string(p));
+}
+
 struct FluentReader {
     std::string_view mD;
     std::size_t mP = 0;
@@ -297,6 +320,7 @@ void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Coun
 }  // namespace
 
 Mesh read_ansys(const std::string& rPath) {
+    fluent_refuse_early(rPath);
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::string_view data = source.View();
     FluentReader rd(data);

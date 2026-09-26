@@ -40,6 +40,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
+#include "vtk_preflight.hpp"
 
 namespace meshioplusplus {
 
@@ -264,6 +265,8 @@ struct VtuSource {
 };
 
 void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
+    detail::vtk_preflight(rPath, "UnstructuredGrid",
+                          "lzma-compressed VTU not supported by the C++ reader");
     pugi::xml_parse_result res = rSource.mDoc.load_file(rPath.c_str(), ParseOptions);
     if (res) {
         pugi::xml_node app = rSource.mDoc.child("VTKFile").child("AppendedData");

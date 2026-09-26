@@ -48,6 +48,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "vtk_preflight.hpp"
 
 namespace meshioplusplus {
 
@@ -316,6 +317,8 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "ImageData",
+                          "lzma-compressed VTI not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTI XML parse failed: ") + res.description());
@@ -369,6 +372,8 @@ MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
     // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
     // metadata path this decodes NOTHING at all: the extent attribute alone
     // gives both counts.
+    detail::vtk_preflight(rPath, "ImageData",
+                          "lzma-compressed VTI not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTI XML parse failed: ") + res.description());

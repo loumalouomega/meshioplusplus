@@ -45,6 +45,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "vtk_preflight.hpp"
 
 namespace meshioplusplus {
 
@@ -167,8 +168,8 @@ std::vector<std::string> vts_array_names(const pugi::xml_node& rPiece, const cha
 // `detail/grid_lattice.hpp` uses -- points come from the file, not from a
 // recomputed origin/spacing, but the CONNECTIVITY formula is identical
 // regardless of where the points came from.
-void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px,
-                  std::int64_t py, std::int64_t* pOut) {
+void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
+                  std::int64_t* pOut) {
     const std::int64_t base = (k * py + j) * px + i;
     const std::int64_t top = base + px * py;
     pOut[0] = base;
@@ -304,6 +305,8 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "StructuredGrid",
+                          "lzma-compressed VTS not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTS XML parse failed: ") + res.description());
@@ -377,6 +380,8 @@ Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
 
 MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "StructuredGrid",
+                          "lzma-compressed VTS not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTS XML parse failed: ") + res.description());
