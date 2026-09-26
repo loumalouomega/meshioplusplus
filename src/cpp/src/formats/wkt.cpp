@@ -24,6 +24,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -63,10 +65,8 @@ struct CoordHash {
 }  // namespace
 
 Mesh read_wkt(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource s_source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view s = s_source.View();
 
     // Must be a TIN.
     std::size_t tin = s.find("TIN");

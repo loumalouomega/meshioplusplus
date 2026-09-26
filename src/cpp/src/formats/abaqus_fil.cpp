@@ -29,6 +29,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -46,6 +47,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/region.hpp"
 #include "abaqus_face.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -133,7 +135,7 @@ std::string fil_trim(std::string s) {
 }
 
 // Binary: the 512-word blocks' payloads, joined, cut into records.
-void fil_parse_binary(const std::string& rText, FilData& rOut) {
+void fil_parse_binary(std::string_view rText, FilData& rOut) {
     std::string words;
     if (const auto layout = detail::sniff_fortran_records(rText.data(), rText.size())) {
         for (const auto& r :
@@ -171,7 +173,7 @@ void fil_parse_binary(const std::string& rText, FilData& rOut) {
 }
 
 // ASCII: line breaks dropped, then item by item from each `*`.
-void fil_parse_ascii(const std::string& rText, FilData& rOut) {
+void fil_parse_ascii(std::string_view rText, FilData& rOut) {
     std::string s;
     s.reserve(rText.size());
     for (char c : rText)
@@ -254,10 +256,9 @@ void fil_parse_ascii(const std::string& rText, FilData& rOut) {
 }
 
 FilData fil_parse(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Abaqus .fil: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Abaqus .fil: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     FilData out;
     const std::size_t first = text.find_first_not_of(" \t\r\n");
     if (first != std::string::npos && text[first] == '*')

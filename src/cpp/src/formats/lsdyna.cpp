@@ -51,6 +51,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -173,16 +174,16 @@ bool lsd_starts_with(const std::string& rText, const char* pPrefix) {
     return rText.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> lsd_split(const std::string& rText, char Sep) {
+std::vector<std::string> lsd_split(std::string_view rText, char Sep) {
     std::vector<std::string> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t k = rText.find(Sep, start);
-        if (k == std::string::npos) {
-            out.push_back(rText.substr(start));
+        if (k == std::string_view::npos) {
+            out.emplace_back(rText.substr(start));
             return out;
         }
-        out.push_back(rText.substr(start, k - start));
+        out.emplace_back(rText.substr(start, k - start));
         start = k + 1;
     }
 }
@@ -653,17 +654,16 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
     rDeck.mSets.push_back(std::move(set));
 }
 
-void lsd_read_text(LsdDeck& rDeck, const std::string& rText, const fs::path& rBaseDir,
+void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode);
 
 void lsd_read_file(LsdDeck& rDeck, const fs::path& rPath, int Depth, CardMode Mode) {
     if (Depth > lsd_max_include_depth)
         throw ReadError("LS-DYNA: *INCLUDE nested deeper than " +
                         std::to_string(lsd_max_include_depth));
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("LS-DYNA: could not read " + rPath.string());
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath.string(), "LS-DYNA: could not read " + rPath.string());
+    const std::string_view text = text_source.View();
     std::error_code ec;
     const fs::path absolute = fs::absolute(rPath, ec);
     lsd_read_text(rDeck, text, (ec ? rPath : absolute).parent_path(), rPath.string(), Depth, Mode);
@@ -734,7 +734,7 @@ void lsd_read_includes(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
     }
 }
 
-void lsd_read_text(LsdDeck& rDeck, const std::string& rText, const fs::path& rBaseDir,
+void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode) {
     std::vector<std::string> lines = lsd_split(rText, '\n');
     for (std::string& ln : lines)

@@ -22,6 +22,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -62,9 +64,9 @@ const std::vector<std::pair<std::string, std::pair<std::string, int>>>& meshio_t
 
 // Whitespace/comment-skipping tokenizer over the whole file.
 struct Tokenizer {
-    const std::string& mBuf;
+    std::string_view mBuf;
     std::size_t mPos = 0;
-    explicit Tokenizer(const std::string& rB) : mBuf(rB) {}
+    explicit Tokenizer(std::string_view rB) : mBuf(rB) {}
 
     bool eof() const { return mPos >= mBuf.size(); }
 
@@ -87,7 +89,7 @@ struct Tokenizer {
         while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
                mBuf[mPos] != '#')
             ++mPos;
-        return mBuf.substr(start, mPos - start);
+        return std::string(mBuf.substr(start, mPos - start));
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
     // A section's entry count: every entry takes at least a byte of the file,
@@ -160,10 +162,9 @@ std::string pick_first_int_cell(const Mesh& rMesh) {
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource buf_source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = buf_source.View();
     Tokenizer tok(buf);
 
     int dim = 0;

@@ -27,6 +27,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -48,7 +50,7 @@ constexpr std::int32_t kAnimMagic = 0x542C;
 // Big-endian reads with a bounds check.
 class AnimCursor {
 public:
-    AnimCursor(const std::string& rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
+    AnimCursor(std::string_view rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
 
     const char* Take(std::size_t N) {
         if (N > mData.size() - mPos)  // not mPos + N: that wraps for a huge N
@@ -126,7 +128,7 @@ public:
     }
 
 private:
-    const std::string& mData;
+    std::string_view mData;
     const std::string& mPath;
     std::size_t mPos = 0;
 };
@@ -218,10 +220,9 @@ bool is_radioss_anim_filename(const std::string& rPath) {
 }
 
 Mesh read_radioss_anim(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Radioss animation: cannot open " + rPath);
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource data_source =
+        detail::open_source(rPath, "Radioss animation: cannot open " + rPath);
+    const std::string_view data = data_source.View();
     AnimCursor c(data, rPath);
     const std::int64_t magic = c.Int();
     if (magic != kAnimMagic) {

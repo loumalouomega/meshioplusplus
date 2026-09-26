@@ -45,6 +45,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -174,10 +175,7 @@ std::vector<std::int64_t> z88_leading_ints(std::string_view Line) {
 }
 
 std::string z88_read_text(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Z88: cannot open " + rPath);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return std::string(detail::open_source(rPath, "Z88: cannot open " + rPath).View());
 }
 
 std::string z88_lower(std::string s) {
