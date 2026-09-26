@@ -93,6 +93,16 @@ std::optional<std::int64_t> ans_int(const std::string& rText) {
     return detail::checked_integer<std::int64_t>(v, "Ansys .cdb");
 }
 
+// The capacity a block's header count asks for, capped at one entry per line
+// left: a wrong count only sizes the reservation.
+std::size_t ans_count_hint(const std::vector<std::string>& rHeader, std::size_t Field,
+                           std::size_t LinesLeft) {
+    if (rHeader.size() <= Field)
+        return 0;
+    const std::int64_t v = ans_int(rHeader[Field]).value_or(0);
+    return v > 0 ? std::min(static_cast<std::size_t>(v), LinesLeft) : 0;
+}
+
 // An element type given by number (`186`) or name (`SOLID186`): the routine.
 int ans_routine(const std::string& rText) {
     if (const auto v = ans_int(rText))
@@ -219,6 +229,10 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             ++i;
         } else if (up.rfind("NBLOCK", 0) == 0) {
             saw_block = true;
+            // NBLOCK,<fields>,SOLID,<largest id>,<count>
+            const std::size_t hint = ans_count_hint(ans_commas(up), 4, n - i);
+            deck.mModel.mNodeIds.reserve(deck.mModel.mNodeIds.size() + hint);
+            deck.mModel.mCoords.reserve(deck.mModel.mCoords.size() + 3 * hint);
             const auto fields = ans_format(rLines, i + 1);
             std::size_t n_int = 0;
             while (n_int < fields.size() && fields[n_int].mKind == 'i')
@@ -245,6 +259,10 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             const bool solid = header.size() > 2 && header[2] == "SOLID";
             const auto fields = ans_format(rLines, i + 1);
             i += 2;
+            // EBLOCK,<fields>,SOLID,<largest id>,<count>
+            if (solid)
+                deck.mModel.mElements.reserve(deck.mModel.mElements.size() +
+                                              ans_count_hint(header, 4, n - i));
             if (!solid) {
                 ++deck.mNonSolidBlocks;
                 while (i < n && !ans_is_terminator(rLines[i]))
