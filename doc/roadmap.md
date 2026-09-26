@@ -20,6 +20,12 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
+## 0. Update doc with latest features in the library
+
+The doc is not up-to-date, and should be updated accordingly.
+
+---
+
 ## 1. Format reach
 
 *Admission: a format a simulation or physics-ML workflow actually exchanges, or the missing half of a shipped one. "Exchanges" means a file that crosses a tool boundary in a real pipeline (mesher → solver, solver → post-processor, solver → training set), not a format that merely exists. Every item names the consumer on the other side of the file.*
