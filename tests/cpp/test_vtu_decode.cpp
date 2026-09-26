@@ -63,7 +63,8 @@ NDArray vd_reference(const std::string& rText, std::size_t hsz, det::VtkCodec co
 void vd_expect_same(const NDArray& rA, const NDArray& rB) {
     ASSERT_EQ(rA.Shape(), rB.Shape());
     ASSERT_EQ(rA.Dtype(), rB.Dtype());
-    EXPECT_EQ(0, std::memcmp(rA.Data(), rB.Data(), rA.Nbytes()));
+    if (rA.Nbytes() > 0)  // an empty array's Data() may be null
+        EXPECT_EQ(0, std::memcmp(rA.Data(), rB.Data(), rA.Nbytes()));
 }
 
 }  // namespace
