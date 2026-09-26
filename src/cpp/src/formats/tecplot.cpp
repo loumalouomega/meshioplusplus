@@ -29,6 +29,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,8 @@
 
 // Project includes (private, not installed)
 #include "../detail/row_writer.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
@@ -82,6 +85,39 @@ std::vector<std::string> tecplot_tokens(std::string S) {
         out.push_back(t);
     return out;
 }
+/// tecplot_tokens as views into @p Line (appended to @p rOut, cleared first):
+/// blanks and commas separate values, as replacing the commas with blanks
+/// and splitting on whitespace did.
+void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& rOut) {
+    rOut.clear();
+    std::size_t i = 0;
+    const std::size_t n = Line.size();
+    const auto sep = [](char c) { return c == ',' || detail::text_is_blank(c); };
+    while (true) {
+        while (i < n && sep(Line[i]))
+            ++i;
+        if (i >= n)
+            return;
+        const std::size_t b = i;
+        while (i < n && !sep(Line[i]))
+            ++i;
+        rOut.push_back(Line.substr(b, i - b));
+    }
+}
+
+/// How many tokens tecplot_tokens gives for @p Line, without building them.
+std::size_t tecplot_count_tokens(std::string_view Line) {
+    std::size_t count = 0;
+    bool in_token = false;
+    for (const char c : Line) {
+        const bool sep = c == ',' || detail::text_is_blank(c);
+        if (!sep && !in_token)
+            ++count;
+        in_token = !sep;
+    }
+    return count;
+}
+
 bool is_float_token(const std::string& rS) {
     if (rS.empty())
         return false;
@@ -551,16 +587,18 @@ std::size_t tecplot_ascii_token_count(const TecplotZone& rZ, std::size_t NumVari
 // convention, so this is the only reliable way to find where one zone's data
 // ends and the next one's header begins. Anything else (TEXT, GEOMETRY,
 // DATASETAUXDATA, face-neighbour lines) is skipped.
-std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLines,
+std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string_view>& rLines,
                                             std::vector<std::string>& rVariables) {
     std::vector<TecplotZone> zones;
     std::size_t i = 0;
     while (i < rLines.size()) {
-        const std::string u = tecplot_upper(rLines[i]);
+        const std::string u = tecplot_upper(std::string(rLines[i]));
         if (u.rfind("VARIABLES", 0) == 0) {
-            std::string joined = rLines[i];
-            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"')
-                joined += " " + rLines[++i];
+            std::string joined(rLines[i]);
+            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"') {
+                joined += " ";
+                joined += rLines[++i];
+            }
             rVariables.clear();
             const std::string rhs = joined.substr(joined.find('=') + 1);
             std::size_t p = 0;
@@ -590,15 +628,18 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
         }
 
         TecplotZone z;
-        std::string joined = rLines[i];
+        std::string joined(rLines[i]);
         // A header continues until the first line that starts with a number
         // (a blank line has no first token, so it continues too).
-        auto continues = [&](const std::string& rLine) {
-            const std::vector<std::string> t = tecplot_tokens(rLine);
-            return t.empty() || !is_float_token(t[0]);
+        std::vector<std::string_view> first;
+        auto continues = [&](std::string_view Line) {
+            tecplot_tokens_view(Line, first);
+            return first.empty() || !is_float_token(std::string(first[0]));
         };
-        while (i + 1 < rLines.size() && continues(rLines[i + 1]))
-            joined += " " + rLines[++i];
+        while (i + 1 < rLines.size() && continues(rLines[i + 1])) {
+            joined += " ";
+            joined += rLines[++i];
+        }
         z.mDataStart = i + 1;
 
         // tk[0] is the "ZONE" keyword itself; the rest is KEY = VALUE triples,
@@ -702,7 +743,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
         const std::size_t want = tecplot_ascii_token_count(z, rVariables.size());
         std::size_t li = z.mDataStart, got = 0;
         while (got < want && li < rLines.size()) {
-            got += tecplot_tokens(rLines[li]).size();
+            got += tecplot_count_tokens(rLines[li]);
             ++li;
         }
         if (!z.mOrdered && z.mConnShareZone < 0) {
@@ -711,7 +752,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
                 const std::size_t face_tokens = tecplot_ascii_face_map_tokens(z);
                 std::size_t seen = 0;
                 while (seen < face_tokens && li < rLines.size())
-                    seen += tecplot_tokens(rLines[li++]).size();
+                    seen += tecplot_count_tokens(rLines[li++]);
             } else {
                 li += z.mNumCells;  // one connectivity line per cell -- none if shared
             }
@@ -728,7 +769,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
 
 class TecplotAsciiSource final : public TecplotSource {
 public:
-    TecplotAsciiSource(const std::vector<std::string>& rLines,
+    TecplotAsciiSource(const std::vector<std::string_view>& rLines,
                        const std::vector<TecplotZone>& rZones, std::size_t NumVariables)
         : mrLines(rLines), mrZones(rZones), mNumVariables(NumVariables) {}
 
@@ -740,9 +781,11 @@ public:
         std::vector<double> flat;
         flat.reserve(want);
         std::size_t li = z.mDataStart;
+        std::vector<std::string_view> toks;  // reused
         while (flat.size() < want && li < mrLines.size()) {
-            for (const auto& t : tecplot_tokens(mrLines[li]))
-                flat.push_back(detail::parse_double(t));
+            tecplot_tokens_view(mrLines[li], toks);
+            for (const std::string_view t : toks)
+                flat.push_back(detail::parse_double_prefix(t));
             ++li;
         }
         if (flat.size() < want)
@@ -773,9 +816,11 @@ public:
             const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
             std::vector<std::int64_t> ints;
             ints.reserve(want_ints);
-            while (ints.size() < want_ints && li < mrLines.size())
-                for (const auto& t : tecplot_tokens(mrLines[li++]))
-                    ints.push_back(std::strtoll(t.c_str(), nullptr, 10));
+            while (ints.size() < want_ints && li < mrLines.size()) {
+                tecplot_tokens_view(mrLines[li++], toks);
+                for (const std::string_view t : toks)
+                    ints.push_back(detail::strtoll_token(t));
+            }
             if (ints.size() < want_ints)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " face map is truncated");
@@ -801,17 +846,17 @@ public:
             if (li >= mrLines.size())
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " connectivity is truncated");
-            const auto t = tecplot_tokens(mrLines[li++]);
-            if (t.size() < nn)
+            tecplot_tokens_view(mrLines[li++], toks);
+            if (toks.size() < nn)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
             for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = detail::zero_based(std::strtoll(t[j].c_str(), nullptr, 10));
+                cp[c * nn + j] = detail::zero_based(detail::strtoll_token(toks[j]));
         }
     }
 
 private:
-    const std::vector<std::string>& mrLines;
+    const std::vector<std::string_view>& mrLines;
     const std::vector<TecplotZone>& mrZones;
     std::size_t mNumVariables;
 };
@@ -1880,8 +1925,9 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
 struct TecplotFile {
     std::vector<std::string> mVariables;
     std::vector<TecplotZone> mZones;
-    std::vector<std::string> mLines;           // ASCII
-    std::unique_ptr<detail::FileSource> mRaw;  // binary
+    std::unique_ptr<detail::FileSource> mText;  // ASCII: the file, read once
+    std::vector<std::string_view> mLines;       // ASCII: its stripped lines
+    std::unique_ptr<detail::FileSource> mRaw;   // binary
     std::unique_ptr<TecplotSource> mSource;
 };
 
@@ -1896,15 +1942,19 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
         binary = tecplot_is_plt(head, static_cast<std::size_t>(probe.gcount()));
     }
     if (!binary) {
-        auto in = detail::make_classic_ifstream(rPath);
-        if (!in)
-            throw ReadError("Could not open file: " + rPath);
-        std::string l;
-        while (std::getline(in, l)) {
-            std::string s = tecplot_strip(l);
-            if (s.empty() || s[0] == '#')
+        // The file read once; its stripped lines are views into it
+        // (detail/text_cursor.hpp).
+        rFile.mText = std::make_unique<detail::FileSource>(
+            detail::open_source(rPath, "Could not open file: " + rPath));
+        for (std::string_view l : detail::split_lines(rFile.mText->View())) {
+            const std::size_t b = l.find_first_not_of(" \t\r\n");
+            if (b == std::string_view::npos)
                 continue;
-            rFile.mLines.push_back(std::move(s));
+            const std::size_t e = l.find_last_not_of(" \t\r\n");
+            const std::string_view st = l.substr(b, e - b + 1);
+            if (st[0] == '#')
+                continue;
+            rFile.mLines.push_back(st);
         }
         rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
         rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,

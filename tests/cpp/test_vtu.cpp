@@ -73,11 +73,16 @@ TEST(Vtu, PolyhedronRoundTrip) {
         "polyhedron8",
         {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}}});
 
-    for (bool binary : {false, true}) {
-        const std::string p = mt::temp_path(binary ? "_poly_b.vtu" : "_poly_a.vtu");
-        meshioplusplus::write_vtu(p, m, binary, /*zlib=*/false);
+    // 0 ascii, 1 inline binary, 2 raw appended (v16.20.0).
+    for (int mode : {0, 1, 2}) {
+        const bool binary = mode > 0;
+        const std::string p = mt::temp_path("_poly_" + std::to_string(mode) + ".vtu");
+        if (mode == 2)
+            meshioplusplus::write_vtu_appended(p, m, meshioplusplus::detail::VtkCodec::None);
+        else
+            meshioplusplus::write_vtu(p, m, binary, /*zlib=*/false);
         const meshioplusplus::Mesh back = meshioplusplus::read_vtu(p);
-        ASSERT_EQ(back.NumCellBlocks(), 1u) << "binary=" << binary;
+        ASSERT_EQ(back.NumCellBlocks(), 1u) << "mode=" << mode;
         const auto cb = back.Cells(0);
         EXPECT_TRUE(cb.IsPolyhedron());
         EXPECT_EQ(cb.NumFaces(0), 6u);

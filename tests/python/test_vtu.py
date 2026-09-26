@@ -59,6 +59,41 @@ def test(mesh, data_type, tmp_path):
     helpers.write_read(tmp_path, writer, meshioplusplus.vtu.read, mesh, tol)
 
 
+@pytest.mark.parametrize(
+    "mesh",
+    [
+        helpers.tri_mesh,
+        helpers.polyhedron_mesh,
+        helpers.add_point_data(helpers.tri_mesh, 3),
+        helpers.add_cell_data(helpers.tri_quad_mesh, [("a", (), np.float64)]),
+    ],
+)
+@pytest.mark.parametrize("compression", [None, "zlib", "lzma"])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_raw_appended_round_trip(mesh, compression, engine, tmp_path):
+    # v16.20.0: every array in one raw <AppendedData> section. The Python
+    # reference writes it too (lzma only there), and both engines read either.
+    if engine == "core" and compression == "lzma":
+        pytest.skip("lzma is Python-only")
+    writer = meshioplusplus.vtu.write if engine == "core" else _vtu.write
+
+    def write(filename, m):
+        writer(filename, m, binary=True, compression=compression, appended=True)
+        text = pathlib.Path(filename).read_bytes()
+        assert b'<AppendedData encoding="raw">' in text
+        assert b'format="appended"' in text
+        assert b'format="binary"' not in text
+
+    helpers.write_read(tmp_path, write, meshioplusplus.vtu.read, mesh, 1.0e-15)
+    helpers.write_read(tmp_path, write, _vtu.read, mesh, 1.0e-15)
+
+
+def test_raw_appended_needs_binary(tmp_path):
+    for writer in (meshioplusplus.vtu.write, _vtu.write):
+        with pytest.raises(meshioplusplus.WriteError, match="needs binary=True"):
+            writer(tmp_path / "a.vtu", helpers.tri_mesh, binary=False, appended=True)
+
+
 def test_generic_io(tmp_path):
     helpers.generic_io(tmp_path / "test.vtu")
     # With additional, insignificant suffix:

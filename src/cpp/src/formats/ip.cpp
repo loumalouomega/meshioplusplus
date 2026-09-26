@@ -28,6 +28,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -56,7 +57,7 @@ Mesh read_ip(const std::string& rPath) {
     while (ints.size() < 4 && idx < lines.size()) {
         std::string s = ip_strip(lines[idx++]);
         if (!s.empty()) {
-            auto iss = detail::make_classic_istringstream(s);
+            detail::TextStream iss(s);
             int v;
             iss >> v;
             ints.push_back(v);
@@ -88,7 +89,7 @@ Mesh read_ip(const std::string& rPath) {
                 c = ' ';
             else if (c == 'D' || c == 'd')
                 c = 'E';
-        auto iss = detail::make_classic_istringstream(s);
+        detail::TextStream iss(s);
         std::string tok;
         while (iss >> tok)
             flat.push_back(detail::parse_double(tok));

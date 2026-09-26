@@ -34,6 +34,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -75,7 +76,7 @@ Parsed parse_file(const std::string& rPath) {
             ++s;
         if (s >= line.size() || line[s] == '#')
             continue;
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         if (!have_header) {
             while (iss >> tok)

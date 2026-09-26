@@ -81,6 +81,15 @@ private:
 NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, VtkCodec codec,
                            DType dt);
 
+/**
+ * @brief Appends to @p rOut what `vtu_encode_binary` base64-encodes, as raw
+ * bytes: the `hsz`-byte size header and the payload, or with @p codec the
+ * block header and the compressed blocks -- one array of a raw
+ * `<AppendedData>` section.
+ */
+void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                    std::vector<unsigned char>& rOut);
+
 /// `vtu_parse_binary(vtu_strip(...), ...)` over a view of the element's text.
 inline NDArray vtu_decode_bin_view(std::string_view Text, DType dt, VtkCodec codec,
                                    std::size_t hsz) {

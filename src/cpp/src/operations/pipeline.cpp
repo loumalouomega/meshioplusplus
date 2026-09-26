@@ -1202,9 +1202,10 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
     const WriteOptions& wopts = rPipeline.mOutput.mOptions;
-    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
-                                : wopts.mEncoding == WriteEncoding::Binary ? "binary"
-                                                                           : "";
+    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii         ? "ascii"
+                                : wopts.mEncoding == WriteEncoding::Binary      ? "binary"
+                                : wopts.mEncoding == WriteEncoding::RawAppended ? "raw_appended"
+                                                                                : "";
     const char* codec_name = wopts.mCodecSet ? vtk_codec_name(wopts.mCodec) : "";
     detail::provenance_set_target(out_fmt, encoding_name, codec_name, wopts.mFloatFormat);
 
@@ -1222,9 +1223,11 @@ WriteEncoding pipeline_encoding_from_name(const std::string& rName) {
         return WriteEncoding::Ascii;
     if (rName == "binary")
         return WriteEncoding::Binary;
+    if (rName == "raw_appended")
+        return WriteEncoding::RawAppended;
     throw std::invalid_argument(
-        "meshio++: pipeline: Output.Encoding must be 'ascii' or "
-        "'binary', not '" +
+        "meshio++: pipeline: Output.Encoding must be 'ascii', 'binary' or "
+        "'raw_appended', not '" +
         rName + "'");
 }
 

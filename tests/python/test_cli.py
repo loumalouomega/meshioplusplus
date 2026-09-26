@@ -145,6 +145,22 @@ def test_convert_ascii_and_float_format(tmp_path):
     assert is_same_mesh(helpers.tri_mesh, mesh, atol=1.0e-7)
 
 
+def test_convert_appended(tmp_path):
+    infile = tmp_path / "in.vtk"
+    outfile = tmp_path / "out.vtu"
+    meshioplusplus.write(infile, helpers.tri_mesh)
+    meshioplusplus._cli.main(["convert", str(infile), str(outfile), "--appended"])
+    assert b'<AppendedData encoding="raw">' in outfile.read_bytes()
+    mesh = meshioplusplus.read(outfile)
+    assert is_same_mesh(helpers.tri_mesh, mesh, atol=1.0e-15)
+    for bad in (
+        ["convert", str(infile), str(tmp_path / "out.vtk"), "--appended"],
+        ["convert", str(infile), str(outfile), "--appended", "--ascii"],
+    ):
+        with pytest.raises(ValueError, match="--appended"):
+            meshioplusplus._cli.main(bad)
+
+
 def test_convert_int_data_to_sets(tmp_path):
     # The `-d`/`--int-data-to-sets` path (converse of `--sets-to-int-data`).
     # Regression test: `convert -d` used to raise "dictionary changed size

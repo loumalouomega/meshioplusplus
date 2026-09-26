@@ -11215,7 +11215,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 19
+#define MESHIOPLUSPLUS_VERSION_MINOR 20
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11225,7 +11225,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.19.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.20.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -21381,8 +21381,8 @@ MESHIOPLUSPLUS_API MeshMetadata read_vts_metadata(const std::string& rPath,
 // ===== begin src/cpp/include/meshioplusplus/formats/vtu.hpp =====
 /**
  * @file vtu.hpp
- * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer, ascii and inline
- *        binary (uncompressed or zlib), single `<Piece>` only.
+ * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer: ascii, inline
+ *        binary (uncompressed or block-compressed) and raw appended data.
  *
  * A `.vtu` file is `<VTKFile type="UnstructuredGrid" ...><UnstructuredGrid>
  * <Piece ...><Points>/<Cells>(connectivity,offsets,types[,faces,
@@ -21402,15 +21402,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vts_metadata(const std::string& rPath,
  * `byte_order="LittleEndian"` (unlike the Python writer, which records the
  * host's native order).
  *
- * The C++ core explicitly does **not** implement several paths, each of
- * which throws ReadError/WriteError to force the Python fallback:
- * lzma compression; `<AppendedData>` (raw/appended binary, including the
- * regex-based manual XML-repair the Python reader falls back to when
- * appended raw bytes break XML parsing); polyhedron cells (both read and
- * write — they also cannot mix with other cell types, a Python-side
- * ValueError); multiple `<Piece>` elements (the Python reader concatenates
- * them, C++ requires exactly one); and any non-default `header_type` other
- * than `UInt32`.
+ * The reader also takes `<AppendedData>` (raw or base64, in either byte
+ * order), several `<Piece>` elements (concatenated), polyhedron cells mixed
+ * with other types (`faces`/`faceoffsets`, -1 for a non-polyhedral cell) and
+ * a `UInt64` `header_type`; `write_vtu_appended` writes raw appended data
+ * (since v16.20.0). What the C++ core refuses -- with a ReadError, so the
+ * Python reader takes the file -- is lzma compression, and an lz4 or zstd
+ * compressor this build was compiled without.
  */
 
 // System includes
@@ -21461,6 +21459,22 @@ MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rM
                      detail::VtkCodec codec);
 
 /**
+ * @brief Write a `.vtu` with its arrays in one raw `<AppendedData>` section
+ * (since v16.20.0).
+ *
+ * Every array, field data included, is `format="appended"` with an `offset`, and its bytes --
+ * the size header and payload, or with @p codec the block header and the
+ * compressed blocks -- follow the XML unencoded, after the section's leading
+ * underscore: no base64 on either side. VTK, ParaView and vtk.js read it, as
+ * does `read_vtu`. `VtkCodec::None` writes the payloads uncompressed.
+ *
+ * @throws WriteError naming the CMake option when the codec was not compiled
+ *         into this build.
+ */
+MESHIOPLUSPLUS_API void write_vtu_appended(const std::string& rPath, const Mesh& rMesh,
+                                           detail::VtkCodec codec);
+
+/**
  * @brief Read a `.vtu` file.
  *
  * Parses the single `<Piece>`'s `<Points>`/`<Cells>`/`<PointData>`/
@@ -21475,10 +21489,9 @@ MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rM
  *        `Name` attribute is readable before the payload is touched, so a
  *        skipped array costs neither base64 decode, inflate, nor allocation.
  * @return the read Mesh
- * @throws ReadError if the file uses lzma compression, an `<AppendedData>`
- *         section, more than one `<Piece>`, polyhedron cells, or a
- *         non-`UInt32` `header_type` — the shim then falls back to the
- *         Python reader, which supports all of these.
+ * @throws ReadError if the file uses lzma compression, or an lz4 or zstd
+ *         compressor this build lacks -- the shim then falls back to the
+ *         Python reader -- or is malformed.
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */
@@ -26101,6 +26114,9 @@ enum class WriteEncoding {
     Default,  ///< the format's registry default (unchanged behaviour)
     Ascii,
     Binary,
+    /// `.vtu` only (since v16.20.0): binary, with every array in one raw
+    /// `<AppendedData>` section -- no base64 (`write_vtu_appended`).
+    RawAppended,
 };
 
 /**
@@ -30884,6 +30900,420 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/text_cursor.hpp =====
+/**
+ * @file detail/text_cursor.hpp
+ * @brief Text readers' lines, tokens and numbers as views over one buffer.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Twenty-odd text readers held the whole file as a `std::vector<std::string>`
+ * of lines and split each line into `std::string` tokens through a
+ * `std::istringstream`: a heap string per line and per token. Here a file is
+ * read once (`FileSource`), its lines are `string_view`s into it
+ * (`split_lines`, the lines `std::getline` gives), a line's tokens are views
+ * into it (`split_blanks`, the tokens `istringstream >> std::string` gives),
+ * and a token parses in place with the semantics the readers used before:
+ * `parse_double_token` is `parse_double` over the whole token, and
+ * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
+ * accepted, an out-of-range value saturated. Roadmap §4, "A shared tokenizer
+ * and number path".
+ */
+
+// System includes
+#include <charconv>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Whether `c` separates tokens: `std::isspace` in the classic locale.
+inline bool text_is_blank(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+/**
+ * @brief The lines `std::getline` reads from @p Text, as views into it: split
+ * on `'\n'` (a `'\r'` before it is kept, as `getline` keeps it), with no empty
+ * last line after a final newline.
+ */
+inline std::vector<std::string_view> split_lines(std::string_view Text) {
+    std::vector<std::string_view> lines;
+    std::size_t pos = 0;
+    while (pos < Text.size()) {
+        std::size_t eol = Text.find('\n', pos);
+        if (eol == std::string_view::npos)
+            eol = Text.size();
+        lines.push_back(Text.substr(pos, eol - pos));
+        pos = eol + 1;
+    }
+    return lines;
+}
+
+/// The tokens `istringstream >> std::string` reads from @p Line, as views,
+/// appended to @p rOut (cleared first).
+inline void split_blanks(std::string_view Line, std::vector<std::string_view>& rOut) {
+    rOut.clear();
+    std::size_t i = 0;
+    const std::size_t n = Line.size();
+    while (true) {
+        while (i < n && text_is_blank(Line[i]))
+            ++i;
+        if (i >= n)
+            return;
+        const std::size_t b = i;
+        while (i < n && !text_is_blank(Line[i]))
+            ++i;
+        rOut.push_back(Line.substr(b, i - b));
+    }
+}
+
+/// `split_blanks` returning its tokens.
+inline std::vector<std::string_view> split_blanks(std::string_view Line) {
+    std::vector<std::string_view> out;
+    split_blanks(Line, out);
+    return out;
+}
+
+/**
+ * @brief `parse_double` over the whole of @p Token: true, with the value, when
+ * the entire token is one number (what `parse_double(s.c_str(), end)` with
+ * `end == s.c_str() + s.size()` accepted), false otherwise.
+ */
+inline bool parse_double_token(std::string_view Token, double& rOut) {
+    if (Token.empty())
+        return false;
+    // parse_double reads a NUL-terminated string; a token is copied into one.
+    // Tokens are short, so this costs little next to the parse itself.
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Token.size() < sizeof small) {
+        Token.copy(small, Token.size());
+        small[Token.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Token);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    const double v = parse_double(first, end);
+    if (end != first + Token.size())
+        return false;
+    rOut = v;
+    return true;
+}
+
+/**
+ * @brief `strtoll(…, 10)` over the whole of @p Token: true, with the value,
+ * when the entire token is one base-10 integer. Like `strtoll`, a leading `+`
+ * is accepted and a value outside `int64` saturates.
+ */
+inline bool parse_int_token(std::string_view Token, std::int64_t& rOut) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;  // strtoll skips leading blanks
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
+        return false;
+    std::uint64_t mag = 0;
+    const char* p = Token.data() + i;
+    const char* last = Token.data() + Token.size();
+    const auto r = std::from_chars(p, last, mag);
+    if (r.ptr != last)
+        return false;
+    constexpr std::uint64_t kMax =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0)) {
+        rOut = neg ? std::numeric_limits<std::int64_t>::min()
+                   : std::numeric_limits<std::int64_t>::max();
+        return true;
+    }
+    rOut = neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
+    return true;
+}
+
+/**
+ * @brief `strtoll(token, nullptr, 10)` on @p Token: the longest base-10 prefix
+ * (after blanks and a sign), 0 when there is none, saturated when out of
+ * range -- the lenient parse, which ignores what follows the number.
+ */
+inline std::int64_t strtoll_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    constexpr std::uint64_t kMax =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0))
+        return neg ? std::numeric_limits<std::int64_t>::min()
+                   : std::numeric_limits<std::int64_t>::max();
+    return neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
+}
+
+/**
+ * @brief `strtoull(token, nullptr, 10)` on @p Token: the longest base-10
+ * prefix after blanks and a sign, 0 when there is none, `UINT64_MAX` when out
+ * of range, and -- as `strtoull` does -- a negative value wrapped modulo 2^64.
+ */
+inline std::uint64_t strtoull_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    if (r.ec == std::errc::result_out_of_range)
+        return std::numeric_limits<std::uint64_t>::max();
+    return neg ? 0 - mag : mag;
+}
+
+/**
+ * @brief `parse_double(token)` on @p Token: the longest numeric prefix, 0.0
+ * when there is none -- the lenient parse, which ignores what follows.
+ */
+inline double parse_double_prefix(std::string_view Token) {
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Token.size() < sizeof small) {
+        Token.copy(small, Token.size());
+        small[Token.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Token);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    return parse_double(first, end);
+}
+
+/**
+ * @brief `std::istringstream` extraction over a view, with no stream: the
+ * same values and the same fail state as `operator>>` in the classic locale.
+ *
+ * Readers that split a line into numbers through a stream built one per line
+ * (a copy of the line, a locale-aware parse per value) take this instead,
+ * unchanged. A double is read as libstdc++'s `num_get` does: blanks skipped,
+ * then a sign, digits with at most one decimal point, and -- after a digit --
+ * an exponent (`e`/`E`, a sign, digits) are accumulated and converted as
+ * `strtod` would; a conversion that fails stores 0, one that overflows stores
+ * the largest finite value of that sign, and either sets the fail state. An
+ * integer accumulates a sign and digits, and out of range stores the bound and
+ * fails. At the end of the text an extraction fails and leaves the value
+ * alone, and once failed every further extraction does nothing, as with a
+ * stream. `test_text_cursor.cpp` checks it against `std::istringstream`.
+ */
+class TextStream {
+public:
+    explicit TextStream(std::string_view Text) : mText(Text) {}
+    explicit TextStream(const char* pText) : mText(pText ? pText : "") {}
+    explicit TextStream(const std::string& rText) : mText(rText) {}
+    /// A temporary is kept, so the view never outlives it.
+    explicit TextStream(std::string&& rText) : mOwned(std::move(rText)), mText(mOwned) {}
+    TextStream(const TextStream&) = delete;
+    TextStream& operator=(const TextStream&) = delete;
+
+    explicit operator bool() const { return !mFail; }
+    bool operator!() const { return mFail; }
+    bool fail() const { return mFail; }
+
+    TextStream& operator>>(double& rValue) {
+        if (!Sentry())
+            return *this;
+        const std::size_t b = mPos;
+        if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
+            ++mPos;
+        bool digits = false, point = false;
+        while (mPos < mText.size()) {
+            const char c = mText[mPos];
+            if (c >= '0' && c <= '9') {
+                digits = true;
+                ++mPos;
+            } else if (c == '.' && !point) {
+                point = true;
+                ++mPos;
+            } else {
+                break;
+            }
+        }
+        if (digits && mPos < mText.size() && (mText[mPos] == 'e' || mText[mPos] == 'E')) {
+            ++mPos;
+            if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
+                ++mPos;
+            while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+                ++mPos;
+        }
+        double v = 0.0;
+        if (!parse_double_token(mText.substr(b, mPos - b), v)) {
+            rValue = 0.0;
+            mFail = true;
+        } else if (v == std::numeric_limits<double>::infinity()) {
+            rValue = std::numeric_limits<double>::max();
+            mFail = true;
+        } else if (v == -std::numeric_limits<double>::infinity()) {
+            rValue = -std::numeric_limits<double>::max();
+            mFail = true;
+        } else {
+            rValue = v;
+        }
+        return *this;
+    }
+
+    TextStream& operator>>(long long& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(long& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(int& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(unsigned long long& rValue) { return ExtractUnsigned(rValue); }
+    TextStream& operator>>(unsigned long& rValue) { return ExtractUnsigned(rValue); }
+    TextStream& operator>>(unsigned& rValue) { return ExtractUnsigned(rValue); }
+
+    /// `std::getline(stream, rLine, Delim)`: the characters up to @p Delim
+    /// (consumed, not stored) or the end; fails only when none are left.
+    friend TextStream& getline(TextStream& rIn, std::string& rLine, char Delim = '\n') {
+        if (rIn.mFail)
+            return rIn;
+        if (rIn.mPos >= rIn.mText.size()) {
+            rIn.mFail = true;
+            return rIn;
+        }
+        std::size_t e = rIn.mText.find(Delim, rIn.mPos);
+        if (e == std::string_view::npos)
+            e = rIn.mText.size();
+        rLine.assign(rIn.mText.substr(rIn.mPos, e - rIn.mPos));
+        rIn.mPos = e < rIn.mText.size() ? e + 1 : e;
+        return rIn;
+    }
+
+    TextStream& operator>>(std::string& rValue) {
+        if (!Sentry())
+            return *this;
+        const std::size_t b = mPos;
+        while (mPos < mText.size() && !text_is_blank(mText[mPos]))
+            ++mPos;
+        rValue.assign(mText.substr(b, mPos - b));
+        return *this;
+    }
+
+private:
+    // The stream's sentry: skip blanks; failed already, or at the end, fails
+    // and leaves the value alone.
+    bool Sentry() {
+        if (mFail)
+            return false;
+        while (mPos < mText.size() && text_is_blank(mText[mPos]))
+            ++mPos;
+        if (mPos >= mText.size()) {
+            mFail = true;
+            return false;
+        }
+        return true;
+    }
+
+    template <class T>
+    TextStream& ExtractInt(T& rValue) {
+        if (!Sentry())
+            return *this;
+        bool neg = false;
+        if (mText[mPos] == '+' || mText[mPos] == '-') {
+            neg = mText[mPos] == '-';
+            ++mPos;
+        }
+        const std::size_t d = mPos;
+        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+            ++mPos;
+        if (mPos == d) {
+            rValue = 0;
+            mFail = true;
+            return *this;
+        }
+        std::uint64_t mag = 0;
+        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
+        const std::uint64_t bound =
+            neg ? static_cast<std::uint64_t>(-(std::numeric_limits<T>::min() + 1)) + 1
+                : static_cast<std::uint64_t>(std::numeric_limits<T>::max());
+        if (r.ec == std::errc::result_out_of_range || mag > bound) {
+            rValue = neg ? std::numeric_limits<T>::min() : std::numeric_limits<T>::max();
+            mFail = true;
+            return *this;
+        }
+        rValue = neg ? static_cast<T>(0 - mag) : static_cast<T>(mag);
+        return *this;
+    }
+
+    // num_get for an unsigned type: a sign is allowed and a negative value
+    // wraps, as strtoull does; out of range stores the maximum and fails.
+    template <class T>
+    TextStream& ExtractUnsigned(T& rValue) {
+        if (!Sentry())
+            return *this;
+        bool neg = false;
+        if (mText[mPos] == '+' || mText[mPos] == '-') {
+            neg = mText[mPos] == '-';
+            ++mPos;
+        }
+        const std::size_t d = mPos;
+        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+            ++mPos;
+        if (mPos == d) {
+            rValue = 0;
+            mFail = true;
+            return *this;
+        }
+        std::uint64_t mag = 0;
+        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
+        if (r.ec == std::errc::result_out_of_range ||
+            mag > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
+            rValue = std::numeric_limits<T>::max();
+            mFail = true;
+            return *this;
+        }
+        rValue = neg ? static_cast<T>(0 - static_cast<T>(mag)) : static_cast<T>(mag);
+        return *this;
+    }
+
+    std::string mOwned;
+    std::string_view mText;
+    std::size_t mPos = 0;
+    bool mFail = false;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/text_cursor.hpp =====
 // ===== begin src/cpp/src/detail/typed_view.hpp =====
 /**
  * @file detail/typed_view.hpp
@@ -31050,6 +31480,15 @@ private:
  */
 NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, VtkCodec codec,
                            DType dt);
+
+/**
+ * @brief Appends to @p rOut what `vtu_encode_binary` base64-encodes, as raw
+ * bytes: the `hsz`-byte size header and the payload, or with @p codec the
+ * block header and the compressed blocks -- one array of a raw
+ * `<AppendedData>` section.
+ */
+void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                    std::vector<unsigned char>& rOut);
 
 /// `vtu_parse_binary(vtu_strip(...), ...)` over a view of the element's text.
 inline NDArray vtu_decode_bin_view(std::string_view Text, DType dt, VtkCodec codec,
@@ -56872,6 +57311,21 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
     const char* const last = p + std::strlen(p);
+    {
+        // Tokens counted first: the values are then parsed into buffers
+        // reserved once, not grown push_back by push_back (roadmap §4).
+        std::size_t tokens = 0;
+        bool in_token = false;
+        for (const char* q = p; q < last; ++q) {
+            const bool space = std::isspace(static_cast<unsigned char>(*q)) != 0;
+            tokens += !space && !in_token ? 1 : 0;
+            in_token = !space;
+        }
+        if (isflt)
+            dv.reserve(tokens);
+        else
+            iv.reserve(tokens);
+    }
     while (*p) {
         while (*p && std::isspace(static_cast<unsigned char>(*p)))
             ++p;
@@ -56903,9 +57357,17 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         p = endp;
     }
     std::size_t n = isflt ? dv.size() : iv.size();
-    NDArray a(dt, {n});
-    for (std::size_t i = 0; i < n; ++i)
-        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
+    // vtu_store's conversion (a plain static_cast), the dtype switch taken once.
+    NDArray a = NDArray::Uninit(dt, {n});
+    dispatch_dtype(dt, [&]<class T>() {
+        T* out = a.As<T>();
+        if (isflt)
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(dv[i]);
+        else
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(iv[i]);
+    });
     return a;
 }
 
@@ -57574,61 +58036,96 @@ std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes) {
     return maxArrayBytes > std::numeric_limits<std::uint32_t>::max() ? 8 : 4;
 }
 
-std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
-                              std::size_t hsz) {
-    if (hsz != 4 && hsz != 8)
-        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(hsz));
-    // One little-endian header item of hsz bytes. A size that does not fit is
-    // refused: a UInt32 header silently truncated a 4 GiB array's byte count.
-    auto put = [hsz](std::vector<unsigned char>& rOut, std::uint64_t Value) {
-        if (hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
-            throw WriteError("VTK XML: a size of " + std::to_string(Value) +
-                             " does not fit a UInt32 header_type (the writer must choose UInt64)");
-        for (std::size_t b = 0; b < hsz; ++b)
-            rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
-    };
+namespace {
 
-    if (codec == VtkCodec::None) {
-        std::vector<unsigned char> head;
-        put(head, nbytes);  // refuses before anything is allocated
-        return vtub_b64encode_pair(head.data(), head.size(), pData, nbytes);
-    }
+// One little-endian header item of `Hsz` bytes. A size that does not fit is
+// refused: a UInt32 header silently truncated a 4 GiB array's byte count.
+void vtub_put(std::vector<unsigned char>& rOut, std::uint64_t Value, std::size_t Hsz) {
+    if (Hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
+        throw WriteError("VTK XML: a size of " + std::to_string(Value) +
+                         " does not fit a UInt32 header_type (the writer must choose UInt64)");
+    for (std::size_t b = 0; b < Hsz; ++b)
+        rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
+}
 
-    vtk_codec_require_write(codec);
+// The VTK block scheme: `pData` cut into 32 KiB blocks, each compressed with
+// `Codec` (in parallel), and the header -- block count, block size, last block
+// size, each compressed size, as `Hsz`-byte items.
+struct VtubBlocks {
+    std::vector<unsigned char> mHeader;
+    std::vector<std::vector<unsigned char>> mBlocks;
+    std::size_t mTotal = 0;  ///< compressed bytes over every block
+};
+
+VtubBlocks vtub_compress(const unsigned char* pData, std::size_t nbytes, VtkCodec Codec,
+                         std::size_t Hsz) {
+    vtk_codec_require_write(Codec);
     const std::size_t max_block = 32768;
     const std::size_t num_blocks = (nbytes + max_block - 1) / max_block;
     const std::size_t last_block_size =
         num_blocks ? nbytes - (num_blocks - 1) * max_block : max_block;
 
+    VtubBlocks out;
     // Blocks are independent -> compress in parallel into pre-sized slots.
-    std::vector<std::vector<unsigned char> > blocks(num_blocks);
+    out.mBlocks.resize(num_blocks);
     parallel_for(
         num_blocks,
         [&](std::size_t b) {
             std::size_t off = b * max_block;
             std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
+            out.mBlocks[b] = vtk_codec_compress_block(Codec, pData + off, len);
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
-    std::vector<unsigned char> header;
-    header.reserve((3 + num_blocks) * hsz);
-    put(header, num_blocks);
-    put(header, max_block);
-    put(header, last_block_size);
-    std::size_t total = 0;
-    for (const auto& b : blocks) {
-        put(header, b.size());
-        total += b.size();
+    out.mHeader.reserve((3 + num_blocks) * Hsz);
+    vtub_put(out.mHeader, num_blocks, Hsz);
+    vtub_put(out.mHeader, max_block, Hsz);
+    vtub_put(out.mHeader, last_block_size, Hsz);
+    for (const auto& b : out.mBlocks) {
+        vtub_put(out.mHeader, b.size(), Hsz);
+        out.mTotal += b.size();
     }
+    return out;
+}
 
-    std::string out = b64encode(header.data(), header.size());
+void vtub_check_hsz(std::size_t Hsz) {
+    if (Hsz != 4 && Hsz != 8)
+        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(Hsz));
+}
+
+}  // namespace
+
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
+                              std::size_t hsz) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        std::vector<unsigned char> head;
+        vtub_put(head, nbytes, hsz);  // refuses before anything is allocated
+        return vtub_b64encode_pair(head.data(), head.size(), pData, nbytes);
+    }
+    const VtubBlocks blocks = vtub_compress(pData, nbytes, codec, hsz);
+    std::string out = b64encode(blocks.mHeader.data(), blocks.mHeader.size());
     std::vector<unsigned char> concat;
-    concat.reserve(total);
-    for (const auto& b : blocks)
+    concat.reserve(blocks.mTotal);
+    for (const auto& b : blocks.mBlocks)
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
     return out;
+}
+
+void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                    std::vector<unsigned char>& rOut) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        vtub_put(rOut, nbytes, hsz);
+        rOut.insert(rOut.end(), pData, pData + nbytes);
+        return;
+    }
+    const VtubBlocks blocks = vtub_compress(pData, nbytes, codec, hsz);
+    rOut.reserve(rOut.size() + blocks.mHeader.size() + blocks.mTotal);
+    rOut.insert(rOut.end(), blocks.mHeader.begin(), blocks.mHeader.end());
+    for (const auto& b : blocks.mBlocks)
+        rOut.insert(rOut.end(), b.begin(), b.end());
 }
 
 namespace {
@@ -58467,8 +58964,8 @@ std::string abaqus_trim(const std::string& rS) {
 std::vector<std::string> split(const std::string& rS, char sep) {
     std::vector<std::string> out;
     std::string cur;
-    auto iss = detail::make_classic_istringstream(rS);
-    while (std::getline(iss, cur, sep))
+    detail::TextStream iss(rS);
+    while (getline(iss, cur, sep))
         out.push_back(abaqus_trim(cur));
     return out;
 }
@@ -63614,6 +64111,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -63669,31 +64167,24 @@ bool is_int_dtype(DType t) {
            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64;
 }
 
-std::vector<std::string> avsucd_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> avsucd_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
 }  // namespace
 
 Mesh read_avsucd(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
+    // The file read once; its lines are views into it (detail/text_cursor.hpp).
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    std::vector<std::string_view> lines;
+    for (std::string_view l : detail::split_lines(source.View())) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
-        std::string t = l;
-        std::size_t b = t.find_first_not_of(" \t");
-        if (b == std::string::npos)
+            l.remove_suffix(1);
+        const std::size_t b = l.find_first_not_of(" \t");
+        if (b == std::string_view::npos)
             continue;  // blank
-        if (t[b] == '#')
+        if (l[b] == '#')
             continue;  // comment
         lines.push_back(l);
     }
@@ -63703,23 +64194,25 @@ Mesh read_avsucd(const std::string& rPath) {
     detail::need_tokens(hdr, 4, "AVS-UCD");
     // Each node and each cell is one line of the file, so the header's counts
     // are bounded by what follows it.
-    const auto num_nodes = static_cast<long long>(
-        detail::checked_count(std::stoll(hdr[0]), lines.size() - li, "AVS-UCD", "node"));
+    const auto num_nodes = static_cast<long long>(detail::checked_count(
+        std::stoll(std::string(hdr[0])), lines.size() - li, "AVS-UCD", "node"));
     const auto num_cells = static_cast<long long>(detail::checked_count(
-        std::stoll(hdr[1]), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
-    long long num_node_data = std::stoll(hdr[2]);
-    long long num_cell_data = std::stoll(hdr[3]);
+        std::stoll(std::string(hdr[1])), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
+    long long num_node_data = std::stoll(std::string(hdr[2]));
+    long long num_cell_data = std::stoll(std::string(hdr[3]));
 
     Mesh mesh;
     std::unordered_map<std::int64_t, std::int64_t> point_ids;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
     double* pp = pts.As<double>();
+    point_ids.reserve(static_cast<std::size_t>(num_nodes));
+    std::vector<std::string_view> t;  // reused: one allocation, not a vector per row
     for (long long i = 0; i < num_nodes; ++i) {
-        auto t = avsucd_tokens(lines.at(li++));
+        detail::split_blanks(lines.at(li++), t);
         detail::need_tokens(t, 4, "AVS-UCD");
-        point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
+        point_ids[detail::strtoll_token(t[0])] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = detail::parse_double(t[1 + c]);
+            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -63733,22 +64226,24 @@ Mesh read_avsucd(const std::string& rPath) {
         std::size_t mCount = 0;
     };
     std::vector<Blk> blocks;
+    cell_ids.reserve(static_cast<std::size_t>(num_cells));
     for (long long c = 0; c < num_cells; ++c) {
-        auto t = avsucd_tokens(lines.at(li++));
+        detail::split_blanks(lines.at(li++), t);
         detail::need_tokens(t, 4, "AVS-UCD");
-        std::int64_t cid = std::strtoll(t[0].c_str(), nullptr, 10);
-        std::int64_t mat = std::strtoll(t[1].c_str(), nullptr, 10);
-        auto it = avsucd_to_meshio_type().find(t[2]);
+        std::int64_t cid = detail::strtoll_token(t[0]);
+        std::int64_t mat = detail::strtoll_token(t[1]);
+        const std::string type_name(t[2]);
+        auto it = avsucd_to_meshio_type().find(type_name);
         if (it == avsucd_to_meshio_type().end())
-            throw ReadError("AVS-UCD: unknown cell type '" + t[2] + "'");
+            throw ReadError("AVS-UCD: unknown cell type '" + type_name + "'");
         const std::string& mtype = it->second;
         int n = static_cast<int>(t.size()) - 3;
         const std::vector<int>& order = avsucd_to_meshio_order(mtype);
         if (!order.empty() && static_cast<std::size_t>(n) != order.size())
-            throw ReadError("AVS-UCD: a '" + t[2] + "' cell needs " + std::to_string(order.size()) +
-                            " nodes, got " + std::to_string(n));
+            throw ReadError("AVS-UCD: a '" + type_name + "' cell needs " +
+                            std::to_string(order.size()) + " nodes, got " + std::to_string(n));
         if (!blocks.empty() && blocks.back().mType == mtype && blocks.back().mN != n)
-            throw ReadError("AVS-UCD: '" + t[2] + "' cells with different node counts");
+            throw ReadError("AVS-UCD: '" + type_name + "' cells with different node counts");
         if (blocks.empty() || blocks.back().mType != mtype) {
             Blk b;
             b.mType = mtype;
@@ -63757,7 +64252,7 @@ Mesh read_avsucd(const std::string& rPath) {
         }
         Blk& blk = blocks.back();
         for (int j = 0; j < n; ++j)
-            blk.mConn.push_back(point_ids.at(std::strtoll(t[3 + j].c_str(), nullptr, 10)));
+            blk.mConn.push_back(point_ids.at(detail::strtoll_token(t[3 + j])));
         blk.mMat.push_back(mat);
         cell_ids[cid] = c;
         ++blk.mCount;
@@ -63787,12 +64282,12 @@ Mesh read_avsucd(const std::string& rPath) {
                          std::vector<std::string>& names, std::vector<NDArray>& arrays) {
         auto h = avsucd_tokens(lines.at(li++));
         detail::need_tokens(h, 1, "AVS-UCD");
-        const int narr = static_cast<int>(
-            detail::checked_count(std::stoi(h[0]), h.size() - 1, "AVS-UCD", "data array"));
+        const int narr = static_cast<int>(detail::checked_count(
+            std::stoi(std::string(h[0])), h.size() - 1, "AVS-UCD", "data array"));
         std::vector<int> sizes(narr);
         std::size_t width = 0;
         for (int i = 0; i < narr; ++i) {
-            sizes[i] = std::stoi(h[1 + i]);
+            sizes[i] = std::stoi(std::string(h[1 + i]));
             if (sizes[i] < 1)
                 throw ReadError("AVS-UCD: a data array needs at least one component");
             width += static_cast<std::size_t>(sizes[i]);
@@ -63805,7 +64300,7 @@ Mesh read_avsucd(const std::string& rPath) {
             detail::need_tokens(avsucd_tokens(lines[li + narr]), 1 + width, "AVS-UCD");
         }
         for (int i = 0; i < narr; ++i) {
-            std::string lbl = lines.at(li++);
+            const std::string lbl(lines.at(li++));
             std::size_t comma = lbl.find(',');
             std::string name = (comma == std::string::npos) ? lbl : lbl.substr(0, comma);
             // strip + replace spaces with underscore
@@ -63822,14 +64317,16 @@ Mesh read_avsucd(const std::string& rPath) {
                                               : std::vector<std::size_t>{(std::size_t)num_entities,
                                                                          (std::size_t)sizes[i]});
         }
+        std::vector<std::string_view> row;  // reused
         for (long long e = 0; e < num_entities; ++e) {
-            auto t = avsucd_tokens(lines.at(li++));
-            detail::need_tokens(t, 1 + width, "AVS-UCD");
-            std::int64_t eid = ids.at(std::strtoll(t[0].c_str(), nullptr, 10));
+            detail::split_blanks(lines.at(li++), row);
+            detail::need_tokens(row, 1 + width, "AVS-UCD");
+            std::int64_t eid = ids.at(detail::strtoll_token(row[0]));
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].As<double>()[eid * sizes[i] + c] = detail::parse_double(t[j++]);
+                    arrays[i].As<double>()[eid * sizes[i] + c] =
+                        detail::parse_double_prefix(row[j++]);
             }
         }
     };
@@ -67190,7 +67687,7 @@ Mesh read_dex(const std::string& rPath) {
 
     std::vector<std::vector<double>> rows;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::vector<double> r;
         std::string tok;
         while (iss >> tok) {
@@ -74406,7 +74903,7 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
 
 std::vector<std::string> flac3d_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -74975,7 +75472,7 @@ bool contains(const std::string& rHay, const char* pNeedle) {
 }
 
 long long leading_int(const std::string& rLine) {
-    auto iss = detail::make_classic_istringstream(rLine);
+    detail::TextStream iss(rLine);
     long long v = 0;
     iss >> v;
     return v;
@@ -75015,7 +75512,7 @@ Mesh read_flux(const std::string& rPath) {
     // element tokens
     std::vector<std::string> etok;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::string w;
         while (iss >> w)
             etok.push_back(w);
@@ -75064,7 +75561,7 @@ Mesh read_flux(const std::string& rPath) {
     // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::string w;
         while (iss >> w)
             ctok.push_back(w);
@@ -76079,7 +76576,7 @@ namespace {
 bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
     std::string line;
     while (std::getline(rIn, line)) {
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string t;
         rOut.clear();
         while (iss >> t)
@@ -80636,7 +81133,7 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
         std::string line = rCur.read_line();
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         long long dim, tag;
         iss >> dim >> tag;
         std::size_t q1 = line.find('"');
@@ -80974,7 +81471,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
     if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
-            auto iss = detail::make_classic_istringstream(line);
+            detail::TextStream iss(line);
             std::vector<std::int64_t> v;
             long long x;
             while (iss >> x)
@@ -81685,7 +82182,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    auto fss = detail::make_classic_istringstream(cur.read_line());
+    detail::TextStream fss(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -81753,7 +82250,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
     std::string fmt = cur.read_line();
-    auto fss = detail::make_classic_istringstream(fmt);
+    detail::TextStream fss(fmt);
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -82698,7 +83195,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    auto fss = detail::make_classic_istringstream(cur.read_line());
+    detail::TextStream fss(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -83242,7 +83739,7 @@ Mesh read_ip(const std::string& rPath) {
     while (ints.size() < 4 && idx < lines.size()) {
         std::string s = ip_strip(lines[idx++]);
         if (!s.empty()) {
-            auto iss = detail::make_classic_istringstream(s);
+            detail::TextStream iss(s);
             int v;
             iss >> v;
             ints.push_back(v);
@@ -83274,7 +83771,7 @@ Mesh read_ip(const std::string& rPath) {
                 c = ' ';
             else if (c == 'D' || c == 'd')
                 c = 'E';
-        auto iss = detail::make_classic_istringstream(s);
+        detail::TextStream iss(s);
         std::string tok;
         while (iss >> tok)
             flat.push_back(detail::parse_double(tok));
@@ -90364,6 +90861,7 @@ MeshMetadata read_marc_t19_metadata(const std::string& rPath, const ReadOptions&
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -90380,53 +90878,37 @@ namespace {
 // because the single-header amalgamation concatenates all of src/cpp/src.
 // ---------------------------------------------------------------------------
 
-std::string mdpa_strip(const std::string& rS) {
-    const std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    const std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+std::string_view mdpa_strip(std::string_view S) {
+    const std::size_t b = S.find_first_not_of(" \t\r\n");
+    if (b == std::string_view::npos)
+        return {};
+    const std::size_t e = S.find_last_not_of(" \t\r\n");
+    return S.substr(b, e - b + 1);
 }
 
 /// The line with any `//` comment removed, then stripped.
-std::string mdpa_clean(const std::string& rS) {
-    const std::size_t c = rS.find("//");
-    return mdpa_strip(c == std::string::npos ? rS : rS.substr(0, c));
+std::string_view mdpa_clean(std::string_view S) {
+    const std::size_t c = S.find("//");
+    return mdpa_strip(c == std::string_view::npos ? S : S.substr(0, c));
 }
 
-std::vector<std::string> mdpa_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> mdpa_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
-bool mdpa_starts_with(const std::string& rS, const std::string& rPrefix) {
-    return rS.size() >= rPrefix.size() && rS.compare(0, rPrefix.size(), rPrefix) == 0;
+bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
+    return S.size() >= Prefix.size() && S.compare(0, Prefix.size(), Prefix) == 0;
 }
 
-bool mdpa_parse_int(const std::string& rS, std::int64_t& rOut) {
-    if (rS.empty())
-        return false;
-    char* end = nullptr;
-    const long long v = std::strtoll(rS.c_str(), &end, 10);
-    if (end != rS.c_str() + rS.size())
-        return false;
-    rOut = static_cast<std::int64_t>(v);
-    return true;
+/// strtoll(…, 10) over the whole token.
+bool mdpa_parse_int(std::string_view S, std::int64_t& rOut) {
+    return detail::parse_int_token(S, rOut);
 }
 
-bool mdpa_parse_double(const std::string& rS, double& rOut) {
-    if (rS.empty())
-        return false;
-    const char* end = nullptr;
-    const double v = detail::parse_double(rS.c_str(), end);
-    if (end != rS.c_str() + rS.size())
-        return false;
-    rOut = v;
-    return true;
+/// parse_double over the whole token.
+bool mdpa_parse_double(std::string_view S, double& rOut) {
+    return detail::parse_double_token(S, rOut);
 }
 
 // ---------------------------------------------------------------------------
@@ -90498,11 +90980,11 @@ struct MdpaDataRow {
 
 /// A cursor over the file's lines, so every block parser advances one index.
 struct MdpaCursor {
-    const std::vector<std::string>* mpLines = nullptr;
+    const std::vector<std::string_view>* mpLines = nullptr;
     std::size_t mIndex = 0;
 
     bool Done() const { return mIndex >= mpLines->size(); }
-    const std::string& Next() { return (*mpLines)[mIndex++]; }
+    std::string_view Next() { return (*mpLines)[mIndex++]; }
 };
 
 /// Consume the rest of a block, ignoring blank/comment-only lines.
@@ -90538,15 +91020,15 @@ void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::s
 void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
                              bool Lenient, MdpaInfo* pInfo) {
     while (!rCur.Done()) {
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == rEnd)
             return;
         if (!Lenient)
             throw ReadError("MDPA: " + rWhat +
-                            " is not supported by the C++ reader (offending line: '" + line +
-                            "'; set ReadOptions::mLenient to skip it instead)");
+                            " is not supported by the C++ reader (offending line: '" +
+                            std::string(line) + "'; set ReadOptions::mLenient to skip it instead)");
         log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
         if (pInfo)
             pInfo->mSkippedConstructs.push_back(rWhat);
@@ -90564,7 +91046,7 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
  * names unchanged. Rows are whitespace-separated numbers; the first usable row
  * fixes the column count and a row that disagrees is warned about and skipped.
  */
-PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHeader) {
+PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, std::string_view rHeader) {
     PropertyValue out;
     out.mIsTable = true;
     out.mKey = mdpa_strip(rHeader.substr(std::string("Begin Table").size()));
@@ -90573,18 +91055,18 @@ PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHe
     std::size_t ncols = 0;
     bool terminated = false;
     while (!rCur.Done()) {
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == "End Table") {
             terminated = true;
             break;
         }
-        const std::vector<std::string> toks = mdpa_tokens(line);
+        const std::vector<std::string_view> toks = mdpa_tokens(line);
         std::vector<double> row;
         row.reserve(toks.size());
         bool ok = true;
-        for (const std::string& tok : toks) {
+        for (const std::string_view tok : toks) {
             double v = 0.0;
             if (!mdpa_parse_double(tok, v)) {
                 ok = false;
@@ -90625,9 +91107,9 @@ PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHe
  * bracketed vector or matrix -- is kept verbatim as text, which is both
  * lossless and what the pure-Python reference does.
  */
-PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) {
+PropertySet mdpa_parse_properties(MdpaCursor& rCur, std::string_view rHeader) {
     PropertySet out;
-    const std::vector<std::string> head = mdpa_tokens(rHeader);
+    const std::vector<std::string_view> head = mdpa_tokens(rHeader);
     if (head.size() < 3 || !mdpa_parse_int(head[2], out.mId)) {
         log::warn("mdpa: Properties block with no readable id, using 0: {}", rHeader);
         out.mId = 0;
@@ -90636,7 +91118,7 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) 
     while (true) {
         if (rCur.Done())
             throw ReadError("MDPA: EOF before 'End Properties'");
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == "End Properties")
@@ -90654,7 +91136,7 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) 
         }
         PropertyValue v;
         v.mKey = line.substr(0, sep);
-        const std::string rest = mdpa_strip(line.substr(sep + 1));
+        const std::string_view rest = mdpa_strip(line.substr(sep + 1));
         double scalar = 0.0;
         if (mdpa_parse_double(rest, scalar)) {
             NDArray a(DType::Float64, {1});
@@ -90687,20 +91169,21 @@ int mdpa_parse_data_block(
     std::vector<MdpaDataRow>& rRows, bool& rHasFixed) {
     int nc = -1;
     bool terminated = false;
+    std::vector<std::string_view> toks;  // reused: one allocation per block, not per row
     while (!rCur.Done()) {
-        const std::string raw = mdpa_strip(rCur.Next());
+        const std::string_view raw = mdpa_strip(rCur.Next());
         if (raw == rEnd) {
             terminated = true;
             break;
         }
-        const std::string line = mdpa_clean(raw);
+        const std::string_view line = mdpa_clean(raw);
         if (line.empty())
             continue;
         if (line == rEnd) {
             terminated = true;
             break;
         }
-        const std::vector<std::string> toks = mdpa_tokens(line);
+        detail::split_blanks(line, toks);
         std::int64_t id = 0;
         if (toks.empty())
             continue;
@@ -90814,13 +91297,10 @@ namespace {
  * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
  */
 Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l))
-        lines.push_back(l);
+    // The file read once; its lines are views into it (detail/text_cursor.hpp),
+    // not a string each.
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
     MdpaCursor cur{&lines, 0};
 
@@ -90885,7 +91365,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
 
     auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut) {
         while (!cur.Done()) {
-            const std::string line = mdpa_clean(cur.Next());
+            const std::string_view line = mdpa_clean(cur.Next());
             if (line.empty())
                 continue;
             if (line == rEnd)
@@ -90917,8 +91397,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     };
 
     while (!cur.Done()) {
-        const std::string raw = mdpa_strip(cur.Next());
-        const std::string line = mdpa_clean(raw);
+        const std::string_view raw = mdpa_strip(cur.Next());
+        const std::string_view line = mdpa_clean(raw);
         if (line.empty())
             continue;
 
@@ -90926,19 +91406,20 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             while (true) {
                 if (cur.Done())
                     throw ReadError("MDPA: EOF before 'End ModelPartData'");
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == "End ModelPartData")
                     break;
-                const std::vector<std::string> t = mdpa_tokens(e);
+                const std::vector<std::string_view> t = mdpa_tokens(e);
                 if (t.size() < 2) {
                     log::warn("mdpa: skipping malformed ModelPartData line: {}", e);
                     continue;
                 }
                 double v = 0.0;
                 if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
-                    const std::string what = "a non-numeric ModelPartData value for '" + t[0] + "'";
+                    const std::string what =
+                        "a non-numeric ModelPartData value for '" + std::string(t[0]) + "'";
                     if (!Lenient)
                         throw ReadError("MDPA: " + what +
                                         " is not supported by the C++ reader (set "
@@ -90950,30 +91431,45 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 }
                 NDArray a(DType::Float64, {1});
                 a.As<double>()[0] = v;
-                field_data[t[0]] = std::move(a);
+                field_data[std::string(t[0])] = std::move(a);
             }
         } else if (line == "Begin Nodes") {
             if (num_points)
                 throw ReadError("MDPA: more than one Nodes block");
             bool terminated = false;
+            // The format carries no node count: the block's lines (views, so
+            // cheap to look ahead over) bound it, and size the coordinates.
+            {
+                std::size_t rows = 0;
+                for (std::size_t k = cur.mIndex; k < lines.size(); ++k) {
+                    const std::string_view ahead = mdpa_clean(lines[k]);
+                    if (ahead == "End Nodes")
+                        break;
+                    rows += ahead.empty() ? 0 : 1;
+                }
+                coords.reserve(coords.size() + 3 * rows);
+                raw_node_ids.reserve(raw_node_ids.size() + rows);
+            }
+            std::vector<std::string_view> t;  // reused: one allocation per block, not per row
             while (!cur.Done()) {
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == "End Nodes") {
                     terminated = true;
                     break;
                 }
-                const std::vector<std::string> t = mdpa_tokens(e);
+                detail::split_blanks(e, t);
                 if (t.size() < 3)
-                    throw ReadError("MDPA: node line with fewer than 3 coordinates: " + e);
+                    throw ReadError("MDPA: node line with fewer than 3 coordinates: " +
+                                    std::string(e));
                 // An id-less row (`x y z`) takes its position as its id, which is
                 // exactly what "connectivity is 1-based into row order" already
                 // meant for a fully id-less file -- so such a file never leaves
                 // the dense path and reads byte-identically to before.
                 std::int64_t id = static_cast<std::int64_t>(num_points) + 1;
                 if (t.size() >= 4 && !mdpa_parse_int(t[0], id))
-                    throw ReadError("MDPA: non-integer node id: " + e);
+                    throw ReadError("MDPA: non-integer node id: " + std::string(e));
                 if (node_ids_dense && id != static_cast<std::int64_t>(num_points) + 1) {
                     node_ids.reserve(num_points * 2 + 16);
                     for (std::size_t r = 0; r < num_points; ++r)
@@ -90990,7 +91486,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 for (std::size_t c = t.size() - 3; c < t.size(); ++c) {
                     double v = 0.0;
                     if (!mdpa_parse_double(t[c], v))
-                        throw ReadError("MDPA: non-numeric node coordinate: " + e);
+                        throw ReadError("MDPA: non-numeric node coordinate: " + std::string(e));
                     coords.push_back(v);
                 }
                 ++num_points;
@@ -91001,8 +91497,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                    mdpa_starts_with(line, "Begin Conditions")) {
             const bool is_condition = mdpa_starts_with(line, "Begin Conditions");
             const std::string end_token = is_condition ? "End Conditions" : "End Elements";
-            const std::vector<std::string> head = mdpa_tokens(line);
-            const std::string entity_name = head.size() >= 3 ? head[2] : std::string();
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string entity_name = head.size() >= 3 ? std::string(head[2]) : std::string();
             const CellType type = mdpa_entity_cell_type(entity_name);
             if (type == CellType::Custom)
                 throw ReadError("MDPA: unknown Kratos entity name '" + entity_name + "'");
@@ -91014,8 +91510,9 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             const std::vector<int>& order = mdpa_kratos_node_order(type);
 
             bool terminated = false;
+            std::vector<std::string_view> t;  // reused: one allocation per block, not per row
             while (!cur.Done()) {
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == end_token) {
@@ -91023,15 +91520,17 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     break;
                 }
                 if (mdpa_starts_with(e, "End "))
-                    throw ReadError("MDPA: expected '" + end_token + "', got '" + e + "'");
-                const std::vector<std::string> t = mdpa_tokens(e);
+                    throw ReadError("MDPA: expected '" + end_token + "', got '" + std::string(e) +
+                                    "'");
+                detail::split_blanks(e, t);
                 if (static_cast<int>(t.size()) != nn + 2)
                     throw ReadError("MDPA: " + entity_name + " row with " +
                                     std::to_string(t.size() >= 2 ? t.size() - 2 : 0) +
-                                    " nodes (expected " + std::to_string(nn) + "): " + e);
+                                    " nodes (expected " + std::to_string(nn) +
+                                    "): " + std::string(e));
                 std::int64_t id = 0, prop = 0;
                 if (!mdpa_parse_int(t[0], id) || !mdpa_parse_int(t[1], prop))
-                    throw ReadError("MDPA: non-integer id/property in: " + e);
+                    throw ReadError("MDPA: non-integer id/property in: " + std::string(e));
 
                 // The Kratos *name* is part of the split key, not just the cell
                 // type: two adjacent SmallDisplacementElement3D4N and
@@ -91054,7 +91553,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 for (int j = 0; j < nn; ++j) {
                     std::int64_t node = 0;
                     if (!mdpa_parse_int(t[static_cast<std::size_t>(j) + 2], node))
-                        throw ReadError("MDPA: non-integer node id in: " + e);
+                        throw ReadError("MDPA: non-integer node id in: " + std::string(e));
                     const std::size_t slot =
                         order.empty()
                             ? static_cast<std::size_t>(j)
@@ -91088,12 +91587,12 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             if (pInfo)
                 pInfo->mProperties.push_back(std::move(ps));
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed NodalData header: " + line);
+                throw ReadError("MDPA: malformed NodalData header: " + std::string(line));
             if (num_points == 0)
                 throw ReadError("MDPA: NodalData before Nodes");
-            std::string name = head[2];
+            std::string name(head[2]);
             const std::size_t br = name.find('[');
             if (br != std::string::npos)
                 name = name.substr(0, br);
@@ -91116,10 +91615,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                    mdpa_starts_with(line, "Begin ConditionalData")) {
             const bool elemental = mdpa_starts_with(line, "Begin ElementalData");
             const std::string end_token = elemental ? "End ElementalData" : "End ConditionalData";
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed " + end_token.substr(4) + " header: " + line);
-            std::string name = head[2];
+                throw ReadError("MDPA: malformed " + end_token.substr(4) +
+                                " header: " + std::string(line));
+            std::string name(head[2]);
             const std::size_t br = name.find('[');
             if (br != std::string::npos)
                 name = name.substr(0, br);
@@ -91190,10 +91690,10 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 smp.mCells.push_back(it->second);
             }
         } else if (mdpa_starts_with(line, "Begin SubModelPart")) {
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed SubModelPart header: " + line);
-            smp_stack.push_back(head[2]);
+                throw ReadError("MDPA: malformed SubModelPart header: " + std::string(line));
+            smp_stack.emplace_back(head[2]);
             smps[smp_name()];  // an entity-less SubModelPart is still a group
         } else if (line == "End SubModelPart") {
             if (smp_stack.empty())
@@ -91210,11 +91710,13 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             // block a future Kratos adds are covered without a case each. The
             // terminator is the header's first word after `Begin`, so a nested
             // `End <other>` cannot end the scan early.
-            const std::vector<std::string> head = mdpa_tokens(line);
-            const std::string end_token = "End " + (head.size() >= 2 ? head[1] : std::string());
-            mdpa_reject_or_skip(cur, end_token, "the block '" + line + "'", Lenient, pInfo);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string end_token =
+                "End " + (head.size() >= 2 ? std::string(head[1]) : std::string());
+            mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'", Lenient,
+                                pInfo);
         } else {
-            throw ReadError("MDPA: unexpected line outside a block: '" + line + "'");
+            throw ReadError("MDPA: unexpected line outside a block: '" + std::string(line) + "'");
         }
     }
     if (!smp_stack.empty())
@@ -103787,7 +104289,7 @@ int topo_dim(const std::string& rType) {
 
 std::vector<std::string> netgen_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);
@@ -104201,7 +104703,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        auto iss = detail::make_classic_istringstream(line.substr(b, e - b));
+        detail::TextStream iss(line.substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {
@@ -104653,11 +105155,11 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    auto ss = detail::make_classic_istringstream(out);
+    detail::TextStream ss(out);
     std::string line, result;
     bool in_header = false;
     int depth = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.find("FoamFile") != std::string::npos)
             in_header = true;
@@ -104694,11 +105196,11 @@ std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
 
 std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
     std::vector<std::array<double, 3>> pts;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false;
     bool have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -104719,7 +105221,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ns = detail::make_classic_istringstream(t);
+            detail::TextStream ns(t);
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -104730,10 +105232,10 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
 
 std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     std::vector<Face> faces;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -104755,7 +105257,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             if (lp == std::string::npos || rp == std::string::npos)
                 continue;
             std::string inside = s.substr(lp + 1, rp - lp - 1);
-            auto ns = detail::make_classic_istringstream(inside);
+            detail::TextStream ns(inside);
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -104768,10 +105270,10 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
 
 std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
     std::vector<std::int64_t> out;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -104787,7 +105289,7 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
         if (s == ")")
             break;
         if (in_block) {
-            auto ns = detail::make_classic_istringstream(s);
+            detail::TextStream ns(s);
             std::int64_t v;
             while (ns >> v)
                 out.push_back(v);
@@ -104948,7 +105450,7 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
         ++rp;
     }
     const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
-    auto ss = detail::make_classic_istringstream(inside);
+    detail::TextStream ss(inside);
     std::vector<std::int64_t> out;
     std::int64_t v;
     while (ss >> v)
@@ -105436,7 +105938,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    auto ss = detail::make_classic_istringstream(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -105450,11 +105952,11 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
     const std::string text_owned(rText);
-    auto ss = detail::make_classic_istringstream(text_owned);
+    detail::TextStream ss(text_owned);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -105470,7 +105972,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     }
     out.mCount = n;
     out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
-    for (std::int64_t i = 0; i < n && std::getline(ss, line);) {
+    for (std::int64_t i = 0; i < n && getline(ss, line);) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -105480,7 +105982,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             for (char& c : s)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ls = detail::make_classic_istringstream(s);
+            detail::TextStream ls(s);
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -109102,7 +109604,7 @@ const std::vector<int>* write_reorder(const std::string& rType) {
 
 std::vector<std::string> permas_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -109495,7 +109997,7 @@ Mesh read_ply(const std::string& rPath) {
 
     std::string line = next_sig();
     while (line != "end_header") {
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         iss >> tok;
         if (tok == "obj_info") {
@@ -109510,7 +110012,7 @@ Mesh read_ply(const std::string& rPath) {
                 num_verts = count;
                 line = next_sig();
                 while (line.rfind("property", 0) == 0) {
-                    auto ps = detail::make_classic_istringstream(line);
+                    detail::TextStream ps(line);
                     std::string p, type, name;
                     ps >> p >> type >> name;
                     if (type == "list")
@@ -109524,7 +110026,7 @@ Mesh read_ply(const std::string& rPath) {
                 line = next_sig();
                 bool got_list = false;
                 while (line.rfind("property", 0) == 0) {
-                    auto ps = detail::make_classic_istringstream(line);
+                    detail::TextStream ps(line);
                     std::string p, kind;
                     ps >> p >> kind;
                     if (kind == "list") {
@@ -109581,7 +110083,7 @@ Mesh read_ply(const std::string& rPath) {
     } else {
         for (std::size_t i = 0; i < num_verts; ++i) {
             std::string row = read_line();
-            auto rs = detail::make_classic_istringstream(row);
+            detail::TextStream rs(row);
             for (std::size_t c = 0; c < vprops.size(); ++c) {
                 std::string t;
                 rs >> t;
@@ -109650,7 +110152,7 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                auto rs = detail::make_classic_istringstream(read_line());
+                detail::TextStream rs(read_line());
                 long long cnt;
                 if (!(rs >> cnt))
                     throw ReadError("PLY: a face row without a vertex count");
@@ -113240,7 +113742,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         std::string s = lstrip(line);
         if (s.empty() || is_comment_line(s))
             continue;
-        auto iss = detail::make_classic_istringstream(s);
+        detail::TextStream iss(s);
         std::vector<std::string> tok;
         std::string t;
         while (iss >> t)
@@ -113481,6 +113983,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -113549,20 +114052,16 @@ int meshio_to_su2(const std::string& rT) {
     return -1;
 }
 
-std::string su2_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+std::string_view su2_strip(std::string_view S) {
+    std::size_t b = S.find_first_not_of(" \t\r\n");
+    if (b == std::string_view::npos)
+        return {};
+    std::size_t e = S.find_last_not_of(" \t\r\n");
+    return S.substr(b, e - b + 1);
 }
-std::vector<std::string> su2_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> su2_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
 struct Blk {
@@ -113577,32 +114076,40 @@ struct Blk {
 // Parse `count` element lines (each "vtk_type n0 n1 ... [extra]") into type-
 // grouped blocks (sorted by vtk type code, matching numpy.unique), all with
 // the given tag and zone.
-void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, std::size_t count,
-                     std::int32_t tag, std::int32_t zone, std::vector<Blk>& rOut) {
-    std::vector<std::pair<int, std::vector<std::int64_t>>> elems;
+void read_elem_block(const std::vector<std::string_view>& rLines, std::size_t& rLi,
+                     std::size_t count, std::int32_t tag, std::int32_t zone,
+                     std::vector<Blk>& rOut) {
+    // Each element's type and nodes, flat: no vector per element.
+    std::vector<int> vts;
+    vts.reserve(count);
+    std::vector<std::int64_t> flat;
+    std::vector<std::size_t> start{0};
+    start.reserve(count + 1);
     std::set<int> types;
+    std::vector<std::string_view> t;  // reused
     for (std::size_t e = 0; e < count; ++e) {
-        auto t = su2_tokens(rLines.at(rLi++));
+        detail::split_blanks(rLines.at(rLi++), t);
         detail::need_tokens(t, 1, "SU2");
-        int vt = std::stoi(t[0]);
+        int vt = std::stoi(std::string(t[0]));
         int nn = su2_numnodes(vt);
         if (nn == 0)
-            throw ReadError("SU2: unsupported element type " + t[0]);
+            throw ReadError("SU2: unsupported element type " + std::string(t[0]));
         detail::need_tokens(t, 1 + static_cast<std::size_t>(nn), "SU2");
-        std::vector<std::int64_t> nodes(nn);
         for (int j = 0; j < nn; ++j)
-            nodes[j] = std::strtoll(t[1 + j].c_str(), nullptr, 10);
-        elems.emplace_back(vt, std::move(nodes));
+            flat.push_back(detail::strtoll_token(t[1 + static_cast<std::size_t>(j)]));
+        vts.push_back(vt);
+        start.push_back(flat.size());
         types.insert(vt);
     }
     for (int vt : types) {  // std::set is sorted
         Blk b;
         b.mType = su2_to_meshio(vt);
         b.mN = su2_numnodes(vt);
-        for (auto& e : elems) {
-            if (e.first != vt)
+        for (std::size_t e = 0; e < vts.size(); ++e) {
+            if (vts[e] != vt)
                 continue;
-            b.mConn.insert(b.mConn.end(), e.second.begin(), e.second.end());
+            b.mConn.insert(b.mConn.end(), flat.begin() + static_cast<std::ptrdiff_t>(start[e]),
+                           flat.begin() + static_cast<std::ptrdiff_t>(start[e + 1]));
             b.mTag.push_back(tag);
             b.mZone.push_back(zone);
             ++b.mCount;
@@ -113626,7 +114133,7 @@ struct Su2ZoneBody {
 /// consumed. Stops at the next "IZONE=" (the next zone) or end of file --
 /// shared by the single-zone and multizone read paths, so both go through
 /// exactly the same per-record logic.
-Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size_t& rLi,
+Su2ZoneBody read_su2_zone_body(const std::vector<std::string_view>& rLines, std::size_t& rLi,
                                std::int32_t zone) {
     Su2ZoneBody zoneBody;
     std::int32_t next_tag_id = 0;
@@ -113634,20 +114141,20 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
     std::string current_tag_name;  // empty when the marker's own tag is numeric
 
     while (rLi < rLines.size()) {
-        std::string line = su2_strip(rLines[rLi]);
+        std::string_view line = su2_strip(rLines[rLi]);
         if (line.empty() || line[0] == '%') {
             ++rLi;
             continue;
         }
         std::size_t eq = line.find('=');
-        if (eq == std::string::npos) {
+        if (eq == std::string_view::npos) {
             ++rLi;
             continue;
         }
-        std::string name = su2_strip(line.substr(0, eq));
+        std::string_view name = su2_strip(line.substr(0, eq));
         if (name == "IZONE")
             break;  // the next zone: let the caller consume it
-        std::string rest = su2_strip(line.substr(eq + 1));
+        const std::string rest(su2_strip(line.substr(eq + 1)));
         ++rLi;
 
         if (name == "NDIME") {
@@ -113660,16 +114167,17 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (zoneBody.mDim == 0)
                 throw ReadError("SU2: NPOIN before NDIME");
             // One point per line: the count cannot exceed the lines left.
-            const std::size_t npoin = detail::checked_count(std::stoll(npoin_tok[0]),
+            const std::size_t npoin = detail::checked_count(std::stoll(std::string(npoin_tok[0])),
                                                             rLines.size() - rLi, "SU2", "point");
             NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(zoneBody.mDim)});
             double* pp = pts.As<double>();
+            std::vector<std::string_view> t;  // reused
             for (std::size_t i = 0; i < npoin; ++i) {
-                auto t = su2_tokens(rLines.at(rLi++));
+                detail::split_blanks(rLines.at(rLi++), t);
                 detail::need_tokens(t, static_cast<std::size_t>(zoneBody.mDim), "SU2");
                 for (int c = 0; c < zoneBody.mDim; ++c)
                     pp[i * static_cast<std::size_t>(zoneBody.mDim) + static_cast<std::size_t>(c)] =
-                        detail::parse_double(t[static_cast<std::size_t>(c)]);
+                        detail::parse_double_prefix(t[static_cast<std::size_t>(c)]);
             }
             zoneBody.mPoints = std::move(pts);
         } else if (name == "NELEM") {
@@ -113737,13 +114245,9 @@ void su2_merge_by_type(std::vector<Blk>& rBlocks) {
 }  // namespace
 
 Mesh read_su2(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l))
-        lines.push_back(l);
+    // The file read once; its lines are views into it (detail/text_cursor.hpp).
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
     // NZONE= (if present) is always the first key: a single-file multizone
     // mesh's own header, before the first (implicit) IZONE= 1.
@@ -113752,19 +114256,20 @@ Mesh read_su2(const std::string& rPath) {
     {
         std::size_t li = 0;
         while (li < lines.size()) {
-            std::string line = su2_strip(lines[li]);
+            std::string_view line = su2_strip(lines[li]);
             if (line.empty() || line[0] == '%') {
                 ++li;
                 continue;
             }
             std::size_t eq = line.find('=');
-            if (eq == std::string::npos)
+            if (eq == std::string_view::npos)
                 break;
             if (su2_strip(line.substr(0, eq)) == "NZONE") {
                 const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
                 detail::need_tokens(value, 1, "SU2");
                 // Every zone takes lines of its own: bounded by the file.
-                nzone = detail::checked_count(std::stoll(value[0]), lines.size(), "SU2", "zone");
+                nzone = detail::checked_count(std::stoll(std::string(value[0])), lines.size(),
+                                              "SU2", "zone");
                 multizone = true;
             }
             break;
@@ -113777,19 +114282,19 @@ Mesh read_su2(const std::string& rPath) {
         // Skip blank/comment lines and (for a multizone file) the NZONE=/IZONE=
         // markers themselves; the shared body parser starts at NDIME.
         while (li < lines.size()) {
-            std::string line = su2_strip(lines[li]);
+            std::string_view line = su2_strip(lines[li]);
             if (line.empty() || line[0] == '%') {
                 ++li;
                 continue;
             }
             std::size_t eq = line.find('=');
-            if (eq == std::string::npos)
+            if (eq == std::string_view::npos)
                 break;
-            std::string name = su2_strip(line.substr(0, eq));
+            std::string_view name = su2_strip(line.substr(0, eq));
             if (name == "NZONE" || name == "IZONE") {
                 const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
-                if (name == "IZONE" &&
-                    (value.empty() || std::stoll(value[0]) != static_cast<long long>(z + 1)))
+                if (name == "IZONE" && (value.empty() || std::stoll(std::string(value[0])) !=
+                                                             static_cast<long long>(z + 1)))
                     throw ReadError("SU2: IZONE out of order (expected " + std::to_string(z + 1) +
                                     ")");
                 ++li;
@@ -113824,7 +114329,7 @@ Mesh read_su2(const std::string& rPath) {
             const std::size_t n = z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
             if (n)
                 std::memcpy(pp + offset * static_cast<std::size_t>(dim), z.mPoints.Data(),
-                           z.mPoints.Nbytes());
+                            z.mPoints.Nbytes());
             for (Blk& b : z.mBlocks)
                 for (std::int64_t& id : b.mConn)
                     id += static_cast<std::int64_t>(offset);
@@ -113873,7 +114378,8 @@ Mesh read_su2(const std::string& rPath) {
     for (std::size_t bi = 0; bi < kept.size(); ++bi) {
         const Blk& b = *kept[bi];
         for (std::size_t r = 0; r < b.mCount; ++r) {
-            const std::int64_t global = detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
+            const std::int64_t global =
+                detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
             zone_cells[b.mZone[r]].push_back(global);
             marker_cells[{b.mZone[r], b.mTag[r]}].push_back(global);
         }
@@ -113908,7 +114414,8 @@ std::vector<std::string> su2_vtypes(std::size_t dim) {
                     : std::vector<std::string>{"tetra", "hexahedron", "wedge", "pyramid"};
 }
 std::vector<std::string> su2_btypes(std::size_t dim) {
-    return dim == 2 ? std::vector<std::string>{"line"} : std::vector<std::string>{"triangle", "quad"};
+    return dim == 2 ? std::vector<std::string>{"line"}
+                    : std::vector<std::string>{"triangle", "quad"};
 }
 bool su2_in(const std::vector<std::string>& rV, const std::string& rT) {
     return std::find(rV.begin(), rV.end(), rT) != rV.end();
@@ -113956,7 +114463,8 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     auto remap_of = [&](std::int64_t old_id) {
         if (!Subset)
             return old_id;
-        const auto [it, inserted] = remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
+        const auto [it, inserted] =
+            remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
         if (inserted)
             old_ids.push_back(old_id);
         return it->second;
@@ -113980,8 +114488,9 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     for (std::int64_t old_id : old_ids) {
         for (std::size_t c = 0; c < Dim; ++c) {
             char buf[64];
-            detail::snprintf_c(buf, sizeof(buf), "%.16e",
-                               detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
+            detail::snprintf_c(
+                buf, sizeof(buf), "%.16e",
+                detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
             rOs << buf << (c + 1 == Dim ? '\n' : ' ');
         }
     }
@@ -114018,8 +114527,8 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     rOs << "NMARK= " << tag_counts.size() << "\n";
     for (const auto& [tag, count] : tag_counts) {
         const auto name_it = rMarkerNames.find(tag);
-        rOs << "MARKER_TAG= " << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag))
-            << "\n";
+        rOs << "MARKER_TAG= "
+            << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag)) << "\n";
         rOs << "MARKER_ELEMS= " << count << "\n";
         for (const auto& [block, row] : rCells)
             if (su2_in(btypes, rMesh.Cells(block).Type()) && tag_of(block, row) == tag)
@@ -114046,16 +114555,17 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
         const auto cb = rMesh.Cells(bi);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int32_t zone = has_zone_data
-                                          ? static_cast<std::int32_t>(detail::read_int(
-                                                rMesh.CellData("su2:zone", bi), r))
-                                          : 0;
+            const std::int32_t zone =
+                has_zone_data
+                    ? static_cast<std::int32_t>(detail::read_int(rMesh.CellData("su2:zone", bi), r))
+                    : 0;
             by_zone[zone].emplace_back(bi, static_cast<std::int64_t>(r));
         }
     }
     const bool multizone = by_zone.size() > 1;
 
-    std::map<std::int32_t, std::map<std::int64_t, std::string>> marker_names;  // zone -> tag -> name
+    std::map<std::int32_t, std::map<std::int64_t, std::string>>
+        marker_names;  // zone -> tag -> name
     for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
         const Region& region = rMesh.Region(ri);
         if (region.mKind != RegionKind::Cell || region.NumEntries() == 0)
@@ -114063,15 +114573,13 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         const auto [block, row] = detail::global_to_block_row(bases, region.Entries()[0]);
         if (block == static_cast<std::size_t>(-1))
             continue;
-        const std::int32_t zone = has_zone_data
-                                      ? static_cast<std::int32_t>(
-                                            detail::read_int(rMesh.CellData("su2:zone", block),
-                                                             static_cast<std::size_t>(row)))
-                                      : 0;
-        const std::int64_t tag = tag_key.empty()
-                                     ? 1
-                                     : detail::read_int(rMesh.CellData(tag_key, block),
-                                                        static_cast<std::size_t>(row));
+        const std::int32_t zone =
+            has_zone_data ? static_cast<std::int32_t>(detail::read_int(
+                                rMesh.CellData("su2:zone", block), static_cast<std::size_t>(row)))
+                          : 0;
+        const std::int64_t tag = tag_key.empty() ? 1
+                                                 : detail::read_int(rMesh.CellData(tag_key, block),
+                                                                    static_cast<std::size_t>(row));
         std::string name = region.mName;
         const std::string prefix = "zone_" + std::to_string(zone) + "/";
         if (multizone && name.rfind(prefix, 0) == 0)
@@ -114085,10 +114593,10 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         std::vector<std::pair<std::size_t, std::int64_t>> all;
         for (auto& [zone, cells] : by_zone)
             all.insert(all.end(), cells.begin(), cells.end());
-        write_su2_zone_body(os, rMesh, dim, all, tag_key,
-                            marker_names.count(0) ? marker_names[0]
-                                                  : std::map<std::int64_t, std::string>{},
-                            /*Subset=*/false);
+        write_su2_zone_body(
+            os, rMesh, dim, all, tag_key,
+            marker_names.count(0) ? marker_names[0] : std::map<std::int64_t, std::string>{},
+            /*Subset=*/false);
         return;
     }
 
@@ -114096,10 +114604,10 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     std::int32_t ordinal = 1;
     for (auto& [zone, cells] : by_zone) {
         os << "\nIZONE= " << ordinal++ << "\n";
-        write_su2_zone_body(os, rMesh, dim, cells, tag_key,
-                            marker_names.count(zone) ? marker_names[zone]
-                                                     : std::map<std::int64_t, std::string>{},
-                            /*Subset=*/true);
+        write_su2_zone_body(
+            os, rMesh, dim, cells, tag_key,
+            marker_names.count(zone) ? marker_names[zone] : std::map<std::int64_t, std::string>{},
+            /*Subset=*/true);
     }
 }
 
@@ -114472,6 +114980,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -114510,6 +115019,39 @@ std::vector<std::string> tecplot_tokens(std::string S) {
         out.push_back(t);
     return out;
 }
+/// tecplot_tokens as views into @p Line (appended to @p rOut, cleared first):
+/// blanks and commas separate values, as replacing the commas with blanks
+/// and splitting on whitespace did.
+void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& rOut) {
+    rOut.clear();
+    std::size_t i = 0;
+    const std::size_t n = Line.size();
+    const auto sep = [](char c) { return c == ',' || detail::text_is_blank(c); };
+    while (true) {
+        while (i < n && sep(Line[i]))
+            ++i;
+        if (i >= n)
+            return;
+        const std::size_t b = i;
+        while (i < n && !sep(Line[i]))
+            ++i;
+        rOut.push_back(Line.substr(b, i - b));
+    }
+}
+
+/// How many tokens tecplot_tokens gives for @p Line, without building them.
+std::size_t tecplot_count_tokens(std::string_view Line) {
+    std::size_t count = 0;
+    bool in_token = false;
+    for (const char c : Line) {
+        const bool sep = c == ',' || detail::text_is_blank(c);
+        if (!sep && !in_token)
+            ++count;
+        in_token = !sep;
+    }
+    return count;
+}
+
 bool is_float_token(const std::string& rS) {
     if (rS.empty())
         return false;
@@ -114979,16 +115521,18 @@ std::size_t tecplot_ascii_token_count(const TecplotZone& rZ, std::size_t NumVari
 // convention, so this is the only reliable way to find where one zone's data
 // ends and the next one's header begins. Anything else (TEXT, GEOMETRY,
 // DATASETAUXDATA, face-neighbour lines) is skipped.
-std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLines,
+std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string_view>& rLines,
                                             std::vector<std::string>& rVariables) {
     std::vector<TecplotZone> zones;
     std::size_t i = 0;
     while (i < rLines.size()) {
-        const std::string u = tecplot_upper(rLines[i]);
+        const std::string u = tecplot_upper(std::string(rLines[i]));
         if (u.rfind("VARIABLES", 0) == 0) {
-            std::string joined = rLines[i];
-            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"')
-                joined += " " + rLines[++i];
+            std::string joined(rLines[i]);
+            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"') {
+                joined += " ";
+                joined += rLines[++i];
+            }
             rVariables.clear();
             const std::string rhs = joined.substr(joined.find('=') + 1);
             std::size_t p = 0;
@@ -115018,15 +115562,18 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
         }
 
         TecplotZone z;
-        std::string joined = rLines[i];
+        std::string joined(rLines[i]);
         // A header continues until the first line that starts with a number
         // (a blank line has no first token, so it continues too).
-        auto continues = [&](const std::string& rLine) {
-            const std::vector<std::string> t = tecplot_tokens(rLine);
-            return t.empty() || !is_float_token(t[0]);
+        std::vector<std::string_view> first;
+        auto continues = [&](std::string_view Line) {
+            tecplot_tokens_view(Line, first);
+            return first.empty() || !is_float_token(std::string(first[0]));
         };
-        while (i + 1 < rLines.size() && continues(rLines[i + 1]))
-            joined += " " + rLines[++i];
+        while (i + 1 < rLines.size() && continues(rLines[i + 1])) {
+            joined += " ";
+            joined += rLines[++i];
+        }
         z.mDataStart = i + 1;
 
         // tk[0] is the "ZONE" keyword itself; the rest is KEY = VALUE triples,
@@ -115130,7 +115677,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
         const std::size_t want = tecplot_ascii_token_count(z, rVariables.size());
         std::size_t li = z.mDataStart, got = 0;
         while (got < want && li < rLines.size()) {
-            got += tecplot_tokens(rLines[li]).size();
+            got += tecplot_count_tokens(rLines[li]);
             ++li;
         }
         if (!z.mOrdered && z.mConnShareZone < 0) {
@@ -115139,7 +115686,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
                 const std::size_t face_tokens = tecplot_ascii_face_map_tokens(z);
                 std::size_t seen = 0;
                 while (seen < face_tokens && li < rLines.size())
-                    seen += tecplot_tokens(rLines[li++]).size();
+                    seen += tecplot_count_tokens(rLines[li++]);
             } else {
                 li += z.mNumCells;  // one connectivity line per cell -- none if shared
             }
@@ -115156,7 +115703,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
 
 class TecplotAsciiSource final : public TecplotSource {
 public:
-    TecplotAsciiSource(const std::vector<std::string>& rLines,
+    TecplotAsciiSource(const std::vector<std::string_view>& rLines,
                        const std::vector<TecplotZone>& rZones, std::size_t NumVariables)
         : mrLines(rLines), mrZones(rZones), mNumVariables(NumVariables) {}
 
@@ -115168,9 +115715,11 @@ public:
         std::vector<double> flat;
         flat.reserve(want);
         std::size_t li = z.mDataStart;
+        std::vector<std::string_view> toks;  // reused
         while (flat.size() < want && li < mrLines.size()) {
-            for (const auto& t : tecplot_tokens(mrLines[li]))
-                flat.push_back(detail::parse_double(t));
+            tecplot_tokens_view(mrLines[li], toks);
+            for (const std::string_view t : toks)
+                flat.push_back(detail::parse_double_prefix(t));
             ++li;
         }
         if (flat.size() < want)
@@ -115201,9 +115750,11 @@ public:
             const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
             std::vector<std::int64_t> ints;
             ints.reserve(want_ints);
-            while (ints.size() < want_ints && li < mrLines.size())
-                for (const auto& t : tecplot_tokens(mrLines[li++]))
-                    ints.push_back(std::strtoll(t.c_str(), nullptr, 10));
+            while (ints.size() < want_ints && li < mrLines.size()) {
+                tecplot_tokens_view(mrLines[li++], toks);
+                for (const std::string_view t : toks)
+                    ints.push_back(detail::strtoll_token(t));
+            }
             if (ints.size() < want_ints)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " face map is truncated");
@@ -115229,17 +115780,17 @@ public:
             if (li >= mrLines.size())
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " connectivity is truncated");
-            const auto t = tecplot_tokens(mrLines[li++]);
-            if (t.size() < nn)
+            tecplot_tokens_view(mrLines[li++], toks);
+            if (toks.size() < nn)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
             for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = detail::zero_based(std::strtoll(t[j].c_str(), nullptr, 10));
+                cp[c * nn + j] = detail::zero_based(detail::strtoll_token(toks[j]));
         }
     }
 
 private:
-    const std::vector<std::string>& mrLines;
+    const std::vector<std::string_view>& mrLines;
     const std::vector<TecplotZone>& mrZones;
     std::size_t mNumVariables;
 };
@@ -116308,8 +116859,9 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
 struct TecplotFile {
     std::vector<std::string> mVariables;
     std::vector<TecplotZone> mZones;
-    std::vector<std::string> mLines;           // ASCII
-    std::unique_ptr<detail::FileSource> mRaw;  // binary
+    std::unique_ptr<detail::FileSource> mText;  // ASCII: the file, read once
+    std::vector<std::string_view> mLines;       // ASCII: its stripped lines
+    std::unique_ptr<detail::FileSource> mRaw;   // binary
     std::unique_ptr<TecplotSource> mSource;
 };
 
@@ -116324,15 +116876,19 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
         binary = tecplot_is_plt(head, static_cast<std::size_t>(probe.gcount()));
     }
     if (!binary) {
-        auto in = detail::make_classic_ifstream(rPath);
-        if (!in)
-            throw ReadError("Could not open file: " + rPath);
-        std::string l;
-        while (std::getline(in, l)) {
-            std::string s = tecplot_strip(l);
-            if (s.empty() || s[0] == '#')
+        // The file read once; its stripped lines are views into it
+        // (detail/text_cursor.hpp).
+        rFile.mText = std::make_unique<detail::FileSource>(
+            detail::open_source(rPath, "Could not open file: " + rPath));
+        for (std::string_view l : detail::split_lines(rFile.mText->View())) {
+            const std::size_t b = l.find_first_not_of(" \t\r\n");
+            if (b == std::string_view::npos)
                 continue;
-            rFile.mLines.push_back(std::move(s));
+            const std::size_t e = l.find_last_not_of(" \t\r\n");
+            const std::string_view st = l.substr(b, e - b + 1);
+            if (st[0] == '#')
+                continue;
+            rFile.mLines.push_back(st);
         }
         rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
         rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,
@@ -117004,7 +117560,7 @@ Parsed parse_file(const std::string& rPath) {
             ++s;
         if (s >= line.size() || line[s] == '#')
             continue;
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         if (!have_header) {
             while (iss >> tok)
@@ -117672,7 +118228,7 @@ TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
         const std::size_t hash = line.find('#');
         if (hash != std::string::npos)
             line.resize(hash);
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         while (iss >> tok)
             tokens.mToks.push_back(tok);
@@ -120765,7 +121321,7 @@ template <class T>
 bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -124826,7 +125382,7 @@ template <class T>
 bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -125220,7 +125776,7 @@ template <class T>
 bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -125587,16 +126143,13 @@ using detail::read_int;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
-}  // namespace
-
-void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    // The historical bool API, preserved exactly: zlib stays the only codec it
-    // can select, so existing callers are unaffected.
-    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
-}
-
-void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
-                     detail::VtkCodec codec) {
+// The writer behind write_vtu_codec and write_vtu_appended. `Appended` writes
+// every array as `format="appended"`: its size header and payload (or
+// block header and compressed blocks) go, unencoded, into one raw
+// `<AppendedData>` section at the end of the file, each array's `offset`
+// counted from the byte after its leading underscore.
+void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
+                    detail::VtkCodec codec, bool Appended) {
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -125610,7 +126163,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
 
-    const char* fmt = binary ? "binary" : "ascii";
+    const char* fmt = Appended ? "appended" : (binary ? "binary" : "ascii");
+    std::vector<unsigned char> appended;  // the raw <AppendedData> payload
     // UInt64 size headers only where an uncompressed array could pass 4 GiB
     // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
     const std::size_t hsz =
@@ -125620,10 +126174,17 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
         if (ncomp > 0)
             os << " NumberOfComponents=\"" << ncomp << "\"";
-        os << " format=\"" << fmt << "\">\n";
+        os << " format=\"" << fmt << "\"";
+        if (Appended)
+            os << " offset=\"" << appended.size() << "\"";
+        os << ">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        if (Appended)
+            detail::vtu_encode_raw(d, n, codec, hsz, appended);
+        else
+            os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz)
+               << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -125640,9 +126201,27 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
     if (rMesh.NumFieldData() != 0) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames())
-            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
-                                          binary ? codec : detail::VtkCodec::None, hsz);
+        for (const auto& name : rMesh.FieldDataNames()) {
+            const NDArray& arr = rMesh.FieldData(name);
+            if (!Appended) {
+                detail::vtu_write_field_array(os, name, arr, binary,
+                                              binary ? codec : detail::VtkCodec::None, hsz);
+                continue;
+            }
+            // vtu_write_field_array's element, with the payload appended.
+            const std::vector<std::size_t>& shape = arr.Shape();
+            os << "<DataArray type=\"" << vtu_type_str(arr.Dtype()) << "\" Name=\"" << name
+               << "\" NumberOfTuples=\"" << (shape.empty() ? 1 : shape[0]) << "\"";
+            if (shape.size() >= 2) {
+                std::size_t components = 1;
+                for (std::size_t d = 1; d < shape.size(); ++d)
+                    components *= shape[d];
+                os << " NumberOfComponents=\"" << components << "\"";
+            }
+            os << " format=\"appended\" offset=\"" << appended.size() << "\">\n";
+            emit_bin(reinterpret_cast<const unsigned char*>(arr.Data()), arr.Nbytes());
+            os << "</DataArray>\n";
+        }
         os << "</FieldData>\n";
     }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
@@ -125847,7 +126426,31 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "</CellData>\n";
     }
 
-    os << "</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
+    os << "</Piece>\n</UnstructuredGrid>\n";
+    if (Appended) {
+        os << "<AppendedData encoding=\"raw\">\n_";
+        os.write(reinterpret_cast<const char*>(appended.data()),
+                 static_cast<std::streamsize>(appended.size()));
+        os << "\n</AppendedData>\n";
+    }
+    os << "</VTKFile>\n";
+}
+
+}  // namespace
+
+void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    vtu_write_impl(rPath, rMesh, binary, codec, /*Appended=*/false);
+}
+
+void write_vtu_appended(const std::string& rPath, const Mesh& rMesh, detail::VtkCodec codec) {
+    vtu_write_impl(rPath, rMesh, /*binary=*/true, codec, /*Appended=*/true);
 }
 
 }  // namespace meshioplusplus
@@ -125860,7 +126463,9 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -126098,7 +126703,8 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  */
 struct VtuSource {
     pugi::xml_document mDoc;
-    std::string mBytes;
+    std::optional<detail::FileSource> mFile;  // the file, read once
+    std::string_view mBytes;                  // its bytes: a raw payload is a view into them
     std::size_t mRawStart = 0;
     std::size_t mRawStop = 0;
     bool mIsRaw = false;
@@ -126107,23 +126713,19 @@ struct VtuSource {
 void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
     detail::vtk_preflight(rPath, "UnstructuredGrid",
                           "lzma-compressed VTU not supported by the C++ reader");
-    pugi::xml_parse_result res = rSource.mDoc.load_file(rPath.c_str(), ParseOptions);
-    if (res) {
-        pugi::xml_node app = rSource.mDoc.child("VTKFile").child("AppendedData");
-        if (!app || std::string(app.attribute("encoding").as_string("base64")) != "raw")
-            return;
-        // A raw payload that happened to parse as text still has to be read as bytes.
-    }
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    rSource.mBytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    const std::string& b = rSource.mBytes;
+    // The file is read once: a raw <AppendedData> payload is not XML, so only
+    // the text around it is parsed, and the payload is a view into the same
+    // bytes (it read the file twice and parsed it twice before v16.20.0).
+    rSource.mFile.emplace(detail::open_source(rPath, "Could not open file: " + rPath));
+    rSource.mBytes = rSource.mFile->View();
+    const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
-    const std::size_t tag_end = tag == std::string::npos ? tag : b.find('>', tag);
-    const bool raw = tag_end != std::string::npos &&
-                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string::npos;
+    const std::size_t tag_end = tag == std::string_view::npos ? tag : b.find('>', tag);
+    const bool raw = tag_end != std::string_view::npos &&
+                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string_view::npos;
+    pugi::xml_parse_result res;
     if (!raw) {
+        res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
         if (!res)
             throw ReadError(std::string("VTU XML parse failed: ") + res.description());
         return;
@@ -126132,7 +126734,8 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     const std::size_t stop = b.rfind("</AppendedData>");
     if (underscore == std::string::npos || stop == std::string::npos || stop <= underscore)
         throw ReadError("VTU: AppendedData is not closed");
-    const std::string xml = b.substr(0, tag_end + 1) + b.substr(stop);
+    std::string xml(b.substr(0, tag_end + 1));
+    xml += b.substr(stop);
     rSource.mDoc.reset();
     res = rSource.mDoc.load_buffer(xml.data(), xml.size(), ParseOptions);
     if (!res)
@@ -127352,7 +127955,7 @@ namespace {
 
 std::vector<double> parse_point(const std::string& rS) {
     std::vector<double> p;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         p.push_back(detail::parse_double(tok));
@@ -127517,12 +128120,14 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/wkt.cpp =====
 // ===== begin src/cpp/src/formats/xdmf.cpp =====
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -127532,6 +128137,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 // Project includes (private, not installed)
 
 // Project includes
+
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #endif
@@ -127600,47 +128206,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
     return p == 4 ? DType::Float32 : DType::Float64;
 }
 
-void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(detail::parse_double(rTok));
-            break;
-        case DType::Float64:
-            rA.As<double>()[i] = detail::parse_double(rTok);
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[i] =
-                static_cast<std::int8_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[i] =
-                static_cast<std::int16_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] =
-                static_cast<std::int32_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = std::strtoll(rTok.c_str(), nullptr, 10);
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[i] =
-                static_cast<std::uint8_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[i] =
-                static_cast<std::uint16_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[i] =
-                static_cast<std::uint32_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[i] = std::strtoull(rTok.c_str(), nullptr, 10);
-            break;
-    }
-}
-
 NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
     std::vector<std::size_t> dims = parse_dims(rDi.attribute("Dimensions").value());
 
@@ -127658,12 +128223,35 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
                                                        std::multiplies<>());
 
     if (fmt == "XML") {
-        NDArray a(dt, dims);
-        auto iss = detail::make_classic_istringstream(rDi.text().get());
-        std::string tok;
-        std::size_t i = 0;
-        while (i < total && (iss >> tok))
-            store_token(a, i++, tok);
+        // The element's text read in place, token by token, and parsed straight
+        // into the typed buffer with the dtype switch taken once (roadmap §4):
+        // the lenient parse_double / strtoll / strtoull store_token used. A
+        // short item leaves the rest zero, as the zero-filled array did.
+        NDArray a = NDArray::Uninit(dt, dims);
+        const std::string_view text = rDi.text().get();
+        detail::dispatch_dtype(dt, [&]<class T>() {
+            T* out = a.As<T>();
+            std::size_t i = 0, pos = 0;
+            while (i < total) {
+                while (pos < text.size() && detail::text_is_blank(text[pos]))
+                    ++pos;
+                if (pos >= text.size())
+                    break;
+                const std::size_t b = pos;
+                while (pos < text.size() && !detail::text_is_blank(text[pos]))
+                    ++pos;
+                const std::string_view tok = text.substr(b, pos - b);
+                if constexpr (std::is_floating_point_v<T>)
+                    out[i++] = static_cast<T>(detail::parse_double_prefix(tok));
+                else if constexpr (std::is_signed_v<T>)
+                    out[i++] = static_cast<T>(detail::strtoll_token(tok));
+                else
+                    out[i++] = static_cast<T>(detail::strtoull_token(tok));
+            }
+            if (i * sizeof(T) < a.Nbytes())
+                std::memset(reinterpret_cast<unsigned char*>(out) + i * sizeof(T), 0,
+                            a.Nbytes() - i * sizeof(T));
+        });
         return a;
     }
     if (fmt == "Binary") {
@@ -144925,9 +145513,10 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
     const WriteOptions& wopts = rPipeline.mOutput.mOptions;
-    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
-                                : wopts.mEncoding == WriteEncoding::Binary ? "binary"
-                                                                           : "";
+    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii         ? "ascii"
+                                : wopts.mEncoding == WriteEncoding::Binary      ? "binary"
+                                : wopts.mEncoding == WriteEncoding::RawAppended ? "raw_appended"
+                                                                                : "";
     const char* codec_name = wopts.mCodecSet ? vtk_codec_name(wopts.mCodec) : "";
     detail::provenance_set_target(out_fmt, encoding_name, codec_name, wopts.mFloatFormat);
 
@@ -144945,9 +145534,11 @@ WriteEncoding pipeline_encoding_from_name(const std::string& rName) {
         return WriteEncoding::Ascii;
     if (rName == "binary")
         return WriteEncoding::Binary;
+    if (rName == "raw_appended")
+        return WriteEncoding::RawAppended;
     throw std::invalid_argument(
-        "meshio++: pipeline: Output.Encoding must be 'ascii' or "
-        "'binary', not '" +
+        "meshio++: pipeline: Output.Encoding must be 'ascii', 'binary' or "
+        "'raw_appended', not '" +
         rName + "'");
 }
 
@@ -152084,6 +152675,9 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (!rOptions.mFloatFormat.empty())
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support FloatFormat");
+    if (rOptions.mEncoding == WriteEncoding::RawAppended)
+        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+                         " writer has no raw appended encoding (only vtu does)");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -158936,6 +159530,10 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         rWhy = "format '" + rFormat + "' has no ASCII/binary variant to select";
         return false;
     }
+    if (rOptions.mEncoding == WriteEncoding::RawAppended && rFormat != "vtu") {
+        rWhy = "format '" + rFormat + "' has no raw appended encoding (only vtu does)";
+        return false;
+    }
     if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
         rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
         return false;
@@ -158974,7 +159572,8 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     if (!registry_write_supports(fmt, rOptions, why))
         throw WriteError("meshio++: " + why);
 
-    const bool binary = rOptions.mEncoding == WriteEncoding::Binary;
+    const bool appended = rOptions.mEncoding == WriteEncoding::RawAppended;
+    const bool binary = rOptions.mEncoding == WriteEncoding::Binary || appended;
     const std::string& r_ff =
         rOptions.mFloatFormat.empty() ? std::string(".16e") : rOptions.mFloatFormat;
 
@@ -159011,7 +159610,10 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         const detail::VtkCodec codec =
             rOptions.mCodecSet ? rOptions.mCodec
                                : (binary ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
-        write_vtu_codec(rPath, rMesh, binary, codec);
+        if (appended)
+            write_vtu_appended(rPath, rMesh, codec);
+        else
+            write_vtu_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "vtp") {
         const detail::VtkCodec codec =
             rOptions.mCodecSet ? rOptions.mCodec

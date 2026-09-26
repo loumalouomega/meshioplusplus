@@ -913,6 +913,9 @@ mio_status write_opts_to_cxx(const mio_write_opts& rOpts, meshioplusplus::WriteO
         case MIO_ENCODING_BINARY:
             rOut.mEncoding = meshioplusplus::WriteEncoding::Binary;
             break;
+        case MIO_ENCODING_RAW_APPENDED:
+            rOut.mEncoding = meshioplusplus::WriteEncoding::RawAppended;
+            break;
         default:
             return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.encoding");
     }

@@ -204,6 +204,21 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
     const char* const last = p + std::strlen(p);
+    {
+        // Tokens counted first: the values are then parsed into buffers
+        // reserved once, not grown push_back by push_back (roadmap §4).
+        std::size_t tokens = 0;
+        bool in_token = false;
+        for (const char* q = p; q < last; ++q) {
+            const bool space = std::isspace(static_cast<unsigned char>(*q)) != 0;
+            tokens += !space && !in_token ? 1 : 0;
+            in_token = !space;
+        }
+        if (isflt)
+            dv.reserve(tokens);
+        else
+            iv.reserve(tokens);
+    }
     while (*p) {
         while (*p && std::isspace(static_cast<unsigned char>(*p)))
             ++p;
@@ -235,9 +250,17 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         p = endp;
     }
     std::size_t n = isflt ? dv.size() : iv.size();
-    NDArray a(dt, {n});
-    for (std::size_t i = 0; i < n; ++i)
-        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
+    // vtu_store's conversion (a plain static_cast), the dtype switch taken once.
+    NDArray a = NDArray::Uninit(dt, {n});
+    dispatch_dtype(dt, [&]<class T>() {
+        T* out = a.As<T>();
+        if (isflt)
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(dv[i]);
+        else
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(iv[i]);
+    });
     return a;
 }
 

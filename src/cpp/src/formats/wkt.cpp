@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -42,7 +43,7 @@ namespace {
 
 std::vector<double> parse_point(const std::string& rS) {
     std::vector<double> p;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         p.push_back(detail::parse_double(tok));

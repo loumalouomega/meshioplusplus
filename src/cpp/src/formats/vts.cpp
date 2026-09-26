@@ -47,6 +47,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "vtk_preflight.hpp"
 #include "../detail/vtu_decode.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -61,7 +62,7 @@ template <class T>
 bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
