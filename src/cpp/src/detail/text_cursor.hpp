@@ -193,6 +193,32 @@ inline std::int64_t strtoll_token(std::string_view Token) {
 }
 
 /**
+ * @brief `strtoull(token, nullptr, 10)` on @p Token: the longest base-10
+ * prefix after blanks and a sign, 0 when there is none, `UINT64_MAX` when out
+ * of range, and -- as `strtoull` does -- a negative value wrapped modulo 2^64.
+ */
+inline std::uint64_t strtoull_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    if (r.ec == std::errc::result_out_of_range)
+        return std::numeric_limits<std::uint64_t>::max();
+    return neg ? 0 - mag : mag;
+}
+
+/**
  * @brief `parse_double(token)` on @p Token: the longest numeric prefix, 0.0
  * when there is none -- the lenient parse, which ignores what follows.
  */

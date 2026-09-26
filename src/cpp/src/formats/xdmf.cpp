@@ -16,12 +16,14 @@
 //
 // System includes
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -43,6 +45,7 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "../detail/text_cursor.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -109,47 +112,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
     return p == 4 ? DType::Float32 : DType::Float64;
 }
 
-void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(detail::parse_double(rTok));
-            break;
-        case DType::Float64:
-            rA.As<double>()[i] = detail::parse_double(rTok);
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[i] =
-                static_cast<std::int8_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[i] =
-                static_cast<std::int16_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] =
-                static_cast<std::int32_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = std::strtoll(rTok.c_str(), nullptr, 10);
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[i] =
-                static_cast<std::uint8_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[i] =
-                static_cast<std::uint16_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[i] =
-                static_cast<std::uint32_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[i] = std::strtoull(rTok.c_str(), nullptr, 10);
-            break;
-    }
-}
-
 NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
     std::vector<std::size_t> dims = parse_dims(rDi.attribute("Dimensions").value());
 
@@ -167,12 +129,35 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
                                                        std::multiplies<>());
 
     if (fmt == "XML") {
-        NDArray a(dt, dims);
-        auto iss = detail::make_classic_istringstream(rDi.text().get());
-        std::string tok;
-        std::size_t i = 0;
-        while (i < total && (iss >> tok))
-            store_token(a, i++, tok);
+        // The element's text read in place, token by token, and parsed straight
+        // into the typed buffer with the dtype switch taken once (roadmap §4):
+        // the lenient parse_double / strtoll / strtoull store_token used. A
+        // short item leaves the rest zero, as the zero-filled array did.
+        NDArray a = NDArray::Uninit(dt, dims);
+        const std::string_view text = rDi.text().get();
+        detail::dispatch_dtype(dt, [&]<class T>() {
+            T* out = a.As<T>();
+            std::size_t i = 0, pos = 0;
+            while (i < total) {
+                while (pos < text.size() && detail::text_is_blank(text[pos]))
+                    ++pos;
+                if (pos >= text.size())
+                    break;
+                const std::size_t b = pos;
+                while (pos < text.size() && !detail::text_is_blank(text[pos]))
+                    ++pos;
+                const std::string_view tok = text.substr(b, pos - b);
+                if constexpr (std::is_floating_point_v<T>)
+                    out[i++] = static_cast<T>(detail::parse_double_prefix(tok));
+                else if constexpr (std::is_signed_v<T>)
+                    out[i++] = static_cast<T>(detail::strtoll_token(tok));
+                else
+                    out[i++] = static_cast<T>(detail::strtoull_token(tok));
+            }
+            if (i * sizeof(T) < a.Nbytes())
+                std::memset(reinterpret_cast<unsigned char*>(out) + i * sizeof(T), 0,
+                            a.Nbytes() - i * sizeof(T));
+        });
         return a;
     }
     if (fmt == "Binary") {
