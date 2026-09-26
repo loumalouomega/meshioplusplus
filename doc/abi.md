@@ -132,7 +132,7 @@ endif()
 
 ```cmake
 # Conservative, and still fully supported: pin the release.
-find_package(meshioplusplus 16.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.22.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 Both are correct. The second is stricter than it needs to be, and that is a legitimate choice — it is one line, it needs no reasoning about tiers, and re-pinning is a small price for never thinking about this page again.

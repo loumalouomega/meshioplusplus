@@ -8,6 +8,16 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.22.0 (2026-09-26)
+
+**Closes roadmap §2, "Spack package upkeep", and renumbers the rest.** The two recipes in [`spack/spack-packages`](https://github.com/spack/spack-packages) were brought current and audited upstream, so the section is removed rather than narrowed: it listed the six-major-version drift, the lagging `MESHIOPLUSPLUS_WITH_*` variants, the install matrix and the release-checklist step, and the last of those is already in `AGENTS.md` and in [Installation → Spack](doc/installation.md#spack). `MESHIOPLUSPLUS_ABI_VERSION` stays 18 and no reader, writer or operation output changes: this is a documentation release.
+
+- **Roadmap:** §2 removed, §3–§8 renumbered to §2–§7, every intra-document `§N` link and the *Suggested sequencing* list following (the OSS-Fuzz submission is second now). The status line reads v16.22.0.
+- **Every cross-reference followed**, in the pattern the v12.0.0 section closure set: the `performance` anchors in [mmap](doc/mmap.md) and [benchmarks](doc/benchmarks.md), the ABI-18 row in [ABI](doc/abi.md), the doc comments of `parallel.hpp`, `operations/neighbors.hpp`, `detail/space_filling.hpp` (installed headers, reviewed in [ABI reviews](doc/abi_reviews.md)) and of the core-private `detail/{weld,slot_runs,text_cursor,typed_view,open_source,row_writer,surface_distance,surface_edge_runs,vtk_xml,vtu_decode}.hpp`, `formats/{ansys,gmsh,xdmf}.cpp`, `formats/vtk_preflight.hpp` and `operations/smooth_odt.hpp`, the `§3/§4` and `§4` notes in `src/cpp/benchmark/{bench_ops.cpp,mesh_digest.hpp}`, `src/python/meshioplusplus/_common.py`, `pyproject.toml`, `tools/bench_ops.sh`, the `tests/{cpp,python}` docstrings and the `determinism`, `sanitize` and `benchmark` CI comments. `CHANGELOG.md` and the earlier `doc/abi*.md` rows are history and are left as they were. `operations/agglomerate.hpp`'s cross-reference, stale since v12.0.0, reads correctly again now that Operations is §5.
+- **The [roadmap map](doc/roadmap.md#the-map)** drops the Spack column and carries the new numbers (`doc/diagrams/figures/flows.py` and the committed SVG/PNG, regenerated).
+- Version bump across the ten files (patch 1 -> 0, minor 21 -> 22), the `find_package(meshioplusplus 16.22.0 EXACT CONFIG REQUIRED COMPONENTS CXX)` pins in `README.md` and `doc/cpp_api.md`, and `src/viewer/package-lock.json` regenerated with `npm install` (its `../wasm` entry only). The four `BASELINE_HASHES` in `tests/python/test_io_baseline.py` are refreshed for the version string in the writer provenance comments, each verified by substituting the old version back into the newly written bytes and reproducing the previous hashes — no unrelated output change. Single header regenerated.
+- Not done here: the two Spack recipe `version(...)` bumps upstream, which `AGENTS.md`'s release checklist still asks for after the tag and which needs `spack checksum` and an upstream PR.
+
 ## v16.21.1 (2026-09-26)
 
 **Documentation refresh (roadmap §0), no code or ABI change.** No reader, writer or operation output changes.
