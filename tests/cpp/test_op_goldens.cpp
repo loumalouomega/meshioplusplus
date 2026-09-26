@@ -339,7 +339,7 @@ std::uint64_t og_convert_cells() {
         d.Of(r.mMesh);
         d.Array(r.mPointMap);
         d.Arrays(r.mCellMaps);
-        return r.mMesh;
+        return std::move(r.mMesh);  // a member: C++20 would copy it
     };
     const Mesh hex = ft_hex_grid(3, 0.1, false);
     const Mesh tet = ft_tet_cube(3, 0.2);
