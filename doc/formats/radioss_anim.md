@@ -6,7 +6,7 @@ The animation files an OpenRadioss (or Radioss) run writes, one per output time:
 |---|---|
 | **Format name** | `radioss_anim` |
 | **File names** | a stem, then `A` and three or more digits (`crashA001`, `crashA042`); also recognised by content, the magic number `0x542C` |
-| **Read / Write** | ✓ / — |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#radioss-anim): the OpenRadioss engine writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | — |
 
 ## Reading

@@ -234,17 +234,7 @@ std::pair<LsdType, std::vector<std::int64_t>> lsd_collapse_solid(
 
 // The 8 LS-DYNA nodes of a meshio++ tetra, pyramid, wedge or hexahedron.
 std::array<std::int64_t, 8> lsd_expand_solid(LsdType Type, const std::int64_t* pRow) {
-    const std::int64_t* r = pRow;
-    switch (Type) {
-        case LsdType::Tetra:
-            return {r[0], r[1], r[2], r[3], r[3], r[3], r[3], r[3]};
-        case LsdType::Pyramid:
-            return {r[0], r[1], r[2], r[3], r[4], r[4], r[4], r[4]};
-        case LsdType::Wedge:
-            return {r[0], r[2], r[5], r[3], r[1], r[1], r[4], r[4]};
-        default:
-            return {r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]};
-    }
+    return detail::expand_brick(lsd_type_name(Type), pRow);
 }
 
 // -- deck state -----------------------------------------------------------------

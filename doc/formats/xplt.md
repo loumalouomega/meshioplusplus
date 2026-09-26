@@ -6,7 +6,7 @@ The `.xplt` file is the binary results database [FEBio](https://febio.org) write
 |---|---|
 | **Format name** | `xplt` |
 | **Extensions** | `.xplt` (also recognised by content: its magic, in either byte order) |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#xplt): FEBio writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | zlib for compressed files: built into the C++ core with `-DMESHIOPLUSPLUS_WITH_ZLIB=ON`; the Python fallback uses the standard library's |
 
 ## Reading

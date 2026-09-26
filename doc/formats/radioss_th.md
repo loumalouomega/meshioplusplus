@@ -6,7 +6,7 @@ The time-history file an OpenRadioss (or Radioss) run writes (`/TFILE` in the en
 |---|---|
 | **Format name** | `radioss_th` |
 | **File names** | a stem, then `T` and two digits, no extension (`crashT01`; a restart run writes `crashT02`…); also recognised by content, its title record |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#radioss-th): the OpenRadioss engine writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | — |
 
 ## Reading

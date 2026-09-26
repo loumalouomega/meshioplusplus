@@ -7884,6 +7884,7 @@ MESHIOPLUSPLUS_API void decim_sorted_insert(std::vector<std::int64_t>& rVec, std
 // System includes
 #include <array>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -7907,6 +7908,18 @@ struct CollapsedBrick {
  * @param rNodes The brick's eight node ids in file order.
  */
 MESHIOPLUSPLUS_API CollapsedBrick collapse_brick(const std::array<std::int64_t, 8>& rNodes);
+
+/**
+ * @brief The 8 brick nodes a `tetra`, `pyramid` or `wedge` is written as, the
+ * inverse of `collapse_brick` (`1 2 3 4 4 4 4 4`, `1 2 3 4 5 5 5 5`, and a wedge
+ * `1 3 6 4 2 2 5 5`); any other type's first eight nodes as they are. The
+ * LS-DYNA and Radioss writers share it; the Python twin is `_expand_solid` in
+ * `lsdyna/_lsdyna.py`. Since v16.17.0.
+ * @param Type The meshio++ cell type.
+ * @param pRow The cell's nodes, in meshio++ order.
+ */
+MESHIOPLUSPLUS_API std::array<std::int64_t, 8> expand_brick(std::string_view Type,
+                                                            const std::int64_t* pRow);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -10209,6 +10222,22 @@ MESHIOPLUSPLUS_API std::vector<std::string> split_fixed(std::string_view Line,
  */
 MESHIOPLUSPLUS_API std::string format_real16(double Value);
 
+/**
+ * @brief `Value` in at most `Width` columns: the shortest scientific string that
+ * round-trips, else as many digits as fit (`format_real16` is `Width` 16).
+ * Since v16.17.0.
+ */
+MESHIOPLUSPLUS_API std::string format_real_fit(double Value, int Width);
+
+/**
+ * @brief The shortest string that reads back as `Value`, spelled as Python's
+ * `repr` spells a float: the digits of the shortest round-tripping `%.*e`, in
+ * fixed notation when the decimal point falls within 16 digits of the start
+ * and after at most 3 leading zeros, else as `1.5e-05`. The Python twin
+ * (`lsdyna/_cards.py`) gives the same bytes. Since v16.17.0.
+ */
+MESHIOPLUSPLUS_API std::string format_real_short(double Value);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/keyword_card.hpp =====
@@ -11215,7 +11244,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 16
+#define MESHIOPLUSPLUS_VERSION_MINOR 17
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11225,7 +11254,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.16.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.17.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -15082,9 +15111,12 @@ MESHIOPLUSPLUS_API void write_elmer(const std::string& rPath, const Mesh& rMesh,
  * EnSight Gold stores a dataset as a small `.case` index file plus a
  * geometry file (conventionally `.geo`) and, optionally, one file per
  * `VARIABLE` entry. The `.case` `FORMAT`/`GEOMETRY` sections (the file must
- * declare `type: ensight gold`) and the Gold geometry file in both ASCII and
- * C-binary form (the leading `"C Binary"` 80-char record selects binary;
- * `"Fortran Binary"` is rejected) are read; since v11.3.0 (roadmap §1 tier
+ * declare `type: ensight gold`) and the Gold geometry file in ASCII, C-binary
+ * and (since v16.17.0) Fortran-binary form (the leading `"C Binary"` 80-char
+ * record selects binary; a `"Fortran Binary"` one framed as a Fortran
+ * sequential record selects Fortran binary, whose record markers are
+ * stripped, `detail/fortran_records.hpp`) are read; variable files follow
+ * their geometry file's encoding; since v11.3.0 (roadmap §1 tier
  * B1) so are `TIME` (a transient file's step times) and `VARIABLE` (per-node/
  * per-element scalar/vector `point_data`/`cell_data`) — see `read_ensight`'s
  * own doc comment. Binary files use 32-bit ints/floats in the writing
@@ -15141,19 +15173,31 @@ namespace meshioplusplus {
 MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
+ * @brief `write_ensight` in C binary or, with @p fortran, Fortran binary: the
+ * same records, each framed as a Fortran sequential unformatted record (4-byte
+ * length markers in host byte order before and after it), under a
+ * `"Fortran Binary"` first record. Since v16.17.0.
+ * @throws WriteError as `write_ensight`, and when @p fortran is set without
+ *         @p binary or a record exceeds 2 GiB
+ */
+MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                      bool fortran);
+
+/**
  * @brief Read an EnSight Gold `.case` file (or a Gold geometry file directly).
  *
  * A `.case` path is parsed for its `GEOMETRY`/`model:` entry (resolved
  * relative to the case file's directory; transient wildcard names are
- * rejected); any other path is treated as a Gold geometry file. ASCII and
- * C-binary geometries are both handled, including foreign-endian binaries.
+ * rejected); any other path is treated as a Gold geometry file. ASCII,
+ * C-binary and Fortran-binary geometries are handled, including
+ * foreign-endian binaries.
  *
  * @param rPath filesystem path to a `.case` file or a Gold `.geo` file
  * @return the read Mesh (parts concatenated; one cell block per per-part
  *         element section; `"ensight:part"` cell_data when the file has
  *         two or more parts)
- * @throws ReadError on malformed input, a non-Gold case file, Fortran-binary
- *         geometry, an unknown element keyword, or out-of-range connectivity
+ * @throws ReadError on malformed input, a non-Gold case file, an unknown
+ *         element keyword, or out-of-range connectivity
  */
 MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath);
 
@@ -15486,6 +15530,8 @@ MESHIOPLUSPLUS_API void write_febio(const std::string& rPath, const Mesh& rMesh)
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15524,19 +15570,63 @@ MESHIOPLUSPLUS_API std::vector<double> femap_time_values(const std::string& rPat
 
 /**
  * @brief Write `rMesh` as a Femap 8.2 neutral file: blocks 100, 402, 403, 404
- * and 408.
+ * and 408, and one output set (450) with its vectors (451) when the mesh has
+ * numeric point or cell data.
  *
  * The property of each element is `femap:property` (else 1) and its type
  * `femap:type` (else one derived from the cell type); properties take their
  * titles from the cell regions the reader makes of them. Other point and cell
- * regions become groups; results are not written. Cell types without a Femap
- * topology, side regions and data arrays are dropped with a warning.
+ * regions become groups. Numeric point and cell data become nodal and
+ * elemental output vectors, one per component of a multi-component array
+ * (`<name>_0`, `<name>_1`...), in one output set whose id is `femap:set` and
+ * whose value is `meshio:time`. Cell types without a Femap topology, side
+ * regions and other data are dropped with a warning.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
  * @throws WriteError for points of dimension above 3
  */
 MESHIOPLUSPLUS_API void write_femap(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A time series in one neutral file: the mesh once (blocks 100 to 408,
+ * from the first step), then one output set (450) with its vectors (451) per
+ * step, the steps `read_femap` reads back by `mTimeStep`. Since v16.17.0.
+ *
+ * A step's set id is its `femap:set` when positive and unused, else the next
+ * free one; its value is the step's time. A vector keeps its id across steps
+ * (by title and entity). Every step must have the first step's cells; a step
+ * whose points moved is written with the first step's, with a warning. The
+ * Python twin, `meshioplusplus.femap.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API FemapSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit FemapSeriesWriter(const std::string& rPath);
+    ~FemapSeriesWriter();
+
+    FemapSeriesWriter(const FemapSeriesWriter&) = delete;
+    FemapSeriesWriter& operator=(const FemapSeriesWriter&) = delete;
+    FemapSeriesWriter(FemapSeriesWriter&&) noexcept;
+    FemapSeriesWriter& operator=(FemapSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's cells differ from the first step's,
+     *         on a write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/femap.hpp =====
@@ -17179,6 +17269,26 @@ MESHIOPLUSPLUS_API bool is_marc_deck(std::string_view Head);
  *         element naming an undefined node, or a set naming an undefined member
  */
 MESHIOPLUSPLUS_API Mesh read_marc(const std::string& rPath);
+
+/**
+ * @brief Write an MSC Marc input deck (`.dat`) in `EXTENDED` format.
+ *
+ * The parameter section (`TITLE`, `SIZING`, one `ELEMENTS` line per type,
+ * `END`), then `CONNECTIVITY`, `COORDINATES`, a `DEFINE NODE SET` per point
+ * region and a `DEFINE ELEMENT SET` per cell region, and `END OPTION`. A
+ * cell's Marc type is its `marc:type` when that fits it, else a default (the
+ * solids and shells in 3-D, the plane-strain elements in a planar mesh; a
+ * pyramid as a degenerate brick); element numbers are `marc:element` when
+ * positive and unique. Face and edge sets come back from their `marc:` field
+ * data. `.dat` is Tecplot's for a write by extension: name the format.
+ * Other cells, data and side regions are dropped with a warning.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @throws WriteError for a mesh with no points or points of dimension above 3
+ * @note Since v16.17.0. The Python twin writes the same bytes.
+ */
+MESHIOPLUSPLUS_API void write_marc(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read one increment of an MSC Marc formatted post file.
@@ -19531,6 +19641,34 @@ namespace meshioplusplus {
  *         node or element id is defined twice
  */
 MESHIOPLUSPLUS_API Mesh read_radioss(const std::string& rPath);
+
+/**
+ * @brief Write an OpenRadioss starter deck (`*_0000.rad`, input version 2022).
+ *
+ * `/BEGIN` (run name from the file name, identical input and work units),
+ * `/PART` and `/SUBSET`, `/NODE`, then one element card per run of cells of
+ * one block and one part: `hexahedron` `/BRICK` (a `pyramid` as a degenerate
+ * one), `wedge` `/PENTA6`, `tetra` `/TETRA4`, `tetra10` `/TETRA10`,
+ * `hexahedron20` `/BRIC20`, `quad` `/SHELL`, `triangle` `/SH3N`, `line`
+ * `/TRUSS`. Parts come from `radioss:part` (titles from the cell region of the
+ * same tag and cells, properties and materials from `radioss:property` and
+ * `radioss:material`), else from the cell regions of one element family, else
+ * one per block; a remaining cell region that is a union of whole parts is a
+ * `/SUBSET`, any other one a `/GR<family>` group per family, point regions
+ * `/GRNOD/NODE` and side regions `/SURF/SEG`. Other cells, data and regions
+ * are dropped with a warning and a provenance note.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @param Stubs also write a placeholder `/MAT/LAW1` per material and
+ *        `/PROP/SOLID|SHELL|TRUSS` per property, so the OpenRadioss starter
+ *        accepts the deck on its own
+ * @throws WriteError for a mesh with no points, points of dimension above 3,
+ *         or, with @p Stubs, a part mixing element families
+ * @note Since v16.17.0. The Python twin writes the same bytes.
+ */
+MESHIOPLUSPLUS_API void write_radioss(const std::string& rPath, const Mesh& rMesh,
+                                      bool Stubs = false);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/radioss.hpp =====
@@ -29812,6 +29950,17 @@ MESHIOPLUSPLUS_API const std::map<std::string, std::string>& registry_extension_
 MESHIOPLUSPLUS_API std::string resolve_format(const std::string& rPath, const std::string& rFormat);
 
 /**
+ * @brief `resolve_format` for a file about to be written: the same rules
+ *        without the content checks, so an existing file never chooses the
+ *        format of the file that replaces it (`.dat` is Tecplot's and `.mesh`
+ *        Medit's even over a Marc deck or an MFEM mesh; write those by name).
+ *        Since v16.17.0.
+ * @throws ReadError if `rFormat` is empty and the extension is unknown.
+ */
+MESHIOPLUSPLUS_API std::string resolve_write_format(const std::string& rPath,
+                                                    const std::string& rFormat);
+
+/**
  * @brief The optional dependency a known-but-absent format was compiled out
  *        with, or `nullptr`.
  * @return `"HDF5"` / `"netCDF"` when `rFormat` names a format this build
@@ -30958,7 +31107,8 @@ inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
  * is 8-11 bottom ring, 12-15 VERTICALS, 16-19 top ring -- the reverse split.
  * Face centres 20-25 also disagree: meshio++ orders them x-min/x-max/y-min/
  * y-max/bottom/top, Kratos orders them bottom/y-min/x-max/y-max/x-min/top.
- * Body centre 26 agrees. The permutation below is `dst[c] = src[p[c]]` (the
+ * Body centre 26 agrees. The permutation (the node-ordering registry's "gid"
+ * entry) is `dst[c] = src[p[c]]` (the
  * `med_node_perm()`/`flatten_f`/`unflatten_f` convention already used
  * elsewhere in this repo, reused rather than reinvented) mapping a
  * GiD/Kratos slot to the meshio++ index holding the same edge/face/body; it
@@ -30971,61 +31121,20 @@ inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
  * top triangle -- the same reverse-split pattern, and again self-inverse.
  *
  * `pyramid13`: identical in both conventions (base-ring edges 5-8, apex
- * edges 9-12) -- no permutation, `mPerm == nullptr`.
+ * edges 9-12) -- no permutation.
  */
-struct GidCellPermEntry {
-    const char* mMeshioName;
-    std::size_t mNumNodes;
-    const int* mPerm;  // nullptr = identity
-};
-
-/// `dst[c] = src[p[c]]`, self-inverse. See `hexahedron27`'s derivation above;
-/// independently confirmed against Kratos's `vtk_output.cpp` array verbatim.
-/// Indexed and grouped deliberately, not a flat literal, so a slipped digit
-/// here is easy to catch by eye against the derivation comment above:
-///   corners 0-7, bottom-ring edges 8-11: identity
-///   top-ring edges 12-15 <- meshio++'s verticals 16-19
-///   verticals 16-19      <- meshio++'s top-ring edges 12-15
-///   face centres: 20<-24(bottom), 21<-22(y-min), 22<-21(x-max),
-///                 23<-23(y-max, fixed), 24<-20(x-min), 25<-25(top, fixed)
-///   body centre 26: fixed
-inline constexpr int kGidHexahedron27Perm[27] = {
-    0,  1,  2,  3,  4,  5,  6, 7,  // corners
-    8,  9,  10, 11,                // bottom-ring edges
-    16, 17, 18, 19,                // slot 12-15 (top ring)   <- verticals
-    12, 13, 14, 15,                // slot 16-19 (verticals)  <- top ring
-    24, 22, 21, 23, 20, 25,        // face centres 20-25
-    26,                            // body centre
-};
-
-/// `dst[c] = src[p[c]]`, self-inverse. See `wedge15`'s derivation above:
-///   corners 0-5, bottom-triangle edges 6-8: identity
-///   top-triangle edges 9-11 <- meshio++'s verticals 12-14
-///   verticals 12-14         <- meshio++'s top-triangle edges 9-11
-inline constexpr int kGidWedge15Perm[15] = {
-    0,  1,  2,  3, 4, 5,  // corners
-    6,  7,  8,            // bottom-triangle edges
-    12, 13, 14,           // slot 9-11 (top triangle) <- verticals
-    9,  10, 11,           // slot 12-14 (verticals)   <- top triangle
-};
-
-inline const std::vector<GidCellPermEntry>& gid_cell_perm_table() {
-    static const std::vector<GidCellPermEntry> table = {
-        {"hexahedron27", 27, kGidHexahedron27Perm},
-        {"wedge15", 15, kGidWedge15Perm},
-        {"pyramid13", 13, nullptr},
-    };
-    return table;
-}
-
-/// The permutation for @p rMeshioName / @p nnode, or nullptr for identity
+/// The gather table for @p rMeshioName / @p nnode, or nullptr for identity
 /// (either because the type needs none, like `pyramid13`, or because it is
-/// not in this table at all -- every OTHER GiD-supported type is identity).
-inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnode) {
-    for (const GidCellPermEntry& e : gid_cell_perm_table())
-        if (e.mNumNodes == nnode && rMeshioName == e.mMeshioName)
-            return e.mPerm;
-    return nullptr;
+/// not in the table at all -- every OTHER GiD-supported type is identity).
+/// The tables are the "gid" entries of the node-ordering registry
+/// (detail/node_order.cpp): with @p ToMeshio, meshio++ slot j receives GiD
+/// file slot perm[j] (reading); otherwise GiD slot j receives meshio++ node
+/// perm[j] (writing).
+inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnode, bool ToMeshio) {
+    const detail::NodeOrder* order = detail::node_order("gid", rMeshioName);
+    if (!order || order->mToMeshio.size() != nnode)
+        return nullptr;
+    return ToMeshio ? order->mToMeshio.data() : order->mFromMeshio.data();
 }
 
 /**
@@ -48613,6 +48722,17 @@ CollapsedBrick collapse_brick(const std::array<std::int64_t, 8>& rNodes) {
     return {"hexahedron", std::vector<std::int64_t>(n.begin(), n.end())};
 }
 
+std::array<std::int64_t, 8> expand_brick(std::string_view Type, const std::int64_t* pRow) {
+    const std::int64_t* r = pRow;
+    if (Type == "tetra")
+        return {r[0], r[1], r[2], r[3], r[3], r[3], r[3], r[3]};
+    if (Type == "pyramid")
+        return {r[0], r[1], r[2], r[3], r[4], r[4], r[4], r[4]};
+    if (Type == "wedge")
+        return {r[0], r[2], r[5], r[3], r[1], r[1], r[4], r[4]};
+    return {r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]};
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/degenerate_solid.cpp =====
@@ -50959,13 +51079,13 @@ std::vector<std::string> split_fixed(std::string_view Line, const std::vector<Ca
     return out;
 }
 
-std::string format_real16(double Value) {
+std::string format_real_fit(double Value, int Width) {
     if (Value == 0.0)
         return "0.0";
     const int neg = Value < 0.0 ? 1 : 0;
     const int e3 = (std::fabs(Value) >= 1e100 || std::fabs(Value) < 1e-99) ? 1 : 0;
-    const int pmax = 10 - neg - e3;
-    char buf[64];
+    const int pmax = Width - 6 - neg - e3;
+    char buf[64] = {};
     for (int p = 1; p <= pmax; ++p) {
         snprintf_c(buf, sizeof(buf), "%.*e", p, Value);
         const char* end = nullptr;
@@ -50973,6 +51093,50 @@ std::string format_real16(double Value) {
             return std::string(buf);
     }
     return std::string(buf);
+}
+
+std::string format_real16(double Value) {
+    return format_real_fit(Value, 16);
+}
+
+std::string format_real_short(double Value) {
+    if (Value == 0.0)
+        return "0.0";
+    char buf[64] = {};
+    for (int p = 0; p <= 16; ++p) {
+        snprintf_c(buf, sizeof(buf), "%.*e", p, Value);
+        const char* end = nullptr;
+        if (parse_double(buf, end) == Value)
+            break;
+    }
+    const std::string s(buf);
+    const std::size_t e_at = s.find('e');
+    const bool neg = s[0] == '-';
+    std::string digits;
+    for (std::size_t i = neg ? 1 : 0; i < e_at; ++i)
+        if (s[i] != '.')
+            digits += s[i];
+    const int e = std::atoi(s.c_str() + e_at + 1);
+    const int point = e + 1;
+    const int n = static_cast<int>(digits.size());
+    std::string body;
+    if (point > -4 && point <= 16) {
+        if (point <= 0)
+            body = "0." + std::string(static_cast<std::size_t>(-point), '0') + digits;
+        else if (point >= n)
+            body = digits + std::string(static_cast<std::size_t>(point - n), '0') + ".0";
+        else
+            body = digits.substr(0, static_cast<std::size_t>(point)) + "." +
+                   digits.substr(static_cast<std::size_t>(point));
+    } else {
+        body = digits.substr(0, 1);
+        if (n > 1)
+            body += "." + digits.substr(1);
+        char exp[16];
+        snprintf_c(exp, sizeof(exp), "e%c%02d", e < 0 ? '-' : '+', e < 0 ? -e : e);
+        body += exp;
+    }
+    return (neg ? "-" : "") + body;
 }
 
 }  // namespace detail
@@ -52299,6 +52463,71 @@ const std::vector<NodeOrderSource>& node_order_sources() {
         {"unv", "wedge15", D::FromMeshio, {0, 6, 1, 7, 2, 8, 12, 13, 14, 3, 9, 4, 10, 5, 11}},
         {"unv", "hexahedron20", D::FromMeshio, {0,  8,  1, 9,  2, 10, 3, 11, 16, 17,
                                                 18, 19, 4, 12, 5, 13, 6, 14, 7,  15}},
+        // gmsh `.msh` ("Node ordering", gmsh reference manual; src/geo/MHexahedron.h,
+        // MPrism.h, MPyramid.h): mid-edge nodes follow gmsh's own edge list, and
+        // hex27's face centres run z-, y-, x-, x+, y+, z+. wedge18/pyramid14
+        // extend wedge15/pyramid13 with the quad-face centres / the base
+        // centre. Every mid-edge and face-centre slot lands at the midpoint or
+        // centroid of its corners.
+        {"gmsh", "tetra10", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
+        {"gmsh", "hexahedron20", D::ToMeshio, {0,  1, 2,  3,  4,  5,  6,  7,  8,  11,
+                                               13, 9, 16, 18, 19, 17, 10, 12, 14, 15}},
+        {"gmsh", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                               11, 13, 9,  16, 18, 19, 17, 10, 12,
+                                               14, 15, 22, 23, 21, 24, 20, 25, 26}},
+        {"gmsh", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11}},
+        {"gmsh",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16}},
+        {"gmsh", "pyramid13", D::ToMeshio, {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12}},
+        {"gmsh", "pyramid14", D::ToMeshio, {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13}},
+        // CGNS (SIDS, "Unstructured Grid Element Numbering Conventions"):
+        // PENTA_15/18 and HEXA_20/27 list the vertical mid-edges before the
+        // top ring, and HEXA_27's face centres run z-, y-, x+, y+, x-, z+.
+        // Every other SIDS type is in meshio++'s order.
+        {"cgns", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"cgns",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
+        {"cgns", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"cgns", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                               9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                               14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // GiD `.post.msh`: hexahedron20 is in meshio++'s order (the order Kratos's
+        // GiD writer emits, see formats/gid.cpp), while hexahedron27 and
+        // wedge15 are written in Kratos's internal order, which lists the
+        // vertical mid-edges before the top ring (and hex27's face centres z-,
+        // y-, x+, y+, x-, z+). pyramid13 needs none.
+        {"gid", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"gid", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                              9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                              14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // Kratos `.mdpa`: a model part stores Kratos's internal order, read from
+        // its geometry classes (kratos/geometries/hexahedra_3d_20.h,
+        // hexahedra_3d_27.h, prism_3d_15.h, where PointsLocalCoordinates,
+        // GenerateEdges and the shape functions agree): the vertical mid-edges
+        // come before the top ring, and hex27's face centres run z-, y-, x+,
+        // y+, x-, z+. Pyramid3D13 is in meshio++'s order.
+        {"mdpa", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"mdpa", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"mdpa", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                               9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                               14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // Exodus II (SEACAS Ioss element topologies Hex20, Hex27 and Wedge15,
+        // the tables vtkExodusIIReader applies too): the vertical mid-edges
+        // come before the top ring, and Hex27 puts its body centre first (node
+        // 21), then the face centres z-, z+, x-, x+, y-, y+. TETRA10,
+        // PYRAMID13 and the 2-D types are in meshio++'s order.
+        {"exodus", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"exodus", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                 9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                                 14, 15, 23, 24, 25, 26, 21, 22, 20}},
+        {"exodus", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
     };
     return sources;
 }
@@ -62736,37 +62965,45 @@ std::string cgns_hdf5_version_string() {
 struct CgnsTypeInfo {
     std::string mCgnsName;
     int mCode;
-    std::vector<int> mPerm;  // empty = identity
 };
 
 const std::unordered_map<std::string, CgnsTypeInfo>& cgns_type_table() {
+    // The SIDS node order of PENTA_15/18 and HEXA_20/27 differs from
+    // meshio++'s; those permutations live in the node-ordering registry
+    // (detail/node_order.cpp, format "cgns").
     static const std::unordered_map<std::string, CgnsTypeInfo> m = {
-        {"vertex", {"NODE", 2, {}}},
-        {"line", {"BAR_2", 3, {}}},
-        {"line3", {"BAR_3", 4, {}}},
-        {"triangle", {"TRI_3", 5, {}}},
-        {"triangle6", {"TRI_6", 6, {}}},
-        {"quad", {"QUAD_4", 7, {}}},
-        {"quad8", {"QUAD_8", 8, {}}},
-        {"quad9", {"QUAD_9", 9, {}}},
-        {"tetra", {"TETRA_4", 10, {}}},
-        {"tetra10", {"TETRA_10", 11, {}}},
-        {"pyramid", {"PYRA_5", 12, {}}},
-        {"pyramid14", {"PYRA_14", 13, {}}},
-        {"wedge", {"PENTA_6", 14, {}}},
-        {"wedge15", {"PENTA_15", 15, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}}},
-        {"wedge18",
-         {"PENTA_18", 16, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}}},
-        {"hexahedron", {"HEXA_8", 17, {}}},
-        {"hexahedron20",
-         {"HEXA_20", 18, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}}},
-        {"hexahedron27", {"HEXA_27", 19, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
-                                          18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26}}},
+        {"vertex", {"NODE", 2}},
+        {"line", {"BAR_2", 3}},
+        {"line3", {"BAR_3", 4}},
+        {"triangle", {"TRI_3", 5}},
+        {"triangle6", {"TRI_6", 6}},
+        {"quad", {"QUAD_4", 7}},
+        {"quad8", {"QUAD_8", 8}},
+        {"quad9", {"QUAD_9", 9}},
+        {"tetra", {"TETRA_4", 10}},
+        {"tetra10", {"TETRA_10", 11}},
+        {"pyramid", {"PYRA_5", 12}},
+        {"pyramid14", {"PYRA_14", 13}},
+        {"wedge", {"PENTA_6", 14}},
+        {"wedge15", {"PENTA_15", 15}},
+        {"wedge18", {"PENTA_18", 16}},
+        {"hexahedron", {"HEXA_8", 17}},
+        {"hexahedron20", {"HEXA_20", 18}},
+        {"hexahedron27", {"HEXA_27", 19}},
         // PYRA_13's code (21) is non-monotonic -- appended to ElementType_t
         // after MIXED in the CGNS enum -- not a typo.
-        {"pyramid13", {"PYRA_13", 21, {}}},
+        {"pyramid13", {"PYRA_13", 21}},
     };
     return m;
+}
+
+/// The gather table taking a SIDS row to meshio++'s (@p ToMeshio) or back;
+/// nullptr for the identity.
+const std::vector<int>* cgns_perm(const std::string& rMeshioType, bool ToMeshio) {
+    const detail::NodeOrder* order = detail::node_order("cgns", rMeshioType);
+    if (!order)
+        return nullptr;
+    return ToMeshio ? &order->mToMeshio : &order->mFromMeshio;
 }
 
 const std::unordered_map<int, std::string>& cgns_code_to_meshio() {
@@ -62791,11 +63028,11 @@ const std::unordered_map<int, std::string>& cgns_code_to_name() {
     return m;
 }
 
-// Apply an optional column permutation and additive shift to an (n, k)
-// row-major connectivity array (CGNS is element-major/row-major, unlike
-// MED's Fortran storage, so no transpose is needed -- only the permutation).
-// Self-inverse (`p == p^-1` for every table entry above), so the same `pPerm`
-// serves both write (shift=+1) and read (shift=-1).
+// Apply an optional column gather (`dst[c] = src[p[c]]`) and additive shift to
+// an (n, k) row-major connectivity array (CGNS is element-major/row-major,
+// unlike MED's Fortran storage, so no transpose is needed -- only the
+// permutation): cgns_perm(type, false) and shift=+1 write, cgns_perm(type,
+// true) and shift=-1 read.
 NDArray cgns_permute_conn(const NDArray& rConn, std::size_t n, std::size_t k, std::int64_t shift,
                           const std::vector<int>* pPerm) {
     const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
@@ -63465,8 +63702,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
             h5::write_dataset(rng, " data", rdata);
         }
 
-        const std::vector<int>* perm = info.mPerm.empty() ? nullptr : &info.mPerm;
-        NDArray conn = cgns_permute_conn(cb.Conn(), nc, npc, +1, perm);
+        NDArray conn = cgns_permute_conn(cb.Conn(), nc, npc, +1, cgns_perm(ctype, false));
         // Widen to the section's chosen dtype if it disagrees with Conn()'s.
         if (conn.Dtype() != out_dt) {
             NDArray widened(out_dt, {nc, npc});
@@ -63994,8 +64230,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                     "ElementConnectivity has {} entries",
                     sec.mName, nc, info.mCgnsName, nc * npc, flat.Size()));
 
-            const std::vector<int>* perm = info.mPerm.empty() ? nullptr : &info.mPerm;
-            NDArray out = cgns_permute_conn(flat, nc, npc, -1, perm);
+            NDArray out = cgns_permute_conn(flat, nc, npc, -1, cgns_perm(meshio_type, true));
             if (point_offset != 0) {
                 detail::dispatch_dtype(out.Dtype(), [&]<class T>() {
                     T* d = out.As<T>();
@@ -64442,23 +64677,6 @@ std::string cgns_mll_meshio_name(CGNS_ENUMT(ElementType_t) type) {
     }
 }
 
-/// The SIDS<->meshio node permutation for the types whose orderings differ.
-/// Self-inverse, so one table serves both directions -- the same tables
-/// cgns.cpp's cgns_type_table() carries, restated here rather than exported
-/// because that one is file-private and its shape (name + code + perm) does not
-/// fit a lookup keyed on the MLL's enum.
-const std::vector<int>* cgns_mll_perm(const std::string& rName) {
-    static const std::map<std::string, std::vector<int> > perms = {
-        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
-        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
-        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
-        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
-                          18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26}},
-    };
-    auto it = perms.find(rName);
-    return it == perms.end() ? nullptr : &it->second;
-}
-
 /// One section's raw description, gathered before anything is decoded.
 struct MllSection {
     int mIndex = 0;
@@ -64486,15 +64704,17 @@ void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std
 
     NDArray conn = NDArray::Uninit(DType::Int64, {ncells, static_cast<std::size_t>(npc)});
     std::int64_t* dst = conn.As<std::int64_t>();
-    const std::vector<int>* perm = cgns_mll_perm(rMeshio);
+    // The SIDS order of the types whose ordering differs lives in the
+    // node-ordering registry (detail/node_order.cpp); CGNS node ids are 1-based.
+    const detail::NodeOrder* order = detail::node_order("cgns", rMeshio);
+    const std::vector<int>* perm = order && order->mToMeshio.size() == static_cast<std::size_t>(npc)
+                                       ? &order->mToMeshio
+                                       : nullptr;
     for (std::size_t c = 0; c < ncells; ++c) {
-        for (int k = 0; k < npc; ++k) {
-            // CGNS node ids are 1-based; the permutation is self-inverse, so
-            // the same scatter serves read and write.
-            const std::int64_t v =
-                static_cast<std::int64_t>(raw[c * static_cast<std::size_t>(npc) + k]) - 1;
-            dst[c * static_cast<std::size_t>(npc) + (perm ? (*perm)[k] : k)] = v;
-        }
+        const cgsize_t* src = raw.data() + c * static_cast<std::size_t>(npc);
+        for (int k = 0; k < npc; ++k)
+            dst[c * static_cast<std::size_t>(npc) + k] =
+                static_cast<std::int64_t>(src[perm ? (*perm)[k] : k]) - 1;
     }
     rMesh.AddCellBlock(rMeshio, std::move(conn));
 }
@@ -67495,6 +67715,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
 // ===== end src/cpp/src/formats/elmer.cpp =====
 // ===== begin src/cpp/src/formats/ensight.cpp =====
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -67504,6 +67725,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -67736,9 +67958,11 @@ private:
 
 class EnsightBinaryCursor final : public EnsightCursor {
 public:
-    // Text is the whole file; the cursor starts after the leading
-    // "C Binary" 80-char record.
-    explicit EnsightBinaryCursor(std::string_view data) : mData(data), mPos(80) {}
+    // Data is the whole file; a geometry cursor starts after the leading
+    // "C Binary" 80-char record, a variable cursor at its description.
+    // `Swap` seeds the byte order when the file says it (Fortran markers).
+    explicit EnsightBinaryCursor(std::string_view data, std::size_t Start = 80, bool Swap = false)
+        : mData(data), mPos(Start), mSwap(Swap) {}
 
     bool AtEnd() override { return mPos >= mData.size(); }
 
@@ -67826,8 +68050,52 @@ private:
 
     std::string_view mData;
     std::size_t mPos;
-    bool mSwap = false;
+    bool mSwap;
 };
+
+// ---------------------------------------------------------------------------
+// Fortran binary: the C-binary stream with every WRITE framed as a Fortran
+// sequential unformatted record (its byte length before and after it, 4 or 8
+// bytes, in the writer's byte order). Joining the payloads gives the C-binary
+// stream back, whatever the producer's record boundaries were.
+// ---------------------------------------------------------------------------
+
+enum class EnsightEncoding { Ascii, CBinary, Fortran };
+
+struct EnsightUnframed {
+    std::string mBytes;
+    bool mSwap = false;  ///< the markers (so the values) are in the other byte order
+};
+
+/// The joined payloads of a Fortran-framed `Data`, or nothing when it is not
+/// framed. `rWhat` names the file in errors.
+std::optional<EnsightUnframed> ensight_unframe_fortran(std::string_view Data,
+                                                       const std::string& rWhat) {
+    const auto layout = detail::sniff_fortran_records(Data.data(), Data.size());
+    if (!layout)
+        return std::nullopt;
+    const std::vector<detail::FortranRecord> records =
+        detail::fortran_records(Data.data(), Data.size(), *layout, "EnSight " + rWhat);
+    EnsightUnframed out;
+    std::size_t total = 0;
+    for (const detail::FortranRecord& r : records)
+        total += r.mSize;
+    out.mBytes.reserve(total);
+    for (const detail::FortranRecord& r : records)
+        out.mBytes.append(Data.data() + r.mOffset, r.mSize);
+    out.mSwap = layout->mBigEndian != (std::endian::native == std::endian::big);
+    return out;
+}
+
+/// Whether `Data` is a Fortran-binary geometry file: its first record is the
+/// 80-byte "Fortran Binary" string.
+bool ensight_is_fortran_geometry(std::string_view Data) {
+    const auto layout = detail::sniff_fortran_records(Data.data(), Data.size());
+    if (!layout)
+        return false;
+    const std::size_t m = static_cast<std::size_t>(layout->mMarkerBytes);
+    return Data.size() >= m + 80 && ensight_starts_with(Data.substr(m), "Fortran Binary");
+}
 
 // ---------------------------------------------------------------------------
 // .case parsing
@@ -68398,19 +68666,54 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
         *pPointOut = std::move(point_out);
 }
 
-/// Dispatches to the ascii/binary cursor, mirroring read_ensight's own
-/// geometry-file dispatch.
-void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
-                                     std::size_t NumComponents,
+/// A binary variable file starts with its description record; files meshio++
+/// wrote before v16.17.0 put a "C Binary" record before it, which no other
+/// reader expects. Where the binary cursor starts in `Data`.
+std::size_t ensight_variable_start(std::string_view Data) {
+    const bool standard = Data.size() >= 160 && ensight_starts_with(Data.substr(80), "part");
+    return !standard && ensight_starts_with(Data, "C Binary") ? 80 : 0;
+}
+
+/// Whether a variable file is plain text: no NUL in its first KiB and its
+/// description line ends within 80 characters. A binary variable file's
+/// description is an 80-byte record, so its second record starts at byte 80.
+bool ensight_variable_looks_ascii(std::string_view Data) {
+    const std::string_view head = Data.substr(0, std::min<std::size_t>(Data.size(), 1024));
+    if (head.find('\0') != std::string_view::npos)
+        return false;
+    const std::size_t eol = head.find('\n');
+    return eol != std::string_view::npos && eol < 81;
+}
+
+/// Reads a variable file in the encoding of its geometry file, as EnSight
+/// defines it (a variable file carries no format record of its own). A text
+/// variable file next to a binary geometry file, which hand-made cases hold
+/// and meshio++ read before v16.17.0, is still read as text.
+void ensight_read_variable_file_auto(const std::string& rPath, EnsightEncoding Encoding,
+                                     bool PerNode, std::size_t NumComponents,
                                      const std::vector<EnsightPartLayout>& rLayout,
                                      std::size_t TotalPoints, NDArray* pPointOut,
                                      std::vector<NDArray>* pCellOut) {
     const detail::FileSource source = ensight_read_whole_file(rPath, "variable file");
     const std::string_view data = source.View();
-    if (ensight_starts_with(data, "Fortran Binary"))
-        throw ReadError("EnSight: Fortran-binary variable files are not supported");
-    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
-        EnsightBinaryCursor cur(data);
+    const bool binary_layout =
+        (data.size() >= 160 && ensight_starts_with(data.substr(80), "part") &&
+         data.substr(0, 80).find('\n') == std::string_view::npos) ||
+        ensight_starts_with(data, "C Binary");
+    if (Encoding != EnsightEncoding::Ascii && !binary_layout && ensight_variable_looks_ascii(data))
+        Encoding = EnsightEncoding::Ascii;
+    if (Encoding == EnsightEncoding::Fortran) {
+        const auto unframed = ensight_unframe_fortran(data, "variable file");
+        if (!unframed)
+            throw ReadError("EnSight: variable file '" + rPath +
+                            "' is not Fortran binary like its geometry file");
+        EnsightBinaryCursor cur(unframed->mBytes, 0, unframed->mSwap);
+        ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
+                                   pCellOut);
+        return;
+    }
+    if (Encoding == EnsightEncoding::CBinary) {
+        EnsightBinaryCursor cur(data, ensight_variable_start(data));
         ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
                                    pCellOut);
         return;
@@ -68470,12 +68773,17 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
     // The source outlives both cursors below, which only hold views into it.
     const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
     const std::string_view data = source.View();
-    if (ensight_starts_with(data, "Fortran Binary"))
-        throw ReadError("EnSight: Fortran-binary geometry files are not supported");
 
     std::vector<EnsightPartLayout> layout;
     Mesh mesh;
-    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+    EnsightEncoding encoding = EnsightEncoding::Ascii;
+    if (ensight_is_fortran_geometry(data)) {
+        encoding = EnsightEncoding::Fortran;
+        const auto unframed = ensight_unframe_fortran(data, "geometry file");
+        EnsightBinaryCursor cur(unframed->mBytes, 80, unframed->mSwap);
+        mesh = ensight_parse_geo(cur, &layout);
+    } else if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+        encoding = EnsightEncoding::CBinary;
         EnsightBinaryCursor cur(data);
         mesh = ensight_parse_geo(cur, &layout);
     } else {
@@ -68529,14 +68837,15 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
 
         if (per_node) {
             NDArray arr;
-            ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
-                                            nullptr);
+            ensight_read_variable_file_auto(var_path, encoding, true, ncomp, layout,
+                                            mesh.NumPoints(), &arr, nullptr);
             if (tensor_symm)
                 ensight_swap_tensor_symm_last_two(arr.As<double>(), mesh.NumPoints());
             mesh.AddPointData(var.mName, std::move(arr));
         } else {
             std::vector<NDArray> blocks(mesh.NumCellBlocks());
-            ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            ensight_read_variable_file_auto(var_path, encoding, false, ncomp, layout, 0, nullptr,
+                                            &blocks);
             if (tensor_symm)
                 for (NDArray& blk : blocks)
                     if (blk.Size() > 0)
@@ -68568,17 +68877,59 @@ namespace {
 // Writing
 // ---------------------------------------------------------------------------
 
-void ensight_append_str80(std::vector<char>& rOut, const std::string& rStr) {
-    char buf[80] = {};
-    rStr.copy(buf, std::min<std::size_t>(rStr.size(), 79));
-    rOut.insert(rOut.end(), buf, buf + 80);
-}
+/// A binary EnSight file as its records: C binary writes them back to back,
+/// Fortran binary frames each one as the WRITE of a Fortran producer (its byte
+/// length before and after it, 4 bytes in the native byte order). A record is
+/// one string, one count, or one array: the layout vtkEnSightGoldBinaryReader
+/// reads Fortran files in (each coordinate component and each variable
+/// component is its own record).
+class EnsightRecordWriter {
+public:
+    explicit EnsightRecordWriter(bool Fortran) : mFortran(Fortran) {}
 
-void ensight_append_i32(std::vector<char>& rOut, std::int64_t v) {
-    const std::int32_t i = static_cast<std::int32_t>(v);
-    const char* p = reinterpret_cast<const char*>(&i);
-    rOut.insert(rOut.end(), p, p + 4);
-}
+    void Str80(const std::string& rStr) {
+        char buf[80] = {};
+        rStr.copy(buf, std::min<std::size_t>(rStr.size(), 79));
+        Record(buf, 80);
+    }
+
+    void Int(std::int64_t Value) {
+        const std::int32_t i = static_cast<std::int32_t>(Value);
+        Record(reinterpret_cast<const char*>(&i), 4);
+    }
+
+    void Ints(const std::vector<std::int32_t>& rValues) {
+        Record(reinterpret_cast<const char*>(rValues.data()), rValues.size() * 4);
+    }
+
+    void Floats(const float* pValues, std::size_t Count) {
+        Record(reinterpret_cast<const char*>(pValues), Count * 4);
+    }
+
+    const std::vector<char>& Bytes() const { return mOut; }
+    std::vector<char>& Bytes() { return mOut; }
+
+private:
+    void Record(const char* pData, std::size_t Size) {
+        if (mFortran) {
+            if (Size > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+                throw WriteError("EnSight: a Fortran-binary record over 2 GiB cannot be written");
+            Marker(Size);
+        }
+        mOut.insert(mOut.end(), pData, pData + Size);
+        if (mFortran)
+            Marker(Size);
+    }
+
+    void Marker(std::size_t Size) {
+        const std::int32_t n = static_cast<std::int32_t>(Size);
+        const char* p = reinterpret_cast<const char*>(&n);
+        mOut.insert(mOut.end(), p, p + 4);
+    }
+
+    bool mFortran;
+    std::vector<char> mOut;
+};
 
 // Validate the mesh and return one keyword entry per cell block.
 // The two ragged keywords have no fixed node count, so they cannot live in
@@ -68708,7 +69059,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
 }
 
 void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
-                              const std::vector<const EnsightTypeEntry*>& rEntries) {
+                              const std::vector<const EnsightTypeEntry*>& rEntries, bool Fortran) {
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
     const std::size_t np = rMesh.NumPoints();
@@ -68718,26 +69069,26 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     if (np > i32_max)
         throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
 
-    std::vector<char> out;
-    out.reserve(80 * 8 + np * 12 + 64);
-    ensight_append_str80(out, "C Binary");
-    ensight_append_str80(out, "EnSight Gold Geometry File");
-    ensight_append_str80(out, detail::provenance_lines(detail::SlotTier::Bounded)[0]);
-    ensight_append_str80(out, "node id assign");
-    ensight_append_str80(out, "element id assign");
-    ensight_append_str80(out, "part");
-    ensight_append_i32(out, 1);
-    ensight_append_str80(out, "Mesh");
-    ensight_append_str80(out, "coordinates");
-    ensight_append_i32(out, static_cast<std::int64_t>(np));
+    EnsightRecordWriter out(Fortran);
+    out.Bytes().reserve(80 * 8 + np * 12 + 64);
+    out.Str80(Fortran ? "Fortran Binary" : "C Binary");
+    out.Str80("EnSight Gold Geometry File");
+    out.Str80(detail::provenance_lines(detail::SlotTier::Bounded)[0]);
+    out.Str80("node id assign");
+    out.Str80("element id assign");
+    out.Str80("part");
+    out.Int(1);
+    out.Str80("Mesh");
+    out.Str80("coordinates");
+    out.Int(static_cast<std::int64_t>(np));
     {
         std::vector<float> col(np * 3);
         for (std::size_t c = 0; c < 3; ++c)
             for (std::size_t i = 0; i < np; ++i)
                 col[c * np + i] =
                     c < dim ? static_cast<float>(detail::read_double(points, i * dim + c)) : 0.0f;
-        const char* p = reinterpret_cast<const char*>(col.data());
-        out.insert(out.end(), p, p + col.size() * sizeof(float));
+        for (std::size_t c = 0; c < 3; ++c)
+            out.Floats(col.data() + c * np, np);
     }
 
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
@@ -68750,8 +69101,8 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
         const NDArray& conn = cb.Conn();
         const std::vector<int>* perm = ensight_permutation(cb.Type());
 
-        ensight_append_str80(out, entry->mKeyword);
-        ensight_append_i32(out, static_cast<std::int64_t>(ne));
+        out.Str80(entry->mKeyword);
+        out.Int(static_cast<std::int64_t>(ne));
         if (entry->mNumNodes < 0) {
             // nsided / nfaced: the same three (or two) runs as the ASCII path,
             // as int32 -- which is exactly what read_binary_faces consumes.
@@ -68775,10 +69126,8 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
                 }
             }
             auto append = [&out](const std::vector<std::int32_t>& v) {
-                if (v.empty())
-                    return;
-                const char* q = reinterpret_cast<const char*>(v.data());
-                out.insert(out.end(), q, q + v.size() * sizeof(std::int32_t));
+                if (!v.empty())
+                    out.Ints(v);
             };
             append(counts);
             if (faced)
@@ -68793,11 +69142,10 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
                 flat[r * npc + j] =
                     static_cast<std::int32_t>(detail::read_int(conn, r * npc + src)) + 1;
             }
-        const char* p = reinterpret_cast<const char*>(flat.data());
-        out.insert(out.end(), p, p + flat.size() * sizeof(std::int32_t));
+        out.Ints(flat);
     }
 
-    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+    rOs.write(out.Bytes().data(), static_cast<std::streamsize>(out.Bytes().size()));
 }
 
 // ---------------------------------------------------------------------------
@@ -68918,35 +69266,36 @@ void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
     rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
 }
 
+// A variable file has no format record: it starts with its description, and
+// its encoding is its geometry file's (until v16.17.0 a "C Binary" record came
+// first, which kept VTK and ParaView from reading the variables).
 void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
                                    const std::vector<const EnsightTypeEntry*>& rEntries,
-                                   const EnsightVariableToWrite& rVar) {
-    std::vector<char> out;
-    ensight_append_str80(out, "C Binary");
-    ensight_append_str80(out, "variable");
-    ensight_append_str80(out, "part");
-    ensight_append_i32(out, 1);
+                                   const EnsightVariableToWrite& rVar, bool Fortran) {
+    EnsightRecordWriter out(Fortran);
+    out.Str80("variable");
+    out.Str80("part");
+    out.Int(1);
 
     auto append_col = [&](const std::vector<double>& col) {
         std::vector<float> f(col.size());
         for (std::size_t i = 0; i < col.size(); ++i)
             f[i] = static_cast<float>(col[i]);
-        const char* p = reinterpret_cast<const char*>(f.data());
-        out.insert(out.end(), p, p + f.size() * sizeof(float));
+        out.Floats(f.data(), f.size());
     };
 
     if (rVar.mPerNode) {
-        ensight_append_str80(out, "coordinates");
+        out.Str80("coordinates");
         for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
             append_col(ensight_variable_column(rMesh, rVar, c, 0));
     } else {
         for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-            ensight_append_str80(out, rEntries[bi]->mKeyword);
+            out.Str80(rEntries[bi]->mKeyword);
             for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
                 append_col(ensight_variable_column(rMesh, rVar, c, bi));
         }
     }
-    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+    rOs.write(out.Bytes().data(), static_cast<std::streamsize>(out.Bytes().size()));
 }
 
 /// Scans `rMesh`'s data maps for what this writer can express: `point_data`
@@ -69005,6 +69354,12 @@ void ensight_collect_variables(const Mesh& rMesh, std::vector<EnsightVariableToW
 }  // namespace
 
 void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    write_ensight(rPath, rMesh, binary, /*fortran=*/false);
+}
+
+void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, bool fortran) {
+    if (fortran && !binary)
+        throw WriteError("EnSight: Fortran binary is a binary encoding (binary=true)");
     bool ok = false;
     auto paths = ensight_case_geo_paths(rPath, ok);
     if (!ok)
@@ -69053,7 +69408,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
     if (!gf)
         throw WriteError("Could not open file for writing: " + geo_path);
     if (binary)
-        ensight_write_geo_binary(gf, rMesh, entries);
+        ensight_write_geo_binary(gf, rMesh, entries, fortran);
     else
         ensight_write_geo_ascii(gf, rMesh, entries);
 
@@ -69064,7 +69419,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         if (!vf)
             throw WriteError("Could not open file for writing: " + var_path);
         if (binary)
-            ensight_write_variable_binary(vf, rMesh, entries, v);
+            ensight_write_variable_binary(vf, rMesh, entries, v, fortran);
         else
             ensight_write_variable_ascii(vf, rMesh, entries, v);
     }
@@ -69119,21 +69474,42 @@ const std::unordered_map<std::string, std::string>& exodus_to_meshio() {
         {"HEX8", "hexahedron"},    {"HEX9", "hexahedron9"}, {"HEX20", "hexahedron20"},
         {"HEX27", "hexahedron27"}, {"TETRA", "tetra"},      {"TETRA4", "tetra4"},
         {"TET4", "tetra4"},        {"TETRA8", "tetra8"},    {"TETRA10", "tetra10"},
-        {"TETRA14", "tetra14"},    {"PYRAMID", "pyramid"},  {"WEDGE", "wedge"}};
+        {"TETRA14", "tetra14"},    {"PYRAMID", "pyramid"},  {"WEDGE", "wedge"},
+        {"PYRAMID5", "pyramid"},   {"WEDGE6", "wedge"},     {"PYRAMID13", "pyramid13"},
+        {"WEDGE15", "wedge15"}};
     return m;
 }
 
 // The Python reverse map is last-wins over dict order.
 const std::unordered_map<std::string, std::string>& meshio_to_exodus() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "SPHERE"},      {"line", "BAR2"},          {"line3", "BEAM3"},
-        {"quad", "QUAD4"},         {"quad5", "QUAD5"},        {"quad8", "QUAD8"},
-        {"quad9", "QUAD9"},        {"triangle", "TRI3"},      {"triangle6", "TRI6"},
-        {"triangle7", "TRI7"},     {"hexahedron", "HEX8"},    {"hexahedron9", "HEX9"},
-        {"hexahedron20", "HEX20"}, {"hexahedron27", "HEX27"}, {"tetra", "TETRA"},
-        {"tetra4", "TET4"},        {"tetra8", "TETRA8"},      {"tetra10", "TETRA10"},
-        {"tetra14", "TETRA14"},    {"pyramid", "PYRAMID"},    {"wedge", "WEDGE"}};
+        {"vertex", "SPHERE"},       {"line", "BAR2"},          {"line3", "BEAM3"},
+        {"quad", "QUAD4"},          {"quad5", "QUAD5"},        {"quad8", "QUAD8"},
+        {"quad9", "QUAD9"},         {"triangle", "TRI3"},      {"triangle6", "TRI6"},
+        {"triangle7", "TRI7"},      {"hexahedron", "HEX8"},    {"hexahedron9", "HEX9"},
+        {"hexahedron20", "HEX20"},  {"hexahedron27", "HEX27"}, {"tetra", "TETRA"},
+        {"tetra4", "TET4"},         {"tetra8", "TETRA8"},      {"tetra10", "TETRA10"},
+        {"tetra14", "TETRA14"},     {"pyramid", "PYRAMID"},    {"wedge", "WEDGE"},
+        {"pyramid13", "PYRAMID13"}, {"wedge15", "WEDGE15"}};
     return m;
+}
+
+/// `out[r][c] = in[r][perm[c]]` for an (n, k) integer array; @p rIn unchanged
+/// when @p rPerm does not match its width.
+NDArray exo_gather_columns(const NDArray& rIn, const std::vector<int>& rPerm) {
+    const std::size_t k = detail::cols(rIn);
+    if (rPerm.size() != k || k == 0)
+        return rIn;
+    NDArray out(rIn.Dtype(), rIn.Shape());
+    const std::size_t n = rIn.Size() / k;
+    detail::dispatch_dtype(rIn.Dtype(), [&]<class T>() {
+        const T* src = rIn.As<T>();
+        T* dst = out.As<T>();
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t c = 0; c < k; ++c)
+                dst[r * k + c] = src[r * k + static_cast<std::size_t>(rPerm[c])];
+    });
+    return out;
 }
 
 nc_type nc_type_of(DType dt) {
@@ -69768,6 +70144,10 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
                         throw ReadError("Exodus: unexpected connectivity dtype");
                 }
             }
+            // The quadratic solids list their nodes in SEACAS's order: the
+            // "exodus" entries of the node-ordering registry.
+            if (const detail::NodeOrder* order = detail::node_order("exodus", it->second))
+                conn = exo_gather_columns(conn, order->mToMeshio);
             int blk = key.size() > 7 ? std::atoi(key.c_str() + 7) : 1;
             blocks.emplace_back(blk, Block{it->second, std::move(conn)});
         } else if (key == "coord") {
@@ -70124,8 +70504,16 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         check(nc_put_att_text(ncid, var, "elem_type", it->second.size(), it->second.c_str()),
               "elem_type", true);
         NDArray shifted(conn.Dtype(), conn.Shape());
+        const detail::NodeOrder* order = detail::node_order("exodus", cb.Type());
+        const std::vector<int>* perm = order && order->mFromMeshio.size() == detail::cols(conn)
+                                           ? &order->mFromMeshio
+                                           : nullptr;
+        const std::size_t ncols = detail::cols(conn);
         for (std::size_t i = 0; i < conn.Size(); ++i) {
-            std::int64_t v = detail::read_int(conn, i) + 1;
+            // Exodus is 1-based, in SEACAS's node order.
+            const std::size_t src =
+                perm ? (i / ncols) * ncols + static_cast<std::size_t>((*perm)[i % ncols]) : i;
+            std::int64_t v = detail::read_int(conn, src) + 1;
             switch (shifted.Dtype()) {
                 case DType::Int32:
                     shifted.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
@@ -71571,10 +71959,13 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <ios>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -71586,7 +71977,10 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
 
 namespace meshioplusplus {
 
-namespace {
+// FnTopology and FnPlan are held by FemapSeriesWriter::Impl, a class with
+// external linkage, so they live in a named namespace rather than the
+// anonymous one (-Wsubobject-linkage in the single header).
+namespace detail::femap_writer {
 
 // Femap topology code -> meshio++ type and, per meshio++ node, the slot of the
 // 20-slot element record it comes from. The slots follow Femap's degenerate
@@ -71598,6 +71992,25 @@ struct FnTopology {
     std::vector<int> mSlots;
     int mDefaultType;  // Femap element type written for this topology
 };
+
+/// What the writer makes of a mesh: each cell's topology, property, type and
+/// label (0 when it is dropped).
+struct FnPlan {
+    std::size_t mPdim = 0;
+    std::size_t mNpts = 0;
+    std::vector<const FnTopology*> mTops;
+    std::vector<std::size_t> mStart{0};
+    std::size_t mNumCells = 0;
+    std::vector<std::int64_t> mProp, mType, mLabel;
+    std::int64_t mWritten = 0;
+};
+
+}  // namespace detail::femap_writer
+
+namespace {
+
+using detail::femap_writer::FnPlan;
+using detail::femap_writer::FnTopology;
 
 const std::vector<FnTopology>& fn_topologies() {
     static const std::vector<FnTopology> t = {
@@ -72398,39 +72811,37 @@ void fn_zero_lines(std::string& rOut, int Count, int PerLine, const char* pZero)
     }
 }
 
-}  // namespace
-
-void write_femap(const std::string& rPath, const Mesh& rMesh) {
-    const std::size_t pdim = rMesh.PointDim();
-    if (pdim > 3)
-        throw WriteError("Femap neutral writer: points of dimension " + std::to_string(pdim) +
+FnPlan fn_plan(const Mesh& rMesh) {
+    FnPlan plan;
+    plan.mPdim = rMesh.PointDim();
+    if (plan.mPdim > 3)
+        throw WriteError("Femap neutral writer: points of dimension " + std::to_string(plan.mPdim) +
                          " (at most 3)");
-    const std::size_t npts = rMesh.NumPoints();
-
-    std::vector<const FnTopology*> tops(rMesh.NumCellBlocks(), nullptr);
-    std::vector<std::size_t> block_start{0};
+    plan.mNpts = rMesh.NumPoints();
+    plan.mTops.assign(rMesh.NumCellBlocks(), nullptr);
     std::set<std::string> dropped_types;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
-        tops[b] = cb.IsRagged() ? nullptr : fn_topology_of_type(cb.Type());
-        if (!tops[b] && cb.NumCells())
+        plan.mTops[b] = cb.IsRagged() ? nullptr : fn_topology_of_type(cb.Type());
+        if (!plan.mTops[b] && cb.NumCells())
             dropped_types.insert(std::string(cb.Type()));
-        block_start.push_back(block_start.back() + cb.NumCells());
+        plan.mStart.push_back(plan.mStart.back() + cb.NumCells());
     }
-    const std::size_t ncells = block_start.back();
+    plan.mNumCells = plan.mStart.back();
     const bool has_prop = rMesh.HasCellData("femap:property");
     const bool has_type = rMesh.HasCellData("femap:type");
-    std::vector<std::int64_t> prop(ncells, 1), etype(ncells, 0), label(ncells, 0);
-    std::int64_t written = 0;
+    plan.mProp.assign(plan.mNumCells, 1);
+    plan.mType.assign(plan.mNumCells, 0);
+    plan.mLabel.assign(plan.mNumCells, 0);
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
-            const std::size_t g = block_start[b] + r;
+            const std::size_t g = plan.mStart[b] + r;
             if (has_prop)
-                prop[g] = detail::read_int(rMesh.CellData("femap:property", b), r);
-            etype[g] = has_type ? detail::read_int(rMesh.CellData("femap:type", b), r)
-                                : (tops[b] ? tops[b]->mDefaultType : 0);
-            if (tops[b])
-                label[g] = ++written;
+                plan.mProp[g] = detail::read_int(rMesh.CellData("femap:property", b), r);
+            plan.mType[g] = has_type ? detail::read_int(rMesh.CellData("femap:type", b), r)
+                                     : (plan.mTops[b] ? plan.mTops[b]->mDefaultType : 0);
+            if (plan.mTops[b])
+                plan.mLabel[g] = ++plan.mWritten;
         }
     }
 
@@ -72448,19 +72859,27 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("regions-dropped", std::to_string(side_regions) +
                                                        " side region(s) have no Femap group");
     }
-    // Results: one output set (450) of vectors (451), a point array per
-    // component as nodal vectors, a cell array per component as elemental ones.
-    struct FnOutVector {
-        std::string mTitle;
-        int mEntity;  // 7 nodes, 8 elements
-        std::vector<std::pair<std::int64_t, double>> mValues;
-    };
+    return plan;
+}
+
+// Results: an output set (450) of vectors (451), a point array per component as
+// nodal vectors, a cell array per component as elemental ones.
+struct FnOutVector {
+    std::string mTitle;
+    int mEntity;  // 7 nodes, 8 elements
+    std::vector<std::pair<std::int64_t, double>> mValues;
+};
+
+/// The output vectors of a mesh's data, and (in @p rUnwritable) the arrays
+/// that have none.
+std::vector<FnOutVector> fn_vectors(const Mesh& rMesh, const FnPlan& rPlan,
+                                    std::vector<std::string>& rUnwritable) {
+    const std::size_t npts = rPlan.mNpts;
     std::vector<FnOutVector> vectors;
-    std::vector<std::string> unwritable;
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         if (a.Shape().size() > 2 || a.Shape().empty() || a.Shape()[0] != npts) {
-            unwritable.push_back(name);
+            rUnwritable.push_back(name);
             continue;
         }
         const std::size_t nc = a.Shape().size() == 2 ? a.Shape()[1] : 1;
@@ -72487,7 +72906,7 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
             nc = c;
         }
         if (!ok || nc == 0) {
-            unwritable.push_back(name);
+            rUnwritable.push_back(name);
             continue;
         }
         for (std::size_t c = 0; c < nc; ++c) {
@@ -72495,33 +72914,52 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
             for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
                 const NDArray& a = rMesh.CellData(name, b);
                 for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
-                    const std::size_t g = block_start[b] + r;
+                    const std::size_t g = rPlan.mStart[b] + r;
                     const double x = detail::read_double(a, r * nc + c);
-                    if (label[g] && !std::isnan(x))
-                        v.mValues.emplace_back(label[g], x);
+                    if (rPlan.mLabel[g] && !std::isnan(x))
+                        v.mValues.emplace_back(rPlan.mLabel[g], x);
                 }
             }
             vectors.push_back(std::move(v));
         }
     }
-    std::int64_t set_id = 1;
-    double set_value = 0.0;
+    return vectors;
+}
+
+/// The output set's `femap:set` and `meshio:time`, when the mesh has them;
+/// other field data goes to @p rUnwritable.
+void fn_set_fields(const Mesh& rMesh, std::optional<std::int64_t>& rSet,
+                   std::optional<double>& rValue, std::vector<std::string>& rUnwritable) {
     for (const std::string& name : rMesh.FieldDataNames()) {
         const NDArray& a = rMesh.FieldData(name);
         if (name == "femap:set" && a.Size() == 1)
-            set_id = std::max<std::int64_t>(1, detail::read_int(a, 0));
+            rSet = detail::read_int(a, 0);
         else if (name == kSequenceTimeKey && a.Size() == 1)
-            set_value = detail::read_double(a, 0);
+            rValue = detail::read_double(a, 0);
         else
-            unwritable.push_back(name);
+            rUnwritable.push_back(name);
     }
-    if (!unwritable.empty()) {
-        std::string list;
-        for (const std::string& n : unwritable)
-            list += (list.empty() ? "" : ", ") + n;
-        log::warn("Femap neutral writer: arrays with no Femap output vector dropped: {}", list);
-        detail::provenance_note("data-dropped", "arrays with no Femap output vector: " + list);
-    }
+}
+
+void fn_note_unwritable(const std::vector<std::string>& rUnwritable) {
+    if (rUnwritable.empty())
+        return;
+    std::string list;
+    for (const std::string& n : rUnwritable)
+        list += (list.empty() ? "" : ", ") + n;
+    log::warn("Femap neutral writer: arrays with no Femap output vector dropped: {}", list);
+    detail::provenance_note("data-dropped", "arrays with no Femap output vector: " + list);
+}
+
+/// Blocks 100 (header), 402 (properties), 403 (nodes), 404 (elements) and 408
+/// (groups).
+void fn_write_mesh_blocks(std::ostream& rOs, const Mesh& rMesh, const FnPlan& rPlan) {
+    const std::size_t ncells = rPlan.mNumCells;
+    const std::size_t npts = rPlan.mNpts;
+    const std::size_t pdim = rPlan.mPdim;
+    const std::vector<std::int64_t>& prop = rPlan.mProp;
+    const std::vector<std::int64_t>& etype = rPlan.mType;
+    const std::vector<std::int64_t>& label = rPlan.mLabel;
 
     // Properties: the cells of each, and a title from the cell region the reader
     // made of it (same tag, same cells).
@@ -72546,9 +72984,6 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!f)
-        throw WriteError("Could not open file for writing: " + rPath);
     std::string out;
     fn_block_open(out, 100);
     out += fn_clean_title(detail::provenance_lines(detail::SlotTier::SingleLine)[0]) + "\n8.2,\n";
@@ -72581,20 +73016,20 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         out += "0,\n";
     }
     fn_block_close(out);
-    f << out;
+    rOs << out;
     out.clear();
 
-    if (written) {
+    if (rPlan.mWritten) {
         fn_block_open(out, 404);
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const FnTopology* t = tops[b];
+            const FnTopology* t = rPlan.mTops[b];
             if (!t)
                 continue;
             const auto cb = rMesh.Cells(b);
             const NDArray& conn = cb.Conn();
             const std::size_t k = t->mSlots.size();
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-                const std::size_t g = block_start[b] + r;
+                const std::size_t g = rPlan.mStart[b] + r;
                 std::array<std::int64_t, 20> slots{};
                 for (std::size_t j = 0; j < k; ++j)
                     slots[static_cast<std::size_t>(t->mSlots[j])] =
@@ -72602,15 +73037,15 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
                 out += std::to_string(label[g]) + ",124," + std::to_string(prop[g]) + "," +
                        std::to_string(etype[g]) + "," + std::to_string(t->mCode) +
                        ",1,0,0,0,0,0,0,0,\n";
-                for (std::size_t s = 0; s < 20; ++s) {
-                    out += std::to_string(slots[s]) + ",";
-                    if (s == 9 || s == 19)
+                for (std::size_t s2 = 0; s2 < 20; ++s2) {
+                    out += std::to_string(slots[s2]) + ",";
+                    if (s2 == 9 || s2 == 19)
                         out += '\n';
                 }
                 out += "0.,0.,0.,\n0.,0.,0.,\n0.,0.,0.,\n0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\n";
             }
             if (out.size() > (1u << 20)) {
-                f << out;
+                rOs << out;
                 out.clear();
             }
         }
@@ -72681,16 +73116,22 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         }
         fn_block_close(out);
     }
+    rOs << out;
+}
 
-    if (!vectors.empty()) {
-        fn_block_open(out, 450);
-        out += std::to_string(set_id) + ",\nmeshio++\n0,1,\n";
-        fn_append_real(out, set_value);
-        out += ",\n0,\n";
-        fn_block_close(out);
+/// One output set (450) and its vectors (451); @p rIds gives each vector's id.
+void fn_write_set(std::ostream& rOs, std::int64_t SetId, double SetValue,
+                  const std::vector<FnOutVector>& rVectors, const std::vector<std::int64_t>& rIds) {
+    std::string out;
+    fn_block_open(out, 450);
+    out += std::to_string(SetId) + ",\nmeshio++\n0,1,\n";
+    fn_append_real(out, SetValue);
+    out += ",\n0,\n";
+    fn_block_close(out);
+    if (!rVectors.empty()) {
         fn_block_open(out, 451);
-        for (std::size_t k = 0; k < vectors.size(); ++k) {
-            const FnOutVector& v = vectors[k];
+        for (std::size_t k = 0; k < rVectors.size(); ++k) {
+            const FnOutVector& v = rVectors[k];
             double lo = 0.0, hi = 0.0, absmax = 0.0;
             std::int64_t id_lo = 0, id_hi = 0;
             for (std::size_t j = 0; j < v.mValues.size(); ++j) {
@@ -72705,7 +73146,7 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
                 }
                 absmax = std::max(absmax, std::fabs(x));
             }
-            out += std::to_string(set_id) + "," + std::to_string(k + 1) + ",1,\n" +
+            out += std::to_string(SetId) + "," + std::to_string(rIds[k]) + ",1,\n" +
                    fn_clean_title(v.mTitle) + "\n";
             fn_append_real(out, lo);
             out += ',';
@@ -72722,15 +73163,165 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
             }
             out += "-1,0.,\n";
             if (out.size() > (1u << 20)) {
-                f << out;
+                rOs << out;
                 out.clear();
             }
         }
         fn_block_close(out);
     }
-    f << out;
+    rOs << out;
+}
+
+/// FNV-1a over a mesh's cells (types, shapes, connectivity) and, separately,
+/// its points: what must not change between the steps of a series, kept as
+/// digests so no copy of a step is held.
+std::pair<std::uint64_t, std::uint64_t> fn_fingerprint(const Mesh& rMesh) {
+    const auto mix = [](std::uint64_t h, const void* pData, std::size_t Size) {
+        const auto* p = static_cast<const unsigned char*>(pData);
+        for (std::size_t i = 0; i < Size; ++i) {
+            h ^= p[i];
+            h *= 1099511628211ull;
+        }
+        return h;
+    };
+    std::uint64_t cells = 14695981039346656037ull;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string head = std::string(cb.Type()) + ":" + std::to_string(cb.NumCells()) +
+                                 "x" + std::to_string(cb.IsRagged() ? 0 : cb.NodesPerCell()) + ";";
+        cells = mix(cells, head.data(), head.size());
+        if (cb.IsRagged())
+            continue;
+        const NDArray& conn = cb.Conn();
+        for (std::size_t i = 0; i < conn.Size(); ++i) {
+            const std::int64_t v = detail::read_int(conn, i);
+            cells = mix(cells, &v, sizeof v);
+        }
+    }
+    std::uint64_t points = 14695981039346656037ull;
+    const NDArray& pts = rMesh.Points();
+    for (std::size_t i = 0; i < pts.Size(); ++i) {
+        const double v = detail::read_double(pts, i);
+        points = mix(points, &v, sizeof v);
+    }
+    return {cells, points};
+}
+
+}  // namespace
+
+void write_femap(const std::string& rPath, const Mesh& rMesh) {
+    const FnPlan plan = fn_plan(rMesh);
+    std::vector<std::string> unwritable;
+    const std::vector<FnOutVector> vectors = fn_vectors(rMesh, plan, unwritable);
+    std::optional<std::int64_t> set_id;
+    std::optional<double> set_value;
+    fn_set_fields(rMesh, set_id, set_value, unwritable);
+    fn_note_unwritable(unwritable);
+
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+    fn_write_mesh_blocks(f, rMesh, plan);
+    if (!vectors.empty()) {
+        std::vector<std::int64_t> ids(vectors.size());
+        for (std::size_t k = 0; k < ids.size(); ++k)
+            ids[k] = static_cast<std::int64_t>(k + 1);
+        fn_write_set(f, std::max<std::int64_t>(1, set_id.value_or(0)), set_value.value_or(0.0),
+                     vectors, ids);
+    }
     if (!f)
         throw WriteError("Femap neutral writer: failed writing " + rPath);
+}
+
+struct FemapSeriesWriter::Impl {
+    std::string mPath;
+    decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
+    std::optional<FnPlan> mPlan;
+    std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
+    std::set<std::int64_t> mSetIds;
+    std::int64_t mNextSet = 1;
+    std::map<std::pair<std::string, int>, std::int64_t> mVectorIds;
+    bool mMoved = false;
+    std::size_t mSteps = 0;
+};
+
+FemapSeriesWriter::FemapSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!mpImpl->mOut)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+FemapSeriesWriter::~FemapSeriesWriter() = default;
+FemapSeriesWriter::FemapSeriesWriter(FemapSeriesWriter&&) noexcept = default;
+FemapSeriesWriter& FemapSeriesWriter::operator=(FemapSeriesWriter&&) noexcept = default;
+
+void FemapSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("Femap series: the writer was moved from");
+    Impl& s = *mpImpl;
+    std::vector<std::string> unwritable;
+    std::vector<FnOutVector> vectors;
+    std::optional<std::int64_t> set_id;
+    std::optional<double> ignored;
+    if (!s.mPlan) {
+        s.mPlan = fn_plan(rMesh);
+        vectors = fn_vectors(rMesh, *s.mPlan, unwritable);
+        fn_set_fields(rMesh, set_id, ignored, unwritable);
+        fn_note_unwritable(unwritable);
+        fn_write_mesh_blocks(s.mOut, rMesh, *s.mPlan);
+        s.mFingerprint = fn_fingerprint(rMesh);
+    } else {
+        const auto fp = fn_fingerprint(rMesh);
+        if (fp.first != s.mFingerprint.first)
+            throw WriteError("Femap series: step " + std::to_string(s.mSteps) +
+                             "'s cells differ from the first step's; a neutral file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        if (fp.second != s.mFingerprint.second && !s.mMoved) {
+            s.mMoved = true;
+            log::warn(
+                "Femap series: points moved after the first step; written as the first "
+                "step's");
+            detail::provenance_note("points-moved",
+                                    "every output set shares the first step's points");
+        }
+        vectors = fn_vectors(rMesh, *s.mPlan, unwritable);
+        fn_set_fields(rMesh, set_id, ignored, unwritable);
+    }
+    std::int64_t id = set_id.value_or(0);
+    if (id <= 0 || s.mSetIds.count(id)) {
+        while (s.mSetIds.count(s.mNextSet))
+            ++s.mNextSet;
+        id = s.mNextSet;
+    }
+    s.mSetIds.insert(id);
+    std::vector<std::int64_t> ids;
+    for (const FnOutVector& v : vectors) {
+        const auto key = std::make_pair(v.mTitle, v.mEntity);
+        auto it = s.mVectorIds.find(key);
+        if (it == s.mVectorIds.end())
+            it =
+                s.mVectorIds.emplace(key, static_cast<std::int64_t>(s.mVectorIds.size() + 1)).first;
+        ids.push_back(it->second);
+    }
+    fn_write_set(s.mOut, id, Time, vectors, ids);
+    if (!s.mOut)
+        throw WriteError("Femap series: failed writing " + s.mPath);
+    ++s.mSteps;
+}
+
+std::size_t FemapSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void FemapSeriesWriter::Finalize() {
+    if (!mpImpl || !mpImpl->mOut.is_open())
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("Femap series: no step was written to " + mpImpl->mPath);
+    mpImpl->mOut.close();
+    if (!mpImpl->mOut)
+        throw WriteError("Femap series: failed writing " + mpImpl->mPath);
 }
 
 }  // namespace meshioplusplus
@@ -74896,7 +75487,7 @@ namespace {
 // -- and it is the only one of the three with NO Kratos-GiD precedent
 // whatsoever, since Kratos never registers a GiD mesh container for any
 // pyramid; its ordering rests on Kratos's internal geometry convention
-// alone. See gid_common.hpp's `gid_cell_perm_table()` for the full
+// alone. See gid_common.hpp's `gid_cell_perm()` for the full
 // derivation and the permutation arrays themselves.
 //
 // Anything not in this table -- polygon/polyhedron (GiD has no such type),
@@ -75051,7 +75642,7 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         // gid_common.hpp's derivation): GiD slot j receives meshio++ node
         // perm[j], the exact `dst[c] = src[p[c]]` convention med.cpp's
         // `flatten_f` already uses in this repo.
-        const int* perm = gid_detail::gid_cell_perm(cb.Type(), npc);
+        const int* perm = gid_detail::gid_cell_perm(std::string(cb.Type()), npc, false);
         std::vector<int> ids(ne);
         std::vector<int> flat_conn(ne * npc);
         for (std::size_t r = 0; r < ne; ++r) {
@@ -76776,7 +77367,7 @@ Mesh gid_assemble(const GidStaged& rStagedIn, const std::vector<GidResult>& rRes
         // permutation (gid_common.hpp's derivation, self-inverse): meshio++
         // slot j receives GiD file slot perm[j] -- the same table the writer
         // uses, applied in the opposite (gather) direction.
-        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn);
+        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn, true);
         for (std::size_t r = 0; r < ncells; ++r) {
             for (std::size_t j = 0; j < nn; ++j) {
                 const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
@@ -79022,46 +79613,18 @@ const std::unordered_map<std::string, int>& meshio_to_gmsh_type() {
     return m;
 }
 
-// Permutation P such that meshio_row[j] = gmsh_row[P[j]]; empty = identity.
+// gmsh's node permutations live in the node-ordering registry
+// (detail/node_order.cpp): meshio_row[j] = gmsh_row[P[j]]; empty = identity.
 const std::vector<int>& gmsh_to_meshio_perm(const std::string& rT) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra10", {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
-        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15}},
-        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 13, 9,  16, 18,
-                          19, 17, 10, 12, 14, 15, 22, 23, 21, 24, 20, 25, 26}},
-        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11}},
-        {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12}},
-        // wedge18/pyramid14 extend wedge15/pyramid13's corner+mid-edge
-        // portion unchanged with the added face-centre node(s): wedge18's
-        // three quad-face centres (indices 15-17), pyramid14's one
-        // base-face centre (index 13). Derived from gmsh's own edge/face
-        // tables (src/geo/MPrism.h, src/geo/MPyramid.h in gmsh's source)
-        // against meshio's own layout (`_skin.py`'s `_CELL_FACES`, pinned
-        // independently by the CGNS wedge18 permutation in cgns.cpp) and
-        // verified geometrically: every mid-edge/face-centre slot lands at
-        // the exact arithmetic midpoint/centroid of the corners it should.
-        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16}},
-        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13}},
-    };
     static const std::vector<int> empty;
-    auto it = m.find(rT);
-    return it == m.end() ? empty : it->second;
+    const detail::NodeOrder* order = detail::node_order("gmsh", rT);
+    return order ? order->mToMeshio : empty;
 }
 
 const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra10", {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
-        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 16, 9, 17, 10, 18, 19, 12, 15, 13, 14}},
-        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 16, 9,  17, 10,
-                          18, 19, 12, 15, 13, 14, 24, 22, 20, 21, 23, 25, 26}},
-        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10}},
-        {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12}},
-        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10, 15, 17, 16}},
-        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12, 13}},
-    };
     static const std::vector<int> empty;
-    auto it = m.find(rT);
-    return it == m.end() ? empty : it->second;
+    const detail::NodeOrder* order = detail::node_order("gmsh", rT);
+    return order ? order->mFromMeshio : empty;
 }
 
 std::string gmsh_trim(const std::string& rS) {
@@ -83983,17 +84546,7 @@ std::pair<LsdType, std::vector<std::int64_t>> lsd_collapse_solid(
 
 // The 8 LS-DYNA nodes of a meshio++ tetra, pyramid, wedge or hexahedron.
 std::array<std::int64_t, 8> lsd_expand_solid(LsdType Type, const std::int64_t* pRow) {
-    const std::int64_t* r = pRow;
-    switch (Type) {
-        case LsdType::Tetra:
-            return {r[0], r[1], r[2], r[3], r[3], r[3], r[3], r[3]};
-        case LsdType::Pyramid:
-            return {r[0], r[1], r[2], r[3], r[4], r[4], r[4], r[4]};
-        case LsdType::Wedge:
-            return {r[0], r[2], r[5], r[3], r[1], r[1], r[4], r[4]};
-        default:
-            return {r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]};
-    }
+    return detail::expand_brick(lsd_type_name(Type), pRow);
 }
 
 // -- deck state -----------------------------------------------------------------
@@ -88844,6 +89397,377 @@ MeshMetadata read_marc_t19_metadata(const std::string& rPath, const ReadOptions&
     return meta;
 }
 
+// ---------------------------------------------------------------------------
+// Writing the input deck. The Python twin is marc/_marc.py's `write`; both
+// give the same bytes.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::size_t kMarcNodesPerLine = 14;
+constexpr std::size_t kMarcSetItemsPerLine = 6;
+
+/// The Marc type a cell is written as when its marc:type does not fit it, in a
+/// 3-D mesh or a planar one; 0 when Marc has no such element there. Planar
+/// meshes get the plane-strain elements, 3-D ones the solids and shells; a
+/// pyramid is a degenerate brick of type 7.
+std::int64_t marcw_default_type(std::string_view Type, bool Planar) {
+    static const std::map<std::string, std::pair<std::int64_t, std::int64_t>, std::less<>> m = {
+        {"hexahedron", {7, 0}},  {"hexahedron20", {21, 0}}, {"tetra", {134, 0}},
+        {"tetra10", {127, 0}},   {"wedge", {136, 0}},       {"pyramid", {7, 0}},
+        {"quad", {75, 11}},      {"triangle", {138, 6}},    {"quad8", {22, 27}},
+        {"triangle6", {0, 125}}, {"line", {9, 9}},          {"line3", {64, 64}}};
+    const auto it = m.find(Type);
+    if (it == m.end())
+        return 0;
+    return Planar ? it->second.second : it->second.first;
+}
+
+void marcw_i10(std::string& rOut, std::int64_t Value) {
+    const std::string t = std::to_string(Value);
+    if (t.size() < 10)
+        rOut.append(10 - t.size(), ' ');
+    rOut += t;
+}
+
+std::string marcw_i10s(const std::vector<std::int64_t>& rValues, std::size_t Begin,
+                       std::size_t End) {
+    std::string out;
+    for (std::size_t k = Begin; k < End && k < rValues.size(); ++k)
+        marcw_i10(out, rValues[k]);
+    return out;
+}
+
+/// A real in a 20-column field: exact when its shortest spelling fits.
+void marcw_real20(std::string& rOut, double Value) {
+    std::string t = detail::format_real_short(Value);
+    if (t.size() > 20)
+        t = detail::format_real_fit(Value, 20);
+    if (t.size() < 20)
+        rOut.append(20 - t.size(), ' ');
+    rOut += t;
+}
+
+/// A keyword line: each word but the last padded to 20 columns.
+std::string marcw_keyword(const std::vector<std::string>& rWords) {
+    std::string out;
+    for (std::size_t k = 0; k + 1 < rWords.size(); ++k) {
+        out += rWords[k];
+        if (rWords[k].size() < 20)
+            out.append(20 - rWords[k].size(), ' ');
+    }
+    return out + rWords.back();
+}
+
+std::string marcw_lower(std::string Text) {
+    for (char& c : Text)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return Text;
+}
+
+/// A set name the reader reads back as one token: blanks, commas and `$`
+/// become `_`, a keyword the next line could start with gets `_set`, and a
+/// name already taken (case-insensitively) a `_2`, `_3` ... suffix.
+std::string marcw_set_name(const std::string& rName, std::set<std::string>& rUsed) {
+    std::string base;
+    for (const char c : rName)
+        base += (c == ' ' || c == '\t' || c == ',' || c == '$' || c == '\r' || c == '\n') ? '_' : c;
+    if (base.empty())
+        base = "set";
+    if (marcw_lower(base) == "define" || marcw_lower(base) == "end")
+        base += "_set";
+    std::string out = base;
+    for (int k = 2; rUsed.count(marcw_lower(out)); ++k)
+        out = base + "_" + std::to_string(k);
+    rUsed.insert(marcw_lower(out));
+    return out;
+}
+
+/// Set items: ascending runs of three or more as `a to b`.
+std::vector<std::string> marcw_set_items(const std::vector<std::int64_t>& rIds) {
+    std::vector<std::string> out;
+    std::size_t k = 0;
+    while (k < rIds.size()) {
+        std::size_t j = k;
+        while (j + 1 < rIds.size() && rIds[j + 1] == rIds[j] + 1)
+            ++j;
+        std::string item;
+        marcw_i10(item, rIds[k]);
+        if (j - k >= 2) {
+            item += " to ";
+            marcw_i10(item, rIds[j]);
+            k = j + 1;
+        } else {
+            ++k;
+        }
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
+/// Set items six to a line, every line but the last ending in `c`.
+void marcw_set_lines(std::vector<std::string>& rOut, const std::vector<std::string>& rItems) {
+    for (std::size_t k = 0; k < rItems.size(); k += kMarcSetItemsPerLine) {
+        std::string line;
+        for (std::size_t j = k; j < std::min(k + kMarcSetItemsPerLine, rItems.size()); ++j)
+            line += rItems[j];
+        if (k + kMarcSetItemsPerLine < rItems.size())
+            line += "   c";
+        rOut.push_back(std::move(line));
+    }
+}
+
+struct MarcwCell {
+    std::size_t mBlock = 0;
+    std::size_t mRow = 0;
+    std::int64_t mType = 0;  // 0: not written
+};
+
+}  // namespace
+
+void write_marc(const std::string& rPath, const Mesh& rMesh) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim > 3)
+        throw WriteError("Marc writer: points must have 1 to 3 coordinates");
+    const std::size_t npts = rMesh.NumPoints();
+    if (npts == 0)
+        throw WriteError("Marc writer: a deck needs nodes; the mesh has none");
+    bool volume = false;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
+            volume = true;
+    }
+    bool flat = pdim < 3;
+    if (!flat) {
+        flat = true;
+        for (std::size_t p = 0; p < npts && flat; ++p)
+            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+    }
+    const bool planar = !volume && flat;
+    const auto cell_array_ok = [&](const std::string& rName) {
+        return rMesh.HasCellData(rName) && rMesh.CellDataNumBlocks(rName) == rMesh.NumCellBlocks();
+    };
+    const bool has_type = cell_array_ok("marc:type");
+    const bool has_element = cell_array_ok("marc:element");
+
+    // Every cell: its block, row and Marc type (0: not written).
+    std::vector<MarcwCell> cells;
+    std::set<std::string> dropped, changed;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const bool ragged = cb.IsRagged();
+        const std::int64_t fallback = marcw_default_type(type, planar);
+        const std::size_t nodes = ragged ? 0 : cb.NodesPerCell();
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            std::int64_t etype = 0;
+            if (!ragged && has_type) {
+                const std::int64_t want = detail::read_int(rMesh.CellData("marc:type", b), r);
+                if (const MarcType* known = marc_type(want)) {
+                    const std::string kind(known->mCell);
+                    if ((kind == type && known->mNodes == nodes) ||
+                        (kind == "hexahedron" && known->mNodes == 8 &&
+                         (type == "tetra" || type == "pyramid" || type == "wedge")))
+                        etype = want;
+                    else if (fallback != 0)
+                        changed.insert(type);
+                }
+            }
+            if (etype == 0 && !ragged)
+                etype = fallback;
+            if (etype == 0)
+                dropped.insert(type);
+            cells.push_back({b, r, etype});
+        }
+    }
+    for (const std::string& t : dropped) {
+        log::warn("Marc writer: '{}' cells have no Marc element type here; dropped", t);
+        detail::provenance_note("cells-dropped", "Marc has no element type for '" + t + "' cells");
+    }
+    if (!changed.empty()) {
+        std::string list;
+        for (const std::string& t : changed)
+            list += (list.empty() ? "" : ", ") + t;
+        log::warn(
+            "Marc writer: marc:type of some {} cells does not fit them (or has extra nodes); "
+            "written as the default type",
+            list);
+        detail::provenance_note("type-changed",
+                                "a marc:type that does not fit its cell is replaced");
+    }
+    std::vector<std::size_t> written;
+    for (std::size_t c = 0; c < cells.size(); ++c)
+        if (cells[c].mType != 0)
+            written.push_back(c);
+
+    // Element numbers: marc:element when they are positive and unique.
+    std::vector<std::int64_t> ids;
+    if (has_element) {
+        std::set<std::int64_t> seen;
+        bool ok = true;
+        for (const std::size_t c : written) {
+            const std::int64_t id =
+                detail::read_int(rMesh.CellData("marc:element", cells[c].mBlock), cells[c].mRow);
+            ok = ok && id > 0 && seen.insert(id).second;
+            ids.push_back(id);
+        }
+        if (!ok) {
+            log::warn("Marc writer: marc:element is not positive and unique; elements renumbered");
+            ids.clear();
+        }
+    }
+    if (ids.empty())
+        for (std::size_t k = 0; k < written.size(); ++k)
+            ids.push_back(static_cast<std::int64_t>(k + 1));
+    std::map<std::size_t, std::int64_t> elem_id;
+    for (std::size_t k = 0; k < written.size(); ++k)
+        elem_id[written[k]] = ids[k];
+
+    // Sets: point regions as node sets, cell regions as element sets, in the
+    // regions' own (kind, name, dim, tag) order.
+    std::set<std::string> used_names;
+    struct MarcwSet {
+        std::string mFamily;
+        std::string mName;
+        std::vector<std::string> mItems;
+    };
+    std::vector<MarcwSet> sets;
+    std::size_t unlisted = 0, sides = 0;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        const Region& reg = rMesh.Region(k);
+        const std::size_t n = reg.NumEntries() * reg.Stride();
+        const std::set<std::int64_t> entries(reg.Entries(), reg.Entries() + n);
+        std::vector<std::int64_t> members;
+        std::string family;
+        if (reg.mKind == RegionKind::Point) {
+            for (const std::int64_t v : entries)
+                if (v >= 0 && static_cast<std::size_t>(v) < npts)
+                    members.push_back(v + 1);
+            family = "node";
+        } else if (reg.mKind == RegionKind::Cell) {
+            for (const std::int64_t c : entries) {
+                const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
+                if (it == elem_id.end())
+                    ++unlisted;
+                else
+                    members.push_back(it->second);
+            }
+            std::sort(members.begin(), members.end());
+            family = "element";
+        } else {
+            ++sides;
+            continue;
+        }
+        sets.push_back({family, marcw_set_name(reg.mName, used_names), marcw_set_items(members)});
+    }
+    if (unlisted)
+        log::warn("Marc writer: {} set member(s) on cells not written dropped", unlisted);
+    if (sides) {
+        log::warn("Marc writer: side regions dropped (Marc face numbering is not mapped)");
+        detail::provenance_note("regions-dropped",
+                                "Marc face and edge sets are not mapped to facets");
+    }
+
+    // Face and edge sets read from a deck come back from their field data.
+    std::size_t dropped_data = rMesh.PointDataNames().size();
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "marc:element" && name != "marc:type")
+            ++dropped_data;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        std::string family;
+        for (const char* f : {"edge", "face"})
+            if (name.rfind(std::string("marc:") + f + "_set:", 0) == 0)
+                family = f;
+        if (family.empty()) {
+            ++dropped_data;
+            continue;
+        }
+        const NDArray& rows = rMesh.FieldData(name);
+        std::vector<std::string> items;
+        for (std::size_t q = 0; q + 1 < rows.Size(); q += 2) {
+            const std::int64_t c = detail::read_int(rows, q);
+            const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
+            if (it != elem_id.end())
+                items.push_back(" " + std::to_string(it->second) + ":" +
+                                std::to_string(detail::read_int(rows, q + 1)));
+        }
+        const std::string set_name = marcw_set_name(
+            name.substr(std::string("marc:").size() + family.size() + 5), used_names);
+        sets.push_back({family, set_name, std::move(items)});
+    }
+    if (dropped_data) {
+        log::warn(
+            "Marc writer: a deck holds no data arrays; point, cell and field data other than "
+            "marc:element, marc:type and the face and edge sets dropped");
+        detail::provenance_note("data-dropped", "a Marc deck holds no data arrays");
+    }
+
+    std::set<std::int64_t> types_used;
+    for (const std::size_t c : written)
+        types_used.insert(cells[c].mType);
+    std::vector<std::string> out = {marcw_keyword({"title", "meshio++"})};
+    for (const std::string& line : detail::provenance_lines(detail::SlotTier::Block))
+        out.push_back("$ " + line);
+    out.push_back("extended");
+    out.push_back(marcw_keyword({"sizing", marcw_i10s({0, static_cast<std::int64_t>(written.size()),
+                                                       static_cast<std::int64_t>(npts), 0},
+                                                      0, 4)}));
+    for (const std::int64_t t : types_used)
+        out.push_back(marcw_keyword({"elements", marcw_i10s({t}, 0, 1)}));
+    out.push_back("end");
+    out.push_back("connectivity");
+    out.push_back(marcw_i10s({static_cast<std::int64_t>(written.size()), 0, 1}, 0, 3));
+    for (const std::size_t c : written) {
+        const auto cb = rMesh.Cells(cells[c].mBlock);
+        const std::size_t k = cb.NodesPerCell();
+        std::vector<std::int64_t> nodes(k);
+        for (std::size_t q = 0; q < k; ++q)
+            nodes[q] = detail::read_int(cb.Conn(), cells[c].mRow * k + q) + 1;
+        const std::int64_t etype = cells[c].mType;
+        if (std::string(marc_type(etype)->mCell) == "hexahedron" && cb.Type() != "hexahedron") {
+            const auto brick = detail::expand_brick(cb.Type(), nodes.data());
+            nodes.assign(brick.begin(), brick.end());
+        } else if (etype >= 168 && etype <= 170 && nodes.size() == 3) {
+            std::swap(nodes[1], nodes[2]);
+        }
+        std::string line;
+        marcw_i10(line, elem_id[c]);
+        marcw_i10(line, etype);
+        line += marcw_i10s(nodes, 0, kMarcNodesPerLine);
+        out.push_back(std::move(line));
+        for (std::size_t q = kMarcNodesPerLine; q < nodes.size(); q += kMarcNodesPerLine)
+            out.push_back(marcw_i10s(nodes, q, q + kMarcNodesPerLine));
+    }
+    out.push_back("coordinates");
+    out.push_back(marcw_i10s({3, static_cast<std::int64_t>(npts), 0, 1}, 0, 4));
+    for (std::size_t p = 0; p < npts; ++p) {
+        std::string line;
+        marcw_i10(line, static_cast<std::int64_t>(p + 1));
+        for (std::size_t d = 0; d < 3; ++d)
+            marcw_real20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+        out.push_back(std::move(line));
+    }
+    for (const MarcwSet& set : sets) {
+        out.push_back(marcw_keyword({"define", set.mFamily, "set", set.mName}));
+        marcw_set_lines(out, set.mItems);
+    }
+    out.push_back("end option");
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Marc writer: cannot open " + rPath + " for writing");
+    std::string text;
+    for (const std::string& line : out) {
+        text += line;
+        text += '\n';
+    }
+    os.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!os)
+        throw WriteError("Marc writer: failed writing " + rPath);
+}
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/marc.cpp =====
 // ===== begin src/cpp/src/formats/mdpa.cpp =====
@@ -88929,21 +89853,15 @@ bool mdpa_parse_double(const std::string& rS, double& rOut) {
 //
 // `mdpa_kratos_node_order(type)[i]` is the meshio/VTK slot the node in Kratos
 // slot `i` belongs in. Reading therefore scatters (`out[table[i]] = in[i]`) and
-// writing gathers (`out[j] = in[table[j]]`) — the exact inverse pair the Python
-// reference builds with `np.argsort`.
+// writing gathers (`out[j] = in[table[j]]`). The tables are the "mdpa" entries
+// of the node-ordering registry (detail/node_order.cpp), read from Kratos's own
+// geometry classes.
 // ---------------------------------------------------------------------------
 
 const std::vector<int>& mdpa_kratos_node_order(CellType type) {
-    static const std::vector<int> h20 = {0,  1, 2,  3,  4,  5,  6,  7,  8,  11,
-                                         10, 9, 16, 19, 18, 17, 12, 13, 14, 15};
-    static const std::vector<int> h27 = {0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 10, 9,  16, 19,
-                                         18, 17, 12, 15, 14, 13, 20, 23, 21, 24, 22, 25, 26};
     static const std::vector<int> none;
-    if (type == CellType::Hexahedron20)
-        return h20;
-    if (type == CellType::Hexahedron27)
-        return h27;
-    return none;
+    const detail::NodeOrder* order = detail::node_order("mdpa", cell_type_name(type));
+    return order ? order->mFromMeshio : none;
 }
 
 /**
@@ -110531,6 +111449,754 @@ Mesh read_radioss(const std::string& rPath) {
     return mesh;
 }
 
+// ---------------------------------------------------------------------------
+// Writing. The Python twin is radioss/_radioss.py's `write`; both give the
+// same bytes.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kRadWriteVersion = 2022;
+constexpr std::size_t kRadTitleWidth = 100;
+
+/// The starter card that writes a meshio++ type ("" when none does). A
+/// pyramid and a wedge are degenerate /BRICKs (`1 2 3 4 5 5 5 5`,
+/// `1 3 6 4 2 2 5 5`), which the reader collapses back and which need no
+/// formulation of their own, unlike /PENTA6.
+const char* radw_card(std::string_view Type) {
+    static const std::map<std::string, const char*, std::less<>> m = {
+        {"hexahedron", "BRICK"}, {"pyramid", "BRICK"},   {"wedge", "BRICK"},
+        {"tetra", "TETRA4"},     {"tetra10", "TETRA10"}, {"hexahedron20", "BRIC20"},
+        {"quad", "SHELL"},       {"triangle", "SH3N"},   {"line", "TRUSS"}};
+    const auto it = m.find(Type);
+    return it == m.end() ? "" : it->second;
+}
+
+/// A card's group family (the reader's `/GR<family>` naming).
+std::string radw_family(const std::string& rCard) {
+    if (rCard == "SHELL")
+        return "SHEL";
+    if (rCard == "SH3N")
+        return "SH3N";
+    if (rCard == "TRUSS")
+        return "TRUS";
+    return "BRIC";
+}
+
+std::string radw_group_keyword(const std::string& rFamily) {
+    return "GR" + rFamily;
+}
+
+/// The stub property type a card's part needs.
+std::string radw_stub_kind(const std::string& rCard) {
+    if (rCard == "SHELL" || rCard == "SH3N")
+        return "SHELL";
+    if (rCard == "TRUSS")
+        return "TRUSS";
+    return "SOLID";
+}
+
+/// The stub property cards `rCards` can share, (type, Isolid); false when
+/// they need different types. /BRIC20 needs Isolid 16, the other solids the
+/// default 0; a part mixing /BRIC20 and /BRICK gets 0, which the starter turns
+/// to 16 for the /BRIC20 with a warning.
+bool radw_stub_share(const std::set<std::string>& rCards, std::pair<std::string, int>& rNeed) {
+    std::set<std::string> kinds;
+    bool brick = false;
+    bool bric20 = false;
+    for (const std::string& card : rCards) {
+        kinds.insert(radw_stub_kind(card));
+        brick = brick || card == "BRICK";
+        bric20 = bric20 || card == "BRIC20";
+    }
+    if (kinds.size() != 1)
+        return false;
+    rNeed = {*kinds.begin(), bric20 && !brick ? 16 : 0};
+    return true;
+}
+
+void radw_i10(std::string& rOut, std::int64_t Value) {
+    const std::string t = std::to_string(Value);
+    if (t.size() < 10)
+        rOut.append(10 - t.size(), ' ');
+    rOut += t;
+}
+
+/// A real in an F20 field: exact when its shortest spelling fits, else the 20
+/// columns' worth of digits.
+void radw_f20(std::string& rOut, double Value) {
+    std::string t = detail::format_real_short(Value);
+    if (t.size() > 20)
+        t = detail::format_real_fit(Value, 20);
+    if (t.size() < 20)
+        rOut.append(20 - t.size(), ' ');
+    rOut += t;
+}
+
+/// A title line: one line, at most 100 characters, never read as a comment or
+/// a keyword (a leading `#`, `$` or `/` gets a space in front).
+std::string radw_title(const std::string& rName) {
+    std::string t = rName;
+    for (char& c : t)
+        if (c == '\r' || c == '\n')
+            c = ' ';
+    const std::size_t b = t.find_first_not_of(" \t\v\f");
+    if (b == std::string::npos)
+        return {};
+    t = t.substr(b, t.find_last_not_of(" \t\v\f") - b + 1);
+    if (t[0] == '#' || t[0] == '$' || t[0] == '/')
+        t = " " + t;
+    return t.substr(0, kRadTitleWidth);
+}
+
+void radw_ids_lines(std::vector<std::string>& rOut, const std::vector<std::int64_t>& rIds) {
+    for (std::size_t k = 0; k < rIds.size(); k += 10) {
+        std::string line;
+        for (std::size_t j = k; j < std::min(k + 10, rIds.size()); ++j)
+            radw_i10(line, rIds[j]);
+        rOut.push_back(std::move(line));
+    }
+}
+
+/// One id namespace: a tag when positive and free, else the next free id.
+struct RadwIds {
+    std::set<std::int64_t> mUsed;
+    std::int64_t mNext = 1;
+    std::int64_t Take(std::int64_t Tag = 0) {
+        if (Tag > 0 && mUsed.insert(Tag).second)
+            return Tag;
+        while (mUsed.count(mNext))
+            ++mNext;
+        mUsed.insert(mNext);
+        return mNext;
+    }
+};
+
+struct RadwCell {
+    std::size_t mBlock = 0;
+    std::size_t mRow = 0;
+    std::string mCard;  // empty: not written
+};
+
+struct RadwPart {
+    std::int64_t mId;
+    std::string mTitle;
+    std::int64_t mProp;
+    std::int64_t mMat;
+};
+
+/// A region's entries, flattened: (cell, facet) pairs for a side region.
+std::vector<std::int64_t> radw_entries(const Region& rRegion) {
+    const std::size_t n = rRegion.NumEntries() * rRegion.Stride();
+    return n ? std::vector<std::int64_t>(rRegion.Entries(), rRegion.Entries() + n)
+             : std::vector<std::int64_t>();
+}
+
+}  // namespace
+
+void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim > 3)
+        throw WriteError("Radioss writer: points must have 1 to 3 coordinates");
+    const std::size_t npts = rMesh.NumPoints();
+    if (npts == 0)
+        throw WriteError("Radioss writer: a starter deck needs nodes; the mesh has none");
+
+    // Cells: which are written, as what, with which element id.
+    std::vector<RadwCell> info;
+    std::set<std::string> dropped_types;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        std::string card = radw_card(cb.Type());
+        if (card.empty() || cb.IsRagged()) {
+            dropped_types.insert(std::string(cb.Type()));
+            card.clear();
+        }
+        for (std::size_t r = 0; r < cb.NumCells(); ++r)
+            info.push_back({b, r, card});
+    }
+    for (const std::string& t : dropped_types) {
+        log::warn("Radioss writer: '{}' cells have no starter element card; dropped", t);
+        detail::provenance_note("cells-dropped",
+                                "Radioss has no element card for '" + t + "' cells");
+    }
+    const std::size_t ncells = info.size();
+    const auto written = [&](std::int64_t c) {
+        return c >= 0 && static_cast<std::size_t>(c) < ncells &&
+               !info[static_cast<std::size_t>(c)].mCard.empty();
+    };
+    const auto family = [&](std::size_t c) { return radw_family(info[c].mCard); };
+
+    std::vector<bool> used_regions(rMesh.NumRegions(), false);
+    const auto cell_array_ok = [&](const std::string& rName) {
+        return rMesh.HasCellData(rName) && rMesh.CellDataNumBlocks(rName) == rMesh.NumCellBlocks();
+    };
+
+    // Parts: radioss:part when the mesh carries it, else cell regions of one
+    // family, else one part per block.
+    RadwIds part_ids;
+    std::vector<std::int64_t> cell_part(ncells, 0);
+    std::vector<RadwPart> parts;
+    if (cell_array_ok("radioss:part")) {
+        // Part ids come from the data; an id of 0 or less gets a new one.
+        std::vector<std::int64_t> raw(ncells, 0);
+        for (std::size_t c = 0; c < ncells; ++c) {
+            raw[c] = detail::read_int(rMesh.CellData("radioss:part", info[c].mBlock), info[c].mRow);
+            if (!info[c].mCard.empty() && raw[c] > 0)
+                part_ids.mUsed.insert(raw[c]);
+        }
+        std::map<std::int64_t, std::int64_t> renumbered;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (info[c].mCard.empty())
+                continue;
+            std::int64_t pid = raw[c];
+            if (pid <= 0) {
+                auto it = renumbered.find(pid);
+                if (it == renumbered.end())
+                    it = renumbered.emplace(pid, part_ids.Take()).first;
+                pid = it->second;
+            }
+            cell_part[c] = pid;
+        }
+        if (!renumbered.empty())
+            log::warn("Radioss writer: cells with a part id of 0 or less put in new parts");
+        const bool has_prop = cell_array_ok("radioss:property");
+        const bool has_mat = cell_array_ok("radioss:material");
+        std::vector<std::int64_t> order;
+        std::map<std::int64_t, std::vector<std::int64_t>> members;
+        std::map<std::int64_t, std::size_t> first;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (info[c].mCard.empty())
+                continue;
+            const std::int64_t pid = cell_part[c];
+            if (!members.count(pid)) {
+                order.push_back(pid);
+                first[pid] = c;
+            }
+            members[pid].push_back(static_cast<std::int64_t>(c));
+        }
+        for (const std::int64_t pid : order) {
+            std::string title;
+            for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+                const Region& reg = rMesh.Region(k);
+                if (used_regions[k] || reg.mKind != RegionKind::Cell || reg.mTag != pid)
+                    continue;
+                std::vector<std::int64_t> e = radw_entries(reg);
+                std::sort(e.begin(), e.end());
+                if (e == members[pid]) {
+                    title = reg.mName;
+                    used_regions[k] = true;
+                    break;
+                }
+            }
+            const RadwCell& f = info[first[pid]];
+            const std::int64_t prop =
+                has_prop ? detail::read_int(rMesh.CellData("radioss:property", f.mBlock), f.mRow)
+                         : pid;
+            const std::int64_t mat =
+                has_mat ? detail::read_int(rMesh.CellData("radioss:material", f.mBlock), f.mRow)
+                        : 1;
+            parts.push_back({pid, title, prop, mat});
+        }
+    } else {
+        std::vector<bool> claimed(ncells, false);
+        for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+            const Region& reg = rMesh.Region(k);
+            if (reg.mKind != RegionKind::Cell)
+                continue;
+            std::vector<std::int64_t> cells = radw_entries(reg);
+            std::sort(cells.begin(), cells.end());
+            cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+            if (cells.empty())
+                continue;
+            // One stub property must be able to serve a part.
+            bool ok = true;
+            std::set<std::string> region_cards;
+            for (const std::int64_t c : cells) {
+                if (!written(c) || claimed[static_cast<std::size_t>(c)]) {
+                    ok = false;
+                    break;
+                }
+                region_cards.insert(info[static_cast<std::size_t>(c)].mCard);
+            }
+            std::pair<std::string, int> shared;
+            if (!ok || !radw_stub_share(region_cards, shared))
+                continue;
+            const std::int64_t pid = part_ids.Take(reg.mTag);
+            for (const std::int64_t c : cells) {
+                claimed[static_cast<std::size_t>(c)] = true;
+                cell_part[static_cast<std::size_t>(c)] = pid;
+            }
+            used_regions[k] = true;
+            parts.push_back({pid, reg.mName, pid, 1});
+        }
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            std::int64_t pid = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
+                if (info[g].mCard.empty() || claimed[g])
+                    continue;
+                if (pid == 0) {
+                    pid = part_ids.Take();
+                    parts.push_back({pid, std::string(cb.Type()), pid, 1});
+                }
+                cell_part[g] = pid;
+            }
+        }
+    }
+
+    // Subsets: a remaining cell region that is exactly a union of whole parts,
+    // smallest first, so a subset nested in another is its child.
+    std::map<std::int64_t, std::set<std::int64_t>> part_cells;
+    for (std::size_t c = 0; c < ncells; ++c)
+        if (!info[c].mCard.empty())
+            part_cells[cell_part[c]].insert(static_cast<std::int64_t>(c));
+    std::map<std::int64_t, std::int64_t> part_subset;
+    std::map<std::int64_t, std::set<std::int64_t>> subset_parts;
+    RadwIds subset_ids;
+    struct RadwSubset {
+        std::int64_t mId;
+        std::string mTitle;
+        std::vector<std::int64_t> mChildren;
+    };
+    std::vector<RadwSubset> subsets;
+    std::vector<std::tuple<std::size_t, std::size_t, std::set<std::int64_t>>> candidates;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        const Region& reg = rMesh.Region(k);
+        if (used_regions[k] || reg.mKind != RegionKind::Cell)
+            continue;
+        const std::vector<std::int64_t> e = radw_entries(reg);
+        std::set<std::int64_t> cells(e.begin(), e.end());
+        if (cells.empty() || !std::all_of(cells.begin(), cells.end(), written))
+            continue;
+        candidates.emplace_back(cells.size(), k, std::move(cells));
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto& rA, const auto& rB) {
+        return std::tie(std::get<0>(rA), std::get<1>(rA)) <
+               std::tie(std::get<0>(rB), std::get<1>(rB));
+    });
+    for (const auto& [size, k, cells] : candidates) {
+        std::vector<std::int64_t> inside;
+        std::set<std::int64_t> covered;
+        for (const RadwPart& p : parts) {
+            const auto it = part_cells.find(p.mId);
+            if (it == part_cells.end() || it->second.empty())
+                continue;
+            if (std::includes(cells.begin(), cells.end(), it->second.begin(), it->second.end())) {
+                inside.push_back(p.mId);
+                covered.insert(it->second.begin(), it->second.end());
+            }
+        }
+        if (covered != cells)
+            continue;
+        const std::set<std::int64_t> inside_set(inside.begin(), inside.end());
+        std::set<std::int64_t> children;
+        for (const std::int64_t p : inside)
+            if (part_subset.count(p))
+                children.insert(part_subset[p]);
+        bool nested = true;
+        for (const std::int64_t s : children)
+            if (!std::includes(inside_set.begin(), inside_set.end(), subset_parts[s].begin(),
+                               subset_parts[s].end()))
+                nested = false;
+        if (!nested)
+            continue;
+        const Region& reg = rMesh.Region(k);
+        const std::int64_t sid = subset_ids.Take(reg.mTag);
+        for (const std::int64_t p : inside)
+            part_subset.emplace(p, sid);
+        subset_parts[sid] = inside_set;
+        subsets.push_back(
+            {sid, reg.mName, std::vector<std::int64_t>(children.begin(), children.end())});
+        used_regions[k] = true;
+    }
+
+    // Element ids, in the order the cards write them.
+    std::vector<std::int64_t> elem_id(ncells, 0);
+    struct RadwCard {
+        std::string mCard;
+        std::int64_t mPart;
+        std::vector<std::size_t> mCells;
+    };
+    std::vector<RadwCard> cards;
+    std::int64_t next_elem = 1;
+    {
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const std::size_t n = rMesh.Cells(b).NumCells();
+            bool open = false;
+            for (std::size_t r = 0; r < n; ++r, ++g) {
+                if (info[g].mCard.empty())
+                    continue;
+                if (!open || cards.back().mPart != cell_part[g]) {
+                    cards.push_back({info[g].mCard, cell_part[g], {}});
+                    open = true;
+                }
+                cards.back().mCells.push_back(g);
+                elem_id[g] = next_elem++;
+            }
+        }
+    }
+
+    // Groups, then surfaces.
+    struct RadwGroup {
+        std::string mKeyword;
+        std::string mSubtype;
+        std::int64_t mId;
+        std::string mTitle;
+        std::vector<std::int64_t> mIds;
+    };
+    std::map<std::string, RadwIds> group_ids;
+    std::vector<RadwGroup> groups;
+    struct RadwSurface {
+        std::int64_t mId;
+        std::string mTitle;
+        std::vector<std::array<std::int64_t, 4>> mSegs;
+    };
+    RadwIds surf_ids;
+    std::vector<RadwSurface> surfaces;
+    std::size_t dropped_sides = 0;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        if (used_regions[k])
+            continue;
+        const Region& reg = rMesh.Region(k);
+        const std::vector<std::int64_t> e = radw_entries(reg);
+        if (reg.mKind == RegionKind::Point) {
+            std::set<std::int64_t> ids;
+            for (const std::int64_t p : e)
+                if (p >= 0 && static_cast<std::size_t>(p) < npts)
+                    ids.insert(p + 1);
+            const std::int64_t gid = group_ids["GRNOD"].Take(reg.mTag);
+            groups.push_back({"GRNOD", "NODE", gid, reg.mName,
+                              std::vector<std::int64_t>(ids.begin(), ids.end())});
+        } else if (reg.mKind == RegionKind::Cell) {
+            std::vector<std::pair<std::string, std::vector<std::int64_t>>> by_family;
+            const std::set<std::int64_t> cells(e.begin(), e.end());
+            for (const std::int64_t c : cells) {
+                if (!written(c))
+                    continue;
+                const std::string fam = family(static_cast<std::size_t>(c));
+                auto it = std::find_if(by_family.begin(), by_family.end(),
+                                       [&](const auto& rF) { return rF.first == fam; });
+                if (it == by_family.end()) {
+                    by_family.emplace_back(fam, std::vector<std::int64_t>{});
+                    it = by_family.end() - 1;
+                }
+                it->second.push_back(elem_id[static_cast<std::size_t>(c)]);
+            }
+            if (by_family.empty())
+                by_family.emplace_back("BRIC", std::vector<std::int64_t>{});
+            for (auto& [fam, ids] : by_family) {
+                const std::string keyword = radw_group_keyword(fam);
+                const std::int64_t gid = group_ids[keyword].Take(reg.mTag);
+                groups.push_back({keyword, fam, gid, reg.mName, std::move(ids)});
+            }
+        } else {
+            RadwSurface surf;
+            for (std::size_t j = 0; j + 1 < e.size(); j += 2) {
+                const std::int64_t c = e[j];
+                if (!written(c)) {
+                    ++dropped_sides;
+                    continue;
+                }
+                const RadwCell& ci = info[static_cast<std::size_t>(c)];
+                const std::string fam = family(static_cast<std::size_t>(c));
+                std::vector<std::int64_t> nodes;
+                if (fam == "SHEL" || fam == "SH3N") {
+                    const auto cb = rMesh.Cells(ci.mBlock);
+                    const std::size_t k2 = cb.NodesPerCell();
+                    for (std::size_t q = 0; q < k2; ++q)
+                        nodes.push_back(detail::read_int(cb.Conn(), ci.mRow * k2 + q));
+                } else if (fam == "BRIC") {
+                    CellType ftype{};
+                    std::vector<std::int64_t> fnodes;
+                    if (!detail::facet_nodes(rMesh, c, e[j + 1], ftype, fnodes)) {
+                        ++dropped_sides;
+                        continue;
+                    }
+                    const bool tri = cell_type_name(ftype).rfind("triangle", 0) == 0;
+                    nodes.assign(fnodes.begin(), fnodes.begin() + (tri ? 3 : 4));
+                } else {
+                    ++dropped_sides;
+                    continue;
+                }
+                std::array<std::int64_t, 4> seg{};
+                for (std::size_t q = 0; q < nodes.size() && q < 4; ++q)
+                    seg[q] = nodes[q] + 1;
+                if (nodes.size() == 3)
+                    seg[3] = seg[2];
+                surf.mSegs.push_back(seg);
+            }
+            surf.mId = surf_ids.Take(reg.mTag);
+            surf.mTitle = reg.mName;
+            surfaces.push_back(std::move(surf));
+        }
+    }
+    if (dropped_sides) {
+        log::warn("Radioss writer: {} side region entries on cells with no face segment dropped",
+                  dropped_sides);
+        detail::provenance_note("regions-dropped",
+                                "a /SURF/SEG segment is a solid face or a shell");
+    }
+
+    // Data: only the part, property, material and deck field data are written.
+    std::vector<std::pair<std::int64_t, std::vector<double>>> planes;
+    std::size_t dropped_data = rMesh.PointDataNames().size();
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "radioss:part" && name != "radioss:property" && name != "radioss:material")
+            ++dropped_data;
+    const std::string plane_prefix = "radioss:surf_plane:";
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name == "radioss:version" || name == "radioss:length_scale")
+            continue;
+        if (name.rfind(plane_prefix, 0) == 0) {
+            const NDArray& v = rMesh.FieldData(name);
+            const std::string ident = name.substr(plane_prefix.size());
+            const bool digits =
+                !ident.empty() && std::all_of(ident.begin(), ident.end(),
+                                              [](char ch) { return ch >= '0' && ch <= '9'; });
+            if (v.Size() == 6 && digits) {
+                std::vector<double> values(6);
+                for (std::size_t q = 0; q < 6; ++q)
+                    values[q] = detail::read_double(v, q);
+                planes.emplace_back(std::stoll(ident), std::move(values));
+                continue;
+            }
+        }
+        ++dropped_data;
+    }
+    if (dropped_data) {
+        log::warn(
+            "Radioss writer: a starter deck holds no data arrays; point, cell and field data "
+            "other than the radioss: parts and analytical surfaces dropped");
+        detail::provenance_note("data-dropped", "a Radioss starter deck holds no data arrays");
+    }
+
+    std::int64_t version = kRadWriteVersion;
+    if (rMesh.HasFieldData("radioss:version")) {
+        const std::int64_t v = detail::read_int(rMesh.FieldData("radioss:version"), 0);
+        if (v >= 2017 && v <= 2026)
+            version = v;
+    }
+
+    std::string run = fs::path(rPath).stem().string();
+    if (run.size() >= 5 && run.compare(run.size() - 5, 5, "_0000") == 0)
+        run.resize(run.size() - 5);
+    std::vector<std::string> out = {"#RADIOSS STARTER"};
+    for (const std::string& line : detail::provenance_lines(detail::SlotTier::Block))
+        out.push_back("# " + line);
+    // The same input and work units, so the starter converts nothing and the
+    // reader reads the coordinates as written.
+    std::string units;
+    for (const char* u : {"kg", "m", "s"})
+        units += std::string(20 - std::string(u).size(), ' ') + u;
+    std::string begin_line;
+    radw_i10(begin_line, version);
+    radw_i10(begin_line, 0);
+    out.push_back("/BEGIN");
+    out.push_back(radw_title(run.empty() ? "meshio" : run).substr(0, 80));
+    out.push_back(begin_line);
+    out.push_back(units);
+    out.push_back(units);
+
+    if (Stubs) {
+        // One stub property per property id, as its parts' cards need it
+        // (radw_stub_need). A part whose property already serves a part that
+        // needs another stub gets a property of its own; material 0 becomes 1.
+        RadwIds prop_ids;
+        for (const RadwPart& p : parts)
+            if (p.mProp > 0)
+                prop_ids.mUsed.insert(p.mProp);
+        std::map<std::int64_t, std::pair<std::string, int>> props;
+        std::vector<std::int64_t> mats;
+        for (RadwPart& p : parts) {
+            std::set<std::string> part_cards;
+            for (const std::int64_t c : part_cells[p.mId])
+                part_cards.insert(info[static_cast<std::size_t>(c)].mCard);
+            std::pair<std::string, int> need;
+            if (!radw_stub_share(part_cards, need))
+                throw WriteError("Radioss writer: part " + std::to_string(p.mId) +
+                                 " holds solid, shell or truss elements together, which no one "
+                                 "stub property serves");
+            if (p.mProp <= 0)
+                p.mProp = prop_ids.Take(p.mId);
+            const auto it = props.emplace(p.mProp, need).first;
+            if (it->second != need) {
+                p.mProp = prop_ids.Take();
+                props[p.mProp] = need;
+            }
+            if (p.mMat <= 0)
+                p.mMat = 1;
+            if (std::find(mats.begin(), mats.end(), p.mMat) == mats.end())
+                mats.push_back(p.mMat);
+        }
+        std::sort(mats.begin(), mats.end());
+        for (const std::int64_t mid : mats) {
+            std::string a, b;
+            radw_f20(a, 1.0);
+            radw_f20(a, 0.0);
+            radw_f20(b, 1.0);
+            radw_f20(b, 0.3);
+            out.push_back("/MAT/LAW1/" + std::to_string(mid));
+            out.push_back("meshio++ stub material " + std::to_string(mid));
+            out.push_back(a);
+            out.push_back(b);
+        }
+        for (const auto& [pr, need] : props) {
+            out.push_back("/PROP/" + need.first + "/" + std::to_string(pr));
+            out.push_back("meshio++ stub property " + std::to_string(pr));
+            if (need.first == "SOLID") {
+                std::string l1, l2, l3;
+                radw_i10(l1, need.second);
+                radw_i10(l1, 0);
+                l1.append(10, ' ');
+                radw_i10(l1, 0);
+                l1.append(10, ' ');
+                for (int q = 0; q < 3; ++q)
+                    radw_i10(l1, 0);
+                radw_f20(l1, 0.0);
+                for (int q = 0; q < 5; ++q)
+                    radw_f20(l2, 0.0);
+                radw_f20(l3, 0.0);
+                radw_i10(l3, 0);
+                radw_i10(l3, 0);
+                out.push_back(l1);
+                out.push_back(l2);
+                out.push_back(l3);
+            } else if (need.first == "SHELL") {
+                std::string l1, l2, l3;
+                for (int q = 0; q < 3; ++q)
+                    radw_i10(l1, 0);
+                for (int q = 0; q < 5; ++q)
+                    radw_f20(l2, 0.0);
+                radw_i10(l3, 1);
+                radw_i10(l3, 0);
+                radw_f20(l3, 1.0);
+                out.push_back(l1);
+                out.push_back(l2);
+                out.push_back(l3);
+            } else {
+                std::string l1;
+                radw_f20(l1, 1.0);
+                radw_f20(l1, 0.0);
+                out.push_back(l1);
+            }
+        }
+    }
+
+    for (const RadwPart& p : parts) {
+        std::string line;
+        radw_i10(line, p.mProp);
+        radw_i10(line, p.mMat);
+        const auto it = part_subset.find(p.mId);
+        radw_i10(line, it == part_subset.end() ? 0 : it->second);
+        out.push_back("/PART/" + std::to_string(p.mId));
+        out.push_back(radw_title(p.mTitle));
+        out.push_back(line);
+    }
+    for (const RadwSubset& s : subsets) {
+        out.push_back("/SUBSET/" + std::to_string(s.mId));
+        out.push_back(radw_title(s.mTitle));
+        radw_ids_lines(out, s.mChildren);
+    }
+
+    out.push_back("/NODE");
+    for (std::size_t p = 0; p < npts; ++p) {
+        std::string line;
+        radw_i10(line, static_cast<std::int64_t>(p + 1));
+        for (std::size_t d = 0; d < 3; ++d)
+            radw_f20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+        out.push_back(std::move(line));
+    }
+
+    const detail::NodeOrder* bric20 = detail::node_order("radioss", "hexahedron20");
+    for (const RadwCard& card : cards) {
+        out.push_back("/" + card.mCard + "/" + std::to_string(card.mPart));
+        for (const std::size_t c : card.mCells) {
+            const auto cb = rMesh.Cells(info[c].mBlock);
+            const std::size_t k = cb.NodesPerCell();
+            std::vector<std::int64_t> nodes(k);
+            for (std::size_t q = 0; q < k; ++q)
+                nodes[q] = detail::read_int(cb.Conn(), info[c].mRow * k + q) + 1;
+            if (card.mCard == "BRICK") {
+                const auto brick = detail::expand_brick(cb.Type(), nodes.data());
+                nodes.assign(brick.begin(), brick.end());
+            }
+            std::string line;
+            radw_i10(line, elem_id[c]);
+            if (card.mCard == "TETRA10") {
+                out.push_back(std::move(line));
+                line.clear();
+                for (const std::int64_t v : nodes)
+                    radw_i10(line, v);
+                out.push_back(std::move(line));
+            } else if (card.mCard == "BRIC20") {
+                std::vector<std::int64_t> file(20);
+                for (std::size_t j = 0; j < 20; ++j)
+                    file[j] = nodes[static_cast<std::size_t>(bric20->mFromMeshio[j])];
+                for (std::size_t j = 0; j < 8; ++j)
+                    radw_i10(line, file[j]);
+                out.push_back(std::move(line));
+                std::string l2, l3;
+                for (std::size_t j = 8; j < 16; ++j)
+                    radw_i10(l2, file[j]);
+                for (std::size_t j = 16; j < 20; ++j)
+                    radw_i10(l3, file[j]);
+                out.push_back(std::move(l2));
+                out.push_back(std::move(l3));
+            } else {
+                for (const std::int64_t v : nodes)
+                    radw_i10(line, v);
+                out.push_back(std::move(line));
+            }
+        }
+    }
+
+    for (const RadwGroup& g : groups) {
+        out.push_back("/" + g.mKeyword + "/" + g.mSubtype + "/" + std::to_string(g.mId));
+        out.push_back(radw_title(g.mTitle));
+        radw_ids_lines(out, g.mIds);
+    }
+    for (const RadwSurface& s : surfaces) {
+        out.push_back("/SURF/SEG/" + std::to_string(s.mId));
+        out.push_back(radw_title(s.mTitle));
+        for (std::size_t k = 0; k < s.mSegs.size(); ++k) {
+            std::string line;
+            radw_i10(line, static_cast<std::int64_t>(k + 1));
+            for (const std::int64_t v : s.mSegs[k])
+                radw_i10(line, v);
+            out.push_back(std::move(line));
+        }
+    }
+    std::sort(planes.begin(), planes.end());
+    for (const auto& [sid, v] : planes) {
+        std::string a, b;
+        for (std::size_t q = 0; q < 3; ++q)
+            radw_f20(a, v[q]);
+        for (std::size_t q = 3; q < 6; ++q)
+            radw_f20(b, v[q]);
+        out.push_back("/SURF/PLANE/" + std::to_string(surf_ids.Take(sid)));
+        out.push_back("PLANE_" + std::to_string(sid));
+        out.push_back(std::move(a));
+        out.push_back(std::move(b));
+    }
+    out.push_back("/END");
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Radioss writer: cannot open " + rPath + " for writing");
+    std::string text;
+    for (const std::string& line : out) {
+        text += line;
+        text += '\n';
+    }
+    os.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!os)
+        throw WriteError("Radioss writer: failed writing " + rPath);
+}
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/radioss.cpp =====
 // ===== begin src/cpp/src/formats/radioss_anim.cpp =====
@@ -117203,6 +118869,7 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -117483,9 +119150,9 @@ std::int64_t unv_int(std::string_view t) {
     return v;
 }
 
-std::vector<std::int64_t> unv_ints(std::string_view line) {
+std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTokens) {
     std::vector<std::int64_t> out;
-    for (auto t : unv_split(line)) {
+    for (auto t : rTokens) {
         // Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1").
         if (t.front() == '%')
             break;
@@ -117509,9 +119176,9 @@ double unv_real(std::string_view t) {
 // Real tokens of a line. Fixed-width fields (E13.5 and friends) run together when a
 // value is negative and fills its field, so a sign that does not follow an exponent
 // letter also starts a new number.
-std::vector<double> unv_reals(std::string_view line) {
+std::vector<double> unv_reals(const std::vector<std::string_view>& rTokens) {
     std::vector<double> out;
-    for (auto t : unv_split(line)) {
+    for (auto t : rTokens) {
         std::size_t start = 0;
         for (std::size_t k = 1; k < t.size(); ++k) {
             const char c = t[k];
@@ -117524,6 +119191,134 @@ std::vector<double> unv_reals(std::string_view line) {
         out.push_back(unv_real(t.substr(start)));
     }
     return out;
+}
+
+std::vector<double> unv_reals(std::string_view line) {
+    return unv_reals(unv_split(line));
+}
+
+// ---------------------------------------------------------------------------
+// Fixed columns. A UNV record is Fortran-formatted (I10 integers, E13.5 and
+// D25.16 reals), so neighbouring values may touch: a 10-digit label fills its
+// whole field, as does a negative real. Splitting on whitespace is exact for
+// right-aligned fields unless two values touch, which always leaves a token
+// longer than a field; such a line is cut in its columns with the shared card
+// tokenizer (detail/keyword_card.hpp). A line that does not fit them (a
+// free-format writer, Code_Aster's `%` comments, a field holding two values)
+// keeps the whitespace split above.
+// ---------------------------------------------------------------------------
+
+/// Whether a token (before a Code_Aster `%` comment) is wider than `Width`.
+bool unv_has_wide_token(const std::vector<std::string_view>& rTokens, std::size_t Width) {
+    for (const std::string_view t : rTokens) {
+        if (t.front() == '%')
+            return false;
+        if (t.size() > Width)
+            return true;
+    }
+    return false;
+}
+
+bool unv_is_int_text(const std::string& rText) {
+    std::size_t i = (!rText.empty() && (rText[0] == '+' || rText[0] == '-')) ? 1 : 0;
+    if (i == rText.size())
+        return false;
+    for (; i < rText.size(); ++i)
+        if (!std::isdigit(static_cast<unsigned char>(rText[i])))
+            return false;
+    return true;
+}
+
+bool unv_is_real_text(const std::string& rText) {
+    bool digit = false;
+    for (const char c : rText) {
+        if (std::isdigit(static_cast<unsigned char>(c)))
+            digit = true;
+        else if (c == '\0' || !std::strchr("+-.EeDd", c))
+            return false;
+    }
+    return digit;
+}
+
+/// The fields `rLayout` cuts from `Line`, or nothing when the line runs past its
+/// columns or a numeric field does not hold one value. A blank field is `""`.
+std::optional<std::vector<std::string>> unv_fixed_fields(
+    std::string_view Line, const std::vector<detail::CardField>& rLayout) {
+    std::size_t width = 0;
+    std::vector<char> kinds;
+    for (const detail::CardField& f : rLayout) {
+        width += static_cast<std::size_t>(f.mWidth);
+        if (f.mKind != 'x')
+            kinds.push_back(f.mKind);
+    }
+    const std::size_t last = Line.find_last_not_of(" \t\r\n");
+    if (last == std::string_view::npos)
+        return std::vector<std::string>{};
+    if (last >= width)
+        return std::nullopt;
+    std::vector<std::string> fields = detail::split_fixed(Line.substr(0, last + 1), rLayout);
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        const std::string& t = fields[i];
+        if (t.empty() || kinds[i] == 'a')
+            continue;
+        if (kinds[i] == 'i' ? !unv_is_int_text(t) : !unv_is_real_text(t))
+            return std::nullopt;
+    }
+    return fields;
+}
+
+/// The integers of an I10 record. A blank field between two values falls back
+/// too: the whitespace split has always skipped it.
+std::vector<std::int64_t> unv_ints(std::string_view line) {
+    static const std::vector<detail::CardField> kLayout = detail::parse_fortran_format("(8I10)");
+    const std::vector<std::string_view> tokens = unv_split(line);
+    if (!unv_has_wide_token(tokens, 10))
+        return unv_ints_free(tokens);
+    if (const auto fields = unv_fixed_fields(line, kLayout)) {
+        std::vector<std::int64_t> out;
+        bool gap = false;
+        bool ok = true;
+        for (const std::string& t : *fields) {
+            if (t.empty()) {
+                gap = true;
+            } else if (gap) {
+                ok = false;
+                break;
+            } else {
+                out.push_back(detail::card_to_int(t, " in a UNV record", "UNV"));
+            }
+        }
+        if (ok)
+            return out;
+    }
+    return unv_ints_free(tokens);
+}
+
+/// The reals of a record of E13.5 (`Width` 13) or D25.16 (25) fields.
+std::vector<double> unv_reals_fixed(std::string_view line, int Width) {
+    static const std::vector<detail::CardField> kE13 = detail::parse_fortran_format("(6E13.5)");
+    static const std::vector<detail::CardField> kD25 = detail::parse_fortran_format("(3D25.16)");
+    const std::vector<std::string_view> tokens = unv_split(line);
+    if (!unv_has_wide_token(tokens, static_cast<std::size_t>(Width)))
+        return unv_reals(tokens);
+    if (const auto fields = unv_fixed_fields(line, Width == 13 ? kE13 : kD25)) {
+        std::vector<double> out;
+        bool gap = false;
+        bool ok = true;
+        for (const std::string& t : *fields) {
+            if (t.empty()) {
+                gap = true;
+            } else if (gap) {
+                ok = false;
+                break;
+            } else {
+                out.push_back(detail::card_to_real(t, " in a UNV record", "UNV"));
+            }
+        }
+        if (ok)
+            return out;
+    }
+    return unv_reals(line);
 }
 
 std::string unv_name(std::string_view s) {
@@ -117746,11 +119541,13 @@ struct UnvFile {
 };
 
 // Gather `Count` reals starting at line `rK` (advancing it).
+// `Width` is the record's real field width when it is fixed (D25.16), else 0:
+// the data records of datasets 2414 and 58 are E13.5 or E20.12 by precision.
 std::vector<double> unv_take_reals(const std::vector<std::string_view>& rLines, std::size_t& rK,
-                                   std::size_t Count) {
+                                   std::size_t Count, int Width = 0) {
     std::vector<double> vals;
     while (vals.size() < Count && rK < rLines.size()) {
-        for (double v : unv_reals(rLines[rK]))
+        for (double v : Width > 0 ? unv_reals_fixed(rLines[rK], Width) : unv_reals(rLines[rK]))
             vals.push_back(v);
         ++rK;
     }
@@ -117786,12 +119583,13 @@ void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
         if (rDs.mId == 15) {
             // 4I10,1P3E13.5 on one line.
             const std::string_view line = lines[k++];
-            auto ints = unv_split(line.substr(0, std::min<std::size_t>(40, line.size())));
+            auto ints = unv_ints(line.substr(0, std::min<std::size_t>(40, line.size())));
             if (ints.size() < 2)
                 throw ReadError("UNV: malformed dataset-15 node record");
-            node.mLabel = unv_int(ints[0]);
-            node.mCs = unv_int(ints[1]);
-            auto xs = line.size() > 40 ? unv_reals(line.substr(40)) : std::vector<double>{};
+            node.mLabel = ints[0];
+            node.mCs = ints[1];
+            auto xs =
+                line.size() > 40 ? unv_reals_fixed(line.substr(40), 13) : std::vector<double>{};
             node.mNumCoords = std::min<std::size_t>(3, xs.size());
             for (std::size_t c = 0; c < node.mNumCoords; ++c)
                 node.mX[c] = xs[c];
@@ -117802,7 +119600,7 @@ void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
                 throw ReadError("UNV: malformed node record in dataset " + std::to_string(rDs.mId));
             node.mLabel = r1[0];
             node.mCs = r1.size() > 1 ? r1[1] : 0;
-            auto xs = unv_reals(lines[k + 1]);
+            auto xs = unv_reals_fixed(lines[k + 1], 25);  // 1P3D25.16
             node.mNumCoords = std::min<std::size_t>(3, xs.size());
             for (std::size_t c = 0; c < node.mNumCoords; ++c)
                 node.mX[c] = xs[c];
@@ -117894,7 +119692,7 @@ void unv_parse_units(const UnvDataset& rDs, UnvFile& rFile) {
     std::size_t k = 1;
     rFile.mUnitFactors.clear();
     while (k < rDs.mLines.size() && rFile.mUnitFactors.size() < 4) {
-        for (double v : unv_reals(rDs.mLines[k]))
+        for (double v : unv_reals_fixed(rDs.mLines[k], 25))  // 3D25.17
             rFile.mUnitFactors.push_back(v);
         ++k;
     }
@@ -117915,7 +119713,7 @@ void unv_parse_cs(const UnvDataset& rDs, UnvFile& rFile) {
         UnvCs cs;
         cs.mType = static_cast<int>(r3[1]);
         std::size_t j = k + 2;
-        auto m = unv_take_reals(lines, j, 12);
+        auto m = unv_take_reals(lines, j, 12, 25);  // 1P3D25.16
         for (int r = 0; r < 4; ++r)
             for (int c = 0; c < 3; ++c)
                 cs.mM[r][c] = m[r * 3 + c];
@@ -118127,23 +119925,25 @@ void unv_parse_function(const UnvDataset& rDs, UnvFile& rFile) {
     if (lines.size() < 11)
         throw ReadError("UNV: dataset 58 has a truncated header");
     UnvFunction fn;
-    // Record 6: Format(2(I5,I10),2(1X,10A1,I10,I4)); names may hold spaces, so slice.
-    const std::string rec6(lines[5]);
-    auto field = [&](std::size_t a, std::size_t n) {
-        return a < rec6.size() ? unv_strip(std::string_view(rec6).substr(a, n))
-                               : std::string_view();
-    };
-    auto int_field = [&](std::size_t a, std::size_t n) {
-        auto f = field(a, n);
-        return f.empty() ? std::int64_t{0} : unv_int(f);
-    };
-    if (rec6.size() >= 80) {
-        fn.mType = static_cast<int>(int_field(0, 5));
-        fn.mLoadCase = int_field(20, 10);
-        fn.mRspNode = int_field(41, 10);
-        fn.mRspDir = static_cast<int>(int_field(51, 4));
-        fn.mRefNode = int_field(66, 10);
-        fn.mRefDir = static_cast<int>(int_field(76, 4));
+    // Record 6: Format(2(I5,I10),2(1X,10A1,I10,I4)); names may hold spaces, so a
+    // full-width record is cut in its columns.
+    static const std::vector<detail::CardField> kRec6 =
+        detail::parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)");
+    const std::string_view rec6 = lines[5];
+    const auto rec6_fields = rec6.size() >= 80 ? unv_fixed_fields(rec6, kRec6)
+                                               : std::optional<std::vector<std::string>>();
+    if (rec6_fields) {
+        const std::vector<std::string>& f = *rec6_fields;
+        auto int_field = [&](std::size_t i) {
+            return i < f.size() ? detail::card_to_int(f[i], " in dataset 58 record 6", "UNV")
+                                : std::int64_t{0};
+        };
+        fn.mType = static_cast<int>(int_field(0));
+        fn.mLoadCase = int_field(3);
+        fn.mRspNode = int_field(5);
+        fn.mRspDir = static_cast<int>(int_field(6));
+        fn.mRefNode = int_field(8);
+        fn.mRefDir = static_cast<int>(int_field(9));
     } else {
         auto t = unv_split(rec6);
         if (t.size() < 10)
@@ -142707,7 +144507,8 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
     mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
 
-    const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
+    const std::string out_fmt =
+        resolve_write_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
     const WriteOptions& wopts = rPipeline.mOutput.mOptions;
     const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
                                 : wopts.mEncoding == WriteEncoding::Binary ? "binary"
@@ -149437,12 +151238,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd") {
+    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
+        rFormat == "femap") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf' and 'pvd' can); "
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd' and 'femap' "
+           "can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -149553,14 +151356,19 @@ std::vector<std::string> seq_glob(const std::string& rPattern) {
                         rPattern + "': " + ec.message());
     for (const std::filesystem::directory_entry& entry : it) {
         const std::string name = entry.path().filename().string();
-        // A `.bp` directory is one sample (a DOLFINx VTX file), like a file.
-        if (!entry.is_regular_file(ec) && !(entry.is_directory(ec) && seq_is_bp_directory(name)))
+        const bool is_file = entry.is_regular_file(ec);
+        if (!is_file && !entry.is_directory(ec))
             continue;
         // `d3plot01`, `d3plot02`... continue the `d3plot` beside them: one sample.
-        if (seq_is_d3plot_member(entry.path()))
+        if (seq_is_d3plot_member(entry.path()) || !sequence_glob_match(base, name))
             continue;
-        if (sequence_glob_match(base, name))
-            out.push_back(entry.path().string());
+        // A `.bp` directory is one sample (a DOLFINx VTX file), like a file, and
+        // so is an Elmer mesh directory, which has no suffix and is known by its
+        // files. Other directories, OpenFOAM cases included, are not.
+        if (!is_file && !seq_is_bp_directory(name) &&
+            sniff_format(entry.path().string()) != "elmer")
+            continue;
+        out.push_back(entry.path().string());
     }
     std::sort(out.begin(), out.end(), sequence_natural_less);
     if (out.empty())
@@ -149692,7 +151500,7 @@ std::string seq_resolve_write_format(const SequenceOutput& rOutput, std::size_t 
     const std::string probe = sequence_pattern_has_token(rOutput.mPath)
                                   ? sequence_expand_pattern(rOutput.mPath, 0, Count)
                                   : rOutput.mPath;
-    return resolve_format(probe, "");
+    return resolve_write_format(probe, "");
 }
 
 /// The transient writer's data-format choice. An explicit request always
@@ -149722,13 +151530,20 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
 /// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    const char* who = rFormat == "vtkhdf" ? "VTKHDF" : rFormat == "pvd" ? "PVD" : "XDMF";
+    const char* who = rFormat == "vtkhdf"  ? "VTKHDF"
+                      : rFormat == "pvd"   ? "PVD"
+                      : rFormat == "femap" ? "Femap"
+                                           : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
     if (!rOptions.mFloatFormat.empty())
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support FloatFormat");
+    if (rFormat == "femap" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
+            "select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -149771,6 +151586,19 @@ private:
     PvdSeriesWriter mWriter;
 };
 
+/// A Femap neutral file holds one mesh and an output set per step: its writer
+/// writes the mesh with the first step, so `WritePointsCells` has nothing to do.
+class SeqFemapSink final : public SeqSeriesSink {
+public:
+    explicit SeqFemapSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    FemapSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -149797,6 +151625,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqPvdSink>(rPath, rOptions.mEncoding != WriteEncoding::Ascii,
                                             codec);
     }
+    if (rFormat == "femap")
+        return std::make_unique<SeqFemapSink>(rPath);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);
@@ -150032,22 +151862,39 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         if (!sequence_write_supports_time(ofmt, why))
             throw WriteError(why);
         seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
-        const std::unique_ptr<SeqSeriesSink> writer =
-            seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
-        bool grid_written = false;
-        for (std::size_t i = 0; i < entries.size(); ++i) {
+        // One step, read and run through the pipeline, with its time.
+        auto step = [&](std::size_t i, double& rTime) {
             Mesh mesh =
                 sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
-            double time = entries[i].mTime;
+            rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
                 rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {
                 double t = 0.0;
                 if (seq_time_from_mesh(mesh, t))
-                    time = t;
+                    rTime = t;
             }
             // The single owner of step dispatch, unchanged: sequences are a
             // driver AROUND run_pipeline_steps, never a second dispatch path.
-            mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+            return run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+        };
+        if (ofmt == "gid") {
+            // gid's series writer pulls its steps, as in sequence_to_timeseries
+            // (until v16.17.0 this path wrote XDMF into the .post.msh name).
+            write_gid_series(rPipeline.mOutput.mPath,
+                             [&](std::size_t i, double& rTime, Mesh& rMesh) {
+                                 if (i >= entries.size())
+                                     return false;
+                                 rMesh = step(i, rTime);
+                                 return true;
+                             });
+            return report;
+        }
+        const std::unique_ptr<SeqSeriesSink> writer =
+            seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
+        bool grid_written = false;
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            double time = 0.0;
+            Mesh mesh = step(i, time);
             if (!grid_written) {
                 writer->WritePointsCells(mesh);
                 grid_written = true;
@@ -155721,6 +157568,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"libmesh", meshioplusplus::write_libmesh},
         {"z88",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
+        {"radioss",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
+        // By name only: ".dat" writes Tecplot (resolve_write_format).
+        {"marc", meshioplusplus::write_marc},
         {"elmer",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},
@@ -156118,9 +157969,9 @@ std::string basename_of(const std::string& rPath) {
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
 }
 
-}  // namespace
-
-std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
+/// `resolve_format`, looking at an existing file's content only when
+/// `Content` is set: a write never lets the file it replaces choose its format.
+std::string registry_resolve(const std::string& rPath, const std::string& rFormat, bool Content) {
     if (!rFormat.empty())
         return rFormat;
     const auto& defaults = registry_extension_defaults();
@@ -156148,15 +157999,25 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
             continue;
         // `.mesh` is both Medit's and MFEM's: an existing file whose first line
         // names an MFEM mesh goes to mfem.
-        if (suffix == ".mesh" && registry_is_mfem_mesh(rPath))
+        if (Content && suffix == ".mesh" && registry_is_mfem_mesh(rPath))
             return "mfem";
         // `.dat` is Tecplot's, and Marc's input deck's when it opens as one.
-        if (suffix == ".dat" && registry_is_marc_dat(rPath))
+        if (Content && suffix == ".dat" && registry_is_marc_dat(rPath))
             return "marc";
         return it->second;
     }
     throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
                                     "' -- pass an explicit format argument");
+}
+
+}  // namespace
+
+std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
+    return registry_resolve(rPath, rFormat, /*Content=*/true);
+}
+
+std::string resolve_write_format(const std::string& rPath, const std::string& rFormat) {
+    return registry_resolve(rPath, rFormat, /*Content=*/false);
 }
 
 const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
@@ -156539,7 +158400,7 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
 
 void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
                        const WriteOptions& rOptions) {
-    const std::string fmt = resolve_format(rPath, rFormat);
+    const std::string fmt = resolve_write_format(rPath, rFormat);
     // Bound scope-less notes to this write -- see provenance_begin_write().
     detail::provenance_begin_write();
 

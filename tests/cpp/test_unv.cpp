@@ -393,3 +393,38 @@ TEST(Unv, SideRegionsAreDroppedAndOthersBecomeGroups) {
     EXPECT_FALSE(find_region(back, "wall", RegionKind::Side));
     std::filesystem::remove(p);
 }
+
+TEST(Unv, TouchingTenDigitLabelsAreCutInTheirColumns) {
+    // Records are I10: a 10-digit label fills its field, so two of them touch
+    // and a group entry's type touches its tag; whitespace splitting read one
+    // number there. The Python twin is test_unv.py's
+    // test_touching_ten_digit_labels_are_cut_in_their_columns.
+    const std::string d0 = "   0.0000000000000000D+00";
+    const std::string d1 = "   1.0000000000000000D+00";
+    const std::string text =
+        "    -1\n  2411\n"
+        "1000000001         1         1        11\n" +
+        d0 + d0 + d0 + "\n1000000002         1         1        11\n" + d1 + d0 + d0 +
+        "\n1000000003         1         1        11\n" + d0 + d1 + d0 +
+        "\n1000000004         1         1        11\n" + d0 + d0 + d1 +
+        "\n    -1\n    -1\n  2412\n"
+        "1999999999       111         1         1         7         4\n"
+        "1000000001100000000210000000031000000004\n"
+        "    -1\n    -1\n  2467\n"
+        "         1         0         0         0         0         0"
+        "         0         2\ntips\n"
+        "         71000000001         0         0         71000000004"
+        "         0         0\n    -1\n";
+    const std::string p = write_text(text);
+    const Mesh m = meshioplusplus::read_unv(p);
+    ASSERT_EQ(m.NumPoints(), 4u);
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(m.Cells(0).Type()), "tetra");
+    for (std::size_t j = 0; j < 4; ++j)
+        EXPECT_EQ(meshioplusplus::detail::read_int(m.Cells(0).Conn(), j),
+                  static_cast<std::int64_t>(j));
+    const meshioplusplus::Region* tips = find_region(m, "tips", RegionKind::Point);
+    ASSERT_NE(tips, nullptr);
+    EXPECT_EQ(entries(*tips), (std::vector<std::int64_t>{0, 3}));
+    std::filesystem::remove(p);
+}

@@ -14,8 +14,9 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// The permutation tables that used to live in formats/med.cpp, formats/frd.cpp
-// and formats/unv.cpp, plus Code_Aster's `.mail`, in one place (roadmap §1.21).
+// Every format's node permutation tables in one place: the ones that used to
+// live in the MED, `.frd`, UNV, gmsh, CGNS, GiD and Kratos readers, plus every
+// format added since Code_Aster's `.mail` (doc/node_ordering.md).
 // Python twin: src/python/meshioplusplus/_node_order.py.
 
 // System includes
@@ -188,6 +189,71 @@ const std::vector<NodeOrderSource>& node_order_sources() {
         {"unv", "wedge15", D::FromMeshio, {0, 6, 1, 7, 2, 8, 12, 13, 14, 3, 9, 4, 10, 5, 11}},
         {"unv", "hexahedron20", D::FromMeshio, {0,  8,  1, 9,  2, 10, 3, 11, 16, 17,
                                                 18, 19, 4, 12, 5, 13, 6, 14, 7,  15}},
+        // gmsh `.msh` ("Node ordering", gmsh reference manual; src/geo/MHexahedron.h,
+        // MPrism.h, MPyramid.h): mid-edge nodes follow gmsh's own edge list, and
+        // hex27's face centres run z-, y-, x-, x+, y+, z+. wedge18/pyramid14
+        // extend wedge15/pyramid13 with the quad-face centres / the base
+        // centre. Every mid-edge and face-centre slot lands at the midpoint or
+        // centroid of its corners.
+        {"gmsh", "tetra10", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
+        {"gmsh", "hexahedron20", D::ToMeshio, {0,  1, 2,  3,  4,  5,  6,  7,  8,  11,
+                                               13, 9, 16, 18, 19, 17, 10, 12, 14, 15}},
+        {"gmsh", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                               11, 13, 9,  16, 18, 19, 17, 10, 12,
+                                               14, 15, 22, 23, 21, 24, 20, 25, 26}},
+        {"gmsh", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11}},
+        {"gmsh",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16}},
+        {"gmsh", "pyramid13", D::ToMeshio, {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12}},
+        {"gmsh", "pyramid14", D::ToMeshio, {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13}},
+        // CGNS (SIDS, "Unstructured Grid Element Numbering Conventions"):
+        // PENTA_15/18 and HEXA_20/27 list the vertical mid-edges before the
+        // top ring, and HEXA_27's face centres run z-, y-, x+, y+, x-, z+.
+        // Every other SIDS type is in meshio++'s order.
+        {"cgns", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"cgns",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
+        {"cgns", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"cgns", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                               9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                               14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // GiD `.post.msh`: hexahedron20 is in meshio++'s order (the order Kratos's
+        // GiD writer emits, see formats/gid.cpp), while hexahedron27 and
+        // wedge15 are written in Kratos's internal order, which lists the
+        // vertical mid-edges before the top ring (and hex27's face centres z-,
+        // y-, x+, y+, x-, z+). pyramid13 needs none.
+        {"gid", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"gid", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                              9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                              14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // Kratos `.mdpa`: a model part stores Kratos's internal order, read from
+        // its geometry classes (kratos/geometries/hexahedra_3d_20.h,
+        // hexahedra_3d_27.h, prism_3d_15.h, where PointsLocalCoordinates,
+        // GenerateEdges and the shape functions agree): the vertical mid-edges
+        // come before the top ring, and hex27's face centres run z-, y-, x+,
+        // y+, x-, z+. Pyramid3D13 is in meshio++'s order.
+        {"mdpa", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"mdpa", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"mdpa", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                               9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                               14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // Exodus II (SEACAS Ioss element topologies Hex20, Hex27 and Wedge15,
+        // the tables vtkExodusIIReader applies too): the vertical mid-edges
+        // come before the top ring, and Hex27 puts its body centre first (node
+        // 21), then the face centres z-, z+, x-, x+, y-, y+. TETRA10,
+        // PYRAMID13 and the 2-D types are in meshio++'s order.
+        {"exodus", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"exodus", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                 9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                                 14, 15, 23, 24, 25, 26, 21, 22, 20}},
+        {"exodus", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
     };
     return sources;
 }

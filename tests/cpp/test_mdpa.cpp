@@ -92,8 +92,9 @@ TEST(Mdpa, RoundTripHex20AppliesKratosPermutation) {
     const Mesh in = mt::hex20_mesh();
     meshioplusplus::write_mdpa(path, in);
 
-    // The file must carry the *Kratos* order, i.e. the mid-edge nodes of the
-    // top face (meshio slots 16..19) written in slots 12..15.
+    // The file must carry the *Kratos* order (kratos/geometries/
+    // hexahedra_3d_20.h), i.e. the vertical mid-edge nodes (meshio slots
+    // 16..19) written in slots 12..15, before the top ring.
     const std::string text = mdpa_slurp(path);
     EXPECT_NE(text.find("Begin Elements Element3D20N"), std::string::npos);
 
@@ -103,8 +104,8 @@ TEST(Mdpa, RoundTripHex20AppliesKratosPermutation) {
     // A round trip that skipped both permutations would also pass the above,
     // so pin the on-disk order itself: node ids of the single cell, in file
     // order, must be the meshio row permuted by the Kratos table.
-    const std::vector<int> kratos = {0,  1, 2,  3,  4,  5,  6,  7,  8,  11,
-                                     10, 9, 16, 19, 18, 17, 12, 13, 14, 15};
+    const std::vector<int> kratos = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                     10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
     const auto cb = in.Cells(0);
     std::string expected;
     for (std::size_t j = 0; j < 20; ++j)

@@ -3,7 +3,8 @@ I/O for EnSight Gold (.case/.geo), geometry only, c.f.
 <https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf>
 
 Handles the FORMAT/GEOMETRY sections of the .case file and the Gold geometry
-file in ASCII and C-binary form (32-bit ints/floats, 80-char string records;
+file in ASCII, C-binary and Fortran-binary form (32-bit ints/floats, 80-char
+string records, framed as Fortran sequential records in Fortran binary;
 a foreign byte order is auto-detected from the plausibility of the
 part-number/node-count records). Per the Gold specification connectivity is
 positional (1-based index into the part's coordinate list), so "node id
@@ -21,6 +22,7 @@ import numpy as np
 from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
+from .._fortran_records import fortran_records, sniff_fortran_records
 from .._mesh import CellBlock, Mesh
 
 ensight_to_meshio_type = {
@@ -200,13 +202,15 @@ class _AsciiCursor:
 
 
 class _BinaryCursor:
-    """Record/number stream over a C-binary Gold geometry file."""
+    """Record/number stream over a C-binary Gold geometry file (or a
+    Fortran-binary one with its record markers stripped)."""
 
-    def __init__(self, data):
+    def __init__(self, data, order="="):
+        # `order` seeds the byte order when the file says it (Fortran markers).
         self.data = data
-        self.pos = 80  # past the leading "C Binary" record
-        self.i4 = np.dtype(np.int32)
-        self.f4 = np.dtype(np.float32)
+        self.pos = 80  # past the leading "C Binary"/"Fortran Binary" record
+        self.i4 = np.dtype(np.int32).newbyteorder(order)
+        self.f4 = np.dtype(np.float32).newbyteorder(order)
 
     def at_end(self):
         return self.pos >= len(self.data)
@@ -400,13 +404,32 @@ def _parse_geo(cur):
     return Mesh(points, cells, cell_data=cell_data)
 
 
+def _unframe_fortran(data):
+    """The joined payloads of a Fortran-binary geometry file and their byte order
+    (``"<"`` or ``">"``), or ``None``.
+
+    Fortran binary is the C-binary stream with every WRITE framed as a Fortran
+    sequential unformatted record; its first record is the 80-byte ``Fortran
+    Binary`` string. Joining the payloads gives the C-binary stream back.
+    """
+    layout = sniff_fortran_records(data)
+    if layout is None:
+        return None
+    width = layout[0]
+    if not data[width : width + 80].startswith(b"Fortran Binary"):
+        return None
+    records = fortran_records(data, layout, "EnSight geometry file")
+    return b"".join(data[off : off + size] for off, size in records), layout[1]
+
+
 def read(filename):
     filename = pathlib.Path(filename)
     geo_path = _parse_case(filename) if filename.suffix == ".case" else filename
     with open(geo_path, "rb") as f:
         data = f.read()
-    if data.startswith(b"Fortran Binary"):
-        raise ReadError("EnSight: Fortran-binary geometry files are not supported")
+    unframed = _unframe_fortran(data)
+    if unframed is not None:
+        return _parse_geo(_BinaryCursor(*unframed))
     if len(data) >= 80 and data.startswith(b"C Binary"):
         return _parse_geo(_BinaryCursor(data))
     return _parse_geo(_AsciiCursor(data.decode("utf-8", errors="replace")))
@@ -437,31 +460,48 @@ def _write_geo_ascii(fh, points, cells):
         )
 
 
-def _write_geo_binary(fh, points, cells):
+def _write_geo_binary(fh, points, cells, fortran=False):
+    # One record per string, count or array: Fortran binary frames each as a
+    # Fortran sequential unformatted record (native 4-byte length markers), the
+    # layout vtkEnSightGoldBinaryReader reads.
+    def record(payload):
+        if fortran:
+            if len(payload) > np.iinfo(np.int32).max:
+                raise WriteError(
+                    "EnSight: a Fortran-binary record over 2 GiB cannot be written"
+                )
+            marker = np.int32(len(payload)).tobytes()
+            fh.write(marker + payload + marker)
+        else:
+            fh.write(payload)
+
     int32_max = np.iinfo(np.int32).max
     if points.shape[0] > int32_max:
         raise WriteError("EnSight: mesh too large for 32-bit binary EnSight output")
-    fh.write(_str80("C Binary"))
-    fh.write(_str80("EnSight Gold Geometry File"))
-    fh.write(_str80(_provenance.lines(_provenance.SlotTier.BOUNDED)[0]))
-    fh.write(_str80("node id assign"))
-    fh.write(_str80("element id assign"))
-    fh.write(_str80("part"))
-    fh.write(np.int32(1).tobytes())
-    fh.write(_str80("Mesh"))
-    fh.write(_str80("coordinates"))
-    fh.write(np.int32(points.shape[0]).tobytes())
-    fh.write(np.ascontiguousarray(points.T, dtype=np.float32).tobytes())
+    record(_str80("Fortran Binary" if fortran else "C Binary"))
+    record(_str80("EnSight Gold Geometry File"))
+    record(_str80(_provenance.lines(_provenance.SlotTier.BOUNDED)[0]))
+    record(_str80("node id assign"))
+    record(_str80("element id assign"))
+    record(_str80("part"))
+    record(np.int32(1).tobytes())
+    record(_str80("Mesh"))
+    record(_str80("coordinates"))
+    record(np.int32(points.shape[0]).tobytes())
+    for c in range(3):
+        record(np.ascontiguousarray(points[:, c], dtype=np.float32).tobytes())
     for cell_block in cells:
         conn = _permute(cell_block.type, np.asarray(cell_block.data)) + 1
         if conn.shape[0] > int32_max:
             raise WriteError("EnSight: mesh too large for 32-bit binary EnSight output")
-        fh.write(_str80(meshio_to_ensight_type[cell_block.type]))
-        fh.write(np.int32(conn.shape[0]).tobytes())
-        fh.write(np.ascontiguousarray(conn, dtype=np.int32).tobytes())
+        record(_str80(meshio_to_ensight_type[cell_block.type]))
+        record(np.int32(conn.shape[0]).tobytes())
+        record(np.ascontiguousarray(conn, dtype=np.int32).tobytes())
 
 
-def write(filename, mesh, binary=True):
+def write(filename, mesh, binary=True, fortran=False):
+    if fortran and not binary:
+        raise WriteError("EnSight: Fortran binary is a binary encoding (binary=True)")
     case_path, geo_path = _case_geo_paths(filename)
     if case_path is None:
         raise WriteError(f"EnSight: must specify a .case or .geo file. Got {filename}.")
@@ -499,6 +539,6 @@ def write(filename, mesh, binary=True):
 
     with open(geo_path, "wb") as fh:
         if binary:
-            _write_geo_binary(fh, points, mesh.cells)
+            _write_geo_binary(fh, points, mesh.cells, fortran)
         else:
             _write_geo_ascii(fh, points, mesh.cells)

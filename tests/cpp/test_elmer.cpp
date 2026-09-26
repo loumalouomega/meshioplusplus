@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
@@ -438,4 +439,19 @@ TEST(Elmer, WritesTheHaloLayer) {
     EXPECT_EQ(lines(plain / "partitioning.2" / "part.1.elements"),
               (std::vector<std::string>{"1 1 504 1 2 3 4"}));
     fs::remove_all(dir.parent_path());
+}
+
+TEST(Elmer, AGlobFindsMeshDirectories) {
+    // An Elmer mesh directory has no suffix: the sequence glob keeps a
+    // matching directory by its files, and still skips a plain directory.
+    const fs::path root = fresh_dir();
+    write_elmer((root / "step_10").string(), two_tets());
+    write_elmer((root / "step_2").string(), two_tets());
+    fs::create_directories(root / "step_plain");
+    SequenceInput in;
+    in.mPattern = (root / "step_*").string();
+    const std::vector<SequenceEntry> entries = sequence_expand(in);
+    ASSERT_EQ(entries.size(), 2u);
+    EXPECT_EQ(fs::path(entries[0].mPath).filename(), "step_2");
+    EXPECT_EQ(fs::path(entries[1].mPath).filename(), "step_10");
 }

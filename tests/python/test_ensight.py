@@ -244,3 +244,115 @@ def test_variable_write_skips_unsupported_component_counts(tmp_path):
 
     assert "weird" not in out.point_data
     assert np.allclose(out.point_data["ok"], mesh.point_data["ok"])
+
+
+# --------------------------------------------------------------------------- #
+# Fortran binary, and binary variable files other readers can read            #
+# --------------------------------------------------------------------------- #
+
+
+def _data_mesh():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("tetra", np.array([[0, 1, 2, 3]])), ("triangle", np.array([[1, 2, 4]]))],
+        point_data={"T": np.arange(1.0, 6.0), "V": np.arange(15.0).reshape(5, 3)},
+        cell_data={"S": [np.array([7.0]), np.array([8.0])]},
+    )
+
+
+def _reframe(path, width, order):
+    """Rewrite a little-endian Fortran-binary file with `width`-byte markers in
+    byte order `order`, swapping the numeric records to match."""
+    import struct
+
+    from meshioplusplus._fortran_records import fortran_records, sniff_fortran_records
+
+    data = path.read_bytes()
+    records = fortran_records(data, sniff_fortran_records(data), "test")
+    fmt = order + ("i" if width == 4 else "q")
+    out = b""
+    for off, size in records:
+        payload = data[off : off + size]
+        if size != 80 and order == ">":
+            payload = np.frombuffer(payload, "<u4").byteswap().tobytes()
+        out += struct.pack(fmt, size) + payload + struct.pack(fmt, size)
+    path.write_bytes(out)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_fortran_binary_round_trips(engine, tmp_path):
+    mesh = _data_mesh()
+    case = tmp_path / "m.case"
+    if engine == "core":
+        meshioplusplus._core.ensight_write(str(case), mesh, True, True)
+    else:
+        _ensight.write(case, mesh, binary=True, fortran=True)
+    geo = (tmp_path / "m.geo").read_bytes()
+    assert geo[:4] == np.int32(80).tobytes() and geo[4:18] == b"Fortran Binary"
+    for back in (meshioplusplus.read(case), _ensight.read(case)):
+        np.testing.assert_allclose(back.points, mesh.points)
+        assert [c.type for c in back.cells] == ["tetra", "triangle"]
+    if engine == "core":  # the Python writer is geometry-only
+        back = meshioplusplus.read(case)
+        np.testing.assert_allclose(back.point_data["V"], mesh.point_data["V"])
+        np.testing.assert_allclose(back.cell_data["S"][1], [8.0])
+
+
+@pytest.mark.parametrize("width, order", [(4, ">"), (8, "<"), (8, ">")])
+def test_fortran_binary_reads_any_marker_width_and_byte_order(width, order, tmp_path):
+    mesh = _data_mesh()
+    case = tmp_path / "m.case"
+    meshioplusplus._core.ensight_write(str(case), mesh, True, True)
+    for f in tmp_path.iterdir():
+        if f.suffix != ".case":
+            _reframe(f, width, order)
+    back = meshioplusplus.read(case)
+    np.testing.assert_allclose(back.points, mesh.points)
+    np.testing.assert_allclose(back.point_data["T"], mesh.point_data["T"])
+    np.testing.assert_allclose(_ensight.read(case).points, mesh.points)
+
+
+@pytest.mark.parametrize("fortran", [False, True])
+def test_vtk_reads_binary_variables(fortran, tmp_path):
+    # A variable file starts with its description: until v16.17.0 the writer
+    # put a "C Binary" record first, and VTK/ParaView read no variables.
+    vtk = pytest.importorskip("vtk")
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    mesh = _data_mesh()
+    case = tmp_path / "m.case"
+    meshioplusplus._core.ensight_write(str(case), mesh, True, fortran)
+    reader = vtk.vtkEnSightGoldBinaryReader()
+    reader.SetCaseFileName(str(case))
+    reader.Update()
+    block = reader.GetOutput().GetBlock(0)
+    np.testing.assert_allclose(vtk_to_numpy(block.GetPoints().GetData()), mesh.points)
+    np.testing.assert_allclose(
+        vtk_to_numpy(block.GetPointData().GetArray("T")), mesh.point_data["T"]
+    )
+    np.testing.assert_allclose(
+        vtk_to_numpy(block.GetPointData().GetArray("V")), mesh.point_data["V"]
+    )
+    np.testing.assert_allclose(
+        vtk_to_numpy(block.GetCellData().GetArray("S")), [7.0, 8.0]
+    )
+
+
+def test_variable_files_written_before_v16_17_still_read(tmp_path):
+    mesh = _data_mesh()
+    case = tmp_path / "m.case"
+    meshioplusplus._core.ensight_write(str(case), mesh, True, False)
+    for name in ("T.scl", "V.vec", "S.escl"):
+        f = tmp_path / name
+        f.write_bytes(b"C Binary".ljust(80, b"\0") + f.read_bytes())
+    back = meshioplusplus.read(case)
+    np.testing.assert_allclose(back.point_data["V"], mesh.point_data["V"])
+    np.testing.assert_allclose(back.cell_data["S"][0], [7.0])
+
+
+def test_fortran_needs_binary(tmp_path):
+    with pytest.raises(meshioplusplus.WriteError):
+        _ensight.write(tmp_path / "m.case", _data_mesh(), binary=False, fortran=True)
+    with pytest.raises(meshioplusplus.WriteError):
+        meshioplusplus.ensight.write(tmp_path / "m.case", _data_mesh(), False, True)

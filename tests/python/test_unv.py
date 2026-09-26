@@ -537,3 +537,38 @@ def test_code_aster_comments_and_touching_units(tmp_path):
     for out in _both_readers(p):
         _assert_fields(out, rtol=1e-5)
         assert out.field_data["unv:units"][0] == 5
+
+
+def _i10(*values):
+    return "".join(f"{v:10d}" for v in values)
+
+
+def test_touching_ten_digit_labels_are_cut_in_their_columns(tmp_path):
+    # Records are I10: a 10-digit label fills its field, so two of them touch
+    # ("10000000011000000002") and a group entry's type touches its tag
+    # ("71000000001"). Whitespace splitting read one number there.
+    labels = [1000000001, 1000000002, 1000000003, 1000000004]
+    xyz = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    lines = ["    -1", "  2411"]
+    for label, x in zip(labels, xyz):
+        lines.append(_i10(label, 1, 1, 11))
+        lines.append("".join(f"{c:25.16E}".replace("E", "D") for c in x))
+    lines += ["    -1", "    -1", "  2412"]
+    lines.append(_i10(1999999999, 111, 1, 1, 7, 4))
+    lines.append(_i10(*labels))
+    lines += ["    -1", "    -1", "  2467"]
+    lines.append(_i10(1, 0, 0, 0, 0, 0, 0, 2))
+    lines.append("tips")
+    lines.append(_i10(7, labels[0], 0, 0, 7, labels[3], 0, 0))
+    lines += ["    -1", ""]
+    p = tmp_path / "touching.unv"
+    p.write_text("\n".join(lines))
+    assert "10000000011000000002" in p.read_text()
+    assert "71000000001" in p.read_text()
+    for out in _both_readers(p):
+        np.testing.assert_array_equal(out.points, xyz)
+        assert out.cells[0].type == "tetra"
+        np.testing.assert_array_equal(out.cells[0].data, [[0, 1, 2, 3]])
+        tips = [r for r in out.regions if r.name == "tips"]
+        assert len(tips) == 1
+        np.testing.assert_array_equal(tips[0].entries, [0, 3])

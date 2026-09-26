@@ -222,7 +222,8 @@ def test_dispatch_and_sniffing(tmp_path):
     assert formats["extensions"][".t19"] == ["marc_t19"]
     assert formats["extensions"][".dat"] == ["marc", "tecplot"]
     assert {"marc", "marc_t19"} <= set(formats["readable"])
-    assert not {"marc", "marc_t19"} & set(formats["writable"])
+    # The deck is written since v16.17.0; the post file stays read-only.
+    assert "marc" in formats["writable"] and "marc_t19" not in formats["writable"]
     # A Marc .dat reads as Marc; a Tecplot .dat still as Tecplot.
     mesh = meshioplusplus.read(MARC / "hex20.dat")
     assert [b.type for b in mesh.cells] == ["hexahedron20"]
@@ -350,3 +351,110 @@ def test_include_and_remesh_engines_agree():
             meshioplusplus.marc.read_t19(MARC / "remesh.t19", time_step=step),
             _Python.read_t19(MARC / "remesh.t19", time_step=step),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Writing (v16.17.0)                                                          #
+# --------------------------------------------------------------------------- #
+
+WRITERS = {
+    "core": lambda p, m: _core.marc_write(str(p), m),
+    "python": lambda p, m: py_marc.write(p, m),
+}
+
+
+def _set_members(mesh):
+    return {
+        (r.kind, r.name): sorted(np.asarray(r.entries).ravel().tolist())
+        for r in mesh.regions
+    }
+
+
+@pytest.mark.parametrize("path", DECKS, ids=[p.name for p in DECKS])
+def test_decks_round_trip_and_the_writers_agree(path, tmp_path):
+    mesh = py_marc.read(path)
+    written = {}
+    for name, writer in WRITERS.items():
+        out = tmp_path / name / "deck.dat"
+        out.parent.mkdir()
+        writer(out, mesh)
+        written[name] = out.read_bytes()
+    assert written["core"] == written["python"]
+    back = py_marc.read(tmp_path / "core" / "deck.dat")
+    # Types with extra nodes (Herrmann elements) come back as the default type.
+    if path.name == "include_main.dat":
+        mesh.cell_data.pop("marc:type")
+        back.cell_data.pop("marc:type")
+    _same(mesh, back)
+    for a, b in zip(mesh.cell_data["marc:element"], back.cell_data["marc:element"]):
+        np.testing.assert_array_equal(a, b)
+    assert _set_members(mesh) == _set_members(back)
+    for name, value in mesh.field_data.items():
+        if "_set:" in name:
+            np.testing.assert_array_equal(value, back.field_data[name])
+
+
+def _cells(types, points):
+    mesh = meshioplusplus.Mesh(
+        points, [(t, np.arange(n)[None] + off) for t, n, off in types]
+    )
+    return mesh
+
+
+@pytest.mark.parametrize("engine", sorted(WRITERS))
+def test_default_types_follow_the_mesh(engine, tmp_path):
+    # A planar mesh gets plane-strain elements, a 3-D one shells and solids;
+    # a pyramid is a degenerate brick of type 7.
+    flat = _cells(
+        [("quad", 4, 0), ("triangle", 3, 0)],
+        np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float),
+    )
+    WRITERS[engine](tmp_path / "flat.dat", flat)
+    back = py_marc.read(tmp_path / "flat.dat")
+    assert [int(t[0]) for t in back.cell_data["marc:type"]] == [11, 6]
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0.5, 1], [0, 0, 2]],
+        dtype=float,
+    )
+    solid = _cells([("pyramid", 5, 0), ("triangle", 3, 0)], pts)
+    WRITERS[engine](tmp_path / "solid.dat", solid)
+    back = py_marc.read(tmp_path / "solid.dat")
+    assert [c.type for c in back.cells] == ["pyramid", "triangle"]
+    np.testing.assert_array_equal(back.cells[0].data, solid.cells[0].data)
+    assert [int(t[0]) for t in back.cell_data["marc:type"]] == [7, 138]
+
+
+@pytest.mark.parametrize("engine", sorted(WRITERS))
+def test_set_names_read_back_as_sets(engine, tmp_path):
+    from meshioplusplus._regions import Region
+
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    mesh = meshioplusplus.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3]]))])
+    mesh.regions = [
+        Region("end", "point", np.array([0, 1])),
+        Region("two words", "cell", np.array([0])),
+        Region("Two_words", "cell", np.array([0])),
+    ]
+    WRITERS[engine](tmp_path / "names.dat", mesh)
+    back = _set_members(py_marc.read(tmp_path / "names.dat"))
+    assert back == {
+        ("point", "end_set"): [0, 1],
+        ("cell", "Two_words"): [0],
+        ("cell", "two_words_2"): [0],
+    }
+
+
+def test_dat_writes_tecplot_unless_marc_is_named(tmp_path):
+    tet = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float),
+        [("tetra", np.array([[0, 1, 2, 3]]))],
+    )
+    meshioplusplus.write(tmp_path / "a.dat", tet)
+    assert not py_marc.is_marc_deck((tmp_path / "a.dat").read_text())
+    deck = py_marc.read(MARC / "hex20.dat")
+    meshioplusplus.write(tmp_path / "b.dat", deck, file_format="marc")
+    assert py_marc.is_marc_deck((tmp_path / "b.dat").read_text())
+    from meshioplusplus._sniff import sniff_format
+
+    assert sniff_format(tmp_path / "b.dat") == "marc"
+    _same(deck, meshioplusplus.read(tmp_path / "b.dat"))

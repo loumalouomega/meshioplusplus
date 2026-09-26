@@ -305,6 +305,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"libmesh", meshioplusplus::write_libmesh},
         {"z88",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
+        {"radioss",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
+        // By name only: ".dat" writes Tecplot (resolve_write_format).
+        {"marc", meshioplusplus::write_marc},
         {"elmer",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},
@@ -702,9 +706,9 @@ std::string basename_of(const std::string& rPath) {
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
 }
 
-}  // namespace
-
-std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
+/// `resolve_format`, looking at an existing file's content only when
+/// `Content` is set: a write never lets the file it replaces choose its format.
+std::string registry_resolve(const std::string& rPath, const std::string& rFormat, bool Content) {
     if (!rFormat.empty())
         return rFormat;
     const auto& defaults = registry_extension_defaults();
@@ -732,15 +736,25 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
             continue;
         // `.mesh` is both Medit's and MFEM's: an existing file whose first line
         // names an MFEM mesh goes to mfem.
-        if (suffix == ".mesh" && registry_is_mfem_mesh(rPath))
+        if (Content && suffix == ".mesh" && registry_is_mfem_mesh(rPath))
             return "mfem";
         // `.dat` is Tecplot's, and Marc's input deck's when it opens as one.
-        if (suffix == ".dat" && registry_is_marc_dat(rPath))
+        if (Content && suffix == ".dat" && registry_is_marc_dat(rPath))
             return "marc";
         return it->second;
     }
     throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
                                     "' -- pass an explicit format argument");
+}
+
+}  // namespace
+
+std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
+    return registry_resolve(rPath, rFormat, /*Content=*/true);
+}
+
+std::string resolve_write_format(const std::string& rPath, const std::string& rFormat) {
+    return registry_resolve(rPath, rFormat, /*Content=*/false);
 }
 
 const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {

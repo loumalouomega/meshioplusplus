@@ -6,7 +6,7 @@ The binary result database [LS-DYNA](https://lsdyna.ansys.com/) writes for post-
 |---|---|
 | **Format name** | `lsdyna_d3plot` |
 | **Extensions** | none: found by its file name, `d3plot` (any case), or by its control block |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#lsdyna-d3plot): LS-DYNA writes it, and no tool reads one written elsewhere) |
 | **Extra dependencies** | none |
 
 ## Reading

@@ -6,7 +6,7 @@ The output of DOLFINx's `VTXWriter` (`dolfinx.io.VTXWriter`): an ADIOS2 BP4 or B
 |---|---|
 | **Format name** | `vtx` |
 | **Extensions** | `.bp` (a directory; one without the extension is found by its `md.idx` and `data.0`) |
-| **Read / Write** | ✓ / — (read-only) |
+| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#vtx): DOLFINx writes it, and meshio++ hands meshes to ParaView as VTKHDF, XDMF or VTU instead) |
 | **Time steps** | ✓ — `time_step=`, `read_metadata()["time_values"]`, [`read_sequence`](/sequences) |
 | **Extra dependencies** | ADIOS2: a core built with `MESHIOPLUSPLUS_WITH_ADIOS2=ON`, or the `adios2` Python package (`pip install meshioplusplus[adios2]`) |
 

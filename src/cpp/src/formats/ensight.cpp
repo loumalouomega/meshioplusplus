@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +27,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -42,6 +44,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/fortran_records.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
@@ -267,9 +270,11 @@ private:
 
 class EnsightBinaryCursor final : public EnsightCursor {
 public:
-    // Text is the whole file; the cursor starts after the leading
-    // "C Binary" 80-char record.
-    explicit EnsightBinaryCursor(std::string_view data) : mData(data), mPos(80) {}
+    // Data is the whole file; a geometry cursor starts after the leading
+    // "C Binary" 80-char record, a variable cursor at its description.
+    // `Swap` seeds the byte order when the file says it (Fortran markers).
+    explicit EnsightBinaryCursor(std::string_view data, std::size_t Start = 80, bool Swap = false)
+        : mData(data), mPos(Start), mSwap(Swap) {}
 
     bool AtEnd() override { return mPos >= mData.size(); }
 
@@ -357,8 +362,52 @@ private:
 
     std::string_view mData;
     std::size_t mPos;
-    bool mSwap = false;
+    bool mSwap;
 };
+
+// ---------------------------------------------------------------------------
+// Fortran binary: the C-binary stream with every WRITE framed as a Fortran
+// sequential unformatted record (its byte length before and after it, 4 or 8
+// bytes, in the writer's byte order). Joining the payloads gives the C-binary
+// stream back, whatever the producer's record boundaries were.
+// ---------------------------------------------------------------------------
+
+enum class EnsightEncoding { Ascii, CBinary, Fortran };
+
+struct EnsightUnframed {
+    std::string mBytes;
+    bool mSwap = false;  ///< the markers (so the values) are in the other byte order
+};
+
+/// The joined payloads of a Fortran-framed `Data`, or nothing when it is not
+/// framed. `rWhat` names the file in errors.
+std::optional<EnsightUnframed> ensight_unframe_fortran(std::string_view Data,
+                                                       const std::string& rWhat) {
+    const auto layout = detail::sniff_fortran_records(Data.data(), Data.size());
+    if (!layout)
+        return std::nullopt;
+    const std::vector<detail::FortranRecord> records =
+        detail::fortran_records(Data.data(), Data.size(), *layout, "EnSight " + rWhat);
+    EnsightUnframed out;
+    std::size_t total = 0;
+    for (const detail::FortranRecord& r : records)
+        total += r.mSize;
+    out.mBytes.reserve(total);
+    for (const detail::FortranRecord& r : records)
+        out.mBytes.append(Data.data() + r.mOffset, r.mSize);
+    out.mSwap = layout->mBigEndian != (std::endian::native == std::endian::big);
+    return out;
+}
+
+/// Whether `Data` is a Fortran-binary geometry file: its first record is the
+/// 80-byte "Fortran Binary" string.
+bool ensight_is_fortran_geometry(std::string_view Data) {
+    const auto layout = detail::sniff_fortran_records(Data.data(), Data.size());
+    if (!layout)
+        return false;
+    const std::size_t m = static_cast<std::size_t>(layout->mMarkerBytes);
+    return Data.size() >= m + 80 && ensight_starts_with(Data.substr(m), "Fortran Binary");
+}
 
 // ---------------------------------------------------------------------------
 // .case parsing
@@ -929,19 +978,54 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
         *pPointOut = std::move(point_out);
 }
 
-/// Dispatches to the ascii/binary cursor, mirroring read_ensight's own
-/// geometry-file dispatch.
-void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
-                                     std::size_t NumComponents,
+/// A binary variable file starts with its description record; files meshio++
+/// wrote before v16.17.0 put a "C Binary" record before it, which no other
+/// reader expects. Where the binary cursor starts in `Data`.
+std::size_t ensight_variable_start(std::string_view Data) {
+    const bool standard = Data.size() >= 160 && ensight_starts_with(Data.substr(80), "part");
+    return !standard && ensight_starts_with(Data, "C Binary") ? 80 : 0;
+}
+
+/// Whether a variable file is plain text: no NUL in its first KiB and its
+/// description line ends within 80 characters. A binary variable file's
+/// description is an 80-byte record, so its second record starts at byte 80.
+bool ensight_variable_looks_ascii(std::string_view Data) {
+    const std::string_view head = Data.substr(0, std::min<std::size_t>(Data.size(), 1024));
+    if (head.find('\0') != std::string_view::npos)
+        return false;
+    const std::size_t eol = head.find('\n');
+    return eol != std::string_view::npos && eol < 81;
+}
+
+/// Reads a variable file in the encoding of its geometry file, as EnSight
+/// defines it (a variable file carries no format record of its own). A text
+/// variable file next to a binary geometry file, which hand-made cases hold
+/// and meshio++ read before v16.17.0, is still read as text.
+void ensight_read_variable_file_auto(const std::string& rPath, EnsightEncoding Encoding,
+                                     bool PerNode, std::size_t NumComponents,
                                      const std::vector<EnsightPartLayout>& rLayout,
                                      std::size_t TotalPoints, NDArray* pPointOut,
                                      std::vector<NDArray>* pCellOut) {
     const detail::FileSource source = ensight_read_whole_file(rPath, "variable file");
     const std::string_view data = source.View();
-    if (ensight_starts_with(data, "Fortran Binary"))
-        throw ReadError("EnSight: Fortran-binary variable files are not supported");
-    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
-        EnsightBinaryCursor cur(data);
+    const bool binary_layout =
+        (data.size() >= 160 && ensight_starts_with(data.substr(80), "part") &&
+         data.substr(0, 80).find('\n') == std::string_view::npos) ||
+        ensight_starts_with(data, "C Binary");
+    if (Encoding != EnsightEncoding::Ascii && !binary_layout && ensight_variable_looks_ascii(data))
+        Encoding = EnsightEncoding::Ascii;
+    if (Encoding == EnsightEncoding::Fortran) {
+        const auto unframed = ensight_unframe_fortran(data, "variable file");
+        if (!unframed)
+            throw ReadError("EnSight: variable file '" + rPath +
+                            "' is not Fortran binary like its geometry file");
+        EnsightBinaryCursor cur(unframed->mBytes, 0, unframed->mSwap);
+        ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
+                                   pCellOut);
+        return;
+    }
+    if (Encoding == EnsightEncoding::CBinary) {
+        EnsightBinaryCursor cur(data, ensight_variable_start(data));
         ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
                                    pCellOut);
         return;
@@ -1001,12 +1085,17 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
     // The source outlives both cursors below, which only hold views into it.
     const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
     const std::string_view data = source.View();
-    if (ensight_starts_with(data, "Fortran Binary"))
-        throw ReadError("EnSight: Fortran-binary geometry files are not supported");
 
     std::vector<EnsightPartLayout> layout;
     Mesh mesh;
-    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+    EnsightEncoding encoding = EnsightEncoding::Ascii;
+    if (ensight_is_fortran_geometry(data)) {
+        encoding = EnsightEncoding::Fortran;
+        const auto unframed = ensight_unframe_fortran(data, "geometry file");
+        EnsightBinaryCursor cur(unframed->mBytes, 80, unframed->mSwap);
+        mesh = ensight_parse_geo(cur, &layout);
+    } else if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+        encoding = EnsightEncoding::CBinary;
         EnsightBinaryCursor cur(data);
         mesh = ensight_parse_geo(cur, &layout);
     } else {
@@ -1060,14 +1149,15 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
 
         if (per_node) {
             NDArray arr;
-            ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
-                                            nullptr);
+            ensight_read_variable_file_auto(var_path, encoding, true, ncomp, layout,
+                                            mesh.NumPoints(), &arr, nullptr);
             if (tensor_symm)
                 ensight_swap_tensor_symm_last_two(arr.As<double>(), mesh.NumPoints());
             mesh.AddPointData(var.mName, std::move(arr));
         } else {
             std::vector<NDArray> blocks(mesh.NumCellBlocks());
-            ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            ensight_read_variable_file_auto(var_path, encoding, false, ncomp, layout, 0, nullptr,
+                                            &blocks);
             if (tensor_symm)
                 for (NDArray& blk : blocks)
                     if (blk.Size() > 0)
@@ -1099,17 +1189,59 @@ namespace {
 // Writing
 // ---------------------------------------------------------------------------
 
-void ensight_append_str80(std::vector<char>& rOut, const std::string& rStr) {
-    char buf[80] = {};
-    rStr.copy(buf, std::min<std::size_t>(rStr.size(), 79));
-    rOut.insert(rOut.end(), buf, buf + 80);
-}
+/// A binary EnSight file as its records: C binary writes them back to back,
+/// Fortran binary frames each one as the WRITE of a Fortran producer (its byte
+/// length before and after it, 4 bytes in the native byte order). A record is
+/// one string, one count, or one array: the layout vtkEnSightGoldBinaryReader
+/// reads Fortran files in (each coordinate component and each variable
+/// component is its own record).
+class EnsightRecordWriter {
+public:
+    explicit EnsightRecordWriter(bool Fortran) : mFortran(Fortran) {}
 
-void ensight_append_i32(std::vector<char>& rOut, std::int64_t v) {
-    const std::int32_t i = static_cast<std::int32_t>(v);
-    const char* p = reinterpret_cast<const char*>(&i);
-    rOut.insert(rOut.end(), p, p + 4);
-}
+    void Str80(const std::string& rStr) {
+        char buf[80] = {};
+        rStr.copy(buf, std::min<std::size_t>(rStr.size(), 79));
+        Record(buf, 80);
+    }
+
+    void Int(std::int64_t Value) {
+        const std::int32_t i = static_cast<std::int32_t>(Value);
+        Record(reinterpret_cast<const char*>(&i), 4);
+    }
+
+    void Ints(const std::vector<std::int32_t>& rValues) {
+        Record(reinterpret_cast<const char*>(rValues.data()), rValues.size() * 4);
+    }
+
+    void Floats(const float* pValues, std::size_t Count) {
+        Record(reinterpret_cast<const char*>(pValues), Count * 4);
+    }
+
+    const std::vector<char>& Bytes() const { return mOut; }
+    std::vector<char>& Bytes() { return mOut; }
+
+private:
+    void Record(const char* pData, std::size_t Size) {
+        if (mFortran) {
+            if (Size > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+                throw WriteError("EnSight: a Fortran-binary record over 2 GiB cannot be written");
+            Marker(Size);
+        }
+        mOut.insert(mOut.end(), pData, pData + Size);
+        if (mFortran)
+            Marker(Size);
+    }
+
+    void Marker(std::size_t Size) {
+        const std::int32_t n = static_cast<std::int32_t>(Size);
+        const char* p = reinterpret_cast<const char*>(&n);
+        mOut.insert(mOut.end(), p, p + 4);
+    }
+
+    bool mFortran;
+    std::vector<char> mOut;
+};
 
 // Validate the mesh and return one keyword entry per cell block.
 // The two ragged keywords have no fixed node count, so they cannot live in
@@ -1239,7 +1371,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
 }
 
 void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
-                              const std::vector<const EnsightTypeEntry*>& rEntries) {
+                              const std::vector<const EnsightTypeEntry*>& rEntries, bool Fortran) {
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
     const std::size_t np = rMesh.NumPoints();
@@ -1249,26 +1381,26 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     if (np > i32_max)
         throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
 
-    std::vector<char> out;
-    out.reserve(80 * 8 + np * 12 + 64);
-    ensight_append_str80(out, "C Binary");
-    ensight_append_str80(out, "EnSight Gold Geometry File");
-    ensight_append_str80(out, detail::provenance_lines(detail::SlotTier::Bounded)[0]);
-    ensight_append_str80(out, "node id assign");
-    ensight_append_str80(out, "element id assign");
-    ensight_append_str80(out, "part");
-    ensight_append_i32(out, 1);
-    ensight_append_str80(out, "Mesh");
-    ensight_append_str80(out, "coordinates");
-    ensight_append_i32(out, static_cast<std::int64_t>(np));
+    EnsightRecordWriter out(Fortran);
+    out.Bytes().reserve(80 * 8 + np * 12 + 64);
+    out.Str80(Fortran ? "Fortran Binary" : "C Binary");
+    out.Str80("EnSight Gold Geometry File");
+    out.Str80(detail::provenance_lines(detail::SlotTier::Bounded)[0]);
+    out.Str80("node id assign");
+    out.Str80("element id assign");
+    out.Str80("part");
+    out.Int(1);
+    out.Str80("Mesh");
+    out.Str80("coordinates");
+    out.Int(static_cast<std::int64_t>(np));
     {
         std::vector<float> col(np * 3);
         for (std::size_t c = 0; c < 3; ++c)
             for (std::size_t i = 0; i < np; ++i)
                 col[c * np + i] =
                     c < dim ? static_cast<float>(detail::read_double(points, i * dim + c)) : 0.0f;
-        const char* p = reinterpret_cast<const char*>(col.data());
-        out.insert(out.end(), p, p + col.size() * sizeof(float));
+        for (std::size_t c = 0; c < 3; ++c)
+            out.Floats(col.data() + c * np, np);
     }
 
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
@@ -1281,8 +1413,8 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
         const NDArray& conn = cb.Conn();
         const std::vector<int>* perm = ensight_permutation(cb.Type());
 
-        ensight_append_str80(out, entry->mKeyword);
-        ensight_append_i32(out, static_cast<std::int64_t>(ne));
+        out.Str80(entry->mKeyword);
+        out.Int(static_cast<std::int64_t>(ne));
         if (entry->mNumNodes < 0) {
             // nsided / nfaced: the same three (or two) runs as the ASCII path,
             // as int32 -- which is exactly what read_binary_faces consumes.
@@ -1306,10 +1438,8 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
                 }
             }
             auto append = [&out](const std::vector<std::int32_t>& v) {
-                if (v.empty())
-                    return;
-                const char* q = reinterpret_cast<const char*>(v.data());
-                out.insert(out.end(), q, q + v.size() * sizeof(std::int32_t));
+                if (!v.empty())
+                    out.Ints(v);
             };
             append(counts);
             if (faced)
@@ -1324,11 +1454,10 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
                 flat[r * npc + j] =
                     static_cast<std::int32_t>(detail::read_int(conn, r * npc + src)) + 1;
             }
-        const char* p = reinterpret_cast<const char*>(flat.data());
-        out.insert(out.end(), p, p + flat.size() * sizeof(std::int32_t));
+        out.Ints(flat);
     }
 
-    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+    rOs.write(out.Bytes().data(), static_cast<std::streamsize>(out.Bytes().size()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1449,35 +1578,36 @@ void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
     rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
 }
 
+// A variable file has no format record: it starts with its description, and
+// its encoding is its geometry file's (until v16.17.0 a "C Binary" record came
+// first, which kept VTK and ParaView from reading the variables).
 void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
                                    const std::vector<const EnsightTypeEntry*>& rEntries,
-                                   const EnsightVariableToWrite& rVar) {
-    std::vector<char> out;
-    ensight_append_str80(out, "C Binary");
-    ensight_append_str80(out, "variable");
-    ensight_append_str80(out, "part");
-    ensight_append_i32(out, 1);
+                                   const EnsightVariableToWrite& rVar, bool Fortran) {
+    EnsightRecordWriter out(Fortran);
+    out.Str80("variable");
+    out.Str80("part");
+    out.Int(1);
 
     auto append_col = [&](const std::vector<double>& col) {
         std::vector<float> f(col.size());
         for (std::size_t i = 0; i < col.size(); ++i)
             f[i] = static_cast<float>(col[i]);
-        const char* p = reinterpret_cast<const char*>(f.data());
-        out.insert(out.end(), p, p + f.size() * sizeof(float));
+        out.Floats(f.data(), f.size());
     };
 
     if (rVar.mPerNode) {
-        ensight_append_str80(out, "coordinates");
+        out.Str80("coordinates");
         for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
             append_col(ensight_variable_column(rMesh, rVar, c, 0));
     } else {
         for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-            ensight_append_str80(out, rEntries[bi]->mKeyword);
+            out.Str80(rEntries[bi]->mKeyword);
             for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
                 append_col(ensight_variable_column(rMesh, rVar, c, bi));
         }
     }
-    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+    rOs.write(out.Bytes().data(), static_cast<std::streamsize>(out.Bytes().size()));
 }
 
 /// Scans `rMesh`'s data maps for what this writer can express: `point_data`
@@ -1536,6 +1666,12 @@ void ensight_collect_variables(const Mesh& rMesh, std::vector<EnsightVariableToW
 }  // namespace
 
 void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    write_ensight(rPath, rMesh, binary, /*fortran=*/false);
+}
+
+void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, bool fortran) {
+    if (fortran && !binary)
+        throw WriteError("EnSight: Fortran binary is a binary encoding (binary=true)");
     bool ok = false;
     auto paths = ensight_case_geo_paths(rPath, ok);
     if (!ok)
@@ -1584,7 +1720,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
     if (!gf)
         throw WriteError("Could not open file for writing: " + geo_path);
     if (binary)
-        ensight_write_geo_binary(gf, rMesh, entries);
+        ensight_write_geo_binary(gf, rMesh, entries, fortran);
     else
         ensight_write_geo_ascii(gf, rMesh, entries);
 
@@ -1595,7 +1731,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         if (!vf)
             throw WriteError("Could not open file for writing: " + var_path);
         if (binary)
-            ensight_write_variable_binary(vf, rMesh, entries, v);
+            ensight_write_variable_binary(vf, rMesh, entries, v, fortran);
         else
             ensight_write_variable_ascii(vf, rMesh, entries, v);
     }

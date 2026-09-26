@@ -1210,6 +1210,7 @@ void write_with_info(const std::string& rPath, const Mesh& rMesh, const std::str
 using meshioplusplus::registry_readers;
 using meshioplusplus::registry_writers;
 using meshioplusplus::resolve_format;
+using meshioplusplus::resolve_write_format;
 
 /// Strict key check for a settings/options object, mirroring the JSON
 /// front-end's rule: an unknown key is an error naming it, never silently
@@ -1602,7 +1603,7 @@ val effective_write_info(const val& rMeshObj, const val& rOptions, const std::st
 val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat,
                const val& rOptions) {
     return with_js_errors([&]() -> val {
-        std::string fmt = resolve_format(rPath, rFormat);
+        std::string fmt = resolve_write_format(rPath, rFormat);
         // Kept ahead of registry_write_ex() purely so the "unknown format"
         // error text is unchanged from before A6 (registry_write_ex's own
         // message for the same case differs slightly).
@@ -1645,7 +1646,7 @@ val convert(const std::string& rInPath, const std::string& rInFormat, const std:
            const std::string& rOutFormat, const val& rOptions) {
     return with_js_errors([&]() -> val {
         std::string rfmt = resolve_format(rInPath, rInFormat);
-        std::string wfmt = resolve_format(rOutPath, rOutFormat);
+        std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
         if (rit == registry_readers().end())
             throw meshioplusplus::ReadError(
@@ -1685,7 +1686,7 @@ void convert_surface(const std::string& rInPath, const std::string& rInFormat,
                      const std::string& rOutPath, const std::string& rOutFormat) {
     with_js_errors([&]() {
         std::string rfmt = resolve_format(rInPath, rInFormat);
-        std::string wfmt = resolve_format(rOutPath, rOutFormat);
+        std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
         auto wit = registry_writers().find(wfmt);
         if (rit == registry_readers().end())
@@ -1868,7 +1869,7 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
                         bool keepProvenance) {
     return with_js_errors([&]() -> val {
         std::string rfmt = resolve_format(rInPath, rInFormat);
-        std::string wfmt = resolve_format(rOutPath, rOutFormat);
+        std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
         auto wit = registry_writers().find(wfmt);
         if (rit == registry_readers().end())

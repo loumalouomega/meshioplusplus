@@ -98,7 +98,7 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
 
 void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
                        const WriteOptions& rOptions) {
-    const std::string fmt = resolve_format(rPath, rFormat);
+    const std::string fmt = resolve_write_format(rPath, rFormat);
     // Bound scope-less notes to this write -- see provenance_begin_write().
     detail::provenance_begin_write();
 

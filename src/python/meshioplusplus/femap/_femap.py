@@ -24,11 +24,11 @@ import numpy as np
 from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
-from .._files import open_file
+from .._files import is_buffer, open_file
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region
 
-__all__ = ["read", "write", "time_values"]
+__all__ = ["read", "write", "time_values", "SeriesWriter"]
 
 # topology code -> (meshio++ type, slot of each meshio++ node, default element type)
 _TOPOLOGIES = {
@@ -606,61 +606,73 @@ def _clean_title(title):
     return t or "<NULL>"
 
 
-def write(filename, mesh):
-    points = np.asarray(mesh.points)
-    pdim = points.shape[1] if points.ndim == 2 else 0
-    if pdim > 3:
-        raise WriteError(
-            f"Femap neutral writer: points of dimension {pdim} (at most 3)"
-        )
-    npts = len(points)
+class _Plan:
+    """What the writer makes of a mesh: each cell's topology, property, type
+    and label (0 when it is dropped), and the regions in their canonical order."""
 
-    tops = []
-    starts = [0]
-    dropped = set()
-    for block in mesh.cells:
-        top = (
-            _TOPOLOGY_OF.get(block.type) if isinstance(block.data, np.ndarray) else None
-        )
-        tops.append(top)
-        if top is None and len(block.data):
-            dropped.add(block.type)
-        starts.append(starts[-1] + len(block.data))
-    ncells = starts[-1]
-    pdata = mesh.cell_data.get("femap:property")
-    tdata = mesh.cell_data.get("femap:type")
-    prop = [1] * ncells
-    etype = [0] * ncells
-    label = [0] * ncells
-    written = 0
-    for b, block in enumerate(mesh.cells):
-        for r in range(len(block.data)):
-            g = starts[b] + r
-            if pdata is not None:
-                prop[g] = int(np.asarray(pdata[b]).ravel()[r])
-            if tdata is not None:
-                etype[g] = int(np.asarray(tdata[b]).ravel()[r])
-            elif tops[b] is not None:
-                etype[g] = tops[b][2]
-            if tops[b] is not None:
-                written += 1
-                label[g] = written
+    def __init__(self, mesh):
+        points = np.asarray(mesh.points)
+        self.pdim = points.shape[1] if points.ndim == 2 else 0
+        if self.pdim > 3:
+            raise WriteError(
+                f"Femap neutral writer: points of dimension {self.pdim} (at most 3)"
+            )
+        self.points = points
+        self.npts = len(points)
+        self.tops = []
+        self.starts = [0]
+        dropped = set()
+        for block in mesh.cells:
+            top = (
+                _TOPOLOGY_OF.get(block.type)
+                if isinstance(block.data, np.ndarray)
+                else None
+            )
+            self.tops.append(top)
+            if top is None and len(block.data):
+                dropped.add(block.type)
+            self.starts.append(self.starts[-1] + len(block.data))
+        self.ncells = self.starts[-1]
+        pdata = mesh.cell_data.get("femap:property")
+        tdata = mesh.cell_data.get("femap:type")
+        self.prop = [1] * self.ncells
+        self.etype = [0] * self.ncells
+        self.label = [0] * self.ncells
+        self.written = 0
+        for b, block in enumerate(mesh.cells):
+            for r in range(len(block.data)):
+                g = self.starts[b] + r
+                if pdata is not None:
+                    self.prop[g] = int(np.asarray(pdata[b]).ravel()[r])
+                if tdata is not None:
+                    self.etype[g] = int(np.asarray(tdata[b]).ravel()[r])
+                elif self.tops[b] is not None:
+                    self.etype[g] = self.tops[b][2]
+                if self.tops[b] is not None:
+                    self.written += 1
+                    self.label[g] = self.written
 
-    for t in sorted(dropped):
-        warn(f"Femap neutral has no '{t}' topology; those cells are dropped")
-        _provenance.note("cells-dropped", f"Femap neutral has no '{t}' topology")
-    regions = sorted(getattr(mesh, "regions", []) or [], key=lambda r: r.key)
-    side_regions = sum(1 for r in regions if r.kind == "side")
-    if side_regions:
-        warn(
-            f"Femap neutral has no facet groups; {side_regions} side region(s) dropped"
-        )
-        _provenance.note(
-            "regions-dropped", f"{side_regions} side region(s) have no Femap group"
-        )
-    # results: one output set (450) of vectors (451), a point array per
-    # component as nodal vectors, a cell array per component as elemental ones
-    vectors = []  # (title, entity, [(id, value)])
+        for t in sorted(dropped):
+            warn(f"Femap neutral has no '{t}' topology; those cells are dropped")
+            _provenance.note("cells-dropped", f"Femap neutral has no '{t}' topology")
+        self.regions = sorted(getattr(mesh, "regions", []) or [], key=lambda r: r.key)
+        side_regions = sum(1 for r in self.regions if r.kind == "side")
+        if side_regions:
+            warn(
+                f"Femap neutral has no facet groups; {side_regions} side region(s) "
+                "dropped"
+            )
+            _provenance.note(
+                "regions-dropped", f"{side_regions} side region(s) have no Femap group"
+            )
+
+
+def _vectors(mesh, plan):
+    """The output vectors of a mesh's data, ``(title, entity, [(id, value)])``: a
+    point array per component as nodal vectors (entity 7), a cell array per
+    component as elemental ones (8); and the arrays that have none."""
+    npts, starts, label = plan.npts, plan.starts, plan.label
+    vectors = []
     unwritable = []
     for name in sorted(mesh.point_data):
         a = np.asarray(mesh.point_data[name])
@@ -702,15 +714,25 @@ def write(filename, mesh):
                     if label[g] and not np.isnan(x[r, c]):
                         values.append((label[g], float(x[r, c])))
             vectors.append((name if nc == 1 else f"{name}_{c}", 8, values))
-    set_id, set_value = 1, 0.0
+    return vectors, unwritable
+
+
+def _set_fields(mesh, unwritable):
+    """The output set's ``femap:set`` and ``meshio:time`` (None when absent);
+    other field data goes to ``unwritable``."""
+    set_id = set_value = None
     for name in sorted(mesh.field_data):
         a = np.asarray(mesh.field_data[name]).ravel()
         if name == "femap:set" and a.size == 1:
-            set_id = max(1, int(a[0]))
+            set_id = int(a[0])
         elif name == "meshio:time" and a.size == 1:
             set_value = float(a[0])
         else:
             unwritable.append(name)
+    return set_id, set_value
+
+
+def _note_unwritable(unwritable):
     if unwritable:
         listed = ", ".join(unwritable)
         warn(
@@ -720,6 +742,20 @@ def write(filename, mesh):
             "data-dropped", f"arrays with no Femap output vector: {listed}"
         )
 
+
+def _block_open(out, bid):
+    out.append(f"   -1\n{bid:6d}\n")
+
+
+def _block_close(out):
+    out.append("   -1\n")
+
+
+def _mesh_blocks(mesh, plan):
+    """Blocks 100 (header), 402 (properties), 403 (nodes), 404 (elements) and
+    408 (groups)."""
+    ncells, label, prop, etype = plan.ncells, plan.label, plan.prop, plan.etype
+    regions = plan.regions
     prop_cells = {}
     prop_type = {}
     for g in range(ncells):
@@ -736,26 +772,19 @@ def write(filename, mesh):
             property_regions.add(k)
 
     out = []
-
-    def block_open(bid):
-        out.append(f"   -1\n{bid:6d}\n")
-
-    def block_close():
-        out.append("   -1\n")
-
-    block_open(100)
+    _block_open(out, 100)
     out.append(
         _clean_title(_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0])
         + "\n8.2,\n"
     )
-    block_close()
+    _block_close(out)
 
     def zero_lines(count, per_line, zero):
         for k in range(0, count, per_line):
             out.append(f"{zero}," * (min(count, k + per_line) - k) + "\n")
 
     if prop_cells:
-        block_open(402)
+        _block_open(out, 402)
         for pid in sorted(prop_cells):
             out.append(f"{pid},110,0,{prop_type[pid]},1,0,\n")
             out.append(
@@ -766,28 +795,28 @@ def write(filename, mesh):
             out.append("190,\n")
             zero_lines(190, 5, "0.")
             out.append("0,\n0,\n")
-        block_close()
+        _block_close(out)
 
-    block_open(403)
-    pts = points.astype(np.float64, copy=False)
-    for p in range(npts):
-        xyz = [pts[p, d] if d < pdim else 0.0 for d in range(3)]
+    _block_open(out, 403)
+    pts = plan.points.astype(np.float64, copy=False)
+    for p in range(plan.npts):
+        xyz = [pts[p, d] if d < plan.pdim else 0.0 for d in range(3)]
         out.append(
             f"{p + 1},0,0,1,46,0,0,0,0,0,0,"
             + "".join(f"{_fmt(v)}," for v in xyz)
             + "0,\n"
         )
-    block_close()
+    _block_close(out)
 
-    if written:
-        block_open(404)
+    if plan.written:
+        _block_open(out, 404)
         for b, block in enumerate(mesh.cells):
-            if tops[b] is None:
+            if plan.tops[b] is None:
                 continue
-            code, slots, _ = tops[b]
+            code, slots, _ = plan.tops[b]
             data = np.asarray(block.data, dtype=np.int64)
             for r in range(len(data)):
-                g = starts[b] + r
+                g = plan.starts[b] + r
                 sl = [0] * 20
                 for j, s in enumerate(slots):
                     sl[s] = int(data[r, j]) + 1
@@ -799,7 +828,7 @@ def write(filename, mesh):
                 out.append(
                     "0.,0.,0.,\n0.,0.,0.,\n0.,0.,0.,\n0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,\n"
                 )
-        block_close()
+        _block_close(out)
 
     names = []
     groups = {}
@@ -822,7 +851,7 @@ def write(filename, mesh):
         used = {tags[n] for n in names if tags[n] > 0}
         assigned = set()
         nxt = 1
-        block_open(408)
+        _block_open(out, 408)
         for name in names:
             gid = tags[name]
             if gid <= 0 or gid in assigned:
@@ -840,29 +869,141 @@ def write(filename, mesh):
             if elements:
                 out.append("8,\n" + "".join(f"{v},\n" for v in elements) + "-1,\n")
             out.append("-1,\n")
-        block_close()
+        _block_close(out)
+    return out
 
+
+def _set_blocks(set_id, set_value, vectors, ids):
+    """One output set (450) and its vectors (451); ``ids`` gives each vector's id."""
+    out = []
+    _block_open(out, 450)
+    out.append(f"{set_id},\nmeshio++\n0,1,\n{_fmt(set_value)},\n0,\n")
+    _block_close(out)
+    if not vectors:
+        return out
+    _block_open(out, 451)
+    for (title, entity, values), vid_ in zip(vectors, ids):
+        lo = hi = absmax = 0.0
+        id_lo = id_hi = 0
+        for j, (vid, x) in enumerate(values):
+            if j == 0 or x < lo:
+                lo, id_lo = x, vid
+            if j == 0 or x > hi:
+                hi, id_hi = x, vid
+            absmax = max(absmax, abs(x))
+        out.append(f"{set_id},{vid_},1,\n{_clean_title(title)}\n")
+        out.append(f"{_fmt(lo)},{_fmt(hi)},{_fmt(absmax)},\n")
+        out.append("0,0,0,0,0,0,0,0,0,0,\n" * 2)
+        out.append(f"{id_lo},{id_hi},0,{entity},\n0,0,1,\n")
+        out.append("".join(f"{vid},{_fmt(x)},\n" for vid, x in values))
+        out.append("-1,0.,\n")
+    _block_close(out)
+    return out
+
+
+def write(filename, mesh):
+    plan = _Plan(mesh)
+    vectors, unwritable = _vectors(mesh, plan)
+    set_id, set_value = _set_fields(mesh, unwritable)
+    _note_unwritable(unwritable)
+    out = _mesh_blocks(mesh, plan)
     if vectors:
-        block_open(450)
-        out.append(f"{set_id},\nmeshio++\n0,1,\n{_fmt(set_value)},\n0,\n")
-        block_close()
-        block_open(451)
-        for k, (title, entity, values) in enumerate(vectors, start=1):
-            lo = hi = absmax = 0.0
-            id_lo = id_hi = 0
-            for j, (vid, x) in enumerate(values):
-                if j == 0 or x < lo:
-                    lo, id_lo = x, vid
-                if j == 0 or x > hi:
-                    hi, id_hi = x, vid
-                absmax = max(absmax, abs(x))
-            out.append(f"{set_id},{k},1,\n{_clean_title(title)}\n")
-            out.append(f"{_fmt(lo)},{_fmt(hi)},{_fmt(absmax)},\n")
-            out.append("0,0,0,0,0,0,0,0,0,0,\n" * 2)
-            out.append(f"{id_lo},{id_hi},0,{entity},\n0,0,1,\n")
-            out.append("".join(f"{vid},{_fmt(x)},\n" for vid, x in values))
-            out.append("-1,0.,\n")
-        block_close()
-
+        out += _set_blocks(
+            max(1, set_id or 0),
+            0.0 if set_value is None else set_value,
+            vectors,
+            range(1, len(vectors) + 1),
+        )
     with open_file(filename, "w", newline="\n") as fh:
         fh.write("".join(out))
+
+
+def _fingerprint(mesh):
+    """What must not change between the steps of a series, as digests (no copy
+    of a step is kept): the cells, and separately the points."""
+    import hashlib
+
+    cells = hashlib.blake2b(digest_size=16)
+    for block in mesh.cells:
+        data = np.asarray(block.data, dtype=np.int64)
+        cells.update(f"{block.type}:{data.shape};".encode())
+        cells.update(np.ascontiguousarray(data).tobytes())
+    points = hashlib.blake2b(
+        np.ascontiguousarray(np.asarray(mesh.points, dtype=np.float64)).tobytes(),
+        digest_size=16,
+    )
+    return cells.digest(), points.digest()
+
+
+class SeriesWriter:
+    """Write a time series into one neutral file: the mesh once, then an output
+    set (450) with its vectors (451) per step, the steps ``read(time_step=k)``
+    reads back. Every step must have the first step's cells; a step whose points
+    moved is written with the first step's, with a warning. Use as a context
+    manager, or call :meth:`close`."""
+
+    def __init__(self, filename):
+        # A path is opened as `write` opens it; a caller's buffer is written
+        # into and left open.
+        self._owned = not is_buffer(filename, "w")
+        self._fh = open(filename, "w", newline="\n") if self._owned else filename
+        self._cells = self._points = None
+        self._plan = None
+        self._set_ids = set()
+        self._next_set = 1
+        self._vector_ids = {}
+        self._moved = False
+        self._step = 0
+
+    def write(self, time, mesh):
+        if self._plan is None:
+            self._plan = _Plan(mesh)
+            vectors, unwritable = _vectors(mesh, self._plan)
+            set_id, _ = _set_fields(mesh, unwritable)
+            _note_unwritable(unwritable)
+            self._fh.write("".join(_mesh_blocks(mesh, self._plan)))
+            self._cells, self._points = _fingerprint(mesh)
+        else:
+            cells, points = _fingerprint(mesh)
+            if cells != self._cells:
+                raise WriteError(
+                    f"Femap series: step {self._step}'s cells differ from the first "
+                    "step's; a neutral file holds one mesh -- write one file per step "
+                    "with '{step}'"
+                )
+            if points != self._points and not self._moved:
+                self._moved = True
+                warn(
+                    "Femap series: points moved after the first step; written as the first step's"
+                )
+                _provenance.note(
+                    "points-moved", "every output set shares the first step's points"
+                )
+            vectors, unwritable = _vectors(mesh, self._plan)
+            set_id, _ = _set_fields(mesh, unwritable)
+        if set_id is None or set_id <= 0 or set_id in self._set_ids:
+            while self._next_set in self._set_ids:
+                self._next_set += 1
+            set_id = self._next_set
+        self._set_ids.add(set_id)
+        ids = []
+        for title, entity, _ in vectors:
+            key = (title, entity)
+            if key not in self._vector_ids:
+                self._vector_ids[key] = len(self._vector_ids) + 1
+            ids.append(self._vector_ids[key])
+        self._fh.write("".join(_set_blocks(set_id, float(time), vectors, ids)))
+        self._step += 1
+
+    def close(self):
+        if self._fh is not None:
+            if self._owned:
+                self._fh.close()
+            self._fh = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False

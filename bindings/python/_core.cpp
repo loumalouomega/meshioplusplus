@@ -16,6 +16,7 @@
 //
 // System includes
 #include <memory>
+#include <set>
 #include <vector>
 
 // External includes
@@ -842,6 +843,38 @@ PYBIND11_MODULE(_core, m) {
                              path, fmt, meshioplusplus::ReadOptions{}));
                      }),
           py::arg("path"), py::arg("format") = "");
+
+    // The native registry's own lists, the way WASM's availableFormats reports
+    // them: what reads, what writes, and the extension defaults. The drift guard
+    // in tests/python/test_conformance.py holds them against Python's registry.
+    m.def("registry_formats", []() {
+        // A format may read only through the options-aware table.
+        std::set<std::string> read_names;
+        for (const auto& entry : meshioplusplus::registry_readers())
+            read_names.insert(entry.first);
+        for (const auto& entry : meshioplusplus::registry_readers_ex())
+            read_names.insert(entry.first);
+        py::list readable;
+        for (const std::string& name : read_names)
+            readable.append(name);
+        py::list writable;
+        for (const auto& entry : meshioplusplus::registry_writers())
+            writable.append(entry.first);
+        py::dict extensions;
+        for (const auto& [ext, fmt] : meshioplusplus::registry_extension_defaults())
+            extensions[py::str(ext)] = fmt;
+        py::dict out;
+        out["readable"] = readable;
+        out["writable"] = writable;
+        out["extensions"] = extensions;
+        return out;
+    });
+    m.def(
+        "resolve_write_format",
+        [](const std::string& path, const std::string& format) {
+            return meshioplusplus::resolve_write_format(path, format);
+        },
+        py::arg("path"), py::arg("format") = "");
 
     // Whether `format` has a native selective-read path (rather than being read
     // whole and filtered afterwards).
@@ -2959,6 +2992,19 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("femap_time_values",
           [](const std::string& path) { return meshioplusplus::femap_time_values(path); });
+    // A time series in one neutral file (v16.17.0): the core half of
+    // `meshioplusplus.femap.SeriesWriter`.
+    py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::FemapSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::FemapSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::FemapSeriesWriter::Finalize);
 
     // Abaqus results file (.fil) reader.
     m.def(
@@ -3027,6 +3073,13 @@ PYBIND11_MODULE(_core, m) {
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_marc(path));
           }));
     m.def(
+        "marc_write",
+        [](const std::string& path, py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_marc(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+        },
+        py::arg("path"), py::arg("mesh"));
+    m.def(
         "marc_t19_read",
         guard_read("marc_t19",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {
@@ -3042,6 +3095,13 @@ PYBIND11_MODULE(_core, m) {
     m.def("radioss_read", guard_read("radioss", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
           }));
+    m.def(
+        "radioss_write",
+        [](const std::string& path, py::object pymesh, bool stubs) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_radioss(path, meshioplusplus_py::py_to_mesh(pymesh, refs), stubs);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("stubs") = false);
     // OpenRadioss animation file (A001...) reader.
     // OpenRadioss time-history (T01) reader.
     m.def(
@@ -3276,10 +3336,14 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0);
 
     // EnSight Gold writer / reader (.case/.geo pair, geometry only).
-    m.def("ensight_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_ensight(path, meshioplusplus_py::py_to_mesh(pymesh, refs), binary);
-    });
+    m.def(
+        "ensight_write",
+        [](const std::string& path, py::object pymesh, bool binary, bool fortran) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_ensight(path, meshioplusplus_py::py_to_mesh(pymesh, refs), binary,
+                                          fortran);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("fortran") = false);
     m.def("ensight_read",
           guard_read("ensight",
                      [](const std::string& path, int time_step) {

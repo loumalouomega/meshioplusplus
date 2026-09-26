@@ -72,6 +72,26 @@ MESHIOPLUSPLUS_API bool is_marc_deck(std::string_view Head);
 MESHIOPLUSPLUS_API Mesh read_marc(const std::string& rPath);
 
 /**
+ * @brief Write an MSC Marc input deck (`.dat`) in `EXTENDED` format.
+ *
+ * The parameter section (`TITLE`, `SIZING`, one `ELEMENTS` line per type,
+ * `END`), then `CONNECTIVITY`, `COORDINATES`, a `DEFINE NODE SET` per point
+ * region and a `DEFINE ELEMENT SET` per cell region, and `END OPTION`. A
+ * cell's Marc type is its `marc:type` when that fits it, else a default (the
+ * solids and shells in 3-D, the plane-strain elements in a planar mesh; a
+ * pyramid as a degenerate brick); element numbers are `marc:element` when
+ * positive and unique. Face and edge sets come back from their `marc:` field
+ * data. `.dat` is Tecplot's for a write by extension: name the format.
+ * Other cells, data and side regions are dropped with a warning.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @throws WriteError for a mesh with no points or points of dimension above 3
+ * @note Since v16.17.0. The Python twin writes the same bytes.
+ */
+MESHIOPLUSPLUS_API void write_marc(const std::string& rPath, const Mesh& rMesh);
+
+/**
  * @brief Read one increment of an MSC Marc formatted post file.
  * @param rOptions `mTimeStep` picks the increment (negative counts from the
  *        end); `mPointsOnly`/`mDataArrays` narrow the data read

@@ -42,6 +42,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -82,46 +83,18 @@ const std::unordered_map<std::string, int>& meshio_to_gmsh_type() {
     return m;
 }
 
-// Permutation P such that meshio_row[j] = gmsh_row[P[j]]; empty = identity.
+// gmsh's node permutations live in the node-ordering registry
+// (detail/node_order.cpp): meshio_row[j] = gmsh_row[P[j]]; empty = identity.
 const std::vector<int>& gmsh_to_meshio_perm(const std::string& rT) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra10", {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
-        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15}},
-        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 13, 9,  16, 18,
-                          19, 17, 10, 12, 14, 15, 22, 23, 21, 24, 20, 25, 26}},
-        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11}},
-        {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12}},
-        // wedge18/pyramid14 extend wedge15/pyramid13's corner+mid-edge
-        // portion unchanged with the added face-centre node(s): wedge18's
-        // three quad-face centres (indices 15-17), pyramid14's one
-        // base-face centre (index 13). Derived from gmsh's own edge/face
-        // tables (src/geo/MPrism.h, src/geo/MPyramid.h in gmsh's source)
-        // against meshio's own layout (`_skin.py`'s `_CELL_FACES`, pinned
-        // independently by the CGNS wedge18 permutation in cgns.cpp) and
-        // verified geometrically: every mid-edge/face-centre slot lands at
-        // the exact arithmetic midpoint/centroid of the corners it should.
-        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16}},
-        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13}},
-    };
     static const std::vector<int> empty;
-    auto it = m.find(rT);
-    return it == m.end() ? empty : it->second;
+    const detail::NodeOrder* order = detail::node_order("gmsh", rT);
+    return order ? order->mToMeshio : empty;
 }
 
 const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra10", {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
-        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 16, 9, 17, 10, 18, 19, 12, 15, 13, 14}},
-        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  11, 16, 9,  17, 10,
-                          18, 19, 12, 15, 13, 14, 24, 22, 20, 21, 23, 25, 26}},
-        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10}},
-        {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12}},
-        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10, 15, 17, 16}},
-        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12, 13}},
-    };
     static const std::vector<int> empty;
-    auto it = m.find(rT);
-    return it == m.end() ? empty : it->second;
+    const detail::NodeOrder* order = detail::node_order("gmsh", rT);
+    return order ? order->mFromMeshio : empty;
 }
 
 std::string gmsh_trim(const std::string& rS) {

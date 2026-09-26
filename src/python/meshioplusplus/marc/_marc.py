@@ -18,12 +18,14 @@ import re
 
 import numpy as np
 
+from .. import _provenance
 from .._common import num_nodes_per_cell, warn
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
 from .._files import is_buffer, open_file
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region
-from ..lsdyna._lsdyna import _collapse_solid
+from ..lsdyna._cards import format_real_fit, format_real_short
+from ..lsdyna._lsdyna import _collapse_solid, _expand_solid
 
 _DAT = "Marc .dat"
 _T19 = "Marc .t19"
@@ -996,3 +998,259 @@ def time_values(filename):
     """The time (a frequency or buckling factor in a modal, harmonic or buckling
     analysis) of every increment."""
     return _Post(filename).times()
+
+
+# -- writing the input deck ------------------------------------------------------
+
+# The Marc element type a cell is written as when its marc:type does not fit it:
+# (in a 3-D mesh, in a planar one); None when Marc has no such element there.
+# Planar meshes (two coordinates, or z = 0, and no volume cells) get the
+# plane-strain elements, 3-D ones the solids and shells. A pyramid is a
+# degenerate brick of type 7.
+_WRITE_TYPES = {
+    "hexahedron": (7, None),
+    "hexahedron20": (21, None),
+    "tetra": (134, None),
+    "tetra10": (127, None),
+    "wedge": (136, None),
+    "pyramid": (7, None),
+    "quad": (75, 11),
+    "triangle": (138, 6),
+    "quad8": (22, 27),
+    "triangle6": (None, 125),
+    "line": (9, 9),
+    "line3": (64, 64),
+}
+# A set named as a keyword the reader can meet next would swallow that line.
+_RESERVED_SET_NAMES = ("define", "end")
+_SET_ITEMS_PER_LINE = 6
+_NODES_PER_LINE = 14
+
+
+def _i10(*values):
+    return "".join(f"{int(v):10d}" for v in values)
+
+
+def _real20(value):
+    """A real in a 20-column field: exact when its shortest spelling fits."""
+    text = format_real_short(value)
+    return f"{text if len(text) <= 20 else format_real_fit(value, 20):>20}"
+
+
+def _keyword(*words):
+    """A keyword line: each word but the last padded to 20 columns."""
+    return "".join(f"{w:<20}" for w in words[:-1]) + words[-1]
+
+
+def _set_items(ids):
+    """Set items: ascending runs of three or more as ``a to b``."""
+    out = []
+    k = 0
+    while k < len(ids):
+        j = k
+        while j + 1 < len(ids) and ids[j + 1] == ids[j] + 1:
+            j += 1
+        if j - k >= 2:
+            out.append(f"{_i10(ids[k])} to {_i10(ids[j])}")
+            k = j + 1
+        else:
+            out.append(_i10(ids[k]))
+            k += 1
+    return out
+
+
+def _set_lines(items):
+    """Set items six to a line, every line but the last ending in ``c``."""
+    lines = [
+        "".join(items[k : k + _SET_ITEMS_PER_LINE])
+        for k in range(0, len(items), _SET_ITEMS_PER_LINE)
+    ]
+    return [line + "   c" for line in lines[:-1]] + lines[-1:]
+
+
+def _set_name(name, used):
+    """A set name the reader reads back as one token: blanks, commas and ``$``
+    become ``_``, a keyword the next line could start with gets ``_set``, and
+    a name already taken (case-insensitively) a ``_2``, ``_3`` ... suffix."""
+    base = "".join("_" if ch in " \t,$\r\n" else ch for ch in str(name)) or "set"
+    if base.lower() in _RESERVED_SET_NAMES:
+        base += "_set"
+    out, k = base, 2
+    while out.lower() in used:
+        out = f"{base}_{k}"
+        k += 1
+    used.add(out.lower())
+    return out
+
+
+def write(filename, mesh):
+    """Write an MSC Marc input deck (see ``marc/__init__.py``)."""
+    points = np.asarray(mesh.points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] > 3:
+        raise WriteError("Marc writer: points must have 1 to 3 coordinates")
+    npts = len(points)
+    if npts == 0:
+        raise WriteError("Marc writer: a deck needs nodes; the mesh has none")
+    volume = any(
+        not isinstance(b.data, list) and topological_dimension.get(b.type) == 3
+        for b in mesh.cells
+    )
+    planar = not volume and (points.shape[1] < 3 or bool(np.all(points[:, 2] == 0.0)))
+
+    def cell_array(name):
+        if name not in mesh.cell_data or len(mesh.cell_data[name]) != len(mesh.cells):
+            return None
+        return [np.asarray(a).reshape(-1) for a in mesh.cell_data[name]]
+
+    marc_type = cell_array("marc:type")
+    marc_element = cell_array("marc:element")
+
+    # Every cell: (block, row, Marc type) or None when it is not written.
+    cells = []
+    dropped, changed = set(), set()
+    for b, block in enumerate(mesh.cells):
+        ragged = isinstance(block.data, list)
+        default = _WRITE_TYPES.get(block.type, (None, None))[1 if planar else 0]
+        nodes = (
+            0
+            if ragged
+            else np.asarray(block.data).reshape(len(block.data), -1).shape[1]
+        )
+        for r in range(len(block.data)):
+            etype = None
+            if not ragged and marc_type is not None:
+                want = int(marc_type[b][r])
+                known = TYPES.get(want)
+                if known is not None:
+                    kind, count = known
+                    if (kind == block.type and count == nodes) or (
+                        kind == "hexahedron"
+                        and count == 8
+                        and block.type in ("tetra", "pyramid", "wedge")
+                    ):
+                        etype = want
+                    elif default is not None:
+                        changed.add(block.type)
+            if etype is None and not ragged:
+                etype = default
+            if etype is None:
+                dropped.add(block.type)
+                cells.append(None)
+            else:
+                cells.append((b, r, etype))
+    for t in sorted(dropped):
+        warn(f"Marc writer: '{t}' cells have no Marc element type here; dropped")
+        _provenance.note("cells-dropped", f"Marc has no element type for '{t}' cells")
+    if changed:
+        warn(
+            "Marc writer: marc:type of some "
+            + ", ".join(sorted(changed))
+            + " cells does not fit them (or has extra nodes); written as the default type"
+        )
+        _provenance.note(
+            "type-changed", "a marc:type that does not fit its cell is replaced"
+        )
+    written = [c for c in range(len(cells)) if cells[c] is not None]
+
+    # Element numbers: marc:element when they are positive and unique.
+    ids = []
+    if marc_element is not None:
+        ids = [int(marc_element[cells[c][0]][cells[c][1]]) for c in written]
+        if min(ids, default=1) <= 0 or len(set(ids)) != len(ids):
+            warn(
+                "Marc writer: marc:element is not positive and unique; elements renumbered"
+            )
+            ids = []
+    if not ids:
+        ids = list(range(1, len(written) + 1))
+    elem_id = dict(zip(written, ids))
+
+    # Sets, in the core's region order (kind, name, dim, tag), with sorted
+    # entries: point regions as node sets, cell regions as element sets.
+    kind_order = {"point": 0, "cell": 1, "side": 2}
+    regions = sorted(
+        getattr(mesh, "regions", None) or [],
+        key=lambda r: (kind_order.get(r.kind, 3), r.name.encode("utf-8"), r.dim, r.tag),
+    )
+    used_names = set()
+    sets = []  # (family, name, items)
+    unlisted = sides = 0
+    for reg in regions:
+        entries = sorted(set(int(v) for v in np.asarray(reg.entries).reshape(-1)))
+        if reg.kind == "point":
+            members = [v + 1 for v in entries if 0 <= v < npts]
+            family = "node"
+        elif reg.kind == "cell":
+            members = sorted(elem_id[c] for c in entries if c in elem_id)
+            unlisted += sum(1 for c in entries if c not in elem_id)
+            family = "element"
+        else:
+            sides += 1
+            continue
+        sets.append((family, _set_name(reg.name, used_names), _set_items(members)))
+    if unlisted:
+        warn(f"Marc writer: {unlisted} set member(s) on cells not written dropped")
+    if sides:
+        warn("Marc writer: side regions dropped (Marc face numbering is not mapped)")
+        _provenance.note(
+            "regions-dropped", "Marc face and edge sets are not mapped to facets"
+        )
+
+    # Face and edge sets read from a deck come back from their field data.
+    facet_sets = []
+    dropped_data = len(mesh.point_data) + sum(
+        1 for name in mesh.cell_data if name not in ("marc:element", "marc:type")
+    )
+    for name in sorted(mesh.field_data):
+        family = next(
+            (f for f in ("edge", "face") if name.startswith(f"marc:{f}_set:")), None
+        )
+        if family is None:
+            dropped_data += 1
+            continue
+        rows = np.asarray(mesh.field_data[name], dtype=np.int64).reshape(-1, 2)
+        items = [
+            f"{elem_id[int(c)]}:{int(n)}" for c, n in rows.tolist() if int(c) in elem_id
+        ]
+        set_name = _set_name(name.split(":", 2)[2], used_names)
+        facet_sets.append((family, set_name, [f" {t}" for t in items]))
+    if dropped_data:
+        warn(
+            "Marc writer: a deck holds no data arrays; point, cell and field data other "
+            "than marc:element, marc:type and the face and edge sets dropped"
+        )
+        _provenance.note("data-dropped", "a Marc deck holds no data arrays")
+
+    types_used = sorted({cells[c][2] for c in written})
+    out = [_keyword("title", "meshio++")]
+    out += ["$ " + line for line in _provenance.lines(_provenance.SlotTier.BLOCK)]
+    out += [
+        "extended",
+        _keyword("sizing", _i10(0, len(written), npts, 0)),
+    ]
+    out += [_keyword("elements", _i10(t)) for t in types_used]
+    out += ["end", "connectivity", _i10(len(written), 0, 1)]
+    for c in written:
+        b, r, etype = cells[c]
+        block = mesh.cells[b]
+        nodes = [int(v) + 1 for v in np.asarray(block.data[r])]
+        if TYPES[etype][0] == "hexahedron" and block.type != "hexahedron":
+            nodes = _expand_solid(block.type, nodes)
+        elif 168 <= etype <= 170 and len(nodes) == 3:
+            nodes = [nodes[0], nodes[2], nodes[1]]
+        out.append(_i10(elem_id[c], etype, *nodes[:_NODES_PER_LINE]))
+        rest = nodes[_NODES_PER_LINE:]
+        out += [
+            _i10(*rest[k : k + _NODES_PER_LINE])
+            for k in range(0, len(rest), _NODES_PER_LINE)
+        ]
+    out += ["coordinates", _i10(3, npts, 0, 1)]
+    for p in range(npts):
+        xyz = [float(points[p, d]) if d < points.shape[1] else 0.0 for d in range(3)]
+        out.append(_i10(p + 1) + "".join(_real20(v) for v in xyz))
+    for family, name, items in sets + facet_sets:
+        out.append(_keyword("define", family, "set", name))
+        out += _set_lines(items)
+    out.append("end option")
+    with open(os.fspath(filename), "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(out) + "\n")

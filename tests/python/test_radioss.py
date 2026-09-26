@@ -373,3 +373,240 @@ def test_version_4_decks_title_their_keywords(read, tmp_path):
     assert np.asarray(mesh.points)[4].tolist() == [0.0, 2.0, 0.0]
     assert sorted(_region(mesh, "point", "FIXED_NODES").entries.tolist()) == [0, 3]
     assert len(_region(mesh, "cell", "COPPER").entries) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Writing                                                                     #
+# --------------------------------------------------------------------------- #
+
+WRITERS = {
+    "core": lambda p, m, stubs=False: _core.radioss_write(str(p), m, stubs),
+    "python": lambda p, m, stubs=False: py_radioss.write(p, m, stubs=stubs),
+}
+
+
+def _every_card_mesh():
+    """One cell of every type the writer has a card for, a node group and a
+    surface on a solid face and on a shell."""
+    from meshioplusplus._regions import Region
+
+    c = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4)]
+    edges += [(0, 4), (1, 5), (2, 6), (3, 7)]
+    h20 = np.vstack([c] + [(c[a] + c[b])[None] / 2 for a, b in edges])
+    t = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    t_edges = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)]
+    t10 = np.vstack([t] + [(t[a] + t[b])[None] / 2 for a, b in t_edges])
+    w = c[[0, 1, 3, 4, 5, 7]]
+    p = np.vstack([c[:4], [[0.5, 0.5, 1.0]]])
+    q = c[:4] + [0, 0, -1]
+    blocks = [
+        ("hexahedron20", h20),
+        ("tetra10", t10 + [2, 0, 0]),
+        ("hexahedron", c + [4, 0, 0]),
+        ("tetra", t + [6, 0, 0]),
+        ("wedge", w + [8, 0, 0]),
+        ("pyramid", p + [10, 0, 0]),
+        ("quad", q),
+        ("triangle", q[:3] + [2, 0, 0]),
+        ("line", q[:2] + [4, 0, 0]),
+    ]
+    pts, cells = [], []
+    for ctype, x in blocks:
+        cells.append((ctype, np.arange(len(x))[None] + sum(len(y) for y in pts)))
+        pts.append(x)
+    mesh = meshioplusplus.Mesh(np.vstack(pts), cells)
+    mesh.regions = [
+        Region("fixed", "point", np.array([0, 1, 2]), tag=4),
+        Region("skin", "side", np.array([[2, 0], [6, 0], [7, 2]]), tag=7),
+        Region("solids", "cell", np.array([0, 1, 2, 3, 4, 5]), tag=3),
+    ]
+    return mesh
+
+
+def _same_mesh(a, b):
+    np.testing.assert_array_equal(a.points, b.points)
+    assert [c.type for c in a.cells] == [c.type for c in b.cells]
+    for x, y in zip(a.cells, b.cells):
+        np.testing.assert_array_equal(x.data, y.data)
+
+
+@pytest.mark.parametrize("engine", sorted(WRITERS))
+def test_every_card_round_trips(engine, tmp_path):
+    mesh = _every_card_mesh()
+    out = tmp_path / "every_0000.rad"
+    WRITERS[engine](out, mesh)
+    for back in (meshioplusplus.radioss.read(out), py_radioss.read(out)):
+        _same_mesh(mesh, back)
+        by_name = {(r.kind, r.name): r for r in back.regions}
+        np.testing.assert_array_equal(by_name[("point", "fixed")].entries, [0, 1, 2])
+        assert by_name[("point", "fixed")].tag == 4
+        # The shell's own face, and the hexahedron's first face.
+        sides = sorted(
+            map(tuple, np.asarray(by_name[("side", "skin")].entries).tolist())
+        )
+        assert sides == [(2, 0), (6, 0), (7, 0)]
+        # A region of one element family is a part.
+        assert by_name[("cell", "solids")].tag == 3
+
+
+@pytest.mark.parametrize("path", DECKS, ids=[p.name for p in DECKS])
+def test_decks_round_trip_and_the_writers_agree(path, tmp_path):
+    mesh = py_radioss.read(path)
+    written = {}
+    for engine, writer in WRITERS.items():
+        for stubs in (False, True):
+            out = tmp_path / engine / str(stubs) / path.name
+            out.parent.mkdir(parents=True)
+            writer(out, mesh, stubs)
+            written[(engine, stubs)] = out.read_bytes()
+    assert written[("core", False)] == written[("python", False)]
+    assert written[("core", True)] == written[("python", True)]
+    back = py_radioss.read(tmp_path / "core" / "False" / path.name)
+    _same_mesh(mesh, back)
+    for name in ("radioss:part", "radioss:property", "radioss:material"):
+        for x, y in zip(mesh.cell_data[name], back.cell_data[name]):
+            np.testing.assert_array_equal(x, y)
+    assert _regions(mesh) == _regions(back)
+
+
+def test_titles_stay_one_title_line(tmp_path):
+    from meshioplusplus._regions import Region
+
+    mesh = _every_card_mesh()
+    names = ["#not a comment", "/not a keyword", "two\nlines", "x" * 150]
+    mesh.regions = [
+        Region(n, "point", np.array([k]), tag=k + 1) for k, n in enumerate(names)
+    ]
+    for engine, writer in WRITERS.items():
+        out = tmp_path / f"{engine}_0000.rad"
+        writer(out, mesh)
+        back = {
+            r.tag: r.name for r in py_radioss.read(out).regions if r.kind == "point"
+        }
+        assert back == {
+            1: "#not a comment",
+            2: "/not a keyword",
+            3: "two lines",
+            4: "x" * 100,
+        }
+
+
+def _stub_props(text):
+    """{property id: (type, first field)} and {part id: property id} of a deck."""
+    lines = text.split("\n")
+    props, parts = {}, {}
+    for k, line in enumerate(lines):
+        if line.startswith("/PROP/"):
+            kind, pid = line.split("/")[2:4]
+            props[int(pid)] = (kind, lines[k + 2][:10].strip())
+        if line.startswith("/PART/"):
+            parts[int(line[6:])] = int(lines[k + 2][:10])
+    return props, parts
+
+
+def test_stub_properties_fit_each_card(tmp_path):
+    # The every-card mesh: its "solids" region (every solid) is one part, whose
+    # bricks mix /BRICK and /BRIC20 (Isolid 0, which the starter turns to 16
+    # for the /BRIC20); the shells and the truss have their own types.
+    mesh = _every_card_mesh()
+    # A /BRIC20 on its own gets Isolid 16.
+    alone = meshioplusplus.Mesh(mesh.points, [mesh.cells[0]])
+    for engine, writer in WRITERS.items():
+        out = tmp_path / f"{engine}_0000.rad"
+        writer(out, mesh, True)
+        text = out.read_text()
+        assert "/MAT/LAW1/1" in text
+        props, parts = _stub_props(text)
+        assert sorted(props[p] for p in set(parts.values())) == [
+            ("SHELL", "0"),
+            ("SHELL", "0"),
+            ("SOLID", "0"),
+            ("TRUSS", ""),
+        ]
+        writer(out, alone, True)
+        props, _ = _stub_props(out.read_text())
+        assert list(props.values()) == [("SOLID", "16")]
+    # A part of solids and shells has no one stub property.
+    mixed = _every_card_mesh()
+    mixed.cell_data["radioss:part"] = [
+        np.ones(len(c.data), dtype=int) for c in mixed.cells
+    ]
+    for writer in WRITERS.values():
+        with pytest.raises(meshioplusplus.WriteError, match="no one stub property"):
+            writer(tmp_path / "m_0000.rad", mixed, True)
+
+
+def test_write_dispatch_and_refusals(tmp_path):
+    mesh = _every_card_mesh()
+    meshioplusplus.write(tmp_path / "d_0000.rad", mesh)
+    assert "/BRIC20/" in (tmp_path / "d_0000.rad").read_text()
+    empty = meshioplusplus.Mesh(np.zeros((0, 3)), [])
+    for writer in WRITERS.values():
+        with pytest.raises(meshioplusplus.WriteError, match="needs nodes"):
+            writer(tmp_path / "e_0000.rad", empty)
+
+
+def _openradioss():
+    import os
+
+    root = os.environ.get("MESHIOPLUSPLUS_OPENRADIOSS")
+    if not root:
+        pytest.skip(
+            "set MESHIOPLUSPLUS_OPENRADIOSS to an OpenRadioss install to run its starter"
+        )
+    return pathlib.Path(root)
+
+
+def _run_starter(root, deck):
+    import os
+    import subprocess
+
+    env = dict(os.environ)
+    env.update(
+        OPENRADIOSS_PATH=str(root),
+        RAD_CFG_PATH=str(root / "hm_cfg_files"),
+        OMP_NUM_THREADS="1",
+        LD_LIBRARY_PATH=os.pathsep.join(
+            [
+                str(root / "extlib" / "hm_reader" / "linux64"),
+                env.get("LD_LIBRARY_PATH", ""),
+            ]
+        ),
+    )
+    exe = root / "exec" / "starter_linux64_gf"
+    run = subprocess.run(
+        [str(exe), "-i", deck.name, "-np", "1"],
+        cwd=deck.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    report = (deck.parent / (deck.stem + ".out")).read_text(errors="replace")
+    return run.returncode, report
+
+
+@pytest.mark.parametrize("path", DECKS, ids=[p.name for p in DECKS])
+def test_openradioss_starter_accepts_written_decks(path, tmp_path):
+    # Opt-in: MESHIOPLUSPLUS_OPENRADIOSS names an OpenRadioss install (its
+    # exec/, hm_cfg_files/ and extlib/); v16.17.0 was checked with the
+    # latest-20260728 build.
+    root = _openradioss()
+    deck = tmp_path / path.name
+    meshioplusplus.radioss.write(deck, py_radioss.read(path), stubs=True)
+    code, report = _run_starter(root, deck)
+    assert code == 0, report[-3000:]
+    assert "ERROR TERMINATION" not in report

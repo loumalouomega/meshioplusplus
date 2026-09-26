@@ -882,7 +882,7 @@ mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format)
     return guarded([&]() -> mio_status {
         if (!path || !mesh)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
-        std::string fmt = meshioplusplus::resolve_format(path, format_or_empty(format));
+        std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
         meshioplusplus::detail::provenance_begin_write();
         auto it = meshioplusplus::registry_writers().find(fmt);
         if (it == meshioplusplus::registry_writers().end())
@@ -1018,7 +1018,8 @@ mio_status mio_convert(const char* in_path, const char* in_format, const char* o
         if (!in_path || !out_path)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: path is NULL");
         std::string rfmt = meshioplusplus::resolve_format(in_path, format_or_empty(in_format));
-        std::string wfmt = meshioplusplus::resolve_format(out_path, format_or_empty(out_format));
+        std::string wfmt =
+            meshioplusplus::resolve_write_format(out_path, format_or_empty(out_format));
         auto rit = meshioplusplus::registry_readers().find(rfmt);
         if (rit == meshioplusplus::registry_readers().end())
             return fail(MIO_ERR_NOT_FOUND, unknown_format_message(rfmt, /*for_write=*/false));

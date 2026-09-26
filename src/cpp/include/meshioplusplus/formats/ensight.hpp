@@ -23,9 +23,12 @@
  * EnSight Gold stores a dataset as a small `.case` index file plus a
  * geometry file (conventionally `.geo`) and, optionally, one file per
  * `VARIABLE` entry. The `.case` `FORMAT`/`GEOMETRY` sections (the file must
- * declare `type: ensight gold`) and the Gold geometry file in both ASCII and
- * C-binary form (the leading `"C Binary"` 80-char record selects binary;
- * `"Fortran Binary"` is rejected) are read; since v11.3.0 (roadmap §1 tier
+ * declare `type: ensight gold`) and the Gold geometry file in ASCII, C-binary
+ * and (since v16.17.0) Fortran-binary form (the leading `"C Binary"` 80-char
+ * record selects binary; a `"Fortran Binary"` one framed as a Fortran
+ * sequential record selects Fortran binary, whose record markers are
+ * stripped, `detail/fortran_records.hpp`) are read; variable files follow
+ * their geometry file's encoding; since v11.3.0 (roadmap §1 tier
  * B1) so are `TIME` (a transient file's step times) and `VARIABLE` (per-node/
  * per-element scalar/vector `point_data`/`cell_data`) — see `read_ensight`'s
  * own doc comment. Binary files use 32-bit ints/floats in the writing
@@ -85,19 +88,31 @@ namespace meshioplusplus {
 MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
+ * @brief `write_ensight` in C binary or, with @p fortran, Fortran binary: the
+ * same records, each framed as a Fortran sequential unformatted record (4-byte
+ * length markers in host byte order before and after it), under a
+ * `"Fortran Binary"` first record. Since v16.17.0.
+ * @throws WriteError as `write_ensight`, and when @p fortran is set without
+ *         @p binary or a record exceeds 2 GiB
+ */
+MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                      bool fortran);
+
+/**
  * @brief Read an EnSight Gold `.case` file (or a Gold geometry file directly).
  *
  * A `.case` path is parsed for its `GEOMETRY`/`model:` entry (resolved
  * relative to the case file's directory; transient wildcard names are
- * rejected); any other path is treated as a Gold geometry file. ASCII and
- * C-binary geometries are both handled, including foreign-endian binaries.
+ * rejected); any other path is treated as a Gold geometry file. ASCII,
+ * C-binary and Fortran-binary geometries are handled, including
+ * foreign-endian binaries.
  *
  * @param rPath filesystem path to a `.case` file or a Gold `.geo` file
  * @return the read Mesh (parts concatenated; one cell block per per-part
  *         element section; `"ensight:part"` cell_data when the file has
  *         two or more parts)
- * @throws ReadError on malformed input, a non-Gold case file, Fortran-binary
- *         geometry, an unknown element keyword, or out-of-range connectivity
+ * @throws ReadError on malformed input, a non-Gold case file, an unknown
+ *         element keyword, or out-of-range connectivity
  */
 MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath);
 

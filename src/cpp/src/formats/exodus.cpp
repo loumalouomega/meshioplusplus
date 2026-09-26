@@ -36,6 +36,7 @@
 // Project includes
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -68,21 +69,42 @@ const std::unordered_map<std::string, std::string>& exodus_to_meshio() {
         {"HEX8", "hexahedron"},    {"HEX9", "hexahedron9"}, {"HEX20", "hexahedron20"},
         {"HEX27", "hexahedron27"}, {"TETRA", "tetra"},      {"TETRA4", "tetra4"},
         {"TET4", "tetra4"},        {"TETRA8", "tetra8"},    {"TETRA10", "tetra10"},
-        {"TETRA14", "tetra14"},    {"PYRAMID", "pyramid"},  {"WEDGE", "wedge"}};
+        {"TETRA14", "tetra14"},    {"PYRAMID", "pyramid"},  {"WEDGE", "wedge"},
+        {"PYRAMID5", "pyramid"},   {"WEDGE6", "wedge"},     {"PYRAMID13", "pyramid13"},
+        {"WEDGE15", "wedge15"}};
     return m;
 }
 
 // The Python reverse map is last-wins over dict order.
 const std::unordered_map<std::string, std::string>& meshio_to_exodus() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "SPHERE"},      {"line", "BAR2"},          {"line3", "BEAM3"},
-        {"quad", "QUAD4"},         {"quad5", "QUAD5"},        {"quad8", "QUAD8"},
-        {"quad9", "QUAD9"},        {"triangle", "TRI3"},      {"triangle6", "TRI6"},
-        {"triangle7", "TRI7"},     {"hexahedron", "HEX8"},    {"hexahedron9", "HEX9"},
-        {"hexahedron20", "HEX20"}, {"hexahedron27", "HEX27"}, {"tetra", "TETRA"},
-        {"tetra4", "TET4"},        {"tetra8", "TETRA8"},      {"tetra10", "TETRA10"},
-        {"tetra14", "TETRA14"},    {"pyramid", "PYRAMID"},    {"wedge", "WEDGE"}};
+        {"vertex", "SPHERE"},       {"line", "BAR2"},          {"line3", "BEAM3"},
+        {"quad", "QUAD4"},          {"quad5", "QUAD5"},        {"quad8", "QUAD8"},
+        {"quad9", "QUAD9"},         {"triangle", "TRI3"},      {"triangle6", "TRI6"},
+        {"triangle7", "TRI7"},      {"hexahedron", "HEX8"},    {"hexahedron9", "HEX9"},
+        {"hexahedron20", "HEX20"},  {"hexahedron27", "HEX27"}, {"tetra", "TETRA"},
+        {"tetra4", "TET4"},         {"tetra8", "TETRA8"},      {"tetra10", "TETRA10"},
+        {"tetra14", "TETRA14"},     {"pyramid", "PYRAMID"},    {"wedge", "WEDGE"},
+        {"pyramid13", "PYRAMID13"}, {"wedge15", "WEDGE15"}};
     return m;
+}
+
+/// `out[r][c] = in[r][perm[c]]` for an (n, k) integer array; @p rIn unchanged
+/// when @p rPerm does not match its width.
+NDArray exo_gather_columns(const NDArray& rIn, const std::vector<int>& rPerm) {
+    const std::size_t k = detail::cols(rIn);
+    if (rPerm.size() != k || k == 0)
+        return rIn;
+    NDArray out(rIn.Dtype(), rIn.Shape());
+    const std::size_t n = rIn.Size() / k;
+    detail::dispatch_dtype(rIn.Dtype(), [&]<class T>() {
+        const T* src = rIn.As<T>();
+        T* dst = out.As<T>();
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t c = 0; c < k; ++c)
+                dst[r * k + c] = src[r * k + static_cast<std::size_t>(rPerm[c])];
+    });
+    return out;
 }
 
 nc_type nc_type_of(DType dt) {
@@ -717,6 +739,10 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
                         throw ReadError("Exodus: unexpected connectivity dtype");
                 }
             }
+            // The quadratic solids list their nodes in SEACAS's order: the
+            // "exodus" entries of the node-ordering registry.
+            if (const detail::NodeOrder* order = detail::node_order("exodus", it->second))
+                conn = exo_gather_columns(conn, order->mToMeshio);
             int blk = key.size() > 7 ? std::atoi(key.c_str() + 7) : 1;
             blocks.emplace_back(blk, Block{it->second, std::move(conn)});
         } else if (key == "coord") {
@@ -1073,8 +1099,16 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         check(nc_put_att_text(ncid, var, "elem_type", it->second.size(), it->second.c_str()),
               "elem_type", true);
         NDArray shifted(conn.Dtype(), conn.Shape());
+        const detail::NodeOrder* order = detail::node_order("exodus", cb.Type());
+        const std::vector<int>* perm = order && order->mFromMeshio.size() == detail::cols(conn)
+                                           ? &order->mFromMeshio
+                                           : nullptr;
+        const std::size_t ncols = detail::cols(conn);
         for (std::size_t i = 0; i < conn.Size(); ++i) {
-            std::int64_t v = detail::read_int(conn, i) + 1;
+            // Exodus is 1-based, in SEACAS's node order.
+            const std::size_t src =
+                perm ? (i / ncols) * ncols + static_cast<std::size_t>((*perm)[i % ncols]) : i;
+            std::int64_t v = detail::read_int(conn, src) + 1;
             switch (shifted.Dtype()) {
                 case DType::Int32:
                     shifted.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);

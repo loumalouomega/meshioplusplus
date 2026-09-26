@@ -415,3 +415,29 @@ def test_partitioned_write_refuses_negative_parts(engine, tmp_path):
     }
     with pytest.raises(meshioplusplus.WriteError, match="negative"):
         engine.write(tmp_path / "out", mesh)
+
+
+def test_a_glob_finds_elmer_mesh_directories(tmp_path):
+    # An Elmer mesh directory has no suffix: both engines' globs keep a matching
+    # directory by its files, and still skip a plain one and an OpenFOAM case.
+    import shutil
+
+    for name in ("step_10", "step_2"):
+        shutil.copytree(MESHES / "quad8_2d", tmp_path / name)
+    (tmp_path / "step_plain").mkdir()
+    foam = tmp_path / "step_foam" / "constant" / "polyMesh"
+    foam.mkdir(parents=True)
+    for f in ("points", "faces", "owner", "neighbour", "boundary"):
+        (foam / f).write_text("")
+    pattern = str(tmp_path / "step_*")
+    python = [
+        pathlib.Path(e["path"]).name for e in meshioplusplus.sequence_entries(pattern)
+    ]
+    core = [
+        pathlib.Path(e["path"]).name
+        for e in _core.sequence_entries([], pattern, "", [], "auto", True)
+    ]
+    assert python == core == ["step_2", "step_10"]
+    steps = list(meshioplusplus.read_sequence(pattern))
+    assert len(steps) == 2
+    assert all(mesh.points.shape[0] > 0 for _, mesh in steps)
