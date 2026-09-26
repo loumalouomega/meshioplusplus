@@ -45,6 +45,8 @@ meshioplusplus.unv.write("out.unv", mesh, code_aster=True)
 
 Any other dataset is skipped. Data at nodes on elements (dataset 57, 2414 location 3) and data at points (2414 location 5) are skipped with a warning.
 
+Records are Fortran-formatted (`I10` integers, `1P3D25.16` and `1P6E13.5` reals), so a 10-digit label fills its field and can touch its neighbour (`10000000011000000002`, or a group entry's type and tag, `71000000001`). Since v16.17.0 a line with a token wider than its field is cut in its columns with the shared card tokenizer (`detail/keyword_card.hpp`, `lsdyna/_cards.py`); a right-aligned record that splits cleanly on whitespace, and a free-format line that does not fit the columns (Code_Aster's `%` comments), keep the whitespace split. Before, such a file failed with "dataset ends inside an integer record".
+
 ### Nodes and coordinate systems
 
 Record 1 of a 2411 node names its definition coordinate system. When a 2420 dataset defines that system as **Cartesian**, the coordinates are moved into the global system as `x = M·x_local + o`, where `M` is the matrix's first three rows and `o` its fourth: the convention of Salome's reader, the only widely used consumer of the dataset. A **cylindrical** or **spherical** system is warned about and its nodes are left in local coordinates; a system number above 1 with no 2420 definition is taken as global, with a warning. Units (164) are recorded, not applied: `unv:unit_factors` holds the length, force, temperature and temperature-offset factors *to SI* as the file states them. The units code is read from columns 1–10 of record 1 (`I10,20A1,I10`), since some writers run the description into it (`5mm (milli-newton)`); since v16.6.0 Python no longer refuses such a record.
