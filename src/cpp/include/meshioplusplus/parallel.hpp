@@ -54,7 +54,7 @@
  * `parallel_reduce`, whose chunk size is a constant the caller picks, never
  * the thread count, with partials combined in chunk order; and
  * `parallel_exclusive_scan` over integers, exact under any chunking. Together
- * they are what the sort-based facet and edge tables (roadmap §4) are built
+ * they are what the sort-based facet and edge tables (roadmap §3) are built
  * from, and each is deterministic by construction.
  *
  * To add a new backend (e.g. HPX): add one CMake branch that defines

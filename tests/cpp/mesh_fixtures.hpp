@@ -649,7 +649,7 @@ inline constexpr double mt_kPi = 3.141592653589793238462643383279;
 /// A closed icosahedron of radius R, then `Subdivisions` rounds of 1-to-4
 /// splitting with every new point pushed back onto the sphere.
 ///
-/// meshio++ has no `sphere` primitive (roadmap section 6), and the analytic
+/// meshio++ has no `sphere` primitive (roadmap section 5), and the analytic
 /// answers on a sphere -- H = 1/R and K = 1/R^2 at every vertex -- are the
 /// only exact per-vertex oracle either estimator has.
 inline Mesh icosphere(int Subdivisions, double Radius) {

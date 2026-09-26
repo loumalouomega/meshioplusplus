@@ -12159,7 +12159,7 @@ inline std::uint64_t sfc_hilbert_key(const std::uint32_t q[3], int bits) {
  * `rKeys[i]`, ties in ascending index -- exactly what `std::stable_sort` with
  * an indirect `rKeys[a] < rKeys[b]` comparator returns, as a least-significant-
  * digit radix sort (11-bit digits; a digit every key shares is skipped). It
- * replaces that comparison sort in `reorder` and `partition` (roadmap §4):
+ * replaces that comparison sort in `reorder` and `partition` (roadmap §3):
  * linear passes over two index buffers instead of O(n log n) indirect loads.
  */
 inline std::vector<std::int64_t> sfc_stable_argsort(const std::vector<std::uint64_t>& rKeys) {
@@ -25688,7 +25688,7 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
  * @file operations/neighbors.hpp
  * @brief Exact radius and k-nearest neighbour search over a point cloud.
  *
- * The search behind `meshioplusplus.proximity_graph` (roadmap §4): the Python
+ * The search behind `meshioplusplus.proximity_graph` (roadmap §3): the Python
  * layer keeps the input handling and the graph assembly (sorting,
  * symmetrising, deduplicating -- the Non-goals keep graph construction in
  * Python) and hands the core the pair search, which dominated it (200k points
@@ -29419,7 +29419,7 @@ MESHIOPLUSPLUS_API VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& r
  * `parallel_reduce`, whose chunk size is a constant the caller picks, never
  * the thread count, with partials combined in chunk order; and
  * `parallel_exclusive_scan` over integers, exact under any chunking. Together
- * they are what the sort-based facet and edge tables (roadmap §4) are built
+ * they are what the sort-based facet and edge tables (roadmap §3) are built
  * from, and each is deterministic by construction.
  *
  * To add a new backend (e.g. HPX): add one CMake branch that defines
@@ -30410,7 +30410,7 @@ inline bool is_special_cell(const std::string& rMeshioType) {
  * character at a time into a heap string -- read it through `FileSource`
  * instead: one bulk read, or a mapping above `MESHIOPLUSPLUS_MMAP_THRESHOLD`.
  * `FileSource` reports an unreadable file as "Could not open file"; this keeps
- * the message each reader gave before. Roadmap §4, "Memory and allocation".
+ * the message each reader gave before. Roadmap §3, "Memory and allocation".
  */
 
 // System includes
@@ -30449,7 +30449,7 @@ inline FileSource open_source(const std::string& rPath, const std::string& rMess
  * locale's decimal point once, outside the loop: `snprintf_c` calls
  * `localeconv()` per value, and POSIX does not require it to be thread-safe.
  * Integers go through `std::to_chars`, which is what `ostream << int` prints
- * in the classic locale. Roadmap §4, "Parallel row formatting in ASCII
+ * in the classic locale. Roadmap §3, "Parallel row formatting in ASCII
  * writers".
  */
 
@@ -30610,7 +30610,7 @@ void append_row_chunks(std::string& rOut, std::size_t NumRows, F&& rFormat,
  *    exactly the order the serial sweep did;
  *  - a run's size is its key's count.
  *
- * Roadmap §4, "One shared, deterministic facet and edge table".
+ * Roadmap §3, "One shared, deterministic facet and edge table".
  */
 
 // System includes
@@ -31015,7 +31015,7 @@ inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::
  * corner `i` to corner `i + 1`, as (low, high) -- the same way. An operation
  * that needs both (`sample_distance`, `distance_to_surface`, `shrinkwrap`,
  * `remesh_volume`) groups them once and hands the runs to both, with results
- * identical to the one-argument forms. Roadmap §4, "Build once".
+ * identical to the one-argument forms. Roadmap §3, "Build once".
  */
 
 // System includes
@@ -31066,7 +31066,7 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
  * and a token parses in place with the semantics the readers used before:
  * `parse_double_token` is `parse_double` over the whole token, and
  * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
- * accepted, an out-of-range value saturated. Roadmap §4, "A shared tokenizer
+ * accepted, an out-of-range value saturated. Roadmap §3, "A shared tokenizer
  * and number path".
  */
 
@@ -31476,7 +31476,7 @@ private:
  * `DoubleView` exactly as `detail::read_double` does -- a pointer into the
  * array itself when its dtype already is the target, otherwise one converted
  * copy made in parallel through `dispatch_dtype`. A hot loop then indexes a
- * plain pointer. Roadmap §4, "Hoist the dtype switch in operations".
+ * plain pointer. Roadmap §3, "Hoist the dtype switch in operations".
  */
 
 // System includes
@@ -31583,7 +31583,7 @@ private:
  * then zero-filled an array and copied the bytes in once more. Here the text
  * is a view of the document's own characters, the base64 stream decodes any
  * byte window straight to a destination (`VtubB64`), and every compressed
- * block decompresses into its place in an uninitialised array. Roadmap §4,
+ * block decompresses into its place in an uninitialised array. Roadmap §3,
  * "The VTU binary read copies each payload five or six times".
  */
 
@@ -31673,7 +31673,7 @@ inline std::string_view vtu_strip_view(const char* pS) {
  * ascending dz -> dy -> dx order, representatives in creation order) joins the
  * first such representative, otherwise it becomes a new one. The result is
  * order-dependent by design (chains A~B, B~C, A!~C), so the decision loop
- * stays serial; what this moves out of it (roadmap §4, "Welding") is
+ * stays serial; what this moves out of it (roadmap §3, "Welding") is
  * everything else: the cell keys and each cell's non-empty neighbour cells are
  * computed in parallel up front (cell ids come from one serial pass through a
  * flat open-addressing table), and the serial loop walks per-cell
@@ -33326,7 +33326,7 @@ inline MeshMetadata aggregate_metadata(const std::vector<MeshMetadata>& rParts,
  * attribute of the `<VTKFile ...>` start tag, so the first few kilobytes
  * decide it. The pre-flight is loose on purpose: whenever it cannot find the
  * tag, or the tag names another file type, it decides nothing and the full
- * parse gives its usual answer. Roadmap §4, "A declined C++ read".
+ * parse gives its usual answer. Roadmap §3, "A declined C++ read".
  */
 
 // System includes
@@ -35136,7 +35136,7 @@ inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
  * the pin mask is computed once; each sweep then rebuilds only the tet table
  * and incidence (the flips change the tets) and runs the same Jacobi pass,
  * with the same arithmetic in the same order, straight on the caller's
- * coordinate buffer (roadmap §4).
+ * coordinate buffer (roadmap §3).
  */
 
 // System includes
@@ -56111,7 +56111,7 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
 
 namespace {
 
-// Grid insertion (roadmap §4): every (bucket, triangle) pair of the
+// Grid insertion (roadmap §3): every (bucket, triangle) pair of the
 // triangles' quantized boxes, laid out in (triangle, z, y, x) order -- the
 // serial `InsertBox` loop's order -- and grouped by bucket with the
 // sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
@@ -57542,7 +57542,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     const char* const last = p + std::strlen(p);
     {
         // Tokens counted first: the values are then parsed into buffers
-        // reserved once, not grown push_back by push_back (roadmap §4).
+        // reserved once, not grown push_back by push_back (roadmap §3).
         std::size_t tokens = 0;
         bool in_token = false;
         for (const char* q = p; q < last; ++q) {
@@ -60897,7 +60897,7 @@ bool fluent_is_space(char c) {
 // A Fluent file opens with a section: '(' and its index. Any other file is
 // refused from its first bytes, with the message the full read gives, before
 // it is read whole -- every `.msh` a Gmsh or FreeFEM file is is offered to this
-// reader first (roadmap §4). Undecided while the head is all blanks.
+// reader first (roadmap §3). Undecided while the head is all blanks.
 void fluent_refuse_early(const std::string& rPath) {
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -82776,7 +82776,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
 }
 /// Whether the file has a `$Periodic` section: the header on a line of its own,
 /// found by one search of the buffer before `$Nodes` and `$Elements` are
-/// parsed only to be refused (roadmap §4). `$` is rare in mesh data, so the
+/// parsed only to be refused (roadmap §3). `$` is rare in mesh data, so the
 /// search runs at memchr speed; a match inside binary data only declines a
 /// read the Python reader then takes, which is what a real `$Periodic` does.
 bool gmsh_has_periodic(std::string_view rBuf) {
@@ -130026,7 +130026,7 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
 
     if (fmt == "XML") {
         // The element's text read in place, token by token, and parsed straight
-        // into the typed buffer with the dtype switch taken once (roadmap §4):
+        // into the typed buffer with the dtype switch taken once (roadmap §3):
         // the lenient parse_double / strtoll / strtoull store_token used. A
         // short item leaves the rest zero, as the zero-filled array did.
         NDArray a = NDArray::Uninit(dt, dims);

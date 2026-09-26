@@ -33,7 +33,7 @@
  * the pin mask is computed once; each sweep then rebuilds only the tet table
  * and incidence (the flips change the tets) and runs the same Jacobi pass,
  * with the same arithmetic in the same order, straight on the caller's
- * coordinate buffer (roadmap §4).
+ * coordinate buffer (roadmap §3).
  */
 
 // System includes

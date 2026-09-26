@@ -263,7 +263,7 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
 
 namespace {
 
-// Grid insertion (roadmap §4): every (bucket, triangle) pair of the
+// Grid insertion (roadmap §3): every (bucket, triangle) pair of the
 // triangles' quantized boxes, laid out in (triangle, z, y, x) order -- the
 // serial `InsertBox` loop's order -- and grouped by bucket with the
 // sort-based table (slot_runs.hpp), whose runs keep their slots ascending.

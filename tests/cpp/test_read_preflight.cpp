@@ -17,7 +17,7 @@
 /**
  * @file test_read_preflight.cpp
  * @brief Readers refuse a file they cannot read from its first bytes, before
- *        parsing the rest (roadmap §4, "A declined C++ read"): each input
+ *        parsing the rest (roadmap §3, "A declined C++ read"): each input
  *        below has a refusing header and a body the full parse would reject
  *        with a different message, so the message shows which check ran.
  */

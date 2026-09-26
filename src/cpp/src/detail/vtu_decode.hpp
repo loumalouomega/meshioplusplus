@@ -32,7 +32,7 @@
  * then zero-filled an array and copied the bytes in once more. Here the text
  * is a view of the document's own characters, the base64 stream decodes any
  * byte window straight to a destination (`VtubB64`), and every compressed
- * block decompresses into its place in an uninitialised array. Roadmap §4,
+ * block decompresses into its place in an uninitialised array. Roadmap §3,
  * "The VTU binary read copies each payload five or six times".
  */
 

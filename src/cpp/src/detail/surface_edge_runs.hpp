@@ -30,7 +30,7 @@
  * corner `i` to corner `i + 1`, as (low, high) -- the same way. An operation
  * that needs both (`sample_distance`, `distance_to_surface`, `shrinkwrap`,
  * `remesh_volume`) groups them once and hands the runs to both, with results
- * identical to the one-argument forms. Roadmap §4, "Build once".
+ * identical to the one-argument forms. Roadmap §3, "Build once".
  */
 
 // System includes

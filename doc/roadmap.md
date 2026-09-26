@@ -76,35 +76,19 @@ The readers:
 
 ---
 
-## 2. Spack package upkeep
-
-*Admission: a package that already exists but lives in someone else's repository and has fallen behind the release. Not a feature, and ordered straight after format reach because it is how HPC users get meshio++ at all ([issue #3](https://github.com/loumalouomega/meshioplusplus/issues/3): "Interesting for HPC"; the maintainer's follow-up: done, but it has to be kept current with every release).*
-
-Both recipes are upstream in [`spack/spack-packages`](https://github.com/spack/spack-packages) — [`meshioplusplus`](https://github.com/spack/spack-packages/blob/develop/repos/spack_repo/builtin/packages/meshioplusplus/package.py) (a `CMakePackage`: C API, Fortran, installable C++ API, CLI) and [`py-meshioplusplus`](https://github.com/spack/spack-packages/blob/develop/repos/spack_repo/builtin/packages/py_meshioplusplus/package.py) (a `PythonPackage`), added in [PR #5624](https://github.com/spack/spack-packages/pull/5624). Nothing in this repository builds or tests them, so nothing notices when they drift.
-
-- **Verify first, then bump the versions.** Read on 2026-09-21, the newest tagged `version()` in both recipes is **9.10.0** (plus `master`) against **15.2.0** here, and the `meshioplusplus` recipe's `url` still points at the `v9.10.0` tarball. Probe: `spack versions meshioplusplus py-meshioplusplus` against `git tag`. Add a `version(..., sha256=...)` line per release worth keeping (`spack checksum` computes it); `spack install py-meshioplusplus@15.2.0` and `meshioplusplus@15.2.0` must then concretize and build. **S**
-- **Audit the recipes against six major versions of drift.** Every `when="@X:"` guard, the `depends_on` floors (`py-scikit-build-core@0.8:`, `py-pybind11@2.11:`, `python@3.8:`, `cmake@3.15:`) and the `conflicts("%gcc@:9")` must be re-checked against `pyproject.toml` and `CMakeLists.txt` at the new version, and the docstring's "~40 unstructured mesh formats" is now 52. The `+cxx_api` libraries install as `libmeshioplusplus_core_<backend>.so.<abi>` and `MESHIOPLUSPLUS_ABI_VERSION` is now 15, while the C library keeps `SOVERSION 0` ([ABI policy](./abi.md)) — confirm the recipe finds both, and that a `find_package(meshioplusplus X.Y.Z EXACT CONFIG)` consumer against a Spack-installed `+cxx_api` still resolves ([C++ API](./cpp_api.md)). **S**
-- **Variants that lag the CMake options.** The recipes expose `hdf5`, `netcdf`, `zlib`, `zstd`, `lz4`, `kahip`, `fortran`, `cli`, `parallel`, `mesh_backend`, `cxx_api` and `cxx_api_backends`. `CMakeLists.txt` also defines `MESHIOPLUSPLUS_WITH_CGNSLIB`, `MESHIOPLUSPLUS_WITH_GIDPOST`, `MESHIOPLUSPLUS_WITH_POLYSCOPE`, `MESHIOPLUSPLUS_WITH_EIGEN` and `MESHIOPLUSPLUS_WITH_JSON`. Verify which of them post-date 9.10.0 and which have a Spack package to depend on (`cgns` does); expose the ones an HPC build would choose, leave the rest at their defaults, and keep every variant named as the Conan option and vcpkg feature are ([C API](./c_api.md#package-managers-conan-vcpkg-spack)). **S–M**
-- **Test the matrix, not one install.** Build both recipes with `spack install --test=root` for the default variants, `+fortran`, `+cxx_api` (each `cxx_api_backends`), `parallel=openmp|tbb|kokkos` and `mesh_backend=kratos`, and run `spack style` and `spack audit` before opening the PR. None of this is in CI here today; a smoke job that installs from a `spack-packages` checkout on a schedule would catch the next drift without a person remembering to look. **S–M**
-- **Make the bump a release step.** [Installation → Spack](./installation.md#spack) and the C API page both say a new release "needs no action here" because a `version(...)` line is added upstream after each tag; the drift above is what that sentence produces when it is nobody's job. Add the upstream PR to the release checklist in `AGENTS.md` (after the tag: `spack checksum`, one `version()` line per recipe, `spack style`) and replace the sentence in both docs. Opening the PR from the release workflow needs a token on a fork and is a follow-up only if the manual step is skipped again. **S**
-- **Done when.** Both recipes list the current release, `spack install py-meshioplusplus@<current> +hdf5 +netcdf +zlib` and `spack install meshioplusplus@<current> +fortran +cxx_api` succeed on a clean Spack, the docs no longer claim the step is automatic, and issue #3 is closed.
-- **References.** [Spack packaging guide](https://spack.readthedocs.io/en/latest/packaging_guide_creation.html) † · [`spack checksum`](https://spack.readthedocs.io/en/latest/command_index.html#spack-checksum) † · [PR #5624, the original submission](https://github.com/spack/spack-packages/pull/5624) · [Installation → Spack](./installation.md#spack)
-
----
-
-## 3. Quality of implementation
+## 2. Quality of implementation
 
 *Admission: work that makes every other item safer to land. None of it is a feature, so none of it competes for the same attention — it can run in parallel with everything.*
 
 The sanitizer leg, the reader fuzzing, the format conformance matrix, the property tests, the benchmark harness, the ParaView plugin test and the fallback narrowing all shipped in v16.14.0 ([fuzzing and sanitizers](./fuzzing.md), [format conformance](./conformance.md), [benchmarks](./benchmarks.md)). What remains:
 
-- **OSS-Fuzz submission.** The harness already takes its format from its binary's name, and `tools/fuzz/oss-fuzz/` holds a draft `project.yaml` and `build.sh`; what is left is the submission to `google/oss-fuzz` and the maintainer contact it needs. Calendar-bound, like the registries in [§7](#_7-ecosystem-reach). **S**
+- **OSS-Fuzz submission.** The harness already takes its format from its binary's name, and `tools/fuzz/oss-fuzz/` holds a draft `project.yaml` and `build.sh`; what is left is the submission to `google/oss-fuzz` and the maintainer contact it needs. Calendar-bound, like the registries in [§6](#_6-ecosystem-reach). **S**
 - **Fuzz the library-backed readers.** The campaign skips the formats whose bytes go to HDF5, netCDF, ADIOS2 or TecIO (`tools/fuzz/not_fuzzed.txt`): those libraries are not instrumented in the build, and their own parsers are not this project's to fix. meshio++'s code that walks the objects they return (dataset shapes, attribute types, link targets) is reachable all the same; fuzzing it means building the libraries with the sanitizers, or fuzzing at the object level behind a stub. Probe: an HDF5 file whose connectivity dataset's shape disagrees with its declared element count. **M**
 - **A benchmark trend store.** The `benchmark` workflow records CSVs as artifacts and never gates; comparing runs means downloading them. A store that keeps one row set per run (a branch or a release asset) and a page that plots it would make a slow drift visible without anyone looking for it. **S**
 
 ---
 
-## 4. Performance
+## 3. Performance
 
 *Admission: a measured or code-verified slowdown in a path a user hits, with the shape of the fix named. Every item shows its before/after on the benchmark harness (`benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations; [benchmarks](./benchmarks.md)).*
 
@@ -169,18 +153,18 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 - **Explicit SIMD intrinsics or `-march` flags** — portability across wheels, WASM and the release binaries is worth more than the scalar kernels cost; revisit only if the harness shows a kernel dominating.
 - **Kokkos device execution** — every `parallel_for` body captures host pointers (`parallel.hpp`); the GPU route is the DLPack/CuPy handoff ([GPU handoff](./gpu.md)).
 - **A BVH in place of the uniform grid** — the tiebreak argument above.
-- **Tuning the pure-Python fallback readers** — the fix is making the C++ path accept the file ([§5](#_5-core-parity-across-surfaces)), not a faster fallback; `_decimate.py`'s heap-based twin is deleted once `decimate` accepts its inputs, not optimised.
+- **Tuning the pure-Python fallback readers** — the fix is making the C++ path accept the file ([§4](#_4-core-parity-across-surfaces)), not a faster fallback; `_decimate.py`'s heap-based twin is deleted once `decimate` accepts its inputs, not optimised.
 
 *Recommended posture:* the boundary items as their consumers ask, and the tokenizer's remaining readers alongside other work in them; the operations' layout-bound leftovers with the next ABI bump. Every item is judged by the determinism check (`--hash`, v16.15.0).
 
 ---
 
-## 5. Core parity across surfaces
+## 4. Core parity across surfaces
 
 *Admission: something the Python layer can do that the C++ core cannot, or that the core can do and a binding cannot reach.* A construct that forces the Python fallback is not "slower from C" — it is **unreadable** from C, Fortran, Julia, R, WASM and the native CLI, none of which has a fallback. Ordered by this project's own consumers, Kratos first.
 
 - **MDPA beyond mesh-level blocks.** The C++ core reads and writes `Nodes`/`Elements`/`Conditions`/`SubModelPart`s, but `Begin Table`, `Begin Geometries`, `Begin Mesh <id>`, `Begin Constraints` and non-numeric `ModelPartData` throw — or, under a lenient read, are skipped and listed in `MdpaInfo`, which no flat binding exposes ([MDPA](./formats/mdpa.md#c-core)). **M**
-- **Gmsh `$Periodic` and format 4.0 in the C++ core.** `$Periodic`, both directions: a periodic 4.1 file is unreadable from every flat binding today ([Gmsh](./formats/gmsh.md)). The C++ reader also accepts only versions 2.2 and 4.1 (`gmsh.cpp`), so a 4.0 file, which the Python reader reads, is unreadable from them too. Pairs with periodic node matching in [§6](#_6-operations). **S–M**
+- **Gmsh `$Periodic` and format 4.0 in the C++ core.** `$Periodic`, both directions: a periodic 4.1 file is unreadable from every flat binding today ([Gmsh](./formats/gmsh.md)). The C++ reader also accepts only versions 2.2 and 4.1 (`gmsh.cpp`), so a 4.0 file, which the Python reader reads, is unreadable from them too. Pairs with periodic node matching in [§5](#_5-operations). **S–M**
 - **VTK-family constructs the C++ readers refuse**: `<AppendedData>` and multiple `<Piece>`s in `.vtp`, `.vts`, `.vtr` and `.vti` (the `.vtu` reader handles both since v16.6.0; its appended-data decoder in `vtu_read.cpp` is the one to share), and legacy `.vtk` structured points, structured grid and rectilinear grid ([VTU](./formats/vtu.md), [VTK](./formats/vtk.md)). **S–M**
 - **XDMF 2 and XPath references** — the C++ core implements XDMF 3 only, and `Reference="XML"` `DataItem`s not at all ([XDMF](./formats/xdmf.md)). **M**
 - **MED multi-mesh files and profiles**, which are Python-only and not reachable even under a lenient C++ read ([MED](./formats/med.md)). **M**
@@ -195,7 +179,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 ---
 
-## 6. Operations
+## 5. Operations
 
 *Admission: a new operation, or a public face for machinery that already exists privately inside one.*
 
@@ -218,7 +202,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 ---
 
-## 7. Ecosystem reach
+## 6. Ecosystem reach
 
 *Admission: getting what exists to the people who would use it.*
 
@@ -243,7 +227,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 ---
 
-## 8. Long run (spike first)
+## 7. Long run (spike first)
 
 *Admission: work whose shape is unknown until an investigation writes it down. Findings before code.*
 
@@ -270,7 +254,7 @@ Recorded so they are not re-proposed as gaps.
 
 - **MPI in the library** — none planned ([C++ API](./cpp_api.md)); `partition`'s ghost layers produce the halo an MPI assembly in the owning application needs.
 - **Solver-coupled physics-ML** — assembled solver residuals, adjoints and Sobolev training, co-simulation, active-learning *labeling*, adaptive remeshing driven by a surrogate, and MPI model-part gathering. Every one needs a live solver (an assembly routine, its tangent, its communicator) and meshio++ has no notion of a discrete system; they belong in the application that owns the solver, the division [Symbolic and physics](physicsnemo/symbolic_and_physics.md) describes.
-- **The Python-only layers stay Python** — `pmsh`, `zarr`, `cae` and `usd`, and the physics-ML surface (`tessellate`, grids, point budgets, proximity graphs, datasets, training) are export targets and tooling for a training pipeline, registered in Python rather than the shared C++ registry. A core kernel they call (the neighbour search in [§4](#_4-performance)) does not change that.
+- **The Python-only layers stay Python** — `pmsh`, `zarr`, `cae` and `usd`, and the physics-ML surface (`tessellate`, grids, point budgets, proximity graphs, datasets, training) are export targets and tooling for a training pipeline, registered in Python rather than the shared C++ registry. A core kernel they call (the neighbour search in [§3](#_3-performance)) does not change that.
 - **Polyscope in the release CLI binaries** — excluded deliberately, so `view`/`screenshot` there report the build flag rather than opening a window ([viewer](./viewer.md)).
 - **General meshing algorithms as operations** — hex and hex-dominant meshing, boolean/CSG, boundary-layer inflation, quadrangulation and geodesic distance are each a library in their own right; the answer is an optional backend (the KaHIP pattern), not a native implementation.
 - **KaHIP in the WASM build** — no Emscripten port, and a graph partitioner would bloat every consumer's bundle; `"auto"` resolving to the SFC method is the answer, and `"kahip"` throwing by name is the contract.
@@ -287,10 +271,9 @@ Recorded so they are not re-proposed as gaps.
 Open work only; what shipped is in `CHANGELOG.md`.
 
 1. **Format reach ([§1](#_1-format-reach))** — the checks against the vendor tools, as licences or files the tools wrote appear.
-2. **Spack package upkeep ([§2](#_2-spack-package-upkeep))** — a small, mechanical catch-up (recipes, variants, one release-checklist line) that unblocks HPC users on the current release; then a checklist step, so it stays current.
-3. **The OSS-Fuzz submission ([§3](#_3-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
-4. **Performance ([§4](#_4-performance))** — the boundaries, and the tokenizer's remaining readers as they are touched; the operations' layout-bound leftovers with the next ABI bump.
-5. **Primitive constructors ([§6](#_6-operations))** — a few days, and a prerequisite of the conformance matrix, every demo surface and `extrude`/`revolve`.
-6. **Core parity ([§5](#_5-core-parity-across-surfaces))** — MDPA first, then Side-region survival and sets → regions, then the rest by consumer demand.
-7. **Registration ([§7](#_7-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else.
-8. **Long-run spikes ([§8](#_8-long-run-spike-first))** — the benchmark tier decides the scale items; the NURBS spike is scheduled independently of the rest.
+2. **The OSS-Fuzz submission ([§2](#_2-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
+3. **Performance ([§3](#_3-performance))** — the boundaries, and the tokenizer's remaining readers as they are touched; the operations' layout-bound leftovers with the next ABI bump.
+4. **Primitive constructors ([§5](#_5-operations))** — a few days, and a prerequisite of the conformance matrix, every demo surface and `extrude`/`revolve`.
+5. **Core parity ([§4](#_4-core-parity-across-surfaces))** — MDPA first, then Side-region survival and sets → regions, then the rest by consumer demand.
+6. **Registration ([§6](#_6-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else.
+7. **Long-run spikes ([§7](#_7-long-run-spike-first))** — the benchmark tier decides the scale items; the NURBS spike is scheduled independently of the rest.

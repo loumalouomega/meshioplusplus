@@ -108,7 +108,7 @@ bool fluent_is_space(char c) {
 // A Fluent file opens with a section: '(' and its index. Any other file is
 // refused from its first bytes, with the message the full read gives, before
 // it is read whole -- every `.msh` a Gmsh or FreeFEM file is is offered to this
-// reader first (roadmap §4). Undecided while the head is all blanks.
+// reader first (roadmap §3). Undecided while the head is all blanks.
 void fluent_refuse_early(const std::string& rPath) {
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)

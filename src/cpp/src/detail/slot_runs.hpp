@@ -44,7 +44,7 @@
  *    exactly the order the serial sweep did;
  *  - a run's size is its key's count.
  *
- * Roadmap §4, "One shared, deterministic facet and edge table".
+ * Roadmap §3, "One shared, deterministic facet and edge table".
  */
 
 // System includes

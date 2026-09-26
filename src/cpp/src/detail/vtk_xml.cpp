@@ -206,7 +206,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     const char* const last = p + std::strlen(p);
     {
         // Tokens counted first: the values are then parsed into buffers
-        // reserved once, not grown push_back by push_back (roadmap §4).
+        // reserved once, not grown push_back by push_back (roadmap §3).
         std::size_t tokens = 0;
         bool in_token = false;
         for (const char* q = p; q < last; ++q) {

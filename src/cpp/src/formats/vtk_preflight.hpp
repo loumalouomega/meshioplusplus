@@ -32,7 +32,7 @@
  * attribute of the `<VTKFile ...>` start tag, so the first few kilobytes
  * decide it. The pre-flight is loose on purpose: whenever it cannot find the
  * tag, or the tag names another file type, it decides nothing and the full
- * parse gives its usual answer. Roadmap §4, "A declined C++ read".
+ * parse gives its usual answer. Roadmap §3, "A declined C++ read".
  */
 
 // System includes

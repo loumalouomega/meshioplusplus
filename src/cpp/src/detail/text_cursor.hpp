@@ -33,7 +33,7 @@
  * and a token parses in place with the semantics the readers used before:
  * `parse_double_token` is `parse_double` over the whole token, and
  * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
- * accepted, an out-of-range value saturated. Roadmap §4, "A shared tokenizer
+ * accepted, an out-of-range value saturated. Roadmap §3, "A shared tokenizer
  * and number path".
  */
 

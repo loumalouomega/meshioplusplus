@@ -124,7 +124,7 @@ def _pick_first_int_data(data):
 
 def _stderr_console():
     # Imported here, not at module level: `rich` costs ~17 ms, and these three
-    # messages are the only users of it outside the CLI (roadmap §4).
+    # messages are the only users of it outside the CLI (roadmap §3).
     from rich.console import Console
 
     return Console(stderr=True)

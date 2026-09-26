@@ -99,7 +99,7 @@ The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and
 
 ## In CI
 
-The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every [performance](./roadmap.md#_4-performance) item on the roadmap is expected to show its before and after with these tools.
+The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every [performance](./roadmap.md#_3-performance) item on the roadmap is expected to show its before and after with these tools.
 
 ## Mesh-backend benchmarks
 

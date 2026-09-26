@@ -1,4 +1,4 @@
-"""The format conformance matrix (roadmap §3; declarations in conformance_spec.py).
+"""The format conformance matrix (roadmap §2; declarations in conformance_spec.py).
 
 Every writable format must have a declaration, and what a write and a read
 actually keep must match it exactly -- in both directions, so a format that

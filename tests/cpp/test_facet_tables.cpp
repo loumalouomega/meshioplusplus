@@ -20,7 +20,7 @@
  *
  * `extract_surface`, `extract_skin`, `smooth`'s boundary pass, `refine`,
  * `convert_cells` (elevate), `decimate` and `build_global_faces` each number or
- * count facets or edges keyed by their node ids. Roadmap §4 replaces their
+ * count facets or edges keyed by their node ids. Roadmap §3 replaces their
  * single-threaded hash maps with one sort-based table; these digests, taken
  * from the hash-map implementation, prove the replacement changes no byte.
  * The repeated-run checks hold everywhere; the golden digests are pinned for

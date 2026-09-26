@@ -219,7 +219,7 @@ jobs:
   #   * shared, one backend -- the only configuration where symbol visibility is
   #     observable. The variants are built -fvisibility=hidden, so a public
   #     declaration missing MESHIOPLUSPLUS_API fails THIS link and nothing else.
-  # ASan + UBSan over the C++ suite (roadmap §3). Clang, SEQ, no Python (a
+  # ASan + UBSan over the C++ suite (roadmap §2). Clang, SEQ, no Python (a
   # sanitized _core would need the runtime preloaded into the interpreter)
   # and no Fortran; the gtest binary, the C API objects and the fuzz replay
   # driver are all instrumented (MESHIOPLUSPLUS_SANITIZE applies PUBLIC). UBSan
@@ -274,7 +274,7 @@ jobs:
 
   # --------------------------------------------------------------------------
   # Byte-identical operation output across parallel backends and thread counts
-  # (roadmap §4). Every serial phase that §4 parallelises is a determinism pin;
+  # (roadmap §3). Every serial phase that §3 parallelises is a determinism pin;
   # this is the check that proves a change kept it: tools/bench_ops.sh builds
   # the operations benchmark per backend, runs every row on the small tier at
   # 1 and 4 threads with --hash, and fails when one row's digest differs.
@@ -1045,7 +1045,7 @@ jobs:
           # NOT apply here and an unbounded `mcp` resolves 2.0.0, which removed
           # mcp.server.fastmcp. Keep the two in step. `hypothesis` runs
           # test_properties.py, which importorskips it everywhere else
-          # (roadmap §4: the determinism properties need one leg that runs them).
+          # (roadmap §3: the determinism properties need one leg that runs them).
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
             pyvista trimesh pyarrow pandas polars zarr usd-core "mcp<2" starlette uvicorn httpx foamlib \
             hypothesis

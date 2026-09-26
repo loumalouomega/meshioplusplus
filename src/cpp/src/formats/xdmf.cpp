@@ -131,7 +131,7 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
 
     if (fmt == "XML") {
         // The element's text read in place, token by token, and parsed straight
-        // into the typed buffer with the dtype switch taken once (roadmap §4):
+        // into the typed buffer with the dtype switch taken once (roadmap §3):
         // the lenient parse_double / strtoll / strtoull store_token used. A
         // short item leaves the rest zero, as the zero-filled array did.
         NDArray a = NDArray::Uninit(dt, dims);

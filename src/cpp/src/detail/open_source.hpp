@@ -29,7 +29,7 @@
  * character at a time into a heap string -- read it through `FileSource`
  * instead: one bulk read, or a mapping above `MESHIOPLUSPLUS_MMAP_THRESHOLD`.
  * `FileSource` reports an unreadable file as "Could not open file"; this keeps
- * the message each reader gave before. Roadmap §4, "Memory and allocation".
+ * the message each reader gave before. Roadmap §3, "Memory and allocation".
  */
 
 // System includes

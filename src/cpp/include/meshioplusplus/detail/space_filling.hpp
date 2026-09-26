@@ -104,7 +104,7 @@ inline std::uint64_t sfc_hilbert_key(const std::uint32_t q[3], int bits) {
  * `rKeys[i]`, ties in ascending index -- exactly what `std::stable_sort` with
  * an indirect `rKeys[a] < rKeys[b]` comparator returns, as a least-significant-
  * digit radix sort (11-bit digits; a digit every key shares is skipped). It
- * replaces that comparison sort in `reorder` and `partition` (roadmap §4):
+ * replaces that comparison sort in `reorder` and `partition` (roadmap §3):
  * linear passes over two index buffers instead of O(n log n) indirect loads.
  */
 inline std::vector<std::int64_t> sfc_stable_argsort(const std::vector<std::uint64_t>& rKeys) {

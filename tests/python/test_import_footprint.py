@@ -1,4 +1,4 @@
-"""What ``import meshioplusplus`` pulls in (roadmap §4, "Boundaries and startup").
+"""What ``import meshioplusplus`` pulls in (roadmap §3, "Boundaries and startup").
 
 Deterministic, unlike a timing: each module below was measured on the import
 path once and removed from it, and this keeps it out. Run in a subprocess so

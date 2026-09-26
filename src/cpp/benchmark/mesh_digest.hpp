@@ -45,7 +45,7 @@ namespace meshioplusplus::bench {
  *
  * Two results with equal digests are byte-identical for every practical
  * purpose; this is what `meshioplusplus_bench_ops --hash` prints and what the
- * C++ determinism tests compare (roadmap §4).
+ * C++ determinism tests compare (roadmap §3).
  */
 class MeshDigest {
 public:

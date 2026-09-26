@@ -16,7 +16,7 @@
 //
 /**
  * @file test_op_goldens.cpp
- * @brief Pins the output of the operations roadmap §4's third part rewrites.
+ * @brief Pins the output of the operations roadmap §3's third part rewrites.
  *
  * Welding (`clean`, `merge`), the distance kernel's construction (`compute_sdf`,
  * `shrinkwrap`, `voxelize`, `compute_curvature`, `compute_normals`) and the
@@ -235,7 +235,7 @@ std::uint64_t og_hessian() {
     return ft_mesh(mio::hessian(m, o).mMesh);
 }
 
-// --- Roadmap §4 part 3b: the operations its remaining items rewrite -------
+// --- Roadmap §3 part 3b: the operations its remaining items rewrite -------
 
 // A tet cube carrying the smooth point field u = x^2 + y z.
 Mesh og_with_field(std::size_t n) {

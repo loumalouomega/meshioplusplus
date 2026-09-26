@@ -11,7 +11,7 @@
 #
 # With `--hash` among the bench_ops args, every row carries a digest of its
 # result, and the script fails unless each (op, cells) row has the same digest
-# on every backend and thread count (roadmap §4: the determinism check). With
+# on every backend and thread count (roadmap §3: the determinism check). With
 # BASELINE=<earlier.csv> set, the digests must also equal that file's, which is
 # how a change that must not alter output proves it.
 set -eu

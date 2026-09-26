@@ -29,7 +29,7 @@
  * ascending dz -> dy -> dx order, representatives in creation order) joins the
  * first such representative, otherwise it becomes a new one. The result is
  * order-dependent by design (chains A~B, B~C, A!~C), so the decision loop
- * stays serial; what this moves out of it (roadmap §4, "Welding") is
+ * stays serial; what this moves out of it (roadmap §3, "Welding") is
  * everything else: the cell keys and each cell's non-empty neighbour cells are
  * computed in parallel up front (cell ids come from one serial pass through a
  * flat open-addressing table), and the serial loop walks per-cell

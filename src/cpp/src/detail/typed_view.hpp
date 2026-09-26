@@ -29,7 +29,7 @@
  * `DoubleView` exactly as `detail::read_double` does -- a pointer into the
  * array itself when its dtype already is the target, otherwise one converted
  * copy made in parallel through `dispatch_dtype`. A hot loop then indexes a
- * plain pointer. Roadmap §4, "Hoist the dtype switch in operations".
+ * plain pointer. Roadmap §3, "Hoist the dtype switch in operations".
  */
 
 // System includes

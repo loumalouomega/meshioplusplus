@@ -32,7 +32,7 @@
  * locale's decimal point once, outside the loop: `snprintf_c` calls
  * `localeconv()` per value, and POSIX does not require it to be thread-safe.
  * Integers go through `std::to_chars`, which is what `ostream << int` prints
- * in the classic locale. Roadmap §4, "Parallel row formatting in ASCII
+ * in the classic locale. Roadmap §3, "Parallel row formatting in ASCII
  * writers".
  */
 

@@ -142,7 +142,7 @@ cmake.version = ">=3.15"
 cmake.build-type = "Release"
 
 # The version, written into the package at build time so `import
-# meshioplusplus` need not ask importlib.metadata (~22 ms; roadmap §4).
+# meshioplusplus` need not ask importlib.metadata (~22 ms; roadmap §3).
 [[tool.scikit-build.generate]]
 path = "meshioplusplus/_version.py"
 template = '''

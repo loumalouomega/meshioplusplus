@@ -269,7 +269,7 @@ std::uint64_t optimize_volume_digest(const OptimizeVolumeResult& rR) {
 }
 
 // Byte-identical results from repeated runs: the gate for the sweep's
-// relocation context and the sort-based flip tables (roadmap §4).
+// relocation context and the sort-based flip tables (roadmap §3).
 TEST(OptimizeVolume, ResultIsStableAcrossRepeatedRuns) {
     const Mesh in = jittered_cube_fixture(5);
     const OptimizeVolumeResult first = optimize_volume(in);

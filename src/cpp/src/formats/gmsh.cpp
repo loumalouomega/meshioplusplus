@@ -1290,7 +1290,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
 }
 /// Whether the file has a `$Periodic` section: the header on a line of its own,
 /// found by one search of the buffer before `$Nodes` and `$Elements` are
-/// parsed only to be refused (roadmap §4). `$` is rare in mesh data, so the
+/// parsed only to be refused (roadmap §3). `$` is rare in mesh data, so the
 /// search runs at memchr speed; a match inside binary data only declines a
 /// read the Python reader then takes, which is what a real `$Periodic` does.
 bool gmsh_has_periodic(std::string_view rBuf) {

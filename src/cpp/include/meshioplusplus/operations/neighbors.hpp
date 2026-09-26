@@ -20,7 +20,7 @@
  * @file operations/neighbors.hpp
  * @brief Exact radius and k-nearest neighbour search over a point cloud.
  *
- * The search behind `meshioplusplus.proximity_graph` (roadmap §4): the Python
+ * The search behind `meshioplusplus.proximity_graph` (roadmap §3): the Python
  * layer keeps the input handling and the graph assembly (sorting,
  * symmetrising, deduplicating -- the Non-goals keep graph construction in
  * Python) and hands the core the pair search, which dominated it (200k points

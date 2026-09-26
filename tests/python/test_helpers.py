@@ -149,7 +149,7 @@ def test_declined_candidates_are_logged(caplog, tmp_path):
 def test_the_sniffed_candidate_is_tried_first(caplog):
     # A Gmsh file behind the ambiguous `.msh` goes to gmsh first -- the content
     # sniff recognises it -- so ansys never reads it whole just to decline it
-    # (roadmap §4, "A declined C++ read").
+    # (roadmap §3, "A declined C++ read").
     import logging
 
     with caplog.at_level(logging.DEBUG, logger="meshioplusplus"):

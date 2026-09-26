@@ -17,7 +17,7 @@
 
 /**
  * @file bench_ops.cpp
- * @brief Timings of the mesh operations over a size sweep (roadmap §3/§4).
+ * @brief Timings of the mesh operations over a size sweep (roadmap §2/§3).
  *
  * The companion of `bench_backends.cpp` for operations rather than I/O: the
  * operations below on the same structured tetrahedral cube (or its surface),
@@ -34,7 +34,7 @@
  * point/cell/field data and regions, in block and sorted-name order, plus the
  * result's index maps and counters -- so `tools/bench_ops.sh --check` can
  * prove a row's output is byte-identical across parallel backends and thread
- * counts (roadmap §4, "The determinism check the section assumes"). The warmup
+ * counts (roadmap §3, "The determinism check the section assumes"). The warmup
  * run is the one hashed, so hashing never enters a timing.
  *
  * Usage: `meshioplusplus_bench_ops [--tier S|M|L|XL]... [--ops a,b,...] [--runs N] [--hash]`.
@@ -456,7 +456,7 @@ int main(int argc, char** argv) {
             o.mResolution = std::array<std::int64_t, 3>{48, 48, 48};
             of(pD, mio::voxelize(volume, o).mMesh);
         });
-        // Rows for roadmap §4's remaining operation items (v16.19.0).
+        // Rows for roadmap §3's remaining operation items (v16.19.0).
         row("remesh", [&](MeshDigest* pD) {
             mio::RemeshOptions o;
             o.mNumClusters = static_cast<std::int64_t>(surface.NumPoints() / 4);
