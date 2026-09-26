@@ -42,6 +42,9 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -83,8 +86,8 @@ std::string abaqus_trim(const std::string& rS) {
 std::vector<std::string> split(const std::string& rS, char sep) {
     std::vector<std::string> out;
     std::string cur;
-    auto iss = detail::make_classic_istringstream(rS);
-    while (std::getline(iss, cur, sep))
+    detail::TextStream iss(rS);
+    while (getline(iss, cur, sep))
         out.push_back(abaqus_trim(cur));
     return out;
 }
@@ -481,22 +484,19 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
     os << detail::provenance_render_lines(detail::SlotTier::Block, "");
     os << "*NODE\n";
     {
-        // Format node rows in parallel (snprintf per row, bytes unchanged),
-        // then stream sequentially.
-        std::vector<std::string> rows(n);
-        parallel_for(n, [&](std::size_t i) {
-            char buf[48];
-            std::string& row = rows[i];
-            row = std::to_string(i + 1);
-            for (std::size_t c = 0; c < dim; ++c) {
-                detail::snprintf_c(buf, sizeof(buf), ", %.16e",
-                                   detail::read_double(points, i * dim + c));
-                row += buf;
-            }
-            row += '\n';
-        });
-        for (const auto& row : rows)
-            os << row;
+        // Node rows formatted in parallel chunks, streamed in order
+        // (row_writer.hpp): the same bytes as snprintf_c row by row.
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(os, n,
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         detail::append_int(rBuf, static_cast<std::int64_t>(i + 1));
+                                         for (std::size_t c = 0; c < dim; ++c)
+                                             num.Append(rBuf, ", %.16e", pv[i * dim + c]);
+                                         rBuf += '\n';
+                                     }
+                                 });
     }
 
     const auto& m2a = meshio_to_abaqus();
@@ -508,12 +508,20 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
         const NDArray& conn = cb.Conn();
         std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         os << "*ELEMENT, TYPE=" << it->second << "\n";
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            os << (++eid);
-            for (std::size_t j = 0; j < k; ++j)
-                os << "," << (detail::read_int(conn, r * k + j) + 1);
-            os << "\n";
-        }
+        const detail::Int64View cv(conn);
+        const std::size_t first_eid = eid;
+        detail::write_row_chunks(
+            os, cb.NumCells(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    detail::append_int(rBuf, static_cast<std::int64_t>(first_eid + r + 1));
+                    for (std::size_t j = 0; j < k; ++j) {
+                        rBuf += ',';
+                        detail::append_int(rBuf, cv[r * k + j] + 1);
+                    }
+                    rBuf += '\n';
+                }
+            });
+        eid += cb.NumCells();
     }
 
     // --- named groups -------------------------------------------------------

@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -89,7 +90,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        auto iss = detail::make_classic_istringstream(line.substr(b, e - b));
+        detail::TextStream iss(line.substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {

@@ -24,24 +24,29 @@
 #include "meshioplusplus/detail/decimate_common.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "slot_runs.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
 DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n) {
+    // A stable counting sort of the corners by vertex (chunked in parallel
+    // when large, slot_runs.hpp): each row lists its faces in ascending order,
+    // a face once per corner it has at the vertex.
+    const std::size_t ncorner = rFaces.mNumFaces * 3;
+    std::vector<std::uint64_t> order;
+    std::vector<std::uint64_t> start;
+    slot_runs_impl::counting_sort(
+        ncorner, n, [&](std::uint64_t c) { return static_cast<std::size_t>(rFaces.mCorners[c]); },
+        order, start);
     DecimCsr csr;
-    csr.mXadj.assign(n + 1, 0);
-    const std::size_t nf = rFaces.mNumFaces;
-    for (std::size_t i = 0; i < nf * 3; ++i)
-        ++csr.mXadj[static_cast<std::size_t>(rFaces.mCorners[i]) + 1];
-    for (std::size_t i = 0; i < n; ++i)
-        csr.mXadj[i + 1] += csr.mXadj[i];
-    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
-    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
-    for (std::size_t f = 0; f < nf; ++f)
-        for (std::size_t k = 0; k < 3; ++k) {
-            const std::size_t v = static_cast<std::size_t>(rFaces.mCorners[f * 3 + k]);
-            csr.mAdj[static_cast<std::size_t>(cursor[v]++)] = static_cast<std::int64_t>(f);
-        }
+    csr.mXadj.resize(n + 1);
+    parallel_for_bw(n + 1,
+                    [&](std::size_t i) { csr.mXadj[i] = static_cast<std::int64_t>(start[i]); });
+    csr.mAdj.resize(ncorner);
+    parallel_for_bw(ncorner,
+                    [&](std::size_t j) { csr.mAdj[j] = static_cast<std::int64_t>(order[j] / 3); });
     return csr;
 }
 
@@ -189,7 +194,7 @@ DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t 
 
     if (rCtx.mPlacement == DecimatePlacement::Optimal) {
         const double midpoint[3] = {(xa[0] + xb[0]) * 0.5, (xa[1] + xb[1]) * 0.5,
-                                     (xa[2] + xb[2]) * 0.5};
+                                    (xa[2] + xb[2]) * 0.5};
         decim_quadric_optimal_point(q, midpoint, out.mX);
     } else {  // Midpoint
         out.mX[0] = (xa[0] + xb[0]) * 0.5;

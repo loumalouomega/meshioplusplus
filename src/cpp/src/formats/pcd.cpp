@@ -27,6 +27,7 @@
 #include <ios>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -42,6 +43,7 @@
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -306,14 +308,14 @@ struct PcdHeader {
     std::size_t mBody = 0;
 };
 
-PcdHeader pcd_parse_header(const std::string& rRaw) {
+PcdHeader pcd_parse_header(std::string_view rRaw) {
     std::unordered_map<std::string, std::vector<std::string>> header;
     std::size_t pos = 0;
     for (;;) {
         const std::size_t end = rRaw.find('\n', pos);
         if (end == std::string::npos)
             throw ReadError("PCD: no DATA line found in the header");
-        const std::string line = pcd_strip(rRaw.substr(pos, end - pos));
+        const std::string line = pcd_strip(std::string(rRaw.substr(pos, end - pos)));
         pos = end + 1;
         if (line.empty() || line[0] == '#')
             continue;
@@ -418,7 +420,7 @@ std::size_t pcd_row_bytes(const PcdHeader& rH) {
     return total;
 }
 
-PcdColumns pcd_read_ascii(const PcdHeader& rH, const std::string& rRaw, std::size_t npoints) {
+PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_t npoints) {
     const char* p = rRaw.data() + rH.mBody;
     const char* end = rRaw.data() + rRaw.size();
     const std::size_t expected = npoints * pcd_row_values(rH);
@@ -474,7 +476,7 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, const std::string& rRaw, std::siz
     return columns;
 }
 
-PcdColumns pcd_read_binary(const PcdHeader& rH, const std::string& rRaw, std::size_t npoints) {
+PcdColumns pcd_read_binary(const PcdHeader& rH, std::string_view rRaw, std::size_t npoints) {
     const std::size_t stride = pcd_row_bytes(rH);
     const std::size_t have = rRaw.size() - rH.mBody;
     if (stride != 0 && npoints > have / stride)
@@ -499,7 +501,7 @@ PcdColumns pcd_read_binary(const PcdHeader& rH, const std::string& rRaw, std::si
     return columns;
 }
 
-PcdColumns pcd_read_compressed(const PcdHeader& rH, const std::string& rRaw, std::size_t npoints) {
+PcdColumns pcd_read_compressed(const PcdHeader& rH, std::string_view rRaw, std::size_t npoints) {
     const std::size_t have = rRaw.size() - rH.mBody;
     if (have < 8)
         throw ReadError("PCD: binary_compressed data is missing its size prefix");
@@ -741,10 +743,9 @@ std::string pcd_ascii_value(const NDArray& rData, std::size_t index, char type) 
 }  // namespace
 
 Mesh read_pcd(const std::string& rPath, const PcdReadOptions& rOptions) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource raw_source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view raw = raw_source.View();
 
     const PcdHeader header = pcd_parse_header(raw);
     const std::size_t npoints = static_cast<std::size_t>(header.mPoints);

@@ -52,6 +52,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -200,11 +201,13 @@ struct ElmMesh {
 // is taken from the first record's id, which is small and positive.
 class ElmBinary {
 public:
+    // mData views mSource's bytes: pinned in place.
+    ElmBinary(const ElmBinary&) = delete;
+    ElmBinary& operator=(const ElmBinary&) = delete;
     explicit ElmBinary(const fs::path& rFile) : mFile(rFile) {
-        auto in = detail::make_classic_ifstream(rFile.string(), std::ios::binary);
-        if (!in)
-            throw ReadError("Elmer mesh: cannot open " + rFile.string());
-        mData.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        mSource.emplace(
+            detail::open_source(rFile.string(), "Elmer mesh: cannot open " + rFile.string()));
+        mData = mSource->View();
         if (mData.size() >= 4) {
             std::uint32_t v;
             std::memcpy(&v, mData.data(), 4);
@@ -251,7 +254,8 @@ private:
     }
 
     fs::path mFile;
-    std::string mData;
+    std::optional<detail::FileSource> mSource;
+    std::string_view mData;
     std::size_t mPos = 0;
     std::size_t mRecord = 0;
     bool mSwap = false;

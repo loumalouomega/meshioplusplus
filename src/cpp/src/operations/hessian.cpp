@@ -97,7 +97,13 @@ HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
     grad1.mMethod = rOptions.mMethod;
     grad1.mOutputName = kHessRawGradName;
     grad1.mOverwrite = true;
-    const GradientResult r1 = gradient(rMesh, grad1);
+    // Both passes run on the geometry and the field alone, so none of the
+    // input's other arrays is copied through their clones.
+    const Mesh work = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return Location == DataLocation::Point && rName == rOptions.mArrayName;
+        });
+    const GradientResult r1 = gradient(work, grad1);
 
     // The second pass differentiates the first pass' (n,3) gradient with the
     // default Gradient operator, which is generic over the input's own
@@ -112,25 +118,34 @@ HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
     grad2.mOverwrite = true;
     const GradientResult r2 = gradient(r1.mMesh, grad2);
 
-    // --- build the actual result from a fresh clone of the ORIGINAL input ---
-    Mesh out = detail::clone_mesh(rMesh);
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    std::vector<NDArray> hess_blocks;
-    hess_blocks.reserve(nblocks);
-    for (std::size_t b = 0; b < nblocks; ++b)
-        hess_blocks.push_back(r2.mMesh.CellData(kHessRawName, b));  // deep copy: NDArray owns its buffer
-    out.AddCellData(out_name, std::move(hess_blocks));
-
-    if (rOptions.mLocation == DataLocation::Point) {
+    // --- build the actual result from one clone of the ORIGINAL input -------
+    // Every array rides through except the ones the result replaces: the
+    // output name at its location and, for Point, at Cell too (the Cell-first
+    // array the averaging consumes is dropped afterwards, as before).
+    const bool at_point = rOptions.mLocation == DataLocation::Point;
+    Mesh out = detail::clone_mesh(rMesh, [&](DataLocation Location, const std::string& rName,
+                                             std::string&) {
+        if (rName != out_name)
+            return true;
+        return !(Location == DataLocation::Cell || (at_point && Location == DataLocation::Point));
+    });
+    if (!at_point) {
+        const std::size_t nblocks = rMesh.NumCellBlocks();
+        std::vector<NDArray> hess_blocks;
+        hess_blocks.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            hess_blocks.push_back(r2.mMesh.CellData(kHessRawName, b));  // deep copy
+        out.AddCellData(out_name, std::move(hess_blocks));
+    } else {
         // Compose the existing averaging rather than reimplementing a scatter
         // -- gradient()'s own Point-location handling, applied to the final
-        // Hessian array.
+        // Hessian array on the working mesh, which has the same geometry.
         DataAverageOptions avg;
-        avg.names = {out_name};
+        avg.names = {kHessRawName};
         avg.weight = CellPointWeight::Uniform;
         avg.overwrite = true;
-        Mesh with_points = cell_data_to_point_data(out, avg);
-        out = data_drop(with_points, DataLocation::Cell, {out_name});
+        const Mesh with_points = cell_data_to_point_data(r2.mMesh, avg);
+        out.AddPointData(out_name, NDArray(with_points.PointData(kHessRawName)));
     }
 
     return HessianResult{std::move(out), r2.mNumSkipped, r1.mNumFallback + r2.mNumFallback};

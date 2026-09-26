@@ -34,6 +34,10 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/row_writer.hpp"
+#include "../detail/typed_view.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -70,10 +74,16 @@ const char* vtk_dtype_str(DType dt) {
     return "double";
 }
 
-void vtk_ascii_double(std::ostream& rOs, double v) {
-    char buf[32];
-    detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
-    rOs << buf;
+// `n` integers, one per line (`ostream << v << '\n'`), formatted in parallel
+// chunks (row_writer.hpp).
+template <class F>
+void vtk_write_int_lines(std::ostream& rOs, std::size_t n, F&& rValue) {
+    detail::write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+        for (std::size_t i = First; i < Last; ++i) {
+            detail::append_int(rBuf, static_cast<std::int64_t>(rValue(i)));
+            rBuf += '\n';
+        }
+    });
 }
 
 // Byte-swap a whole array into a big-endian buffer (elements independent ->
@@ -148,13 +158,27 @@ void write_field_block(std::ostream& rOs, const std::string& rName, DType dt,
             rOs.write(reinterpret_cast<const char*>(buf.data()),
                       static_cast<std::streamsize>(buf.size()));
         } else {
+            // Values in parallel chunks (row_writer.hpp), each followed by a space.
             const std::size_t n = blk->Size();
-            for (std::size_t i = 0; i < n; ++i) {
-                if (flt)
-                    vtk_ascii_double(rOs, read_double(*blk, i));
-                else
-                    rOs << read_int(*blk, i);
-                rOs << ' ';
+            if (flt) {
+                const detail::DoubleView v(*blk);
+                const detail::CNumber num;
+                detail::write_row_chunks(
+                    rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                        for (std::size_t i = First; i < Last; ++i) {
+                            num.Append(rBuf, "%.17g", v[i]);
+                            rBuf += ' ';
+                        }
+                    });
+            } else {
+                const detail::Int64View v(*blk);
+                detail::write_row_chunks(
+                    rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                        for (std::size_t i = First; i < Last; ++i) {
+                            detail::append_int(rBuf, v[i]);
+                            rBuf += ' ';
+                        }
+                    });
             }
         }
     }
@@ -204,11 +228,16 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                  static_cast<std::streamsize>(buf.size()));
         os << '\n';
     } else {
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c) {
-                vtk_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
-                os << ((r + 1 == num_points && c == 2) ? '\n' : ' ');
-            }
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r)
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        num.Append(rBuf, "%.17g", (c < dim) ? pv[r * dim + c] : 0.0);
+                        rBuf += (r + 1 == num_points && c == 2) ? '\n' : ' ';
+                    }
+            });
         if (num_points == 0)
             os << '\n';
     }
@@ -247,19 +276,17 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                      static_cast<std::streamsize>(cbuf.size()));
             os << '\n';
         } else {
-            for (std::int64_t v : offs)
-                os << v << '\n';
+            vtk_write_int_lines(os, offs.size(), [&](std::size_t i) { return offs[i]; });
             os << "CONNECTIVITY vtktypeint64\n";
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
-                const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(conn);
+                const detail::Int64View conn(cb.Conn());
+                const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
-                for (std::size_t r = 0; r < nc; ++r)
-                    for (std::size_t j = 0; j < k; ++j) {
-                        std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                        os << read_int(conn, r * k + col) << '\n';
-                    }
+                vtk_write_int_lines(os, cb.NumCells() * k, [&](std::size_t i) {
+                    const std::size_t j = i % k;
+                    const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    return conn[i - j + col];
+                });
             }
         }
     } else {
@@ -297,17 +324,19 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             os << '\n';
         } else {
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
-                const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(conn);
+                const detail::Int64View conn(cb.Conn());
+                const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
-                for (std::size_t r = 0; r < nc; ++r) {
-                    os << k << '\n';
-                    for (std::size_t j = 0; j < k; ++j) {
-                        std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                        os << read_int(conn, r * k + col) << '\n';
-                    }
-                }
+                // Each cell is its count, then its ids: k + 1 lines.
+                vtk_write_int_lines(os, cb.NumCells() * (k + 1), [&](std::size_t i) {
+                    const std::size_t r = i / (k + 1);
+                    const std::size_t j = i % (k + 1);
+                    if (j == 0)
+                        return static_cast<std::int64_t>(k);
+                    const std::size_t col =
+                        order.empty() ? j - 1 : static_cast<std::size_t>(order[j - 1]);
+                    return conn[r * k + col];
+                });
             }
         }
     }
@@ -328,8 +357,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
         write_be(os, ctypes);
         os << '\n';
     } else {
-        for (std::int32_t v : ctypes)
-            os << v << '\n';
+        vtk_write_int_lines(os, ctypes.size(), [&](std::size_t i) { return ctypes[i]; });
     }
 
     // Point data.

@@ -25,6 +25,7 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--input-format FORMAT` | `-i` | Force input format (skip extension detection) |
 | `--output-format FORMAT` | `-o` | Force output format |
 | `--ascii` | `-a` | Write ASCII variant (default: binary where available) |
+| `--appended` | | Write a `.vtu`'s arrays as raw binary in one `<AppendedData>` section, no base64 (see [VTU](formats/vtu.md)); any other output format is an error |
 | `--float-format FMT` | `-f` | Float format string for ASCII output (default: `.16e`) |
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |

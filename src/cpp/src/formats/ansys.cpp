@@ -48,6 +48,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "face_cells_common.hpp"
+#include "../detail/open_source.hpp"
 
 // ANSYS Fluent `.msh` (also TGrid and GAMBIT meshes). A face row lists its
 // nodes and the two cells it separates, `n0 .. nk c0 c1` (hexadecimal in
@@ -104,11 +105,34 @@ bool fluent_is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
+// A Fluent file opens with a section: '(' and its index. Any other file is
+// refused from its first bytes, with the message the full read gives, before
+// it is read whole -- every `.msh` a Gmsh or FreeFEM file is is offered to this
+// reader first (roadmap §4). Undecided while the head is all blanks.
+void fluent_refuse_early(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return;  // the full read reports it
+    char head[256];
+    in.read(head, sizeof head);
+    const std::size_t n = static_cast<std::size_t>(in.gcount());
+    std::size_t p = 0;
+    while (p < n && fluent_is_space(head[p]))
+        ++p;
+    if (p == n)
+        return;
+    std::size_t q = p + 1;
+    while (q < n && fluent_is_space(head[q]))
+        ++q;
+    if (head[p] != '(' || (q < n && !std::isdigit(static_cast<unsigned char>(head[q]))))
+        throw ReadError("Fluent: expected a section at byte " + std::to_string(p));
+}
+
 struct FluentReader {
-    const std::string& mD;
+    std::string_view mD;
     std::size_t mP = 0;
 
-    explicit FluentReader(const std::string& rD) : mD(rD) {}
+    explicit FluentReader(std::string_view rD) : mD(rD) {}
 
     bool Eof() const { return mP >= mD.size(); }
     char At() const { return mD[mP]; }
@@ -162,7 +186,8 @@ struct FluentReader {
             while (i < q && !fluent_is_space(mD[i]))
                 ++i;
             if (i > j)
-                rValues.push_back(std::strtoll(mD.substr(j, i - j).c_str(), nullptr, 16));
+                rValues.push_back(
+                    std::strtoll(std::string(mD.substr(j, i - j)).c_str(), nullptr, 16));
         }
         mP = q + 1;
         // A body opens with '(' after nothing but blanks; anything else (a
@@ -295,10 +320,9 @@ void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Coun
 }  // namespace
 
 Mesh read_ansys(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    fluent_refuse_early(rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view data = source.View();
     FluentReader rd(data);
 
     std::int64_t dim = 0;
@@ -326,7 +350,7 @@ Mesh read_ansys(const std::string& rPath) {
         const std::size_t idx0 = rd.mP;
         while (!rd.Eof() && std::isdigit(static_cast<unsigned char>(rd.At())))
             ++rd.mP;
-        const std::string index = data.substr(idx0, rd.mP - idx0);
+        const std::string index(data.substr(idx0, rd.mP - idx0));
         if (index.empty())
             throw ReadError("Fluent: expected a section at byte " + std::to_string(start));
         const std::string prefix = index.size() <= 2 ? "" : index.substr(0, index.size() - 2);
@@ -335,7 +359,7 @@ Mesh read_ansys(const std::string& rPath) {
         if (index == "2") {
             rd.SkipWs();
             const std::size_t q = data.find(')', rd.mP);
-            dim = std::strtoll(data.substr(rd.mP, q - rd.mP).c_str(), nullptr, 10);
+            dim = std::strtoll(std::string(data.substr(rd.mP, q - rd.mP)).c_str(), nullptr, 10);
             rd.mP = q == std::string::npos ? data.size() : q + 1;
         } else if (index == "39" || index == "45") {
             // (45 (id type name)(...)): the id is decimal here.
@@ -343,8 +367,8 @@ Mesh read_ansys(const std::string& rPath) {
             if (!rd.Eof() && rd.At() == '(') {
                 const std::size_t q = data.find_first_of("()", rd.mP + 1);
                 if (q != std::string::npos) {
-                    auto iss =
-                        detail::make_classic_istringstream(data.substr(rd.mP + 1, q - rd.mP - 1));
+                    auto iss = detail::make_classic_istringstream(
+                        std::string(data.substr(rd.mP + 1, q - rd.mP - 1)));
                     std::int64_t id = 0;
                     std::string type, name;
                     if (iss >> id >> type >> name)

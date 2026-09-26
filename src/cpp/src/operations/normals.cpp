@@ -39,7 +39,11 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -152,20 +156,21 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
     const double nan = std::numeric_limits<double>::quiet_NaN();
     NDArray point_normals(DType::Float64, {n_out, std::size_t{3}});
     double* pn = point_normals.As<double>();
-    for (std::size_t i = 0; i < n_out * 3; ++i)
-        pn[i] = nan;
-    for (std::size_t g = 0; g < ngroups; ++g) {
+    parallel_for_bw(n_out * 3, [&](std::size_t i) { pn[i] = nan; });
+    // Each written row belongs to exactly one group (its primary, or its own
+    // appended copy), so the groups fill their rows independently.
+    parallel_for(ngroups, [&](std::size_t g) {
         const std::int64_t p = groups.mGroupPoint[g];
         const bool is_primary =
             static_cast<std::int64_t>(g) == primary[static_cast<std::size_t>(p)];
         if (!is_primary && group_point[g] == p)
-            continue;  // an undefined group folded into the primary one
+            return;  // an undefined group folded into the primary one
         if (!defined(g))
-            continue;  // stays NaN
+            return;  // stays NaN
         const std::size_t row = static_cast<std::size_t>(group_point[g]);
         for (std::size_t k = 0; k < 3; ++k)
             pn[row * 3 + k] = groups.mGroupNormal[g][k];
-    }
+    });
     for (std::size_t p = 0; p < n; ++p) {
         if (primary[p] < 0)
             ++result.mNumIsolated;
@@ -182,12 +187,18 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
         first_tri.assign(ncells_total, -1);
         cell_sum.assign(ncells_total, Vec3{0.0, 0.0, 0.0});
         const std::vector<Vec3> face = detail::soup_face_normals(soup);
-        for (std::size_t t = 0; t < ntri; ++t) {
-            const std::size_t c = static_cast<std::size_t>(soup.mSourceCell[t]);
-            if (first_tri[c] < 0)
-                first_tri[c] = static_cast<std::int64_t>(t);
-            cell_sum[c] = detail::vec3_add(cell_sum[c], face[t]);
-        }
+        // A cell's fan triangles are consecutive in the soup, in fan order:
+        // each run's first triangle sums the run, in the serial order.
+        parallel_for(ntri, [&](std::size_t t) {
+            const std::int64_t c = soup.mSourceCell[t];
+            if (t > 0 && soup.mSourceCell[t - 1] == c)
+                return;
+            Vec3 acc = cell_sum[static_cast<std::size_t>(c)];
+            for (std::size_t u = t; u < ntri && soup.mSourceCell[u] == c; ++u)
+                acc = detail::vec3_add(acc, face[u]);
+            first_tri[static_cast<std::size_t>(c)] = static_cast<std::int64_t>(t);
+            cell_sum[static_cast<std::size_t>(c)] = acc;
+        });
     }
 
     if (n_added == 0) {
@@ -228,24 +239,31 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
                 rIds[nv - 1] = corner_point(t + nv - 3, 2);
             };
             if (cb.IsRagged()) {
-                std::vector<std::vector<std::int64_t>> rows(ncells);
-                for (std::size_t c = 0; c < ncells; ++c) {
-                    rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-                    rewrite(c, rows[c]);
-                }
-                out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+                // Straight into CSR: the rows keep their sizes, so the offsets
+                // are the input's.
+                std::vector<std::int64_t> offsets(ncells + 1, 0);
+                for (std::size_t c = 0; c < ncells; ++c)
+                    offsets[c + 1] = offsets[c] + static_cast<std::int64_t>(cb.RowSize(c));
+                std::vector<std::int64_t> flat(static_cast<std::size_t>(offsets[ncells]));
+                parallel_for(ncells, [&](std::size_t c) {
+                    thread_local std::vector<std::int64_t> ids;
+                    ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+                    rewrite(c, ids);
+                    std::copy(ids.begin(), ids.end(),
+                              flat.begin() + static_cast<std::ptrdiff_t>(offsets[c]));
+                });
+                out.AddPolygonBlock(std::string(cb.Type()), std::move(flat), std::move(offsets));
             } else {
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t npc = cb.NodesPerCell();
                 NDArray new_conn = NDArray::Uninit(DType::Int64, {ncells, npc});
-                std::vector<std::int64_t> ids(npc);
-                for (std::size_t c = 0; c < ncells; ++c) {
-                    for (std::size_t i = 0; i < npc; ++i)
-                        ids[i] = detail::read_int(conn, c * npc + i);
+                std::int64_t* dst = new_conn.As<std::int64_t>();
+                parallel_for(ncells, [&](std::size_t c) {
+                    thread_local std::vector<std::int64_t> ids;
+                    ids.assign(conn.Data() + c * npc, conn.Data() + (c + 1) * npc);
                     rewrite(c, ids);
-                    for (std::size_t i = 0; i < npc; ++i)
-                        detail::write_int(new_conn, c * npc + i, ids[i]);
-                }
+                    std::copy(ids.begin(), ids.end(), dst + c * npc);
+                });
                 out.AddCellBlock(std::string(cb.Type()), std::move(new_conn));
             }
         }
@@ -301,13 +319,13 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
             const std::size_t ncells = cb.NumCells();
             NDArray a(DType::Float64, {ncells, std::size_t{3}});
             double* d = a.As<double>();
-            for (std::size_t c = 0; c < ncells; ++c) {
+            parallel_for(ncells, [&](std::size_t c) {
                 const std::size_t global = static_cast<std::size_t>(bases[bi]) + c;
                 const Vec3& s = cell_sum[global];
                 const double len = detail::vec3_norm(s);
                 for (std::size_t k = 0; k < 3; ++k)
                     d[c * 3 + k] = (first_tri[global] >= 0 && len > 0.0) ? s[k] * (1.0 / len) : nan;
-            }
+            });
             blocks.push_back(std::move(a));
         }
         result.mMesh.AddCellData(kNormalsName, std::move(blocks));

@@ -40,6 +40,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/slot_runs.hpp"
 #include "../detail/weld.hpp"
 
 namespace meshioplusplus {
@@ -451,26 +452,48 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         // Dedup (keep-first) if requested; else identity.
         bb.finalpos.assign(ob.pre_count, 0);
         if (rOpts.weld && rOpts.drop_duplicate_cells) {
-            std::map<std::vector<std::int64_t>, std::int64_t> seen;
-            for (std::size_t p = 0; p < ob.pre_count; ++p) {
-                std::vector<std::int64_t> key;
+            // Each cell's key -- the sorted multiset of all its nodes (every
+            // face's, for a polyhedron) -- built in parallel as CSR and
+            // grouped by the sort-based table (detail/slot_runs.hpp); every
+            // member of a run but its first is a duplicate, the cells a
+            // serial sweep through a map of keys drops.
+            const std::size_t pc = ob.pre_count;
+            const std::int64_t* rect = ob.poly || ob.ragged ? nullptr : bb.conn.As<std::int64_t>();
+            std::vector<std::uint64_t> length(pc);
+            parallel_for_bw(pc, [&](std::size_t p) {
+                std::size_t len = 0;
                 if (ob.poly) {
                     for (const auto& face : bb.polycells[p])
-                        key.insert(key.end(), face.begin(), face.end());
-                } else if (ob.ragged) {
-                    key = bb.polyrows[p];
+                        len += face.size();
                 } else {
-                    const std::int64_t* dst = bb.conn.As<std::int64_t>();
-                    key.assign(dst + p * ob.npc, dst + (p + 1) * ob.npc);
+                    len = ob.ragged ? bb.polyrows[p].size() : ob.npc;
                 }
-                std::sort(key.begin(), key.end());
-                auto it = seen.find(key);
-                if (it != seen.end()) {
+                length[p] = len;
+            });
+            std::vector<std::uint64_t> offset(pc + 1);
+            offset[pc] =
+                parallel_exclusive_scan(length.data(), pc, offset.data(), std::uint64_t{0});
+            std::vector<std::int64_t> keys(offset[pc]);
+            parallel_for(pc, [&](std::size_t p) {
+                std::int64_t* key = keys.data() + offset[p];
+                std::int64_t* out_k = key;
+                if (ob.poly) {
+                    for (const auto& face : bb.polycells[p])
+                        out_k = std::copy(face.begin(), face.end(), out_k);
+                } else if (ob.ragged) {
+                    out_k = std::copy(bb.polyrows[p].begin(), bb.polyrows[p].end(), out_k);
+                } else {
+                    out_k = std::copy(rect + p * ob.npc, rect + (p + 1) * ob.npc, out_k);
+                }
+                std::sort(key, out_k);
+            });
+            const detail::SlotRuns runs = detail::group_int_rows(keys, offset, out_pts);
+            const std::vector<std::uint8_t> duplicate = detail::later_duplicates(runs, pc);
+            for (std::size_t p = 0; p < pc; ++p) {
+                if (duplicate[p]) {
                     bb.finalpos[p] = -1;  // dropped duplicate
                 } else {
-                    const std::int64_t fidx = static_cast<std::int64_t>(bb.final_to_pre.size());
-                    seen.emplace(std::move(key), fidx);
-                    bb.finalpos[p] = fidx;
+                    bb.finalpos[p] = static_cast<std::int64_t>(bb.final_to_pre.size());
                     bb.final_to_pre.push_back(static_cast<std::int64_t>(p));
                 }
             }

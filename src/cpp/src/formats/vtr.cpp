@@ -43,6 +43,9 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "vtk_preflight.hpp"
+#include "../detail/vtu_decode.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -56,7 +59,7 @@ template <class T>
 bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -143,7 +146,8 @@ NDArray vtr_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTR '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -177,8 +181,8 @@ std::vector<double> vtr_read_axis(const pugi::xml_node& rCoordinates, const char
     throw ReadError(std::string("VTR Coordinates has no '") + pName + "' DataArray");
 }
 
-void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px,
-                  std::int64_t py, std::int64_t* pOut) {
+void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
+                  std::int64_t* pOut) {
     const std::int64_t base = (k * py + j) * px + i;
     const std::int64_t top = base + px * py;
     pOut[0] = base;
@@ -250,10 +254,12 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         const std::int64_t n = spec.mDims[k] + 1;
         std::vector<double> axis(static_cast<std::size_t>(n));
         for (std::int64_t i = 0; i < n; ++i)
-            axis[static_cast<std::size_t>(i)] = spec.mOrigin[k] + static_cast<double>(i) * spec.mSpacing[k];
+            axis[static_cast<std::size_t>(i)] =
+                spec.mOrigin[k] + static_cast<double>(i) * spec.mSpacing[k];
         da_header(vtu_type_str(DType::Float64), axis_names[k], 0);
         if (binary)
-            emit_bin(reinterpret_cast<const unsigned char*>(axis.data()), axis.size() * sizeof(double));
+            emit_bin(reinterpret_cast<const unsigned char*>(axis.data()),
+                     axis.size() * sizeof(double));
         else
             for (double v : axis)
                 os << v << "\n";
@@ -307,6 +313,8 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "RectilinearGrid",
+                          "lzma-compressed VTR not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTR XML parse failed: ") + res.description());
@@ -392,6 +400,8 @@ Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
 
 MeshMetadata read_vtr_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "RectilinearGrid",
+                          "lzma-compressed VTR not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTR XML parse failed: ") + res.description());

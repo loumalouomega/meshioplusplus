@@ -28,6 +28,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -44,6 +45,8 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -54,53 +57,37 @@ namespace {
 // because the single-header amalgamation concatenates all of src/cpp/src.
 // ---------------------------------------------------------------------------
 
-std::string mdpa_strip(const std::string& rS) {
-    const std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    const std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+std::string_view mdpa_strip(std::string_view S) {
+    const std::size_t b = S.find_first_not_of(" \t\r\n");
+    if (b == std::string_view::npos)
+        return {};
+    const std::size_t e = S.find_last_not_of(" \t\r\n");
+    return S.substr(b, e - b + 1);
 }
 
 /// The line with any `//` comment removed, then stripped.
-std::string mdpa_clean(const std::string& rS) {
-    const std::size_t c = rS.find("//");
-    return mdpa_strip(c == std::string::npos ? rS : rS.substr(0, c));
+std::string_view mdpa_clean(std::string_view S) {
+    const std::size_t c = S.find("//");
+    return mdpa_strip(c == std::string_view::npos ? S : S.substr(0, c));
 }
 
-std::vector<std::string> mdpa_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> mdpa_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
-bool mdpa_starts_with(const std::string& rS, const std::string& rPrefix) {
-    return rS.size() >= rPrefix.size() && rS.compare(0, rPrefix.size(), rPrefix) == 0;
+bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
+    return S.size() >= Prefix.size() && S.compare(0, Prefix.size(), Prefix) == 0;
 }
 
-bool mdpa_parse_int(const std::string& rS, std::int64_t& rOut) {
-    if (rS.empty())
-        return false;
-    char* end = nullptr;
-    const long long v = std::strtoll(rS.c_str(), &end, 10);
-    if (end != rS.c_str() + rS.size())
-        return false;
-    rOut = static_cast<std::int64_t>(v);
-    return true;
+/// strtoll(…, 10) over the whole token.
+bool mdpa_parse_int(std::string_view S, std::int64_t& rOut) {
+    return detail::parse_int_token(S, rOut);
 }
 
-bool mdpa_parse_double(const std::string& rS, double& rOut) {
-    if (rS.empty())
-        return false;
-    const char* end = nullptr;
-    const double v = detail::parse_double(rS.c_str(), end);
-    if (end != rS.c_str() + rS.size())
-        return false;
-    rOut = v;
-    return true;
+/// parse_double over the whole token.
+bool mdpa_parse_double(std::string_view S, double& rOut) {
+    return detail::parse_double_token(S, rOut);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,11 +159,11 @@ struct MdpaDataRow {
 
 /// A cursor over the file's lines, so every block parser advances one index.
 struct MdpaCursor {
-    const std::vector<std::string>* mpLines = nullptr;
+    const std::vector<std::string_view>* mpLines = nullptr;
     std::size_t mIndex = 0;
 
     bool Done() const { return mIndex >= mpLines->size(); }
-    const std::string& Next() { return (*mpLines)[mIndex++]; }
+    std::string_view Next() { return (*mpLines)[mIndex++]; }
 };
 
 /// Consume the rest of a block, ignoring blank/comment-only lines.
@@ -212,15 +199,15 @@ void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::s
 void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
                              bool Lenient, MdpaInfo* pInfo) {
     while (!rCur.Done()) {
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == rEnd)
             return;
         if (!Lenient)
             throw ReadError("MDPA: " + rWhat +
-                            " is not supported by the C++ reader (offending line: '" + line +
-                            "'; set ReadOptions::mLenient to skip it instead)");
+                            " is not supported by the C++ reader (offending line: '" +
+                            std::string(line) + "'; set ReadOptions::mLenient to skip it instead)");
         log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
         if (pInfo)
             pInfo->mSkippedConstructs.push_back(rWhat);
@@ -238,7 +225,7 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
  * names unchanged. Rows are whitespace-separated numbers; the first usable row
  * fixes the column count and a row that disagrees is warned about and skipped.
  */
-PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHeader) {
+PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, std::string_view rHeader) {
     PropertyValue out;
     out.mIsTable = true;
     out.mKey = mdpa_strip(rHeader.substr(std::string("Begin Table").size()));
@@ -247,18 +234,18 @@ PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHe
     std::size_t ncols = 0;
     bool terminated = false;
     while (!rCur.Done()) {
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == "End Table") {
             terminated = true;
             break;
         }
-        const std::vector<std::string> toks = mdpa_tokens(line);
+        const std::vector<std::string_view> toks = mdpa_tokens(line);
         std::vector<double> row;
         row.reserve(toks.size());
         bool ok = true;
-        for (const std::string& tok : toks) {
+        for (const std::string_view tok : toks) {
             double v = 0.0;
             if (!mdpa_parse_double(tok, v)) {
                 ok = false;
@@ -299,9 +286,9 @@ PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHe
  * bracketed vector or matrix -- is kept verbatim as text, which is both
  * lossless and what the pure-Python reference does.
  */
-PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) {
+PropertySet mdpa_parse_properties(MdpaCursor& rCur, std::string_view rHeader) {
     PropertySet out;
-    const std::vector<std::string> head = mdpa_tokens(rHeader);
+    const std::vector<std::string_view> head = mdpa_tokens(rHeader);
     if (head.size() < 3 || !mdpa_parse_int(head[2], out.mId)) {
         log::warn("mdpa: Properties block with no readable id, using 0: {}", rHeader);
         out.mId = 0;
@@ -310,7 +297,7 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) 
     while (true) {
         if (rCur.Done())
             throw ReadError("MDPA: EOF before 'End Properties'");
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == "End Properties")
@@ -328,7 +315,7 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) 
         }
         PropertyValue v;
         v.mKey = line.substr(0, sep);
-        const std::string rest = mdpa_strip(line.substr(sep + 1));
+        const std::string_view rest = mdpa_strip(line.substr(sep + 1));
         double scalar = 0.0;
         if (mdpa_parse_double(rest, scalar)) {
             NDArray a(DType::Float64, {1});
@@ -361,20 +348,21 @@ int mdpa_parse_data_block(
     std::vector<MdpaDataRow>& rRows, bool& rHasFixed) {
     int nc = -1;
     bool terminated = false;
+    std::vector<std::string_view> toks;  // reused: one allocation per block, not per row
     while (!rCur.Done()) {
-        const std::string raw = mdpa_strip(rCur.Next());
+        const std::string_view raw = mdpa_strip(rCur.Next());
         if (raw == rEnd) {
             terminated = true;
             break;
         }
-        const std::string line = mdpa_clean(raw);
+        const std::string_view line = mdpa_clean(raw);
         if (line.empty())
             continue;
         if (line == rEnd) {
             terminated = true;
             break;
         }
-        const std::vector<std::string> toks = mdpa_tokens(line);
+        detail::split_blanks(line, toks);
         std::int64_t id = 0;
         if (toks.empty())
             continue;
@@ -488,13 +476,10 @@ namespace {
  * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
  */
 Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l))
-        lines.push_back(l);
+    // The file read once; its lines are views into it (detail/text_cursor.hpp),
+    // not a string each.
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
     MdpaCursor cur{&lines, 0};
 
@@ -559,7 +544,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
 
     auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut) {
         while (!cur.Done()) {
-            const std::string line = mdpa_clean(cur.Next());
+            const std::string_view line = mdpa_clean(cur.Next());
             if (line.empty())
                 continue;
             if (line == rEnd)
@@ -591,8 +576,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     };
 
     while (!cur.Done()) {
-        const std::string raw = mdpa_strip(cur.Next());
-        const std::string line = mdpa_clean(raw);
+        const std::string_view raw = mdpa_strip(cur.Next());
+        const std::string_view line = mdpa_clean(raw);
         if (line.empty())
             continue;
 
@@ -600,19 +585,20 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             while (true) {
                 if (cur.Done())
                     throw ReadError("MDPA: EOF before 'End ModelPartData'");
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == "End ModelPartData")
                     break;
-                const std::vector<std::string> t = mdpa_tokens(e);
+                const std::vector<std::string_view> t = mdpa_tokens(e);
                 if (t.size() < 2) {
                     log::warn("mdpa: skipping malformed ModelPartData line: {}", e);
                     continue;
                 }
                 double v = 0.0;
                 if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
-                    const std::string what = "a non-numeric ModelPartData value for '" + t[0] + "'";
+                    const std::string what =
+                        "a non-numeric ModelPartData value for '" + std::string(t[0]) + "'";
                     if (!Lenient)
                         throw ReadError("MDPA: " + what +
                                         " is not supported by the C++ reader (set "
@@ -624,30 +610,45 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 }
                 NDArray a(DType::Float64, {1});
                 a.As<double>()[0] = v;
-                field_data[t[0]] = std::move(a);
+                field_data[std::string(t[0])] = std::move(a);
             }
         } else if (line == "Begin Nodes") {
             if (num_points)
                 throw ReadError("MDPA: more than one Nodes block");
             bool terminated = false;
+            // The format carries no node count: the block's lines (views, so
+            // cheap to look ahead over) bound it, and size the coordinates.
+            {
+                std::size_t rows = 0;
+                for (std::size_t k = cur.mIndex; k < lines.size(); ++k) {
+                    const std::string_view ahead = mdpa_clean(lines[k]);
+                    if (ahead == "End Nodes")
+                        break;
+                    rows += ahead.empty() ? 0 : 1;
+                }
+                coords.reserve(coords.size() + 3 * rows);
+                raw_node_ids.reserve(raw_node_ids.size() + rows);
+            }
+            std::vector<std::string_view> t;  // reused: one allocation per block, not per row
             while (!cur.Done()) {
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == "End Nodes") {
                     terminated = true;
                     break;
                 }
-                const std::vector<std::string> t = mdpa_tokens(e);
+                detail::split_blanks(e, t);
                 if (t.size() < 3)
-                    throw ReadError("MDPA: node line with fewer than 3 coordinates: " + e);
+                    throw ReadError("MDPA: node line with fewer than 3 coordinates: " +
+                                    std::string(e));
                 // An id-less row (`x y z`) takes its position as its id, which is
                 // exactly what "connectivity is 1-based into row order" already
                 // meant for a fully id-less file -- so such a file never leaves
                 // the dense path and reads byte-identically to before.
                 std::int64_t id = static_cast<std::int64_t>(num_points) + 1;
                 if (t.size() >= 4 && !mdpa_parse_int(t[0], id))
-                    throw ReadError("MDPA: non-integer node id: " + e);
+                    throw ReadError("MDPA: non-integer node id: " + std::string(e));
                 if (node_ids_dense && id != static_cast<std::int64_t>(num_points) + 1) {
                     node_ids.reserve(num_points * 2 + 16);
                     for (std::size_t r = 0; r < num_points; ++r)
@@ -664,7 +665,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 for (std::size_t c = t.size() - 3; c < t.size(); ++c) {
                     double v = 0.0;
                     if (!mdpa_parse_double(t[c], v))
-                        throw ReadError("MDPA: non-numeric node coordinate: " + e);
+                        throw ReadError("MDPA: non-numeric node coordinate: " + std::string(e));
                     coords.push_back(v);
                 }
                 ++num_points;
@@ -675,8 +676,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                    mdpa_starts_with(line, "Begin Conditions")) {
             const bool is_condition = mdpa_starts_with(line, "Begin Conditions");
             const std::string end_token = is_condition ? "End Conditions" : "End Elements";
-            const std::vector<std::string> head = mdpa_tokens(line);
-            const std::string entity_name = head.size() >= 3 ? head[2] : std::string();
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string entity_name = head.size() >= 3 ? std::string(head[2]) : std::string();
             const CellType type = mdpa_entity_cell_type(entity_name);
             if (type == CellType::Custom)
                 throw ReadError("MDPA: unknown Kratos entity name '" + entity_name + "'");
@@ -688,8 +689,9 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             const std::vector<int>& order = mdpa_kratos_node_order(type);
 
             bool terminated = false;
+            std::vector<std::string_view> t;  // reused: one allocation per block, not per row
             while (!cur.Done()) {
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == end_token) {
@@ -697,15 +699,17 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     break;
                 }
                 if (mdpa_starts_with(e, "End "))
-                    throw ReadError("MDPA: expected '" + end_token + "', got '" + e + "'");
-                const std::vector<std::string> t = mdpa_tokens(e);
+                    throw ReadError("MDPA: expected '" + end_token + "', got '" + std::string(e) +
+                                    "'");
+                detail::split_blanks(e, t);
                 if (static_cast<int>(t.size()) != nn + 2)
                     throw ReadError("MDPA: " + entity_name + " row with " +
                                     std::to_string(t.size() >= 2 ? t.size() - 2 : 0) +
-                                    " nodes (expected " + std::to_string(nn) + "): " + e);
+                                    " nodes (expected " + std::to_string(nn) +
+                                    "): " + std::string(e));
                 std::int64_t id = 0, prop = 0;
                 if (!mdpa_parse_int(t[0], id) || !mdpa_parse_int(t[1], prop))
-                    throw ReadError("MDPA: non-integer id/property in: " + e);
+                    throw ReadError("MDPA: non-integer id/property in: " + std::string(e));
 
                 // The Kratos *name* is part of the split key, not just the cell
                 // type: two adjacent SmallDisplacementElement3D4N and
@@ -728,7 +732,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 for (int j = 0; j < nn; ++j) {
                     std::int64_t node = 0;
                     if (!mdpa_parse_int(t[static_cast<std::size_t>(j) + 2], node))
-                        throw ReadError("MDPA: non-integer node id in: " + e);
+                        throw ReadError("MDPA: non-integer node id in: " + std::string(e));
                     const std::size_t slot =
                         order.empty()
                             ? static_cast<std::size_t>(j)
@@ -762,12 +766,12 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             if (pInfo)
                 pInfo->mProperties.push_back(std::move(ps));
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed NodalData header: " + line);
+                throw ReadError("MDPA: malformed NodalData header: " + std::string(line));
             if (num_points == 0)
                 throw ReadError("MDPA: NodalData before Nodes");
-            std::string name = head[2];
+            std::string name(head[2]);
             const std::size_t br = name.find('[');
             if (br != std::string::npos)
                 name = name.substr(0, br);
@@ -790,10 +794,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                    mdpa_starts_with(line, "Begin ConditionalData")) {
             const bool elemental = mdpa_starts_with(line, "Begin ElementalData");
             const std::string end_token = elemental ? "End ElementalData" : "End ConditionalData";
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed " + end_token.substr(4) + " header: " + line);
-            std::string name = head[2];
+                throw ReadError("MDPA: malformed " + end_token.substr(4) +
+                                " header: " + std::string(line));
+            std::string name(head[2]);
             const std::size_t br = name.find('[');
             if (br != std::string::npos)
                 name = name.substr(0, br);
@@ -864,10 +869,10 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 smp.mCells.push_back(it->second);
             }
         } else if (mdpa_starts_with(line, "Begin SubModelPart")) {
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed SubModelPart header: " + line);
-            smp_stack.push_back(head[2]);
+                throw ReadError("MDPA: malformed SubModelPart header: " + std::string(line));
+            smp_stack.emplace_back(head[2]);
             smps[smp_name()];  // an entity-less SubModelPart is still a group
         } else if (line == "End SubModelPart") {
             if (smp_stack.empty())
@@ -884,11 +889,13 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             // block a future Kratos adds are covered without a case each. The
             // terminator is the header's first word after `Begin`, so a nested
             // `End <other>` cannot end the scan early.
-            const std::vector<std::string> head = mdpa_tokens(line);
-            const std::string end_token = "End " + (head.size() >= 2 ? head[1] : std::string());
-            mdpa_reject_or_skip(cur, end_token, "the block '" + line + "'", Lenient, pInfo);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string end_token =
+                "End " + (head.size() >= 2 ? std::string(head[1]) : std::string());
+            mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'", Lenient,
+                                pInfo);
         } else {
-            throw ReadError("MDPA: unexpected line outside a block: '" + line + "'");
+            throw ReadError("MDPA: unexpected line outside a block: '" + std::string(line) + "'");
         }
     }
     if (!smp_stack.empty())

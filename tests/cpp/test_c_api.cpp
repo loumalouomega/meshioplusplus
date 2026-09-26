@@ -1442,6 +1442,28 @@ TEST(CApi, WriteExHonoursEncodingAndCodec) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_wex_raw.vtu");
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.encoding = MIO_ENCODING_RAW_APPENDED;
+    ASSERT_EQ(mio_write_ex(path.c_str(), m, "vtu", &opts), MIO_OK) << mio_last_error();
+    mio_mesh* back = mio_read(path.c_str(), "vtu");
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(back), mio_mesh_num_points(m));
+    mio_mesh_free(back);
+    std::remove(path.c_str());
+
+    const std::string bad = mt::temp_path("_wex_raw.vtk");
+    EXPECT_NE(mio_write_ex(bad.c_str(), m, "vtk", &opts), MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("raw appended"), std::string::npos)
+        << mio_last_error();
+    std::remove(bad.c_str());
+    mio_mesh_free(m);
+}
+
 TEST(CApi, WriteExRejectsAnOptionTheFormatCannotHonour) {
     mio_mesh* m = build_tet_mesh();
     ASSERT_NE(m, nullptr);

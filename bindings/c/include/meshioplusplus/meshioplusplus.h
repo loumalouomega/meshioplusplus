@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 17
+#define MIO_VERSION_MINOR 20
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -512,7 +512,9 @@ MIO_API mio_status mio_write(const char* path, const mio_mesh* mesh, const char*
 typedef enum mio_write_encoding {
     MIO_ENCODING_DEFAULT = 0, /**< the format's own default (unchanged behaviour) */
     MIO_ENCODING_ASCII = 1,
-    MIO_ENCODING_BINARY = 2
+    MIO_ENCODING_BINARY = 2,
+    MIO_ENCODING_RAW_APPENDED = 3 /**< vtu only: binary arrays in one raw <AppendedData> section,
+                                       no base64 (since v16.20.0) */
 } mio_write_encoding;
 
 /** Block compression codec for mio_write_opts.codec (vti/vtu/vtp only). */

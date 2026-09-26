@@ -45,6 +45,9 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
+// Project includes (private, not installed)
 #include "smooth_odt.hpp"
 
 namespace meshioplusplus {
@@ -185,8 +188,8 @@ std::array<std::int64_t, 3> optvol_face_ordered(const Tet& t, int lf) {
 // two tets with three around the segment joining their apexes, iff the segment
 // lies inside the (convex) union -- a pure signed-volume test -- and the worst
 // of the three new tets is strictly better than the worst of the two old ones.
-std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
-                            double min_improve, double eps_len, double eps_vol6) {
+std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets, double min_improve,
+                            double eps_len, double eps_vol6) {
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
@@ -271,9 +274,9 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             const double vC = optvol_svol6(g2, g0, pe, pd);
             if (vA <= eps_vol6 || vB <= eps_vol6 || vC <= eps_vol6)
                 continue;  // non-convex union -> invalid flip
-            const double q_new = std::min(
-                {optvol_quality_tet(rXyz, A, eps_len), optvol_quality_tet(rXyz, B, eps_len),
-                 optvol_quality_tet(rXyz, C, eps_len)});
+            const double q_new = std::min({optvol_quality_tet(rXyz, A, eps_len),
+                                           optvol_quality_tet(rXyz, B, eps_len),
+                                           optvol_quality_tet(rXyz, C, eps_len)});
             const double q_old = std::min(optvol_quality_tet(rXyz, rTets[t], eps_len),
                                           optvol_quality_tet(rXyz, rTets[u], eps_len));
             if (q_new <= q_old + min_improve)
@@ -305,8 +308,8 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
 // candidate: replace the three tets with two capping the ring triangle, iff the
 // two caps tile the same trigonal bipyramid (a signed-volume tiling test) and
 // the worse cap beats the worst of the three old tets.
-std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
-                            double min_improve, double eps_len, double eps_vol6) {
+std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, double min_improve,
+                            double eps_len, double eps_vol6) {
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
@@ -398,16 +401,16 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
             continue;
         double old_sum = 0.0;
         for (int r = 0; r < 3; ++r)
-            old_sum += std::fabs(optvol_svol6(
-                optvol_point(rXyz, rTets[ring_tets[r]][0]), optvol_point(rXyz, rTets[ring_tets[r]][1]),
-                optvol_point(rXyz, rTets[ring_tets[r]][2]),
-                optvol_point(rXyz, rTets[ring_tets[r]][3])));
+            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, rTets[ring_tets[r]][0]),
+                                              optvol_point(rXyz, rTets[ring_tets[r]][1]),
+                                              optvol_point(rXyz, rTets[ring_tets[r]][2]),
+                                              optvol_point(rXyz, rTets[ring_tets[r]][3])));
         const double new_sum = vcap1 + vcap2;
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;  // not a clean tiling -> non-convex / invalid
         const Tet cap1{a, b, c, uu}, cap2{a, c, b, vv};
-        const double q_new =
-            std::min(optvol_quality_tet(rXyz, cap1, eps_len), optvol_quality_tet(rXyz, cap2, eps_len));
+        const double q_new = std::min(optvol_quality_tet(rXyz, cap1, eps_len),
+                                      optvol_quality_tet(rXyz, cap2, eps_len));
         double q_old = 1.0;
         for (int r = 0; r < 3; ++r)
             q_old = std::min(q_old, optvol_quality_tet(rXyz, rTets[ring_tets[r]], eps_len));
@@ -478,9 +481,10 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     std::vector<double> xyz(n * 3, 0.0);
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView points_v(points);
         parallel_for_bw(n, [&](std::size_t i) {
             for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+                xyz[i * 3 + d] = points_v[i * dim + d];
         });
     }
     const std::vector<double> xyz0 = xyz;  // for the moved-count at the end
@@ -492,11 +496,12 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
         std::size_t bi = 0;
         for (const auto cb : rMesh.CellRange()) {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t nc = cb.NumCells();
             const std::size_t base = static_cast<std::size_t>(bases[bi]);
             for (std::size_t c = 0; c < nc; ++c)
                 for (std::size_t k = 0; k < 4; ++k)
-                    tets[base + c][k] = detail::read_int(conn, c * 4 + k);
+                    tets[base + c][k] = conn_v[c * 4 + k];
             ++bi;
         }
     }
@@ -512,8 +517,9 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
                 hi[d] = std::max(hi[d], xyz[i * 3 + d]);
             }
     }
-    const double L = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                               (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const double L =
+        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
     const double eps_len = (L > 0.0 ? L : 1.0) * 1e-14;
     const double eps_vol6 = (L > 0.0 ? L * L * L : 1.0) * 1e-14;
 
@@ -572,13 +578,14 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     Mesh& out = result.mMesh;
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView points_v(points);
         NDArray np = NDArray::Uninit(points.Dtype(), {n, dim});
         detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
             T* dst = np.As<T>();
             for (std::size_t i = 0; i < n; ++i)
                 for (std::size_t d = 0; d < dim; ++d)
                     dst[i * dim + d] = d < 3 ? static_cast<T>(xyz[i * 3 + d])
-                                             : static_cast<T>(detail::read_double(points, i * dim + d));
+                                             : static_cast<T>(points_v[i * dim + d]);
         });
         out.AssignPoints(std::move(np));
     }
@@ -604,13 +611,14 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     for (std::size_t i = 0; i < static_cast<std::size_t>(rMesh.NumRegions()); ++i) {
         const Region& r = rMesh.Region(i);
         if (r.mKind == RegionKind::Point)
-            out.AddRegion(Region(r.mName, r.mKind, r.mDim, r.mTag, detail::data_owned_copy(r.mEntries)));
+            out.AddRegion(
+                Region(r.mName, r.mKind, r.mDim, r.mTag, detail::data_owned_copy(r.mEntries)));
         else
             ++dropped_cell_regions;
     }
     if (!rMesh.CellDataNames().empty())
-        log::warn("{}dropped {} cell_data array(s): a flip has no cell correspondence",
-                  kOvPrefix, rMesh.CellDataNames().size());
+        log::warn("{}dropped {} cell_data array(s): a flip has no cell correspondence", kOvPrefix,
+                  rMesh.CellDataNames().size());
     if (dropped_cell_regions > 0)
         log::warn("{}dropped {} Cell/Side region(s): a flip has no cell correspondence", kOvPrefix,
                   dropped_cell_regions);

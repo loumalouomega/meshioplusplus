@@ -40,6 +40,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -244,7 +245,7 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
 
 std::vector<std::string> flac3d_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);

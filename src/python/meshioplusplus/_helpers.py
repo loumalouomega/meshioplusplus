@@ -462,8 +462,24 @@ def _read_file(
                 raise
             possible_file_formats = [sniffed]
 
+    # An ambiguous extension (.msh, .dat, .inp, .mesh, .ele/.node) tries first
+    # the candidate the content sniff recognises -- 512 bytes -- so a Gmsh
+    # file is not read whole by the ansys reader before gmsh gets it. Every
+    # candidate is still tried; the order only decides who goes first.
+    attempts = list(possible_file_formats)
+    if len(attempts) > 1:
+        from ._sniff import sniff_format
+
+        try:
+            sniffed = sniff_format(path)
+        except (ReadError, OSError):
+            sniffed = ""  # advisory only: keep the extension's order
+        if sniffed in attempts:
+            attempts.remove(sniffed)
+            attempts.insert(0, sniffed)
+
     failures: list[tuple[str, ReadError]] = []
-    for file_format in possible_file_formats:
+    for file_format in attempts:
         if file_format not in reader_map:
             raise ReadError(f"Unknown file format '{file_format}' of '{path}'.")
 

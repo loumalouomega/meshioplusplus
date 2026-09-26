@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 
 from .._colormap import NAMES as CMAP_NAMES
-from .._helpers import _writer_map, read, reader_map, write
+from .._helpers import _filetypes_from_path, _writer_map, read, reader_map, write
 
 # Colouring reaches the writer as keyword arguments, and only the SVG and TikZ
 # writers accept them -- every other writer would raise on the unexpected kwarg,
@@ -37,6 +37,12 @@ def add_args(parser):
         "-a",
         action="store_true",
         help="write in ASCII format variant (where applicable, default: binary)",
+    )
+    parser.add_argument(
+        "--appended",
+        action="store_true",
+        help="write a .vtu's arrays as raw binary in one <AppendedData> section "
+        "(no base64)",
     )
     parser.add_argument("outfile", type=str, help="mesh file to be written to")
     parser.add_argument(
@@ -286,8 +292,9 @@ def _color_kwargs(args):
             f"--color-by is only supported for {'/'.join(_COLOR_FORMATS)} output, "
             f"not '{fmt}'"
         )
-    if args.ascii:
-        raise ValueError(f"--ascii has no meaning for {fmt} output")
+    if args.ascii or args.appended:
+        flag = "--ascii" if args.ascii else "--appended"
+        raise ValueError(f"{flag} has no meaning for {fmt} output")
     if args.colorbar and fmt == "gltf":
         raise ValueError("--colorbar has no meaning for gltf output (svg/tikz only)")
 
@@ -305,6 +312,30 @@ def _color_kwargs(args):
         kwargs["nan_color"] = args.nan_color
     kwargs.update(gltf_kwargs)
     return kwargs
+
+
+def _encoding_kwargs(args, outfile=None):
+    """``--ascii``/``--appended`` -> writer kwargs. ``--appended`` is VTU's raw
+    ``<AppendedData>`` encoding, as the MCP ``mode="raw_appended"`` spells it;
+    ``outfile`` (a single file, not a sequence pattern) lets it be checked
+    before the read."""
+    if args.ascii and args.appended:
+        raise ValueError("--ascii and --appended are mutually exclusive")
+    if args.ascii:
+        return {"binary": False}
+    if not args.appended:
+        return {}
+    if outfile is not None:
+        fmt = (
+            args.output_format
+            or (_filetypes_from_path(pathlib.Path(outfile)) or [None])[0]
+        )
+        if fmt != "vtu":
+            raise ValueError(
+                f"--appended: format '{fmt}' has no raw appended encoding "
+                "(only vtu does)"
+            )
+    return {"binary": True, "appended": True}
 
 
 def _wants_sequence(args):
@@ -405,8 +436,7 @@ def convert(args):
         write_kwargs = dict(color_kwargs)
         if args.float_format is not None:
             write_kwargs["float_fmt"] = args.float_format
-        if args.ascii:
-            write_kwargs["binary"] = False
+        write_kwargs.update(_encoding_kwargs(args))
         return _convert_sequence(args, arrays, write_kwargs)
 
     # read mesh data
@@ -447,8 +477,7 @@ def convert(args):
     kwargs = {"file_format": args.output_format}
     if args.float_format is not None:
         kwargs["float_fmt"] = args.float_format
-    if args.ascii:
-        kwargs["binary"] = False
+    kwargs.update(_encoding_kwargs(args, args.outfile))
     kwargs.update(color_kwargs)
 
     write(args.outfile, mesh, **kwargs)

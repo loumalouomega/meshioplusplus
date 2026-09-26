@@ -41,6 +41,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -588,10 +589,7 @@ Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
 }
 
 std::string comsol_slurp(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return std::string(detail::open_source(rPath, "Could not open file: " + rPath).View());
 }
 
 // ---------------------------------------------------------------------------

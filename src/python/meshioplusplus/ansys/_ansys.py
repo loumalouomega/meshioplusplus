@@ -180,9 +180,34 @@ def _binary_mixed_faces(rd, count, dtype):
     return values
 
 
+def _refuse_early(head):
+    """Refuse a file that does not open with a Fluent section from its first
+    bytes, with the message the full read would give -- before reading it
+    whole. Every ``.msh`` (Gmsh, FreeFEM) is offered to this reader first."""
+    p, n = 0, len(head)
+    while p < n and head[p] in b" \t\r\n":
+        p += 1
+    if p == n:
+        return  # undecided: all blanks so far
+    q = p + 1
+    while q < n and head[q] in b" \t\r\n":
+        q += 1
+    if head[p] != 0x28 or (q < n and not 0x30 <= head[q] <= 0x39):
+        raise ReadError(f"Fluent: expected a section at byte {p}")
+
+
 def read(filename):  # noqa: C901
     with open_file(filename, "rb") as f:
-        data = f.read()
+        head = f.read(256)
+        if isinstance(head, str):
+            head = head.encode()
+        _refuse_early(head)
+        if f.seekable():
+            f.seek(0)
+            data = f.read()
+        else:
+            rest = f.read()
+            data = head + (rest.encode() if isinstance(rest, str) else rest)
     if isinstance(data, str):
         data = data.encode()
     rd = _Reader(data)

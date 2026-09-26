@@ -31,6 +31,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -40,7 +41,7 @@ namespace {
 bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
     std::string line;
     while (std::getline(rIn, line)) {
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string t;
         rOut.clear();
         while (iss >> t)

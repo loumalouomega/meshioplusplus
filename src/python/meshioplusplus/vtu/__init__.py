@@ -1,4 +1,5 @@
 from .. import _core
+from .._exceptions import WriteError
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
@@ -26,7 +27,9 @@ def read(filename, points_only=False, arrays=None):
     return _py_read(filename)
 
 
-def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+def write(
+    filename, mesh, binary=True, compression="zlib", header_type=None, appended=False
+):
     """Write a VTU file.
 
     Uses the C++ core for the cases it supports (ASCII and binary, the latter
@@ -34,7 +37,15 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     path) and otherwise falls back to the reference Python writer. The
     fallback also catches any limitation hit by the C++ path, so behaviour is
     identical to the pure-Python implementation.
+
+    ``appended=True`` (since v16.20.0) writes every piece array into one raw
+    ``<AppendedData>`` section -- binary, with no base64 -- compressed with
+    ``compression`` as usual. It needs ``binary=True``.
     """
+    if appended and not binary:
+        raise WriteError(
+            "VTU: appended data is binary; appended=True needs binary=True"
+        )
     # zstd/lz4 reach the C++ writer when this build has them; otherwise the
     # Python reference path handles it (needing the `codecs` extra), so a
     # request never silently degrades to a different codec.
@@ -46,13 +57,23 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         cpp_compression_ok = False
     if header_type is None and cpp_compression_ok and not is_buffer(filename, "w"):
         try:
-            _core.vtu_write_codec(str(filename), mesh, binary, _CPP_CODECS[compression])
+            if appended:
+                _core.vtu_write_appended(str(filename), mesh, _CPP_CODECS[compression])
+            else:
+                _core.vtu_write_codec(
+                    str(filename), mesh, binary, _CPP_CODECS[compression]
+                )
             return
         except Exception as exc:
             if not core_declined(exc, "vtu", "write", filename):
                 raise
     return _py_write(
-        filename, mesh, binary=binary, compression=compression, header_type=header_type
+        filename,
+        mesh,
+        binary=binary,
+        compression=compression,
+        header_type=header_type,
+        appended=appended,
     )
 
 

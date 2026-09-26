@@ -49,6 +49,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
@@ -844,10 +845,9 @@ int lm_shellface(const std::string& rName, std::string* pBase) {
 }  // namespace
 
 Mesh read_libmesh(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("libMesh: cannot open " + rPath);
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // One bulk read; the text is owned, since a compressed file is replaced
+    // by its inflated bytes.
+    std::string text(detail::open_source(rPath, "libMesh: cannot open " + rPath).View());
     // libMesh writes `.xda.gz`/`.xdr.gz` through gzip and `.bz2` through bzip2.
     if (text.size() >= 2 && static_cast<unsigned char>(text[0]) == 0x1f &&
         static_cast<unsigned char>(text[1]) == 0x8b)

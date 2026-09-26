@@ -41,6 +41,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/typed_view.hpp"
+
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // System includes (KaHIP dual-graph path only)
 #include <array>
@@ -74,6 +77,7 @@ std::size_t partition_total_cells(const Mesh& rMesh) {
 // across their faces (a node shared by several faces counts once).
 std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView points_v(points);
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t dim = std::min<std::size_t>(pdim, 3);
 
@@ -93,8 +97,7 @@ std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::int64_t node : nodes)
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] +=
-                            detail::read_double(points, static_cast<std::size_t>(node) * pdim + d);
+                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
                 if (!nodes.empty())
                     for (std::size_t d = 0; d < dim; ++d)
                         out[d] /= static_cast<double>(nodes.size());
@@ -114,14 +117,14 @@ std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
             });
         } else {
             const NDArray& conn = cb.Conn();
+            const detail::Int64View conn_v(conn);
             const std::size_t npc = cb.NodesPerCell();
             parallel_for(ncells, [&, base](std::size_t c) {
                 double* out = cent.data() + 3 * (base + c);
                 for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node =
-                        static_cast<std::size_t>(detail::read_int(conn, c * npc + k));
+                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
                     for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points, node * pdim + d);
+                        out[d] += points_v[node * pdim + d];
                 }
                 if (npc > 0)
                     for (std::size_t d = 0; d < dim; ++d)
@@ -407,6 +410,7 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
             continue;
         }
         const NDArray& conn = *d.mpConn;
+        const detail::Int64View conn_v(conn);
         const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacets.size();
         parallel_for(d.mNumCells * fpc, [&](std::size_t j) {
@@ -415,7 +419,7 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
             PartitionFacetRecord& r = recs[d.mFirstFacet + j];
             std::array<std::int64_t, 4> ids{};
             for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
-                ids[k] = detail::read_int(conn, cell * npc + facet.mNodes[k]);
+                ids[k] = conn_v[cell * npc + facet.mNodes[k]];
             r.mKey = PartitionFacetKey(ids.data(), facet.mNumCorners);
             r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
         });
