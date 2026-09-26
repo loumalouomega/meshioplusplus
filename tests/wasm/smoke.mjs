@@ -2381,13 +2381,13 @@ step('availableFormats reports what this build can read and write', () => {
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    // Abaqus .fil and OpenRadioss (v16.7.0) read-only; Z88 and libMesh (its
-    // writer is v16.11.0) both ways.
+    // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0)
+    // and OpenRadioss starter decks (read v16.7.0, written v16.17.0) both ways.
     // OpenRadioss animation files (v16.11.0), time-history files and LS-DYNA
-    // binouts (v16.12.0) read-only too.
-    for (const fmt of ['abaqus_fil', 'radioss', 'radioss_anim', 'radioss_th', 'lsdyna_binout'])
+    // binouts (v16.12.0) read-only.
+    for (const fmt of ['abaqus_fil', 'radioss_anim', 'radioss_th', 'lsdyna_binout'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    for (const fmt of ['z88', 'libmesh'])
+    for (const fmt of ['z88', 'libmesh', 'radioss'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // MSC Marc decks and post files, and the full rotor of a cyclic Ansys .rst
     // (v16.8.0): read-only.
@@ -2727,6 +2727,11 @@ step('z88 is found by its file name; libmesh, abaqus_fil and radioss read by ext
     const deck = m.readMesh('/deck_0000.rad');
     assert.deepEqual(deck.cells.map((c) => c.type), ['tetra']);
     assert.ok(deck.regions.some((r) => r.name === 'tet'));
+    // And written back (v16.17.0), the part with it.
+    m.writeMesh('/back_0000.rad', deck);
+    const back = m.readMesh('/back_0000.rad');
+    assert.deepEqual(back.cells.map((c) => c.type), ['tetra']);
+    assert.ok(back.regions.some((r) => r.name === 'tet'));
 });
 
 step('d3plot is found by its file name, its states across the family; .op2 by extension', () => {

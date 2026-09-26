@@ -3075,6 +3075,13 @@ PYBIND11_MODULE(_core, m) {
     m.def("radioss_read", guard_read("radioss", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
           }));
+    m.def(
+        "radioss_write",
+        [](const std::string& path, py::object pymesh, bool stubs) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_radioss(path, meshioplusplus_py::py_to_mesh(pymesh, refs), stubs);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("stubs") = false);
     // OpenRadioss animation file (A001...) reader.
     // OpenRadioss time-history (T01) reader.
     m.def(

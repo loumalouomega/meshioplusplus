@@ -25,6 +25,7 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -268,4 +269,103 @@ TEST(Radioss, Version4UnitsSkewedBoxesAndEngineDeck) {
     EXPECT_EQ(mesh.Region(touching).NumEntries(), 2u);  // both shells touch it
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.FieldData("radioss:surf_plane:32"), 5), 1.0);
     EXPECT_DOUBLE_EQ(detail::read_double(mesh.FieldData("radioss:engine:ANIM/DT"), 1), 0.25);
+}
+
+// ---------------------------------------------------------------------------
+// Writing (the Python twin: test_radioss.py's writer tests, byte for byte)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<std::string> deck_lines(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    std::vector<std::string> out;
+    for (std::string line; std::getline(in, line);)
+        out.push_back(line);
+    return out;
+}
+
+}  // namespace
+
+TEST(Radioss, WriterRoundTripsTheDeck) {
+    // Read -> write -> read keeps every cell, part, group, subset and surface.
+    const Mesh in = meshioplusplus::read_radioss(write_deck(""));
+    const std::string out = mt::temp_path("_rad_0000.rad");
+    meshioplusplus::write_radioss(out, in);
+    const Mesh back = meshioplusplus::read_radioss(out);
+    mt::expect_mesh_eq(in, back);
+    ASSERT_EQ(in.NumRegions(), back.NumRegions());
+    for (std::size_t k = 0; k < in.NumRegions(); ++k) {
+        const auto& a = in.Region(k);
+        const std::size_t j = back.FindRegion(a.mName, a.mKind);
+        ASSERT_NE(j, Mesh::npos) << a.mName;
+        const auto& b = back.Region(j);
+        EXPECT_EQ(a.mTag, b.mTag) << a.mName;
+        EXPECT_EQ(std::vector<std::int64_t>(a.Entries(), a.Entries() + a.NumEntries() * a.Stride()),
+                  std::vector<std::int64_t>(b.Entries(), b.Entries() + b.NumEntries() * b.Stride()))
+            << a.mName;
+    }
+    std::remove(out.c_str());
+}
+
+TEST(Radioss, WriterColumnLayout) {
+    // One tetrahedron and a node group: the deck, line for line, past the
+    // provenance comment.
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1.5}}));
+    m.AddCellBlock("tetra", mt::conn_from({{0, 1, 2, 3}}));
+    meshioplusplus::NDArray fixed(meshioplusplus::DType::Int64, {2});
+    fixed.As<std::int64_t>()[0] = 0;
+    fixed.As<std::int64_t>()[1] = 3;
+    m.AddRegion(meshioplusplus::Region("fixed", RegionKind::Point, -1, 7, std::move(fixed)));
+    const std::string out = mt::temp_path("_layout_0000.rad");
+    meshioplusplus::write_radioss(out, m);
+    std::vector<std::string> lines = deck_lines(out);
+    ASSERT_GE(lines.size(), 2u);
+    EXPECT_EQ(lines[0], "#RADIOSS STARTER");
+    std::size_t k = 1;
+    while (k < lines.size() && lines[k].rfind("# ", 0) == 0)
+        ++k;
+    const std::string units =
+        std::string(18, ' ') + "kg" + std::string(19, ' ') + "m" + std::string(19, ' ') + "s";
+    const std::vector<std::string> expected = {
+        "/BEGIN",
+        fs::path(out).stem().string().substr(0, fs::path(out).stem().string().size() - 5),
+        "      2022         0",
+        units,
+        units,
+        "/PART/1",
+        "tetra",
+        "         1         1         0",
+        "/NODE",
+        "         1                 0.0                 0.0                 0.0",
+        "         2                 1.0                 0.0                 0.0",
+        "         3                 0.0                 1.0                 0.0",
+        "         4                 0.0                 0.0                 1.5",
+        "/TETRA4/1",
+        "         1         1         2         3         4",
+        "/GRNOD/NODE/7",
+        "fixed",
+        "         1         4",
+        "/END"};
+    EXPECT_EQ(std::vector<std::string>(lines.begin() + static_cast<std::ptrdiff_t>(k), lines.end()),
+              expected);
+    std::remove(out.c_str());
+}
+
+TEST(Radioss, WriterStubsAndRefusals) {
+    const Mesh in = meshioplusplus::read_radioss(write_deck(""));
+    const std::string out = mt::temp_path("_stub_0000.rad");
+    meshioplusplus::write_radioss(out, in, /*Stubs=*/true);
+    const std::vector<std::string> lines = deck_lines(out);
+    const auto has = [&](const std::string& rLine) {
+        return std::find(lines.begin(), lines.end(), rLine) != lines.end();
+    };
+    EXPECT_TRUE(has("/MAT/LAW1/1"));
+    EXPECT_TRUE(has("/PROP/SOLID/1"));  // part 1: bricks, a BRIC20 and a tetra
+    EXPECT_TRUE(has("/PROP/SHELL/3"));
+    // Stubbed or not, the mesh reads back the same.
+    mt::expect_mesh_eq(in, meshioplusplus::read_radioss(out));
+    EXPECT_THROW(meshioplusplus::write_radioss(out, Mesh{}), meshioplusplus::WriteError);
+    std::remove(out.c_str());
 }

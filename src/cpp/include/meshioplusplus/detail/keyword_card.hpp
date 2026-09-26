@@ -112,5 +112,21 @@ MESHIOPLUSPLUS_API std::vector<std::string> split_fixed(std::string_view Line,
  */
 MESHIOPLUSPLUS_API std::string format_real16(double Value);
 
+/**
+ * @brief `Value` in at most `Width` columns: the shortest scientific string that
+ * round-trips, else as many digits as fit (`format_real16` is `Width` 16).
+ * Since v16.17.0.
+ */
+MESHIOPLUSPLUS_API std::string format_real_fit(double Value, int Width);
+
+/**
+ * @brief The shortest string that reads back as `Value`, spelled as Python's
+ * `repr` spells a float: the digits of the shortest round-tripping `%.*e`, in
+ * fixed notation when the decimal point falls within 16 digits of the start
+ * and after at most 3 leading zeros, else as `1.5e-05`. The Python twin
+ * (`lsdyna/_cards.py`) gives the same bytes. Since v16.17.0.
+ */
+MESHIOPLUSPLUS_API std::string format_real_short(double Value);
+
 }  // namespace detail
 }  // namespace meshioplusplus

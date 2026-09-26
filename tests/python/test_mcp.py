@@ -2045,6 +2045,11 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     assert meshioplusplus.read(xdr).cells[0].type == "hexahedron"
     rad = meshes / "radioss" / "old_0000.rad"
     assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8
+    # Written too, since v16.17.0.
+    assert "radioss" in out["writable"]
+    back_rad = str(tmp_path / "back_0000.rad")
+    _tools.tool_convert(str(rad), back_rad)
+    assert meshioplusplus.read(back_rad).cells[0].type == "hexahedron"
     # OpenRadioss animation files (v16.11.0): read-only, found by name.
     assert "radioss_anim" in out["readable"] and "radioss_anim" not in out["writable"]
     anim = str(meshes / "radioss_anim" / "cubeA002")

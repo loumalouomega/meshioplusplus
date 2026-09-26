@@ -16,15 +16,17 @@ import os
 
 import numpy as np
 
+from .. import _provenance
 from .._common import num_nodes_per_cell, warn
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
 from .._facets import FacetIndex, facet_nodes
 from .._mesh import Mesh, topological_dimension
 from .._node_order import node_order
 from .._regions import Region
-from ..lsdyna._lsdyna import _collapse_solid
+from ..lsdyna._cards import format_real_fit, format_real_short
+from ..lsdyna._lsdyna import _collapse_solid, _expand_solid
 
-__all__ = ["read"]
+__all__ = ["read", "write"]
 
 _MAX_INCLUDE_DEPTH = 8
 
@@ -1197,3 +1199,498 @@ def read(filename):
         if os.path.isfile(engine):
             _add_engine_fields(mesh.field_data, engine)
     return mesh
+
+
+# ----------------------------------------------------------------------------
+# Writing
+# ----------------------------------------------------------------------------
+
+# meshio++ type -> the starter card that writes it. A pyramid and a wedge are
+# degenerate /BRICKs (`1 2 3 4 5 5 5 5`, `1 3 6 4 2 2 5 5`), which the reader
+# collapses back and which need no formulation of their own, unlike /PENTA6.
+_WRITE_CARD = {
+    "hexahedron": "BRICK",
+    "pyramid": "BRICK",
+    "wedge": "BRICK",
+    "tetra": "TETRA4",
+    "tetra10": "TETRA10",
+    "hexahedron20": "BRIC20",
+    "quad": "SHELL",
+    "triangle": "SH3N",
+    "line": "TRUSS",
+}
+# A group family's /GR keyword; /GRNOD is the point one.
+_GROUP_KEYWORD = {
+    "BRIC": "GRBRIC",
+    "SHEL": "GRSHEL",
+    "SH3N": "GRSH3N",
+    "TRUS": "GRTRUS",
+}
+# The stub property type a card's part needs.
+_STUB_KIND = {
+    "BRICK": "SOLID",
+    "TETRA4": "SOLID",
+    "TETRA10": "SOLID",
+    "BRIC20": "SOLID",
+    "SHELL": "SHELL",
+    "SH3N": "SHELL",
+    "TRUSS": "TRUSS",
+}
+
+
+def _stub_need(cards):
+    """The stub property cards ``cards`` can share, ``(type, Isolid)``, or None
+    when they need different types. /BRIC20 needs Isolid 16, the other solids
+    the default 0; a part mixing /BRIC20 and /BRICK gets 0, which the starter
+    turns to 16 for the /BRIC20 with a warning."""
+    kinds = {_STUB_KIND[c] for c in cards}
+    if len(kinds) != 1:
+        return None
+    bricks = {c for c in cards if c in ("BRICK", "BRIC20")}
+    return kinds.pop(), 16 if bricks == {"BRIC20"} else 0
+
+
+_WRITE_VERSION = 2022
+_WRITE_UNITS = ("kg", "m", "s")
+_TITLE_WIDTH = 100
+
+
+def _i10(*values):
+    return "".join(f"{int(v):10d}" for v in values)
+
+
+def _real20(value):
+    """A real in an F20 field: exact when its shortest spelling fits, else
+    the 20 columns' worth of digits."""
+    text = format_real_short(value)
+    return text if len(text) <= 20 else format_real_fit(value, 20)
+
+
+def _f20(*values):
+    return "".join(f"{_real20(v):>20}" for v in values)
+
+
+def _title(name):
+    """A title line: one line, at most 100 characters, never read as a comment
+    or a keyword (a leading `#`, `$` or `/` gets a space in front)."""
+    t = str(name).replace("\r", " ").replace("\n", " ").strip(" \t\x0b\x0c")
+    if t[:1] in ("#", "$", "/"):
+        t = " " + t
+    return t[:_TITLE_WIDTH]
+
+
+def _ids_lines(ids):
+    """Ids, ten I10 fields per line."""
+    return [_i10(*ids[k : k + 10]) for k in range(0, len(ids), 10)]
+
+
+class _Ids:
+    """One id namespace: a tag when positive and free, else the next free id."""
+
+    def __init__(self):
+        self.used = set()
+        self.next = 1
+
+    def take(self, tag=0):
+        tag = int(tag)
+        if tag > 0 and tag not in self.used:
+            self.used.add(tag)
+            return tag
+        while self.next in self.used:
+            self.next += 1
+        self.used.add(self.next)
+        return self.next
+
+
+def write(filename, mesh, stubs=False):
+    """Write ``mesh`` as an OpenRadioss starter deck (see ``radioss/__init__.py``)."""
+    path = os.fspath(filename)
+    points = np.asarray(mesh.points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] > 3:
+        raise WriteError("Radioss writer: points must have 1 to 3 coordinates")
+    npts = len(points)
+    if npts == 0:
+        raise WriteError(
+            "Radioss writer: a starter deck needs nodes; the mesh has none"
+        )
+
+    # Cells: which are written, as what, with which element id.
+    cell_info = []  # per global cell: (block, row, card) or None when dropped
+    dropped_types = set()
+    for b, block in enumerate(mesh.cells):
+        card = _WRITE_CARD.get(block.type)
+        ragged = isinstance(block.data, list)
+        if card is None or ragged:
+            dropped_types.add(block.type)
+        for r in range(len(block.data)):
+            cell_info.append(None if card is None or ragged else (b, r, card))
+    for t in sorted(dropped_types):
+        warn(f"Radioss writer: '{t}' cells have no starter element card; dropped")
+        _provenance.note(
+            "cells-dropped", f"Radioss has no element card for '{t}' cells"
+        )
+    ncells = len(cell_info)
+
+    def family(c):
+        return _ELEMENTS[cell_info[c][2]][0]
+
+    # The C++ core keeps regions in (kind, name, dim, tag) order; walk them in
+    # that order so both engines write the same bytes.
+    kind_order = {"point": 0, "cell": 1, "side": 2}
+    regions = sorted(
+        getattr(mesh, "regions", None) or [],
+        key=lambda r: (kind_order.get(r.kind, 3), r.name.encode("utf-8"), r.dim, r.tag),
+    )
+    used_regions = set()
+
+    # Parts: radioss:part when the mesh carries it, else cell regions of one
+    # family, else one part per block.
+    part_ids = _Ids()
+    cell_part = [0] * ncells
+    parts = []  # [pid, title, prop, mat]
+
+    def cell_array(name):
+        if name not in mesh.cell_data or len(mesh.cell_data[name]) != len(mesh.cells):
+            return None
+        return [np.asarray(a).reshape(-1) for a in mesh.cell_data[name]]
+
+    radioss_part = cell_array("radioss:part")
+    if radioss_part is not None:
+        # Part ids come from the data; an id of 0 or less gets a new one.
+        raw = [0] * ncells
+        g = 0
+        for b, block in enumerate(mesh.cells):
+            for r in range(len(block.data)):
+                raw[g] = int(radioss_part[b][r])
+                if cell_info[g] is not None and raw[g] > 0:
+                    part_ids.used.add(raw[g])
+                g += 1
+        renumbered = {}
+        for c in range(ncells):
+            if cell_info[c] is None:
+                continue
+            pid = raw[c]
+            if pid <= 0:
+                if pid not in renumbered:
+                    renumbered[pid] = part_ids.take()
+                pid = renumbered[pid]
+            cell_part[c] = pid
+        if renumbered:
+            warn("Radioss writer: cells with a part id of 0 or less put in new parts")
+        prop = cell_array("radioss:property")
+        mat = cell_array("radioss:material")
+        members = {}
+        g = 0
+        first = {}
+        for b, block in enumerate(mesh.cells):
+            for r in range(len(block.data)):
+                if cell_info[g] is not None:
+                    pid = cell_part[g]
+                    members.setdefault(pid, []).append(g)
+                    first.setdefault(pid, (b, r))
+                g += 1
+        for pid, cells in members.items():
+            title = ""
+            for k, reg in enumerate(regions):
+                if (
+                    k not in used_regions
+                    and reg.kind == "cell"
+                    and int(reg.tag) == pid
+                    and sorted(np.asarray(reg.entries).reshape(-1).tolist()) == cells
+                ):
+                    title = reg.name
+                    used_regions.add(k)
+                    break
+            b, r = first[pid]
+            pr = int(prop[b][r]) if prop is not None else pid
+            ma = int(mat[b][r]) if mat is not None else 1
+            parts.append([pid, title, pr, ma])
+    else:
+        claimed = [False] * ncells
+        for k, reg in enumerate(regions):
+            if reg.kind != "cell":
+                continue
+            cells = sorted(set(int(c) for c in np.asarray(reg.entries).reshape(-1)))
+            if not cells or any(
+                not 0 <= c < ncells or cell_info[c] is None or claimed[c] for c in cells
+            ):
+                continue
+            # One stub property must be able to serve a part.
+            if _stub_need({cell_info[c][2] for c in cells}) is None:
+                continue
+            pid = part_ids.take(reg.tag)
+            for c in cells:
+                claimed[c] = True
+                cell_part[c] = pid
+            used_regions.add(k)
+            parts.append([pid, reg.name, pid, 1])
+        g = 0
+        for block in mesh.cells:
+            pid = None
+            for _ in range(len(block.data)):
+                if cell_info[g] is not None and not claimed[g]:
+                    if pid is None:
+                        pid = part_ids.take()
+                        parts.append([pid, block.type, pid, 1])
+                    cell_part[g] = pid
+                g += 1
+
+    # Subsets: a remaining cell region that is exactly a union of whole parts.
+    part_cells = {}
+    for c in range(ncells):
+        if cell_info[c] is not None:
+            part_cells.setdefault(cell_part[c], set()).add(c)
+    part_subset = {}
+    subset_ids = _Ids()
+    subsets = []  # (sid, title, children)
+    subset_parts = {}
+    # Smallest first, so a subset nested in another is its child.
+    candidates = []
+    for k, reg in enumerate(regions):
+        if k in used_regions or reg.kind != "cell":
+            continue
+        cells = set(int(c) for c in np.asarray(reg.entries).reshape(-1))
+        if cells and all(0 <= c < ncells and cell_info[c] is not None for c in cells):
+            candidates.append((len(cells), k, cells))
+    for _, k, cells in sorted(candidates):
+        reg = regions[k]
+        inside = [
+            p[0] for p in parts if part_cells.get(p[0]) and part_cells[p[0]] <= cells
+        ]
+        if set().union(*(part_cells[p] for p in inside)) != cells:
+            continue
+        children = sorted({part_subset[p] for p in inside if p in part_subset})
+        if any(not subset_parts[s] <= set(inside) for s in children):
+            continue
+        sid = subset_ids.take(reg.tag)
+        for p in inside:
+            part_subset.setdefault(p, sid)
+        subset_parts[sid] = set(inside)
+        subsets.append((sid, reg.name, children))
+        used_regions.add(k)
+
+    # Element ids, in the order the cards write them.
+    elem_id = [0] * ncells
+    next_elem = 1
+    cards = []  # (card, pid, [global cells])
+    g = 0
+    for b, block in enumerate(mesh.cells):
+        run = None
+        for _ in range(len(block.data)):
+            if cell_info[g] is not None:
+                card = cell_info[g][2]
+                if run is None or run[1] != cell_part[g]:
+                    run = (card, cell_part[g], [])
+                    cards.append(run)
+                run[2].append(g)
+                elem_id[g] = next_elem
+                next_elem += 1
+            g += 1
+
+    # Groups, then surfaces.
+    group_ids = {}
+    groups = []  # (keyword, subtype, gid, title, ids)
+    dropped_sides = 0
+    other_regions = 0
+    surf_ids = _Ids()
+    surfaces = []  # (sid, title, segs)
+    for k, reg in enumerate(regions):
+        if k in used_regions:
+            continue
+        entries = np.asarray(reg.entries)
+        if reg.kind == "point":
+            ids = sorted({int(p) + 1 for p in entries.reshape(-1) if 0 <= p < npts})
+            gid = group_ids.setdefault("GRNOD", _Ids()).take(reg.tag)
+            groups.append(("GRNOD", "NODE", gid, reg.name, ids))
+        elif reg.kind == "cell":
+            by_family = {}
+            for c in sorted(set(int(c) for c in entries.reshape(-1))):
+                if 0 <= c < ncells and cell_info[c] is not None:
+                    by_family.setdefault(family(c), []).append(elem_id[c])
+            if not by_family:
+                by_family = {"BRIC": []}
+            for fam, ids in by_family.items():
+                keyword = _GROUP_KEYWORD[fam]
+                gid = group_ids.setdefault(keyword, _Ids()).take(reg.tag)
+                groups.append((keyword, fam, gid, reg.name, ids))
+        elif reg.kind == "side":
+            segs = []
+            # Sorted and without repeats, as the C++ core keeps a region.
+            for c, f in sorted(set(map(tuple, entries.reshape(-1, 2).tolist()))):
+                if not (0 <= c < ncells) or cell_info[c] is None:
+                    dropped_sides += 1
+                    continue
+                b, r, card = cell_info[c]
+                fam = family(c)
+                if fam in ("SHEL", "SH3N"):
+                    nodes = [int(v) for v in np.asarray(mesh.cells[b].data[r])]
+                elif fam == "BRIC":
+                    hit = facet_nodes(mesh, c, int(f))
+                    if hit is None:
+                        dropped_sides += 1
+                        continue
+                    ftype, fnodes = hit
+                    nodes = fnodes[: 3 if ftype.startswith("triangle") else 4]
+                else:
+                    dropped_sides += 1
+                    continue
+                seg = [v + 1 for v in nodes]
+                if len(seg) == 3:
+                    seg.append(seg[2])
+                segs.append(seg)
+            sid = surf_ids.take(reg.tag)
+            surfaces.append((sid, reg.name, segs))
+        else:
+            other_regions += 1
+    if dropped_sides:
+        warn(
+            f"Radioss writer: {dropped_sides} side region entries on cells with no "
+            "face segment dropped"
+        )
+        _provenance.note(
+            "regions-dropped", "a /SURF/SEG segment is a solid face or a shell"
+        )
+    if other_regions:
+        warn(f"Radioss writer: {other_regions} region(s) of unknown kind dropped")
+
+    # Data: only the part, property, material and deck field data are written.
+    planes = []
+    dropped_data = len(mesh.point_data) + sum(
+        1
+        for name in mesh.cell_data
+        if name not in ("radioss:part", "radioss:property", "radioss:material")
+    )
+    for name, value in mesh.field_data.items():
+        if name in ("radioss:version", "radioss:length_scale"):
+            continue
+        if name.startswith("radioss:surf_plane:"):
+            v = np.asarray(value, dtype=np.float64).reshape(-1)
+            ident = name.rsplit(":", 1)[1]
+            if len(v) == 6 and ident.isdigit():
+                planes.append((int(ident), v.tolist()))
+                continue
+        dropped_data += 1
+    if dropped_data:
+        warn(
+            "Radioss writer: a starter deck holds no data arrays; point, cell and "
+            "field data other than the radioss: parts and analytical surfaces dropped"
+        )
+        _provenance.note("data-dropped", "a Radioss starter deck holds no data arrays")
+
+    version = _WRITE_VERSION
+    if "radioss:version" in mesh.field_data:
+        v = int(np.asarray(mesh.field_data["radioss:version"]).reshape(-1)[0])
+        if 2017 <= v <= 2026:
+            version = v
+
+    run = os.path.splitext(os.path.basename(path))[0]
+    if run.endswith("_0000"):
+        run = run[:-5]
+    out = ["#RADIOSS STARTER"]
+    out += ["# " + line for line in _provenance.lines(_provenance.SlotTier.BLOCK)]
+    # The same input and work units, so the starter converts nothing and the
+    # reader reads the coordinates as written.
+    units = "".join(f"{u:>20}" for u in _WRITE_UNITS)
+    out += ["/BEGIN", _title(run or "meshio")[:80], _i10(version, 0), units, units]
+
+    if stubs:
+        # One stub property per property id, as its parts' cards need it
+        # (_STUB_NEED). A part whose property already serves a part that needs
+        # another stub gets a property of its own; material 0 becomes 1.
+        prop_ids = _Ids()
+        prop_ids.used.update(p[2] for p in parts if p[2] > 0)
+        props = {}  # prop id -> (kind, isolid)
+        mats = []
+        for p in parts:
+            need = _stub_need({cell_info[c][2] for c in part_cells.get(p[0], ())})
+            if need is None:
+                raise WriteError(
+                    f"Radioss writer: part {p[0]} holds solid, shell or truss elements "
+                    "together, which no one stub property serves"
+                )
+            if p[2] <= 0:
+                p[2] = prop_ids.take(p[0])
+            if props.setdefault(p[2], need) != need:
+                p[2] = prop_ids.take()
+                props[p[2]] = need
+            if p[3] <= 0:
+                p[3] = 1
+            if p[3] not in mats:
+                mats.append(p[3])
+        for mid in sorted(mats):
+            out += [
+                f"/MAT/LAW1/{mid}",
+                f"meshio++ stub material {mid}",
+                _f20(1.0, 0.0),
+                _f20(1.0, 0.3),
+            ]
+        for pr in sorted(props):
+            kind, isolid = props[pr]
+            out += [f"/PROP/{kind}/{pr}", f"meshio++ stub property {pr}"]
+            if kind == "SOLID":
+                out += [
+                    _i10(isolid, 0)
+                    + " " * 10
+                    + _i10(0)
+                    + " " * 10
+                    + _i10(0, 0, 0)
+                    + _f20(0.0),
+                    _f20(0.0, 0.0, 0.0, 0.0, 0.0),
+                    _f20(0.0) + _i10(0, 0),
+                ]
+            elif kind == "SHELL":
+                out += [
+                    _i10(0, 0, 0),
+                    _f20(0.0, 0.0, 0.0, 0.0, 0.0),
+                    _i10(1, 0) + _f20(1.0),
+                ]
+            else:
+                out += [_f20(1.0, 0.0)]
+
+    for pid, title, pr, ma in parts:
+        out += [f"/PART/{pid}", _title(title), _i10(pr, ma, part_subset.get(pid, 0))]
+    for sid, title, children in subsets:
+        out += [f"/SUBSET/{sid}", _title(title)] + _ids_lines(children)
+
+    out.append("/NODE")
+    for p in range(npts):
+        xyz = [float(points[p, d]) if d < points.shape[1] else 0.0 for d in range(3)]
+        out.append(_i10(p + 1) + _f20(*xyz))
+
+    bric20 = node_order("radioss", "hexahedron20")
+    for card, pid, cells in cards:
+        out.append(f"/{card}/{pid}")
+        for c in cells:
+            b, r, _ = cell_info[c]
+            nodes = [int(v) + 1 for v in np.asarray(mesh.cells[b].data[r])]
+            eid = elem_id[c]
+            if card == "BRICK":
+                nodes = _expand_solid(mesh.cells[b].type, nodes)
+            if card == "TETRA10":
+                out += [_i10(eid), _i10(*nodes)]
+            elif card == "BRIC20":
+                file_nodes = [nodes[j] for j in bric20.from_meshio]
+                out += [
+                    _i10(eid, *file_nodes[:8]),
+                    _i10(*file_nodes[8:16]),
+                    _i10(*file_nodes[16:]),
+                ]
+            else:
+                out.append(_i10(eid, *nodes))
+
+    for keyword, subtype, gid, title, ids in groups:
+        out += [f"/{keyword}/{subtype}/{gid}", _title(title)] + _ids_lines(ids)
+    for sid, title, segs in surfaces:
+        out += [f"/SURF/SEG/{sid}", _title(title)]
+        out += [_i10(k + 1, *seg) for k, seg in enumerate(segs)]
+    for sid, v in sorted(planes):
+        out += [
+            f"/SURF/PLANE/{surf_ids.take(sid)}",
+            f"PLANE_{sid}",
+            _f20(*v[:3]),
+            _f20(*v[3:]),
+        ]
+    out.append("/END")
+    # UTF-8, as the C++ writer's strings are (a Radioss deck is ASCII).
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(out) + "\n")

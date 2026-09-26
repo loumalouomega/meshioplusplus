@@ -68,4 +68,32 @@ namespace meshioplusplus {
  */
 MESHIOPLUSPLUS_API Mesh read_radioss(const std::string& rPath);
 
+/**
+ * @brief Write an OpenRadioss starter deck (`*_0000.rad`, input version 2022).
+ *
+ * `/BEGIN` (run name from the file name, identical input and work units),
+ * `/PART` and `/SUBSET`, `/NODE`, then one element card per run of cells of
+ * one block and one part: `hexahedron` `/BRICK` (a `pyramid` as a degenerate
+ * one), `wedge` `/PENTA6`, `tetra` `/TETRA4`, `tetra10` `/TETRA10`,
+ * `hexahedron20` `/BRIC20`, `quad` `/SHELL`, `triangle` `/SH3N`, `line`
+ * `/TRUSS`. Parts come from `radioss:part` (titles from the cell region of the
+ * same tag and cells, properties and materials from `radioss:property` and
+ * `radioss:material`), else from the cell regions of one element family, else
+ * one per block; a remaining cell region that is a union of whole parts is a
+ * `/SUBSET`, any other one a `/GR<family>` group per family, point regions
+ * `/GRNOD/NODE` and side regions `/SURF/SEG`. Other cells, data and regions
+ * are dropped with a warning and a provenance note.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @param Stubs also write a placeholder `/MAT/LAW1` per material and
+ *        `/PROP/SOLID|SHELL|TRUSS` per property, so the OpenRadioss starter
+ *        accepts the deck on its own
+ * @throws WriteError for a mesh with no points, points of dimension above 3,
+ *         or, with @p Stubs, a part mixing element families
+ * @note Since v16.17.0. The Python twin writes the same bytes.
+ */
+MESHIOPLUSPLUS_API void write_radioss(const std::string& rPath, const Mesh& rMesh,
+                                      bool Stubs = false);
+
 }  // namespace meshioplusplus

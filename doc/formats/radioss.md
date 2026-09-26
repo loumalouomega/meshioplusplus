@@ -6,7 +6,7 @@ The input deck of the OpenRadioss explicit solver (and of Altair Radioss) in its
 |---|---|
 | **Format name** | `radioss` |
 | **Extensions** | `.rad` (also recognised by content: `#RADIOSS STARTER`, or `/BEGIN` as the first non-comment line) |
-| **Read / Write** | ✓ / — |
+| **Read / Write** | ✓ / ✓ (the mesh, parts, subsets, groups and surfaces; since v16.17.0) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -18,6 +18,30 @@ mesh = meshioplusplus.read("crash_0000.rad")
 ```
 
 `read` takes no options. Both engines (the C++ core and the pure-Python reference) read the same meshes.
+
+## Writing
+
+```python
+meshioplusplus.write("crash_0000.rad", mesh)                   # the mesh and its regions
+meshioplusplus.radioss.write("crash_0000.rad", mesh, stubs=True)  # also placeholder materials and properties
+```
+
+Since v16.17.0 both engines write a starter deck, and write the same bytes: `#RADIOSS STARTER`, a `#` comment holding the provenance record, `/BEGIN` (the run name is the file name without `_0000`, the input version 2022, or the `radioss:version` the mesh was read with when it is 2017 or later, and the same input and work units, `kg m s`, so the starter converts nothing), `/PART` and `/SUBSET`, `/NODE`, one element card per run of cells of one block and one part, the groups and the surfaces, and `/END`. Integers fill 10 columns and reals 20: a real is written in its shortest exact spelling (the one Python's `repr` gives) when that fits, so coordinates come back exactly, and in 15 significant digits otherwise.
+
+| meshio++ type | Card |
+|---|---|
+| `hexahedron` | `/BRICK` |
+| `wedge`, `pyramid` | `/BRICK` with repeated nodes (`1 3 6 4 2 2 5 5`, `1 2 3 4 5 5 5 5`), which needs no formulation of its own, unlike `/PENTA6` |
+| `tetra`, `tetra10` | `/TETRA4`, `/TETRA10` |
+| `hexahedron20` | `/BRIC20`, through the `"radioss"` node-order table |
+| `quad`, `triangle` | `/SHELL`, `/SH3N` |
+| `line` | `/TRUSS` |
+
+- **Parts.** With `radioss:part` cell data (a mesh read from a deck), its ids are the parts; a part's title is the name of the cell region of the same tag and cells, and its property and material are `radioss:property` and `radioss:material`. Without it, each cell region whose cells are all written and could share one property (solids, shells or trusses) becomes a part, its id the region's tag when positive and free; the other cells make one part per block, titled by the cell type.
+- **Subsets, groups and surfaces.** Another cell region that is exactly a union of whole parts becomes a `/SUBSET` (the smallest first, so a subset inside another is its child); any other cell region a `/GRBRIC`, `/GRSHEL`, `/GRSH3N` or `/GRTRUS` per element family it holds; a point region `/GRNOD/NODE`; a side region `/SURF/SEG`, a solid's face by its corner nodes and a shell as itself. Ids are the region's tag when positive and free in its keyword, else the next free one. A title is one line of at most 100 characters; one starting with `#`, `$` or `/` gets a space in front, so it is not read as a comment or a keyword.
+- **`stubs=True`** also writes a `/MAT/LAW1` (ρ = 1, E = 1, ν = 0.3) per material and a `/PROP/SOLID`, `/PROP/SHELL` (thickness 1) or `/PROP/TRUSS` (area 1) per property, so the starter accepts the deck on its own. A `/BRIC20`-only part gets `Isolid` 16; a part mixing `/BRIC20` and `/BRICK` the default, which the starter changes to 16 with a warning. A property two parts share but need different stubs for is split, a material 0 becomes 1, and a part mixing solids, shells or trusses is a `WriteError`. The values are placeholders: replace them with the model's own.
+- **Dropped, with a warning and a provenance note:** cells with no card (`vertex`, other quadratic cells, polygons and polyhedra), side entries on lines, and every data array; `/SURF/PLANE` surfaces are written back from their `radioss:surf_plane:` field data. A mesh with no points is a `WriteError`.
+- **What a round trip changes.** Blocks of one type written in several parts read back as one block; a region's order and the ids of regions without a tag follow the writer's; a segment names a face by its nodes, so a face two solids share, or two coincident shells, come back once, on the first cell. A `line` is a `/TRUSS`, so a zero-length one (a joint spring read from `/SPRING`) is kept but refused by the starter.
 
 ## The deck
 
@@ -83,5 +107,7 @@ The animation files Radioss writes (`<run>A001`, …) are read by [`radioss_anim
 ## Validation
 
 Surface forms other than those above (`/SURF/DSURF`, Madymo surfaces…) are skipped with a warning.
+
+**The writer** (v16.17.0) was checked with the OpenRadioss starter (build `latest-20260728`): every fixture and every one of the 81 QA decks that has a mesh (76; five keep theirs in include files the suite does not ship) was read, written with `stubs=True` and run through the starter, which accepts 75 with no error; the other is the zero-length truss above. Read back, 70 of the 76 give the same points, cells, parts, groups and surfaces, and the other six differ only in the surface entries on faces two solids share or on coincident shells. The C++ and Python writers give the same bytes on all of them, with and without stubs. `test_radioss.py` runs the starter on the fixtures when `MESHIOPLUSPLUS_OPENRADIOSS` names an OpenRadioss install.
 
 The fixtures under `tests/python/meshes/radioss/` are written by `tools/gen_radioss_fixtures.py` from the card layouts of OpenRadioss's `hm_cfg_files`, plus two decks gmsh wrote, which read to the same cells as gmsh's own `.msh` of the same mesh; OpenRadioss's own QA decks are CC BY-NC and are not copied. Outside the repository the reader was run on the 81 starter decks of OpenRadioss's `qa-tests/`: every one reads, both engines agree, and every cell has a positive volume. For v16.11.0 the box, generator and surface semantics were taken from the OpenRadioss starter source (read, not copied) and the QA decks that use them (`NEW_BOX_V11`) resolve with both engines alike. v16.12.0: the only Radioss 4.x deck in OpenRadioss's QA suite (`ALE2D/bar2_v41/data/BAR2V41BD02`, written by Radioss 4.1 in 2000; not copied) reads to the same points, cells and regions, in both engines, as the 2017 translation of it that the suite also keeps. `/UNIT`, skewed boxes, box and analytical surfaces and engine decks follow the Radioss 2022 Reference Guide and are checked on synthetic decks.

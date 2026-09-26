@@ -63,6 +63,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="pvd">`pvd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
 | <span id="pvtp">`pvtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
 | <span id="pvtu">`pvtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
+| <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
 | <span id="su2">`su2`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
 | <span id="svg">`svg`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
@@ -102,6 +103,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
+- **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
 - **`svg`**: A 2-D drawing, write-only.
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
@@ -130,7 +132,6 @@ The formats meshio++ reads and does not write, each with the reason. `test_confo
 | <span id="marc-t19">`marc_t19`</span> | Marc's result file: Marc is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
 | <span id="nastran-h5">`nastran_h5`</span> | MSC Nastran's result file: MSC Nastran is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
 | <span id="nastran-op2">`nastran_op2`</span> | Nastran's result file: Nastran is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="radioss">`radioss`</span> | An input deck whose writer is being added (roadmap §1.2). |
 | <span id="radioss-anim">`radioss_anim`</span> | the OpenRadioss engine's result file: the OpenRadioss engine is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
 | <span id="radioss-th">`radioss_th`</span> | the OpenRadioss engine's result file: the OpenRadioss engine is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
 | <span id="szplt">`szplt`</span> | Undocumented: TecIO, Tecplot's own library, is its only reader and writer; meshio++ writes Tecplot's documented `.plt`/`.dat` instead. |

@@ -305,6 +305,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"libmesh", meshioplusplus::write_libmesh},
         {"z88",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
+        {"radioss",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
         {"elmer",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},

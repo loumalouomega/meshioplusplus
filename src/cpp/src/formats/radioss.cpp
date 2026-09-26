@@ -44,6 +44,7 @@
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -1486,6 +1487,754 @@ Mesh read_radioss(const std::string& rPath) {
         }
     }
     return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// Writing. The Python twin is radioss/_radioss.py's `write`; both give the
+// same bytes.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kRadWriteVersion = 2022;
+constexpr std::size_t kRadTitleWidth = 100;
+
+/// The starter card that writes a meshio++ type ("" when none does). A
+/// pyramid and a wedge are degenerate /BRICKs (`1 2 3 4 5 5 5 5`,
+/// `1 3 6 4 2 2 5 5`), which the reader collapses back and which need no
+/// formulation of their own, unlike /PENTA6.
+const char* radw_card(std::string_view Type) {
+    static const std::map<std::string, const char*, std::less<>> m = {
+        {"hexahedron", "BRICK"}, {"pyramid", "BRICK"},   {"wedge", "BRICK"},
+        {"tetra", "TETRA4"},     {"tetra10", "TETRA10"}, {"hexahedron20", "BRIC20"},
+        {"quad", "SHELL"},       {"triangle", "SH3N"},   {"line", "TRUSS"}};
+    const auto it = m.find(Type);
+    return it == m.end() ? "" : it->second;
+}
+
+/// A card's group family (the reader's `/GR<family>` naming).
+std::string radw_family(const std::string& rCard) {
+    if (rCard == "SHELL")
+        return "SHEL";
+    if (rCard == "SH3N")
+        return "SH3N";
+    if (rCard == "TRUSS")
+        return "TRUS";
+    return "BRIC";
+}
+
+std::string radw_group_keyword(const std::string& rFamily) {
+    return "GR" + rFamily;
+}
+
+/// The stub property type a card's part needs.
+std::string radw_stub_kind(const std::string& rCard) {
+    if (rCard == "SHELL" || rCard == "SH3N")
+        return "SHELL";
+    if (rCard == "TRUSS")
+        return "TRUSS";
+    return "SOLID";
+}
+
+/// The stub property cards `rCards` can share, (type, Isolid); false when
+/// they need different types. /BRIC20 needs Isolid 16, the other solids the
+/// default 0; a part mixing /BRIC20 and /BRICK gets 0, which the starter turns
+/// to 16 for the /BRIC20 with a warning.
+bool radw_stub_share(const std::set<std::string>& rCards, std::pair<std::string, int>& rNeed) {
+    std::set<std::string> kinds;
+    bool brick = false;
+    bool bric20 = false;
+    for (const std::string& card : rCards) {
+        kinds.insert(radw_stub_kind(card));
+        brick = brick || card == "BRICK";
+        bric20 = bric20 || card == "BRIC20";
+    }
+    if (kinds.size() != 1)
+        return false;
+    rNeed = {*kinds.begin(), bric20 && !brick ? 16 : 0};
+    return true;
+}
+
+void radw_i10(std::string& rOut, std::int64_t Value) {
+    const std::string t = std::to_string(Value);
+    if (t.size() < 10)
+        rOut.append(10 - t.size(), ' ');
+    rOut += t;
+}
+
+/// A real in an F20 field: exact when its shortest spelling fits, else the 20
+/// columns' worth of digits.
+void radw_f20(std::string& rOut, double Value) {
+    std::string t = detail::format_real_short(Value);
+    if (t.size() > 20)
+        t = detail::format_real_fit(Value, 20);
+    if (t.size() < 20)
+        rOut.append(20 - t.size(), ' ');
+    rOut += t;
+}
+
+/// A title line: one line, at most 100 characters, never read as a comment or
+/// a keyword (a leading `#`, `$` or `/` gets a space in front).
+std::string radw_title(const std::string& rName) {
+    std::string t = rName;
+    for (char& c : t)
+        if (c == '\r' || c == '\n')
+            c = ' ';
+    const std::size_t b = t.find_first_not_of(" \t\v\f");
+    if (b == std::string::npos)
+        return {};
+    t = t.substr(b, t.find_last_not_of(" \t\v\f") - b + 1);
+    if (t[0] == '#' || t[0] == '$' || t[0] == '/')
+        t = " " + t;
+    return t.substr(0, kRadTitleWidth);
+}
+
+void radw_ids_lines(std::vector<std::string>& rOut, const std::vector<std::int64_t>& rIds) {
+    for (std::size_t k = 0; k < rIds.size(); k += 10) {
+        std::string line;
+        for (std::size_t j = k; j < std::min(k + 10, rIds.size()); ++j)
+            radw_i10(line, rIds[j]);
+        rOut.push_back(std::move(line));
+    }
+}
+
+/// One id namespace: a tag when positive and free, else the next free id.
+struct RadwIds {
+    std::set<std::int64_t> mUsed;
+    std::int64_t mNext = 1;
+    std::int64_t Take(std::int64_t Tag = 0) {
+        if (Tag > 0 && mUsed.insert(Tag).second)
+            return Tag;
+        while (mUsed.count(mNext))
+            ++mNext;
+        mUsed.insert(mNext);
+        return mNext;
+    }
+};
+
+struct RadwCell {
+    std::size_t mBlock = 0;
+    std::size_t mRow = 0;
+    std::string mCard;  // empty: not written
+};
+
+struct RadwPart {
+    std::int64_t mId;
+    std::string mTitle;
+    std::int64_t mProp;
+    std::int64_t mMat;
+};
+
+/// A region's entries, flattened: (cell, facet) pairs for a side region.
+std::vector<std::int64_t> radw_entries(const Region& rRegion) {
+    const std::size_t n = rRegion.NumEntries() * rRegion.Stride();
+    return n ? std::vector<std::int64_t>(rRegion.Entries(), rRegion.Entries() + n)
+             : std::vector<std::int64_t>();
+}
+
+}  // namespace
+
+void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim > 3)
+        throw WriteError("Radioss writer: points must have 1 to 3 coordinates");
+    const std::size_t npts = rMesh.NumPoints();
+    if (npts == 0)
+        throw WriteError("Radioss writer: a starter deck needs nodes; the mesh has none");
+
+    // Cells: which are written, as what, with which element id.
+    std::vector<RadwCell> info;
+    std::set<std::string> dropped_types;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        std::string card = radw_card(cb.Type());
+        if (card.empty() || cb.IsRagged()) {
+            dropped_types.insert(std::string(cb.Type()));
+            card.clear();
+        }
+        for (std::size_t r = 0; r < cb.NumCells(); ++r)
+            info.push_back({b, r, card});
+    }
+    for (const std::string& t : dropped_types) {
+        log::warn("Radioss writer: '{}' cells have no starter element card; dropped", t);
+        detail::provenance_note("cells-dropped",
+                                "Radioss has no element card for '" + t + "' cells");
+    }
+    const std::size_t ncells = info.size();
+    const auto written = [&](std::int64_t c) {
+        return c >= 0 && static_cast<std::size_t>(c) < ncells &&
+               !info[static_cast<std::size_t>(c)].mCard.empty();
+    };
+    const auto family = [&](std::size_t c) { return radw_family(info[c].mCard); };
+
+    std::vector<bool> used_regions(rMesh.NumRegions(), false);
+    const auto cell_array_ok = [&](const std::string& rName) {
+        return rMesh.HasCellData(rName) && rMesh.CellDataNumBlocks(rName) == rMesh.NumCellBlocks();
+    };
+
+    // Parts: radioss:part when the mesh carries it, else cell regions of one
+    // family, else one part per block.
+    RadwIds part_ids;
+    std::vector<std::int64_t> cell_part(ncells, 0);
+    std::vector<RadwPart> parts;
+    if (cell_array_ok("radioss:part")) {
+        // Part ids come from the data; an id of 0 or less gets a new one.
+        std::vector<std::int64_t> raw(ncells, 0);
+        for (std::size_t c = 0; c < ncells; ++c) {
+            raw[c] = detail::read_int(rMesh.CellData("radioss:part", info[c].mBlock), info[c].mRow);
+            if (!info[c].mCard.empty() && raw[c] > 0)
+                part_ids.mUsed.insert(raw[c]);
+        }
+        std::map<std::int64_t, std::int64_t> renumbered;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (info[c].mCard.empty())
+                continue;
+            std::int64_t pid = raw[c];
+            if (pid <= 0) {
+                auto it = renumbered.find(pid);
+                if (it == renumbered.end())
+                    it = renumbered.emplace(pid, part_ids.Take()).first;
+                pid = it->second;
+            }
+            cell_part[c] = pid;
+        }
+        if (!renumbered.empty())
+            log::warn("Radioss writer: cells with a part id of 0 or less put in new parts");
+        const bool has_prop = cell_array_ok("radioss:property");
+        const bool has_mat = cell_array_ok("radioss:material");
+        std::vector<std::int64_t> order;
+        std::map<std::int64_t, std::vector<std::int64_t>> members;
+        std::map<std::int64_t, std::size_t> first;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (info[c].mCard.empty())
+                continue;
+            const std::int64_t pid = cell_part[c];
+            if (!members.count(pid)) {
+                order.push_back(pid);
+                first[pid] = c;
+            }
+            members[pid].push_back(static_cast<std::int64_t>(c));
+        }
+        for (const std::int64_t pid : order) {
+            std::string title;
+            for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+                const Region& reg = rMesh.Region(k);
+                if (used_regions[k] || reg.mKind != RegionKind::Cell || reg.mTag != pid)
+                    continue;
+                std::vector<std::int64_t> e = radw_entries(reg);
+                std::sort(e.begin(), e.end());
+                if (e == members[pid]) {
+                    title = reg.mName;
+                    used_regions[k] = true;
+                    break;
+                }
+            }
+            const RadwCell& f = info[first[pid]];
+            const std::int64_t prop =
+                has_prop ? detail::read_int(rMesh.CellData("radioss:property", f.mBlock), f.mRow)
+                         : pid;
+            const std::int64_t mat =
+                has_mat ? detail::read_int(rMesh.CellData("radioss:material", f.mBlock), f.mRow)
+                        : 1;
+            parts.push_back({pid, title, prop, mat});
+        }
+    } else {
+        std::vector<bool> claimed(ncells, false);
+        for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+            const Region& reg = rMesh.Region(k);
+            if (reg.mKind != RegionKind::Cell)
+                continue;
+            std::vector<std::int64_t> cells = radw_entries(reg);
+            std::sort(cells.begin(), cells.end());
+            cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+            if (cells.empty())
+                continue;
+            // One stub property must be able to serve a part.
+            bool ok = true;
+            std::set<std::string> region_cards;
+            for (const std::int64_t c : cells) {
+                if (!written(c) || claimed[static_cast<std::size_t>(c)]) {
+                    ok = false;
+                    break;
+                }
+                region_cards.insert(info[static_cast<std::size_t>(c)].mCard);
+            }
+            std::pair<std::string, int> shared;
+            if (!ok || !radw_stub_share(region_cards, shared))
+                continue;
+            const std::int64_t pid = part_ids.Take(reg.mTag);
+            for (const std::int64_t c : cells) {
+                claimed[static_cast<std::size_t>(c)] = true;
+                cell_part[static_cast<std::size_t>(c)] = pid;
+            }
+            used_regions[k] = true;
+            parts.push_back({pid, reg.mName, pid, 1});
+        }
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            std::int64_t pid = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
+                if (info[g].mCard.empty() || claimed[g])
+                    continue;
+                if (pid == 0) {
+                    pid = part_ids.Take();
+                    parts.push_back({pid, std::string(cb.Type()), pid, 1});
+                }
+                cell_part[g] = pid;
+            }
+        }
+    }
+
+    // Subsets: a remaining cell region that is exactly a union of whole parts,
+    // smallest first, so a subset nested in another is its child.
+    std::map<std::int64_t, std::set<std::int64_t>> part_cells;
+    for (std::size_t c = 0; c < ncells; ++c)
+        if (!info[c].mCard.empty())
+            part_cells[cell_part[c]].insert(static_cast<std::int64_t>(c));
+    std::map<std::int64_t, std::int64_t> part_subset;
+    std::map<std::int64_t, std::set<std::int64_t>> subset_parts;
+    RadwIds subset_ids;
+    struct RadwSubset {
+        std::int64_t mId;
+        std::string mTitle;
+        std::vector<std::int64_t> mChildren;
+    };
+    std::vector<RadwSubset> subsets;
+    std::vector<std::tuple<std::size_t, std::size_t, std::set<std::int64_t>>> candidates;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        const Region& reg = rMesh.Region(k);
+        if (used_regions[k] || reg.mKind != RegionKind::Cell)
+            continue;
+        const std::vector<std::int64_t> e = radw_entries(reg);
+        std::set<std::int64_t> cells(e.begin(), e.end());
+        if (cells.empty() || !std::all_of(cells.begin(), cells.end(), written))
+            continue;
+        candidates.emplace_back(cells.size(), k, std::move(cells));
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto& rA, const auto& rB) {
+        return std::tie(std::get<0>(rA), std::get<1>(rA)) <
+               std::tie(std::get<0>(rB), std::get<1>(rB));
+    });
+    for (const auto& [size, k, cells] : candidates) {
+        std::vector<std::int64_t> inside;
+        std::set<std::int64_t> covered;
+        for (const RadwPart& p : parts) {
+            const auto it = part_cells.find(p.mId);
+            if (it == part_cells.end() || it->second.empty())
+                continue;
+            if (std::includes(cells.begin(), cells.end(), it->second.begin(), it->second.end())) {
+                inside.push_back(p.mId);
+                covered.insert(it->second.begin(), it->second.end());
+            }
+        }
+        if (covered != cells)
+            continue;
+        const std::set<std::int64_t> inside_set(inside.begin(), inside.end());
+        std::set<std::int64_t> children;
+        for (const std::int64_t p : inside)
+            if (part_subset.count(p))
+                children.insert(part_subset[p]);
+        bool nested = true;
+        for (const std::int64_t s : children)
+            if (!std::includes(inside_set.begin(), inside_set.end(), subset_parts[s].begin(),
+                               subset_parts[s].end()))
+                nested = false;
+        if (!nested)
+            continue;
+        const Region& reg = rMesh.Region(k);
+        const std::int64_t sid = subset_ids.Take(reg.mTag);
+        for (const std::int64_t p : inside)
+            part_subset.emplace(p, sid);
+        subset_parts[sid] = inside_set;
+        subsets.push_back(
+            {sid, reg.mName, std::vector<std::int64_t>(children.begin(), children.end())});
+        used_regions[k] = true;
+    }
+
+    // Element ids, in the order the cards write them.
+    std::vector<std::int64_t> elem_id(ncells, 0);
+    struct RadwCard {
+        std::string mCard;
+        std::int64_t mPart;
+        std::vector<std::size_t> mCells;
+    };
+    std::vector<RadwCard> cards;
+    std::int64_t next_elem = 1;
+    {
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const std::size_t n = rMesh.Cells(b).NumCells();
+            bool open = false;
+            for (std::size_t r = 0; r < n; ++r, ++g) {
+                if (info[g].mCard.empty())
+                    continue;
+                if (!open || cards.back().mPart != cell_part[g]) {
+                    cards.push_back({info[g].mCard, cell_part[g], {}});
+                    open = true;
+                }
+                cards.back().mCells.push_back(g);
+                elem_id[g] = next_elem++;
+            }
+        }
+    }
+
+    // Groups, then surfaces.
+    struct RadwGroup {
+        std::string mKeyword;
+        std::string mSubtype;
+        std::int64_t mId;
+        std::string mTitle;
+        std::vector<std::int64_t> mIds;
+    };
+    std::map<std::string, RadwIds> group_ids;
+    std::vector<RadwGroup> groups;
+    struct RadwSurface {
+        std::int64_t mId;
+        std::string mTitle;
+        std::vector<std::array<std::int64_t, 4>> mSegs;
+    };
+    RadwIds surf_ids;
+    std::vector<RadwSurface> surfaces;
+    std::size_t dropped_sides = 0;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        if (used_regions[k])
+            continue;
+        const Region& reg = rMesh.Region(k);
+        const std::vector<std::int64_t> e = radw_entries(reg);
+        if (reg.mKind == RegionKind::Point) {
+            std::set<std::int64_t> ids;
+            for (const std::int64_t p : e)
+                if (p >= 0 && static_cast<std::size_t>(p) < npts)
+                    ids.insert(p + 1);
+            const std::int64_t gid = group_ids["GRNOD"].Take(reg.mTag);
+            groups.push_back({"GRNOD", "NODE", gid, reg.mName,
+                              std::vector<std::int64_t>(ids.begin(), ids.end())});
+        } else if (reg.mKind == RegionKind::Cell) {
+            std::vector<std::pair<std::string, std::vector<std::int64_t>>> by_family;
+            const std::set<std::int64_t> cells(e.begin(), e.end());
+            for (const std::int64_t c : cells) {
+                if (!written(c))
+                    continue;
+                const std::string fam = family(static_cast<std::size_t>(c));
+                auto it = std::find_if(by_family.begin(), by_family.end(),
+                                       [&](const auto& rF) { return rF.first == fam; });
+                if (it == by_family.end()) {
+                    by_family.emplace_back(fam, std::vector<std::int64_t>{});
+                    it = by_family.end() - 1;
+                }
+                it->second.push_back(elem_id[static_cast<std::size_t>(c)]);
+            }
+            if (by_family.empty())
+                by_family.emplace_back("BRIC", std::vector<std::int64_t>{});
+            for (auto& [fam, ids] : by_family) {
+                const std::string keyword = radw_group_keyword(fam);
+                const std::int64_t gid = group_ids[keyword].Take(reg.mTag);
+                groups.push_back({keyword, fam, gid, reg.mName, std::move(ids)});
+            }
+        } else {
+            RadwSurface surf;
+            for (std::size_t j = 0; j + 1 < e.size(); j += 2) {
+                const std::int64_t c = e[j];
+                if (!written(c)) {
+                    ++dropped_sides;
+                    continue;
+                }
+                const RadwCell& ci = info[static_cast<std::size_t>(c)];
+                const std::string fam = family(static_cast<std::size_t>(c));
+                std::vector<std::int64_t> nodes;
+                if (fam == "SHEL" || fam == "SH3N") {
+                    const auto cb = rMesh.Cells(ci.mBlock);
+                    const std::size_t k2 = cb.NodesPerCell();
+                    for (std::size_t q = 0; q < k2; ++q)
+                        nodes.push_back(detail::read_int(cb.Conn(), ci.mRow * k2 + q));
+                } else if (fam == "BRIC") {
+                    CellType ftype{};
+                    std::vector<std::int64_t> fnodes;
+                    if (!detail::facet_nodes(rMesh, c, e[j + 1], ftype, fnodes)) {
+                        ++dropped_sides;
+                        continue;
+                    }
+                    const bool tri = cell_type_name(ftype).rfind("triangle", 0) == 0;
+                    nodes.assign(fnodes.begin(), fnodes.begin() + (tri ? 3 : 4));
+                } else {
+                    ++dropped_sides;
+                    continue;
+                }
+                std::array<std::int64_t, 4> seg{};
+                for (std::size_t q = 0; q < nodes.size() && q < 4; ++q)
+                    seg[q] = nodes[q] + 1;
+                if (nodes.size() == 3)
+                    seg[3] = seg[2];
+                surf.mSegs.push_back(seg);
+            }
+            surf.mId = surf_ids.Take(reg.mTag);
+            surf.mTitle = reg.mName;
+            surfaces.push_back(std::move(surf));
+        }
+    }
+    if (dropped_sides) {
+        log::warn("Radioss writer: {} side region entries on cells with no face segment dropped",
+                  dropped_sides);
+        detail::provenance_note("regions-dropped",
+                                "a /SURF/SEG segment is a solid face or a shell");
+    }
+
+    // Data: only the part, property, material and deck field data are written.
+    std::vector<std::pair<std::int64_t, std::vector<double>>> planes;
+    std::size_t dropped_data = rMesh.PointDataNames().size();
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "radioss:part" && name != "radioss:property" && name != "radioss:material")
+            ++dropped_data;
+    const std::string plane_prefix = "radioss:surf_plane:";
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name == "radioss:version" || name == "radioss:length_scale")
+            continue;
+        if (name.rfind(plane_prefix, 0) == 0) {
+            const NDArray& v = rMesh.FieldData(name);
+            const std::string ident = name.substr(plane_prefix.size());
+            const bool digits =
+                !ident.empty() && std::all_of(ident.begin(), ident.end(),
+                                              [](char ch) { return ch >= '0' && ch <= '9'; });
+            if (v.Size() == 6 && digits) {
+                std::vector<double> values(6);
+                for (std::size_t q = 0; q < 6; ++q)
+                    values[q] = detail::read_double(v, q);
+                planes.emplace_back(std::stoll(ident), std::move(values));
+                continue;
+            }
+        }
+        ++dropped_data;
+    }
+    if (dropped_data) {
+        log::warn(
+            "Radioss writer: a starter deck holds no data arrays; point, cell and field data "
+            "other than the radioss: parts and analytical surfaces dropped");
+        detail::provenance_note("data-dropped", "a Radioss starter deck holds no data arrays");
+    }
+
+    std::int64_t version = kRadWriteVersion;
+    if (rMesh.HasFieldData("radioss:version")) {
+        const std::int64_t v = detail::read_int(rMesh.FieldData("radioss:version"), 0);
+        if (v >= 2017 && v <= 2026)
+            version = v;
+    }
+
+    std::string run = fs::path(rPath).stem().string();
+    if (run.size() >= 5 && run.compare(run.size() - 5, 5, "_0000") == 0)
+        run.resize(run.size() - 5);
+    std::vector<std::string> out = {"#RADIOSS STARTER"};
+    for (const std::string& line : detail::provenance_lines(detail::SlotTier::Block))
+        out.push_back("# " + line);
+    // The same input and work units, so the starter converts nothing and the
+    // reader reads the coordinates as written.
+    std::string units;
+    for (const char* u : {"kg", "m", "s"})
+        units += std::string(20 - std::string(u).size(), ' ') + u;
+    std::string begin_line;
+    radw_i10(begin_line, version);
+    radw_i10(begin_line, 0);
+    out.push_back("/BEGIN");
+    out.push_back(radw_title(run.empty() ? "meshio" : run).substr(0, 80));
+    out.push_back(begin_line);
+    out.push_back(units);
+    out.push_back(units);
+
+    if (Stubs) {
+        // One stub property per property id, as its parts' cards need it
+        // (radw_stub_need). A part whose property already serves a part that
+        // needs another stub gets a property of its own; material 0 becomes 1.
+        RadwIds prop_ids;
+        for (const RadwPart& p : parts)
+            if (p.mProp > 0)
+                prop_ids.mUsed.insert(p.mProp);
+        std::map<std::int64_t, std::pair<std::string, int>> props;
+        std::vector<std::int64_t> mats;
+        for (RadwPart& p : parts) {
+            std::set<std::string> part_cards;
+            for (const std::int64_t c : part_cells[p.mId])
+                part_cards.insert(info[static_cast<std::size_t>(c)].mCard);
+            std::pair<std::string, int> need;
+            if (!radw_stub_share(part_cards, need))
+                throw WriteError("Radioss writer: part " + std::to_string(p.mId) +
+                                 " holds solid, shell or truss elements together, which no one "
+                                 "stub property serves");
+            if (p.mProp <= 0)
+                p.mProp = prop_ids.Take(p.mId);
+            const auto it = props.emplace(p.mProp, need).first;
+            if (it->second != need) {
+                p.mProp = prop_ids.Take();
+                props[p.mProp] = need;
+            }
+            if (p.mMat <= 0)
+                p.mMat = 1;
+            if (std::find(mats.begin(), mats.end(), p.mMat) == mats.end())
+                mats.push_back(p.mMat);
+        }
+        std::sort(mats.begin(), mats.end());
+        for (const std::int64_t mid : mats) {
+            std::string a, b;
+            radw_f20(a, 1.0);
+            radw_f20(a, 0.0);
+            radw_f20(b, 1.0);
+            radw_f20(b, 0.3);
+            out.push_back("/MAT/LAW1/" + std::to_string(mid));
+            out.push_back("meshio++ stub material " + std::to_string(mid));
+            out.push_back(a);
+            out.push_back(b);
+        }
+        for (const auto& [pr, need] : props) {
+            out.push_back("/PROP/" + need.first + "/" + std::to_string(pr));
+            out.push_back("meshio++ stub property " + std::to_string(pr));
+            if (need.first == "SOLID") {
+                std::string l1, l2, l3;
+                radw_i10(l1, need.second);
+                radw_i10(l1, 0);
+                l1.append(10, ' ');
+                radw_i10(l1, 0);
+                l1.append(10, ' ');
+                for (int q = 0; q < 3; ++q)
+                    radw_i10(l1, 0);
+                radw_f20(l1, 0.0);
+                for (int q = 0; q < 5; ++q)
+                    radw_f20(l2, 0.0);
+                radw_f20(l3, 0.0);
+                radw_i10(l3, 0);
+                radw_i10(l3, 0);
+                out.push_back(l1);
+                out.push_back(l2);
+                out.push_back(l3);
+            } else if (need.first == "SHELL") {
+                std::string l1, l2, l3;
+                for (int q = 0; q < 3; ++q)
+                    radw_i10(l1, 0);
+                for (int q = 0; q < 5; ++q)
+                    radw_f20(l2, 0.0);
+                radw_i10(l3, 1);
+                radw_i10(l3, 0);
+                radw_f20(l3, 1.0);
+                out.push_back(l1);
+                out.push_back(l2);
+                out.push_back(l3);
+            } else {
+                std::string l1;
+                radw_f20(l1, 1.0);
+                radw_f20(l1, 0.0);
+                out.push_back(l1);
+            }
+        }
+    }
+
+    for (const RadwPart& p : parts) {
+        std::string line;
+        radw_i10(line, p.mProp);
+        radw_i10(line, p.mMat);
+        const auto it = part_subset.find(p.mId);
+        radw_i10(line, it == part_subset.end() ? 0 : it->second);
+        out.push_back("/PART/" + std::to_string(p.mId));
+        out.push_back(radw_title(p.mTitle));
+        out.push_back(line);
+    }
+    for (const RadwSubset& s : subsets) {
+        out.push_back("/SUBSET/" + std::to_string(s.mId));
+        out.push_back(radw_title(s.mTitle));
+        radw_ids_lines(out, s.mChildren);
+    }
+
+    out.push_back("/NODE");
+    for (std::size_t p = 0; p < npts; ++p) {
+        std::string line;
+        radw_i10(line, static_cast<std::int64_t>(p + 1));
+        for (std::size_t d = 0; d < 3; ++d)
+            radw_f20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+        out.push_back(std::move(line));
+    }
+
+    const detail::NodeOrder* bric20 = detail::node_order("radioss", "hexahedron20");
+    for (const RadwCard& card : cards) {
+        out.push_back("/" + card.mCard + "/" + std::to_string(card.mPart));
+        for (const std::size_t c : card.mCells) {
+            const auto cb = rMesh.Cells(info[c].mBlock);
+            const std::size_t k = cb.NodesPerCell();
+            std::vector<std::int64_t> nodes(k);
+            for (std::size_t q = 0; q < k; ++q)
+                nodes[q] = detail::read_int(cb.Conn(), info[c].mRow * k + q) + 1;
+            if (card.mCard == "BRICK") {
+                const auto brick = detail::expand_brick(cb.Type(), nodes.data());
+                nodes.assign(brick.begin(), brick.end());
+            }
+            std::string line;
+            radw_i10(line, elem_id[c]);
+            if (card.mCard == "TETRA10") {
+                out.push_back(std::move(line));
+                line.clear();
+                for (const std::int64_t v : nodes)
+                    radw_i10(line, v);
+                out.push_back(std::move(line));
+            } else if (card.mCard == "BRIC20") {
+                std::vector<std::int64_t> file(20);
+                for (std::size_t j = 0; j < 20; ++j)
+                    file[j] = nodes[static_cast<std::size_t>(bric20->mFromMeshio[j])];
+                for (std::size_t j = 0; j < 8; ++j)
+                    radw_i10(line, file[j]);
+                out.push_back(std::move(line));
+                std::string l2, l3;
+                for (std::size_t j = 8; j < 16; ++j)
+                    radw_i10(l2, file[j]);
+                for (std::size_t j = 16; j < 20; ++j)
+                    radw_i10(l3, file[j]);
+                out.push_back(std::move(l2));
+                out.push_back(std::move(l3));
+            } else {
+                for (const std::int64_t v : nodes)
+                    radw_i10(line, v);
+                out.push_back(std::move(line));
+            }
+        }
+    }
+
+    for (const RadwGroup& g : groups) {
+        out.push_back("/" + g.mKeyword + "/" + g.mSubtype + "/" + std::to_string(g.mId));
+        out.push_back(radw_title(g.mTitle));
+        radw_ids_lines(out, g.mIds);
+    }
+    for (const RadwSurface& s : surfaces) {
+        out.push_back("/SURF/SEG/" + std::to_string(s.mId));
+        out.push_back(radw_title(s.mTitle));
+        for (std::size_t k = 0; k < s.mSegs.size(); ++k) {
+            std::string line;
+            radw_i10(line, static_cast<std::int64_t>(k + 1));
+            for (const std::int64_t v : s.mSegs[k])
+                radw_i10(line, v);
+            out.push_back(std::move(line));
+        }
+    }
+    std::sort(planes.begin(), planes.end());
+    for (const auto& [sid, v] : planes) {
+        std::string a, b;
+        for (std::size_t q = 0; q < 3; ++q)
+            radw_f20(a, v[q]);
+        for (std::size_t q = 3; q < 6; ++q)
+            radw_f20(b, v[q]);
+        out.push_back("/SURF/PLANE/" + std::to_string(surf_ids.Take(sid)));
+        out.push_back("PLANE_" + std::to_string(sid));
+        out.push_back(std::move(a));
+        out.push_back(std::move(b));
+    }
+    out.push_back("/END");
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Radioss writer: cannot open " + rPath + " for writing");
+    std::string text;
+    for (const std::string& line : out) {
+        text += line;
+        text += '\n';
+    }
+    os.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!os)
+        throw WriteError("Radioss writer: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus

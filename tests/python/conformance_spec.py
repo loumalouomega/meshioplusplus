@@ -1118,6 +1118,23 @@ SPEC: dict[str, dict] = {
         "field_data": True,
         "regions": [],
     },
+    "radioss": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point", "side"],
+        "note": "A starter deck holds no data arrays; a `vertex` has no element card.",
+    },
     "stl": {
         "cells": {
             "triangle": "lost",
@@ -1476,7 +1493,6 @@ READ_ONLY = {
         "writer; meshio++ writes Tecplot's documented `.plt`/`.dat` instead."
     ),
     "marc": "An input deck whose writer is being added (roadmap §1.2).",
-    "radioss": "An input deck whose writer is being added (roadmap §1.2).",
 }
 
 
