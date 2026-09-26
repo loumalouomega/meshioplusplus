@@ -325,7 +325,7 @@ meshio.writeMesh('/out.vtu', mesh, '', { encoding: 'ascii', codec: 'none' });
 meshio.convert('/in.vtu', '/out.stl', { encoding: 'binary' });
 ```
 
-- `encoding` — `'ascii'` or `'binary'`; throws for a format with only one variant.
+- `encoding` — `'ascii'` or `'binary'`; throws for a format with only one variant. `'raw_appended'` (since v16.20.0) writes a `vtu`'s arrays as raw binary in one `<AppendedData>` section and throws for any other format.
 - `codec` — `'none'`, `'zlib'`, `'lz4'`, or `'zstd'`; a block-compression codec for the VTK-XML formats (`vtu`/`vtp`) only, throws for any other format.
 - `floatFormat` — a `printf`-style float format for ASCII writers that take one (e.g. `".16e"`, the default).
 

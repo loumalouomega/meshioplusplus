@@ -969,10 +969,10 @@ def roadmap_map():
         (
             "§4 performance",
             [
-                ("text tokenizer · VTU copy chain", "M"),
+                ("tokenizer: remaining readers", "S"),
                 ("GIL release · lazy imports", "M"),
                 ("facet cache · grid map (next ABI)", "M"),
-                ("ragged readers · file slurps", "S"),
+                ("ragged readers · format dtype hoists", "S"),
             ],
             [],
         ),

@@ -133,13 +133,39 @@ def test_ambiguous_extension_read_writes_nothing_to_stdout(capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_declined_candidates_are_logged(caplog):
+def test_declined_candidates_are_logged(caplog, tmp_path):
+    import logging
+
+    # Every candidate declines an unreadable `.msh`, and each decline is logged.
+    bogus = tmp_path / "bogus.msh"
+    bogus.write_text("this is not a valid mesh file at all\n")
+    with caplog.at_level(logging.DEBUG, logger="meshioplusplus"):
+        with pytest.raises(meshioplusplus.ReadError):
+            meshioplusplus.read(bogus)
+    messages = [r.message for r in caplog.records if r.name == "meshioplusplus"]
+    assert sum("declined" in m for m in messages) >= 3
+
+
+def test_the_sniffed_candidate_is_tried_first(caplog):
+    # A Gmsh file behind the ambiguous `.msh` goes to gmsh first -- the content
+    # sniff recognises it -- so ansys never reads it whole just to decline it
+    # (roadmap §4, "A declined C++ read").
     import logging
 
     with caplog.at_level(logging.DEBUG, logger="meshioplusplus"):
-        meshioplusplus.read(MSH_PATH)
+        mesh = meshioplusplus.read(MSH_PATH)
+    assert len(mesh.points) > 0
     messages = [r.message for r in caplog.records if r.name == "meshioplusplus"]
-    assert any("declined" in m for m in messages)
+    assert not any("'ansys' declined" in m for m in messages)
+
+
+def test_ansys_twin_refuses_a_non_fluent_file_from_its_head(tmp_path):
+    from meshioplusplus.ansys import _ansys
+
+    gmsh_like = tmp_path / "x.msh"
+    gmsh_like.write_text("  \n$MeshFormat\n2.2 0 8\n$EndMeshFormat\n")
+    with pytest.raises(meshioplusplus.ReadError, match="expected a section at byte 3"):
+        _ansys.read(str(gmsh_like))
 
 
 def test_failed_read_chains_the_last_reason(tmp_path):

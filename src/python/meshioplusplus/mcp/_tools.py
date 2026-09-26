@@ -641,22 +641,31 @@ _BINARY_VARIANT = {
     "vtu": {"binary": True},
     "xdmf": {"data_format": "HDF"},
 }
+# Raw binary in one trailing <AppendedData> section (no base64), as VTK's own
+# writers default to; the C++ `WriteEncoding::RawAppended` twin.
+_RAW_APPENDED_VARIANT = {
+    "vtu": {"binary": True, "appended": True},
+}
 _BLOCK_CODECS = ("zlib", "lz4", "zstd", "lzma")
 
 
 def _variant_kwargs(out_fmt, mode, compression):
     kwargs = {}
-    if mode not in ("auto", "ascii", "binary"):
+    if mode not in ("auto", "ascii", "binary", "raw_appended"):
         raise ValueError(
             f"meshio++: mcp: unknown mode '{mode}' "
-            "(expected 'auto', 'ascii' or 'binary')"
+            "(expected 'auto', 'ascii', 'binary' or 'raw_appended')"
         )
     if mode == "ascii" and compression is not None and compression != "none":
         raise ValueError(
             "meshio++: mcp: mode='ascii' cannot be combined with compression"
         )
     if mode != "auto":
-        table = _ASCII_VARIANT if mode == "ascii" else _BINARY_VARIANT
+        table = {
+            "ascii": _ASCII_VARIANT,
+            "binary": _BINARY_VARIANT,
+            "raw_appended": _RAW_APPENDED_VARIANT,
+        }[mode]
         if out_fmt not in table:
             raise ValueError(
                 f"meshio++: mcp: format '{out_fmt}' has no {mode} variant "

@@ -32,6 +32,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -87,7 +88,7 @@ const std::vector<int>* write_reorder(const std::string& rType) {
 
 std::vector<std::string> permas_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);

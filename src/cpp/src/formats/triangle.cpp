@@ -37,6 +37,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -91,7 +92,7 @@ TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
         const std::size_t hash = line.find('#');
         if (hash != std::string::npos)
             line.resize(hash);
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         while (iss >> tok)
             tokens.mToks.push_back(tok);

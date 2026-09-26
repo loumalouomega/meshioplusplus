@@ -49,6 +49,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -238,7 +239,7 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
         std::string line = rCur.read_line();
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         long long dim, tag;
         iss >> dim >> tag;
         std::size_t q1 = line.find('"');
@@ -576,7 +577,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
     if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
-            auto iss = detail::make_classic_istringstream(line);
+            detail::TextStream iss(line);
             std::vector<std::int64_t> v;
             long long x;
             while (iss >> x)
@@ -1287,7 +1288,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    auto fss = detail::make_classic_istringstream(cur.read_line());
+    detail::TextStream fss(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -1314,6 +1315,28 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     }
     return std::vector<double>(times.begin(), times.end());
 }
+/// Whether the file has a `$Periodic` section: the header on a line of its own,
+/// found by one search of the buffer before `$Nodes` and `$Elements` are
+/// parsed only to be refused (roadmap §4). `$` is rare in mesh data, so the
+/// search runs at memchr speed; a match inside binary data only declines a
+/// read the Python reader then takes, which is what a real `$Periodic` does.
+bool gmsh_has_periodic(std::string_view rBuf) {
+    constexpr std::string_view kTag = "$Periodic";
+    std::size_t at = 0;
+    while ((at = rBuf.find(kTag, at)) != std::string_view::npos) {
+        const bool line_start = at == 0 || rBuf[at - 1] == '\n';
+        std::size_t after = at + kTag.size();
+        const std::size_t next = after;
+        while (after < rBuf.size() && (rBuf[after] == ' ' || rBuf[after] == '\t'))
+            ++after;  // the section parser trims the header line
+        const bool line_end = after == rBuf.size() || rBuf[after] == '\n' || rBuf[after] == '\r';
+        if (line_start && line_end)
+            return true;
+        at = next;
+    }
+    return false;
+}
+
 }  // namespace
 
 Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
@@ -1333,7 +1356,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
     std::string fmt = cur.read_line();
-    auto fss = detail::make_classic_istringstream(fmt);
+    detail::TextStream fss(fmt);
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -1345,6 +1368,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             ++cur.mPos;
     }
     cur.skip_to_end("MeshFormat");
+    if (gmsh_has_periodic(buf))
+        throw ReadError("Gmsh $Periodic not supported by the C++ reader");
 
     // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
     // against the sorted union of every $NodeData/$ElementData section's time
@@ -2276,7 +2301,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    auto fss = detail::make_classic_istringstream(cur.read_line());
+    detail::TextStream fss(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;

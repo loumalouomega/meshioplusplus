@@ -18,6 +18,7 @@
 // System includes
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <bit>
 #include <cctype>
 #include <cstdint>
@@ -25,7 +26,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -52,6 +52,8 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "face_cells_common.hpp"
+#include "../detail/row_writer.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace fs = std::filesystem;
 
@@ -159,11 +161,11 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    auto ss = detail::make_classic_istringstream(out);
+    detail::TextStream ss(out);
     std::string line, result;
     bool in_header = false;
     int depth = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.find("FoamFile") != std::string::npos)
             in_header = true;
@@ -186,18 +188,31 @@ std::string strip_comments_and_header(std::string_view rText) {
 
 // ---- ASCII parsers ----
 
+// The capacity to reserve from a list's count line: the count, capped by what
+// the body could hold at `MinBytes` bytes per entry, so a wrong count only
+// sizes the reservation and never fails a read that succeeded before.
+std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
+                                std::size_t MinBytes) {
+    std::uint64_t n = 0;
+    const auto r = std::from_chars(rCount.data(), rCount.data() + rCount.size(), n);
+    if (r.ec != std::errc{})
+        return 0;
+    return static_cast<std::size_t>(std::min<std::uint64_t>(n, BodySize / MinBytes));
+}
+
 std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
     std::vector<std::array<double, 3>> pts;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false;
     bool have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
         if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
             have_n = true;
+            pts.reserve(openfoam_count_hint(s, rBody.size(), 7));
             continue;
         }
         if (s == "(" && have_n) {
@@ -212,7 +227,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ns = detail::make_classic_istringstream(t);
+            detail::TextStream ns(t);
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -223,15 +238,16 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
 
 std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     std::vector<Face> faces;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
         if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
             have_n = true;
+            faces.reserve(openfoam_count_hint(s, rBody.size(), 8));
             continue;
         }
         if (s == "(" && have_n) {
@@ -247,7 +263,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             if (lp == std::string::npos || rp == std::string::npos)
                 continue;
             std::string inside = s.substr(lp + 1, rp - lp - 1);
-            auto ns = detail::make_classic_istringstream(inside);
+            detail::TextStream ns(inside);
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -260,15 +276,16 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
 
 std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
     std::vector<std::int64_t> out;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
         if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
             have_n = true;
+            out.reserve(openfoam_count_hint(s, rBody.size(), 2));
             continue;
         }
         if (s == "(") {
@@ -278,7 +295,7 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
         if (s == ")")
             break;
         if (in_block) {
-            auto ns = detail::make_classic_istringstream(s);
+            detail::TextStream ns(s);
             std::int64_t v;
             while (ns >> v)
                 out.push_back(v);
@@ -439,7 +456,7 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
         ++rp;
     }
     const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
-    auto ss = detail::make_classic_istringstream(inside);
+    detail::TextStream ss(inside);
     std::vector<std::int64_t> out;
     std::int64_t v;
     while (ss >> v)
@@ -601,7 +618,8 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
         std::vector<std::int64_t> ids(static_cast<std::size_t>(count));
         const char* base = rRaw.data() + lparen + 1;
         for (std::int64_t i = 0; i < count; ++i) {
-            const std::size_t off = static_cast<std::size_t>(i) * static_cast<std::size_t>(LabelBytes);
+            const std::size_t off =
+                static_cast<std::size_t>(i) * static_cast<std::size_t>(LabelBytes);
             ids[static_cast<std::size_t>(i)] =
                 LabelBytes == 4 ? static_cast<std::int64_t>(read_le<std::int32_t>(base + off))
                                 : read_le<std::int64_t>(base + off);
@@ -836,8 +854,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         const std::size_t local_patch =
             foam_patch_of_local_face(op.mRaw.mBoundary, owner_claim->mLocalFace);
         std::int64_t global_patch = -1;
-        if (local_patch != static_cast<std::size_t>(-1) &&
-            local_patch < op.mBoundaryAddr.size())
+        if (local_patch != static_cast<std::size_t>(-1) && local_patch < op.mBoundaryAddr.size())
             global_patch = op.mBoundaryAddr[local_patch];
         const bool is_processor_patch =
             global_patch < 0 || (local_patch != static_cast<std::size_t>(-1) &&
@@ -927,7 +944,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    auto ss = detail::make_classic_istringstream(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -941,11 +958,11 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
     const std::string text_owned(rText);
-    auto ss = detail::make_classic_istringstream(text_owned);
+    detail::TextStream ss(text_owned);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -961,7 +978,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     }
     out.mCount = n;
     out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
-    for (std::int64_t i = 0; i < n && std::getline(ss, line);) {
+    for (std::int64_t i = 0; i < n && getline(ss, line);) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -971,7 +988,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             for (char& c : s)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ls = detail::make_classic_istringstream(s);
+            detail::TextStream ls(s);
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -1020,13 +1037,14 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
     const char* base = raw.data() + start;
     for (std::int64_t i = 0; i < n; ++i)
         for (int c = 0; c < components; ++c) {
-            const std::size_t off = (static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
-                                     static_cast<std::size_t>(c)) *
-                                    static_cast<std::size_t>(fmt.mScalarBytes);
+            const std::size_t off =
+                (static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
+                 static_cast<std::size_t>(c)) *
+                static_cast<std::size_t>(fmt.mScalarBytes);
             out.mFlat[static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
-                     static_cast<std::size_t>(c)] =
+                      static_cast<std::size_t>(c)] =
                 fmt.mScalarBytes == 4 ? static_cast<double>(read_le<float>(base + off))
-                                     : read_le<double>(base + off);
+                                      : read_le<double>(base + off);
         }
     return out;
 }
@@ -1078,7 +1096,7 @@ std::vector<FoamTimeDir> foam_time_dirs(const fs::path& rCaseRoot) {
             dirs.push_back({t, name});
     }
     std::sort(dirs.begin(), dirs.end(),
-             [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
+              [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
     return dirs;
 }
 
@@ -1152,8 +1170,8 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
         if (fs::exists(c))
             poly = c;
         else
-            throw ReadError(detail::format_compat(
-                "OpenFOAM: region '{}' has no {}", rInfo.mRegion, c.string()));
+            throw ReadError(detail::format_compat("OpenFOAM: region '{}' has no {}", rInfo.mRegion,
+                                                  c.string()));
     }
     if (poly.empty() && fs::exists(case_root / "constant" / "regionProperties")) {
         std::vector<std::string> regions;
@@ -1261,8 +1279,8 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     // below). `row == npos` marks a skipped (degenerate) cell.
     constexpr std::size_t npos = static_cast<std::size_t>(-1);
     std::vector<std::tuple<bool, std::string, std::size_t>> placement(
-        static_cast<std::size_t>(n_cells), std::tuple<bool, std::string, std::size_t>{false, "",
-                                                                                       npos});
+        static_cast<std::size_t>(n_cells),
+        std::tuple<bool, std::string, std::size_t>{false, "", npos});
 
     std::size_t n_skipped = 0;
     std::size_t n_polyhedra = 0;
@@ -1551,7 +1569,8 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                 const FoamFieldClass fc = foam_field_class(cls);
                 if (!fc.mSupported) {
                     log::warn(
-                        "OpenFOAM: field '{}' has class '{}', which has no point/cell home; skipped",
+                        "OpenFOAM: field '{}' has class '{}', which has no point/cell home; "
+                        "skipped",
                         field_name, cls.empty() ? "?" : cls);
                     continue;
                 }
@@ -1564,14 +1583,15 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                             field_name, values.mCount, npts);
                         continue;
                     }
-                    NDArray arr = NDArray::Uninit(
-                        DType::Float64, {npts, static_cast<std::size_t>(fc.mComponents)});
+                    NDArray arr = NDArray::Uninit(DType::Float64,
+                                                  {npts, static_cast<std::size_t>(fc.mComponents)});
                     double* dst = arr.As<double>();
                     if (values.mUniform) {
                         for (std::size_t i = 0; i < npts; ++i)
                             for (int c = 0; c < fc.mComponents; ++c)
                                 dst[i * static_cast<std::size_t>(fc.mComponents) +
-                                    static_cast<std::size_t>(c)] = values.mFlat[static_cast<std::size_t>(c)];
+                                    static_cast<std::size_t>(c)] =
+                                    values.mFlat[static_cast<std::size_t>(c)];
                     } else {
                         std::copy(values.mFlat.begin(), values.mFlat.end(), dst);
                     }
@@ -1601,10 +1621,12 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                         is_poly ? poly_block_index.at(key) : vol_block_index.at(key);
                     double* dst = blocks[block].As<double>();
                     for (int c = 0; c < fc.mComponents; ++c)
-                        dst[row * static_cast<std::size_t>(fc.mComponents) + static_cast<std::size_t>(c)] =
-                            values.mUniform ? values.mFlat[static_cast<std::size_t>(c)]
-                                            : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
-                                                            static_cast<std::size_t>(c)];
+                        dst[row * static_cast<std::size_t>(fc.mComponents) +
+                            static_cast<std::size_t>(c)] =
+                            values.mUniform
+                                ? values.mFlat[static_cast<std::size_t>(c)]
+                                : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
+                                               static_cast<std::size_t>(c)];
                 }
                 mesh.AddCellData(field_name, std::move(blocks));
             }
@@ -1709,10 +1731,9 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
            "    format      "
         << (rOpts.mBinary ? "binary" : "ascii") << ";\n";
     if (rOpts.mBinary)
-        rOs << "    arch        \"LSB;label=" << rOpts.mLabelBits
-            << ";scalar=" << rOpts.mScalarBits << "\";\n";
-    rOs << "    class       "
-        << rClass
+        rOs << "    arch        \"LSB;label=" << rOpts.mLabelBits << ";scalar=" << rOpts.mScalarBits
+            << "\";\n";
+    rOs << "    class       " << rClass
         << ";\n"
            "    location    \"constant/polyMesh\";\n"
            "    object      "
@@ -2271,10 +2292,9 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     // writer produces them once the mesh carries the matching `Region` kind,
     // and only deletes a stale one when it no longer does (so an old zone
     // file is not left behind once its region is removed from the mesh).
-    for (const char* name :
-         {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing", "faceProcAddressing",
-          "pointProcAddressing", "cellLevel", "pointLevel", "level0Edge", "refinementHistory",
-          "surfaceIndex"}) {
+    for (const char* name : {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing",
+                             "faceProcAddressing", "pointProcAddressing", "cellLevel", "pointLevel",
+                             "level0Edge", "refinementHistory", "surfaceIndex"}) {
         std::error_code rc;
         if (fs::remove(poly / name, rc))
             log::info("OpenFOAM: removed stale {}", name);
@@ -2300,11 +2320,24 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
             f << ")\n";
         } else {
             f << np << "\n(\n";
-            f << std::setprecision(16);
-            for (std::size_t i = 0; i < np; ++i) {
-                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
-                f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
-            }
+            // `f << std::setprecision(16) << x` on this classic-locale stream,
+            // with no float field set, prints exactly printf's "%.16g"; rows are
+            // formatted that way in parallel chunks (row_writer.hpp).
+            const detail::CNumber num;
+            detail::write_row_chunks(
+                f, np, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                    for (std::size_t i = First; i < Last; ++i) {
+                        const detail::Vec3 p =
+                            detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                        rBuf += '(';
+                        num.Append(rBuf, "%.16g", p[0]);
+                        rBuf += ' ';
+                        num.Append(rBuf, "%.16g", p[1]);
+                        rBuf += ' ';
+                        num.Append(rBuf, "%.16g", p[2]);
+                        rBuf += ")\n";
+                    }
+                });
             f << ")\n";
         }
     }
@@ -2363,11 +2396,10 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         if (rOpts.mBinary) {
             f << order.mNumInternal << "\n(";
             for (std::int64_t i = 0; i < order.mNumInternal; ++i)
-                foam_write_binary_label(
-                    f,
-                    faces.mNeighbour[static_cast<std::size_t>(
-                        order.mNewToOld[static_cast<std::size_t>(i)])],
-                    rOpts.mLabelBits);
+                foam_write_binary_label(f,
+                                        faces.mNeighbour[static_cast<std::size_t>(
+                                            order.mNewToOld[static_cast<std::size_t>(i)])],
+                                        rOpts.mLabelBits);
             f << ")\n";
         } else {
             f << order.mNumInternal << "\n(\n";
@@ -2415,8 +2447,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
 
         write_or_remove("cellZones", foam_collect_cell_zones(rMesh, global_to_compact),
                         "cellZoneList", "cellZone", "cellLabels");
-        write_or_remove("pointZones", foam_collect_point_zones(rMesh), "pointZoneList",
-                        "pointZone", "pointLabels");
+        write_or_remove("pointZones", foam_collect_point_zones(rMesh), "pointZoneList", "pointZone",
+                        "pointLabels");
         write_or_remove("faceZones",
                         foam_collect_face_zones(rMesh, faces, global_to_compact, old_to_new),
                         "faceZoneList", "faceZone", "faceLabels");

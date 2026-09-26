@@ -11215,7 +11215,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 18
+#define MESHIOPLUSPLUS_VERSION_MINOR 20
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11225,7 +11225,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.18.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.20.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -21381,8 +21381,8 @@ MESHIOPLUSPLUS_API MeshMetadata read_vts_metadata(const std::string& rPath,
 // ===== begin src/cpp/include/meshioplusplus/formats/vtu.hpp =====
 /**
  * @file vtu.hpp
- * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer, ascii and inline
- *        binary (uncompressed or zlib), single `<Piece>` only.
+ * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer: ascii, inline
+ *        binary (uncompressed or block-compressed) and raw appended data.
  *
  * A `.vtu` file is `<VTKFile type="UnstructuredGrid" ...><UnstructuredGrid>
  * <Piece ...><Points>/<Cells>(connectivity,offsets,types[,faces,
@@ -21402,15 +21402,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vts_metadata(const std::string& rPath,
  * `byte_order="LittleEndian"` (unlike the Python writer, which records the
  * host's native order).
  *
- * The C++ core explicitly does **not** implement several paths, each of
- * which throws ReadError/WriteError to force the Python fallback:
- * lzma compression; `<AppendedData>` (raw/appended binary, including the
- * regex-based manual XML-repair the Python reader falls back to when
- * appended raw bytes break XML parsing); polyhedron cells (both read and
- * write — they also cannot mix with other cell types, a Python-side
- * ValueError); multiple `<Piece>` elements (the Python reader concatenates
- * them, C++ requires exactly one); and any non-default `header_type` other
- * than `UInt32`.
+ * The reader also takes `<AppendedData>` (raw or base64, in either byte
+ * order), several `<Piece>` elements (concatenated), polyhedron cells mixed
+ * with other types (`faces`/`faceoffsets`, -1 for a non-polyhedral cell) and
+ * a `UInt64` `header_type`; `write_vtu_appended` writes raw appended data
+ * (since v16.20.0). What the C++ core refuses -- with a ReadError, so the
+ * Python reader takes the file -- is lzma compression, and an lz4 or zstd
+ * compressor this build was compiled without.
  */
 
 // System includes
@@ -21461,6 +21459,22 @@ MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rM
                      detail::VtkCodec codec);
 
 /**
+ * @brief Write a `.vtu` with its arrays in one raw `<AppendedData>` section
+ * (since v16.20.0).
+ *
+ * Every array, field data included, is `format="appended"` with an `offset`, and its bytes --
+ * the size header and payload, or with @p codec the block header and the
+ * compressed blocks -- follow the XML unencoded, after the section's leading
+ * underscore: no base64 on either side. VTK, ParaView and vtk.js read it, as
+ * does `read_vtu`. `VtkCodec::None` writes the payloads uncompressed.
+ *
+ * @throws WriteError naming the CMake option when the codec was not compiled
+ *         into this build.
+ */
+MESHIOPLUSPLUS_API void write_vtu_appended(const std::string& rPath, const Mesh& rMesh,
+                                           detail::VtkCodec codec);
+
+/**
  * @brief Read a `.vtu` file.
  *
  * Parses the single `<Piece>`'s `<Points>`/`<Cells>`/`<PointData>`/
@@ -21475,10 +21489,9 @@ MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rM
  *        `Name` attribute is readable before the payload is touched, so a
  *        skipped array costs neither base64 decode, inflate, nor allocation.
  * @return the read Mesh
- * @throws ReadError if the file uses lzma compression, an `<AppendedData>`
- *         section, more than one `<Piece>`, polyhedron cells, or a
- *         non-`UInt32` `header_type` — the shim then falls back to the
- *         Python reader, which supports all of these.
+ * @throws ReadError if the file uses lzma compression, or an lz4 or zstd
+ *         compressor this build lacks -- the shim then falls back to the
+ *         Python reader -- or is malformed.
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */
@@ -26101,6 +26114,9 @@ enum class WriteEncoding {
     Default,  ///< the format's registry default (unchanged behaviour)
     Ascii,
     Binary,
+    /// `.vtu` only (since v16.20.0): binary, with every array in one raw
+    /// `<AppendedData>` section -- no base64 (`write_vtu_appended`).
+    RawAppended,
 };
 
 /**
@@ -30232,6 +30248,190 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
+// ===== begin src/cpp/src/detail/open_source.hpp =====
+/**
+ * @file detail/open_source.hpp
+ * @brief A reader's whole file through `FileSource`, failing with the
+ * reader's own message.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Readers that slurped their file through `std::istreambuf_iterator` -- one
+ * character at a time into a heap string -- read it through `FileSource`
+ * instead: one bulk read, or a mapping above `MESHIOPLUSPLUS_MMAP_THRESHOLD`.
+ * `FileSource` reports an unreadable file as "Could not open file"; this keeps
+ * the message each reader gave before. Roadmap §4, "Memory and allocation".
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The whole file at @p rPath, or `ReadError(rMessage)` when it cannot be read.
+inline FileSource open_source(const std::string& rPath, const std::string& rMessage) {
+    try {
+        return FileSource(rPath);
+    } catch (const ReadError&) {
+        throw ReadError(rMessage);
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/open_source.hpp =====
+// ===== begin src/cpp/src/detail/row_writer.hpp =====
+/**
+ * @file detail/row_writer.hpp
+ * @brief ASCII writers' rows formatted in parallel, in fixed-size chunks, and
+ * streamed in order: byte-identical to formatting them one by one.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * `write_row_chunks` hands each worker a chunk of rows and one reused buffer
+ * -- not a heap string per row, the pattern `abaqus`, `ansysinp` and `lsdyna`
+ * used -- and writes the chunks in row order, a bounded number at a time.
+ * `CNumber` formats a number exactly as `snprintf_c` does, but resolves the
+ * locale's decimal point once, outside the loop: `snprintf_c` calls
+ * `localeconv()` per value, and POSIX does not require it to be thread-safe.
+ * Integers go through `std::to_chars`, which is what `ostream << int` prints
+ * in the classic locale. Roadmap §4, "Parallel row formatting in ASCII
+ * writers".
+ */
+
+// System includes
+#include <algorithm>
+#include <charconv>
+#include <clocale>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <ostream>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// `snprintf_c` with the decimal point resolved once (construct it outside
+/// the parallel loop): the same bytes, with no `localeconv()` per value.
+class CNumber {
+public:
+    CNumber() {
+        const char* dp = std::localeconv()->decimal_point;
+        // snprintf_c repairs a single-character separator other than '.' and
+        // leaves every other case alone; so does this.
+        mRepair = dp != nullptr && dp[0] != '\0' && dp[1] == '\0' && dp[0] != '.';
+        mDp = mRepair ? dp[0] : '.';
+    }
+
+    /// `snprintf_c(pBuf, Cap, pFmt, ...)`: the same bytes and return value.
+    int Print(char* pBuf, std::size_t Cap, const char* pFmt, ...) const {
+        va_list args;
+        va_start(args, pFmt);
+        const int n = std::vsnprintf(pBuf, Cap, pFmt, args);
+        va_end(args);
+        if (n <= 0 || !mRepair || Cap == 0)
+            return n;
+        const std::size_t written = std::min<std::size_t>(static_cast<std::size_t>(n), Cap - 1);
+        for (std::size_t i = 0; i < written; ++i)
+            if (pBuf[i] == mDp) {
+                pBuf[i] = '.';
+                break;
+            }
+        return n;
+    }
+
+    /// Appends `v` formatted by the printf format `pFmt` (one double).
+    void Append(std::string& rOut, const char* pFmt, double v) const {
+        char buf[64];
+        const int n = std::snprintf(buf, sizeof buf, pFmt, v);
+        if (n <= 0)
+            return;
+        const std::size_t len = std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1);
+        if (mRepair)
+            for (std::size_t i = 0; i < len; ++i)
+                if (buf[i] == mDp) {
+                    buf[i] = '.';
+                    break;
+                }
+        rOut.append(buf, len);
+    }
+
+private:
+    bool mRepair = false;
+    char mDp = '.';
+};
+
+/// Appends the decimal text of `v`, as `ostream << v` prints it in the
+/// classic locale.
+inline void append_int(std::string& rOut, std::int64_t v) {
+    char buf[24];
+    const auto r = std::to_chars(buf, buf + sizeof buf, v);
+    rOut.append(buf, static_cast<std::size_t>(r.ptr - buf));
+}
+
+/**
+ * @brief Formats rows `[0, NumRows)` in parallel and hands the text to
+ * `rEmit(const std::string&)` in row order: `rFormat(first, last, rBuf)`
+ * appends rows `[first, last)` to `rBuf`. Chunks of @p RowsPerChunk rows are
+ * formatted a wave at a time, so the text held in memory stays bounded
+ * however many rows there are.
+ */
+template <class F, class Emit>
+void row_chunks(std::size_t NumRows, F&& rFormat, Emit&& rEmit, std::size_t RowsPerChunk = 2048) {
+    if (NumRows == 0)
+        return;
+    const std::size_t chunk = std::max<std::size_t>(1, RowsPerChunk);
+    const std::size_t nchunks = (NumRows + chunk - 1) / chunk;
+    constexpr std::size_t kWave = 64;
+    std::vector<std::string> bufs(std::min(kWave, nchunks));
+    for (std::size_t first = 0; first < nchunks; first += kWave) {
+        const std::size_t count = std::min(kWave, nchunks - first);
+        parallel_for(
+            count,
+            [&](std::size_t w) {
+                const std::size_t c = first + w;
+                std::string& buf = bufs[w];
+                buf.clear();
+                rFormat(c * chunk, std::min(NumRows, (c + 1) * chunk), buf);
+            },
+            1);
+        for (std::size_t w = 0; w < count; ++w)
+            rEmit(bufs[w]);
+    }
+}
+
+/// `row_chunks` written to a stream.
+template <class F>
+void write_row_chunks(std::ostream& rOs, std::size_t NumRows, F&& rFormat,
+                      std::size_t RowsPerChunk = 2048) {
+    row_chunks(
+        NumRows, rFormat,
+        [&](const std::string& rBuf) {
+            rOs.write(rBuf.data(), static_cast<std::streamsize>(rBuf.size()));
+        },
+        RowsPerChunk);
+}
+
+/// `row_chunks` appended to a string.
+template <class F>
+void append_row_chunks(std::string& rOut, std::size_t NumRows, F&& rFormat,
+                       std::size_t RowsPerChunk = 2048) {
+    row_chunks(NumRows, rFormat, [&](const std::string& rBuf) { rOut += rBuf; }, RowsPerChunk);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/row_writer.hpp =====
 // ===== begin src/cpp/src/detail/slot_runs.hpp =====
 /**
  * @file detail/slot_runs.hpp
@@ -30700,6 +30900,420 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/text_cursor.hpp =====
+/**
+ * @file detail/text_cursor.hpp
+ * @brief Text readers' lines, tokens and numbers as views over one buffer.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Twenty-odd text readers held the whole file as a `std::vector<std::string>`
+ * of lines and split each line into `std::string` tokens through a
+ * `std::istringstream`: a heap string per line and per token. Here a file is
+ * read once (`FileSource`), its lines are `string_view`s into it
+ * (`split_lines`, the lines `std::getline` gives), a line's tokens are views
+ * into it (`split_blanks`, the tokens `istringstream >> std::string` gives),
+ * and a token parses in place with the semantics the readers used before:
+ * `parse_double_token` is `parse_double` over the whole token, and
+ * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
+ * accepted, an out-of-range value saturated. Roadmap §4, "A shared tokenizer
+ * and number path".
+ */
+
+// System includes
+#include <charconv>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Whether `c` separates tokens: `std::isspace` in the classic locale.
+inline bool text_is_blank(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+/**
+ * @brief The lines `std::getline` reads from @p Text, as views into it: split
+ * on `'\n'` (a `'\r'` before it is kept, as `getline` keeps it), with no empty
+ * last line after a final newline.
+ */
+inline std::vector<std::string_view> split_lines(std::string_view Text) {
+    std::vector<std::string_view> lines;
+    std::size_t pos = 0;
+    while (pos < Text.size()) {
+        std::size_t eol = Text.find('\n', pos);
+        if (eol == std::string_view::npos)
+            eol = Text.size();
+        lines.push_back(Text.substr(pos, eol - pos));
+        pos = eol + 1;
+    }
+    return lines;
+}
+
+/// The tokens `istringstream >> std::string` reads from @p Line, as views,
+/// appended to @p rOut (cleared first).
+inline void split_blanks(std::string_view Line, std::vector<std::string_view>& rOut) {
+    rOut.clear();
+    std::size_t i = 0;
+    const std::size_t n = Line.size();
+    while (true) {
+        while (i < n && text_is_blank(Line[i]))
+            ++i;
+        if (i >= n)
+            return;
+        const std::size_t b = i;
+        while (i < n && !text_is_blank(Line[i]))
+            ++i;
+        rOut.push_back(Line.substr(b, i - b));
+    }
+}
+
+/// `split_blanks` returning its tokens.
+inline std::vector<std::string_view> split_blanks(std::string_view Line) {
+    std::vector<std::string_view> out;
+    split_blanks(Line, out);
+    return out;
+}
+
+/**
+ * @brief `parse_double` over the whole of @p Token: true, with the value, when
+ * the entire token is one number (what `parse_double(s.c_str(), end)` with
+ * `end == s.c_str() + s.size()` accepted), false otherwise.
+ */
+inline bool parse_double_token(std::string_view Token, double& rOut) {
+    if (Token.empty())
+        return false;
+    // parse_double reads a NUL-terminated string; a token is copied into one.
+    // Tokens are short, so this costs little next to the parse itself.
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Token.size() < sizeof small) {
+        Token.copy(small, Token.size());
+        small[Token.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Token);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    const double v = parse_double(first, end);
+    if (end != first + Token.size())
+        return false;
+    rOut = v;
+    return true;
+}
+
+/**
+ * @brief `strtoll(…, 10)` over the whole of @p Token: true, with the value,
+ * when the entire token is one base-10 integer. Like `strtoll`, a leading `+`
+ * is accepted and a value outside `int64` saturates.
+ */
+inline bool parse_int_token(std::string_view Token, std::int64_t& rOut) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;  // strtoll skips leading blanks
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
+        return false;
+    std::uint64_t mag = 0;
+    const char* p = Token.data() + i;
+    const char* last = Token.data() + Token.size();
+    const auto r = std::from_chars(p, last, mag);
+    if (r.ptr != last)
+        return false;
+    constexpr std::uint64_t kMax =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0)) {
+        rOut = neg ? std::numeric_limits<std::int64_t>::min()
+                   : std::numeric_limits<std::int64_t>::max();
+        return true;
+    }
+    rOut = neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
+    return true;
+}
+
+/**
+ * @brief `strtoll(token, nullptr, 10)` on @p Token: the longest base-10 prefix
+ * (after blanks and a sign), 0 when there is none, saturated when out of
+ * range -- the lenient parse, which ignores what follows the number.
+ */
+inline std::int64_t strtoll_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    constexpr std::uint64_t kMax =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0))
+        return neg ? std::numeric_limits<std::int64_t>::min()
+                   : std::numeric_limits<std::int64_t>::max();
+    return neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
+}
+
+/**
+ * @brief `strtoull(token, nullptr, 10)` on @p Token: the longest base-10
+ * prefix after blanks and a sign, 0 when there is none, `UINT64_MAX` when out
+ * of range, and -- as `strtoull` does -- a negative value wrapped modulo 2^64.
+ */
+inline std::uint64_t strtoull_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    if (r.ec == std::errc::result_out_of_range)
+        return std::numeric_limits<std::uint64_t>::max();
+    return neg ? 0 - mag : mag;
+}
+
+/**
+ * @brief `parse_double(token)` on @p Token: the longest numeric prefix, 0.0
+ * when there is none -- the lenient parse, which ignores what follows.
+ */
+inline double parse_double_prefix(std::string_view Token) {
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Token.size() < sizeof small) {
+        Token.copy(small, Token.size());
+        small[Token.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Token);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    return parse_double(first, end);
+}
+
+/**
+ * @brief `std::istringstream` extraction over a view, with no stream: the
+ * same values and the same fail state as `operator>>` in the classic locale.
+ *
+ * Readers that split a line into numbers through a stream built one per line
+ * (a copy of the line, a locale-aware parse per value) take this instead,
+ * unchanged. A double is read as libstdc++'s `num_get` does: blanks skipped,
+ * then a sign, digits with at most one decimal point, and -- after a digit --
+ * an exponent (`e`/`E`, a sign, digits) are accumulated and converted as
+ * `strtod` would; a conversion that fails stores 0, one that overflows stores
+ * the largest finite value of that sign, and either sets the fail state. An
+ * integer accumulates a sign and digits, and out of range stores the bound and
+ * fails. At the end of the text an extraction fails and leaves the value
+ * alone, and once failed every further extraction does nothing, as with a
+ * stream. `test_text_cursor.cpp` checks it against `std::istringstream`.
+ */
+class TextStream {
+public:
+    explicit TextStream(std::string_view Text) : mText(Text) {}
+    explicit TextStream(const char* pText) : mText(pText ? pText : "") {}
+    explicit TextStream(const std::string& rText) : mText(rText) {}
+    /// A temporary is kept, so the view never outlives it.
+    explicit TextStream(std::string&& rText) : mOwned(std::move(rText)), mText(mOwned) {}
+    TextStream(const TextStream&) = delete;
+    TextStream& operator=(const TextStream&) = delete;
+
+    explicit operator bool() const { return !mFail; }
+    bool operator!() const { return mFail; }
+    bool fail() const { return mFail; }
+
+    TextStream& operator>>(double& rValue) {
+        if (!Sentry())
+            return *this;
+        const std::size_t b = mPos;
+        if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
+            ++mPos;
+        bool digits = false, point = false;
+        while (mPos < mText.size()) {
+            const char c = mText[mPos];
+            if (c >= '0' && c <= '9') {
+                digits = true;
+                ++mPos;
+            } else if (c == '.' && !point) {
+                point = true;
+                ++mPos;
+            } else {
+                break;
+            }
+        }
+        if (digits && mPos < mText.size() && (mText[mPos] == 'e' || mText[mPos] == 'E')) {
+            ++mPos;
+            if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
+                ++mPos;
+            while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+                ++mPos;
+        }
+        double v = 0.0;
+        if (!parse_double_token(mText.substr(b, mPos - b), v)) {
+            rValue = 0.0;
+            mFail = true;
+        } else if (v == std::numeric_limits<double>::infinity()) {
+            rValue = std::numeric_limits<double>::max();
+            mFail = true;
+        } else if (v == -std::numeric_limits<double>::infinity()) {
+            rValue = -std::numeric_limits<double>::max();
+            mFail = true;
+        } else {
+            rValue = v;
+        }
+        return *this;
+    }
+
+    TextStream& operator>>(long long& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(long& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(int& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(unsigned long long& rValue) { return ExtractUnsigned(rValue); }
+    TextStream& operator>>(unsigned long& rValue) { return ExtractUnsigned(rValue); }
+    TextStream& operator>>(unsigned& rValue) { return ExtractUnsigned(rValue); }
+
+    /// `std::getline(stream, rLine, Delim)`: the characters up to @p Delim
+    /// (consumed, not stored) or the end; fails only when none are left.
+    friend TextStream& getline(TextStream& rIn, std::string& rLine, char Delim = '\n') {
+        if (rIn.mFail)
+            return rIn;
+        if (rIn.mPos >= rIn.mText.size()) {
+            rIn.mFail = true;
+            return rIn;
+        }
+        std::size_t e = rIn.mText.find(Delim, rIn.mPos);
+        if (e == std::string_view::npos)
+            e = rIn.mText.size();
+        rLine.assign(rIn.mText.substr(rIn.mPos, e - rIn.mPos));
+        rIn.mPos = e < rIn.mText.size() ? e + 1 : e;
+        return rIn;
+    }
+
+    TextStream& operator>>(std::string& rValue) {
+        if (!Sentry())
+            return *this;
+        const std::size_t b = mPos;
+        while (mPos < mText.size() && !text_is_blank(mText[mPos]))
+            ++mPos;
+        rValue.assign(mText.substr(b, mPos - b));
+        return *this;
+    }
+
+private:
+    // The stream's sentry: skip blanks; failed already, or at the end, fails
+    // and leaves the value alone.
+    bool Sentry() {
+        if (mFail)
+            return false;
+        while (mPos < mText.size() && text_is_blank(mText[mPos]))
+            ++mPos;
+        if (mPos >= mText.size()) {
+            mFail = true;
+            return false;
+        }
+        return true;
+    }
+
+    template <class T>
+    TextStream& ExtractInt(T& rValue) {
+        if (!Sentry())
+            return *this;
+        bool neg = false;
+        if (mText[mPos] == '+' || mText[mPos] == '-') {
+            neg = mText[mPos] == '-';
+            ++mPos;
+        }
+        const std::size_t d = mPos;
+        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+            ++mPos;
+        if (mPos == d) {
+            rValue = 0;
+            mFail = true;
+            return *this;
+        }
+        std::uint64_t mag = 0;
+        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
+        const std::uint64_t bound =
+            neg ? static_cast<std::uint64_t>(-(std::numeric_limits<T>::min() + 1)) + 1
+                : static_cast<std::uint64_t>(std::numeric_limits<T>::max());
+        if (r.ec == std::errc::result_out_of_range || mag > bound) {
+            rValue = neg ? std::numeric_limits<T>::min() : std::numeric_limits<T>::max();
+            mFail = true;
+            return *this;
+        }
+        rValue = neg ? static_cast<T>(0 - mag) : static_cast<T>(mag);
+        return *this;
+    }
+
+    // num_get for an unsigned type: a sign is allowed and a negative value
+    // wraps, as strtoull does; out of range stores the maximum and fails.
+    template <class T>
+    TextStream& ExtractUnsigned(T& rValue) {
+        if (!Sentry())
+            return *this;
+        bool neg = false;
+        if (mText[mPos] == '+' || mText[mPos] == '-') {
+            neg = mText[mPos] == '-';
+            ++mPos;
+        }
+        const std::size_t d = mPos;
+        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+            ++mPos;
+        if (mPos == d) {
+            rValue = 0;
+            mFail = true;
+            return *this;
+        }
+        std::uint64_t mag = 0;
+        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
+        if (r.ec == std::errc::result_out_of_range ||
+            mag > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
+            rValue = std::numeric_limits<T>::max();
+            mFail = true;
+            return *this;
+        }
+        rValue = neg ? static_cast<T>(0 - static_cast<T>(mag)) : static_cast<T>(mag);
+        return *this;
+    }
+
+    std::string mOwned;
+    std::string_view mText;
+    std::size_t mPos = 0;
+    bool mFail = false;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/text_cursor.hpp =====
 // ===== begin src/cpp/src/detail/typed_view.hpp =====
 /**
  * @file detail/typed_view.hpp
@@ -30804,6 +31418,98 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/typed_view.hpp =====
+// ===== begin src/cpp/src/detail/vtu_decode.hpp =====
+/**
+ * @file detail/vtu_decode.hpp
+ * @brief A VTK XML "binary" DataArray decoded straight into its array.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI; the exported
+ * `vtu_decode_uncompressed`/`vtu_decode_blocks`/`vtu_parse_binary` keep their
+ * signatures and results.
+ *
+ * The readers stripped the element text into a copy, decoded its base64 into
+ * one buffer (and, uncompressed, copied the payload out of it), or
+ * decompressed every block into a buffer of its own and copied it on, and
+ * then zero-filled an array and copied the bytes in once more. Here the text
+ * is a view of the document's own characters, the base64 stream decodes any
+ * byte window straight to a destination (`VtubB64`), and every compressed
+ * block decompresses into its place in an uninitialised array. Roadmap §4,
+ * "The VTU binary read copies each payload five or six times".
+ */
+
+// System includes
+#include <cctype>
+#include <cstddef>
+#include <string_view>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A base64 text, its valid characters counted once per fixed chunk:
+ * `Decode` then writes any byte window of the decoded stream straight to a
+ * destination, the chunks that overlap it in parallel. Characters outside the
+ * alphabet (padding, whitespace, line breaks) are skipped, as `b64decode`
+ * skips them.
+ */
+class VtubB64 {
+public:
+    VtubB64(const char* pS, std::size_t len);
+
+    /// Decoded bytes in the whole stream.
+    std::size_t Size() const { return mSize; }
+
+    /// Writes the decoded bytes [Lo, Hi) (clamped to `Size()`) to pOut[0 ..).
+    void Decode(std::size_t Lo, std::size_t Hi, unsigned char* pOut) const;
+
+private:
+    const char* mpS;
+    std::size_t mLen;
+    std::vector<std::size_t> mValid;  ///< valid characters before each chunk
+    std::size_t mSize = 0;
+};
+
+/**
+ * @brief `vtu_parse_binary`'s result -- the DataArray's payload as `dt`
+ * elements, a trailing partial element dropped -- decoded in place, with the
+ * checks and messages of `vtu_decode_uncompressed`/`vtu_decode_blocks`.
+ */
+NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, VtkCodec codec,
+                           DType dt);
+
+/**
+ * @brief Appends to @p rOut what `vtu_encode_binary` base64-encodes, as raw
+ * bytes: the `hsz`-byte size header and the payload, or with @p codec the
+ * block header and the compressed blocks -- one array of a raw
+ * `<AppendedData>` section.
+ */
+void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                    std::vector<unsigned char>& rOut);
+
+/// `vtu_parse_binary(vtu_strip(...), ...)` over a view of the element's text.
+inline NDArray vtu_decode_bin_view(std::string_view Text, DType dt, VtkCodec codec,
+                                   std::size_t hsz) {
+    return vtu_decode_ndarray(Text.data(), Text.size(), hsz, codec, dt);
+}
+
+/// `vtu_strip` as a view of @p pS itself, with no copy.
+inline std::string_view vtu_strip_view(const char* pS) {
+    std::string_view t = pS ? std::string_view(pS) : std::string_view();
+    std::size_t b = 0, e = t.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
+        ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
+        --e;
+    return t.substr(b, e - b);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/vtu_decode.hpp =====
 // ===== begin src/cpp/src/detail/weld.hpp =====
 /**
  * @file detail/weld.hpp
@@ -32495,6 +33201,100 @@ inline MeshMetadata aggregate_metadata(const std::vector<MeshMetadata>& rParts,
 }  // namespace pidx
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/pindex_common.hpp =====
+// ===== begin src/cpp/src/formats/vtk_preflight.hpp =====
+/**
+ * @file vtk_preflight.hpp
+ * @brief Refuse a VTK XML file the C++ readers cannot decode from its start
+ *        tag, before its DOM is loaded.
+ *
+ * A **core-private** header beside the formats (the `face_cells_common.hpp`
+ * precedent): it adds nothing to the installed headers or the ABI.
+ *
+ * The five VTK XML readers (`.vtu`, `.vtp`, `.vti`, `.vtr`, `.vts`) refused an
+ * lzma compressor, or an lz4 or zstd one the build lacks, only after pugixml
+ * had loaded the whole document, base64 bodies included -- and the caller then
+ * read the file again through the Python reader. The compressor is an
+ * attribute of the `<VTKFile ...>` start tag, so the first few kilobytes
+ * decide it. The pre-flight is loose on purpose: whenever it cannot find the
+ * tag, or the tag names another file type, it decides nothing and the full
+ * parse gives its usual answer. Roadmap §4, "A declined C++ read".
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <string_view>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The value of attribute @p Name in the start tag @p Tag, or "" without one.
+inline std::string vtk_preflight_attribute(std::string_view Tag, std::string_view Name) {
+    std::size_t at = 0;
+    while ((at = Tag.find(Name, at)) != std::string_view::npos) {
+        const bool starts = at > 0 && (Tag[at - 1] == ' ' || Tag[at - 1] == '\t' ||
+                                       Tag[at - 1] == '\n' || Tag[at - 1] == '\r');
+        std::size_t p = at + Name.size();
+        at = p;
+        if (!starts)
+            continue;
+        while (p < Tag.size() &&
+               (Tag[p] == ' ' || Tag[p] == '\t' || Tag[p] == '\n' || Tag[p] == '\r'))
+            ++p;
+        if (p >= Tag.size() || Tag[p] != '=')
+            continue;
+        ++p;
+        while (p < Tag.size() &&
+               (Tag[p] == ' ' || Tag[p] == '\t' || Tag[p] == '\n' || Tag[p] == '\r'))
+            ++p;
+        if (p >= Tag.size() || (Tag[p] != '"' && Tag[p] != '\''))
+            continue;
+        const char quote = Tag[p++];
+        const std::size_t close = Tag.find(quote, p);
+        if (close == std::string_view::npos)
+            return {};
+        return std::string(Tag.substr(p, close - p));
+    }
+    return {};
+}
+
+/**
+ * @brief Throws, before the document is parsed, the error the reader's header
+ * check would give for the file's compressor: @p pLzmaMessage for lzma, and
+ * `vtk_codec_require_read`'s for an lz4 or zstd codec this build lacks.
+ * Decides nothing when the `<VTKFile>` start tag is not within the first
+ * 4 KiB or its `type` is not @p pType.
+ */
+inline void vtk_preflight(const std::string& rPath, const char* pType, const char* pLzmaMessage) {
+    auto in = make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return;  // the full parse reports an unreadable file
+    std::string head(4096, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+    const std::size_t tag = head.find("<VTKFile");
+    if (tag == std::string::npos)
+        return;
+    const std::size_t end = head.find('>', tag);
+    if (end == std::string::npos)
+        return;
+    const std::string_view start_tag(head.data() + tag, end - tag);
+    if (vtk_preflight_attribute(start_tag, "type") != pType)
+        return;
+    const std::string compressor = vtk_preflight_attribute(start_tag, "compressor");
+    if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
+        throw ReadError(pLzmaMessage);
+    if (compressor == vtk_codec_compressor(VtkCodec::LZ4))
+        vtk_codec_require_read(VtkCodec::LZ4);
+    else if (compressor == vtk_codec_compressor(VtkCodec::ZSTD))
+        vtk_codec_require_read(VtkCodec::ZSTD);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vtk_preflight.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
 /**
  * pugixml parser - version 1.14
@@ -56448,11 +57248,25 @@ void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
             rOs << p[i] << '\n';
         return;
     }
-    for (std::size_t i = 0; i < n; ++i) {
-        if (flt)
-            vtu_ascii_double(rOs, read_double(rA, i));
-        else
-            rOs << read_int(rA, i) << '\n';
+    // One value per line, formatted in parallel chunks (row_writer.hpp):
+    // vtu_ascii_double's "%.11e" and ostream's integers, byte for byte.
+    if (flt) {
+        const DoubleView v(rA);
+        const CNumber num;
+        write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t i = First; i < Last; ++i) {
+                num.Append(rBuf, "%.11e", v[i]);
+                rBuf += '\n';
+            }
+        });
+    } else {
+        const Int64View v(rA);
+        write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t i = First; i < Last; ++i) {
+                append_int(rBuf, v[i]);
+                rBuf += '\n';
+            }
+        });
     }
 }
 
@@ -56497,6 +57311,21 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
     const char* const last = p + std::strlen(p);
+    {
+        // Tokens counted first: the values are then parsed into buffers
+        // reserved once, not grown push_back by push_back (roadmap §4).
+        std::size_t tokens = 0;
+        bool in_token = false;
+        for (const char* q = p; q < last; ++q) {
+            const bool space = std::isspace(static_cast<unsigned char>(*q)) != 0;
+            tokens += !space && !in_token ? 1 : 0;
+            in_token = !space;
+        }
+        if (isflt)
+            dv.reserve(tokens);
+        else
+            iv.reserve(tokens);
+    }
     while (*p) {
         while (*p && std::isspace(static_cast<unsigned char>(*p)))
             ++p;
@@ -56528,9 +57357,17 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         p = endp;
     }
     std::size_t n = isflt ? dv.size() : iv.size();
-    NDArray a(dt, {n});
-    for (std::size_t i = 0; i < n; ++i)
-        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
+    // vtu_store's conversion (a plain static_cast), the dtype switch taken once.
+    NDArray a = NDArray::Uninit(dt, {n});
+    dispatch_dtype(dt, [&]<class T>() {
+        T* out = a.As<T>();
+        if (isflt)
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(dv[i]);
+        else
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = static_cast<T>(iv[i]);
+    });
     return a;
 }
 
@@ -56545,17 +57382,8 @@ std::string vtu_strip(const char* pS) {
 }
 
 NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz) {
-    std::vector<unsigned char> bytes;
-    if (codec == VtkCodec::None)
-        bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
-    else
-        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
-    std::size_t isz = dtype_size(dt);
-    std::size_t n = isz ? bytes.size() / isz : 0;
-    NDArray a(dt, {n});
-    if (n)
-        std::memcpy(a.Data(), bytes.data(), n * isz);
-    return a;
+    // Decoded straight into the array (vtu_decode.hpp).
+    return vtu_decode_ndarray(rText.data(), rText.size(), hsz, codec, dt);
 }
 
 namespace {
@@ -56573,8 +57401,9 @@ const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, N
         return rArray;
     rScratch = NDArray::Uninit(DType::UInt8, rArray.Shape());
     std::uint8_t* out = rScratch.As<std::uint8_t>();
-    for (std::size_t i = 0; i < rArray.Size(); ++i)
-        out[i] = static_cast<std::uint8_t>(read_int(rArray, i));
+    const Int64View v(rArray);
+    parallel_for_bw(rArray.Size(),
+                    [&](std::size_t i) { out[i] = static_cast<std::uint8_t>(v[i]); });
     return rScratch;
 }
 
@@ -56606,10 +57435,8 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
 }
 
 std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
-    std::vector<std::int64_t> v(rA.Size());
-    for (std::size_t i = 0; i < rA.Size(); ++i)
-        v[i] = read_int(rA, i);
-    return v;
+    const Int64View view(rA);
+    return std::vector<std::int64_t>(view.Data(), view.Data() + rA.Size());
 }
 
 }  // namespace detail
@@ -56634,6 +57461,8 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
 #endif
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 namespace detail {
@@ -56696,19 +57525,13 @@ const std::array<int8_t, 256>& vtub_b64_inverse() {
 /// byte range -- but a constant keeps the work split reproducible).
 constexpr std::size_t kVtubDecodeChunk = std::size_t(1) << 20;
 
-/**
- * @brief Decode the 4-character groups whose first character is valid
- * character number `first` .. `last - 1` (multiples of four apart), starting
- * the scan at text offset `from`, which holds valid character `first`.
- *
- * A group whose characters run past the end of this chunk keeps scanning the
- * text after it, so chunks need no seam handling. Writes 3 bytes per whole
- * group and the 1 or 2 bytes of a trailing 2- or 3-character group, exactly
- * as a serial bit accumulator would.
- */
-void vtub_decode_groups(const std::array<int8_t, 256>& rInv, const char* pS, std::size_t len,
-                        std::size_t from, std::size_t first, std::size_t last,
-                        unsigned char* pOut) {
+// Decodes the 4-character groups [first, last) of the valid-character stream,
+// reading the text from position `from`, and stores only the decoded bytes
+// [Lo, Hi) of the stream, at pOut[0 .. Hi - Lo): a group wholly inside the
+// window stores its bytes directly, a group across either end byte by byte.
+void vtub_decode_groups_window(const std::array<int8_t, 256>& rInv, const char* pS, std::size_t len,
+                               std::size_t from, std::size_t first, std::size_t last,
+                               std::size_t Lo, std::size_t Hi, unsigned char* pOut) {
     std::size_t at = from;
     for (std::size_t k = first; k < last; k += 4) {
         unsigned n = 0;
@@ -56720,34 +57543,44 @@ void vtub_decode_groups(const std::array<int8_t, 256>& rInv, const char* pS, std
             n = (n << 6) | static_cast<unsigned>(v);
             ++got;
         }
-        unsigned char* o = pOut + k / 4 * 3;
+        const std::size_t o = k / 4 * 3;
+        unsigned char b[3];
+        std::size_t nb = 0;
         if (got == 4) {
-            o[0] = static_cast<unsigned char>(n >> 16);
-            o[1] = static_cast<unsigned char>(n >> 8);
-            o[2] = static_cast<unsigned char>(n);
-        } else if (got == 3) {  // 18 bits -> 2 bytes
-            o[0] = static_cast<unsigned char>(n >> 10);
-            o[1] = static_cast<unsigned char>(n >> 2);
-        } else if (got == 2) {  // 12 bits -> 1 byte
-            o[0] = static_cast<unsigned char>(n >> 4);
+            b[0] = static_cast<unsigned char>(n >> 16);
+            b[1] = static_cast<unsigned char>(n >> 8);
+            b[2] = static_cast<unsigned char>(n);
+            nb = 3;
+        } else if (got == 3) {
+            b[0] = static_cast<unsigned char>(n >> 10);
+            b[1] = static_cast<unsigned char>(n >> 2);
+            nb = 2;
+        } else if (got == 2) {
+            b[0] = static_cast<unsigned char>(n >> 4);
+            nb = 1;
+        }
+        if (o >= Lo && o + nb <= Hi) {
+            std::memcpy(pOut + (o - Lo), b, nb);
+        } else {
+            for (std::size_t i = 0; i < nb; ++i)
+                if (o + i >= Lo && o + i < Hi)
+                    pOut[o + i - Lo] = b[i];
         }
     }
 }
 
 }  // namespace
 
-std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+VtubB64::VtubB64(const char* pS, std::size_t len) : mpS(pS), mLen(len) {
     // Every character outside the alphabet -- '=' padding, whitespace, line
     // breaks, anything else -- is skipped, and the valid characters form one
-    // bit stream: m of them decode to floor(6m / 8) bytes. Line-wrapped
-    // base64 relies on that. The text is cut into fixed chunks; a first pass
-    // counts each chunk's valid characters, and a prefix sum then tells every
-    // chunk which 4-character groups start inside it and where their bytes
-    // go, so the chunks decode independently (and in parallel) straight into
-    // the pre-sized output.
+    // bit stream: m of them decode to floor(6m / 8) bytes. Line-wrapped base64
+    // relies on that. The text is cut into fixed chunks and each chunk's valid
+    // characters counted (in parallel); the prefix sum tells every chunk which
+    // 4-character groups start inside it and where their bytes go.
     const std::array<int8_t, 256>& inv = vtub_b64_inverse();
     const std::size_t nchunks = (len + kVtubDecodeChunk - 1) / kVtubDecodeChunk;
-    std::vector<std::size_t> valid(nchunks + 1, 0);
+    mValid.assign(nchunks + 1, 0);
     parallel_for(
         nchunks,
         [&](std::size_t c) {
@@ -56756,29 +57589,47 @@ std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
             std::size_t cnt = 0;
             for (std::size_t i = lo; i < hi; ++i)
                 cnt += inv[(unsigned char)pS[i]] >= 0;
-            valid[c + 1] = cnt;
+            mValid[c + 1] = cnt;
         },
         1);
     for (std::size_t c = 0; c < nchunks; ++c)
-        valid[c + 1] += valid[c];
-    const std::size_t m = valid[nchunks];
-    std::vector<unsigned char> out(m / 4 * 3 + (m % 4 == 3 ? 2 : m % 4 == 2 ? 1 : 0));
+        mValid[c + 1] += mValid[c];
+    const std::size_t m = mValid[nchunks];
+    mSize = m / 4 * 3 + (m % 4 == 3 ? 2 : m % 4 == 2 ? 1 : 0);
+}
+
+void VtubB64::Decode(std::size_t Lo, std::size_t Hi, unsigned char* pOut) const {
+    Hi = std::min(Hi, mSize);
+    if (Lo >= Hi)
+        return;
+    const std::array<int8_t, 256>& inv = vtub_b64_inverse();
+    const std::size_t nchunks = mValid.size() - 1;
+    const std::size_t m = mValid[nchunks];
     parallel_for(
         nchunks,
         [&](std::size_t c) {
             // The first group starting in this chunk is the first multiple of
             // four at or after its first valid character; skip the valid
             // characters before it (they finish the previous chunk's group).
-            const std::size_t first = (valid[c] + 3) / 4 * 4;
-            const std::size_t last = std::min(m, valid[c + 1]);
+            const std::size_t first = (mValid[c] + 3) / 4 * 4;
+            const std::size_t last = std::min(m, mValid[c + 1]);
             if (first >= last)
                 return;
+            // The chunk's groups decode bytes [first/4*3, ceil(last/4)*3).
+            if ((last + 3) / 4 * 3 <= Lo || first / 4 * 3 >= Hi)
+                return;
             std::size_t at = c * kVtubDecodeChunk;
-            for (std::size_t skip = first - valid[c]; skip > 0; ++at)
-                skip -= inv[(unsigned char)pS[at]] >= 0;
-            vtub_decode_groups(inv, pS, len, at, first, last, out.data());
+            for (std::size_t skip = first - mValid[c]; skip > 0; ++at)
+                skip -= inv[(unsigned char)mpS[at]] >= 0;
+            vtub_decode_groups_window(inv, mpS, mLen, at, first, last, Lo, Hi, pOut);
         },
         1);
+}
+
+std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+    const VtubB64 stream(pS, len);
+    std::vector<unsigned char> out(stream.Size());
+    stream.Decode(0, out.size(), out.data());
     return out;
 }
 
@@ -57130,6 +57981,53 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
     return out;
 }
 
+namespace {
+
+// b64encode of the concatenation `pHead[0..nHead) + pData[0..n)` without
+// building it: the byte stream is read in place, groups wholly inside the data
+// straight from it (the uncompressed DataArray's header and payload are one
+// base64 unit). The same text as encoding the concatenation.
+std::string vtub_b64encode_pair(const unsigned char* pHead, std::size_t nHead,
+                                const unsigned char* pData, std::size_t n) {
+    const char* tbl = b64_table();
+    const std::size_t len = nHead + n;
+    const auto at = [&](std::size_t i) -> unsigned {
+        return i < nHead ? pHead[i] : pData[i - nHead];
+    };
+    const std::size_t ngroups = len / 3;
+    std::string out(((len + 2) / 3) * 4, '\0');
+    parallel_for(ngroups, [&](std::size_t g) {
+        const std::size_t i = g * 3;
+        unsigned v;
+        if (i >= nHead) {
+            const unsigned char* d = pData + (i - nHead);
+            v = (unsigned(d[0]) << 16) | (unsigned(d[1]) << 8) | unsigned(d[2]);
+        } else {
+            v = (at(i) << 16) | (at(i + 1) << 8) | at(i + 2);
+        }
+        char* o = out.data() + g * 4;
+        o[0] = tbl[(v >> 18) & 63];
+        o[1] = tbl[(v >> 12) & 63];
+        o[2] = tbl[(v >> 6) & 63];
+        o[3] = tbl[v & 63];
+    });
+    const std::size_t i = ngroups * 3;
+    if (i < len) {  // trailing 1- or 2-byte group with '=' padding
+        const bool two = (i + 1 < len);
+        unsigned v = at(i) << 16;
+        if (two)
+            v |= at(i + 1) << 8;
+        char* o = out.data() + ngroups * 4;
+        o[0] = tbl[(v >> 18) & 63];
+        o[1] = tbl[(v >> 12) & 63];
+        o[2] = two ? tbl[(v >> 6) & 63] : '=';
+        o[3] = '=';
+    }
+    return out;
+}
+
+}  // namespace
+
 std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec) {
     return vtu_encode_binary(pData, nbytes, codec, 4);
 }
@@ -57138,64 +58036,241 @@ std::size_t vtu_header_bytes_for(std::uint64_t maxArrayBytes) {
     return maxArrayBytes > std::numeric_limits<std::uint32_t>::max() ? 8 : 4;
 }
 
-std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
-                              std::size_t hsz) {
-    if (hsz != 4 && hsz != 8)
-        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(hsz));
-    // One little-endian header item of hsz bytes. A size that does not fit is
-    // refused: a UInt32 header silently truncated a 4 GiB array's byte count.
-    auto put = [hsz](std::vector<unsigned char>& rOut, std::uint64_t Value) {
-        if (hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
-            throw WriteError("VTK XML: a size of " + std::to_string(Value) +
-                             " does not fit a UInt32 header_type (the writer must choose UInt64)");
-        for (std::size_t b = 0; b < hsz; ++b)
-            rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
-    };
+namespace {
 
-    if (codec == VtkCodec::None) {
-        std::vector<unsigned char> buf;
-        put(buf, nbytes);  // refuses before the payload is allocated
-        buf.reserve(hsz + nbytes);
-        if (nbytes)
-            buf.insert(buf.end(), pData, pData + nbytes);
-        return b64encode(buf.data(), buf.size());
-    }
+// One little-endian header item of `Hsz` bytes. A size that does not fit is
+// refused: a UInt32 header silently truncated a 4 GiB array's byte count.
+void vtub_put(std::vector<unsigned char>& rOut, std::uint64_t Value, std::size_t Hsz) {
+    if (Hsz == 4 && Value > std::numeric_limits<std::uint32_t>::max())
+        throw WriteError("VTK XML: a size of " + std::to_string(Value) +
+                         " does not fit a UInt32 header_type (the writer must choose UInt64)");
+    for (std::size_t b = 0; b < Hsz; ++b)
+        rOut.push_back(static_cast<unsigned char>((Value >> (8 * b)) & 0xFF));
+}
 
-    vtk_codec_require_write(codec);
+// The VTK block scheme: `pData` cut into 32 KiB blocks, each compressed with
+// `Codec` (in parallel), and the header -- block count, block size, last block
+// size, each compressed size, as `Hsz`-byte items.
+struct VtubBlocks {
+    std::vector<unsigned char> mHeader;
+    std::vector<std::vector<unsigned char>> mBlocks;
+    std::size_t mTotal = 0;  ///< compressed bytes over every block
+};
+
+VtubBlocks vtub_compress(const unsigned char* pData, std::size_t nbytes, VtkCodec Codec,
+                         std::size_t Hsz) {
+    vtk_codec_require_write(Codec);
     const std::size_t max_block = 32768;
     const std::size_t num_blocks = (nbytes + max_block - 1) / max_block;
     const std::size_t last_block_size =
         num_blocks ? nbytes - (num_blocks - 1) * max_block : max_block;
 
+    VtubBlocks out;
     // Blocks are independent -> compress in parallel into pre-sized slots.
-    std::vector<std::vector<unsigned char> > blocks(num_blocks);
+    out.mBlocks.resize(num_blocks);
     parallel_for(
         num_blocks,
         [&](std::size_t b) {
             std::size_t off = b * max_block;
             std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
+            out.mBlocks[b] = vtk_codec_compress_block(Codec, pData + off, len);
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
-    std::vector<unsigned char> header;
-    header.reserve((3 + num_blocks) * hsz);
-    put(header, num_blocks);
-    put(header, max_block);
-    put(header, last_block_size);
-    std::size_t total = 0;
-    for (const auto& b : blocks) {
-        put(header, b.size());
-        total += b.size();
+    out.mHeader.reserve((3 + num_blocks) * Hsz);
+    vtub_put(out.mHeader, num_blocks, Hsz);
+    vtub_put(out.mHeader, max_block, Hsz);
+    vtub_put(out.mHeader, last_block_size, Hsz);
+    for (const auto& b : out.mBlocks) {
+        vtub_put(out.mHeader, b.size(), Hsz);
+        out.mTotal += b.size();
     }
+    return out;
+}
 
-    std::string out = b64encode(header.data(), header.size());
+void vtub_check_hsz(std::size_t Hsz) {
+    if (Hsz != 4 && Hsz != 8)
+        throw WriteError("VTK XML: header_type must be 4 or 8 bytes, got " + std::to_string(Hsz));
+}
+
+}  // namespace
+
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec,
+                              std::size_t hsz) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        std::vector<unsigned char> head;
+        vtub_put(head, nbytes, hsz);  // refuses before anything is allocated
+        return vtub_b64encode_pair(head.data(), head.size(), pData, nbytes);
+    }
+    const VtubBlocks blocks = vtub_compress(pData, nbytes, codec, hsz);
+    std::string out = b64encode(blocks.mHeader.data(), blocks.mHeader.size());
     std::vector<unsigned char> concat;
-    concat.reserve(total);
-    for (const auto& b : blocks)
+    concat.reserve(blocks.mTotal);
+    for (const auto& b : blocks.mBlocks)
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
     return out;
+}
+
+void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                    std::vector<unsigned char>& rOut) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        vtub_put(rOut, nbytes, hsz);
+        rOut.insert(rOut.end(), pData, pData + nbytes);
+        return;
+    }
+    const VtubBlocks blocks = vtub_compress(pData, nbytes, codec, hsz);
+    rOut.reserve(rOut.size() + blocks.mHeader.size() + blocks.mTotal);
+    rOut.insert(rOut.end(), blocks.mHeader.begin(), blocks.mHeader.end());
+    for (const auto& b : blocks.mBlocks)
+        rOut.insert(rOut.end(), b.begin(), b.end());
+}
+
+namespace {
+
+// Decompresses one block into `pDst` (capacity `Expected`, the size the VTU
+// block header gives), with the same checks and messages as
+// vtk_codec_decompress_block; returns the bytes written.
+std::size_t vtub_decompress_into(VtkCodec codec, const unsigned char* pSrc, std::size_t n,
+                                 unsigned char* pDst, std::size_t Expected) {
+    if (Expected > (std::size_t{1} << 16) * (n + 1) + (std::size_t{1} << 20))
+        throw ReadError("VTK compressed block declares an implausible decompressed size");
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib: {
+            uLongf dest_len = static_cast<uLongf>(Expected);
+            if (uncompress(pDst, &dest_len, pSrc, static_cast<uLong>(n)) != Z_OK)
+                throw ReadError("zlib decompression failed");
+            return static_cast<std::size_t>(dest_len);
+        }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD: {
+            const std::size_t written = ZSTD_decompress(pDst, Expected, pSrc, n);
+            if (ZSTD_isError(written))
+                throw ReadError(std::string("zstd decompression failed: ") +
+                                ZSTD_getErrorName(written));
+            return written;
+        }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4: {
+            const int written = LZ4_decompress_safe(
+                reinterpret_cast<const char*>(pSrc), reinterpret_cast<char*>(pDst),
+                static_cast<int>(n), static_cast<int>(Expected));
+            if (written < 0)
+                throw ReadError("lz4 decompression failed");
+            return static_cast<std::size_t>(written);
+        }
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    (void)pDst;
+    throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+
+// The payload of an uncompressed DataArray, straight into a fresh array:
+// vtu_decode_uncompressed's checks, without its two intermediate buffers.
+NDArray vtub_uncompressed_ndarray(const char* pText, std::size_t len, std::size_t hsz, DType dt) {
+    const VtubB64 stream(pText, len);
+    if (stream.Size() < hsz)
+        throw ReadError("VTU binary data too short");
+    unsigned char head[8] = {0};
+    stream.Decode(0, hsz, head);
+    const std::uint64_t total = read_uint_le(head, hsz);
+    if (total > stream.Size() - hsz)
+        throw ReadError("VTU binary data truncated");
+    const std::size_t isz = dtype_size(dt);
+    const std::size_t n = isz ? static_cast<std::size_t>(total) / isz : 0;
+    NDArray a = NDArray::Uninit(dt, {n});
+    if (n)
+        stream.Decode(hsz, hsz + n * isz, reinterpret_cast<unsigned char*>(a.Data()));
+    return a;
+}
+
+}  // namespace
+
+NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, VtkCodec codec,
+                           DType dt) {
+    if (codec == VtkCodec::None)
+        return vtub_uncompressed_ndarray(pText, len, hsz, dt);
+
+    // vtu_decode_blocks, decompressing each block straight into the array.
+    vtk_codec_require_read(codec);
+    const std::size_t first_chars = ((hsz + 2) / 3) * 4;
+    if (len < first_chars)
+        throw ReadError("VTU compressed-block header too short");
+    const std::vector<unsigned char> hb = b64decode(pText, first_chars);
+    if (hb.size() < hsz)
+        throw ReadError("VTU compressed-block header too short");
+    const std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
+    if (num_blocks > len / hsz)
+        throw ReadError("VTU compressed-block header declares more blocks than it holds");
+    const std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
+    const std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
+    if (len < num_header_chars)
+        throw ReadError("VTU compressed-block header truncated");
+    const std::vector<unsigned char> header = b64decode(pText, num_header_chars);
+    if (header.size() < num_header_bytes)
+        throw ReadError("VTU compressed-block header truncated");
+    const std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
+    const std::uint64_t last_block = read_uint_le(header.data() + 2 * hsz, hsz);
+    std::vector<std::uint64_t> comp_sizes(num_blocks);
+    for (std::uint64_t k = 0; k < num_blocks; ++k)
+        comp_sizes[k] = read_uint_le(header.data() + (3 + k) * hsz, hsz);
+    const std::vector<unsigned char> blockdata =
+        b64decode(pText + num_header_chars, len - num_header_chars);
+    std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
+    for (std::uint64_t k = 0; k < num_blocks; ++k) {
+        const std::size_t at = in_off[static_cast<std::size_t>(k)];
+        if (comp_sizes[k] > blockdata.size() - at)
+            throw ReadError("VTU compressed blocks are larger than the data that follows");
+        in_off[static_cast<std::size_t>(k) + 1] = at + static_cast<std::size_t>(comp_sizes[k]);
+    }
+    const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (blockdata.size() + 1) + (1u << 20);
+    if (num_blocks && (max_block > ceiling || last_block > ceiling ||
+                       (num_blocks - 1) > ceiling / std::max<std::uint64_t>(max_block, 1)))
+        throw ReadError("VTU compressed-block header declares an implausible size");
+    const std::size_t total = num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
+                                                   static_cast<std::size_t>(max_block) +
+                                               static_cast<std::size_t>(last_block)
+                                         : 0;
+    if (total > ceiling)
+        throw ReadError("VTU compressed-block header declares an implausible size");
+    const std::size_t isz = dtype_size(dt);
+    const std::size_t n = isz ? total / isz : 0;
+    // A payload that is not a whole number of elements (a malformed file) keeps
+    // the buffered path, whose last element is simply dropped.
+    if (isz == 0 || total % isz != 0) {
+        const std::vector<unsigned char> bytes = vtu_decode_blocks(pText, len, hsz, codec);
+        NDArray a(dt, {n});
+        if (n)
+            std::memcpy(a.Data(), bytes.data(), n * isz);
+        return a;
+    }
+    NDArray a = NDArray::Uninit(dt, {n});
+    unsigned char* dst = reinterpret_cast<unsigned char*>(a.Data());
+    parallel_for(
+        static_cast<std::size_t>(num_blocks),
+        [&](std::size_t k) {
+            const std::size_t expected = (k + 1 == num_blocks)
+                                             ? static_cast<std::size_t>(last_block)
+                                             : static_cast<std::size_t>(max_block);
+            unsigned char* out = dst + k * static_cast<std::size_t>(max_block);
+            const std::size_t written =
+                vtub_decompress_into(codec, blockdata.data() + in_off[k],
+                                     static_cast<std::size_t>(comp_sizes[k]), out, expected);
+            // A short block leaves the rest zero, as the zero-filled buffer did.
+            if (written < expected)
+                std::memset(out + written, 0, expected - written);
+        },
+        /*grain=*/1);
+    return a;
 }
 
 }  // namespace detail
@@ -57889,8 +58964,8 @@ std::string abaqus_trim(const std::string& rS) {
 std::vector<std::string> split(const std::string& rS, char sep) {
     std::vector<std::string> out;
     std::string cur;
-    auto iss = detail::make_classic_istringstream(rS);
-    while (std::getline(iss, cur, sep))
+    detail::TextStream iss(rS);
+    while (getline(iss, cur, sep))
         out.push_back(abaqus_trim(cur));
     return out;
 }
@@ -58287,22 +59362,19 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
     os << detail::provenance_render_lines(detail::SlotTier::Block, "");
     os << "*NODE\n";
     {
-        // Format node rows in parallel (snprintf per row, bytes unchanged),
-        // then stream sequentially.
-        std::vector<std::string> rows(n);
-        parallel_for(n, [&](std::size_t i) {
-            char buf[48];
-            std::string& row = rows[i];
-            row = std::to_string(i + 1);
-            for (std::size_t c = 0; c < dim; ++c) {
-                detail::snprintf_c(buf, sizeof(buf), ", %.16e",
-                                   detail::read_double(points, i * dim + c));
-                row += buf;
-            }
-            row += '\n';
-        });
-        for (const auto& row : rows)
-            os << row;
+        // Node rows formatted in parallel chunks, streamed in order
+        // (row_writer.hpp): the same bytes as snprintf_c row by row.
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(os, n,
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         detail::append_int(rBuf, static_cast<std::int64_t>(i + 1));
+                                         for (std::size_t c = 0; c < dim; ++c)
+                                             num.Append(rBuf, ", %.16e", pv[i * dim + c]);
+                                         rBuf += '\n';
+                                     }
+                                 });
     }
 
     const auto& m2a = meshio_to_abaqus();
@@ -58314,12 +59386,20 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
         const NDArray& conn = cb.Conn();
         std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         os << "*ELEMENT, TYPE=" << it->second << "\n";
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            os << (++eid);
-            for (std::size_t j = 0; j < k; ++j)
-                os << "," << (detail::read_int(conn, r * k + j) + 1);
-            os << "\n";
-        }
+        const detail::Int64View cv(conn);
+        const std::size_t first_eid = eid;
+        detail::write_row_chunks(
+            os, cb.NumCells(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    detail::append_int(rBuf, static_cast<std::int64_t>(first_eid + r + 1));
+                    for (std::size_t j = 0; j < k; ++j) {
+                        rBuf += ',';
+                        detail::append_int(rBuf, cv[r * k + j] + 1);
+                    }
+                    rBuf += '\n';
+                }
+            });
+        eid += cb.NumCells();
     }
 
     // --- named groups -------------------------------------------------------
@@ -58391,6 +59471,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -58483,7 +59564,7 @@ std::string fil_trim(std::string s) {
 }
 
 // Binary: the 512-word blocks' payloads, joined, cut into records.
-void fil_parse_binary(const std::string& rText, FilData& rOut) {
+void fil_parse_binary(std::string_view rText, FilData& rOut) {
     std::string words;
     if (const auto layout = detail::sniff_fortran_records(rText.data(), rText.size())) {
         for (const auto& r :
@@ -58521,7 +59602,7 @@ void fil_parse_binary(const std::string& rText, FilData& rOut) {
 }
 
 // ASCII: line breaks dropped, then item by item from each `*`.
-void fil_parse_ascii(const std::string& rText, FilData& rOut) {
+void fil_parse_ascii(std::string_view rText, FilData& rOut) {
     std::string s;
     s.reserve(rText.size());
     for (char c : rText)
@@ -58604,10 +59685,9 @@ void fil_parse_ascii(const std::string& rText, FilData& rOut) {
 }
 
 FilData fil_parse(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Abaqus .fil: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Abaqus .fil: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     FilData out;
     const std::size_t first = text.find_first_not_of(" \t\r\n");
     if (first != std::string::npos && text[first] == '*')
@@ -59585,11 +60665,34 @@ bool fluent_is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
+// A Fluent file opens with a section: '(' and its index. Any other file is
+// refused from its first bytes, with the message the full read gives, before
+// it is read whole -- every `.msh` a Gmsh or FreeFEM file is is offered to this
+// reader first (roadmap §4). Undecided while the head is all blanks.
+void fluent_refuse_early(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return;  // the full read reports it
+    char head[256];
+    in.read(head, sizeof head);
+    const std::size_t n = static_cast<std::size_t>(in.gcount());
+    std::size_t p = 0;
+    while (p < n && fluent_is_space(head[p]))
+        ++p;
+    if (p == n)
+        return;
+    std::size_t q = p + 1;
+    while (q < n && fluent_is_space(head[q]))
+        ++q;
+    if (head[p] != '(' || (q < n && !std::isdigit(static_cast<unsigned char>(head[q]))))
+        throw ReadError("Fluent: expected a section at byte " + std::to_string(p));
+}
+
 struct FluentReader {
-    const std::string& mD;
+    std::string_view mD;
     std::size_t mP = 0;
 
-    explicit FluentReader(const std::string& rD) : mD(rD) {}
+    explicit FluentReader(std::string_view rD) : mD(rD) {}
 
     bool Eof() const { return mP >= mD.size(); }
     char At() const { return mD[mP]; }
@@ -59643,7 +60746,8 @@ struct FluentReader {
             while (i < q && !fluent_is_space(mD[i]))
                 ++i;
             if (i > j)
-                rValues.push_back(std::strtoll(mD.substr(j, i - j).c_str(), nullptr, 16));
+                rValues.push_back(
+                    std::strtoll(std::string(mD.substr(j, i - j)).c_str(), nullptr, 16));
         }
         mP = q + 1;
         // A body opens with '(' after nothing but blanks; anything else (a
@@ -59776,10 +60880,9 @@ void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Coun
 }  // namespace
 
 Mesh read_ansys(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    fluent_refuse_early(rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view data = source.View();
     FluentReader rd(data);
 
     std::int64_t dim = 0;
@@ -59807,7 +60910,7 @@ Mesh read_ansys(const std::string& rPath) {
         const std::size_t idx0 = rd.mP;
         while (!rd.Eof() && std::isdigit(static_cast<unsigned char>(rd.At())))
             ++rd.mP;
-        const std::string index = data.substr(idx0, rd.mP - idx0);
+        const std::string index(data.substr(idx0, rd.mP - idx0));
         if (index.empty())
             throw ReadError("Fluent: expected a section at byte " + std::to_string(start));
         const std::string prefix = index.size() <= 2 ? "" : index.substr(0, index.size() - 2);
@@ -59816,7 +60919,7 @@ Mesh read_ansys(const std::string& rPath) {
         if (index == "2") {
             rd.SkipWs();
             const std::size_t q = data.find(')', rd.mP);
-            dim = std::strtoll(data.substr(rd.mP, q - rd.mP).c_str(), nullptr, 10);
+            dim = std::strtoll(std::string(data.substr(rd.mP, q - rd.mP)).c_str(), nullptr, 10);
             rd.mP = q == std::string::npos ? data.size() : q + 1;
         } else if (index == "39" || index == "45") {
             // (45 (id type name)(...)): the id is decimal here.
@@ -59824,8 +60927,8 @@ Mesh read_ansys(const std::string& rPath) {
             if (!rd.Eof() && rd.At() == '(') {
                 const std::size_t q = data.find_first_of("()", rd.mP + 1);
                 if (q != std::string::npos) {
-                    auto iss =
-                        detail::make_classic_istringstream(data.substr(rd.mP + 1, q - rd.mP - 1));
+                    auto iss = detail::make_classic_istringstream(
+                        std::string(data.substr(rd.mP + 1, q - rd.mP - 1)));
                     std::int64_t id = 0;
                     std::string type, name;
                     if (iss >> id >> type >> name)
@@ -62351,6 +63454,7 @@ MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath, const Read
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -62406,6 +63510,16 @@ std::optional<std::int64_t> ans_int(const std::string& rText) {
     if (end != rText.c_str() + rText.size())
         return std::nullopt;
     return detail::checked_integer<std::int64_t>(v, "Ansys .cdb");
+}
+
+// The capacity a block's header count asks for, capped at one entry per line
+// left: a wrong count only sizes the reservation.
+std::size_t ans_count_hint(const std::vector<std::string>& rHeader, std::size_t Field,
+                           std::size_t LinesLeft) {
+    if (rHeader.size() <= Field)
+        return 0;
+    const std::int64_t v = ans_int(rHeader[Field]).value_or(0);
+    return v > 0 ? std::min(static_cast<std::size_t>(v), LinesLeft) : 0;
 }
 
 // An element type given by number (`186`) or name (`SOLID186`): the routine.
@@ -62534,6 +63648,10 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             ++i;
         } else if (up.rfind("NBLOCK", 0) == 0) {
             saw_block = true;
+            // NBLOCK,<fields>,SOLID,<largest id>,<count>
+            const std::size_t hint = ans_count_hint(ans_commas(up), 4, n - i);
+            deck.mModel.mNodeIds.reserve(deck.mModel.mNodeIds.size() + hint);
+            deck.mModel.mCoords.reserve(deck.mModel.mCoords.size() + 3 * hint);
             const auto fields = ans_format(rLines, i + 1);
             std::size_t n_int = 0;
             while (n_int < fields.size() && fields[n_int].mKind == 'i')
@@ -62560,6 +63678,10 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             const bool solid = header.size() > 2 && header[2] == "SOLID";
             const auto fields = ans_format(rLines, i + 1);
             i += 2;
+            // EBLOCK,<fields>,SOLID,<largest id>,<count>
+            if (solid)
+                deck.mModel.mElements.reserve(deck.mModel.mElements.size() +
+                                              ans_count_hint(header, 4, n - i));
             if (!solid) {
                 ++deck.mNonSolidBlocks;
                 while (i < n && !ans_is_terminator(rLines[i]))
@@ -62745,6 +63867,16 @@ std::string ans_i(std::int64_t Value, int Width) {
     return buf;
 }
 
+// `ans_i` appended in place: right-aligned in `Width` columns, never cut.
+void ans_append_i(std::string& rOut, std::int64_t Value, int Width) {
+    char buf[24];
+    const auto r = std::to_chars(buf, buf + sizeof buf, Value);
+    const auto len = static_cast<std::size_t>(r.ptr - buf);
+    if (len < static_cast<std::size_t>(Width))
+        rOut.append(static_cast<std::size_t>(Width) - len, ' ');
+    rOut.append(buf, len);
+}
+
 // Block `Block` of the `Name` cell data, or null when the mesh has none.
 const NDArray* ans_cell_column(const Mesh& rMesh, const std::string& rName, std::size_t Block) {
     return rMesh.HasCellData(rName) ? &rMesh.CellData(rName, Block) : nullptr;
@@ -62871,21 +64003,22 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     const std::size_t pdim = rMesh.PointDim();
     out += "NBLOCK,6,SOLID," + ans_i(static_cast<std::int64_t>(npts), 9) + "," +
            ans_i(static_cast<std::int64_t>(npts), 9) + "\n(3i9,6e21.13e3)\n";
-    // Rows are formatted in parallel, then joined in order (bytes unchanged).
-    std::vector<std::string> rows(npts);
-    parallel_for(npts, [&](std::size_t p) {
-        char buf[48];
-        std::string& row = rows[p];
-        row = ans_i(static_cast<std::int64_t>(p + 1), 9) + ans_i(0, 9) + ans_i(0, 9);
-        for (std::size_t d = 0; d < 3; ++d) {
-            const double v = d < pdim ? detail::read_double(points, p * pdim + d) : 0.0;
-            detail::snprintf_c(buf, sizeof(buf), "%21.13E", v);
-            row += buf;
-        }
-        row += '\n';
-    });
-    for (const std::string& row : rows)
-        out += row;
+    // Rows formatted in parallel chunks, appended in order (row_writer.hpp).
+    {
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::append_row_chunks(
+            out, npts, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t p = First; p < Last; ++p) {
+                    ans_append_i(rBuf, static_cast<std::int64_t>(p + 1), 9);
+                    ans_append_i(rBuf, 0, 9);
+                    ans_append_i(rBuf, 0, 9);
+                    for (std::size_t d = 0; d < 3; ++d)
+                        num.Append(rBuf, "%21.13E", d < pdim ? pv[p * pdim + d] : 0.0);
+                    rBuf += '\n';
+                }
+            });
+    }
     out += "N,R5.3,LOC,       -1,\n";
 
     const std::int64_t n_cells = bases.back();
@@ -62898,34 +64031,42 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
         const NDArray* mat = ans_cell_column(rMesh, "ansys:mat", b);
         const NDArray* real = ans_cell_column(rMesh, "ansys:real", b);
         const NDArray* secnum = ans_cell_column(rMesh, "ansys:secnum", b);
-        rows.assign(cb.NumCells(), std::string());
-        parallel_for(cb.NumCells(), [&](std::size_t r) {
-            const auto [routine, slot] = cell_etype[b][r];
-            const std::vector<int> layout = *ans_layout(type, detail::ansys_category(routine));
-            const std::int64_t head[11] = {ans_column_int(mat, r, 1),
-                                           slot,
-                                           ans_column_int(real, r, 1),
-                                           ans_column_int(secnum, r, 1),
-                                           0,
-                                           0,
-                                           0,
-                                           0,
-                                           static_cast<std::int64_t>(layout.size()),
-                                           0,
-                                           bases[b] + static_cast<std::int64_t>(r) + 1};
-            std::string& row = rows[r];
-            for (std::int64_t v : head)
-                row += ans_i(v, 10);
-            for (std::size_t c = 0; c < layout.size(); ++c) {
-                if (c == 8)
-                    row += '\n';
-                row += ans_i(
-                    detail::read_int(conn, r * k + static_cast<std::size_t>(layout[c])) + 1, 10);
-            }
-            row += '\n';
-        });
-        for (const std::string& row : rows)
-            out += row;
+        // One layout per element category, not a vector per row.
+        std::array<std::optional<std::vector<int>>, 8> layouts;
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            const auto category = detail::ansys_category(cell_etype[b][r].first);
+            auto& slot = layouts[static_cast<std::size_t>(category)];
+            if (!slot)
+                slot = *ans_layout(type, category);
+        }
+        const detail::Int64View cv(conn);
+        detail::append_row_chunks(
+            out, cb.NumCells(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    const auto [routine, slot] = cell_etype[b][r];
+                    const std::vector<int>& layout =
+                        *layouts[static_cast<std::size_t>(detail::ansys_category(routine))];
+                    const std::int64_t head[11] = {ans_column_int(mat, r, 1),
+                                                   slot,
+                                                   ans_column_int(real, r, 1),
+                                                   ans_column_int(secnum, r, 1),
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   static_cast<std::int64_t>(layout.size()),
+                                                   0,
+                                                   bases[b] + static_cast<std::int64_t>(r) + 1};
+                    for (std::int64_t v : head)
+                        ans_append_i(rBuf, v, 10);
+                    for (std::size_t c = 0; c < layout.size(); ++c) {
+                        if (c == 8)
+                            rBuf += '\n';
+                        ans_append_i(rBuf, cv[r * k + static_cast<std::size_t>(layout[c])] + 1, 10);
+                    }
+                    rBuf += '\n';
+                }
+            });
     }
     out += "        -1\n";
 
@@ -62970,6 +64111,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -63025,31 +64167,24 @@ bool is_int_dtype(DType t) {
            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64;
 }
 
-std::vector<std::string> avsucd_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> avsucd_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
 }  // namespace
 
 Mesh read_avsucd(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
+    // The file read once; its lines are views into it (detail/text_cursor.hpp).
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    std::vector<std::string_view> lines;
+    for (std::string_view l : detail::split_lines(source.View())) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
-        std::string t = l;
-        std::size_t b = t.find_first_not_of(" \t");
-        if (b == std::string::npos)
+            l.remove_suffix(1);
+        const std::size_t b = l.find_first_not_of(" \t");
+        if (b == std::string_view::npos)
             continue;  // blank
-        if (t[b] == '#')
+        if (l[b] == '#')
             continue;  // comment
         lines.push_back(l);
     }
@@ -63059,23 +64194,25 @@ Mesh read_avsucd(const std::string& rPath) {
     detail::need_tokens(hdr, 4, "AVS-UCD");
     // Each node and each cell is one line of the file, so the header's counts
     // are bounded by what follows it.
-    const auto num_nodes = static_cast<long long>(
-        detail::checked_count(std::stoll(hdr[0]), lines.size() - li, "AVS-UCD", "node"));
+    const auto num_nodes = static_cast<long long>(detail::checked_count(
+        std::stoll(std::string(hdr[0])), lines.size() - li, "AVS-UCD", "node"));
     const auto num_cells = static_cast<long long>(detail::checked_count(
-        std::stoll(hdr[1]), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
-    long long num_node_data = std::stoll(hdr[2]);
-    long long num_cell_data = std::stoll(hdr[3]);
+        std::stoll(std::string(hdr[1])), lines.size() - li - num_nodes, "AVS-UCD", "cell"));
+    long long num_node_data = std::stoll(std::string(hdr[2]));
+    long long num_cell_data = std::stoll(std::string(hdr[3]));
 
     Mesh mesh;
     std::unordered_map<std::int64_t, std::int64_t> point_ids;
     NDArray pts(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
     double* pp = pts.As<double>();
+    point_ids.reserve(static_cast<std::size_t>(num_nodes));
+    std::vector<std::string_view> t;  // reused: one allocation, not a vector per row
     for (long long i = 0; i < num_nodes; ++i) {
-        auto t = avsucd_tokens(lines.at(li++));
+        detail::split_blanks(lines.at(li++), t);
         detail::need_tokens(t, 4, "AVS-UCD");
-        point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
+        point_ids[detail::strtoll_token(t[0])] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = detail::parse_double(t[1 + c]);
+            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -63089,22 +64226,24 @@ Mesh read_avsucd(const std::string& rPath) {
         std::size_t mCount = 0;
     };
     std::vector<Blk> blocks;
+    cell_ids.reserve(static_cast<std::size_t>(num_cells));
     for (long long c = 0; c < num_cells; ++c) {
-        auto t = avsucd_tokens(lines.at(li++));
+        detail::split_blanks(lines.at(li++), t);
         detail::need_tokens(t, 4, "AVS-UCD");
-        std::int64_t cid = std::strtoll(t[0].c_str(), nullptr, 10);
-        std::int64_t mat = std::strtoll(t[1].c_str(), nullptr, 10);
-        auto it = avsucd_to_meshio_type().find(t[2]);
+        std::int64_t cid = detail::strtoll_token(t[0]);
+        std::int64_t mat = detail::strtoll_token(t[1]);
+        const std::string type_name(t[2]);
+        auto it = avsucd_to_meshio_type().find(type_name);
         if (it == avsucd_to_meshio_type().end())
-            throw ReadError("AVS-UCD: unknown cell type '" + t[2] + "'");
+            throw ReadError("AVS-UCD: unknown cell type '" + type_name + "'");
         const std::string& mtype = it->second;
         int n = static_cast<int>(t.size()) - 3;
         const std::vector<int>& order = avsucd_to_meshio_order(mtype);
         if (!order.empty() && static_cast<std::size_t>(n) != order.size())
-            throw ReadError("AVS-UCD: a '" + t[2] + "' cell needs " + std::to_string(order.size()) +
-                            " nodes, got " + std::to_string(n));
+            throw ReadError("AVS-UCD: a '" + type_name + "' cell needs " +
+                            std::to_string(order.size()) + " nodes, got " + std::to_string(n));
         if (!blocks.empty() && blocks.back().mType == mtype && blocks.back().mN != n)
-            throw ReadError("AVS-UCD: '" + t[2] + "' cells with different node counts");
+            throw ReadError("AVS-UCD: '" + type_name + "' cells with different node counts");
         if (blocks.empty() || blocks.back().mType != mtype) {
             Blk b;
             b.mType = mtype;
@@ -63113,7 +64252,7 @@ Mesh read_avsucd(const std::string& rPath) {
         }
         Blk& blk = blocks.back();
         for (int j = 0; j < n; ++j)
-            blk.mConn.push_back(point_ids.at(std::strtoll(t[3 + j].c_str(), nullptr, 10)));
+            blk.mConn.push_back(point_ids.at(detail::strtoll_token(t[3 + j])));
         blk.mMat.push_back(mat);
         cell_ids[cid] = c;
         ++blk.mCount;
@@ -63143,12 +64282,12 @@ Mesh read_avsucd(const std::string& rPath) {
                          std::vector<std::string>& names, std::vector<NDArray>& arrays) {
         auto h = avsucd_tokens(lines.at(li++));
         detail::need_tokens(h, 1, "AVS-UCD");
-        const int narr = static_cast<int>(
-            detail::checked_count(std::stoi(h[0]), h.size() - 1, "AVS-UCD", "data array"));
+        const int narr = static_cast<int>(detail::checked_count(
+            std::stoi(std::string(h[0])), h.size() - 1, "AVS-UCD", "data array"));
         std::vector<int> sizes(narr);
         std::size_t width = 0;
         for (int i = 0; i < narr; ++i) {
-            sizes[i] = std::stoi(h[1 + i]);
+            sizes[i] = std::stoi(std::string(h[1 + i]));
             if (sizes[i] < 1)
                 throw ReadError("AVS-UCD: a data array needs at least one component");
             width += static_cast<std::size_t>(sizes[i]);
@@ -63161,7 +64300,7 @@ Mesh read_avsucd(const std::string& rPath) {
             detail::need_tokens(avsucd_tokens(lines[li + narr]), 1 + width, "AVS-UCD");
         }
         for (int i = 0; i < narr; ++i) {
-            std::string lbl = lines.at(li++);
+            const std::string lbl(lines.at(li++));
             std::size_t comma = lbl.find(',');
             std::string name = (comma == std::string::npos) ? lbl : lbl.substr(0, comma);
             // strip + replace spaces with underscore
@@ -63178,14 +64317,16 @@ Mesh read_avsucd(const std::string& rPath) {
                                               : std::vector<std::size_t>{(std::size_t)num_entities,
                                                                          (std::size_t)sizes[i]});
         }
+        std::vector<std::string_view> row;  // reused
         for (long long e = 0; e < num_entities; ++e) {
-            auto t = avsucd_tokens(lines.at(li++));
-            detail::need_tokens(t, 1 + width, "AVS-UCD");
-            std::int64_t eid = ids.at(std::strtoll(t[0].c_str(), nullptr, 10));
+            detail::split_blanks(lines.at(li++), row);
+            detail::need_tokens(row, 1 + width, "AVS-UCD");
+            std::int64_t eid = ids.at(detail::strtoll_token(row[0]));
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].As<double>()[eid * sizes[i] + c] = detail::parse_double(t[j++]);
+                    arrays[i].As<double>()[eid * sizes[i] + c] =
+                        detail::parse_double_prefix(row[j++]);
             }
         }
     };
@@ -65860,6 +67001,7 @@ MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions&
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -65933,7 +67075,7 @@ struct CaToken {
 // Splits the file into tokens: each line cut at column 80, a `%` comment
 // dropped, then split on blanks and commas. `KEY = VALUE`, `KEY= VALUE` and
 // `KEY =VALUE` are joined into one `KEY=VALUE` token.
-std::vector<CaToken> ca_tokenize(const std::string& rText) {
+std::vector<CaToken> ca_tokenize(std::string_view rText) {
     std::vector<CaToken> tokens;
     bool warned_long = false;
     std::size_t line_no = 0;
@@ -65942,7 +67084,7 @@ std::vector<CaToken> ca_tokenize(const std::string& rText) {
         std::size_t eol = rText.find('\n', pos);
         if (eol == std::string::npos)
             eol = rText.size();
-        std::string line = rText.substr(pos, eol - pos);
+        std::string line(rText.substr(pos, eol - pos));
         pos = eol + 1;
         ++line_no;
         if (!line.empty() && line.back() == '\r')
@@ -66073,10 +67215,9 @@ struct CaGroup {
 }  // namespace
 
 Mesh read_code_aster(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Code_Aster .mail: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Code_Aster .mail: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     const std::vector<CaToken> tokens = ca_tokenize(text);
 
     int point_dim = 0;
@@ -66546,7 +67687,7 @@ Mesh read_dex(const std::string& rPath) {
 
     std::vector<std::vector<double>> rows;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::vector<double> r;
         std::string tok;
         while (iss >> tok) {
@@ -67140,11 +68281,13 @@ struct ElmMesh {
 // is taken from the first record's id, which is small and positive.
 class ElmBinary {
 public:
+    // mData views mSource's bytes: pinned in place.
+    ElmBinary(const ElmBinary&) = delete;
+    ElmBinary& operator=(const ElmBinary&) = delete;
     explicit ElmBinary(const fs::path& rFile) : mFile(rFile) {
-        auto in = detail::make_classic_ifstream(rFile.string(), std::ios::binary);
-        if (!in)
-            throw ReadError("Elmer mesh: cannot open " + rFile.string());
-        mData.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        mSource.emplace(
+            detail::open_source(rFile.string(), "Elmer mesh: cannot open " + rFile.string()));
+        mData = mSource->View();
         if (mData.size() >= 4) {
             std::uint32_t v;
             std::memcpy(&v, mData.data(), 4);
@@ -67191,7 +68334,8 @@ private:
     }
 
     fs::path mFile;
-    std::string mData;
+    std::optional<detail::FileSource> mSource;
+    std::string_view mData;
     std::size_t mPos = 0;
     std::size_t mRecord = 0;
     bool mSwap = false;
@@ -70392,6 +71536,7 @@ void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
         const std::size_t rows = att.Shape().empty() ? 0 : att.Shape()[0];
         const std::size_t cols = att.Shape().size() >= 2 ? att.Shape()[1] : 1;
         auto nit = rNames.find(rBlockKeys[b]);
+        const detail::DoubleView att_v(att);
         for (std::size_t c = 0; c < cols; ++c) {
             std::string name;
             if (nit != rNames.end() && c < nit->second.size())
@@ -70402,8 +71547,7 @@ void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
             if (name.empty())
                 name = "attribute" + std::to_string(c + 1);
             std::vector<double> vals(rows, 0.0);
-            for (std::size_t r = 0; r < rows; ++r)
-                vals[r] = detail::read_double(att, r * cols + c);
+            parallel_for_bw(rows, [&](std::size_t r) { vals[r] = att_v[r * cols + c]; });
             by_name[std::string(kExodusAttributePrefix) + name].emplace(b, std::move(vals));
         }
     }
@@ -70428,14 +71572,18 @@ void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
 NDArray column_stack(const std::vector<const NDArray*>& rCols) {
     std::size_t n = rCols.empty() || rCols[0]->Shape().empty() ? 0 : rCols[0]->Shape()[0];
     NDArray out(rCols[0]->Dtype(), {n, rCols.size()});
-    for (std::size_t c = 0; c < rCols.size(); ++c)
-        for (std::size_t i = 0; i < n; ++i) {
-            double v = detail::read_double(*rCols[c], i);
-            if (out.Dtype() == DType::Float32)
-                out.As<float>()[i * rCols.size() + c] = static_cast<float>(v);
-            else
-                out.As<double>()[i * rCols.size() + c] = v;
+    const std::size_t m = rCols.size();
+    const bool f32 = out.Dtype() == DType::Float32;
+    for (std::size_t c = 0; c < m; ++c) {
+        const detail::DoubleView col(*rCols[c]);
+        if (f32) {
+            float* dst = out.As<float>();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i * m + c] = static_cast<float>(col[i]); });
+        } else {
+            double* dst = out.As<double>();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i * m + c] = col[i]; });
         }
+    }
     return out;
 }
 
@@ -70537,14 +71685,20 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             if (it == exodus_to_meshio().end())
                 throw ReadError("Exodus: unknown element type " + elem_type);
             NDArray conn = read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
-            for (std::size_t i = 0; i < conn.Size(); ++i) {
+            // 1-based to 0-based, the dtype switch taken once.
+            const std::size_t nconn = conn.Size();
+            if (nconn > 0) {
                 switch (conn.Dtype()) {
-                    case DType::Int32:
-                        conn.As<std::int32_t>()[i] -= 1;
+                    case DType::Int32: {
+                        std::int32_t* p = conn.As<std::int32_t>();
+                        parallel_for_bw(nconn, [&](std::size_t i) { p[i] -= 1; });
                         break;
-                    case DType::Int64:
-                        conn.As<std::int64_t>()[i] -= 1;
+                    }
+                    case DType::Int64: {
+                        std::int64_t* p = conn.As<std::int64_t>();
+                        parallel_for_bw(nconn, [&](std::size_t i) { p[i] -= 1; });
                         break;
+                    }
                     default:
                         throw ReadError("Exodus: unexpected connectivity dtype");
                 }
@@ -70556,20 +71710,27 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             std::size_t d = dims.size() >= 1 ? dims[0] : 0;
             std::size_t n = dims.size() >= 2 ? dims[1] : 0;
             NDArray pts(coord.Dtype(), {n, d});
-            for (std::size_t c = 0; c < d; ++c)
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (coord.Dtype() == DType::Float32)
-                        pts.As<float>()[i * d + c] = coord.As<float>()[c * n + i];
-                    else
-                        pts.As<double>()[i * d + c] = coord.As<double>()[c * n + i];
-                }
+            // (d, n) to (n, d), the dtype switch taken once.
+            const auto transpose = [&](auto* pDst, const auto* pSrc) {
+                parallel_for_bw(n, [&](std::size_t i) {
+                    for (std::size_t c = 0; c < d; ++c)
+                        pDst[i * d + c] = pSrc[c * n + i];
+                });
+            };
+            if (coord.Dtype() == DType::Float32)
+                transpose(pts.As<float>(), coord.As<float>());
+            else
+                transpose(pts.As<double>(), coord.As<double>());
             mesh.AssignPoints(std::move(pts));
             have_coord = true;
         } else if (key == "coordx" || key == "coordy" || key == "coordz") {
             int c = key.back() - 'x';
             NDArray v = read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
-            for (std::size_t i = 0; i < num_nodes && i < v.Size(); ++i)
-                points_xyz.As<double>()[i * 3 + c] = detail::read_double(v, i);
+            const detail::DoubleView vv(v);
+            double* xyz = points_xyz.As<double>();
+            parallel_for_bw(std::min(num_nodes, v.Size()), [&](std::size_t i) {
+                xyz[i * 3 + static_cast<std::size_t>(c)] = vv[i];
+            });
         } else if (key == "name_nod_var") {
             point_data_names = read_names(ncid, varid);
         } else if (key.rfind("vals_nod_var", 0) == 0) {
@@ -70905,15 +72066,22 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         check(nc_put_att_text(ncid, var, "elem_type", it->second.size(), it->second.c_str()),
               "elem_type", true);
         NDArray shifted(conn.Dtype(), conn.Shape());
-        for (std::size_t i = 0; i < conn.Size(); ++i) {
-            std::int64_t v = detail::read_int(conn, i) + 1;
+        // 0-based to 1-based, the dtype switch taken once.
+        const std::size_t nconn = conn.Size();
+        if (nconn > 0) {
+            const detail::Int64View cv(conn);
             switch (shifted.Dtype()) {
-                case DType::Int32:
-                    shifted.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
+                case DType::Int32: {
+                    std::int32_t* p = shifted.As<std::int32_t>();
+                    parallel_for_bw(
+                        nconn, [&](std::size_t i) { p[i] = static_cast<std::int32_t>(cv[i] + 1); });
                     break;
-                case DType::Int64:
-                    shifted.As<std::int64_t>()[i] = v;
+                }
+                case DType::Int64: {
+                    std::int64_t* p = shifted.As<std::int64_t>();
+                    parallel_for_bw(nconn, [&](std::size_t i) { p[i] = cv[i] + 1; });
                     break;
+                }
                 default:
                     throw WriteError("Exodus: unexpected connectivity dtype");
             }
@@ -70976,9 +72144,11 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             std::string vname = "attrib" + std::to_string(k + 1);
             check(nc_def_var(ncid, vname.c_str(), NC_DOUBLE, 2, dims, &var), "def attrib", true);
             NDArray flat(DType::Float64, {n, names.size()});
-            for (std::size_t r = 0; r < n; ++r)
-                for (std::size_t c = 0; c < names.size(); ++c)
-                    flat.As<double>()[r * names.size() + c] = detail::read_double(*cols[c], r);
+            double* flat_d = flat.As<double>();
+            for (std::size_t c = 0; c < names.size(); ++c) {
+                const detail::DoubleView col(*cols[c]);
+                parallel_for_bw(n, [&](std::size_t r) { flat_d[r * names.size() + c] = col[r]; });
+            }
             if (flat.Size() > 0)
                 check(nc_put_var(ncid, var, flat.Data()), "attrib", true);
 
@@ -72577,7 +73747,7 @@ struct FnFile {
     std::vector<FnVector> mVectors;
 };
 
-std::vector<FnBlock> fn_blocks(const std::string& rText, std::vector<std::string_view>& rLines) {
+std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_view>& rLines) {
     std::size_t pos = 0;
     while (pos < rText.size()) {
         std::size_t eol = rText.find('\n', pos);
@@ -72877,10 +74047,9 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
 }
 
 FnFile fn_parse(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Femap neutral: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Femap neutral: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     std::vector<std::string_view> lines;
     const std::vector<FnBlock> blocks = fn_blocks(text, lines);
     FnFile f;
@@ -73734,7 +74903,7 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
 
 std::vector<std::string> flac3d_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -74303,7 +75472,7 @@ bool contains(const std::string& rHay, const char* pNeedle) {
 }
 
 long long leading_int(const std::string& rLine) {
-    auto iss = detail::make_classic_istringstream(rLine);
+    detail::TextStream iss(rLine);
     long long v = 0;
     iss >> v;
     return v;
@@ -74343,7 +75512,7 @@ Mesh read_flux(const std::string& rPath) {
     // element tokens
     std::vector<std::string> etok;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::string w;
         while (iss >> w)
             etok.push_back(w);
@@ -74392,7 +75561,7 @@ Mesh read_flux(const std::string& rPath) {
     // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::string w;
         while (iss >> w)
             ctok.push_back(w);
@@ -75407,7 +76576,7 @@ namespace {
 bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
     std::string line;
     while (std::getline(rIn, line)) {
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string t;
         rOut.clear();
         while (iss >> t)
@@ -77684,6 +78853,9 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                 if (static_cast<int>(cols.size()) >= nnode + 1) {
                     const std::size_t n = cols[0].Size();
                     const bool has_mat = static_cast<int>(cols.size()) >= nnode + 2;
+                    block.mElemIds.reserve(block.mElemIds.size() + n);
+                    block.mConn.reserve(block.mConn.size() + n * static_cast<std::size_t>(nnode));
+                    block.mMaterial.reserve(block.mMaterial.size() + n);
                     for (std::size_t r = 0; r < n; ++r) {
                         block.mElemIds.push_back(detail::read_int(cols[0], r));
                         for (int k = 0; k < nnode; ++k)
@@ -77739,6 +78911,8 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
             if (cols.size() >= 2) {
                 res.mNumComponents = cols.size() - 1;
                 const std::size_t n = cols[0].Size();
+                res.mIds.reserve(n);
+                res.mValues.reserve(n * res.mNumComponents);
                 for (std::size_t r = 0; r < n; ++r) {
                     res.mIds.push_back(detail::read_int(cols[0], r));
                     for (std::size_t k = 0; k < res.mNumComponents; ++k)
@@ -79959,7 +81133,7 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
         std::string line = rCur.read_line();
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         long long dim, tag;
         iss >> dim >> tag;
         std::size_t q1 = line.find('"');
@@ -80297,7 +81471,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
     if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
-            auto iss = detail::make_classic_istringstream(line);
+            detail::TextStream iss(line);
             std::vector<std::int64_t> v;
             long long x;
             while (iss >> x)
@@ -81008,7 +82182,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    auto fss = detail::make_classic_istringstream(cur.read_line());
+    detail::TextStream fss(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -81035,6 +82209,28 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     }
     return std::vector<double>(times.begin(), times.end());
 }
+/// Whether the file has a `$Periodic` section: the header on a line of its own,
+/// found by one search of the buffer before `$Nodes` and `$Elements` are
+/// parsed only to be refused (roadmap §4). `$` is rare in mesh data, so the
+/// search runs at memchr speed; a match inside binary data only declines a
+/// read the Python reader then takes, which is what a real `$Periodic` does.
+bool gmsh_has_periodic(std::string_view rBuf) {
+    constexpr std::string_view kTag = "$Periodic";
+    std::size_t at = 0;
+    while ((at = rBuf.find(kTag, at)) != std::string_view::npos) {
+        const bool line_start = at == 0 || rBuf[at - 1] == '\n';
+        std::size_t after = at + kTag.size();
+        const std::size_t next = after;
+        while (after < rBuf.size() && (rBuf[after] == ' ' || rBuf[after] == '\t'))
+            ++after;  // the section parser trims the header line
+        const bool line_end = after == rBuf.size() || rBuf[after] == '\n' || rBuf[after] == '\r';
+        if (line_start && line_end)
+            return true;
+        at = next;
+    }
+    return false;
+}
+
 }  // namespace
 
 Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
@@ -81054,7 +82250,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
     std::string fmt = cur.read_line();
-    auto fss = detail::make_classic_istringstream(fmt);
+    detail::TextStream fss(fmt);
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -81066,6 +82262,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             ++cur.mPos;
     }
     cur.skip_to_end("MeshFormat");
+    if (gmsh_has_periodic(buf))
+        throw ReadError("Gmsh $Periodic not supported by the C++ reader");
 
     // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
     // against the sorted union of every $NodeData/$ElementData section's time
@@ -81997,7 +83195,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    auto fss = detail::make_classic_istringstream(cur.read_line());
+    detail::TextStream fss(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -82541,7 +83739,7 @@ Mesh read_ip(const std::string& rPath) {
     while (ints.size() < 4 && idx < lines.size()) {
         std::string s = ip_strip(lines[idx++]);
         if (!s.empty()) {
-            auto iss = detail::make_classic_istringstream(s);
+            detail::TextStream iss(s);
             int v;
             iss >> v;
             ints.push_back(v);
@@ -82573,7 +83771,7 @@ Mesh read_ip(const std::string& rPath) {
                 c = ' ';
             else if (c == 'D' || c == 'd')
                 c = 'E';
-        auto iss = detail::make_classic_istringstream(s);
+        detail::TextStream iss(s);
         std::string tok;
         while (iss >> tok)
             flat.push_back(detail::parse_double(tok));
@@ -83480,10 +84678,9 @@ int lm_shellface(const std::string& rName, std::string* pBase) {
 }  // namespace
 
 Mesh read_libmesh(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("libMesh: cannot open " + rPath);
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // One bulk read; the text is owned, since a compressed file is replaced
+    // by its inflated bytes.
+    std::string text(detail::open_source(rPath, "libMesh: cannot open " + rPath).View());
     // libMesh writes `.xda.gz`/`.xdr.gz` through gzip and `.bz2` through bzip2.
     if (text.size() >= 2 && static_cast<unsigned char>(text[0]) == 0x1f &&
         static_cast<unsigned char>(text[1]) == 0x8b)
@@ -84564,6 +85761,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <ios>
@@ -84703,16 +85901,16 @@ bool lsd_starts_with(const std::string& rText, const char* pPrefix) {
     return rText.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> lsd_split(const std::string& rText, char Sep) {
+std::vector<std::string> lsd_split(std::string_view rText, char Sep) {
     std::vector<std::string> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t k = rText.find(Sep, start);
-        if (k == std::string::npos) {
-            out.push_back(rText.substr(start));
+        if (k == std::string_view::npos) {
+            out.emplace_back(rText.substr(start));
             return out;
         }
-        out.push_back(rText.substr(start, k - start));
+        out.emplace_back(rText.substr(start, k - start));
         start = k + 1;
     }
 }
@@ -85183,17 +86381,16 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
     rDeck.mSets.push_back(std::move(set));
 }
 
-void lsd_read_text(LsdDeck& rDeck, const std::string& rText, const fs::path& rBaseDir,
+void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode);
 
 void lsd_read_file(LsdDeck& rDeck, const fs::path& rPath, int Depth, CardMode Mode) {
     if (Depth > lsd_max_include_depth)
         throw ReadError("LS-DYNA: *INCLUDE nested deeper than " +
                         std::to_string(lsd_max_include_depth));
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("LS-DYNA: could not read " + rPath.string());
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath.string(), "LS-DYNA: could not read " + rPath.string());
+    const std::string_view text = text_source.View();
     std::error_code ec;
     const fs::path absolute = fs::absolute(rPath, ec);
     lsd_read_text(rDeck, text, (ec ? rPath : absolute).parent_path(), rPath.string(), Depth, Mode);
@@ -85264,7 +86461,7 @@ void lsd_read_includes(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
     }
 }
 
-void lsd_read_text(LsdDeck& rDeck, const std::string& rText, const fs::path& rBaseDir,
+void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode) {
     std::vector<std::string> lines = lsd_split(rText, '\n');
     for (std::string& ln : lines)
@@ -85506,6 +86703,26 @@ void lsd_put(std::string& rOut, const std::string& rText, std::size_t Width) {
     rOut += rText;
 }
 
+// detail::format_real16 -- the shortest "%.*e" that parses back to `Value`,
+// within 16 columns -- with the decimal point resolved once (`rNum`) rather
+// than by snprintf_c's localeconv() per call, which POSIX does not require to
+// be thread-safe: callable from a parallel loop. Byte-identical.
+std::string lsd_real16(double Value, const detail::CNumber& rNum) {
+    if (Value == 0.0)
+        return "0.0";
+    const int neg = Value < 0.0 ? 1 : 0;
+    const int e3 = (std::fabs(Value) >= 1e100 || std::fabs(Value) < 1e-99) ? 1 : 0;
+    const int pmax = 10 - neg - e3;
+    char buf[64];
+    for (int p = 1; p <= pmax; ++p) {
+        rNum.Print(buf, sizeof(buf), "%.*e", p, Value);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == Value)
+            return std::string(buf);
+    }
+    return std::string(buf);
+}
+
 void lsd_put_int(std::string& rOut, std::int64_t Value, std::size_t Width) {
     lsd_put(rOut, std::to_string(Value), Width);
 }
@@ -85708,19 +86925,19 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
     {
         const NDArray& points = rMesh.Points();
         const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
-        std::vector<std::string> rows(npts);
-        parallel_for(npts, [&](std::size_t i) {
-            std::string& row = rows[i];
-            lsd_put_int(row, static_cast<std::int64_t>(i + 1), 8);
-            for (std::size_t c = 0; c < 3; ++c)
-                lsd_put(row,
-                        c < dim ? detail::format_real16(detail::read_double(points, i * dim + c))
-                                : std::string("0.0"),
-                        16);
-            row += '\n';
-        });
-        for (const std::string& row : rows)
-            os << row;
+        // Rows formatted in parallel chunks (row_writer.hpp), each coordinate
+        // by lsd_real16: format_real16 with the decimal point resolved once.
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, npts, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    lsd_put_int(rBuf, static_cast<std::int64_t>(i + 1), 8);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        lsd_put(rBuf, c < dim ? lsd_real16(pv[i * dim + c], num) : "0.0", 16);
+                    rBuf += '\n';
+                }
+            });
     }
     {
         std::size_t g = 0;
@@ -88275,6 +89492,7 @@ MeshMetadata read_lsdyna_d3plot_metadata(const std::string& rPath, const ReadOpt
 #include <limits>
 #include <map>
 #include <set>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -88416,17 +89634,20 @@ bool marc_is_data(std::string_view Line) {
 }
 
 std::vector<std::string> marc_lines(const std::string& rPath, const char* pLabel) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
+    std::optional<detail::FileSource> source;
+    try {
+        source.emplace(rPath);
+    } catch (const ReadError&) {
         marc_fail(pLabel, "cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    const std::string_view text = source->View();
     std::vector<std::string> lines;
     std::size_t pos = 0;
     while (pos < text.size()) {
         std::size_t eol = text.find('\n', pos);
         if (eol == std::string::npos)
             eol = text.size();
-        std::string line = text.substr(pos, eol - pos);
+        std::string line(text.substr(pos, eol - pos));
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         lines.push_back(std::move(line));
@@ -89640,6 +90861,7 @@ MeshMetadata read_marc_t19_metadata(const std::string& rPath, const ReadOptions&
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -89656,53 +90878,37 @@ namespace {
 // because the single-header amalgamation concatenates all of src/cpp/src.
 // ---------------------------------------------------------------------------
 
-std::string mdpa_strip(const std::string& rS) {
-    const std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    const std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+std::string_view mdpa_strip(std::string_view S) {
+    const std::size_t b = S.find_first_not_of(" \t\r\n");
+    if (b == std::string_view::npos)
+        return {};
+    const std::size_t e = S.find_last_not_of(" \t\r\n");
+    return S.substr(b, e - b + 1);
 }
 
 /// The line with any `//` comment removed, then stripped.
-std::string mdpa_clean(const std::string& rS) {
-    const std::size_t c = rS.find("//");
-    return mdpa_strip(c == std::string::npos ? rS : rS.substr(0, c));
+std::string_view mdpa_clean(std::string_view S) {
+    const std::size_t c = S.find("//");
+    return mdpa_strip(c == std::string_view::npos ? S : S.substr(0, c));
 }
 
-std::vector<std::string> mdpa_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> mdpa_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
-bool mdpa_starts_with(const std::string& rS, const std::string& rPrefix) {
-    return rS.size() >= rPrefix.size() && rS.compare(0, rPrefix.size(), rPrefix) == 0;
+bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
+    return S.size() >= Prefix.size() && S.compare(0, Prefix.size(), Prefix) == 0;
 }
 
-bool mdpa_parse_int(const std::string& rS, std::int64_t& rOut) {
-    if (rS.empty())
-        return false;
-    char* end = nullptr;
-    const long long v = std::strtoll(rS.c_str(), &end, 10);
-    if (end != rS.c_str() + rS.size())
-        return false;
-    rOut = static_cast<std::int64_t>(v);
-    return true;
+/// strtoll(…, 10) over the whole token.
+bool mdpa_parse_int(std::string_view S, std::int64_t& rOut) {
+    return detail::parse_int_token(S, rOut);
 }
 
-bool mdpa_parse_double(const std::string& rS, double& rOut) {
-    if (rS.empty())
-        return false;
-    const char* end = nullptr;
-    const double v = detail::parse_double(rS.c_str(), end);
-    if (end != rS.c_str() + rS.size())
-        return false;
-    rOut = v;
-    return true;
+/// parse_double over the whole token.
+bool mdpa_parse_double(std::string_view S, double& rOut) {
+    return detail::parse_double_token(S, rOut);
 }
 
 // ---------------------------------------------------------------------------
@@ -89774,11 +90980,11 @@ struct MdpaDataRow {
 
 /// A cursor over the file's lines, so every block parser advances one index.
 struct MdpaCursor {
-    const std::vector<std::string>* mpLines = nullptr;
+    const std::vector<std::string_view>* mpLines = nullptr;
     std::size_t mIndex = 0;
 
     bool Done() const { return mIndex >= mpLines->size(); }
-    const std::string& Next() { return (*mpLines)[mIndex++]; }
+    std::string_view Next() { return (*mpLines)[mIndex++]; }
 };
 
 /// Consume the rest of a block, ignoring blank/comment-only lines.
@@ -89814,15 +91020,15 @@ void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::s
 void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
                              bool Lenient, MdpaInfo* pInfo) {
     while (!rCur.Done()) {
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == rEnd)
             return;
         if (!Lenient)
             throw ReadError("MDPA: " + rWhat +
-                            " is not supported by the C++ reader (offending line: '" + line +
-                            "'; set ReadOptions::mLenient to skip it instead)");
+                            " is not supported by the C++ reader (offending line: '" +
+                            std::string(line) + "'; set ReadOptions::mLenient to skip it instead)");
         log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
         if (pInfo)
             pInfo->mSkippedConstructs.push_back(rWhat);
@@ -89840,7 +91046,7 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
  * names unchanged. Rows are whitespace-separated numbers; the first usable row
  * fixes the column count and a row that disagrees is warned about and skipped.
  */
-PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHeader) {
+PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, std::string_view rHeader) {
     PropertyValue out;
     out.mIsTable = true;
     out.mKey = mdpa_strip(rHeader.substr(std::string("Begin Table").size()));
@@ -89849,18 +91055,18 @@ PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHe
     std::size_t ncols = 0;
     bool terminated = false;
     while (!rCur.Done()) {
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == "End Table") {
             terminated = true;
             break;
         }
-        const std::vector<std::string> toks = mdpa_tokens(line);
+        const std::vector<std::string_view> toks = mdpa_tokens(line);
         std::vector<double> row;
         row.reserve(toks.size());
         bool ok = true;
-        for (const std::string& tok : toks) {
+        for (const std::string_view tok : toks) {
             double v = 0.0;
             if (!mdpa_parse_double(tok, v)) {
                 ok = false;
@@ -89901,9 +91107,9 @@ PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHe
  * bracketed vector or matrix -- is kept verbatim as text, which is both
  * lossless and what the pure-Python reference does.
  */
-PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) {
+PropertySet mdpa_parse_properties(MdpaCursor& rCur, std::string_view rHeader) {
     PropertySet out;
-    const std::vector<std::string> head = mdpa_tokens(rHeader);
+    const std::vector<std::string_view> head = mdpa_tokens(rHeader);
     if (head.size() < 3 || !mdpa_parse_int(head[2], out.mId)) {
         log::warn("mdpa: Properties block with no readable id, using 0: {}", rHeader);
         out.mId = 0;
@@ -89912,7 +91118,7 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) 
     while (true) {
         if (rCur.Done())
             throw ReadError("MDPA: EOF before 'End Properties'");
-        const std::string line = mdpa_clean(rCur.Next());
+        const std::string_view line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == "End Properties")
@@ -89930,7 +91136,7 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) 
         }
         PropertyValue v;
         v.mKey = line.substr(0, sep);
-        const std::string rest = mdpa_strip(line.substr(sep + 1));
+        const std::string_view rest = mdpa_strip(line.substr(sep + 1));
         double scalar = 0.0;
         if (mdpa_parse_double(rest, scalar)) {
             NDArray a(DType::Float64, {1});
@@ -89963,20 +91169,21 @@ int mdpa_parse_data_block(
     std::vector<MdpaDataRow>& rRows, bool& rHasFixed) {
     int nc = -1;
     bool terminated = false;
+    std::vector<std::string_view> toks;  // reused: one allocation per block, not per row
     while (!rCur.Done()) {
-        const std::string raw = mdpa_strip(rCur.Next());
+        const std::string_view raw = mdpa_strip(rCur.Next());
         if (raw == rEnd) {
             terminated = true;
             break;
         }
-        const std::string line = mdpa_clean(raw);
+        const std::string_view line = mdpa_clean(raw);
         if (line.empty())
             continue;
         if (line == rEnd) {
             terminated = true;
             break;
         }
-        const std::vector<std::string> toks = mdpa_tokens(line);
+        detail::split_blanks(line, toks);
         std::int64_t id = 0;
         if (toks.empty())
             continue;
@@ -90090,13 +91297,10 @@ namespace {
  * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
  */
 Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l))
-        lines.push_back(l);
+    // The file read once; its lines are views into it (detail/text_cursor.hpp),
+    // not a string each.
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
     MdpaCursor cur{&lines, 0};
 
@@ -90161,7 +91365,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
 
     auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut) {
         while (!cur.Done()) {
-            const std::string line = mdpa_clean(cur.Next());
+            const std::string_view line = mdpa_clean(cur.Next());
             if (line.empty())
                 continue;
             if (line == rEnd)
@@ -90193,8 +91397,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     };
 
     while (!cur.Done()) {
-        const std::string raw = mdpa_strip(cur.Next());
-        const std::string line = mdpa_clean(raw);
+        const std::string_view raw = mdpa_strip(cur.Next());
+        const std::string_view line = mdpa_clean(raw);
         if (line.empty())
             continue;
 
@@ -90202,19 +91406,20 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             while (true) {
                 if (cur.Done())
                     throw ReadError("MDPA: EOF before 'End ModelPartData'");
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == "End ModelPartData")
                     break;
-                const std::vector<std::string> t = mdpa_tokens(e);
+                const std::vector<std::string_view> t = mdpa_tokens(e);
                 if (t.size() < 2) {
                     log::warn("mdpa: skipping malformed ModelPartData line: {}", e);
                     continue;
                 }
                 double v = 0.0;
                 if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
-                    const std::string what = "a non-numeric ModelPartData value for '" + t[0] + "'";
+                    const std::string what =
+                        "a non-numeric ModelPartData value for '" + std::string(t[0]) + "'";
                     if (!Lenient)
                         throw ReadError("MDPA: " + what +
                                         " is not supported by the C++ reader (set "
@@ -90226,30 +91431,45 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 }
                 NDArray a(DType::Float64, {1});
                 a.As<double>()[0] = v;
-                field_data[t[0]] = std::move(a);
+                field_data[std::string(t[0])] = std::move(a);
             }
         } else if (line == "Begin Nodes") {
             if (num_points)
                 throw ReadError("MDPA: more than one Nodes block");
             bool terminated = false;
+            // The format carries no node count: the block's lines (views, so
+            // cheap to look ahead over) bound it, and size the coordinates.
+            {
+                std::size_t rows = 0;
+                for (std::size_t k = cur.mIndex; k < lines.size(); ++k) {
+                    const std::string_view ahead = mdpa_clean(lines[k]);
+                    if (ahead == "End Nodes")
+                        break;
+                    rows += ahead.empty() ? 0 : 1;
+                }
+                coords.reserve(coords.size() + 3 * rows);
+                raw_node_ids.reserve(raw_node_ids.size() + rows);
+            }
+            std::vector<std::string_view> t;  // reused: one allocation per block, not per row
             while (!cur.Done()) {
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == "End Nodes") {
                     terminated = true;
                     break;
                 }
-                const std::vector<std::string> t = mdpa_tokens(e);
+                detail::split_blanks(e, t);
                 if (t.size() < 3)
-                    throw ReadError("MDPA: node line with fewer than 3 coordinates: " + e);
+                    throw ReadError("MDPA: node line with fewer than 3 coordinates: " +
+                                    std::string(e));
                 // An id-less row (`x y z`) takes its position as its id, which is
                 // exactly what "connectivity is 1-based into row order" already
                 // meant for a fully id-less file -- so such a file never leaves
                 // the dense path and reads byte-identically to before.
                 std::int64_t id = static_cast<std::int64_t>(num_points) + 1;
                 if (t.size() >= 4 && !mdpa_parse_int(t[0], id))
-                    throw ReadError("MDPA: non-integer node id: " + e);
+                    throw ReadError("MDPA: non-integer node id: " + std::string(e));
                 if (node_ids_dense && id != static_cast<std::int64_t>(num_points) + 1) {
                     node_ids.reserve(num_points * 2 + 16);
                     for (std::size_t r = 0; r < num_points; ++r)
@@ -90266,7 +91486,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 for (std::size_t c = t.size() - 3; c < t.size(); ++c) {
                     double v = 0.0;
                     if (!mdpa_parse_double(t[c], v))
-                        throw ReadError("MDPA: non-numeric node coordinate: " + e);
+                        throw ReadError("MDPA: non-numeric node coordinate: " + std::string(e));
                     coords.push_back(v);
                 }
                 ++num_points;
@@ -90277,8 +91497,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                    mdpa_starts_with(line, "Begin Conditions")) {
             const bool is_condition = mdpa_starts_with(line, "Begin Conditions");
             const std::string end_token = is_condition ? "End Conditions" : "End Elements";
-            const std::vector<std::string> head = mdpa_tokens(line);
-            const std::string entity_name = head.size() >= 3 ? head[2] : std::string();
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string entity_name = head.size() >= 3 ? std::string(head[2]) : std::string();
             const CellType type = mdpa_entity_cell_type(entity_name);
             if (type == CellType::Custom)
                 throw ReadError("MDPA: unknown Kratos entity name '" + entity_name + "'");
@@ -90290,8 +91510,9 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             const std::vector<int>& order = mdpa_kratos_node_order(type);
 
             bool terminated = false;
+            std::vector<std::string_view> t;  // reused: one allocation per block, not per row
             while (!cur.Done()) {
-                const std::string e = mdpa_clean(cur.Next());
+                const std::string_view e = mdpa_clean(cur.Next());
                 if (e.empty())
                     continue;
                 if (e == end_token) {
@@ -90299,15 +91520,17 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     break;
                 }
                 if (mdpa_starts_with(e, "End "))
-                    throw ReadError("MDPA: expected '" + end_token + "', got '" + e + "'");
-                const std::vector<std::string> t = mdpa_tokens(e);
+                    throw ReadError("MDPA: expected '" + end_token + "', got '" + std::string(e) +
+                                    "'");
+                detail::split_blanks(e, t);
                 if (static_cast<int>(t.size()) != nn + 2)
                     throw ReadError("MDPA: " + entity_name + " row with " +
                                     std::to_string(t.size() >= 2 ? t.size() - 2 : 0) +
-                                    " nodes (expected " + std::to_string(nn) + "): " + e);
+                                    " nodes (expected " + std::to_string(nn) +
+                                    "): " + std::string(e));
                 std::int64_t id = 0, prop = 0;
                 if (!mdpa_parse_int(t[0], id) || !mdpa_parse_int(t[1], prop))
-                    throw ReadError("MDPA: non-integer id/property in: " + e);
+                    throw ReadError("MDPA: non-integer id/property in: " + std::string(e));
 
                 // The Kratos *name* is part of the split key, not just the cell
                 // type: two adjacent SmallDisplacementElement3D4N and
@@ -90330,7 +91553,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 for (int j = 0; j < nn; ++j) {
                     std::int64_t node = 0;
                     if (!mdpa_parse_int(t[static_cast<std::size_t>(j) + 2], node))
-                        throw ReadError("MDPA: non-integer node id in: " + e);
+                        throw ReadError("MDPA: non-integer node id in: " + std::string(e));
                     const std::size_t slot =
                         order.empty()
                             ? static_cast<std::size_t>(j)
@@ -90364,12 +91587,12 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             if (pInfo)
                 pInfo->mProperties.push_back(std::move(ps));
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed NodalData header: " + line);
+                throw ReadError("MDPA: malformed NodalData header: " + std::string(line));
             if (num_points == 0)
                 throw ReadError("MDPA: NodalData before Nodes");
-            std::string name = head[2];
+            std::string name(head[2]);
             const std::size_t br = name.find('[');
             if (br != std::string::npos)
                 name = name.substr(0, br);
@@ -90392,10 +91615,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                    mdpa_starts_with(line, "Begin ConditionalData")) {
             const bool elemental = mdpa_starts_with(line, "Begin ElementalData");
             const std::string end_token = elemental ? "End ElementalData" : "End ConditionalData";
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed " + end_token.substr(4) + " header: " + line);
-            std::string name = head[2];
+                throw ReadError("MDPA: malformed " + end_token.substr(4) +
+                                " header: " + std::string(line));
+            std::string name(head[2]);
             const std::size_t br = name.find('[');
             if (br != std::string::npos)
                 name = name.substr(0, br);
@@ -90466,10 +91690,10 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 smp.mCells.push_back(it->second);
             }
         } else if (mdpa_starts_with(line, "Begin SubModelPart")) {
-            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
             if (head.size() < 3)
-                throw ReadError("MDPA: malformed SubModelPart header: " + line);
-            smp_stack.push_back(head[2]);
+                throw ReadError("MDPA: malformed SubModelPart header: " + std::string(line));
+            smp_stack.emplace_back(head[2]);
             smps[smp_name()];  // an entity-less SubModelPart is still a group
         } else if (line == "End SubModelPart") {
             if (smp_stack.empty())
@@ -90486,11 +91710,13 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             // block a future Kratos adds are covered without a case each. The
             // terminator is the header's first word after `Begin`, so a nested
             // `End <other>` cannot end the scan early.
-            const std::vector<std::string> head = mdpa_tokens(line);
-            const std::string end_token = "End " + (head.size() >= 2 ? head[1] : std::string());
-            mdpa_reject_or_skip(cur, end_token, "the block '" + line + "'", Lenient, pInfo);
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string end_token =
+                "End " + (head.size() >= 2 ? std::string(head[1]) : std::string());
+            mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'", Lenient,
+                                pInfo);
         } else {
-            throw ReadError("MDPA: unexpected line outside a block: '" + line + "'");
+            throw ReadError("MDPA: unexpected line outside a block: '" + std::string(line) + "'");
         }
     }
     if (!smp_stack.empty())
@@ -93003,12 +94229,16 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -93038,9 +94268,9 @@ const std::vector<std::pair<std::string, std::pair<std::string, int>>>& meshio_t
 
 // Whitespace/comment-skipping tokenizer over the whole file.
 struct Tokenizer {
-    const std::string& mBuf;
+    std::string_view mBuf;
     std::size_t mPos = 0;
-    explicit Tokenizer(const std::string& rB) : mBuf(rB) {}
+    explicit Tokenizer(std::string_view rB) : mBuf(rB) {}
 
     bool eof() const { return mPos >= mBuf.size(); }
 
@@ -93063,7 +94293,7 @@ struct Tokenizer {
         while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
                mBuf[mPos] != '#')
             ++mPos;
-        return mBuf.substr(start, mPos - start);
+        return std::string(mBuf.substr(start, mPos - start));
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
     // A section's entry count: every entry takes at least a byte of the file,
@@ -93136,10 +94366,9 @@ std::string pick_first_int_cell(const Mesh& rMesh) {
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource buf_source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = buf_source.View();
     Tokenizer tok(buf);
 
     int dim = 0;
@@ -93260,14 +94489,23 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     // Vertices
     os << "\nVertices\n" << n << "\n";
     const NDArray* vlabels = pick_first_int(rMesh);
-    char buf[64];
-    for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t c = 0; c < d; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), "%.16e ", detail::read_double(points, i * d + c));
-            os << buf;
-        }
-        std::int64_t lab = vlabels ? detail::read_int(*vlabels, i) : 1;
-        os << lab << "\n";
+    // Rows formatted in parallel chunks (row_writer.hpp), byte for byte.
+    {
+        const detail::DoubleView pv(points);
+        // Int64View is non-copyable: emplace rather than a ternary, which MSVC copies.
+        std::optional<detail::Int64View> labels;
+        if (vlabels)
+            labels.emplace(*vlabels);
+        const detail::CNumber num;
+        detail::write_row_chunks(os, n,
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         for (std::size_t c = 0; c < d; ++c)
+                                             num.Append(rBuf, "%.16e ", pv[i * d + c]);
+                                         detail::append_int(rBuf, labels ? (*labels)[i] : 1);
+                                         rBuf += '\n';
+                                     }
+                                 });
     }
 
     // Cells, grouped by medit element keyword.
@@ -93285,13 +94523,22 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
             const NDArray* lab = (!clabel_key.empty() && ci < rMesh.CellDataNumBlocks(clabel_key))
                                      ? &rMesh.CellData(clabel_key, ci)
                                      : nullptr;
-            const NDArray& conn = cb.Conn();
-            for (std::size_t r = 0; r < count; ++r) {
-                for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1) << " ";
-                std::int64_t l = lab ? detail::read_int(*lab, r) : 1;
-                os << l << "\n";
-            }
+            const detail::Int64View conn(cb.Conn());
+            std::optional<detail::Int64View> labels;
+            if (lab)
+                labels.emplace(*lab);
+            const std::size_t kk = static_cast<std::size_t>(k);
+            detail::write_row_chunks(os, count,
+                                     [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                         for (std::size_t r = First; r < Last; ++r) {
+                                             for (std::size_t j = 0; j < kk; ++j) {
+                                                 detail::append_int(rBuf, conn[r * kk + j] + 1);
+                                                 rBuf += ' ';
+                                             }
+                                             detail::append_int(rBuf, labels ? (*labels)[r] : 1);
+                                             rBuf += '\n';
+                                         }
+                                     });
         }
     }
 
@@ -93742,10 +94989,8 @@ private:
 };
 
 std::string mf_read_text(const std::string& rPath, const char* pWhat) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError(std::string(pWhat) + ": cannot open " + rPath);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return std::string(
+        detail::open_source(rPath, std::string(pWhat) + ": cannot open " + rPath).View());
 }
 
 // A finite element space, as a `FiniteElementSpace` header names it.
@@ -98743,10 +99988,7 @@ Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
 }
 
 std::string comsol_slurp(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return std::string(detail::open_source(rPath, "Could not open file: " + rPath).View());
 }
 
 // ---------------------------------------------------------------------------
@@ -103047,7 +104289,7 @@ int topo_dim(const std::string& rType) {
 
 std::vector<std::string> netgen_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);
@@ -103461,7 +104703,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        auto iss = detail::make_classic_istringstream(line.substr(b, e - b));
+        detail::TextStream iss(line.substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {
@@ -103787,6 +105029,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/openfoam.cpp =====
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <bit>
 #include <cctype>
 #include <cstdint>
@@ -103794,7 +105037,6 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -103913,11 +105155,11 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    auto ss = detail::make_classic_istringstream(out);
+    detail::TextStream ss(out);
     std::string line, result;
     bool in_header = false;
     int depth = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.find("FoamFile") != std::string::npos)
             in_header = true;
@@ -103940,18 +105182,31 @@ std::string strip_comments_and_header(std::string_view rText) {
 
 // ---- ASCII parsers ----
 
+// The capacity to reserve from a list's count line: the count, capped by what
+// the body could hold at `MinBytes` bytes per entry, so a wrong count only
+// sizes the reservation and never fails a read that succeeded before.
+std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
+                                std::size_t MinBytes) {
+    std::uint64_t n = 0;
+    const auto r = std::from_chars(rCount.data(), rCount.data() + rCount.size(), n);
+    if (r.ec != std::errc{})
+        return 0;
+    return static_cast<std::size_t>(std::min<std::uint64_t>(n, BodySize / MinBytes));
+}
+
 std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
     std::vector<std::array<double, 3>> pts;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false;
     bool have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
         if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
             have_n = true;
+            pts.reserve(openfoam_count_hint(s, rBody.size(), 7));
             continue;
         }
         if (s == "(" && have_n) {
@@ -103966,7 +105221,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ns = detail::make_classic_istringstream(t);
+            detail::TextStream ns(t);
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -103977,15 +105232,16 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
 
 std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     std::vector<Face> faces;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
         if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
             have_n = true;
+            faces.reserve(openfoam_count_hint(s, rBody.size(), 8));
             continue;
         }
         if (s == "(" && have_n) {
@@ -104001,7 +105257,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             if (lp == std::string::npos || rp == std::string::npos)
                 continue;
             std::string inside = s.substr(lp + 1, rp - lp - 1);
-            auto ns = detail::make_classic_istringstream(inside);
+            detail::TextStream ns(inside);
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -104014,15 +105270,16 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
 
 std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
     std::vector<std::int64_t> out;
-    auto ss = detail::make_classic_istringstream(rBody);
+    detail::TextStream ss(rBody);
     std::string line;
     bool in_block = false, have_n = false;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
         if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
             have_n = true;
+            out.reserve(openfoam_count_hint(s, rBody.size(), 2));
             continue;
         }
         if (s == "(") {
@@ -104032,7 +105289,7 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
         if (s == ")")
             break;
         if (in_block) {
-            auto ns = detail::make_classic_istringstream(s);
+            detail::TextStream ns(s);
             std::int64_t v;
             while (ns >> v)
                 out.push_back(v);
@@ -104193,7 +105450,7 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
         ++rp;
     }
     const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
-    auto ss = detail::make_classic_istringstream(inside);
+    detail::TextStream ss(inside);
     std::vector<std::int64_t> out;
     std::int64_t v;
     while (ss >> v)
@@ -104355,7 +105612,8 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
         std::vector<std::int64_t> ids(static_cast<std::size_t>(count));
         const char* base = rRaw.data() + lparen + 1;
         for (std::int64_t i = 0; i < count; ++i) {
-            const std::size_t off = static_cast<std::size_t>(i) * static_cast<std::size_t>(LabelBytes);
+            const std::size_t off =
+                static_cast<std::size_t>(i) * static_cast<std::size_t>(LabelBytes);
             ids[static_cast<std::size_t>(i)] =
                 LabelBytes == 4 ? static_cast<std::int64_t>(read_le<std::int32_t>(base + off))
                                 : read_le<std::int64_t>(base + off);
@@ -104590,8 +105848,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         const std::size_t local_patch =
             foam_patch_of_local_face(op.mRaw.mBoundary, owner_claim->mLocalFace);
         std::int64_t global_patch = -1;
-        if (local_patch != static_cast<std::size_t>(-1) &&
-            local_patch < op.mBoundaryAddr.size())
+        if (local_patch != static_cast<std::size_t>(-1) && local_patch < op.mBoundaryAddr.size())
             global_patch = op.mBoundaryAddr[local_patch];
         const bool is_processor_patch =
             global_patch < 0 || (local_patch != static_cast<std::size_t>(-1) &&
@@ -104681,7 +105938,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    auto ss = detail::make_classic_istringstream(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -104695,11 +105952,11 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
     const std::string text_owned(rText);
-    auto ss = detail::make_classic_istringstream(text_owned);
+    detail::TextStream ss(text_owned);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
-    while (std::getline(ss, line)) {
+    while (getline(ss, line)) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -104715,7 +105972,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     }
     out.mCount = n;
     out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
-    for (std::int64_t i = 0; i < n && std::getline(ss, line);) {
+    for (std::int64_t i = 0; i < n && getline(ss, line);) {
         std::string s = openfoam_strip(line);
         if (s.empty())
             continue;
@@ -104725,7 +105982,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             for (char& c : s)
                 if (c == '(' || c == ')')
                     c = ' ';
-            auto ls = detail::make_classic_istringstream(s);
+            detail::TextStream ls(s);
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -104774,13 +106031,14 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
     const char* base = raw.data() + start;
     for (std::int64_t i = 0; i < n; ++i)
         for (int c = 0; c < components; ++c) {
-            const std::size_t off = (static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
-                                     static_cast<std::size_t>(c)) *
-                                    static_cast<std::size_t>(fmt.mScalarBytes);
+            const std::size_t off =
+                (static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
+                 static_cast<std::size_t>(c)) *
+                static_cast<std::size_t>(fmt.mScalarBytes);
             out.mFlat[static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
-                     static_cast<std::size_t>(c)] =
+                      static_cast<std::size_t>(c)] =
                 fmt.mScalarBytes == 4 ? static_cast<double>(read_le<float>(base + off))
-                                     : read_le<double>(base + off);
+                                      : read_le<double>(base + off);
         }
     return out;
 }
@@ -104832,7 +106090,7 @@ std::vector<FoamTimeDir> foam_time_dirs(const fs::path& rCaseRoot) {
             dirs.push_back({t, name});
     }
     std::sort(dirs.begin(), dirs.end(),
-             [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
+              [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
     return dirs;
 }
 
@@ -104906,8 +106164,8 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
         if (fs::exists(c))
             poly = c;
         else
-            throw ReadError(detail::format_compat(
-                "OpenFOAM: region '{}' has no {}", rInfo.mRegion, c.string()));
+            throw ReadError(detail::format_compat("OpenFOAM: region '{}' has no {}", rInfo.mRegion,
+                                                  c.string()));
     }
     if (poly.empty() && fs::exists(case_root / "constant" / "regionProperties")) {
         std::vector<std::string> regions;
@@ -105015,8 +106273,8 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     // below). `row == npos` marks a skipped (degenerate) cell.
     constexpr std::size_t npos = static_cast<std::size_t>(-1);
     std::vector<std::tuple<bool, std::string, std::size_t>> placement(
-        static_cast<std::size_t>(n_cells), std::tuple<bool, std::string, std::size_t>{false, "",
-                                                                                       npos});
+        static_cast<std::size_t>(n_cells),
+        std::tuple<bool, std::string, std::size_t>{false, "", npos});
 
     std::size_t n_skipped = 0;
     std::size_t n_polyhedra = 0;
@@ -105305,7 +106563,8 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                 const FoamFieldClass fc = foam_field_class(cls);
                 if (!fc.mSupported) {
                     log::warn(
-                        "OpenFOAM: field '{}' has class '{}', which has no point/cell home; skipped",
+                        "OpenFOAM: field '{}' has class '{}', which has no point/cell home; "
+                        "skipped",
                         field_name, cls.empty() ? "?" : cls);
                     continue;
                 }
@@ -105318,14 +106577,15 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                             field_name, values.mCount, npts);
                         continue;
                     }
-                    NDArray arr = NDArray::Uninit(
-                        DType::Float64, {npts, static_cast<std::size_t>(fc.mComponents)});
+                    NDArray arr = NDArray::Uninit(DType::Float64,
+                                                  {npts, static_cast<std::size_t>(fc.mComponents)});
                     double* dst = arr.As<double>();
                     if (values.mUniform) {
                         for (std::size_t i = 0; i < npts; ++i)
                             for (int c = 0; c < fc.mComponents; ++c)
                                 dst[i * static_cast<std::size_t>(fc.mComponents) +
-                                    static_cast<std::size_t>(c)] = values.mFlat[static_cast<std::size_t>(c)];
+                                    static_cast<std::size_t>(c)] =
+                                    values.mFlat[static_cast<std::size_t>(c)];
                     } else {
                         std::copy(values.mFlat.begin(), values.mFlat.end(), dst);
                     }
@@ -105355,10 +106615,12 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                         is_poly ? poly_block_index.at(key) : vol_block_index.at(key);
                     double* dst = blocks[block].As<double>();
                     for (int c = 0; c < fc.mComponents; ++c)
-                        dst[row * static_cast<std::size_t>(fc.mComponents) + static_cast<std::size_t>(c)] =
-                            values.mUniform ? values.mFlat[static_cast<std::size_t>(c)]
-                                            : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
-                                                            static_cast<std::size_t>(c)];
+                        dst[row * static_cast<std::size_t>(fc.mComponents) +
+                            static_cast<std::size_t>(c)] =
+                            values.mUniform
+                                ? values.mFlat[static_cast<std::size_t>(c)]
+                                : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
+                                               static_cast<std::size_t>(c)];
                 }
                 mesh.AddCellData(field_name, std::move(blocks));
             }
@@ -105463,10 +106725,9 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
            "    format      "
         << (rOpts.mBinary ? "binary" : "ascii") << ";\n";
     if (rOpts.mBinary)
-        rOs << "    arch        \"LSB;label=" << rOpts.mLabelBits
-            << ";scalar=" << rOpts.mScalarBits << "\";\n";
-    rOs << "    class       "
-        << rClass
+        rOs << "    arch        \"LSB;label=" << rOpts.mLabelBits << ";scalar=" << rOpts.mScalarBits
+            << "\";\n";
+    rOs << "    class       " << rClass
         << ";\n"
            "    location    \"constant/polyMesh\";\n"
            "    object      "
@@ -106025,10 +107286,9 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     // writer produces them once the mesh carries the matching `Region` kind,
     // and only deletes a stale one when it no longer does (so an old zone
     // file is not left behind once its region is removed from the mesh).
-    for (const char* name :
-         {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing", "faceProcAddressing",
-          "pointProcAddressing", "cellLevel", "pointLevel", "level0Edge", "refinementHistory",
-          "surfaceIndex"}) {
+    for (const char* name : {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing",
+                             "faceProcAddressing", "pointProcAddressing", "cellLevel", "pointLevel",
+                             "level0Edge", "refinementHistory", "surfaceIndex"}) {
         std::error_code rc;
         if (fs::remove(poly / name, rc))
             log::info("OpenFOAM: removed stale {}", name);
@@ -106054,11 +107314,24 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
             f << ")\n";
         } else {
             f << np << "\n(\n";
-            f << std::setprecision(16);
-            for (std::size_t i = 0; i < np; ++i) {
-                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
-                f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
-            }
+            // `f << std::setprecision(16) << x` on this classic-locale stream,
+            // with no float field set, prints exactly printf's "%.16g"; rows are
+            // formatted that way in parallel chunks (row_writer.hpp).
+            const detail::CNumber num;
+            detail::write_row_chunks(
+                f, np, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                    for (std::size_t i = First; i < Last; ++i) {
+                        const detail::Vec3 p =
+                            detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                        rBuf += '(';
+                        num.Append(rBuf, "%.16g", p[0]);
+                        rBuf += ' ';
+                        num.Append(rBuf, "%.16g", p[1]);
+                        rBuf += ' ';
+                        num.Append(rBuf, "%.16g", p[2]);
+                        rBuf += ")\n";
+                    }
+                });
             f << ")\n";
         }
     }
@@ -106117,11 +107390,10 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         if (rOpts.mBinary) {
             f << order.mNumInternal << "\n(";
             for (std::int64_t i = 0; i < order.mNumInternal; ++i)
-                foam_write_binary_label(
-                    f,
-                    faces.mNeighbour[static_cast<std::size_t>(
-                        order.mNewToOld[static_cast<std::size_t>(i)])],
-                    rOpts.mLabelBits);
+                foam_write_binary_label(f,
+                                        faces.mNeighbour[static_cast<std::size_t>(
+                                            order.mNewToOld[static_cast<std::size_t>(i)])],
+                                        rOpts.mLabelBits);
             f << ")\n";
         } else {
             f << order.mNumInternal << "\n(\n";
@@ -106169,8 +107441,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
 
         write_or_remove("cellZones", foam_collect_cell_zones(rMesh, global_to_compact),
                         "cellZoneList", "cellZone", "cellLabels");
-        write_or_remove("pointZones", foam_collect_point_zones(rMesh), "pointZoneList",
-                        "pointZone", "pointLabels");
+        write_or_remove("pointZones", foam_collect_point_zones(rMesh), "pointZoneList", "pointZone",
+                        "pointLabels");
         write_or_remove("faceZones",
                         foam_collect_face_zones(rMesh, faces, global_to_compact, old_to_new),
                         "faceZoneList", "faceZone", "faceLabels");
@@ -106256,7 +107528,7 @@ bool pat_is_element_code(std::int64_t Code) {
     throw ReadError("Patran neutral: " + rWhat + " (line " + std::to_string(Line) + ")");
 }
 
-std::vector<std::string_view> pat_lines(const std::string& rText) {
+std::vector<std::string_view> pat_lines(std::string_view rText) {
     std::vector<std::string_view> lines;
     std::size_t pos = 0;
     while (pos < rText.size()) {
@@ -106386,7 +107658,7 @@ struct PatResult {
     std::vector<std::pair<std::int64_t, std::vector<double>>> mRows;
 };
 
-PatResult pat_parse_binary_result(const std::string& rRaw, bool BigEndian, bool Nodal,
+PatResult pat_parse_binary_result(std::string_view rRaw, bool BigEndian, bool Nodal,
                                   const std::string& rPath) {
     const bool swap = BigEndian != (std::endian::native == std::endian::big);
     const auto i4 = [&](std::size_t Pos) {
@@ -106458,10 +107730,9 @@ PatResult pat_parse_binary_result(const std::string& rRaw, bool BigEndian, bool 
 }
 
 PatResult pat_parse_result(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Patran results: cannot open " + rPath);
-    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource raw_source =
+        detail::open_source(rPath, "Patran results: cannot open " + rPath);
+    const std::string_view raw = raw_source.View();
     if (raw.size() >= 4) {
         for (const bool big : {false, true}) {
             std::uint32_t u;
@@ -106559,10 +107830,9 @@ Mesh read_patran(const std::string& rPath) {
 }
 
 Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& rResults) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Patran neutral: cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath, "Patran neutral: cannot open " + rPath);
+    const std::string_view text = text_source.View();
     const std::vector<std::string_view> lines = pat_lines(text);
 
     static const std::vector<detail::CardField> xyz_layout =
@@ -107359,6 +108629,7 @@ void write_patran(const std::string& rPath, const Mesh& rMesh) {
 #include <ios>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -107629,14 +108900,14 @@ struct PcdHeader {
     std::size_t mBody = 0;
 };
 
-PcdHeader pcd_parse_header(const std::string& rRaw) {
+PcdHeader pcd_parse_header(std::string_view rRaw) {
     std::unordered_map<std::string, std::vector<std::string>> header;
     std::size_t pos = 0;
     for (;;) {
         const std::size_t end = rRaw.find('\n', pos);
         if (end == std::string::npos)
             throw ReadError("PCD: no DATA line found in the header");
-        const std::string line = pcd_strip(rRaw.substr(pos, end - pos));
+        const std::string line = pcd_strip(std::string(rRaw.substr(pos, end - pos)));
         pos = end + 1;
         if (line.empty() || line[0] == '#')
             continue;
@@ -107741,7 +109012,7 @@ std::size_t pcd_row_bytes(const PcdHeader& rH) {
     return total;
 }
 
-PcdColumns pcd_read_ascii(const PcdHeader& rH, const std::string& rRaw, std::size_t npoints) {
+PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_t npoints) {
     const char* p = rRaw.data() + rH.mBody;
     const char* end = rRaw.data() + rRaw.size();
     const std::size_t expected = npoints * pcd_row_values(rH);
@@ -107797,7 +109068,7 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, const std::string& rRaw, std::siz
     return columns;
 }
 
-PcdColumns pcd_read_binary(const PcdHeader& rH, const std::string& rRaw, std::size_t npoints) {
+PcdColumns pcd_read_binary(const PcdHeader& rH, std::string_view rRaw, std::size_t npoints) {
     const std::size_t stride = pcd_row_bytes(rH);
     const std::size_t have = rRaw.size() - rH.mBody;
     if (stride != 0 && npoints > have / stride)
@@ -107822,7 +109093,7 @@ PcdColumns pcd_read_binary(const PcdHeader& rH, const std::string& rRaw, std::si
     return columns;
 }
 
-PcdColumns pcd_read_compressed(const PcdHeader& rH, const std::string& rRaw, std::size_t npoints) {
+PcdColumns pcd_read_compressed(const PcdHeader& rH, std::string_view rRaw, std::size_t npoints) {
     const std::size_t have = rRaw.size() - rH.mBody;
     if (have < 8)
         throw ReadError("PCD: binary_compressed data is missing its size prefix");
@@ -108064,10 +109335,9 @@ std::string pcd_ascii_value(const NDArray& rData, std::size_t index, char type) 
 }  // namespace
 
 Mesh read_pcd(const std::string& rPath, const PcdReadOptions& rOptions) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource raw_source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view raw = raw_source.View();
 
     const PcdHeader header = pcd_parse_header(raw);
     const std::size_t npoints = static_cast<std::size_t>(header.mPoints);
@@ -108334,7 +109604,7 @@ const std::vector<int>* write_reorder(const std::string& rType) {
 
 std::vector<std::string> permas_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -108531,6 +109801,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -108621,7 +109892,7 @@ struct VProp {
 
 // Read one scalar of `dt` from the buffer at pos into NDArray element idx,
 // byte-swapping when the file is big-endian.
-void rd_into(NDArray& rA, std::size_t idx, const std::string& rBuf, std::size_t& rPos, bool big) {
+void rd_into(NDArray& rA, std::size_t idx, std::string_view rBuf, std::size_t& rPos, bool big) {
     std::size_t isz = dtype_size(rA.Dtype());
     unsigned char* dst = reinterpret_cast<unsigned char*>(rA.Data()) + idx * isz;
     if (rPos + isz > rBuf.size())
@@ -108634,7 +109905,7 @@ void rd_into(NDArray& rA, std::size_t idx, const std::string& rBuf, std::size_t&
     rPos += isz;
 }
 
-std::int64_t rd_int_val(const std::string& rBuf, std::size_t& rPos, DType dt, bool big) {
+std::int64_t rd_int_val(std::string_view rBuf, std::size_t& rPos, DType dt, bool big) {
     NDArray t(dt, {1});
     rd_into(t, 0, rBuf, rPos, big);
     return detail::read_int(t, 0);
@@ -108679,17 +109950,16 @@ void store_scalar(NDArray& rA, std::size_t idx, double dval, std::int64_t ival, 
 }  // namespace
 
 Mesh read_ply(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource buf_source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = buf_source.View();
     std::size_t pos = 0;
 
     auto read_line = [&]() -> std::string {
         std::size_t start = pos;
         while (pos < buf.size() && buf[pos] != '\n')
             ++pos;
-        std::string line = buf.substr(start, pos - start);
+        std::string line(buf.substr(start, pos - start));
         if (pos < buf.size())
             ++pos;
         if (!line.empty() && line.back() == '\r')
@@ -108727,7 +109997,7 @@ Mesh read_ply(const std::string& rPath) {
 
     std::string line = next_sig();
     while (line != "end_header") {
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         iss >> tok;
         if (tok == "obj_info") {
@@ -108742,7 +110012,7 @@ Mesh read_ply(const std::string& rPath) {
                 num_verts = count;
                 line = next_sig();
                 while (line.rfind("property", 0) == 0) {
-                    auto ps = detail::make_classic_istringstream(line);
+                    detail::TextStream ps(line);
                     std::string p, type, name;
                     ps >> p >> type >> name;
                     if (type == "list")
@@ -108756,7 +110026,7 @@ Mesh read_ply(const std::string& rPath) {
                 line = next_sig();
                 bool got_list = false;
                 while (line.rfind("property", 0) == 0) {
-                    auto ps = detail::make_classic_istringstream(line);
+                    detail::TextStream ps(line);
                     std::string p, kind;
                     ps >> p >> kind;
                     if (kind == "list") {
@@ -108813,7 +110083,7 @@ Mesh read_ply(const std::string& rPath) {
     } else {
         for (std::size_t i = 0; i < num_verts; ++i) {
             std::string row = read_line();
-            auto rs = detail::make_classic_istringstream(row);
+            detail::TextStream rs(row);
             for (std::size_t c = 0; c < vprops.size(); ++c) {
                 std::string t;
                 rs >> t;
@@ -108882,7 +110152,7 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                auto rs = detail::make_classic_istringstream(read_line());
+                detail::TextStream rs(read_line());
                 long long cnt;
                 if (!(rs >> cnt))
                     throw ReadError("PLY: a face row without a vertex count");
@@ -109905,17 +111175,16 @@ void rad_collect(const fs::path& rPath, int Depth, std::vector<RadLine>& rOut, b
     if (Depth > kRadMaxIncludeDepth)
         throw ReadError("Radioss: #include nested deeper than " +
                         std::to_string(kRadMaxIncludeDepth));
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Radioss: cannot open " + rPath.string());
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource text_source =
+        detail::open_source(rPath.string(), "Radioss: cannot open " + rPath.string());
+    const std::string_view text = text_source.View();
     const std::string label = rPath.filename().string();
     std::size_t pos = 0, number = 0;
     while (pos < text.size() && !rEnded) {
         std::size_t eol = text.find('\n', pos);
         if (eol == std::string::npos)
             eol = text.size();
-        std::string line = text.substr(pos, eol - pos);
+        std::string line(text.substr(pos, eol - pos));
         pos = eol + 1;
         ++number;
         if (!line.empty() && line.back() == '\r')
@@ -111327,6 +112596,7 @@ Mesh read_radioss(const std::string& rPath) {
 #include <limits>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -111341,7 +112611,7 @@ constexpr std::int32_t kAnimMagic = 0x542C;
 // Big-endian reads with a bounds check.
 class AnimCursor {
 public:
-    AnimCursor(const std::string& rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
+    AnimCursor(std::string_view rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
 
     const char* Take(std::size_t N) {
         if (N > mData.size() - mPos)  // not mPos + N: that wraps for a huge N
@@ -111419,7 +112689,7 @@ public:
     }
 
 private:
-    const std::string& mData;
+    std::string_view mData;
     const std::string& mPath;
     std::size_t mPos = 0;
 };
@@ -111511,10 +112781,9 @@ bool is_radioss_anim_filename(const std::string& rPath) {
 }
 
 Mesh read_radioss_anim(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Radioss animation: cannot open " + rPath);
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource data_source =
+        detail::open_source(rPath, "Radioss animation: cannot open " + rPath);
+    const std::string_view data = data_source.View();
     AnimCursor c(data, rPath);
     const std::int64_t magic = c.Int();
     if (magic != kAnimMagic) {
@@ -111977,7 +113246,9 @@ MeshMetadata read_radioss_anim_metadata(const std::string& rPath, const ReadOpti
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -112101,7 +113372,8 @@ struct ThGroup {
 // One time-history file: its descriptions and the records of every complete
 // output.
 struct ThFile {
-    std::string mData;
+    std::optional<detail::FileSource> mSource;
+    std::string_view mData;
     std::vector<std::pair<std::size_t, std::size_t>> mRecords;  // (offset, length)
     std::size_t mNext = 0;                                      // next record to read
     std::vector<std::int64_t> mGlobals;
@@ -112111,11 +113383,16 @@ struct ThFile {
     std::vector<std::size_t> mOutputs;  // each output's first record
     std::vector<double> mTimes;
 
+    // mData views mSource's bytes: pinned in place.
+    ThFile(const ThFile&) = delete;
+    ThFile& operator=(const ThFile&) = delete;
     explicit ThFile(const std::string& rPath) {
-        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-        if (!in)
+        try {
+            mSource.emplace(rPath);
+        } catch (const ReadError&) {
             th_fail("cannot open '" + rPath + "'");
-        mData.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        mData = mSource->View();
         if (!is_radioss_th_head(mData.data(), mData.size()))
             th_fail("'" + rPath + "' is not a time-history file");
         // Split the records; a truncated last one ends the file.
@@ -112465,7 +113742,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         std::string s = lstrip(line);
         if (s.empty() || is_comment_line(s))
             continue;
-        auto iss = detail::make_classic_istringstream(s);
+        detail::TextStream iss(s);
         std::vector<std::string> tok;
         std::string t;
         while (iss >> t)
@@ -112706,6 +113983,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -112774,20 +114052,16 @@ int meshio_to_su2(const std::string& rT) {
     return -1;
 }
 
-std::string su2_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+std::string_view su2_strip(std::string_view S) {
+    std::size_t b = S.find_first_not_of(" \t\r\n");
+    if (b == std::string_view::npos)
+        return {};
+    std::size_t e = S.find_last_not_of(" \t\r\n");
+    return S.substr(b, e - b + 1);
 }
-std::vector<std::string> su2_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> su2_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
 struct Blk {
@@ -112802,32 +114076,40 @@ struct Blk {
 // Parse `count` element lines (each "vtk_type n0 n1 ... [extra]") into type-
 // grouped blocks (sorted by vtk type code, matching numpy.unique), all with
 // the given tag and zone.
-void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, std::size_t count,
-                     std::int32_t tag, std::int32_t zone, std::vector<Blk>& rOut) {
-    std::vector<std::pair<int, std::vector<std::int64_t>>> elems;
+void read_elem_block(const std::vector<std::string_view>& rLines, std::size_t& rLi,
+                     std::size_t count, std::int32_t tag, std::int32_t zone,
+                     std::vector<Blk>& rOut) {
+    // Each element's type and nodes, flat: no vector per element.
+    std::vector<int> vts;
+    vts.reserve(count);
+    std::vector<std::int64_t> flat;
+    std::vector<std::size_t> start{0};
+    start.reserve(count + 1);
     std::set<int> types;
+    std::vector<std::string_view> t;  // reused
     for (std::size_t e = 0; e < count; ++e) {
-        auto t = su2_tokens(rLines.at(rLi++));
+        detail::split_blanks(rLines.at(rLi++), t);
         detail::need_tokens(t, 1, "SU2");
-        int vt = std::stoi(t[0]);
+        int vt = std::stoi(std::string(t[0]));
         int nn = su2_numnodes(vt);
         if (nn == 0)
-            throw ReadError("SU2: unsupported element type " + t[0]);
+            throw ReadError("SU2: unsupported element type " + std::string(t[0]));
         detail::need_tokens(t, 1 + static_cast<std::size_t>(nn), "SU2");
-        std::vector<std::int64_t> nodes(nn);
         for (int j = 0; j < nn; ++j)
-            nodes[j] = std::strtoll(t[1 + j].c_str(), nullptr, 10);
-        elems.emplace_back(vt, std::move(nodes));
+            flat.push_back(detail::strtoll_token(t[1 + static_cast<std::size_t>(j)]));
+        vts.push_back(vt);
+        start.push_back(flat.size());
         types.insert(vt);
     }
     for (int vt : types) {  // std::set is sorted
         Blk b;
         b.mType = su2_to_meshio(vt);
         b.mN = su2_numnodes(vt);
-        for (auto& e : elems) {
-            if (e.first != vt)
+        for (std::size_t e = 0; e < vts.size(); ++e) {
+            if (vts[e] != vt)
                 continue;
-            b.mConn.insert(b.mConn.end(), e.second.begin(), e.second.end());
+            b.mConn.insert(b.mConn.end(), flat.begin() + static_cast<std::ptrdiff_t>(start[e]),
+                           flat.begin() + static_cast<std::ptrdiff_t>(start[e + 1]));
             b.mTag.push_back(tag);
             b.mZone.push_back(zone);
             ++b.mCount;
@@ -112851,7 +114133,7 @@ struct Su2ZoneBody {
 /// consumed. Stops at the next "IZONE=" (the next zone) or end of file --
 /// shared by the single-zone and multizone read paths, so both go through
 /// exactly the same per-record logic.
-Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size_t& rLi,
+Su2ZoneBody read_su2_zone_body(const std::vector<std::string_view>& rLines, std::size_t& rLi,
                                std::int32_t zone) {
     Su2ZoneBody zoneBody;
     std::int32_t next_tag_id = 0;
@@ -112859,20 +114141,20 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
     std::string current_tag_name;  // empty when the marker's own tag is numeric
 
     while (rLi < rLines.size()) {
-        std::string line = su2_strip(rLines[rLi]);
+        std::string_view line = su2_strip(rLines[rLi]);
         if (line.empty() || line[0] == '%') {
             ++rLi;
             continue;
         }
         std::size_t eq = line.find('=');
-        if (eq == std::string::npos) {
+        if (eq == std::string_view::npos) {
             ++rLi;
             continue;
         }
-        std::string name = su2_strip(line.substr(0, eq));
+        std::string_view name = su2_strip(line.substr(0, eq));
         if (name == "IZONE")
             break;  // the next zone: let the caller consume it
-        std::string rest = su2_strip(line.substr(eq + 1));
+        const std::string rest(su2_strip(line.substr(eq + 1)));
         ++rLi;
 
         if (name == "NDIME") {
@@ -112885,16 +114167,17 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (zoneBody.mDim == 0)
                 throw ReadError("SU2: NPOIN before NDIME");
             // One point per line: the count cannot exceed the lines left.
-            const std::size_t npoin = detail::checked_count(std::stoll(npoin_tok[0]),
+            const std::size_t npoin = detail::checked_count(std::stoll(std::string(npoin_tok[0])),
                                                             rLines.size() - rLi, "SU2", "point");
             NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(zoneBody.mDim)});
             double* pp = pts.As<double>();
+            std::vector<std::string_view> t;  // reused
             for (std::size_t i = 0; i < npoin; ++i) {
-                auto t = su2_tokens(rLines.at(rLi++));
+                detail::split_blanks(rLines.at(rLi++), t);
                 detail::need_tokens(t, static_cast<std::size_t>(zoneBody.mDim), "SU2");
                 for (int c = 0; c < zoneBody.mDim; ++c)
                     pp[i * static_cast<std::size_t>(zoneBody.mDim) + static_cast<std::size_t>(c)] =
-                        detail::parse_double(t[static_cast<std::size_t>(c)]);
+                        detail::parse_double_prefix(t[static_cast<std::size_t>(c)]);
             }
             zoneBody.mPoints = std::move(pts);
         } else if (name == "NELEM") {
@@ -112962,13 +114245,9 @@ void su2_merge_by_type(std::vector<Blk>& rBlocks) {
 }  // namespace
 
 Mesh read_su2(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l))
-        lines.push_back(l);
+    // The file read once; its lines are views into it (detail/text_cursor.hpp).
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
     // NZONE= (if present) is always the first key: a single-file multizone
     // mesh's own header, before the first (implicit) IZONE= 1.
@@ -112977,19 +114256,20 @@ Mesh read_su2(const std::string& rPath) {
     {
         std::size_t li = 0;
         while (li < lines.size()) {
-            std::string line = su2_strip(lines[li]);
+            std::string_view line = su2_strip(lines[li]);
             if (line.empty() || line[0] == '%') {
                 ++li;
                 continue;
             }
             std::size_t eq = line.find('=');
-            if (eq == std::string::npos)
+            if (eq == std::string_view::npos)
                 break;
             if (su2_strip(line.substr(0, eq)) == "NZONE") {
                 const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
                 detail::need_tokens(value, 1, "SU2");
                 // Every zone takes lines of its own: bounded by the file.
-                nzone = detail::checked_count(std::stoll(value[0]), lines.size(), "SU2", "zone");
+                nzone = detail::checked_count(std::stoll(std::string(value[0])), lines.size(),
+                                              "SU2", "zone");
                 multizone = true;
             }
             break;
@@ -113002,19 +114282,19 @@ Mesh read_su2(const std::string& rPath) {
         // Skip blank/comment lines and (for a multizone file) the NZONE=/IZONE=
         // markers themselves; the shared body parser starts at NDIME.
         while (li < lines.size()) {
-            std::string line = su2_strip(lines[li]);
+            std::string_view line = su2_strip(lines[li]);
             if (line.empty() || line[0] == '%') {
                 ++li;
                 continue;
             }
             std::size_t eq = line.find('=');
-            if (eq == std::string::npos)
+            if (eq == std::string_view::npos)
                 break;
-            std::string name = su2_strip(line.substr(0, eq));
+            std::string_view name = su2_strip(line.substr(0, eq));
             if (name == "NZONE" || name == "IZONE") {
                 const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
-                if (name == "IZONE" &&
-                    (value.empty() || std::stoll(value[0]) != static_cast<long long>(z + 1)))
+                if (name == "IZONE" && (value.empty() || std::stoll(std::string(value[0])) !=
+                                                             static_cast<long long>(z + 1)))
                     throw ReadError("SU2: IZONE out of order (expected " + std::to_string(z + 1) +
                                     ")");
                 ++li;
@@ -113049,7 +114329,7 @@ Mesh read_su2(const std::string& rPath) {
             const std::size_t n = z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
             if (n)
                 std::memcpy(pp + offset * static_cast<std::size_t>(dim), z.mPoints.Data(),
-                           z.mPoints.Nbytes());
+                            z.mPoints.Nbytes());
             for (Blk& b : z.mBlocks)
                 for (std::int64_t& id : b.mConn)
                     id += static_cast<std::int64_t>(offset);
@@ -113098,7 +114378,8 @@ Mesh read_su2(const std::string& rPath) {
     for (std::size_t bi = 0; bi < kept.size(); ++bi) {
         const Blk& b = *kept[bi];
         for (std::size_t r = 0; r < b.mCount; ++r) {
-            const std::int64_t global = detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
+            const std::int64_t global =
+                detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
             zone_cells[b.mZone[r]].push_back(global);
             marker_cells[{b.mZone[r], b.mTag[r]}].push_back(global);
         }
@@ -113133,7 +114414,8 @@ std::vector<std::string> su2_vtypes(std::size_t dim) {
                     : std::vector<std::string>{"tetra", "hexahedron", "wedge", "pyramid"};
 }
 std::vector<std::string> su2_btypes(std::size_t dim) {
-    return dim == 2 ? std::vector<std::string>{"line"} : std::vector<std::string>{"triangle", "quad"};
+    return dim == 2 ? std::vector<std::string>{"line"}
+                    : std::vector<std::string>{"triangle", "quad"};
 }
 bool su2_in(const std::vector<std::string>& rV, const std::string& rT) {
     return std::find(rV.begin(), rV.end(), rT) != rV.end();
@@ -113181,7 +114463,8 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     auto remap_of = [&](std::int64_t old_id) {
         if (!Subset)
             return old_id;
-        const auto [it, inserted] = remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
+        const auto [it, inserted] =
+            remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
         if (inserted)
             old_ids.push_back(old_id);
         return it->second;
@@ -113205,8 +114488,9 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     for (std::int64_t old_id : old_ids) {
         for (std::size_t c = 0; c < Dim; ++c) {
             char buf[64];
-            detail::snprintf_c(buf, sizeof(buf), "%.16e",
-                               detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
+            detail::snprintf_c(
+                buf, sizeof(buf), "%.16e",
+                detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
             rOs << buf << (c + 1 == Dim ? '\n' : ' ');
         }
     }
@@ -113243,8 +114527,8 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     rOs << "NMARK= " << tag_counts.size() << "\n";
     for (const auto& [tag, count] : tag_counts) {
         const auto name_it = rMarkerNames.find(tag);
-        rOs << "MARKER_TAG= " << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag))
-            << "\n";
+        rOs << "MARKER_TAG= "
+            << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag)) << "\n";
         rOs << "MARKER_ELEMS= " << count << "\n";
         for (const auto& [block, row] : rCells)
             if (su2_in(btypes, rMesh.Cells(block).Type()) && tag_of(block, row) == tag)
@@ -113271,16 +114555,17 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
         const auto cb = rMesh.Cells(bi);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int32_t zone = has_zone_data
-                                          ? static_cast<std::int32_t>(detail::read_int(
-                                                rMesh.CellData("su2:zone", bi), r))
-                                          : 0;
+            const std::int32_t zone =
+                has_zone_data
+                    ? static_cast<std::int32_t>(detail::read_int(rMesh.CellData("su2:zone", bi), r))
+                    : 0;
             by_zone[zone].emplace_back(bi, static_cast<std::int64_t>(r));
         }
     }
     const bool multizone = by_zone.size() > 1;
 
-    std::map<std::int32_t, std::map<std::int64_t, std::string>> marker_names;  // zone -> tag -> name
+    std::map<std::int32_t, std::map<std::int64_t, std::string>>
+        marker_names;  // zone -> tag -> name
     for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
         const Region& region = rMesh.Region(ri);
         if (region.mKind != RegionKind::Cell || region.NumEntries() == 0)
@@ -113288,15 +114573,13 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         const auto [block, row] = detail::global_to_block_row(bases, region.Entries()[0]);
         if (block == static_cast<std::size_t>(-1))
             continue;
-        const std::int32_t zone = has_zone_data
-                                      ? static_cast<std::int32_t>(
-                                            detail::read_int(rMesh.CellData("su2:zone", block),
-                                                             static_cast<std::size_t>(row)))
-                                      : 0;
-        const std::int64_t tag = tag_key.empty()
-                                     ? 1
-                                     : detail::read_int(rMesh.CellData(tag_key, block),
-                                                        static_cast<std::size_t>(row));
+        const std::int32_t zone =
+            has_zone_data ? static_cast<std::int32_t>(detail::read_int(
+                                rMesh.CellData("su2:zone", block), static_cast<std::size_t>(row)))
+                          : 0;
+        const std::int64_t tag = tag_key.empty() ? 1
+                                                 : detail::read_int(rMesh.CellData(tag_key, block),
+                                                                    static_cast<std::size_t>(row));
         std::string name = region.mName;
         const std::string prefix = "zone_" + std::to_string(zone) + "/";
         if (multizone && name.rfind(prefix, 0) == 0)
@@ -113310,10 +114593,10 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         std::vector<std::pair<std::size_t, std::int64_t>> all;
         for (auto& [zone, cells] : by_zone)
             all.insert(all.end(), cells.begin(), cells.end());
-        write_su2_zone_body(os, rMesh, dim, all, tag_key,
-                            marker_names.count(0) ? marker_names[0]
-                                                  : std::map<std::int64_t, std::string>{},
-                            /*Subset=*/false);
+        write_su2_zone_body(
+            os, rMesh, dim, all, tag_key,
+            marker_names.count(0) ? marker_names[0] : std::map<std::int64_t, std::string>{},
+            /*Subset=*/false);
         return;
     }
 
@@ -113321,10 +114604,10 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     std::int32_t ordinal = 1;
     for (auto& [zone, cells] : by_zone) {
         os << "\nIZONE= " << ordinal++ << "\n";
-        write_su2_zone_body(os, rMesh, dim, cells, tag_key,
-                            marker_names.count(zone) ? marker_names[zone]
-                                                     : std::map<std::int64_t, std::string>{},
-                            /*Subset=*/true);
+        write_su2_zone_body(
+            os, rMesh, dim, cells, tag_key,
+            marker_names.count(zone) ? marker_names[zone] : std::map<std::int64_t, std::string>{},
+            /*Subset=*/true);
     }
 }
 
@@ -113697,10 +114980,13 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
@@ -113733,6 +115019,39 @@ std::vector<std::string> tecplot_tokens(std::string S) {
         out.push_back(t);
     return out;
 }
+/// tecplot_tokens as views into @p Line (appended to @p rOut, cleared first):
+/// blanks and commas separate values, as replacing the commas with blanks
+/// and splitting on whitespace did.
+void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& rOut) {
+    rOut.clear();
+    std::size_t i = 0;
+    const std::size_t n = Line.size();
+    const auto sep = [](char c) { return c == ',' || detail::text_is_blank(c); };
+    while (true) {
+        while (i < n && sep(Line[i]))
+            ++i;
+        if (i >= n)
+            return;
+        const std::size_t b = i;
+        while (i < n && !sep(Line[i]))
+            ++i;
+        rOut.push_back(Line.substr(b, i - b));
+    }
+}
+
+/// How many tokens tecplot_tokens gives for @p Line, without building them.
+std::size_t tecplot_count_tokens(std::string_view Line) {
+    std::size_t count = 0;
+    bool in_token = false;
+    for (const char c : Line) {
+        const bool sep = c == ',' || detail::text_is_blank(c);
+        if (!sep && !in_token)
+            ++count;
+        in_token = !sep;
+    }
+    return count;
+}
+
 bool is_float_token(const std::string& rS) {
     if (rS.empty())
         return false;
@@ -113775,7 +115094,7 @@ std::vector<std::string> tecplot_header_tokens(const std::string& rS) {
         } else {
             std::size_t j = i;
             while (j < n && rS[j] != ' ' && rS[j] != '\t' && rS[j] != ',' && rS[j] != '=' &&
-                  rS[j] != '"' && rS[j] != '(')
+                   rS[j] != '"' && rS[j] != '(')
                 ++j;
             out.push_back(rS.substr(i, j - i));
             i = j;
@@ -114202,16 +115521,18 @@ std::size_t tecplot_ascii_token_count(const TecplotZone& rZ, std::size_t NumVari
 // convention, so this is the only reliable way to find where one zone's data
 // ends and the next one's header begins. Anything else (TEXT, GEOMETRY,
 // DATASETAUXDATA, face-neighbour lines) is skipped.
-std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLines,
+std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string_view>& rLines,
                                             std::vector<std::string>& rVariables) {
     std::vector<TecplotZone> zones;
     std::size_t i = 0;
     while (i < rLines.size()) {
-        const std::string u = tecplot_upper(rLines[i]);
+        const std::string u = tecplot_upper(std::string(rLines[i]));
         if (u.rfind("VARIABLES", 0) == 0) {
-            std::string joined = rLines[i];
-            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"')
-                joined += " " + rLines[++i];
+            std::string joined(rLines[i]);
+            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"') {
+                joined += " ";
+                joined += rLines[++i];
+            }
             rVariables.clear();
             const std::string rhs = joined.substr(joined.find('=') + 1);
             std::size_t p = 0;
@@ -114241,15 +115562,18 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
         }
 
         TecplotZone z;
-        std::string joined = rLines[i];
+        std::string joined(rLines[i]);
         // A header continues until the first line that starts with a number
         // (a blank line has no first token, so it continues too).
-        auto continues = [&](const std::string& rLine) {
-            const std::vector<std::string> t = tecplot_tokens(rLine);
-            return t.empty() || !is_float_token(t[0]);
+        std::vector<std::string_view> first;
+        auto continues = [&](std::string_view Line) {
+            tecplot_tokens_view(Line, first);
+            return first.empty() || !is_float_token(std::string(first[0]));
         };
-        while (i + 1 < rLines.size() && continues(rLines[i + 1]))
-            joined += " " + rLines[++i];
+        while (i + 1 < rLines.size() && continues(rLines[i + 1])) {
+            joined += " ";
+            joined += rLines[++i];
+        }
         z.mDataStart = i + 1;
 
         // tk[0] is the "ZONE" keyword itself; the rest is KEY = VALUE triples,
@@ -114353,7 +115677,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
         const std::size_t want = tecplot_ascii_token_count(z, rVariables.size());
         std::size_t li = z.mDataStart, got = 0;
         while (got < want && li < rLines.size()) {
-            got += tecplot_tokens(rLines[li]).size();
+            got += tecplot_count_tokens(rLines[li]);
             ++li;
         }
         if (!z.mOrdered && z.mConnShareZone < 0) {
@@ -114362,7 +115686,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
                 const std::size_t face_tokens = tecplot_ascii_face_map_tokens(z);
                 std::size_t seen = 0;
                 while (seen < face_tokens && li < rLines.size())
-                    seen += tecplot_tokens(rLines[li++]).size();
+                    seen += tecplot_count_tokens(rLines[li++]);
             } else {
                 li += z.mNumCells;  // one connectivity line per cell -- none if shared
             }
@@ -114379,7 +115703,7 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
 
 class TecplotAsciiSource final : public TecplotSource {
 public:
-    TecplotAsciiSource(const std::vector<std::string>& rLines,
+    TecplotAsciiSource(const std::vector<std::string_view>& rLines,
                        const std::vector<TecplotZone>& rZones, std::size_t NumVariables)
         : mrLines(rLines), mrZones(rZones), mNumVariables(NumVariables) {}
 
@@ -114391,9 +115715,11 @@ public:
         std::vector<double> flat;
         flat.reserve(want);
         std::size_t li = z.mDataStart;
+        std::vector<std::string_view> toks;  // reused
         while (flat.size() < want && li < mrLines.size()) {
-            for (const auto& t : tecplot_tokens(mrLines[li]))
-                flat.push_back(detail::parse_double(t));
+            tecplot_tokens_view(mrLines[li], toks);
+            for (const std::string_view t : toks)
+                flat.push_back(detail::parse_double_prefix(t));
             ++li;
         }
         if (flat.size() < want)
@@ -114424,9 +115750,11 @@ public:
             const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
             std::vector<std::int64_t> ints;
             ints.reserve(want_ints);
-            while (ints.size() < want_ints && li < mrLines.size())
-                for (const auto& t : tecplot_tokens(mrLines[li++]))
-                    ints.push_back(std::strtoll(t.c_str(), nullptr, 10));
+            while (ints.size() < want_ints && li < mrLines.size()) {
+                tecplot_tokens_view(mrLines[li++], toks);
+                for (const std::string_view t : toks)
+                    ints.push_back(detail::strtoll_token(t));
+            }
             if (ints.size() < want_ints)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " face map is truncated");
@@ -114452,17 +115780,17 @@ public:
             if (li >= mrLines.size())
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " connectivity is truncated");
-            const auto t = tecplot_tokens(mrLines[li++]);
-            if (t.size() < nn)
+            tecplot_tokens_view(mrLines[li++], toks);
+            if (toks.size() < nn)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
             for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = detail::zero_based(std::strtoll(t[j].c_str(), nullptr, 10));
+                cp[c * nn + j] = detail::zero_based(detail::strtoll_token(toks[j]));
         }
     }
 
 private:
-    const std::vector<std::string>& mrLines;
+    const std::vector<std::string_view>& mrLines;
     const std::vector<TecplotZone>& mrZones;
     std::size_t mNumVariables;
 };
@@ -115531,8 +116859,9 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
 struct TecplotFile {
     std::vector<std::string> mVariables;
     std::vector<TecplotZone> mZones;
-    std::vector<std::string> mLines;           // ASCII
-    std::unique_ptr<detail::FileSource> mRaw;  // binary
+    std::unique_ptr<detail::FileSource> mText;  // ASCII: the file, read once
+    std::vector<std::string_view> mLines;       // ASCII: its stripped lines
+    std::unique_ptr<detail::FileSource> mRaw;   // binary
     std::unique_ptr<TecplotSource> mSource;
 };
 
@@ -115547,15 +116876,19 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
         binary = tecplot_is_plt(head, static_cast<std::size_t>(probe.gcount()));
     }
     if (!binary) {
-        auto in = detail::make_classic_ifstream(rPath);
-        if (!in)
-            throw ReadError("Could not open file: " + rPath);
-        std::string l;
-        while (std::getline(in, l)) {
-            std::string s = tecplot_strip(l);
-            if (s.empty() || s[0] == '#')
+        // The file read once; its stripped lines are views into it
+        // (detail/text_cursor.hpp).
+        rFile.mText = std::make_unique<detail::FileSource>(
+            detail::open_source(rPath, "Could not open file: " + rPath));
+        for (std::string_view l : detail::split_lines(rFile.mText->View())) {
+            const std::size_t b = l.find_first_not_of(" \t\r\n");
+            if (b == std::string_view::npos)
                 continue;
-            rFile.mLines.push_back(std::move(s));
+            const std::size_t e = l.find_last_not_of(" \t\r\n");
+            const std::string_view st = l.substr(b, e - b + 1);
+            if (st[0] == '#')
+                continue;
+            rFile.mLines.push_back(st);
         }
         rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
         rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,
@@ -116049,12 +117382,17 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     os << "\n";
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
-    char buf[40];
+    // Twenty values per line, formatted in parallel chunks (row_writer.hpp);
+    // each separator depends on the value's own index, not the chunk's.
+    const detail::CNumber num;
     auto write_column = [&](const std::vector<double>& col) {
-        for (std::size_t i = 0; i < col.size(); ++i) {
-            detail::snprintf_c(buf, sizeof(buf), "%.17g", col[i]);
-            os << buf << ((i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ');
-        }
+        detail::write_row_chunks(
+            os, col.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    num.Append(rBuf, "%.17g", col[i]);
+                    rBuf += (i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ';
+                }
+            });
         if (col.empty())
             os << "\n";
     };
@@ -116072,8 +117410,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             const meshioplusplus::Region& reg = rMesh.Region(ri);
             if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
                 continue;
-            if (reg.NumEntries() !=
-                static_cast<std::size_t>(bases[block + 1] - bases[block]))
+            if (reg.NumEntries() != static_cast<std::size_t>(bases[block + 1] - bases[block]))
                 continue;
             const std::int64_t* e = reg.Entries();
             if (e[0] == bases[block] && e[reg.NumEntries() - 1] == bases[block + 1] - 1) {
@@ -116099,8 +117436,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             for (const auto& f : faces.mFaces)
                 total_face_nodes += f.size();
         }
-        os << "ZONE T = \"" << title << "\", NODES = " << num_nodes
-           << ", ELEMENTS = " << num_cells << ",\n";
+        os << "ZONE T = \"" << title << "\", NODES = " << num_nodes << ", ELEMENTS = " << num_cells
+           << ",\n";
         if (face_based)
             os << "FACES = " << faces.mFaces.size() << ", TOTALNUMFACENODES = " << total_face_nodes
                << ",\nNUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n";
@@ -116223,7 +117560,7 @@ Parsed parse_file(const std::string& rPath) {
             ++s;
         if (s >= line.size() || line[s] == '#')
             continue;
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         if (!have_header) {
             while (iss >> tok)
@@ -116891,7 +118228,7 @@ TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
         const std::size_t hash = line.find('#');
         if (hash != std::string::npos)
             line.resize(hash);
-        auto iss = detail::make_classic_istringstream(line);
+        detail::TextStream iss(line);
         std::string tok;
         while (iss >> tok)
             tokens.mToks.push_back(tok);
@@ -118415,8 +119752,8 @@ std::vector<UnvDataset> unv_split_datasets(std::string_view data) {
                 // pyuff declares exactly half the size of complex data; any other
                 // mismatch deserves a warning.
                 if (2 * n_bytes == expected) {
-                    log::debug("UNV: dataset 58b declares {} bytes, record 7 describes {}",
-                               n_bytes, expected);
+                    log::debug("UNV: dataset 58b declares {} bytes, record 7 describes {}", n_bytes,
+                               expected);
                 } else if (!warned_58b_size) {
                     log::warn(
                         "UNV: dataset 58b declares {} bytes but its record 7 describes {}; "
@@ -118557,6 +119894,8 @@ std::vector<std::int64_t> unv_take_ints(const std::vector<std::string_view>& rLi
 
 void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
     const auto& lines = rDs.mLines;
+    // A node takes one line (dataset 15) or two: at most that many records.
+    rFile.mNodes.reserve(rFile.mNodes.size() + lines.size() / (rDs.mId == 15 ? 1 : 2));
     std::size_t k = 0;
     while (k < lines.size()) {
         if (unv_strip(lines[k]).empty()) {
@@ -118595,6 +119934,8 @@ void unv_parse_nodes(const UnvDataset& rDs, UnvFile& rFile) {
 
 void unv_parse_elements(const UnvDataset& rDs, UnvFile& rFile) {
     const auto& lines = rDs.mLines;
+    // An element takes at least two lines (its record, then its nodes).
+    rFile.mElements.reserve(rFile.mElements.size() + lines.size() / 2);
     std::size_t k = 0;
     while (k < lines.size()) {
         if (unv_strip(lines[k]).empty()) {
@@ -118650,6 +119991,12 @@ void unv_parse_groups(const UnvDataset& rDs, bool Quad, UnvFile& rFile) {
         g.mName = k < lines.size() ? unv_name(lines[k]) : std::string();
         ++k;
         auto vals = unv_take_ints(lines, k, stride * static_cast<std::size_t>(r1[7]));
+        // The record carries its size: count each kind, then fill.
+        std::size_t num_nodes = 0;
+        for (std::size_t e = 0; e < static_cast<std::size_t>(r1[7]); ++e)
+            num_nodes += vals[stride * e] == 7 ? 1 : 0;
+        g.mNodes.reserve(num_nodes);
+        g.mElements.reserve(static_cast<std::size_t>(r1[7]) - num_nodes);
         for (std::size_t e = 0; e < static_cast<std::size_t>(r1[7]); ++e) {
             const std::int64_t type = vals[stride * e];
             const std::int64_t tag = vals[stride * e + 1];
@@ -119974,7 +121321,7 @@ template <class T>
 bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -120095,7 +121442,8 @@ NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTI '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -120226,6 +121574,8 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "ImageData",
+                          "lzma-compressed VTI not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTI XML parse failed: ") + res.description());
@@ -120279,6 +121629,8 @@ MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
     // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
     // metadata path this decodes NOTHING at all: the extent attribute alone
     // gives both counts.
+    detail::vtk_preflight(rPath, "ImageData",
+                          "lzma-compressed VTI not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTI XML parse failed: ") + res.description());
@@ -120322,6 +121674,8 @@ MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -120358,10 +121712,16 @@ const char* vtk_dtype_str(DType dt) {
     return "double";
 }
 
-void vtk_ascii_double(std::ostream& rOs, double v) {
-    char buf[32];
-    detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
-    rOs << buf;
+// `n` integers, one per line (`ostream << v << '\n'`), formatted in parallel
+// chunks (row_writer.hpp).
+template <class F>
+void vtk_write_int_lines(std::ostream& rOs, std::size_t n, F&& rValue) {
+    detail::write_row_chunks(rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+        for (std::size_t i = First; i < Last; ++i) {
+            detail::append_int(rBuf, static_cast<std::int64_t>(rValue(i)));
+            rBuf += '\n';
+        }
+    });
 }
 
 // Byte-swap a whole array into a big-endian buffer (elements independent ->
@@ -120436,13 +121796,27 @@ void write_field_block(std::ostream& rOs, const std::string& rName, DType dt,
             rOs.write(reinterpret_cast<const char*>(buf.data()),
                       static_cast<std::streamsize>(buf.size()));
         } else {
+            // Values in parallel chunks (row_writer.hpp), each followed by a space.
             const std::size_t n = blk->Size();
-            for (std::size_t i = 0; i < n; ++i) {
-                if (flt)
-                    vtk_ascii_double(rOs, read_double(*blk, i));
-                else
-                    rOs << read_int(*blk, i);
-                rOs << ' ';
+            if (flt) {
+                const detail::DoubleView v(*blk);
+                const detail::CNumber num;
+                detail::write_row_chunks(
+                    rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                        for (std::size_t i = First; i < Last; ++i) {
+                            num.Append(rBuf, "%.17g", v[i]);
+                            rBuf += ' ';
+                        }
+                    });
+            } else {
+                const detail::Int64View v(*blk);
+                detail::write_row_chunks(
+                    rOs, n, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                        for (std::size_t i = First; i < Last; ++i) {
+                            detail::append_int(rBuf, v[i]);
+                            rBuf += ' ';
+                        }
+                    });
             }
         }
     }
@@ -120492,11 +121866,16 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                  static_cast<std::streamsize>(buf.size()));
         os << '\n';
     } else {
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c) {
-                vtk_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
-                os << ((r + 1 == num_points && c == 2) ? '\n' : ' ');
-            }
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r)
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        num.Append(rBuf, "%.17g", (c < dim) ? pv[r * dim + c] : 0.0);
+                        rBuf += (r + 1 == num_points && c == 2) ? '\n' : ' ';
+                    }
+            });
         if (num_points == 0)
             os << '\n';
     }
@@ -120535,19 +121914,17 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                      static_cast<std::streamsize>(cbuf.size()));
             os << '\n';
         } else {
-            for (std::int64_t v : offs)
-                os << v << '\n';
+            vtk_write_int_lines(os, offs.size(), [&](std::size_t i) { return offs[i]; });
             os << "CONNECTIVITY vtktypeint64\n";
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
-                const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(conn);
+                const detail::Int64View conn(cb.Conn());
+                const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
-                for (std::size_t r = 0; r < nc; ++r)
-                    for (std::size_t j = 0; j < k; ++j) {
-                        std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                        os << read_int(conn, r * k + col) << '\n';
-                    }
+                vtk_write_int_lines(os, cb.NumCells() * k, [&](std::size_t i) {
+                    const std::size_t j = i % k;
+                    const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    return conn[i - j + col];
+                });
             }
         }
     } else {
@@ -120585,17 +121962,19 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             os << '\n';
         } else {
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
-                const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(conn);
+                const detail::Int64View conn(cb.Conn());
+                const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
-                for (std::size_t r = 0; r < nc; ++r) {
-                    os << k << '\n';
-                    for (std::size_t j = 0; j < k; ++j) {
-                        std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                        os << read_int(conn, r * k + col) << '\n';
-                    }
-                }
+                // Each cell is its count, then its ids: k + 1 lines.
+                vtk_write_int_lines(os, cb.NumCells() * (k + 1), [&](std::size_t i) {
+                    const std::size_t r = i / (k + 1);
+                    const std::size_t j = i % (k + 1);
+                    if (j == 0)
+                        return static_cast<std::int64_t>(k);
+                    const std::size_t col =
+                        order.empty() ? j - 1 : static_cast<std::size_t>(order[j - 1]);
+                    return conn[r * k + col];
+                });
             }
         }
     }
@@ -120616,8 +121995,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
         write_be(os, ctypes);
         os << '\n';
     } else {
-        for (std::int32_t v : ctypes)
-            os << v << '\n';
+        vtk_write_int_lines(os, ctypes.size(), [&](std::size_t i) { return ctypes[i]; });
     }
 
     // Point data.
@@ -123382,6 +124760,8 @@ MeshMetadata read_vtm_metadata(const std::string& rPath, const ReadOptions& rOpt
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -123389,7 +124769,6 @@ namespace {
 using detail::cols;
 using detail::read_double;
 using detail::read_int;
-using detail::vtu_ascii_double;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
@@ -123498,8 +124877,13 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
                      v.size() * sizeof(std::int64_t));
         } else {
-            for (std::int64_t x : v)
-                os << x << '\n';
+            detail::write_row_chunks(os, v.size(),
+                                     [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                         for (std::size_t i = First; i < Last; ++i) {
+                                             detail::append_int(rBuf, v[i]);
+                                             rBuf += '\n';
+                                         }
+                                     });
         }
         os << "</DataArray>\n";
     };
@@ -123539,9 +124923,16 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
         emit_bin(buf.data(), buf.size());
     } else {
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c)
-                vtu_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r)
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        num.Append(rBuf, "%.11e", (c < dim) ? pv[r * dim + c] : 0.0);
+                        rBuf += '\n';
+                    }
+            });
     }
     os << "</DataArray>\n</Points>\n";
 
@@ -123639,7 +125030,8 @@ NDArray vtp_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -123833,6 +125225,7 @@ void vtp_build_types(const VtpPiece& rSec, int kind, std::vector<std::int64_t>& 
 
 Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
     pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTP XML parse failed: ") + res.description());
@@ -123917,6 +125310,7 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
     // See read_vtu_metadata: parse_minimal trims text conversions, but the
     // saving that matters is skipping the array bodies below.
+    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
     pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTP XML parse failed: ") + res.description());
@@ -123988,7 +125382,7 @@ template <class T>
 bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -124075,7 +125469,8 @@ NDArray vtr_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTR '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -124109,8 +125504,8 @@ std::vector<double> vtr_read_axis(const pugi::xml_node& rCoordinates, const char
     throw ReadError(std::string("VTR Coordinates has no '") + pName + "' DataArray");
 }
 
-void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px,
-                  std::int64_t py, std::int64_t* pOut) {
+void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
+                  std::int64_t* pOut) {
     const std::int64_t base = (k * py + j) * px + i;
     const std::int64_t top = base + px * py;
     pOut[0] = base;
@@ -124182,10 +125577,12 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         const std::int64_t n = spec.mDims[k] + 1;
         std::vector<double> axis(static_cast<std::size_t>(n));
         for (std::int64_t i = 0; i < n; ++i)
-            axis[static_cast<std::size_t>(i)] = spec.mOrigin[k] + static_cast<double>(i) * spec.mSpacing[k];
+            axis[static_cast<std::size_t>(i)] =
+                spec.mOrigin[k] + static_cast<double>(i) * spec.mSpacing[k];
         da_header(vtu_type_str(DType::Float64), axis_names[k], 0);
         if (binary)
-            emit_bin(reinterpret_cast<const unsigned char*>(axis.data()), axis.size() * sizeof(double));
+            emit_bin(reinterpret_cast<const unsigned char*>(axis.data()),
+                     axis.size() * sizeof(double));
         else
             for (double v : axis)
                 os << v << "\n";
@@ -124239,6 +125636,8 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "RectilinearGrid",
+                          "lzma-compressed VTR not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTR XML parse failed: ") + res.description());
@@ -124324,6 +125723,8 @@ Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
 
 MeshMetadata read_vtr_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "RectilinearGrid",
+                          "lzma-compressed VTR not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTR XML parse failed: ") + res.description());
@@ -124375,7 +125776,7 @@ template <class T>
 bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    auto is = detail::make_classic_istringstream(pText);
+    detail::TextStream is(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -124467,7 +125868,8 @@ NDArray vts_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
+                                           hsz);
     throw ReadError("VTS '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -124483,8 +125885,8 @@ std::vector<std::string> vts_array_names(const pugi::xml_node& rPiece, const cha
 // `detail/grid_lattice.hpp` uses -- points come from the file, not from a
 // recomputed origin/spacing, but the CONNECTIVITY formula is identical
 // regardless of where the points came from.
-void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px,
-                  std::int64_t py, std::int64_t* pOut) {
+void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
+                  std::int64_t* pOut) {
     const std::int64_t base = (k * py + j) * px + i;
     const std::int64_t top = base + px * py;
     pOut[0] = base;
@@ -124620,6 +126022,8 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "StructuredGrid",
+                          "lzma-compressed VTS not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
     if (!res)
         throw ReadError(std::string("VTS XML parse failed: ") + res.description());
@@ -124693,6 +126097,8 @@ Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
 
 MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
+    detail::vtk_preflight(rPath, "StructuredGrid",
+                          "lzma-compressed VTS not supported by the C++ reader");
     const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
     if (!res)
         throw ReadError(std::string("VTS XML parse failed: ") + res.description());
@@ -124734,20 +126140,16 @@ namespace {
 using detail::cols;
 using detail::read_double;
 using detail::read_int;
-using detail::vtu_ascii_double;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
-}  // namespace
-
-void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    // The historical bool API, preserved exactly: zlib stays the only codec it
-    // can select, so existing callers are unaffected.
-    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
-}
-
-void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
-                     detail::VtkCodec codec) {
+// The writer behind write_vtu_codec and write_vtu_appended. `Appended` writes
+// every array as `format="appended"`: its size header and payload (or
+// block header and compressed blocks) go, unencoded, into one raw
+// `<AppendedData>` section at the end of the file, each array's `offset`
+// counted from the byte after its leading underscore.
+void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
+                    detail::VtkCodec codec, bool Appended) {
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -124761,7 +126163,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
 
-    const char* fmt = binary ? "binary" : "ascii";
+    const char* fmt = Appended ? "appended" : (binary ? "binary" : "ascii");
+    std::vector<unsigned char> appended;  // the raw <AppendedData> payload
     // UInt64 size headers only where an uncompressed array could pass 4 GiB
     // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
     const std::size_t hsz =
@@ -124771,10 +126174,17 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
         if (ncomp > 0)
             os << " NumberOfComponents=\"" << ncomp << "\"";
-        os << " format=\"" << fmt << "\">\n";
+        os << " format=\"" << fmt << "\"";
+        if (Appended)
+            os << " offset=\"" << appended.size() << "\"";
+        os << ">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        if (Appended)
+            detail::vtu_encode_raw(d, n, codec, hsz, appended);
+        else
+            os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz)
+               << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -124791,9 +126201,27 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
     if (rMesh.NumFieldData() != 0) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames())
-            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
-                                          binary ? codec : detail::VtkCodec::None, hsz);
+        for (const auto& name : rMesh.FieldDataNames()) {
+            const NDArray& arr = rMesh.FieldData(name);
+            if (!Appended) {
+                detail::vtu_write_field_array(os, name, arr, binary,
+                                              binary ? codec : detail::VtkCodec::None, hsz);
+                continue;
+            }
+            // vtu_write_field_array's element, with the payload appended.
+            const std::vector<std::size_t>& shape = arr.Shape();
+            os << "<DataArray type=\"" << vtu_type_str(arr.Dtype()) << "\" Name=\"" << name
+               << "\" NumberOfTuples=\"" << (shape.empty() ? 1 : shape[0]) << "\"";
+            if (shape.size() >= 2) {
+                std::size_t components = 1;
+                for (std::size_t d = 1; d < shape.size(); ++d)
+                    components *= shape[d];
+                os << " NumberOfComponents=\"" << components << "\"";
+            }
+            os << " format=\"appended\" offset=\"" << appended.size() << "\">\n";
+            emit_bin(reinterpret_cast<const unsigned char*>(arr.Data()), arr.Nbytes());
+            os << "</DataArray>\n";
+        }
         os << "</FieldData>\n";
     }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
@@ -124814,9 +126242,16 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
         emit_bin(buf.data(), buf.size());
     } else {
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c)
-                vtu_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
+        const detail::DoubleView pv(points);
+        const detail::CNumber num;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r)
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        num.Append(rBuf, "%.11e", (c < dim) ? pv[r * dim + c] : 0.0);
+                        rBuf += '\n';
+                    }
+            });
     }
     os << "</DataArray>\n</Points>\n";
 
@@ -124891,16 +126326,22 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             if (it == tmap.end())
                 throw WriteError("Unknown cell type for VTU: " + cb.Type());
             const std::int64_t vtk_type = it->second;
-            for (std::size_t r = 0; r < nc; ++r) {
+            // Rows are independent: each one's slots and offset are closed-form.
+            const detail::Int64View cv(conn);
+            const std::size_t cbase = connectivity.size();
+            const std::size_t rbase = offsets.size();
+            connectivity.resize(cbase + nc * k);
+            offsets.resize(rbase + nc);
+            types.resize(rbase + nc, vtk_type);
+            if (any_polyhedron)
+                face_offsets.resize(face_offsets.size() + nc, -1);
+            parallel_for_bw(nc, [&](std::size_t r) {
                 for (std::size_t j = 0; j < k; ++j) {
                     const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity.push_back(read_int(conn, r * k + col));
+                    connectivity[cbase + r * k + j] = cv[r * k + col];
                 }
-                offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
-                types.push_back(vtk_type);
-                if (any_polyhedron)
-                    face_offsets.push_back(-1);
-            }
+                offsets[rbase + r] = static_cast<std::int64_t>(cbase + (r + 1) * k);
+            });
         }
 
         auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
@@ -124909,8 +126350,13 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                 emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
                          v.size() * sizeof(std::int64_t));
             } else {
-                for (std::int64_t x : v)
-                    os << x << '\n';
+                detail::write_row_chunks(
+                    os, v.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                        for (std::size_t i = First; i < Last; ++i) {
+                            detail::append_int(rBuf, v[i]);
+                            rBuf += '\n';
+                        }
+                    });
             }
             os << "</DataArray>\n";
         };
@@ -124952,8 +126398,17 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
             da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
-            if (binary) {
+            if (binary && nblocks == 1) {
+                // One block: its bytes go out as they are, with no copy.
+                const NDArray& blk = detail::vtu_disk_array(name, first, scratch);
+                emit_bin(reinterpret_cast<const unsigned char*>(blk.Data()), blk.Nbytes());
+            } else if (binary) {
+                std::size_t total = 0;
+                const std::size_t isz = dtype_size(detail::vtu_disk_dtype(name, first.Dtype()));
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    total += rMesh.CellData(name, bi).Size() * isz;
                 std::vector<unsigned char> buf;
+                buf.reserve(total);
                 for (std::size_t bi = 0; bi < nblocks; ++bi) {
                     const NDArray& blk =
                         detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
@@ -124971,7 +126426,31 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << "</CellData>\n";
     }
 
-    os << "</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
+    os << "</Piece>\n</UnstructuredGrid>\n";
+    if (Appended) {
+        os << "<AppendedData encoding=\"raw\">\n_";
+        os.write(reinterpret_cast<const char*>(appended.data()),
+                 static_cast<std::streamsize>(appended.size()));
+        os << "\n</AppendedData>\n";
+    }
+    os << "</VTKFile>\n";
+}
+
+}  // namespace
+
+void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    vtu_write_impl(rPath, rMesh, binary, codec, /*Appended=*/false);
+}
+
+void write_vtu_appended(const std::string& rPath, const Mesh& rMesh, detail::VtkCodec codec) {
+    vtu_write_impl(rPath, rMesh, /*binary=*/true, codec, /*Appended=*/true);
 }
 
 }  // namespace meshioplusplus
@@ -124984,7 +126463,9 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -125044,6 +126525,7 @@ struct VtuByteSource {
             mPos += n;
             return;
         }
+        mPending.reserve(mPendingPos + n + 3);
         while (mPending.size() - mPendingPos < n) {
             char q[4];
             int k = 0;
@@ -125113,6 +126595,19 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
     std::vector<std::uint64_t> sizes(static_cast<std::size_t>(num_blocks));
     for (auto& rSize : sizes)
         rSize = next();
+    // The blocks' decompressed total, reserved when it is plausible: no codec
+    // expands a block by more than about 2^16, as vtk_codec_decompress_block
+    // enforces per block.
+    std::uint64_t comp_total = 0;
+    for (const std::uint64_t z : sizes)
+        comp_total += std::min<std::uint64_t>(z, std::uint64_t{1} << 40);
+    const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (comp_total + 1) + (1u << 20);
+    if (num_blocks > 0 && max_block <= ceiling && last_block <= ceiling &&
+        num_blocks - 1 <= ceiling / std::max<std::uint64_t>(max_block, 1)) {
+        const std::uint64_t want = (num_blocks - 1) * max_block + last_block;
+        if (want <= ceiling)
+            out.reserve(static_cast<std::size_t>(want));
+    }
     std::vector<unsigned char> comp;
     for (std::size_t k = 0; k < sizes.size(); ++k) {
         if (sizes[k] > rSrc.Remaining())
@@ -125166,8 +126661,8 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary") {
         if (!rCtx.mBigEndian)
-            return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, rCtx.mCodec,
-                                            rCtx.mHeaderSize);
+            return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt,
+                                               rCtx.mCodec, rCtx.mHeaderSize);
         const char* text = rDa.text().get();
         VtuByteSource src;
         src.mText = text;
@@ -125208,30 +126703,29 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  */
 struct VtuSource {
     pugi::xml_document mDoc;
-    std::string mBytes;
+    std::optional<detail::FileSource> mFile;  // the file, read once
+    std::string_view mBytes;                  // its bytes: a raw payload is a view into them
     std::size_t mRawStart = 0;
     std::size_t mRawStop = 0;
     bool mIsRaw = false;
 };
 
 void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
-    pugi::xml_parse_result res = rSource.mDoc.load_file(rPath.c_str(), ParseOptions);
-    if (res) {
-        pugi::xml_node app = rSource.mDoc.child("VTKFile").child("AppendedData");
-        if (!app || std::string(app.attribute("encoding").as_string("base64")) != "raw")
-            return;
-        // A raw payload that happened to parse as text still has to be read as bytes.
-    }
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    rSource.mBytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    const std::string& b = rSource.mBytes;
+    detail::vtk_preflight(rPath, "UnstructuredGrid",
+                          "lzma-compressed VTU not supported by the C++ reader");
+    // The file is read once: a raw <AppendedData> payload is not XML, so only
+    // the text around it is parsed, and the payload is a view into the same
+    // bytes (it read the file twice and parsed it twice before v16.20.0).
+    rSource.mFile.emplace(detail::open_source(rPath, "Could not open file: " + rPath));
+    rSource.mBytes = rSource.mFile->View();
+    const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
-    const std::size_t tag_end = tag == std::string::npos ? tag : b.find('>', tag);
-    const bool raw = tag_end != std::string::npos &&
-                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string::npos;
+    const std::size_t tag_end = tag == std::string_view::npos ? tag : b.find('>', tag);
+    const bool raw = tag_end != std::string_view::npos &&
+                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string_view::npos;
+    pugi::xml_parse_result res;
     if (!raw) {
+        res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
         if (!res)
             throw ReadError(std::string("VTU XML parse failed: ") + res.description());
         return;
@@ -125240,7 +126734,8 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     const std::size_t stop = b.rfind("</AppendedData>");
     if (underscore == std::string::npos || stop == std::string::npos || stop <= underscore)
         throw ReadError("VTU: AppendedData is not closed");
-    const std::string xml = b.substr(0, tag_end + 1) + b.substr(stop);
+    std::string xml(b.substr(0, tag_end + 1));
+    xml += b.substr(stop);
     rSource.mDoc.reset();
     res = rSource.mDoc.load_buffer(xml.data(), xml.size(), ParseOptions);
     if (!res)
@@ -125522,10 +127017,12 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         // One stream across pieces: node ids shift by the points before the
         // piece, offsets by the connectivity before it, face offsets by the
         // face stream before it (-1 marks a cell that is not a polyhedron).
-        for (auto& rV : p_conn)
-            rV += point_base;
-        for (auto& rV : p_offsets)
-            rV += conn_base;
+        if (point_base != 0)
+            for (auto& rV : p_conn)
+                rV += point_base;
+        if (conn_base != 0)
+            for (auto& rV : p_offsets)
+                rV += conn_base;
         for (std::size_t i = 0; i < p_faces.size();) {
             const std::int64_t num_faces = p_faces[i++];
             for (std::int64_t f = 0; f < num_faces && i < p_faces.size(); ++f) {
@@ -125544,11 +127041,18 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         point_base += static_cast<std::int64_t>(num_points);
         conn_base += static_cast<std::int64_t>(p_conn.size());
         face_base += static_cast<std::int64_t>(p_faces.size());
-        conn.insert(conn.end(), p_conn.begin(), p_conn.end());
-        offsets.insert(offsets.end(), p_offsets.begin(), p_offsets.end());
-        types.insert(types.end(), p_types.begin(), p_types.end());
-        faces.insert(faces.end(), p_faces.begin(), p_faces.end());
-        face_offsets.insert(face_offsets.end(), p_face_offsets.begin(), p_face_offsets.end());
+        // The first (usually the only) piece moves in; later ones append.
+        const auto append = [](std::vector<std::int64_t>& rAll, std::vector<std::int64_t>& rPart) {
+            if (rAll.empty())
+                rAll = std::move(rPart);
+            else
+                rAll.insert(rAll.end(), rPart.begin(), rPart.end());
+        };
+        append(conn, p_conn);
+        append(offsets, p_offsets);
+        append(types, p_types);
+        append(faces, p_faces);
+        append(face_offsets, p_face_offsets);
     }
 
     if (!point_parts.empty()) {
@@ -126439,6 +127943,7 @@ MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpt
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -126450,7 +127955,7 @@ namespace {
 
 std::vector<double> parse_point(const std::string& rS) {
     std::vector<double> p;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         p.push_back(detail::parse_double(tok));
@@ -126473,10 +127978,8 @@ struct CoordHash {
 }  // namespace
 
 Mesh read_wkt(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const detail::FileSource s_source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view s = s_source.View();
 
     // Must be a TIN.
     std::size_t tin = s.find("TIN");
@@ -126617,12 +128120,14 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/wkt.cpp =====
 // ===== begin src/cpp/src/formats/xdmf.cpp =====
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -126632,6 +128137,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 // Project includes (private, not installed)
 
 // Project includes
+
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #endif
@@ -126700,47 +128206,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
     return p == 4 ? DType::Float32 : DType::Float64;
 }
 
-void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(detail::parse_double(rTok));
-            break;
-        case DType::Float64:
-            rA.As<double>()[i] = detail::parse_double(rTok);
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[i] =
-                static_cast<std::int8_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[i] =
-                static_cast<std::int16_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] =
-                static_cast<std::int32_t>(std::strtoll(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = std::strtoll(rTok.c_str(), nullptr, 10);
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[i] =
-                static_cast<std::uint8_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[i] =
-                static_cast<std::uint16_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[i] =
-                static_cast<std::uint32_t>(std::strtoull(rTok.c_str(), nullptr, 10));
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[i] = std::strtoull(rTok.c_str(), nullptr, 10);
-            break;
-    }
-}
-
 NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
     std::vector<std::size_t> dims = parse_dims(rDi.attribute("Dimensions").value());
 
@@ -126758,12 +128223,35 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
                                                        std::multiplies<>());
 
     if (fmt == "XML") {
-        NDArray a(dt, dims);
-        auto iss = detail::make_classic_istringstream(rDi.text().get());
-        std::string tok;
-        std::size_t i = 0;
-        while (i < total && (iss >> tok))
-            store_token(a, i++, tok);
+        // The element's text read in place, token by token, and parsed straight
+        // into the typed buffer with the dtype switch taken once (roadmap §4):
+        // the lenient parse_double / strtoll / strtoull store_token used. A
+        // short item leaves the rest zero, as the zero-filled array did.
+        NDArray a = NDArray::Uninit(dt, dims);
+        const std::string_view text = rDi.text().get();
+        detail::dispatch_dtype(dt, [&]<class T>() {
+            T* out = a.As<T>();
+            std::size_t i = 0, pos = 0;
+            while (i < total) {
+                while (pos < text.size() && detail::text_is_blank(text[pos]))
+                    ++pos;
+                if (pos >= text.size())
+                    break;
+                const std::size_t b = pos;
+                while (pos < text.size() && !detail::text_is_blank(text[pos]))
+                    ++pos;
+                const std::string_view tok = text.substr(b, pos - b);
+                if constexpr (std::is_floating_point_v<T>)
+                    out[i++] = static_cast<T>(detail::parse_double_prefix(tok));
+                else if constexpr (std::is_signed_v<T>)
+                    out[i++] = static_cast<T>(detail::strtoll_token(tok));
+                else
+                    out[i++] = static_cast<T>(detail::strtoull_token(tok));
+            }
+            if (i * sizeof(T) < a.Nbytes())
+                std::memset(reinterpret_cast<unsigned char*>(out) + i * sizeof(T), 0,
+                            a.Nbytes() - i * sizeof(T));
+        });
         return a;
     }
     if (fmt == "Binary") {
@@ -129422,10 +130910,7 @@ std::vector<std::int64_t> z88_leading_ints(std::string_view Line) {
 }
 
 std::string z88_read_text(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Z88: cannot open " + rPath);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return std::string(detail::open_source(rPath, "Z88: cannot open " + rPath).View());
 }
 
 std::string z88_lower(std::string s) {
@@ -144028,9 +145513,10 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
     const WriteOptions& wopts = rPipeline.mOutput.mOptions;
-    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
-                                : wopts.mEncoding == WriteEncoding::Binary ? "binary"
-                                                                           : "";
+    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii         ? "ascii"
+                                : wopts.mEncoding == WriteEncoding::Binary      ? "binary"
+                                : wopts.mEncoding == WriteEncoding::RawAppended ? "raw_appended"
+                                                                                : "";
     const char* codec_name = wopts.mCodecSet ? vtk_codec_name(wopts.mCodec) : "";
     detail::provenance_set_target(out_fmt, encoding_name, codec_name, wopts.mFloatFormat);
 
@@ -144048,9 +145534,11 @@ WriteEncoding pipeline_encoding_from_name(const std::string& rName) {
         return WriteEncoding::Ascii;
     if (rName == "binary")
         return WriteEncoding::Binary;
+    if (rName == "raw_appended")
+        return WriteEncoding::RawAppended;
     throw std::invalid_argument(
-        "meshio++: pipeline: Output.Encoding must be 'ascii' or "
-        "'binary', not '" +
+        "meshio++: pipeline: Output.Encoding must be 'ascii', 'binary' or "
+        "'raw_appended', not '" +
         rName + "'");
 }
 
@@ -151187,6 +152675,9 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (!rOptions.mFloatFormat.empty())
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support FloatFormat");
+    if (rOptions.mEncoding == WriteEncoding::RawAppended)
+        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+                         " writer has no raw appended encoding (only vtu does)");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -158039,6 +159530,10 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         rWhy = "format '" + rFormat + "' has no ASCII/binary variant to select";
         return false;
     }
+    if (rOptions.mEncoding == WriteEncoding::RawAppended && rFormat != "vtu") {
+        rWhy = "format '" + rFormat + "' has no raw appended encoding (only vtu does)";
+        return false;
+    }
     if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
         rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
         return false;
@@ -158077,7 +159572,8 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     if (!registry_write_supports(fmt, rOptions, why))
         throw WriteError("meshio++: " + why);
 
-    const bool binary = rOptions.mEncoding == WriteEncoding::Binary;
+    const bool appended = rOptions.mEncoding == WriteEncoding::RawAppended;
+    const bool binary = rOptions.mEncoding == WriteEncoding::Binary || appended;
     const std::string& r_ff =
         rOptions.mFloatFormat.empty() ? std::string(".16e") : rOptions.mFloatFormat;
 
@@ -158114,7 +159610,10 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         const detail::VtkCodec codec =
             rOptions.mCodecSet ? rOptions.mCodec
                                : (binary ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
-        write_vtu_codec(rPath, rMesh, binary, codec);
+        if (appended)
+            write_vtu_appended(rPath, rMesh, codec);
+        else
+            write_vtu_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "vtp") {
         const detail::VtkCodec codec =
             rOptions.mCodecSet ? rOptions.mCodec

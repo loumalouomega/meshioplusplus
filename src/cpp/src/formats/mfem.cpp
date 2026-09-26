@@ -47,6 +47,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "lagrange_common.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -467,10 +468,8 @@ private:
 };
 
 std::string mf_read_text(const std::string& rPath, const char* pWhat) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError(std::string(pWhat) + ": cannot open " + rPath);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return std::string(
+        detail::open_source(rPath, std::string(pWhat) + ": cannot open " + rPath).View());
 }
 
 // A finite element space, as a `FiniteElementSpace` header names it.

@@ -26,6 +26,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -40,6 +41,8 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -103,20 +106,16 @@ int meshio_to_su2(const std::string& rT) {
     return -1;
 }
 
-std::string su2_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+std::string_view su2_strip(std::string_view S) {
+    std::size_t b = S.find_first_not_of(" \t\r\n");
+    if (b == std::string_view::npos)
+        return {};
+    std::size_t e = S.find_last_not_of(" \t\r\n");
+    return S.substr(b, e - b + 1);
 }
-std::vector<std::string> su2_tokens(const std::string& rS) {
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+/// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
+std::vector<std::string_view> su2_tokens(std::string_view S) {
+    return detail::split_blanks(S);
 }
 
 struct Blk {
@@ -131,32 +130,40 @@ struct Blk {
 // Parse `count` element lines (each "vtk_type n0 n1 ... [extra]") into type-
 // grouped blocks (sorted by vtk type code, matching numpy.unique), all with
 // the given tag and zone.
-void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, std::size_t count,
-                     std::int32_t tag, std::int32_t zone, std::vector<Blk>& rOut) {
-    std::vector<std::pair<int, std::vector<std::int64_t>>> elems;
+void read_elem_block(const std::vector<std::string_view>& rLines, std::size_t& rLi,
+                     std::size_t count, std::int32_t tag, std::int32_t zone,
+                     std::vector<Blk>& rOut) {
+    // Each element's type and nodes, flat: no vector per element.
+    std::vector<int> vts;
+    vts.reserve(count);
+    std::vector<std::int64_t> flat;
+    std::vector<std::size_t> start{0};
+    start.reserve(count + 1);
     std::set<int> types;
+    std::vector<std::string_view> t;  // reused
     for (std::size_t e = 0; e < count; ++e) {
-        auto t = su2_tokens(rLines.at(rLi++));
+        detail::split_blanks(rLines.at(rLi++), t);
         detail::need_tokens(t, 1, "SU2");
-        int vt = std::stoi(t[0]);
+        int vt = std::stoi(std::string(t[0]));
         int nn = su2_numnodes(vt);
         if (nn == 0)
-            throw ReadError("SU2: unsupported element type " + t[0]);
+            throw ReadError("SU2: unsupported element type " + std::string(t[0]));
         detail::need_tokens(t, 1 + static_cast<std::size_t>(nn), "SU2");
-        std::vector<std::int64_t> nodes(nn);
         for (int j = 0; j < nn; ++j)
-            nodes[j] = std::strtoll(t[1 + j].c_str(), nullptr, 10);
-        elems.emplace_back(vt, std::move(nodes));
+            flat.push_back(detail::strtoll_token(t[1 + static_cast<std::size_t>(j)]));
+        vts.push_back(vt);
+        start.push_back(flat.size());
         types.insert(vt);
     }
     for (int vt : types) {  // std::set is sorted
         Blk b;
         b.mType = su2_to_meshio(vt);
         b.mN = su2_numnodes(vt);
-        for (auto& e : elems) {
-            if (e.first != vt)
+        for (std::size_t e = 0; e < vts.size(); ++e) {
+            if (vts[e] != vt)
                 continue;
-            b.mConn.insert(b.mConn.end(), e.second.begin(), e.second.end());
+            b.mConn.insert(b.mConn.end(), flat.begin() + static_cast<std::ptrdiff_t>(start[e]),
+                           flat.begin() + static_cast<std::ptrdiff_t>(start[e + 1]));
             b.mTag.push_back(tag);
             b.mZone.push_back(zone);
             ++b.mCount;
@@ -180,7 +187,7 @@ struct Su2ZoneBody {
 /// consumed. Stops at the next "IZONE=" (the next zone) or end of file --
 /// shared by the single-zone and multizone read paths, so both go through
 /// exactly the same per-record logic.
-Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size_t& rLi,
+Su2ZoneBody read_su2_zone_body(const std::vector<std::string_view>& rLines, std::size_t& rLi,
                                std::int32_t zone) {
     Su2ZoneBody zoneBody;
     std::int32_t next_tag_id = 0;
@@ -188,20 +195,20 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
     std::string current_tag_name;  // empty when the marker's own tag is numeric
 
     while (rLi < rLines.size()) {
-        std::string line = su2_strip(rLines[rLi]);
+        std::string_view line = su2_strip(rLines[rLi]);
         if (line.empty() || line[0] == '%') {
             ++rLi;
             continue;
         }
         std::size_t eq = line.find('=');
-        if (eq == std::string::npos) {
+        if (eq == std::string_view::npos) {
             ++rLi;
             continue;
         }
-        std::string name = su2_strip(line.substr(0, eq));
+        std::string_view name = su2_strip(line.substr(0, eq));
         if (name == "IZONE")
             break;  // the next zone: let the caller consume it
-        std::string rest = su2_strip(line.substr(eq + 1));
+        const std::string rest(su2_strip(line.substr(eq + 1)));
         ++rLi;
 
         if (name == "NDIME") {
@@ -214,16 +221,17 @@ Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size
             if (zoneBody.mDim == 0)
                 throw ReadError("SU2: NPOIN before NDIME");
             // One point per line: the count cannot exceed the lines left.
-            const std::size_t npoin = detail::checked_count(std::stoll(npoin_tok[0]),
+            const std::size_t npoin = detail::checked_count(std::stoll(std::string(npoin_tok[0])),
                                                             rLines.size() - rLi, "SU2", "point");
             NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(zoneBody.mDim)});
             double* pp = pts.As<double>();
+            std::vector<std::string_view> t;  // reused
             for (std::size_t i = 0; i < npoin; ++i) {
-                auto t = su2_tokens(rLines.at(rLi++));
+                detail::split_blanks(rLines.at(rLi++), t);
                 detail::need_tokens(t, static_cast<std::size_t>(zoneBody.mDim), "SU2");
                 for (int c = 0; c < zoneBody.mDim; ++c)
                     pp[i * static_cast<std::size_t>(zoneBody.mDim) + static_cast<std::size_t>(c)] =
-                        detail::parse_double(t[static_cast<std::size_t>(c)]);
+                        detail::parse_double_prefix(t[static_cast<std::size_t>(c)]);
             }
             zoneBody.mPoints = std::move(pts);
         } else if (name == "NELEM") {
@@ -291,13 +299,9 @@ void su2_merge_by_type(std::vector<Blk>& rBlocks) {
 }  // namespace
 
 Mesh read_su2(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l))
-        lines.push_back(l);
+    // The file read once; its lines are views into it (detail/text_cursor.hpp).
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
     // NZONE= (if present) is always the first key: a single-file multizone
     // mesh's own header, before the first (implicit) IZONE= 1.
@@ -306,19 +310,20 @@ Mesh read_su2(const std::string& rPath) {
     {
         std::size_t li = 0;
         while (li < lines.size()) {
-            std::string line = su2_strip(lines[li]);
+            std::string_view line = su2_strip(lines[li]);
             if (line.empty() || line[0] == '%') {
                 ++li;
                 continue;
             }
             std::size_t eq = line.find('=');
-            if (eq == std::string::npos)
+            if (eq == std::string_view::npos)
                 break;
             if (su2_strip(line.substr(0, eq)) == "NZONE") {
                 const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
                 detail::need_tokens(value, 1, "SU2");
                 // Every zone takes lines of its own: bounded by the file.
-                nzone = detail::checked_count(std::stoll(value[0]), lines.size(), "SU2", "zone");
+                nzone = detail::checked_count(std::stoll(std::string(value[0])), lines.size(),
+                                              "SU2", "zone");
                 multizone = true;
             }
             break;
@@ -331,19 +336,19 @@ Mesh read_su2(const std::string& rPath) {
         // Skip blank/comment lines and (for a multizone file) the NZONE=/IZONE=
         // markers themselves; the shared body parser starts at NDIME.
         while (li < lines.size()) {
-            std::string line = su2_strip(lines[li]);
+            std::string_view line = su2_strip(lines[li]);
             if (line.empty() || line[0] == '%') {
                 ++li;
                 continue;
             }
             std::size_t eq = line.find('=');
-            if (eq == std::string::npos)
+            if (eq == std::string_view::npos)
                 break;
-            std::string name = su2_strip(line.substr(0, eq));
+            std::string_view name = su2_strip(line.substr(0, eq));
             if (name == "NZONE" || name == "IZONE") {
                 const auto value = su2_tokens(su2_strip(line.substr(eq + 1)));
-                if (name == "IZONE" &&
-                    (value.empty() || std::stoll(value[0]) != static_cast<long long>(z + 1)))
+                if (name == "IZONE" && (value.empty() || std::stoll(std::string(value[0])) !=
+                                                             static_cast<long long>(z + 1)))
                     throw ReadError("SU2: IZONE out of order (expected " + std::to_string(z + 1) +
                                     ")");
                 ++li;
@@ -378,7 +383,7 @@ Mesh read_su2(const std::string& rPath) {
             const std::size_t n = z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
             if (n)
                 std::memcpy(pp + offset * static_cast<std::size_t>(dim), z.mPoints.Data(),
-                           z.mPoints.Nbytes());
+                            z.mPoints.Nbytes());
             for (Blk& b : z.mBlocks)
                 for (std::int64_t& id : b.mConn)
                     id += static_cast<std::int64_t>(offset);
@@ -427,7 +432,8 @@ Mesh read_su2(const std::string& rPath) {
     for (std::size_t bi = 0; bi < kept.size(); ++bi) {
         const Blk& b = *kept[bi];
         for (std::size_t r = 0; r < b.mCount; ++r) {
-            const std::int64_t global = detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
+            const std::int64_t global =
+                detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
             zone_cells[b.mZone[r]].push_back(global);
             marker_cells[{b.mZone[r], b.mTag[r]}].push_back(global);
         }
@@ -462,7 +468,8 @@ std::vector<std::string> su2_vtypes(std::size_t dim) {
                     : std::vector<std::string>{"tetra", "hexahedron", "wedge", "pyramid"};
 }
 std::vector<std::string> su2_btypes(std::size_t dim) {
-    return dim == 2 ? std::vector<std::string>{"line"} : std::vector<std::string>{"triangle", "quad"};
+    return dim == 2 ? std::vector<std::string>{"line"}
+                    : std::vector<std::string>{"triangle", "quad"};
 }
 bool su2_in(const std::vector<std::string>& rV, const std::string& rT) {
     return std::find(rV.begin(), rV.end(), rT) != rV.end();
@@ -510,7 +517,8 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     auto remap_of = [&](std::int64_t old_id) {
         if (!Subset)
             return old_id;
-        const auto [it, inserted] = remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
+        const auto [it, inserted] =
+            remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
         if (inserted)
             old_ids.push_back(old_id);
         return it->second;
@@ -534,8 +542,9 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     for (std::int64_t old_id : old_ids) {
         for (std::size_t c = 0; c < Dim; ++c) {
             char buf[64];
-            detail::snprintf_c(buf, sizeof(buf), "%.16e",
-                               detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
+            detail::snprintf_c(
+                buf, sizeof(buf), "%.16e",
+                detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
             rOs << buf << (c + 1 == Dim ? '\n' : ' ');
         }
     }
@@ -572,8 +581,8 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     rOs << "NMARK= " << tag_counts.size() << "\n";
     for (const auto& [tag, count] : tag_counts) {
         const auto name_it = rMarkerNames.find(tag);
-        rOs << "MARKER_TAG= " << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag))
-            << "\n";
+        rOs << "MARKER_TAG= "
+            << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag)) << "\n";
         rOs << "MARKER_ELEMS= " << count << "\n";
         for (const auto& [block, row] : rCells)
             if (su2_in(btypes, rMesh.Cells(block).Type()) && tag_of(block, row) == tag)
@@ -600,16 +609,17 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
         const auto cb = rMesh.Cells(bi);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int32_t zone = has_zone_data
-                                          ? static_cast<std::int32_t>(detail::read_int(
-                                                rMesh.CellData("su2:zone", bi), r))
-                                          : 0;
+            const std::int32_t zone =
+                has_zone_data
+                    ? static_cast<std::int32_t>(detail::read_int(rMesh.CellData("su2:zone", bi), r))
+                    : 0;
             by_zone[zone].emplace_back(bi, static_cast<std::int64_t>(r));
         }
     }
     const bool multizone = by_zone.size() > 1;
 
-    std::map<std::int32_t, std::map<std::int64_t, std::string>> marker_names;  // zone -> tag -> name
+    std::map<std::int32_t, std::map<std::int64_t, std::string>>
+        marker_names;  // zone -> tag -> name
     for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
         const Region& region = rMesh.Region(ri);
         if (region.mKind != RegionKind::Cell || region.NumEntries() == 0)
@@ -617,15 +627,13 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         const auto [block, row] = detail::global_to_block_row(bases, region.Entries()[0]);
         if (block == static_cast<std::size_t>(-1))
             continue;
-        const std::int32_t zone = has_zone_data
-                                      ? static_cast<std::int32_t>(
-                                            detail::read_int(rMesh.CellData("su2:zone", block),
-                                                             static_cast<std::size_t>(row)))
-                                      : 0;
-        const std::int64_t tag = tag_key.empty()
-                                     ? 1
-                                     : detail::read_int(rMesh.CellData(tag_key, block),
-                                                        static_cast<std::size_t>(row));
+        const std::int32_t zone =
+            has_zone_data ? static_cast<std::int32_t>(detail::read_int(
+                                rMesh.CellData("su2:zone", block), static_cast<std::size_t>(row)))
+                          : 0;
+        const std::int64_t tag = tag_key.empty() ? 1
+                                                 : detail::read_int(rMesh.CellData(tag_key, block),
+                                                                    static_cast<std::size_t>(row));
         std::string name = region.mName;
         const std::string prefix = "zone_" + std::to_string(zone) + "/";
         if (multizone && name.rfind(prefix, 0) == 0)
@@ -639,10 +647,10 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         std::vector<std::pair<std::size_t, std::int64_t>> all;
         for (auto& [zone, cells] : by_zone)
             all.insert(all.end(), cells.begin(), cells.end());
-        write_su2_zone_body(os, rMesh, dim, all, tag_key,
-                            marker_names.count(0) ? marker_names[0]
-                                                  : std::map<std::int64_t, std::string>{},
-                            /*Subset=*/false);
+        write_su2_zone_body(
+            os, rMesh, dim, all, tag_key,
+            marker_names.count(0) ? marker_names[0] : std::map<std::int64_t, std::string>{},
+            /*Subset=*/false);
         return;
     }
 
@@ -650,10 +658,10 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     std::int32_t ordinal = 1;
     for (auto& [zone, cells] : by_zone) {
         os << "\nIZONE= " << ordinal++ << "\n";
-        write_su2_zone_body(os, rMesh, dim, cells, tag_key,
-                            marker_names.count(zone) ? marker_names[zone]
-                                                     : std::map<std::int64_t, std::string>{},
-                            /*Subset=*/true);
+        write_su2_zone_body(
+            os, rMesh, dim, cells, tag_key,
+            marker_names.count(zone) ? marker_names[zone] : std::map<std::int64_t, std::string>{},
+            /*Subset=*/true);
     }
 }
 

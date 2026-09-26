@@ -46,7 +46,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 
 `Input.Options` narrows the read (see [selective reads](selective_read.md)): `PointsOnly` (bool), `DataArrays` (string array; absent = all, `[]` = none), `TimeStep` (int), `Lenient` (bool), `Mmap` (`"auto" | "on" | "off"`).
 
-`Output` maps onto `registry_write_ex`: `Encoding` (`"ascii" | "binary"`), `Codec` (`"none" | "zlib" | "lz4" | "zstd"`, VTU/VTP block codecs), and `FloatFormat` (a printf-style float format for ASCII writers that take one). An option the output format cannot honour is an error.
+`Output` maps onto `registry_write_ex`: `Encoding` (`"ascii" | "binary" | "raw_appended"`; `raw_appended` is VTU only, see [VTU](formats/vtu.md)), `Codec` (`"none" | "zlib" | "lz4" | "zstd"`, VTU/VTP block codecs), and `FloatFormat` (a printf-style float format for ASCII writers that take one). An option the output format cannot honour is an error.
 
 ## Operations
 

@@ -30,6 +30,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -48,6 +49,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -180,17 +182,20 @@ bool marc_is_data(std::string_view Line) {
 }
 
 std::vector<std::string> marc_lines(const std::string& rPath, const char* pLabel) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
+    std::optional<detail::FileSource> source;
+    try {
+        source.emplace(rPath);
+    } catch (const ReadError&) {
         marc_fail(pLabel, "cannot open " + rPath);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    const std::string_view text = source->View();
     std::vector<std::string> lines;
     std::size_t pos = 0;
     while (pos < text.size()) {
         std::size_t eol = text.find('\n', pos);
         if (eol == std::string::npos)
             eol = text.size();
-        std::string line = text.substr(pos, eol - pos);
+        std::string line(text.substr(pos, eol - pos));
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         lines.push_back(std::move(line));

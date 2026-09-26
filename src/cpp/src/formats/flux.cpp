@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/log.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -71,7 +72,7 @@ bool contains(const std::string& rHay, const char* pNeedle) {
 }
 
 long long leading_int(const std::string& rLine) {
-    auto iss = detail::make_classic_istringstream(rLine);
+    detail::TextStream iss(rLine);
     long long v = 0;
     iss >> v;
     return v;
@@ -111,7 +112,7 @@ Mesh read_flux(const std::string& rPath) {
     // element tokens
     std::vector<std::string> etok;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::string w;
         while (iss >> w)
             etok.push_back(w);
@@ -160,7 +161,7 @@ Mesh read_flux(const std::string& rPath) {
     // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        auto iss = detail::make_classic_istringstream(lines[i]);
+        detail::TextStream iss(lines[i]);
         std::string w;
         while (iss >> w)
             ctok.push_back(w);

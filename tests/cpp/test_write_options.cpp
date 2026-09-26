@@ -89,6 +89,28 @@ TEST(WriteOptions, EncodingSelectsAsciiOrBinary) {
     std::remove(b.c_str());
 }
 
+TEST(WriteOptions, RawAppendedIsVtuOnly) {
+    const Mesh m = mt::tet_mesh();
+    WriteOptions appended;
+    appended.mEncoding = WriteEncoding::RawAppended;
+    std::string why;
+    EXPECT_TRUE(meshioplusplus::registry_write_supports("vtu", appended, why)) << why;
+    for (const char* fmt : {"vtk", "vtp", "gmsh", "stl"}) {
+        EXPECT_FALSE(meshioplusplus::registry_write_supports(fmt, appended, why)) << fmt;
+        EXPECT_THROW(registry_write_ex(mt::temp_path("_wo_raw_bad"), m, fmt, appended),
+                     meshioplusplus::WriteError)
+            << fmt;
+    }
+
+    const std::string p = mt::temp_path("_wo_raw.vtu");
+    registry_write_ex(p, m, "vtu", appended);
+    const std::string text = read_all(p);
+    EXPECT_NE(text.find("<AppendedData encoding=\"raw\">"), std::string::npos);
+    const Mesh back = meshioplusplus::registry_read(p, "vtu", {});
+    mt::expect_same_geometry(back, m);
+    std::remove(p.c_str());
+}
+
 TEST(WriteOptions, OpenfoamEncodingReachesTheBinaryWriter) {
     // roadmap §1.1: openfoam joined the formats with an ASCII/binary variant.
     // Each case gets its own directory: unlike every other format here,
