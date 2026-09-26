@@ -16,7 +16,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **Duplicate cells:** `clean`'s ragged and polyhedral passes and `merge`'s `drop_duplicate_cells` find duplicates with the sort-based table in parallel instead of a string key per cell in a hash set, or a `std::map` of node vectors.
 - **The shared facet table's counting sort** is chunked across threads for large inputs (one order for any chunking).
 - **`isosurface` and `slice`** cut every simplex in parallel and number the crossing points by first-seen order over the sort-based table, where they used a serial hash map.
-- **`split`** resolves components in one ascending pass, numbers them by a scan and extracts the pieces in parallel.
+- **`split`** resolves components in one ascending pass and numbers them by a scan, where it hashed every root; its union sweep and the piece extraction stay serial (a mesh is not safe to read from several threads through its lazily filled caches).
 - **`cell_data_to_point_data`** gathers each point's incident cells in parallel, adding the same terms in the order the serial scatter did; `gradient` and `hessian` at Point location use it, and `hessian` no longer copies the input's other arrays through its two gradient passes.
 - **`compute_normals`**, **`remesh_volume`** (lattice, classification, cut, weld and compaction) and **`remesh`'s setup passes** (item weights, vertex normals, curvature and metric fits) run in parallel; `remesh`'s clustering sweep stays serial by design.
 - **The per-element dtype switch** is hoisted out of the hot loops of `refine`, `convert_cells`, `interpolate`, `repair`, `partition`, `sobolev_deform`, `reorder`, `smooth` and `optimize_volume` (63 call sites).

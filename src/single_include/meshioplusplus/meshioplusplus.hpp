@@ -154496,13 +154496,12 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
         piece.mPointMap = std::move(sub.mPointMap);
         piece.mCellMaps = std::move(sub.mCellMaps);
     };
-    // Pieces are independent: extract them in parallel -- unless the mesh has
-    // regions, whose remap may warn, and warnings keep piece order.
-    if (rMesh.NumRegions() == 0)
-        parallel_for(groups.size(), extract, 1);
-    else
-        for (std::size_t i = 0; i < groups.size(); ++i)
-            extract(i);
+    // Serial on purpose: every piece reads the input mesh's data names and
+    // arrays, and the backends fill caches lazily behind const accessors (the
+    // MESHIO name lists, the NATIVE global CSR, the KRATOS ModelPart), so one
+    // Mesh is not safe to read from several threads through them.
+    for (std::size_t i = 0; i < groups.size(); ++i)
+        extract(i);
     return res;
 }
 
