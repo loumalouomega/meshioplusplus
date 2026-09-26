@@ -3060,6 +3060,13 @@ PYBIND11_MODULE(_core, m) {
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_marc(path));
           }));
     m.def(
+        "marc_write",
+        [](const std::string& path, py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_marc(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+        },
+        py::arg("path"), py::arg("mesh"));
+    m.def(
         "marc_t19_read",
         guard_read("marc_t19",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {

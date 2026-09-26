@@ -2111,6 +2111,9 @@ def test_marc_and_ansys_results_formats(tmp_path):
     out = _dump(_tools.tool_formats())
     for fmt in ("marc", "marc_t19", "ansys_rst_cyclic"):
         assert fmt in out["readable"], fmt
+    # The deck is written since v16.17.0 (by name: ".dat" writes Tecplot).
+    assert "marc" in out["writable"]
+    for fmt in ("marc_t19", "ansys_rst_cyclic"):
         assert fmt not in out["writable"], fmt
     assert out["extensions"][".t19"] == ["marc_t19"]
     assert out["extensions"][".dat"] == ["marc", "tecplot"]
@@ -2119,6 +2122,9 @@ def test_marc_and_ansys_results_formats(tmp_path):
     target = str(tmp_path / "hex20.vtu")
     _tools.tool_convert(str(deck), target)
     assert meshioplusplus.read(target).cells[0].type == "hexahedron20"
+    again = str(tmp_path / "again.dat")
+    _tools.tool_convert(target, again, output_format="marc")
+    assert _dump(_tools.tool_sniff(again))["format"] == "marc"
     post = str(meshes / "marc" / "results.t19")
     last = str(tmp_path / "last.vtu")
     _tools.tool_convert(post, last, time_step=-1)

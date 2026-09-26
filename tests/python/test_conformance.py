@@ -122,6 +122,4 @@ _READ_ONLY_PAGE = {"ansys_rst_cyclic": "ansys_rst", "marc_t19": "marc"}
 def test_every_read_only_page_links_its_reason(fmt):
     page = REPO / "doc" / "formats" / f"{_READ_ONLY_PAGE.get(fmt, fmt)}.md"
     anchor = fmt.lower().replace("_", "-")
-    if fmt in ("marc", "radioss"):
-        pytest.skip("a deck whose writer is being added")
     assert f"conformance.md#{anchor}" in page.read_text(encoding="utf-8"), page.name

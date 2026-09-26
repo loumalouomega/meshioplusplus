@@ -307,6 +307,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
         {"radioss",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
+        // By name only: ".dat" writes Tecplot (resolve_write_format).
+        {"marc", meshioplusplus::write_marc},
         {"elmer",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},

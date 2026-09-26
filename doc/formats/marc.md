@@ -6,7 +6,7 @@ MSC Marc's input deck (the `.dat` file Marc Mentat writes and the solver reads) 
 |---|---|
 | **Format names** | `marc` (input deck), `marc_t19` (formatted post file) |
 | **Extensions** | `.dat` (shared with Tecplot: a `.dat` file that opens as a Marc deck is Marc's), `.t19`; both also recognised by content |
-| **Read / Write** | ✓ / — (`marc_t19` is [read-only by design](../conformance.md#marc-t19): Marc writes it, and no tool reads one written elsewhere) |
+| **Read / Write** | ✓ / ✓ for the deck (since v16.17.0, by name); `marc_t19` ✓ / —, [read-only by design](../conformance.md#marc-t19): Marc writes it, and no tool reads one written elsewhere |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -27,6 +27,21 @@ meshioplusplus convert job.t19 'inc_{step}.vtu'      # one .vtu per increment
 ```
 
 `read_t19` (and `read` on a `.t19`) also takes `points_only` and `arrays` (read only the named arrays). The binary `.t16` is not read: Marc writes the `.t19` beside it when the `POST` option asks for a formatted file (its fourth field set to 1), and `.t16` files need Marc's own PyPost library: the [Marc `.t16` route](../routes/marc_t16.md) (v16.13.0) exports one through it.
+
+## Writing
+
+```python
+meshioplusplus.write("job.dat", mesh, file_format="marc")   # ".dat" alone writes Tecplot
+meshioplusplus.marc.write("job.dat", mesh)
+```
+
+Since v16.17.0 both engines write an input deck, and write the same bytes, in `EXTENDED` format (10-column integers, 20-column reals, the shortest exact spelling of a real when it fits, so coordinates come back exactly): `TITLE`, a `$` comment holding the provenance record, `EXTENDED`, `SIZING` (the element and node counts), one `ELEMENTS` line per type, `END`, then `CONNECTIVITY` (at most 14 nodes on an element's first line, continued 14 to a line), `COORDINATES` (three per node), a `DEFINE NODE SET` per point region and a `DEFINE ELEMENT SET` per cell region (ascending runs of three or more as `a TO b`, six items to a line, `C` continuing), the face and edge sets read from a deck back from their `marc:face_set:`/`marc:edge_set:` field data, and `END OPTION`. `.dat` stays Tecplot's for a write by extension, whatever the file it replaces holds (see [Which `.dat` is Marc's](#which-dat-is-marc-s)): name the format.
+
+- **Element types.** A cell keeps its `marc:type` when that type's element is the cell (or a brick of type 7, 43, 117… for a tetrahedron, pyramid or wedge read from a degenerate brick, written back that way); a Herrmann, bubble or generalized-plane-strain type, whose extra nodes a cell does not keep, falls back to the default with a warning. The defaults: in a 3-D mesh `hexahedron` 7, `hexahedron20` 21, `tetra` 134, `tetra10` 127, `wedge` 136, `pyramid` 7 as a degenerate brick, `quad` 75 and `triangle` 138 (shells), `quad8` 22, `line` 9 (truss) and `line3` 64; in a planar mesh (two coordinates, or every z 0, and no volume cells) the plane-strain `quad` 11, `triangle` 6, `quad8` 27 and `triangle6` 125. A 3-D `triangle6` has no default (Marc has no 6-node shell) and is dropped, as are cells with no type (`vertex`, `hexahedron27`…).
+- **Numbers.** Elements keep `marc:element` when every number is positive and unique, else are numbered 1, 2…; nodes are numbered 1, 2… in point order.
+- **Set names** read back as one token: blanks, commas and `$` become `_`; `define` and `end`, which the line after a set could start with, become `define_set` and `end_set`; a name already taken, case aside, gets `_2`, `_3`….
+- **Dropped, with a warning and a provenance note:** side regions (Marc numbers an element's faces and edges its own way, which is not mapped to facets), every data array but `marc:element` and `marc:type`, and cells with no type. A mesh with no points is a `WriteError`.
+- **Unchecked against Marc:** no licence was available, so `SIZING`'s fields, the one-type-per-line `ELEMENTS` and the defaults for shells and plane strain follow Volume C and Mentat's own decks, not a run of Marc; see [Awaiting a licensed run](../roadmap.md#awaiting-a-licensed-run).
 
 ## Which `.dat` is Marc's
 
@@ -111,7 +126,7 @@ No Marc licence was available. The readers are checked against:
 - **A real `.t19`** written by Marc (two 8-node bricks, from the FEDES project's examples), not committed: its mesh, sets, loads and stress tensor read as the file describes them.
 - **Fixtures written from the manuals**, in `tests/python/meshes/marc/` by `tools/gen_marc_fixtures.py`: the same model in fixed and extended format, a free-format deck with a collapsed brick and an unknown type, a plane-strain deck, a deck that INCLUDEs its coordinates and sets (nested, with Herrmann, rebar and composite elements and edge and face sets), a two-increment post file, and a post file whose second increment remeshes.
 
-The C++ and Python readers agree bit for bit on all of them.
+The C++ and Python readers agree bit for bit on all of them. The writer (v16.17.0) reads back every fixture and every DAMASK deck to the same points, cells, element numbers and sets, and the same element types except the Herrmann elements of `include_main.dat`, whose pressure nodes a cell does not keep; the C++ and Python writers give the same bytes on all of them.
 
 ## Not read
 

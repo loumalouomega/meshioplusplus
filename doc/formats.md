@@ -37,7 +37,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — | [8/8 cells · no data · regions CPS](./conformance.md#lsdyna) |
 | [`lsdyna_binout`](./formats/lsdyna_binout.md) | none: the file named `binout` (or `binout0000`...) | ✓ | — | — | [read-only](./conformance.md#lsdyna-binout) |
 | [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` or `d3part` (and its `d3plot01`... family) | ✓ | — | — | [read-only](./conformance.md#lsdyna-d3plot) |
-| [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | — | — | [read-only](./conformance.md#marc) |
+| [`marc`](./formats/marc.md) | `.dat` (a Marc input deck; Tecplot's otherwise) | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#marc) |
 | [`marc_t19`](./formats/marc.md#the-post-file) | `.t19` (formatted post file) | ✓ | — | — | [read-only](./conformance.md#marc-t19) |
 | [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — | [8/8 cells · data P](./conformance.md#mdpa) |
 | [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` | [8/8 cells · data PC · regions CP](./conformance.md#med) |

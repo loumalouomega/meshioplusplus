@@ -269,6 +269,17 @@ MATRIX = [
         "the reader adds a part region per part the writer makes.",
         id="radioss",
     ),
+    pytest.param(
+        "marc",
+        ".dat",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "DEFINE NODE SET and DEFINE ELEMENT SET map onto point and cell regions "
+        "(written since v16.17.0). Marc sets have names and no number, so `tag` is "
+        "lost, and Marc's own face and edge numbering is not mapped to facets, so "
+        "side regions are dropped.",
+        id="marc",
+    ),
 ]
 
 

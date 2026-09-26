@@ -43,7 +43,10 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -1387,6 +1390,377 @@ MeshMetadata read_marc_t19_metadata(const std::string& rPath, const ReadOptions&
     meta.mFormat = "marc_t19";
     meta.mTimeValues = MarcPost(rPath).Times();
     return meta;
+}
+
+// ---------------------------------------------------------------------------
+// Writing the input deck. The Python twin is marc/_marc.py's `write`; both
+// give the same bytes.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::size_t kMarcNodesPerLine = 14;
+constexpr std::size_t kMarcSetItemsPerLine = 6;
+
+/// The Marc type a cell is written as when its marc:type does not fit it, in a
+/// 3-D mesh or a planar one; 0 when Marc has no such element there. Planar
+/// meshes get the plane-strain elements, 3-D ones the solids and shells; a
+/// pyramid is a degenerate brick of type 7.
+std::int64_t marcw_default_type(std::string_view Type, bool Planar) {
+    static const std::map<std::string, std::pair<std::int64_t, std::int64_t>, std::less<>> m = {
+        {"hexahedron", {7, 0}},  {"hexahedron20", {21, 0}}, {"tetra", {134, 0}},
+        {"tetra10", {127, 0}},   {"wedge", {136, 0}},       {"pyramid", {7, 0}},
+        {"quad", {75, 11}},      {"triangle", {138, 6}},    {"quad8", {22, 27}},
+        {"triangle6", {0, 125}}, {"line", {9, 9}},          {"line3", {64, 64}}};
+    const auto it = m.find(Type);
+    if (it == m.end())
+        return 0;
+    return Planar ? it->second.second : it->second.first;
+}
+
+void marcw_i10(std::string& rOut, std::int64_t Value) {
+    const std::string t = std::to_string(Value);
+    if (t.size() < 10)
+        rOut.append(10 - t.size(), ' ');
+    rOut += t;
+}
+
+std::string marcw_i10s(const std::vector<std::int64_t>& rValues, std::size_t Begin,
+                       std::size_t End) {
+    std::string out;
+    for (std::size_t k = Begin; k < End && k < rValues.size(); ++k)
+        marcw_i10(out, rValues[k]);
+    return out;
+}
+
+/// A real in a 20-column field: exact when its shortest spelling fits.
+void marcw_real20(std::string& rOut, double Value) {
+    std::string t = detail::format_real_short(Value);
+    if (t.size() > 20)
+        t = detail::format_real_fit(Value, 20);
+    if (t.size() < 20)
+        rOut.append(20 - t.size(), ' ');
+    rOut += t;
+}
+
+/// A keyword line: each word but the last padded to 20 columns.
+std::string marcw_keyword(const std::vector<std::string>& rWords) {
+    std::string out;
+    for (std::size_t k = 0; k + 1 < rWords.size(); ++k) {
+        out += rWords[k];
+        if (rWords[k].size() < 20)
+            out.append(20 - rWords[k].size(), ' ');
+    }
+    return out + rWords.back();
+}
+
+std::string marcw_lower(std::string Text) {
+    for (char& c : Text)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return Text;
+}
+
+/// A set name the reader reads back as one token: blanks, commas and `$`
+/// become `_`, a keyword the next line could start with gets `_set`, and a
+/// name already taken (case-insensitively) a `_2`, `_3` ... suffix.
+std::string marcw_set_name(const std::string& rName, std::set<std::string>& rUsed) {
+    std::string base;
+    for (const char c : rName)
+        base += (c == ' ' || c == '\t' || c == ',' || c == '$' || c == '\r' || c == '\n') ? '_' : c;
+    if (base.empty())
+        base = "set";
+    if (marcw_lower(base) == "define" || marcw_lower(base) == "end")
+        base += "_set";
+    std::string out = base;
+    for (int k = 2; rUsed.count(marcw_lower(out)); ++k)
+        out = base + "_" + std::to_string(k);
+    rUsed.insert(marcw_lower(out));
+    return out;
+}
+
+/// Set items: ascending runs of three or more as `a to b`.
+std::vector<std::string> marcw_set_items(const std::vector<std::int64_t>& rIds) {
+    std::vector<std::string> out;
+    std::size_t k = 0;
+    while (k < rIds.size()) {
+        std::size_t j = k;
+        while (j + 1 < rIds.size() && rIds[j + 1] == rIds[j] + 1)
+            ++j;
+        std::string item;
+        marcw_i10(item, rIds[k]);
+        if (j - k >= 2) {
+            item += " to ";
+            marcw_i10(item, rIds[j]);
+            k = j + 1;
+        } else {
+            ++k;
+        }
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
+/// Set items six to a line, every line but the last ending in `c`.
+void marcw_set_lines(std::vector<std::string>& rOut, const std::vector<std::string>& rItems) {
+    for (std::size_t k = 0; k < rItems.size(); k += kMarcSetItemsPerLine) {
+        std::string line;
+        for (std::size_t j = k; j < std::min(k + kMarcSetItemsPerLine, rItems.size()); ++j)
+            line += rItems[j];
+        if (k + kMarcSetItemsPerLine < rItems.size())
+            line += "   c";
+        rOut.push_back(std::move(line));
+    }
+}
+
+struct MarcwCell {
+    std::size_t mBlock = 0;
+    std::size_t mRow = 0;
+    std::int64_t mType = 0;  // 0: not written
+};
+
+}  // namespace
+
+void write_marc(const std::string& rPath, const Mesh& rMesh) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim > 3)
+        throw WriteError("Marc writer: points must have 1 to 3 coordinates");
+    const std::size_t npts = rMesh.NumPoints();
+    if (npts == 0)
+        throw WriteError("Marc writer: a deck needs nodes; the mesh has none");
+    bool volume = false;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
+            volume = true;
+    }
+    bool flat = pdim < 3;
+    if (!flat) {
+        flat = true;
+        for (std::size_t p = 0; p < npts && flat; ++p)
+            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+    }
+    const bool planar = !volume && flat;
+    const auto cell_array_ok = [&](const std::string& rName) {
+        return rMesh.HasCellData(rName) && rMesh.CellDataNumBlocks(rName) == rMesh.NumCellBlocks();
+    };
+    const bool has_type = cell_array_ok("marc:type");
+    const bool has_element = cell_array_ok("marc:element");
+
+    // Every cell: its block, row and Marc type (0: not written).
+    std::vector<MarcwCell> cells;
+    std::set<std::string> dropped, changed;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const bool ragged = cb.IsRagged();
+        const std::int64_t fallback = marcw_default_type(type, planar);
+        const std::size_t nodes = ragged ? 0 : cb.NodesPerCell();
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            std::int64_t etype = 0;
+            if (!ragged && has_type) {
+                const std::int64_t want = detail::read_int(rMesh.CellData("marc:type", b), r);
+                if (const MarcType* known = marc_type(want)) {
+                    const std::string kind(known->mCell);
+                    if ((kind == type && known->mNodes == nodes) ||
+                        (kind == "hexahedron" && known->mNodes == 8 &&
+                         (type == "tetra" || type == "pyramid" || type == "wedge")))
+                        etype = want;
+                    else if (fallback != 0)
+                        changed.insert(type);
+                }
+            }
+            if (etype == 0 && !ragged)
+                etype = fallback;
+            if (etype == 0)
+                dropped.insert(type);
+            cells.push_back({b, r, etype});
+        }
+    }
+    for (const std::string& t : dropped) {
+        log::warn("Marc writer: '{}' cells have no Marc element type here; dropped", t);
+        detail::provenance_note("cells-dropped", "Marc has no element type for '" + t + "' cells");
+    }
+    if (!changed.empty()) {
+        std::string list;
+        for (const std::string& t : changed)
+            list += (list.empty() ? "" : ", ") + t;
+        log::warn(
+            "Marc writer: marc:type of some {} cells does not fit them (or has extra nodes); "
+            "written as the default type",
+            list);
+        detail::provenance_note("type-changed",
+                                "a marc:type that does not fit its cell is replaced");
+    }
+    std::vector<std::size_t> written;
+    for (std::size_t c = 0; c < cells.size(); ++c)
+        if (cells[c].mType != 0)
+            written.push_back(c);
+
+    // Element numbers: marc:element when they are positive and unique.
+    std::vector<std::int64_t> ids;
+    if (has_element) {
+        std::set<std::int64_t> seen;
+        bool ok = true;
+        for (const std::size_t c : written) {
+            const std::int64_t id =
+                detail::read_int(rMesh.CellData("marc:element", cells[c].mBlock), cells[c].mRow);
+            ok = ok && id > 0 && seen.insert(id).second;
+            ids.push_back(id);
+        }
+        if (!ok) {
+            log::warn("Marc writer: marc:element is not positive and unique; elements renumbered");
+            ids.clear();
+        }
+    }
+    if (ids.empty())
+        for (std::size_t k = 0; k < written.size(); ++k)
+            ids.push_back(static_cast<std::int64_t>(k + 1));
+    std::map<std::size_t, std::int64_t> elem_id;
+    for (std::size_t k = 0; k < written.size(); ++k)
+        elem_id[written[k]] = ids[k];
+
+    // Sets: point regions as node sets, cell regions as element sets, in the
+    // regions' own (kind, name, dim, tag) order.
+    std::set<std::string> used_names;
+    struct MarcwSet {
+        std::string mFamily;
+        std::string mName;
+        std::vector<std::string> mItems;
+    };
+    std::vector<MarcwSet> sets;
+    std::size_t unlisted = 0, sides = 0;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        const Region& reg = rMesh.Region(k);
+        const std::size_t n = reg.NumEntries() * reg.Stride();
+        const std::set<std::int64_t> entries(reg.Entries(), reg.Entries() + n);
+        std::vector<std::int64_t> members;
+        std::string family;
+        if (reg.mKind == RegionKind::Point) {
+            for (const std::int64_t v : entries)
+                if (v >= 0 && static_cast<std::size_t>(v) < npts)
+                    members.push_back(v + 1);
+            family = "node";
+        } else if (reg.mKind == RegionKind::Cell) {
+            for (const std::int64_t c : entries) {
+                const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
+                if (it == elem_id.end())
+                    ++unlisted;
+                else
+                    members.push_back(it->second);
+            }
+            std::sort(members.begin(), members.end());
+            family = "element";
+        } else {
+            ++sides;
+            continue;
+        }
+        sets.push_back({family, marcw_set_name(reg.mName, used_names), marcw_set_items(members)});
+    }
+    if (unlisted)
+        log::warn("Marc writer: {} set member(s) on cells not written dropped", unlisted);
+    if (sides) {
+        log::warn("Marc writer: side regions dropped (Marc face numbering is not mapped)");
+        detail::provenance_note("regions-dropped",
+                                "Marc face and edge sets are not mapped to facets");
+    }
+
+    // Face and edge sets read from a deck come back from their field data.
+    std::size_t dropped_data = rMesh.PointDataNames().size();
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "marc:element" && name != "marc:type")
+            ++dropped_data;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        std::string family;
+        for (const char* f : {"edge", "face"})
+            if (name.rfind(std::string("marc:") + f + "_set:", 0) == 0)
+                family = f;
+        if (family.empty()) {
+            ++dropped_data;
+            continue;
+        }
+        const NDArray& rows = rMesh.FieldData(name);
+        std::vector<std::string> items;
+        for (std::size_t q = 0; q + 1 < rows.Size(); q += 2) {
+            const std::int64_t c = detail::read_int(rows, q);
+            const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
+            if (it != elem_id.end())
+                items.push_back(" " + std::to_string(it->second) + ":" +
+                                std::to_string(detail::read_int(rows, q + 1)));
+        }
+        const std::string set_name = marcw_set_name(
+            name.substr(std::string("marc:").size() + family.size() + 5), used_names);
+        sets.push_back({family, set_name, std::move(items)});
+    }
+    if (dropped_data) {
+        log::warn(
+            "Marc writer: a deck holds no data arrays; point, cell and field data other than "
+            "marc:element, marc:type and the face and edge sets dropped");
+        detail::provenance_note("data-dropped", "a Marc deck holds no data arrays");
+    }
+
+    std::set<std::int64_t> types_used;
+    for (const std::size_t c : written)
+        types_used.insert(cells[c].mType);
+    std::vector<std::string> out = {marcw_keyword({"title", "meshio++"})};
+    for (const std::string& line : detail::provenance_lines(detail::SlotTier::Block))
+        out.push_back("$ " + line);
+    out.push_back("extended");
+    out.push_back(marcw_keyword({"sizing", marcw_i10s({0, static_cast<std::int64_t>(written.size()),
+                                                       static_cast<std::int64_t>(npts), 0},
+                                                      0, 4)}));
+    for (const std::int64_t t : types_used)
+        out.push_back(marcw_keyword({"elements", marcw_i10s({t}, 0, 1)}));
+    out.push_back("end");
+    out.push_back("connectivity");
+    out.push_back(marcw_i10s({static_cast<std::int64_t>(written.size()), 0, 1}, 0, 3));
+    for (const std::size_t c : written) {
+        const auto cb = rMesh.Cells(cells[c].mBlock);
+        const std::size_t k = cb.NodesPerCell();
+        std::vector<std::int64_t> nodes(k);
+        for (std::size_t q = 0; q < k; ++q)
+            nodes[q] = detail::read_int(cb.Conn(), cells[c].mRow * k + q) + 1;
+        const std::int64_t etype = cells[c].mType;
+        if (std::string(marc_type(etype)->mCell) == "hexahedron" && cb.Type() != "hexahedron") {
+            const auto brick = detail::expand_brick(cb.Type(), nodes.data());
+            nodes.assign(brick.begin(), brick.end());
+        } else if (etype >= 168 && etype <= 170 && nodes.size() == 3) {
+            std::swap(nodes[1], nodes[2]);
+        }
+        std::string line;
+        marcw_i10(line, elem_id[c]);
+        marcw_i10(line, etype);
+        line += marcw_i10s(nodes, 0, kMarcNodesPerLine);
+        out.push_back(std::move(line));
+        for (std::size_t q = kMarcNodesPerLine; q < nodes.size(); q += kMarcNodesPerLine)
+            out.push_back(marcw_i10s(nodes, q, q + kMarcNodesPerLine));
+    }
+    out.push_back("coordinates");
+    out.push_back(marcw_i10s({3, static_cast<std::int64_t>(npts), 0, 1}, 0, 4));
+    for (std::size_t p = 0; p < npts; ++p) {
+        std::string line;
+        marcw_i10(line, static_cast<std::int64_t>(p + 1));
+        for (std::size_t d = 0; d < 3; ++d)
+            marcw_real20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+        out.push_back(std::move(line));
+    }
+    for (const MarcwSet& set : sets) {
+        out.push_back(marcw_keyword({"define", set.mFamily, "set", set.mName}));
+        marcw_set_lines(out, set.mItems);
+    }
+    out.push_back("end option");
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Marc writer: cannot open " + rPath + " for writing");
+    std::string text;
+    for (const std::string& line : out) {
+        text += line;
+        text += '\n';
+    }
+    os.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!os)
+        throw WriteError("Marc writer: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus

@@ -2389,9 +2389,10 @@ step('availableFormats reports what this build can read and write', () => {
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     for (const fmt of ['z88', 'libmesh', 'radioss'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    // MSC Marc decks and post files, and the full rotor of a cyclic Ansys .rst
-    // (v16.8.0): read-only.
-    for (const fmt of ['marc', 'marc_t19', 'ansys_rst_cyclic'])
+    // MSC Marc decks (read v16.8.0, written v16.17.0) both ways; its post files
+    // and the full rotor of a cyclic Ansys .rst (v16.8.0) read-only.
+    assert.ok(readers.includes('marc') && writers.includes('marc'));
+    for (const fmt of ['marc_t19', 'ansys_rst_cyclic'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
     // LS-DYNA d3plot state databases and Nastran OP2 results (v16.9.0): read-only.
     for (const fmt of ['lsdyna_d3plot', 'nastran_op2'])
@@ -2847,6 +2848,11 @@ step('a Marc deck named .dat reads as Marc, a Tecplot .dat as Tecplot; .t19 is M
     const marc = m.readMesh('/marc_deck.dat');
     assert.deepEqual(marc.cells.map((c) => c.type), ['tetra']);
     assert.ok(marc.regions.some((r) => r.name === 'all'));
+    // Written back by name (v16.17.0): a .dat alone is Tecplot's.
+    m.writeMesh('/marc_back.dat', marc, 'marc');
+    const back = m.readMesh('/marc_back.dat');
+    assert.deepEqual(back.cells.map((c) => c.type), ['tetra']);
+    assert.ok(back.regions.some((r) => r.name === 'all'));
     const tri = {
         points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         dim: 3,

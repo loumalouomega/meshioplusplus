@@ -334,3 +334,49 @@ TEST(Marc, IncludeFilesVolumeBTypesAndSideSets) {
     EXPECT_THROW(meshioplusplus::read_marc((dir / "loop.dat").string()), meshioplusplus::ReadError);
     std::filesystem::remove_all(dir.parent_path());
 }
+
+TEST(Marc, WriterRoundTripsTheDeck) {
+    // Read -> write -> read keeps the mesh, element numbers and types, and the
+    // node and element sets (the Python twin writes the same bytes: see
+    // test_marc.py).
+    const std::string in_path = write_temp(kDeck, ".dat");
+    const meshioplusplus::Mesh in = meshioplusplus::read_marc(in_path);
+    const std::string out = mt::temp_path("_marc_out.dat");
+    meshioplusplus::write_marc(out, in);
+    const meshioplusplus::Mesh back = meshioplusplus::read_marc(out);
+    mt::expect_mesh_eq(in, back);
+    for (const char* name : {"marc:element", "marc:type"})
+        for (std::size_t b = 0; b < in.NumCellBlocks(); ++b)
+            for (std::size_t r = 0; r < in.Cells(b).NumCells(); ++r)
+                EXPECT_EQ(meshioplusplus::detail::read_int(in.CellData(name, b), r),
+                          meshioplusplus::detail::read_int(back.CellData(name, b), r))
+                    << name;
+    ASSERT_EQ(in.NumRegions(), back.NumRegions());
+    for (std::size_t k = 0; k < in.NumRegions(); ++k) {
+        const auto& a = in.Region(k);
+        const auto& b = back.Region(k);
+        EXPECT_EQ(a.mName, b.mName);
+        EXPECT_EQ(std::vector<std::int64_t>(a.Entries(), a.Entries() + a.NumEntries()),
+                  std::vector<std::int64_t>(b.Entries(), b.Entries() + b.NumEntries()))
+            << a.mName;
+    }
+    // A write is resolved by name: ".dat" alone is Tecplot's.
+    EXPECT_EQ(meshioplusplus::resolve_write_format(out, ""), "tecplot");
+    EXPECT_THROW(meshioplusplus::write_marc(out, meshioplusplus::Mesh{}),
+                 meshioplusplus::WriteError);
+    std::remove(in_path.c_str());
+    std::remove(out.c_str());
+}
+
+TEST(Marc, WriterPicksTypesForAPlanarMesh) {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0}, {1, 0}, {1, 1}, {0, 1}}));
+    m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    const std::string out = mt::temp_path("_marc_plane.dat");
+    meshioplusplus::write_marc(out, m);
+    const meshioplusplus::Mesh back = meshioplusplus::read_marc(out);
+    EXPECT_EQ(meshioplusplus::detail::read_int(back.CellData("marc:type", 0), 0), 11);
+    EXPECT_EQ(meshioplusplus::detail::read_int(back.CellData("marc:type", 1), 0), 6);
+    std::remove(out.c_str());
+}

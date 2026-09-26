@@ -5,6 +5,7 @@ from .._helpers import register_format
 from ._marc import read as _py_read
 from ._marc import read_t19 as _py_read_t19
 from ._marc import time_values as _py_time_values
+from ._marc import write as _py_write
 
 
 def read(filename):
@@ -68,7 +69,30 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-register_format("marc", [".dat"], read, {})
+def write(filename, mesh):
+    """Write an MSC Marc input deck (``.dat``, ``EXTENDED`` format).
+
+    The parameter section (``TITLE``, ``SIZING``, one ``ELEMENTS`` line per
+    type, ``END``), ``CONNECTIVITY``, ``COORDINATES``, a ``DEFINE NODE SET`` per
+    point region and a ``DEFINE ELEMENT SET`` per cell region, and ``END
+    OPTION``. A cell's Marc type is its ``marc:type`` when that fits it, else a
+    default (solids and shells in 3-D, plane-strain elements in a planar mesh; a
+    pyramid as a degenerate brick); element numbers are ``marc:element`` when
+    positive and unique. ``.dat`` is Tecplot's for a write by extension, so name
+    the format: ``meshioplusplus.write("job.dat", mesh, file_format="marc")``.
+    Both engines write the same bytes.
+    """
+    if not is_buffer(filename, "w"):
+        try:
+            _core.marc_write(str(filename), mesh)
+            return
+        except Exception as exc:
+            if not core_declined(exc, "marc", "write", filename):
+                raise
+    return _py_write(filename, mesh)
+
+
+register_format("marc", [".dat"], read, {"marc": write})
 register_format("marc_t19", [".t19"], read_t19, {})
 
-__all__ = ["read", "read_t19", "time_values"]
+__all__ = ["read", "read_t19", "time_values", "write"]
