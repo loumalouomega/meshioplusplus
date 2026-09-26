@@ -986,8 +986,21 @@ std::size_t ensight_variable_start(std::string_view Data) {
     return !standard && ensight_starts_with(Data, "C Binary") ? 80 : 0;
 }
 
+/// Whether a variable file is plain text: no NUL in its first KiB and its
+/// description line ends within 80 characters. A binary variable file's
+/// description is an 80-byte record, so its second record starts at byte 80.
+bool ensight_variable_looks_ascii(std::string_view Data) {
+    const std::string_view head = Data.substr(0, std::min<std::size_t>(Data.size(), 1024));
+    if (head.find('\0') != std::string_view::npos)
+        return false;
+    const std::size_t eol = head.find('\n');
+    return eol != std::string_view::npos && eol < 81;
+}
+
 /// Reads a variable file in the encoding of its geometry file, as EnSight
-/// defines it (a variable file carries no format record of its own).
+/// defines it (a variable file carries no format record of its own). A text
+/// variable file next to a binary geometry file, which hand-made cases hold
+/// and meshio++ read before v16.17.0, is still read as text.
 void ensight_read_variable_file_auto(const std::string& rPath, EnsightEncoding Encoding,
                                      bool PerNode, std::size_t NumComponents,
                                      const std::vector<EnsightPartLayout>& rLayout,
@@ -995,6 +1008,12 @@ void ensight_read_variable_file_auto(const std::string& rPath, EnsightEncoding E
                                      std::vector<NDArray>* pCellOut) {
     const detail::FileSource source = ensight_read_whole_file(rPath, "variable file");
     const std::string_view data = source.View();
+    const bool binary_layout =
+        (data.size() >= 160 && ensight_starts_with(data.substr(80), "part") &&
+         data.substr(0, 80).find('\n') == std::string_view::npos) ||
+        ensight_starts_with(data, "C Binary");
+    if (Encoding != EnsightEncoding::Ascii && !binary_layout && ensight_variable_looks_ascii(data))
+        Encoding = EnsightEncoding::Ascii;
     if (Encoding == EnsightEncoding::Fortran) {
         const auto unframed = ensight_unframe_fortran(data, "variable file");
         if (!unframed)

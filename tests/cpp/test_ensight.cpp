@@ -485,6 +485,36 @@ TEST(Ensight, FortranBinaryRoundTripsGeometryAndVariables) {
     std::filesystem::remove(path.substr(0, path.find_last_of("/\\") + 1) + "temp.scl", ec);
 }
 
+TEST(Ensight, TextVariableFilesNextToBinaryGeometryReadAsText) {
+    // EnSight wants a case's files in one encoding, but hand-made cases pair a
+    // written binary geometry with text variable files (the WASM smoke test
+    // does); meshio++ read them before v16.17.0 and still does.
+    for (const bool fortran : {false, true}) {
+        SCOPED_TRACE(fortran ? "Fortran binary" : "C binary");
+        mt::Mesh m = mt::tri_mesh();
+        const std::string path = mt::temp_path(fortran ? "_mixf.case" : "_mixc.case");
+        meshioplusplus::write_ensight(path, m, /*binary=*/true, fortran);
+        const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+        {
+            std::ofstream cf(path, std::ios::app);
+            cf << "VARIABLE\nscalar per node: pressure mixpressure.scl\n";
+        }
+        {
+            std::ofstream vf(dir + "mixpressure.scl");
+            vf << "pressure\npart\n         1\ncoordinates\n";
+            for (int i = 0; i < 4; ++i)
+                vf << (10.0 + i) << "\n";
+        }
+        const mt::Mesh back = meshioplusplus::read_ensight(path);
+        ASSERT_TRUE(back.HasPointData("pressure"));
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.PointData("pressure"), 3), 13.0);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);
+        std::filesystem::remove(dir + "mixpressure.scl", ec);
+    }
+}
+
 TEST(Ensight, BinaryVariableFilesStartWithTheirDescription) {
     // EnSight defines no format record for a variable file; until v16.17.0 a
     // "C Binary" one came first, and files with it still read.
