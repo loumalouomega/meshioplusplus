@@ -94,6 +94,10 @@
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 
 namespace {
 
@@ -278,6 +282,16 @@ MIO_ABI_LAYOUT(meshioplusplus::CurvatureOptions, 40, 8);
 // `compute_normals()`, pinned from the release that introduces it for the same
 // reason. NormalsResult is deliberately NOT pinned, embedding a `Mesh`.
 MIO_ABI_LAYOUT(meshioplusplus::NormalsOptions, 64, 8);
+
+// The v16.23.0 analysis-and-editing options, pinned from the release that
+// introduces them. HausdorffResult carries no Mesh, so it is pinned too;
+// FeatureEdgeResult and PeriodicPairs embed a Mesh / NDArrays and are not.
+MIO_ABI_LAYOUT(meshioplusplus::FeatureEdgeOptions, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::HausdorffOptions, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::HausdorffResult, 120, 8);
+MIO_ABI_LAYOUT(meshioplusplus::RegionSelector, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::RegionEdit, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 
 // GltfWriteOptions is passed by const-ref through the exported `write_gltf()`,
 // pinned from the release that introduces it (the "pin in advance" lesson).

@@ -204,6 +204,10 @@ with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The 
 ## v15.4.0 additions
 
 - `mio_compute_normals(mesh, point_normals = TRUE, cell_normals = FALSE, weight = "angle", split_angle = NULL, record_parent_ids = FALSE, region = "")` — point and cell normals of a surface, written as `normals` (an `(n, 3)` point-data matrix; a cell-data array with `cell_normals`). `split_angle = NULL` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Returns a list of `mesh`, `quality`, `num_isolated`, `num_undefined`, `num_degenerate`, `num_split_points` and `num_added_points`. Never reorients: check `quality$inconsistent_pairs`. See [normals](/normals).
+- `mio_feature_edges(mesh, feature_angle = 30, feature = TRUE, boundary = TRUE, non_manifold = TRUE, inconsistent = TRUE, region = "")` — the sharp, open, non-manifold and inconsistently wound edges as a `line` mesh; returns a list of `mesh` and the per-category counts. See [feature edges](/feature_edges).
+- `mio_hausdorff_distance(a, b, face_samples = 0, region_a = "", region_b = "")` — a list of `distance`, the one-sided maxima with means and RMS, the sample counts and the worst points. See [Hausdorff distance](/hausdorff).
+- `mio_edit_regions(mesh, op, inputs, output = "", kind = NULL, dim = NULL, tag = NULL, keep_inputs = TRUE)` and `mio_remove_region(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
+- `mio_match_periodic_nodes(mesh, slave, master, matrix = NULL, translate = NULL, atol = 1e-8, require_complete = TRUE)` — a list of 1-based `slave` / `master` ids, `unmatched`, `num_fixed` and `max_residual`; `matrix` is an R 4x4 (`M %*% c(p, 1)`). See [periodic node pairs](/periodic).
 
 ## v10.9.0 additions
 

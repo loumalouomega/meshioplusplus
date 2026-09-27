@@ -69,7 +69,7 @@ Float-kind `point_data` at the survivor is blended between the two endpoints at 
 Mirroring [`smooth`](/smooth)'s vocabulary and defaults, a pinned vertex never moves and is never removed:
 
 - **`preserve_boundary`** (default on) — boundary vertices, by the classic once-used-edge test (an edge used by exactly one triangle is boundary). An edge between two pinned vertices never enters the queue, which is what keeps an open patch's **outline exactly intact**; a collapse toward a pinned vertex keeps that vertex's own position regardless of `placement`.
-- **`preserve_features`** (default on, `feature_angle=30`) — vertices where two incident face **normals** differ by more than the angle (the `vtkFeatureEdges` convention), which is what keeps a cube's corners and creases sharp. Conservative v1: crease vertices are fully pinned rather than allowed to slide along the crease.
+- **`preserve_features`** (default on, `feature_angle=30`) — the endpoints of every [feature edge](/feature_edges): an edge whose two faces' **normals** differ by more than the angle (the `vtkFeatureEdges` convention), or one used by three or more faces. That is what keeps a cube's corners and creases sharp. Only the two faces sharing an edge are compared (since v16.23.0; before, any two faces around a vertex were, which pinned every vertex of a coarsely tessellated sphere). Conservative: crease vertices are fully pinned rather than allowed to slide along the crease.
 - **`frozen`** — an optional index array, or the name of one of `mesh.point_sets`.
 
 ## Validity guards

@@ -430,13 +430,23 @@ meshioplusplus split in.inp 'part_{key}.vtu' --by regions
 List a mesh's named [regions](/regions) — name, kind, dimension, tag, and entry count (not the entries themselves).
 
 ```
-meshioplusplus regions [options] INFILE
+meshioplusplus regions [options] INFILE [OUTFILE]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--input-format` (`-i`) | Force input format |
+| `--output-format` (`-o`) | Force output format (with edits) |
 | `--json` | Emit the regions as JSON |
+| `--union OUT=A,B[,...]` | Add `OUT`, the union of regions `A`, `B`, ... |
+| `--intersection OUT=A,B[,...]` | Add `OUT`, the entries in every one of them |
+| `--difference OUT=A,B[,...]` | Add `OUT`, the entries of `A` in none of the others |
+| `--rename OLD=NEW` | Rename a region |
+| `--retag NAME=TAG[:DIM]` | Set a region's tag (and dimension); `NAME=:DIM` keeps the tag |
+| `--delete NAME` | Remove a region |
+| `--drop-inputs` | The set operations remove their input regions |
+
+With any edit flag it [edits the regions](/regions#editing-regions) instead of listing them: the edits apply in command-line order to the mesh read from `INFILE`, the result is written to `OUTFILE`, and the resulting region list is printed. A region name may be prefixed `point:`, `cell:` or `side:` to pick one of several regions sharing a name; a name that still matches several, or none, is an error.
 
 Goes through the same cheap path `info --fast`/`read_metadata` use rather than a full read: whenever the summary already comes from an in-memory mesh (every format lacking a native metadata path, plus Exodus, which always falls back), regions cost nothing extra to report; a native metadata path (VTU/VTP/XDMF/Gmsh 4.1) reports none, since none of those currently map regions at all.
 
@@ -447,6 +457,11 @@ meshioplusplus regions bracket.inp
 # <meshio++ mesh regions> (2)
 #   fixed (point, 12 entries, tag=1)
 #   solid (cell, 340 entries, dim=3, tag=2)
+```
+
+```sh
+meshioplusplus regions model.msh bc.msh --union inlet=inlet_a,inlet_b \
+    --difference wall=skin,inlet,outlet --retag side:wall=10 --delete scratch
 ```
 
 ---
@@ -862,6 +877,83 @@ The arrays are named `normals`, so writing to `.pcd` or `.xyz` emits the normal 
 meshioplusplus normals scan.stl scan_n.vtu
 meshioplusplus normals part.vtu part_split.vtu --split-angle 30 --cell
 meshioplusplus normals part.vtu cloud.xyz --record-parent-ids
+```
+
+---
+
+## meshioplusplus feature-edges
+
+Write the sharp, open, non-manifold and inconsistently wound edges of a surface — or of a volume mesh's skin — as a mesh of `line` cells (see [feature edges](/feature_edges)).
+
+```
+meshioplusplus feature-edges [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--angle DEG` | Largest dihedral angle still treated as smooth, `0` to `180` (default `30`) |
+| `--no-feature` / `--no-boundary` / `--no-non-manifold` / `--no-inconsistent` | Do not report that category |
+| `--region NAME` | Restrict to this named cell region |
+| `--json` | Emit the edge count and per-category counts as JSON |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output keeps the input's points and carries cell data `feature:kind` (1 feature, 2 boundary, 3 non-manifold, 4 inconsistent) and `feature:angle`.
+
+```sh
+meshioplusplus feature-edges part.stl part_edges.vtp --angle 45
+```
+
+---
+
+## meshioplusplus hausdorff
+
+Print the Hausdorff distance between the surfaces of two meshes — how far apart they are at their worst (see [Hausdorff distance](/hausdorff)).
+
+```
+meshioplusplus hausdorff [options] INFILE_A INFILE_B
+```
+
+| Option | Description |
+|--------|-------------|
+| `--face-samples S` | Also sample the centroids of the `S*S` sub-triangles of every triangle (default `0`: vertices only, a lower bound) |
+| `--region-a NAME` / `--region-b NAME` | Restrict a side to this named cell region of surface cells |
+| `--input-format-a FMT` / `--input-format-b FMT` | Force a side's input format |
+| `--max D` | Exit with status 1 when the distance exceeds `D` |
+| `--json` | Emit the report as JSON (with `--max`, also `max` and `passed`) |
+
+```sh
+meshioplusplus hausdorff part.stl part_decimated.stl --face-samples 4 --max 1e-3
+```
+
+---
+
+## meshioplusplus periodic
+
+Match the nodes of two regions that an affine transform maps onto each other — the node pairs of a periodic boundary condition (see [periodic node pairs](/periodic)).
+
+```
+meshioplusplus periodic [options] INFILE --slave NAME --master NAME
+```
+
+| Option | Description |
+|--------|-------------|
+| `--slave NAME` / `--master NAME` | The region whose nodes are mapped, and the one they map onto |
+| `--translate DX,DY,DZ` | Slave-to-master translation |
+| `--rotate AXIS,DEG` | Rotation by `DEG` degrees about `AXIS` (`x`, `y`, `z`, or `AX,AY,AZ`), applied before `--translate` |
+| `--origin X,Y,Z` | The point the rotation turns about (default: the origin) |
+| `--matrix M00,...,M33` | A row-major 4x4 affine matrix, overriding `--translate`/`--rotate` |
+| `--atol TOL` | Match tolerance (default `1e-8`) |
+| `--allow-incomplete` | Report unmatched slave nodes instead of failing |
+| `--output FILE` (`-o`) | Write the pairs as `slave,master` CSV rows (0-based ids) |
+| `--json` | Emit the pairs as JSON |
+| `--input-format` (`-i`) | Force input format |
+
+Numbers are comma-separated; write a value with a leading minus as `--translate=-2,0,0`.
+
+```sh
+meshioplusplus periodic channel.msh --slave inlet --master outlet --translate 2,0,0 -o pairs.csv
+meshioplusplus periodic rotor.msh --slave cut_a --master cut_b --rotate z,60 --json
 ```
 
 ---

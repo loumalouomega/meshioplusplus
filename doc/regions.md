@@ -198,6 +198,41 @@ mesh.regions; // [{ name, kind, dim, tag, entries }]
 
 **Native CLI** — `meshioplusplus info` prints `Point sets:` / `Cell sets:` / `Side sets:`, and `meshioplusplus diff` reports regions added, removed and changed, folding them into its nonzero exit code. (`meshes_equal` deliberately does **not** consider them: it is documented to compare geometry and data.)
 
+## Editing regions
+
+`edit_regions(mesh, edits)` (v16.23.0) applies a list of edits, in order, to a copy of the mesh's regions, leaving points, cells, data and property sets untouched. It is what a consumer building boundary conditions otherwise hand-rolls: "the inlet is these two gmsh groups", "the wall is the skin minus the inlet and outlet", "call it `Inlet` and give it tag 10".
+
+```python
+import meshioplusplus as mp
+
+mesh = mp.edit_regions(mesh, [
+    {"op": "union", "inputs": ["inlet_a", "inlet_b"], "output": "inlet"},
+    {"op": "difference", "inputs": ["skin", "inlet", "outlet"], "output": "wall"},
+    {"op": "rename", "inputs": ["Surface 3"], "output": "Outlet"},
+    {"op": "retag", "inputs": [{"name": "wall", "kind": "side"}], "tag": 10},
+    {"op": "delete", "inputs": ["scratch"]},
+])
+```
+
+| Edit | Inputs | Result |
+|---|---|---|
+| `union`, `intersection`, `difference` | two or more, one kind | a region named `output` (`difference` is the first minus the rest); the inputs stay unless `keep_inputs` is false |
+| `rename` | one | the region moved to `output`, keeping its kind, entries, dimension and tag |
+| `retag` | one | the region with a new `tag` and/or `dim` (and name, if `output` is given) |
+| `delete` | one or more | the inputs removed |
+
+**Selecting a region.** A region's identity is `(kind, name, dim, tag)`, and a file may carry one name twice — gmsh allows a physical name per dimension. An input is a name, or `{"name", "kind", "dim", "tag"}` pinning the rest, and must match **exactly one** region: an ambiguous or missing match raises with the candidates listed, rather than picking the first.
+
+**The results.** Set operations work within one kind — `side` regions combine their `(cell, facet)` pairs — and mixing kinds is an error. A set operation's result has the inputs' shared dimension (`-1` when they differ) and tag `-1` unless `dim` / `tag` are given, and an empty result is kept: a named group is information. An edit whose result would overwrite an existing region other than one of its own inputs is an error. For gmsh output, note that a cell's physical tag comes from the `gmsh:physical` cell data when the mesh carries it ([Gmsh precedence](#gmsh-precedence)), so retagging a cell region of such a mesh warns that the array still holds the old tag.
+
+The uniform C++ API gained `Mesh::RemoveRegion(i)` for this (renaming or retagging is a remove plus an add, since the name and tag are part of the key); `operations/region_ops.hpp` declares `edit_regions`, `find_region` and the `RegionSelector`/`RegionEdit` types. The Python implementation edits the region list directly rather than round-tripping the mesh through the core, and is pinned to `_core.edit_regions`. Every other surface carries it:
+
+- **CLI** (both) — edit flags on the `regions` verb, applied in command-line order, with an output file: `meshioplusplus regions in.msh out.msh --union inlet=inlet_a,inlet_b --difference wall=skin,inlet,outlet --rename "Surface 3=Outlet" --retag side:wall=10 --delete scratch` (`--retag NAME=TAG[:DIM]`; `--drop-inputs` makes the set operations remove their inputs; prefix a name with `point:`, `cell:` or `side:` to pin its kind).
+- **Pipeline** — one edit per step: `{"Op": "EditRegions", "Edit": "union", "Inputs": ["a", "b"], "Output": "ab", "Kind": "cell", "Dim": 2, "Tag": 7, "KeepInputs": true}`.
+- **C** — `mio_edit_regions(mesh, MIO_REGION_UNION, selectors, n, "out", MIO_REGION_ANY, MIO_REGION_ANY, 1)` with `mio_region_selector` (initialized by `mio_region_selector_init`), and `mio_mesh_remove_region(mesh, index)`; **Fortran** `m%edit_regions('union', ['a', 'b'], output='ab')` / `m%remove_region(i)`; **Julia** `edit_regions(m, :union, ["a", "b"]; output="ab")` / `remove_region!(m, i)`; **R** `mio_edit_regions(m, "union", c("a", "b"), output = "ab")` / `mio_remove_region(m, i)`; **WASM** `editRegions(mesh, [{op, inputs, output, dim, tag, keepInputs}])`; **MCP** the `edit_regions` tool.
+
+The same selector names the two regions of [periodic node matching](/periodic).
+
 ## Enumerating and splitting by region
 
 Two things build directly on the model above, both added in v8.7.0:

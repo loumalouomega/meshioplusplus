@@ -221,6 +221,10 @@ The suite uses the same deliberately non-square fixture as [`tests/fortran/test_
 ## v15.4.0 additions
 
 - `compute_normals(mesh; point_normals=true, cell_normals=false, weight=:angle, split_angle=nothing, record_parent_ids=false, region="") -> (; mesh, quality, num_isolated, num_undefined, num_degenerate, num_split_points, num_added_points)` — point and cell normals of a surface, written as `normals` (`(n, 3)` point data; `(cells, 3)` cell data with `cell_normals`). `split_angle=nothing` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Never reorients: check `quality.inconsistent_pairs`. See [normals](/normals).
+- `feature_edges(mesh; feature_angle=30.0, feature=true, boundary=true, non_manifold=true, inconsistent=true, region="") -> (; mesh, num_feature, num_boundary, num_non_manifold, num_inconsistent)` — the sharp, open, non-manifold and inconsistently wound edges of a surface (or of a volume mesh's skin) as a `line` mesh with `feature:kind`/`feature:angle`. See [feature edges](/feature_edges).
+- `hausdorff_distance(a, b; face_samples=0, region_a="", region_b="") -> (; distance, a_to_b, b_to_a, mean_a_to_b, rms_a_to_b, mean_b_to_a, rms_b_to_a, num_samples_a, num_samples_b, worst_point_a, worst_point_b)`. See [Hausdorff distance](/hausdorff).
+- `edit_regions(mesh, op, inputs; output="", kind=nothing, dim=nothing, tag=nothing, keep_inputs=true) -> Mesh` (`op` one of `:union`, `:intersection`, `:difference`, `:rename`, `:retag`, `:delete`) and `remove_region!(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
+- `match_periodic_nodes(mesh, slave, master; translate=nothing, matrix=nothing, atol=1e-8, require_complete=true) -> (; slave, master, unmatched, num_fixed, max_residual)` — 1-based node ids; `matrix` is 16 numbers, row-major. See [periodic node pairs](/periodic).
 
 ## v10.9.0 additions
 

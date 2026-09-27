@@ -151,6 +151,10 @@ meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields a
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
 meshioplusplus curvature  in.vtu out.vtu                     # per-vertex mean/Gaussian curvature
 meshioplusplus normals    in.vtu out.vtu --split-angle 30    # point/cell normals, split at creases
+meshioplusplus feature-edges in.stl edges.vtp --angle 45   # sharp/open/non-manifold edges as lines
+meshioplusplus hausdorff  a.stl b.stl --max 1e-3             # worst-case distance; nonzero exit above it
+meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
+meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
 meshioplusplus shrinkwrap in.vtu scan.stl out.vtu           # project onto a target surface
 meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5  # filter a displacement
@@ -343,6 +347,19 @@ print(report["verdict"])
 
 The `meshioplusplus diff a.vtu b.vtu` CLI verb sets a nonzero exit code when meshes differ, for direct use in CI / Makefiles.
 
+#### Hausdorff distance, feature edges, region algebra and periodic pairs
+
+Four analysis and editing operations (v16.23.0), each on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs and MCP. **`meshioplusplus.hausdorff_distance(a, b)`** is how far apart two surfaces are at their worst, the scalar a remeshing or format round trip is asserted on (`--max D` turns the CLI verb into a CI gate) — `doc/hausdorff.md`. **`meshioplusplus.feature_edges(mesh)`** writes the sharp, open, non-manifold and inconsistently wound edges as a line mesh; it is the one crease test `decimate` and `smooth` pin nodes with — `doc/feature_edges.md`. **`meshioplusplus.edit_regions(mesh, edits)`** unions, intersects, subtracts, renames, retags and deletes named regions — `doc/regions.md`. **`meshioplusplus.match_periodic_nodes(mesh, slave, master, translate=...)`** pairs the nodes two boundary regions share under a translation or rotation, the input of a periodic boundary condition — `doc/periodic.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+d = meshioplusplus.hausdorff_distance(before, after, face_samples=4)["distance"]
+edges = meshioplusplus.feature_edges(mesh, feature_angle=45)
+mesh = meshioplusplus.edit_regions(mesh, [{"op": "union", "inputs": ["a", "b"], "output": "inlet"}])
+pairs = meshioplusplus.match_periodic_nodes(mesh, "inlet", "outlet", translate=(2, 0, 0))
+```
+
 #### Merge / combine
 
 `meshioplusplus.merge` combines two or more meshes into one: it concatenates points (offsetting connectivity so indices stay valid), merges cell blocks by type, concatenates data (per a configurable `data_policy`), and tags each cell's origin. With `weld=True` it fuses coincident nodes across inputs within `atol` using a spatial hash (never O(N²)) — the standard way to stitch adjacent blocks into a watertight mesh. Overlapping set / field-data names are namespaced by source id. See `doc/merge.md`.
@@ -480,7 +497,7 @@ coarse = meshioplusplus.decimate(mesh, target_faces=5000)     # absolute face bu
 coarse, report = meshioplusplus.decimate(mesh, max_error=1e-6, return_report=True)
 ```
 
-Boundary vertices (once-used-edge test) and feature vertices (face normals differing by more than `feature_angle`, default 30°) are pinned by default, so an open patch keeps its outline exactly and a cube keeps its corners; the link condition and a normal-flip guard reject any collapse that would change topology, create a non-manifold edge, or fold the surface. Float `point_data` blends along the collapsed edge; integer arrays keep the survivor's value. Volume meshes raise by name — run `extract_surface` first, then decimate the skin.
+Boundary vertices (once-used-edge test) and feature vertices (the endpoints of [feature edges](https://loumalouomega.github.io/meshioplusplus/feature_edges): an edge whose two faces' normals differ by more than `feature_angle`, default 30°) are pinned by default, so an open patch keeps its outline exactly and a cube keeps its corners; the link condition and a normal-flip guard reject any collapse that would change topology, create a non-manifold edge, or fold the surface. Float `point_data` blends along the collapsed edge; integer arrays keep the survivor's value. Volume meshes raise by name — run `extract_surface` first, then decimate the skin.
 
 #### Volume decimation
 
@@ -560,7 +577,7 @@ The flips touch only interior faces/edges, so the boundary surface is preserved 
 
 **`meshioplusplus.smooth`** relaxes point coordinates to improve element shape, leaving topology and every data value alone: **only the points move**. See `doc/smooth.md`.
 
-Three methods. **Laplacian** (`x <- x + lambda*L(x)`, the edge-neighbour centroid displacement) smooths strongly per pass but shrinks — over 40 iterations on a jittered 8×8 quad grid it contracts the bounding box by 57%. **Taubin** (the default) follows each `+lambda` pass with a larger-magnitude `-mu` pass that deliberately un-shrinks, leaving the same grid 3.6% smaller. **ODT** (optimal-Delaunay-triangulation smoothing, **tet-only**) instead moves each free interior vertex to the closed-form volume-weighted average of its incident tets' circumcenters — the "ODT" half of the volumetric-remeshing roadmap item, closed as *smoothing on existing connectivity* rather than remeshing. Neighbours for Laplacian/Taubin are the nodes joined by an actual cell *edge*, not the element clique, so a structured hex block is a fixed point rather than being bevelled toward a sphere. Boundary nodes, feature nodes (incident boundary facet normals differing by more than `feature_angle`), an optional `frozen` mask, and the nodes of blocks whose edge topology is unknown are all pinned by default, and the inversion guard rejects any move that would turn a valid cell inverted.
+Three methods. **Laplacian** (`x <- x + lambda*L(x)`, the edge-neighbour centroid displacement) smooths strongly per pass but shrinks — over 40 iterations on a jittered 8×8 quad grid it contracts the bounding box by 57%. **Taubin** (the default) follows each `+lambda` pass with a larger-magnitude `-mu` pass that deliberately un-shrinks, leaving the same grid 3.6% smaller. **ODT** (optimal-Delaunay-triangulation smoothing, **tet-only**) instead moves each free interior vertex to the closed-form volume-weighted average of its incident tets' circumcenters — the "ODT" half of the volumetric-remeshing roadmap item, closed as *smoothing on existing connectivity* rather than remeshing. Neighbours for Laplacian/Taubin are the nodes joined by an actual cell *edge*, not the element clique, so a structured hex block is a fixed point rather than being bevelled toward a sphere. Boundary nodes, feature nodes (the endpoints of [feature edges](https://loumalouomega.github.io/meshioplusplus/feature_edges) — on a surface mesh its own creases as well as the corners of its boundary), an optional `frozen` mask, and the nodes of blocks whose edge topology is unknown are all pinned by default, and the inversion guard rejects any move that would turn a valid cell inverted.
 
 <!--pytest-codeblocks:skip-->
 

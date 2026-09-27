@@ -72,7 +72,7 @@ Float-kind `point_data` at the survivor is blended between the two endpoints at 
 Mirroring `decimate`'s vocabulary, a pinned vertex never moves and is never removed:
 
 - **`preserve_boundary`** (default **off**, see above) — every boundary vertex, by the once-used-face test on the mesh's own outer skin.
-- **`preserve_features`** (default on, `feature_angle=30`) — boundary vertices whose incident **boundary-triangle** normals differ by more than the angle, keeping corners and creases of the outer surface sharp.
+- **`preserve_features`** (default on, `feature_angle=30`) — the endpoints of every [feature edge](/feature_edges) of the boundary skin: an edge whose two **boundary triangles'** normals differ by more than the angle, keeping corners and creases of the outer surface sharp (a per-edge test since v16.23.0, shared with `decimate` and `smooth`).
 - **`frozen`** — an optional index array, or the name of one of `mesh.point_sets`.
 
 ## Validity guards
