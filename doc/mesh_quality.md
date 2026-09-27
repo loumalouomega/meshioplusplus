@@ -46,6 +46,32 @@ Quadratic and higher-order variants (`tetra10`, `hexahedron20`/`27`, `quad8`/`9`
 
 ![A mesh's boundary coloured by attach_quality's scaled Jacobian](/images/quality_boundary.png)
 
+## Quality gate
+
+`check_quality(mesh, require)` (v16.24.0) turns the metrics into a pass/fail answer — the check a CI job over meshes scripts. Each threshold is tested against the **per-cell** values, not the report's histograms, whose bins span each metric's own data range and so cannot say how many cells fall below a bound.
+
+```python
+import meshioplusplus as mp
+
+r = mp.check_quality(mesh, "scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%")
+r["passed"]                    # every check passed
+for c in r["checks"]:
+    print(c["name"], c["violations"], c["evaluated"], c["worst"], c["worst_cell"])
+```
+
+**The specification text**, which every surface reads the same way: clauses separated by `;`, `,` or newlines (`#` starts a comment, so a gate file is one clause per line), each `METRIC >= VALUE` or `METRIC <= VALUE`, optionally followed by `@ FRACTION` — the fraction of evaluated cells allowed to violate the bound, a number in `[0, 1]` or a percentage (`@1%`). `METRIC` is any metric above, with or without its `quality:` prefix. A structure works too in Python and C++: `{"metric", "min", "max", "max_fraction"}` / `QualityThreshold`.
+
+**Which cells.** A cell where the metric does not apply (NaN — `min_angle` on a quad, say) is not evaluated; a threshold that applies to no cell at all passes vacuously and says so in a warning. Inverted and degenerate cells are gated by count: `max_inverted` and `max_degenerate` default to 0, and a negative limit disables the check.
+
+**Each check reports** its `name`, `metric`, bounds, how many cells it `evaluated` and how many are `violations` (and the `fraction`), the `worst` value — the one closest to, or furthest beyond, the bound — with its global block-major `worst_cell`, and whether it `passed`.
+
+```sh
+meshioplusplus check part.vtu --require "scaled_jacobian >= 0.2" --require "aspect_ratio <= 5 @ 1%"
+meshioplusplus check part.vtu --gate quality.gate --json
+```
+
+The `check` verb (both CLIs) exits **0** when every check passes, **1** when one fails and **2** when the check could not run (an unreadable file, a malformed specification) — so a CI job can tell "the mesh is bad" from "the gate is broken". It is also the pipeline step `{"Op": "QualityGate", "Require": ["scaled_jacobian >= 0.2"], "MaxInverted": 0, "MaxDegenerate": 0}`, which leaves the mesh untouched and stops the pipeline with the summary as its error, and the MCP tool `check_quality`. The flat bindings take the specification text and return the pass/fail and counts plus the summary text both CLIs print: C `mio_check_quality(mesh, spec, max_inverted, max_degenerate, &report, buf, len)`, Fortran `m%check_quality(spec, …)`, Julia `check_quality(m; require=…)`, R `mio_check_quality(m, require)`, WASM `checkQuality(mesh, require)` (which also returns every check).
+
 ## Cross-language
 
 Available in every binding surface: Python (`compute_quality`/`attach_quality`), the C API (`mio_attach_quality` + `mio_quality_counts`), Fortran (`mesh%attach_quality()` / `mesh%quality_counts(...)`), and WASM (`attachQuality`), plus the CLI verb `meshioplusplus quality`.

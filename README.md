@@ -153,6 +153,7 @@ meshioplusplus curvature  in.vtu out.vtu                     # per-vertex mean/G
 meshioplusplus normals    in.vtu out.vtu --split-angle 30    # point/cell normals, split at creases
 meshioplusplus feature-edges in.stl edges.vtp --angle 45   # sharp/open/non-manifold edges as lines
 meshioplusplus hausdorff  a.stl b.stl --max 1e-3             # worst-case distance; nonzero exit above it
+meshioplusplus check      part.vtu -r "scaled_jacobian >= 0.2"  # quality gate: exit 1 on failure, 2 if unchecked
 meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
@@ -320,6 +321,8 @@ report = meshioplusplus.compute_quality(mesh)
 print(report["num_inverted"], "inverted cells")
 annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
 ```
+
+`meshioplusplus.check_quality(mesh, "scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%")` turns the metrics into a pass/fail gate tested per cell, and the `check` CLI verb exits 1 when it fails and 2 when it could not run — what a CI job over meshes scripts; every report verb of both CLIs also takes `--json` with one shared, strictly valid shape. See `doc/mesh_quality.md` and `doc/cli.md`.
 
 #### Reordering / renumbering
 
@@ -1076,7 +1079,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.23.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.24.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
