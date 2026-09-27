@@ -4191,7 +4191,7 @@ TEST(CApi, HausdorffOfAMeshWithItselfIsZero) {
     opts.face_samples = 2;
     mio_hausdorff_report report;
     ASSERT_EQ(mio_hausdorff_distance(a, b, &opts, &report), MIO_OK) << mio_last_error();
-    EXPECT_EQ(report.distance, 0.0);
+    EXPECT_NEAR(report.distance, 0.0, 1e-12);  // face samples: rounding, not exactly 0
     EXPECT_EQ(report.num_samples_a, 8 + 12 * 4);
     EXPECT_NE(mio_hausdorff_distance(a, b, &opts, nullptr), MIO_OK);
     mio_mesh_free(a);

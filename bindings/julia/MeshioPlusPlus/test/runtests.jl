@@ -1220,7 +1220,7 @@ end
     set_points!(other, pts)
     add_cell_block!(other, "triangle", conn)
     h = hausdorff_distance(cube, other; face_samples=2)
-    @test h.distance == 0.0
+    @test h.distance < 1e-12  # face samples: rounding, not exactly 0
     @test h.num_samples_a == 8 + 12 * 4
     close(other)
 

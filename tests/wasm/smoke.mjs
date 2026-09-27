@@ -4344,7 +4344,7 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.featureEdges(cubeSurface, 200));
 
     const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
-    assert.equal(h.distance, 0);
+    assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0
     assert.equal(h.numSamplesA, 8 + 12 * 4);
 
     const tagged = {
