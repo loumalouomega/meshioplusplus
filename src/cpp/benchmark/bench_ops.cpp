@@ -458,6 +458,8 @@ int main(int argc, char** argv) {
             mio::HausdorffOptions o;
             o.mFaceSamples = 2;
             const mio::HausdorffResult r = mio::hausdorff_distance(inflated, surface, o);
+            if (!pD)
+                return;
             pD->Bytes(&r.mDistance, sizeof r.mDistance);
             pD->Bytes(&r.mMeanAtoB, sizeof r.mMeanAtoB);
             pD->Bytes(&r.mRmsBtoA, sizeof r.mRmsBtoA);
