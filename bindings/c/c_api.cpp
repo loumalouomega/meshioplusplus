@@ -106,6 +106,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -4941,6 +4942,44 @@ const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pairs, int
 
 void mio_periodic_pairs_free(mio_periodic_pairs* pairs) {
     delete pairs;
+}
+
+// --- quality gate (v16.24.0) -------------------------------------------------
+
+static_assert(sizeof(mio_quality_gate_report) == 88,
+              "mio_quality_gate_report grew outside its reserved tail");
+
+mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int64_t max_inverted,
+                             int64_t max_degenerate, mio_quality_gate_report* report,
+                             char* summary, int64_t summary_len) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || !report)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_quality: mesh/report is NULL");
+        meshioplusplus::QualityGateOptions options;
+        if (spec)
+            options.mThresholds = meshioplusplus::parse_quality_thresholds(spec);
+        options.mMaxInverted = max_inverted;
+        options.mMaxDegenerate = max_degenerate;
+        const meshioplusplus::QualityGateResult r =
+            meshioplusplus::check_quality(mesh->mMesh, options);
+        const std::string text = meshioplusplus::quality_gate_summary(r);
+        *report = mio_quality_gate_report{};
+        report->passed = r.mPassed ? 1 : 0;
+        report->num_checks = static_cast<int64_t>(r.mChecks.size());
+        for (const meshioplusplus::QualityCheck& c : r.mChecks)
+            report->num_failed += c.mPassed ? 0 : 1;
+        report->num_cells = r.mReport.mNumCells;
+        report->num_inverted = r.mReport.mNumInverted;
+        report->num_degenerate = r.mReport.mNumDegenerate;
+        report->summary_length = static_cast<int64_t>(text.size());
+        if (summary && summary_len > 0) {
+            const std::size_t n =
+                std::min(text.size(), static_cast<std::size_t>(summary_len - 1));
+            std::memcpy(summary, text.data(), n);
+            summary[n] = '\0';
+        }
+        return MIO_OK;
+    });
 }
 
 }  // extern "C"

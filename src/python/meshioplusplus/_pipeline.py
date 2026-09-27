@@ -50,6 +50,7 @@ from ._provenance import add_operation as _prov_add_operation
 from ._provenance import set_source as _prov_set_source
 from ._provenance import set_target as _prov_set_target
 from ._quality import attach_quality
+from ._quality_gate import check_quality, format_quality_gate
 from ._refine import refine
 from ._region_ops import edit_regions
 from ._remesh import remesh
@@ -145,6 +146,7 @@ _OP_TABLE = {
         "Region",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
+    "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
     "Repair": (
         "FixOrientation",
         "OrientOutward",
@@ -651,6 +653,21 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumBoundary"] = report["num_boundary"]
         entry["NumNonManifold"] = report["num_non_manifold"]
         entry["NumInconsistent"] = report["num_inconsistent"]
+    elif op == "QualityGate":
+        # A gate, not a transform: the mesh passes through untouched, and a
+        # failed check stops the pipeline with the summary as the error.
+        result = check_quality(
+            mesh,
+            _svec(step, "Require"),
+            max_inverted=int(_number(step, "MaxInverted", 0)),
+            max_degenerate=int(_number(step, "MaxDegenerate", 0)),
+        )
+        if not result["passed"]:
+            raise RuntimeError(
+                "meshio++: pipeline: QualityGate failed\n" + format_quality_gate(result)
+            )
+        entry["NumChecks"] = len(result["checks"])
+        entry["NumFailed"] = sum(not c["passed"] for c in result["checks"])
     elif op == "EditRegions":
         kind = _text(step, "Kind", "") or None
         edit = {

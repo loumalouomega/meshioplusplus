@@ -109,6 +109,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
@@ -3164,6 +3165,47 @@ val compute_normals_js(const val& rMeshObj, bool pointNormals, bool cellNormals,
 }
 
 /**
+ * @brief Quality gate: thresholds (the specification text) and inverted /
+ * degenerate count limits over compute_quality's per-cell metrics. See
+ * operations/quality_gate.hpp.
+ */
+val check_quality_js(const val& rMeshObj, const std::string& rRequire, double maxInverted,
+                     double maxDegenerate) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::QualityGateOptions options;
+        options.mThresholds = meshioplusplus::parse_quality_thresholds(rRequire);
+        options.mMaxInverted = static_cast<std::int64_t>(maxInverted);
+        options.mMaxDegenerate = static_cast<std::int64_t>(maxDegenerate);
+        const meshioplusplus::QualityGateResult r =
+            meshioplusplus::check_quality(val_to_mesh(rMeshObj), options);
+        val checks = val::array();
+        for (const meshioplusplus::QualityCheck& c : r.mChecks) {
+            val o = val::object();
+            o.set("name", c.mName);
+            o.set("metric", c.mMetric);
+            o.set("min", c.mMin);
+            o.set("max", c.mMax);
+            o.set("maxFraction", c.mMaxFraction);
+            o.set("evaluated", static_cast<double>(c.mEvaluated));
+            o.set("violations", static_cast<double>(c.mViolations));
+            o.set("fraction", c.mFraction);
+            o.set("worst", c.mWorst);
+            o.set("worstCell", static_cast<double>(c.mWorstCell));
+            o.set("passed", c.mPassed);
+            checks.call<void>("push", o);
+        }
+        val out = val::object();
+        out.set("passed", r.mPassed);
+        out.set("numCells", static_cast<double>(r.mReport.mNumCells));
+        out.set("numInverted", static_cast<double>(r.mReport.mNumInverted));
+        out.set("numDegenerate", static_cast<double>(r.mReport.mNumDegenerate));
+        out.set("checks", checks);
+        out.set("summary", meshioplusplus::quality_gate_summary(r));
+        return out;
+    });
+}
+
+/**
  * @brief Sharp, open, non-manifold and inconsistently wound edges as a line
  * mesh. See operations/feature_edges.hpp.
  */
@@ -4585,6 +4627,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("computeCurvature", &compute_curvature_js);
     emscripten::function("computeNormals", &compute_normals_js);
     emscripten::function("featureEdges", &feature_edges_js);
+    emscripten::function("checkQuality", &check_quality_js);
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
     emscripten::function("editRegions", &edit_regions_js);
     emscripten::function("matchPeriodicNodes", &match_periodic_nodes_js);

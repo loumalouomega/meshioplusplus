@@ -8,7 +8,7 @@ is what gives this verb the per-format Python fallbacks the native CLI's
 C++-only run lacks.
 """
 
-import json
+from ._json import emit_json
 
 
 def add_args(parser):
@@ -41,7 +41,7 @@ def pipeline_cmd(args):
 
     report = run_pipeline(args.settings, input_path=args.input, output_path=args.output)
     if args.as_json:
-        print(json.dumps(report, indent=2))
+        emit_json(report)
     elif not args.quiet:
         for i, step in enumerate(report["steps"], start=1):
             counters = ", ".join(

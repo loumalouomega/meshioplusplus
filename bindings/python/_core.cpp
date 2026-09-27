@@ -15,6 +15,8 @@
 //
 //
 // System includes
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <set>
 #include <vector>
@@ -124,6 +126,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
@@ -2028,6 +2031,75 @@ PYBIND11_MODULE(_core, m) {
         py::arg("boundary") = true, py::arg("non_manifold") = true,
         py::arg("inconsistent") = true, py::arg("region") = "");
 
+    // Pass/fail thresholds over compute_quality's per-cell metrics. `thresholds`
+    // is a list of {metric, min?, max?, max_fraction?}. See
+    // operations/quality_gate.hpp.
+    m.def(
+        "check_quality",
+        [](py::object pymesh, py::list thresholds, std::int64_t max_inverted,
+           std::int64_t max_degenerate) {
+            meshioplusplus::QualityGateOptions options;
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            for (py::handle h : thresholds) {
+                py::dict d = py::reinterpret_borrow<py::dict>(h);
+                meshioplusplus::QualityThreshold t;
+                t.mMetric = d["metric"].cast<std::string>();
+                t.mMin = d.contains("min") && !d["min"].is_none() ? d["min"].cast<double>() : nan;
+                t.mMax = d.contains("max") && !d["max"].is_none() ? d["max"].cast<double>() : nan;
+                if (d.contains("max_fraction") && !d["max_fraction"].is_none())
+                    t.mMaxFraction = d["max_fraction"].cast<double>();
+                options.mThresholds.push_back(t);
+            }
+            options.mMaxInverted = max_inverted;
+            options.mMaxDegenerate = max_degenerate;
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const meshioplusplus::QualityGateResult r = meshioplusplus::check_quality(cpp, options);
+            py::list checks;
+            for (const meshioplusplus::QualityCheck& c : r.mChecks) {
+                py::dict d;
+                d["name"] = c.mName;
+                d["metric"] = c.mMetric;
+                d["min"] = c.mMin;
+                d["max"] = c.mMax;
+                d["max_fraction"] = c.mMaxFraction;
+                d["evaluated"] = c.mEvaluated;
+                d["violations"] = c.mViolations;
+                d["fraction"] = c.mFraction;
+                d["worst"] = c.mWorst;
+                d["worst_cell"] = c.mWorstCell;
+                d["passed"] = c.mPassed;
+                checks.append(d);
+            }
+            py::dict out;
+            out["passed"] = r.mPassed;
+            out["num_cells"] = r.mReport.mNumCells;
+            out["num_inverted"] = r.mReport.mNumInverted;
+            out["num_degenerate"] = r.mReport.mNumDegenerate;
+            out["checks"] = checks;
+            return out;
+        },
+        py::arg("mesh"), py::arg("thresholds"), py::arg("max_inverted") = 0,
+        py::arg("max_degenerate") = 0);
+
+    m.def(
+        "parse_quality_thresholds",
+        [](const std::string& spec) {
+            py::list out;
+            for (const meshioplusplus::QualityThreshold& t :
+                 meshioplusplus::parse_quality_thresholds(spec)) {
+                py::dict d;
+                d["metric"] = t.mMetric;
+                d["min"] = std::isnan(t.mMin) ? py::object(py::none()) : py::float_(t.mMin);
+                d["max"] = std::isnan(t.mMax) ? py::object(py::none()) : py::float_(t.mMax);
+                d["max_fraction"] = t.mMaxFraction;
+                out.append(d);
+            }
+            return out;
+        },
+        py::arg("spec"));
+
     // The (sampled) Hausdorff distance between two surfaces. See
     // operations/hausdorff.hpp.
     m.def(
@@ -2920,6 +2992,11 @@ PYBIND11_MODULE(_core, m) {
             out["point_data"] = data_diff(rep.mPointData);
             out["cell_data"] = data_diff(rep.mCellData);
             out["field_data"] = data_diff(rep.mFieldData);
+            py::dict regions;
+            regions["only_in_a"] = py::cast(rep.mRegions.mOnlyInA);
+            regions["only_in_b"] = py::cast(rep.mRegions.mOnlyInB);
+            regions["changed"] = py::cast(rep.mRegions.mChanged);
+            out["regions"] = regions;
             py::list messages;
             for (const std::string& s : rep.mMessages)
                 messages.append(s);

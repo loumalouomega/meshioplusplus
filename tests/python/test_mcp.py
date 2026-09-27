@@ -1060,6 +1060,21 @@ def test_feature_edges_and_hausdorff(tmp_path):
     assert _dump(_tools.tool_hausdorff(src, src))["distance"] == 0.0
 
 
+def test_check_quality(tmp_path):
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    ok = _dump(_tools.tool_check_quality(src, "aspect_ratio <= 1.5"))
+    assert ok["passed"] is True
+    assert ok["checks"][0]["name"] == "aspect_ratio <= 1.5"
+    bad = _dump(
+        _tools.tool_check_quality(src, ["aspect_ratio <= 0.5"], max_inverted=-1)
+    )
+    assert bad["passed"] is False
+    assert len(bad["checks"]) == 2
+    with pytest.raises(ValueError, match="unknown metric"):
+        _tools.tool_check_quality(src, "bogus >= 1")
+
+
 def test_edit_regions_and_periodic(tmp_path):
     from meshioplusplus._regions import Region
 

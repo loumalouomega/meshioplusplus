@@ -480,6 +480,19 @@ struct _CPeriodicOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_quality_gate_report` (v16.24.0)."""
+struct _CQualityGateReport
+    passed::Int32
+    reserved_pad::Int32
+    num_checks::Int64
+    num_failed::Int64
+    num_cells::Int64
+    num_inverted::Int64
+    num_degenerate::Int64
+    summary_length::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_normals_report`."""
 struct _CNormalsReport
     quality::_CSurfaceQuality
@@ -669,6 +682,9 @@ function _check_abi_layout()
               "($(sizeof(_CRegionSelector)) bytes)")
     sizeof(_CPeriodicOpts) == 192 ||
         error("meshio++: mio_periodic_opts layout mismatch ($(sizeof(_CPeriodicOpts)) bytes)")
+    sizeof(_CQualityGateReport) == 88 ||
+        error("meshio++: mio_quality_gate_report layout mismatch " *
+              "($(sizeof(_CQualityGateReport)) bytes)")
     sizeof(_CRepairOpts) == 80 ||
         error("meshio++: mio_repair_opts layout mismatch ($(sizeof(_CRepairOpts)) bytes)")
     sizeof(_CRepairReport) == 272 ||

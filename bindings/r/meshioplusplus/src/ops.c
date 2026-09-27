@@ -448,6 +448,29 @@ SEXP R_mio_feature_edges(SEXP mesh, SEXP feature_angle, SEXP feature, SEXP bound
     return res;
 }
 
+SEXP R_mio_check_quality(SEXP mesh, SEXP require, SEXP max_inverted, SEXP max_degenerate) {
+    mio_quality_gate_report r;
+    char buf[8192];
+    mio_r_check(mio_check_quality(mio_r_mesh(mesh), mio_r_opt_string(require),
+                                  (int64_t)mio_r_double(max_inverted, "max_inverted"),
+                                  (int64_t)mio_r_double(max_degenerate, "max_degenerate"), &r,
+                                  buf, (int64_t)sizeof(buf)),
+                "check_quality");
+    SEXP v0 = PROTECT(Rf_ScalarLogical(r.passed != 0));
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)r.num_checks));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)r.num_failed));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)r.num_cells));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)r.num_inverted));
+    SEXP v5 = PROTECT(Rf_ScalarReal((double)r.num_degenerate));
+    SEXP v6 = PROTECT(Rf_mkString(buf));
+    const char *names[] = {"passed", "num_checks", "num_failed", "num_cells",
+                           "num_inverted", "num_degenerate", "summary"};
+    SEXP values[] = {v0, v1, v2, v3, v4, v5, v6};
+    SEXP res = PROTECT(mio_r_named_list(7, names, values));
+    UNPROTECT(8);
+    return res;
+}
+
 SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
                               SEXP region_b) {
     mio_hausdorff_opts opts;

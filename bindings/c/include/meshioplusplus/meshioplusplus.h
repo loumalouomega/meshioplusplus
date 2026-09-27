@@ -609,55 +609,6 @@ MIO_API mio_status mio_convert(const char* in_path, const char* in_format, const
  * Mesh operations (computations on a mesh, not file formats)
  * --------------------------------------------------------------------- */
 
-/**
- * Extract the boundary of a mesh's highest-dimension cells as a new mesh.
- * Volume cells -> boundary faces; a 2D surface mesh -> boundary edges.
- * @param mesh             input mesh.
- * @param record_parent_ids nonzero to attach an int64 cell_data
- *                          "surface:parent_cell" (owning input-cell index).
- * @return the boundary mesh, or NULL on failure (see mio_last_error()).
- */
-MIO_API mio_mesh* mio_extract_surface(const mio_mesh* mesh, int record_parent_ids);
-
-/**
- * Extract the boundary skin of a volume mesh as a new surface mesh.
- * @param mesh      input volume mesh.
- * @param linearize nonzero to emit only corner nodes (triangle/quad output).
- * @return the skin mesh, or NULL on failure (see mio_last_error()).
- */
-MIO_API mio_mesh* mio_extract_skin(const mio_mesh* mesh, int linearize);
-
-/**
- * Compute per-cell quality metrics and return a copy of the mesh with them
- * attached as cell_data (names "quality:<metric>"; read them back with the
- * cell-data accessors).
- * @param mesh input mesh.
- * @return the annotated mesh, or NULL on failure (see mio_last_error()).
- */
-MIO_API mio_mesh* mio_attach_quality(const mio_mesh* mesh);
-
-/**
- * Report aggregate quality counts. Any out-param may be NULL.
- * @param mesh            input mesh.
- * @param num_cells       total cells scored.
- * @param num_inverted    cells with negative signed volume/area.
- * @param num_degenerate  near-zero (degenerate) cells.
- */
-MIO_API mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells,
-                                      int64_t* num_inverted, int64_t* num_degenerate);
-
-/**
- * Guess a mesh file's format from its contents (magic-byte sniffing).
- * @param path   filesystem path to an existing, readable file, or a directory
- *               (an Elmer mesh directory or an OpenFOAM case is recognised by
- *               the files it holds).
- * @param buf    caller buffer for the format name (may be NULL to query length).
- * @param buflen size of `buf`.
- * @return the untruncated length of the format name (0 if undetermined), or -1
- *         on error; the name is written to `buf` NUL-terminated when it fits.
- */
-MIO_API int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen);
-
 /* ---------------------------------------------------------------------
  * Mesh operations (computations on a mesh, not file formats)
  * --------------------------------------------------------------------- */
@@ -698,6 +649,42 @@ MIO_API mio_mesh* mio_attach_quality(const mio_mesh* mesh);
  */
 MIO_API mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells,
                                       int64_t* num_inverted, int64_t* num_degenerate);
+
+/** What mio_check_quality found (v16.24.0). */
+typedef struct mio_quality_gate_report {
+    int32_t passed;         /**< nonzero when every check passed */
+    int32_t reserved_pad;   /**< zero */
+    int64_t num_checks;     /**< checks evaluated (thresholds, then the two counts) */
+    int64_t num_failed;     /**< checks that failed */
+    int64_t num_cells;      /**< cells scored */
+    int64_t num_inverted;   /**< inverted cells */
+    int64_t num_degenerate; /**< degenerate cells */
+    int64_t summary_length; /**< untruncated length of the summary text, excluding the NUL */
+    int64_t reserved[4];    /**< zero; room for additive growth */
+} mio_quality_gate_report;
+
+/**
+ * Quality gate: score the mesh and test thresholds (see doc/mesh_quality.md).
+ *
+ * @param spec           the thresholds as text -- clauses separated by `;`,
+ *                       `,` or newlines, each `METRIC >= VALUE` or
+ *                       `METRIC <= VALUE`, optionally `@ FRACTION` (e.g.
+ *                       "scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%");
+ *                       NULL or "" checks only the counts.
+ * @param max_inverted   the most inverted cells allowed; negative disables.
+ * @param max_degenerate the most degenerate cells allowed; negative disables.
+ * @param report         required out.
+ * @param summary        optional caller buffer for the one-line-per-check
+ *                       summary both CLIs print (NUL-terminated, truncated
+ *                       to `summary_len`); `report->summary_length` gives the
+ *                       size needed.
+ * @return MIO_OK whether or not the gate passed (read `report->passed`); an
+ *         error only when the check could not run.
+ */
+MIO_API mio_status mio_check_quality(const mio_mesh* mesh, const char* spec,
+                                     int64_t max_inverted, int64_t max_degenerate,
+                                     mio_quality_gate_report* report, char* summary,
+                                     int64_t summary_len);
 
 /**
  * Guess a mesh file's format from its contents (magic-byte sniffing).

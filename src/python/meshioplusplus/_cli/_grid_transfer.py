@@ -296,22 +296,19 @@ def grid_spectrum_cmd(args):
     keep = min(args.max_bins, len(ps.power)) if args.max_bins > 0 else len(ps.power)
 
     if args.json:
-        import json
+        from ._json import emit_json
 
-        print(
-            json.dumps(
-                {
-                    "field": args.field,
-                    "channels": names,
-                    "units": ps.units,
-                    "wavenumber": ps.wavenumber[:keep].tolist(),
-                    "power": ps.power[:keep].tolist(),
-                    "counts": ps.counts[:keep].tolist(),
-                    "num_bins": int(len(ps.power)),
-                    "total_power": float(ps.power.sum()),
-                },
-                indent=2,
-            )
+        emit_json(
+            {
+                "field": args.field,
+                "channels": names,
+                "units": ps.units,
+                "wavenumber": ps.wavenumber[:keep].tolist(),
+                "power": ps.power[:keep].tolist(),
+                "counts": ps.counts[:keep].tolist(),
+                "num_bins": int(len(ps.power)),
+                "total_power": float(ps.power.sum()),
+            }
         )
         return 0
 

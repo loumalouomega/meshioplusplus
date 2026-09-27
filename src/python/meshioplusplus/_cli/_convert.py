@@ -4,6 +4,7 @@ import numpy as np
 
 from .._colormap import NAMES as CMAP_NAMES
 from .._helpers import _filetypes_from_path, _writer_map, read, reader_map, write
+from ._json import emit_json
 
 # Colouring reaches the writer as keyword arguments, and only the SVG and TikZ
 # writers accept them -- every other writer would raise on the unexpected kwarg,
@@ -242,6 +243,11 @@ def add_args(parser):
         default=None,
         help="the source axis that points up (default: auto -- y for a flat mesh, else z)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print a JSON summary of what was written",
+    )
 
 
 def _output_format(args):
@@ -411,7 +417,16 @@ def _convert_sequence(args, arrays, write_kwargs):
     what = "fan-out" if pattern_has_token(args.outfile) else "fan-in"
     if not pattern_has_token(args.outfile) and len(written) == len(entries):
         what = "sequence"
-    print(f"{what}: {len(entries)} step(s) -> {len(written)} file(s)")
+    if getattr(args, "json", False):
+        emit_json(
+            {
+                "mode": what,
+                "num_steps": len(entries),
+                "num_files": len(written),
+            }
+        )
+    else:
+        print(f"{what}: {len(entries)} step(s) -> {len(written)} file(s)")
     return 0
 
 
@@ -481,3 +496,19 @@ def convert(args):
     kwargs.update(color_kwargs)
 
     write(args.outfile, mesh, **kwargs)
+    if args.json:
+        emit_json(
+            {
+                "input": args.infile,
+                "output": args.outfile,
+                "num_points": len(mesh.points),
+                "num_cells": sum(len(cb.data) for cb in mesh.cells),
+                "cell_blocks": [
+                    {"type": cb.type, "num_cells": len(cb.data)} for cb in mesh.cells
+                ],
+                "point_data_names": sorted(mesh.point_data),
+                "cell_data_names": sorted(mesh.cell_data),
+                "field_data_names": sorted(mesh.field_data),
+                "num_regions": len(getattr(mesh, "regions", None) or []),
+            }
+        )

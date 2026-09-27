@@ -6,6 +6,7 @@ from . import (
     _agglomerate,
     _ascii,
     _binary,
+    _check,
     _clean,
     _compress,
     _conservative_interpolate,
@@ -119,6 +120,13 @@ def main(argv=None):
     )
     _normals.add_args(parser)
     parser.set_defaults(func=_normals.normals_cmd)
+
+    parser = subparsers.add_parser(
+        "check",
+        help="Quality gate: exit 1 when cells break thresholds (2: could not check)",
+    )
+    _check.add_args(parser)
+    parser.set_defaults(func=_check.check_cmd)
 
     parser = subparsers.add_parser(
         "feature-edges",

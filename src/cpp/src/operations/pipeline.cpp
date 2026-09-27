@@ -45,6 +45,7 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -265,6 +266,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FeatureEdges",
          {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
+        {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -748,6 +750,28 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumNonManifold", static_cast<double>(fr.mNumNonManifold)},
                         {"NumInconsistent", static_cast<double>(fr.mNumInconsistent)}});
         return std::move(fr.mMesh);
+    }
+    if (op == "QualityGate") {
+        // A gate, not a transform: the mesh passes through untouched, and a
+        // failed check stops the pipeline with the summary as the error.
+        QualityGateOptions opts;
+        for (const std::string& spec : pipe_svec(rStep, "Require")) {
+            std::vector<QualityThreshold> t = parse_quality_thresholds(spec);
+            opts.mThresholds.insert(opts.mThresholds.end(), t.begin(), t.end());
+        }
+        opts.mMaxInverted = static_cast<std::int64_t>(pipe_number(rStep, "MaxInverted", 0.0));
+        opts.mMaxDegenerate = static_cast<std::int64_t>(pipe_number(rStep, "MaxDegenerate", 0.0));
+        const QualityGateResult qr = check_quality(mesh, opts);
+        std::int64_t failed = 0;
+        for (const QualityCheck& c : qr.mChecks)
+            failed += c.mPassed ? 0 : 1;
+        if (!qr.mPassed)
+            throw std::runtime_error("meshio++: pipeline: QualityGate failed\n" +
+                                     quality_gate_summary(qr));
+        pipe_push_step(rReport, rStep,
+                       {{"NumChecks", static_cast<double>(qr.mChecks.size())},
+                        {"NumFailed", static_cast<double>(failed)}});
+        return mesh;
     }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is
