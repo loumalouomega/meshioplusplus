@@ -18,6 +18,7 @@ import json
 import os
 
 from .._dataset import DatasetManifest, portable_relpath
+from ._json import emit_json
 
 
 def _load_or_new(path):
@@ -220,7 +221,7 @@ def list_cmd(args):
             if args.resolve:
                 item["Resolved"] = entry.entries()
             payload.append(item)
-        print(json.dumps(payload, indent=2))
+        emit_json(payload)
         return 0
 
     header = f"<meshio++ dataset> ({len(entries)}"

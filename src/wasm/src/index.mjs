@@ -250,6 +250,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   optimizeVolume: (mesh: Mesh, maxIterations?: number, relocate?: boolean, flip?: boolean, preserveBoundary?: boolean, minImprovement?: number) => {mesh: Mesh, numFlips: number, num23Flips: number, num32Flips: number, numVerticesMoved: number, numTets: number, minQualityBefore: number, minQualityAfter: number},
  *   computeCurvature: (mesh: Mesh, mean?: boolean, gaussian?: boolean, dualArea?: string, includeBoundary?: boolean, recordArea?: boolean, recordPrincipal?: boolean, region?: string) => {mesh: Mesh, numBoundary: number, numIsolated: number, numDegenerate: number, totalAngleDefect: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
+ *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
  *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
@@ -779,6 +780,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.computeNormals(mesh, pointNormals, cellNormals, weight, splitAngle,
                 recordParentIds, region),
+        checkQuality: (mesh, require = '', maxInverted = 0, maxDegenerate = 0) =>
+            Module.checkQuality(mesh, require, maxInverted, maxDegenerate),
         featureEdges: (
             mesh,
             featureAngle = 30,

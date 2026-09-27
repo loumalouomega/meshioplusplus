@@ -37,6 +37,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <cstring>
 #include <utility>
 #include <exception>
@@ -102,6 +103,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
@@ -461,6 +463,9 @@ void print_usage(std::ostream& os) {
           "                            --codec zlib|lz4|zstd for vti/vtu/vtp\n"
           "  decompress              Decompress a mesh file (in place)\n"
           "  quality (q)             Print mesh quality metrics\n"
+          "  check                   Quality gate: exit 1 when cells break thresholds\n"
+          "                            (--require 'scaled_jacobian >= 0.2; ...', --gate FILE,\n"
+          "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
@@ -563,6 +568,130 @@ std::vector<std::string> data_split_names(const std::string& rValue) {
     return out;
 }
 
+// ---- JSON shapes shared with the Python CLI (tests/python/test_cli_json.py) --
+
+void cli_regions_json(meshioplusplus::cli::JsonOut& rJson, const std::string& rName,
+                      meshioplusplus::RegionKind Kind, int Dim, std::int64_t Tag,
+                      std::size_t NumEntries) {
+    rJson.BeginObject();
+    rJson.Field("name", rName);
+    rJson.Field("kind", meshioplusplus::region_kind_name(Kind));
+    rJson.Field("dim", Dim);
+    rJson.Field("tag", Tag);
+    rJson.Field("num_entries", NumEntries);
+    rJson.EndObject();
+}
+
+void cli_names_json(meshioplusplus::cli::JsonOut& rJson, const char* pKey,
+                    const std::vector<std::string>& rNames) {
+    rJson.Key(pKey);
+    rJson.BeginArray();
+    for (const std::string& n : rNames)
+        rJson.String(n);
+    rJson.EndArray();
+}
+
+// `info --fast --json`: the keys of the Python `read_metadata` dict.
+void cli_metadata_json(meshioplusplus::cli::JsonOut& rJson,
+                       const meshioplusplus::MeshMetadata& rMeta) {
+    std::size_t ncells = 0;
+    for (const auto& b : rMeta.mCellBlocks)
+        ncells += b.mNumCells;
+    rJson.BeginObject();
+    rJson.Field("num_points", rMeta.mNumPoints);
+    rJson.Field("point_dim", rMeta.mPointDim);
+    rJson.Field("num_cells", ncells);
+    rJson.Key("cell_blocks");
+    rJson.BeginArray();
+    for (const auto& b : rMeta.mCellBlocks) {
+        rJson.BeginObject();
+        rJson.Field("type", b.mType);
+        rJson.Field("num_cells", b.mNumCells);
+        rJson.Field("nodes_per_cell", b.mNodesPerCell);
+        rJson.Field("ragged", b.mRagged);
+        rJson.EndObject();
+    }
+    rJson.EndArray();
+    cli_names_json(rJson, "point_data_names", rMeta.mPointDataNames);
+    cli_names_json(rJson, "cell_data_names", rMeta.mCellDataNames);
+    cli_names_json(rJson, "field_data_names", rMeta.mFieldDataNames);
+    rJson.Field("fell_back_to_full_read", rMeta.mFellBackToFullRead);
+    rJson.Field("format", rMeta.mFormat);
+    rJson.Key("time_values");
+    rJson.BeginArray();
+    for (double t : rMeta.mTimeValues)
+        rJson.Number(t);
+    rJson.EndArray();
+    cli_names_json(rJson, "provenance", rMeta.mProvenance);
+    rJson.Field("provenance_recognised", rMeta.mProvenanceRecognised);
+    if (rMeta.mHasBBox) {
+        for (const auto& [key, v] :
+             {std::pair<const char*, const double*>{"bbox_min", rMeta.mBBoxMin},
+              {"bbox_max", rMeta.mBBoxMax}}) {
+            rJson.Key(key);
+            rJson.BeginArray();
+            for (int k = 0; k < 3; ++k)
+                rJson.Number(v[k]);
+            rJson.EndArray();
+        }
+    }
+    rJson.Key("regions");
+    rJson.BeginArray();
+    for (const auto& r : rMeta.mRegions)
+        cli_regions_json(rJson, r.mName, r.mKind, r.mDim, r.mTag, r.mNumEntries);
+    rJson.EndArray();
+    rJson.EndObject();
+}
+
+// `info --json` after a full read: the Python CLI's `_mesh_summary`.
+void cli_mesh_summary_json(meshioplusplus::cli::JsonOut& rJson, const Mesh& rMesh) {
+    const std::int64_t n = static_cast<std::int64_t>(rMesh.NumPoints());
+    std::size_t ncells = 0;
+    bool consistent = true;
+    std::vector<char> used(static_cast<std::size_t>(n), 0);
+    for (const auto cb : rMesh.CellRange()) {
+        ncells += cb.NumCells();
+        each_block_index(cb, [&](std::int64_t v) {
+            if (v > n)
+                consistent = false;
+            else if (v >= 0 && v < n)
+                used[static_cast<std::size_t>(v)] = 1;
+        });
+    }
+    rJson.BeginObject();
+    rJson.Field("num_points", n);
+    rJson.Field("point_dim", n ? rMesh.PointDim() : std::size_t{0});
+    rJson.Field("num_cells", ncells);
+    rJson.Key("cell_blocks");
+    rJson.BeginArray();
+    for (const auto cb : rMesh.CellRange()) {
+        rJson.BeginObject();
+        rJson.Field("type", std::string(cb.Type()));
+        rJson.Field("num_cells", cb.NumCells());
+        rJson.Field("nodes_per_cell", cb.IsRagged() ? std::size_t{0} : cb.NodesPerCell());
+        rJson.Field("ragged", cb.IsRagged());
+        rJson.EndObject();
+    }
+    rJson.EndArray();
+    cli_names_json(rJson, "point_data_names", rMesh.PointDataNames());
+    cli_names_json(rJson, "cell_data_names", rMesh.CellDataNames());
+    cli_names_json(rJson, "field_data_names", rMesh.FieldDataNames());
+    rJson.Key("regions");
+    rJson.BeginArray();
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        cli_regions_json(rJson, r.mName, r.mKind, r.mDim, r.mTag, r.NumEntries());
+    }
+    rJson.EndArray();
+    rJson.Field("consistent", consistent);
+    rJson.Key("num_unused_points");
+    if (consistent)
+        rJson.Int(static_cast<std::int64_t>(std::count(used.begin(), used.end(), char{0})));
+    else
+        rJson.Null();
+    rJson.EndObject();
+}
+
 /// The transient half of `convert`: fan-in, fan-out or N->N. Kept separate so
 /// the single-file path above is physically untouched.
 int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
@@ -603,7 +732,16 @@ int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
         meshioplusplus::sequence_resolve_mode(entries, out, meshioplusplus::SequenceMode::Auto);
     if (mode == meshioplusplus::SequenceMode::FanIn) {
         meshioplusplus::sequence_to_timeseries(in, out);
-        std::cout << "fan-in: " << entries.size() << " step(s) -> 1 file\n";
+        if (has_flag(rParsed, "json")) {
+            meshioplusplus::cli::JsonOut json(std::cout);
+            json.BeginObject();
+            json.Field("mode", "fan-in");
+            json.Field("num_steps", entries.size());
+            json.Field("num_files", std::int64_t{1});
+            json.EndObject();
+        } else {
+            std::cout << "fan-in: " << entries.size() << " step(s) -> 1 file\n";
+        }
         return 0;
     }
     // Sequence / fan-out: one output file per entry, through the shared driver.
@@ -611,8 +749,18 @@ int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
     pipeline.mInput = in;
     pipeline.mOutput = out;
     meshioplusplus::run_sequence_pipeline(pipeline);
-    std::cout << (mode == meshioplusplus::SequenceMode::FanOut ? "fan-out: " : "sequence: ")
-              << entries.size() << " step(s) -> " << entries.size() << " file(s)\n";
+    const char* what = mode == meshioplusplus::SequenceMode::FanOut ? "fan-out" : "sequence";
+    if (has_flag(rParsed, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("mode", what);
+        json.Field("num_steps", entries.size());
+        json.Field("num_files", entries.size());
+        json.EndObject();
+    } else {
+        std::cout << what << ": " << entries.size() << " step(s) -> " << entries.size()
+                  << " file(s)\n";
+    }
     return 0;
 }
 
@@ -645,6 +793,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"time-from", {}, true},
                                   {"sequence", {}, false},
                                   {"no-sequence", {}, false},
+                                  {"json", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert requires exactly INFILE and OUTFILE");
@@ -798,6 +947,32 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
             std::cerr << "note: --float-format only affects ASCII output (--ascii)\n";
         write_mesh_cli(outfile, mesh, out_fmt);
     }
+    if (has_flag(p, "json")) {
+        // The Python CLI's convert summary.
+        std::size_t ncells = 0;
+        for (const auto cb : mesh.CellRange())
+            ncells += cb.NumCells();
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("input", infile);
+        json.Field("output", outfile);
+        json.Field("num_points", mesh.NumPoints());
+        json.Field("num_cells", ncells);
+        json.Key("cell_blocks");
+        json.BeginArray();
+        for (const auto cb : mesh.CellRange()) {
+            json.BeginObject();
+            json.Field("type", std::string(cb.Type()));
+            json.Field("num_cells", cb.NumCells());
+            json.EndObject();
+        }
+        json.EndArray();
+        cli_names_json(json, "point_data_names", mesh.PointDataNames());
+        cli_names_json(json, "cell_data_names", mesh.CellDataNames());
+        cli_names_json(json, "field_data_names", mesh.FieldDataNames());
+        json.Field("num_regions", mesh.NumRegions());
+        json.EndObject();
+    }
     return 0;
 }
 
@@ -867,7 +1042,8 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
 }
 
 int cmd_info(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}, {"fast", {}, false}});
+    auto p = cli_parse(rArgs,
+                       {{"input-format", {"-i"}, true}, {"fast", {}, false}, {"json", {}, false}});
     if (has_flag(p, "fast")) {
         if (p.positionals.size() != 1)
             throw std::runtime_error("info requires exactly one INFILE");
@@ -879,12 +1055,23 @@ int cmd_info(const std::vector<std::string>& rArgs) {
             if (fmt.empty())
                 throw;
         }
-        print_metadata_summary(meshioplusplus::registry_read_metadata(p.positionals[0], fmt, {}));
+        const auto meta = meshioplusplus::registry_read_metadata(p.positionals[0], fmt, {});
+        if (has_flag(p, "json")) {
+            meshioplusplus::cli::JsonOut json(std::cout);
+            cli_metadata_json(json, meta);
+        } else {
+            print_metadata_summary(meta);
+        }
         return 0;
     }
     if (p.positionals.size() != 1)
         throw std::runtime_error("info requires exactly INFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        cli_mesh_summary_json(json, mesh);
+        return 0;
+    }
 
     // Mirror Mesh.__repr__, named regions included (doc/regions.md).
     std::cout << "<meshio++ mesh object>\n";
@@ -1274,12 +1461,43 @@ std::string left(const std::string& rS, int w) {
 }
 
 int cmd_quality(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}, {"output", {"-o"}, true}});
+    auto p = cli_parse(
+        rArgs, {{"input-format", {"-i"}, true}, {"output", {"-o"}, true}, {"json", {}, false}});
     if (p.positionals.size() != 1)
         throw std::runtime_error("quality requires exactly INFILE");
     const std::string& infile = p.positionals[0];
     Mesh mesh = read_mesh_cli(infile, opt_value(p, "input-format"));
     auto report = meshioplusplus::compute_quality(mesh);
+    if (has_flag(p, "json")) {
+        const std::string output = opt_value(p, "output");
+        if (!output.empty())
+            write_mesh_cli(output, meshioplusplus::attach_quality(mesh), "");
+        // compute_quality's Python dict, without the per-cell arrays.
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_cells", report.mNumCells);
+        json.Field("num_inverted", report.mNumInverted);
+        json.Field("num_degenerate", report.mNumDegenerate);
+        json.Key("metrics");
+        json.BeginObject();
+        for (const auto& [name, m] : report.mMetrics) {
+            json.Key(name);
+            json.BeginObject();
+            json.Field("min", m.mMin);
+            json.Field("max", m.mMax);
+            json.Field("mean", m.mMean);
+            json.Field("count", m.mCount);
+            json.Key("histogram");
+            json.BeginArray();
+            for (auto h : m.mHistogram)
+                json.Int(h);
+            json.EndArray();
+            json.EndObject();
+        }
+        json.EndObject();
+        json.EndObject();
+        return 0;
+    }
 
     std::cout << "Mesh quality report for " << infile << "\n";
     std::cout << "  cells: " << report.mNumCells << "   inverted: " << report.mNumInverted
@@ -1405,6 +1623,83 @@ int cmd_normals(const std::vector<std::string>& rArgs) {
 
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
+}
+
+void cli_quality_gate_json(meshioplusplus::cli::JsonOut& rJson,
+                           const meshioplusplus::QualityGateResult& rR) {
+    rJson.BeginObject();
+    rJson.Field("passed", rR.mPassed);
+    rJson.Field("num_cells", rR.mReport.mNumCells);
+    rJson.Field("num_inverted", rR.mReport.mNumInverted);
+    rJson.Field("num_degenerate", rR.mReport.mNumDegenerate);
+    rJson.Key("checks");
+    rJson.BeginArray();
+    for (const meshioplusplus::QualityCheck& c : rR.mChecks) {
+        rJson.BeginObject();
+        rJson.Field("name", c.mName);
+        rJson.Field("metric", c.mMetric);
+        rJson.Field("min", c.mMin);
+        rJson.Field("max", c.mMax);
+        rJson.Field("max_fraction", c.mMaxFraction);
+        rJson.Field("evaluated", c.mEvaluated);
+        rJson.Field("violations", c.mViolations);
+        rJson.Field("fraction", c.mFraction);
+        rJson.Field("worst", c.mWorst);
+        rJson.Field("worst_cell", c.mWorstCell);
+        rJson.Field("passed", c.mPassed);
+        rJson.EndObject();
+    }
+    rJson.EndArray();
+    rJson.EndObject();
+}
+
+int cmd_check(const std::vector<std::string>& rArgs) {
+    // 0 pass, 1 fail, 2 could not check (unreadable file, bad specification):
+    // a CI job must tell "the mesh is bad" from "the check did not run".
+    meshioplusplus::QualityGateResult r;
+    bool json = false;
+    try {
+        auto p = cli_parse(rArgs, {
+                                      {"input-format", {"-i"}, true},
+                                      {"require", {"-r"}, true},
+                                      {"gate", {}, true},
+                                      {"max-inverted", {}, true},
+                                      {"max-degenerate", {}, true},
+                                      {"json", {}, false},
+                                  });
+        if (p.positionals.size() != 1)
+            throw std::runtime_error("check requires exactly INFILE");
+        json = has_flag(p, "json");
+        meshioplusplus::QualityGateOptions options;
+        std::vector<std::string> specs = opt_values(p, "require");
+        if (has_opt(p, "gate")) {
+            auto in = meshioplusplus::detail::make_classic_ifstream(opt_value(p, "gate"));
+            if (!in)
+                throw std::runtime_error("check: cannot open '" + opt_value(p, "gate") + "'");
+            specs.emplace_back(std::istreambuf_iterator<char>(in),
+                               std::istreambuf_iterator<char>());
+        }
+        for (const std::string& spec : specs) {
+            const auto t = meshioplusplus::parse_quality_thresholds(spec);
+            options.mThresholds.insert(options.mThresholds.end(), t.begin(), t.end());
+        }
+        if (has_opt(p, "max-inverted"))
+            options.mMaxInverted = std::stoll(opt_value(p, "max-inverted"));
+        if (has_opt(p, "max-degenerate"))
+            options.mMaxDegenerate = std::stoll(opt_value(p, "max-degenerate"));
+        Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        r = meshioplusplus::check_quality(mesh, options);
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 2;
+    }
+    if (json) {
+        meshioplusplus::cli::JsonOut out(std::cout);
+        cli_quality_gate_json(out, r);
+    } else {
+        std::cout << meshioplusplus::quality_gate_summary(r);
+    }
+    return r.mPassed ? 0 : 1;
 }
 
 int cmd_feature_edges(const std::vector<std::string>& rArgs) {
@@ -3058,23 +3353,31 @@ int cmd_stats(const std::vector<std::string>& rArgs) {
     };
 
     if (has_flag(p, "json")) {
-        std::cout << "{\n";
-        std::cout << "  \"num_points\": " << s.mNumPoints << ",\n";
-        std::cout << "  \"num_cells\": " << s.mNumCells << ",\n";
-        std::cout << "  \"bbox_min\": " << vec3(s.mBBoxMin) << ",\n";
-        std::cout << "  \"bbox_max\": " << vec3(s.mBBoxMax) << ",\n";
-        std::cout << "  \"extent\": " << vec3(s.mExtent) << ",\n";
-        std::cout << "  \"centroid\": " << vec3(s.mCentroid) << ",\n";
-        std::cout << "  \"cell_type_counts\": {";
-        for (std::size_t i = 0; i < s.mCellTypeCounts.size(); ++i)
-            std::cout << (i ? ", " : "") << "\"" << s.mCellTypeCounts[i].first
-                      << "\": " << s.mCellTypeCounts[i].second;
-        std::cout << "},\n";
-        std::cout << "  \"total_area\": " << stats_g6(s.mTotalArea) << ",\n";
-        std::cout << "  \"signed_volume\": " << stats_g6(s.mSignedVolume) << ",\n";
-        std::cout << "  \"unsigned_volume\": " << stats_g6(s.mUnsignedVolume) << ",\n";
-        std::cout << "  \"num_inverted\": " << s.mNumInverted << "\n";
-        std::cout << "}\n";
+        meshioplusplus::cli::JsonOut json(std::cout);
+        auto vec = [&](const char* pKey, const double* pV) {
+            json.Key(pKey);
+            json.BeginArray();
+            for (int k = 0; k < 3; ++k)
+                json.Number(pV[k]);
+            json.EndArray();
+        };
+        json.BeginObject();
+        json.Field("num_points", static_cast<std::int64_t>(s.mNumPoints));
+        json.Field("num_cells", static_cast<std::int64_t>(s.mNumCells));
+        vec("bbox_min", s.mBBoxMin);
+        vec("bbox_max", s.mBBoxMax);
+        vec("extent", s.mExtent);
+        vec("centroid", s.mCentroid);
+        json.Key("cell_type_counts");
+        json.BeginObject();
+        for (const auto& kv : s.mCellTypeCounts)
+            json.Field(kv.first, static_cast<std::int64_t>(kv.second));
+        json.EndObject();
+        json.Field("total_area", s.mTotalArea);
+        json.Field("signed_volume", s.mSignedVolume);
+        json.Field("unsigned_volume", s.mUnsignedVolume);
+        json.Field("num_inverted", static_cast<std::int64_t>(s.mNumInverted));
+        json.EndObject();
         return 0;
     }
 
@@ -3167,28 +3470,43 @@ int cmd_data_info(const std::vector<std::string>& rArgs) {
     meshioplusplus::DataInfoReport r = meshioplusplus::data_info(mesh);
 
     if (has_flag(p, "json")) {
-        std::cout << "[\n";
-        for (std::size_t i = 0; i < r.mArrays.size(); ++i) {
-            const auto& a = r.mArrays[i];
-            std::cout << "  {\n";
-            std::cout << "    \"location\": \"" << meshioplusplus::data_location_name(a.mLocation)
-                      << "\",\n";
-            std::cout << "    \"name\": \"" << a.mName << "\",\n";
-            std::cout << "    \"dtype\": \"" << meshioplusplus::dtype_numpy_str(a.mDtype)
-                      << "\",\n";
-            std::cout << "    \"num_blocks\": " << a.mNumBlocks << ",\n";
-            std::cout << "    \"num_entries\": " << a.mNumEntries << ",\n";
-            std::cout << "    \"num_components\": " << a.mNumComponents << ",\n";
-            std::cout << "    \"num_values\": " << a.mNumValues << ",\n";
-            std::cout << "    \"min\": " << data_g6(a.mMin) << ",\n";
-            std::cout << "    \"max\": " << data_g6(a.mMax) << ",\n";
-            std::cout << "    \"mean\": " << data_g6(a.mMean) << ",\n";
-            std::cout << "    \"num_nan\": " << a.mNumNan << ",\n";
-            std::cout << "    \"num_inf\": " << a.mNumInf << ",\n";
-            std::cout << "    \"num_finite\": " << a.mNumFinite << "\n";
-            std::cout << "  }" << (i + 1 < r.mArrays.size() ? "," : "") << "\n";
+        // The keys of the Python `data_info` report, in its order.
+        meshioplusplus::cli::JsonOut json(std::cout);
+        auto numbers = [&](const char* pKey, const std::vector<double>& rV) {
+            json.Key(pKey);
+            json.BeginArray();
+            for (double v : rV)
+                json.Number(v);
+            json.EndArray();
+        };
+        json.BeginArray();
+        for (const auto& a : r.mArrays) {
+            json.BeginObject();
+            json.Field("location", meshioplusplus::data_location_name(a.mLocation));
+            json.Field("name", a.mName);
+            json.Field("dtype", meshioplusplus::dtype_numpy_str(a.mDtype));
+            json.Key("shape");
+            json.BeginArray();
+            for (auto d : a.mShape)
+                json.Int(static_cast<std::int64_t>(d));
+            json.EndArray();
+            json.Field("num_blocks", static_cast<std::int64_t>(a.mNumBlocks));
+            json.Field("num_entries", static_cast<std::int64_t>(a.mNumEntries));
+            json.Field("num_components", static_cast<std::int64_t>(a.mNumComponents));
+            json.Field("num_values", static_cast<std::int64_t>(a.mNumValues));
+            json.Field("min", a.mMin);
+            json.Field("max", a.mMax);
+            json.Field("mean", a.mMean);
+            numbers("min_per_component", a.mMinPerComponent);
+            numbers("max_per_component", a.mMaxPerComponent);
+            numbers("mean_per_component", a.mMeanPerComponent);
+            json.Field("num_nan", static_cast<std::int64_t>(a.mNumNan));
+            json.Field("num_inf", static_cast<std::int64_t>(a.mNumInf));
+            json.Field("num_finite", static_cast<std::int64_t>(a.mNumFinite));
+            json.Field("inconsistent_blocks", a.mInconsistentBlocks);
+            json.EndObject();
         }
-        std::cout << "]\n";
+        json.EndArray();
         return 0;
     }
 
@@ -3627,43 +3945,44 @@ int cmd_data_integrate(const std::vector<std::string>& rArgs) {
     };
 
     if (has_flag(p, "json")) {
-        std::cout << "[\n";
-        for (std::size_t i = 0; i < r.mArrays.size(); ++i) {
-            const auto& a = r.mArrays[i];
-            auto print_region_json = [](const meshioplusplus::FieldIntegralRegion& reg,
-                                        const char* indent) {
-                std::cout << indent << "{\n";
-                std::cout << indent << "  \"name\": \"" << reg.mName << "\",\n";
-                std::cout << indent << "  \"num_cells\": " << reg.mNumCells << ",\n";
-                std::cout << indent << "  \"num_skipped\": " << reg.mNumSkipped << ",\n";
-                auto print_vec = [&](const char* key, const std::vector<double>& v) {
-                    std::cout << indent << "  \"" << key << "\": [";
-                    for (std::size_t k = 0; k < v.size(); ++k)
-                        std::cout << (k ? ", " : "") << data_g6(v[k]);
-                    std::cout << "],\n";
-                };
-                print_vec("domain_measure_per_component", reg.mDomainMeasurePerComponent);
-                print_vec("total_per_component", reg.mTotalPerComponent);
-                print_vec("mean_per_component", reg.mMeanPerComponent);
-                std::cout << indent << "  \"num_nan_per_component\": [";
-                for (std::size_t k = 0; k < reg.mNumNanPerComponent.size(); ++k)
-                    std::cout << (k ? ", " : "") << reg.mNumNanPerComponent[k];
-                std::cout << "]\n" << indent << "}";
+        meshioplusplus::cli::JsonOut json(std::cout);
+        auto region = [&](const meshioplusplus::FieldIntegralRegion& reg) {
+            auto numbers = [&](const char* pKey, const std::vector<double>& rV) {
+                json.Key(pKey);
+                json.BeginArray();
+                for (double v : rV)
+                    json.Number(v);
+                json.EndArray();
             };
-            std::cout << "  {\n";
-            std::cout << "    \"name\": \"" << a.mName << "\",\n";
-            std::cout << "    \"num_components\": " << a.mNumComponents << ",\n";
-            std::cout << "    \"domain\": ";
-            print_region_json(a.mDomain, "    ");
-            std::cout << ",\n    \"regions\": [\n";
-            for (std::size_t j = 0; j < a.mRegions.size(); ++j) {
-                print_region_json(a.mRegions[j], "      ");
-                std::cout << (j + 1 < a.mRegions.size() ? ",\n" : "\n");
-            }
-            std::cout << "    ]\n";
-            std::cout << "  }" << (i + 1 < r.mArrays.size() ? "," : "") << "\n";
+            json.BeginObject();
+            json.Field("name", reg.mName);
+            json.Field("num_cells", static_cast<std::int64_t>(reg.mNumCells));
+            json.Field("num_skipped", static_cast<std::int64_t>(reg.mNumSkipped));
+            numbers("domain_measure_per_component", reg.mDomainMeasurePerComponent);
+            numbers("total_per_component", reg.mTotalPerComponent);
+            numbers("mean_per_component", reg.mMeanPerComponent);
+            json.Key("num_nan_per_component");
+            json.BeginArray();
+            for (auto v : reg.mNumNanPerComponent)
+                json.Int(static_cast<std::int64_t>(v));
+            json.EndArray();
+            json.EndObject();
+        };
+        json.BeginArray();
+        for (const auto& a : r.mArrays) {
+            json.BeginObject();
+            json.Field("name", a.mName);
+            json.Field("num_components", static_cast<std::int64_t>(a.mNumComponents));
+            json.Key("domain");
+            region(a.mDomain);
+            json.Key("regions");
+            json.BeginArray();
+            for (const auto& reg : a.mRegions)
+                region(reg);
+            json.EndArray();
+            json.EndObject();
         }
-        std::cout << "]\n";
+        json.EndArray();
         return 0;
     }
 
@@ -3769,20 +4088,31 @@ int cmd_pipeline(const std::vector<std::string>& rArgs) {
     const meshioplusplus::PipelineReport report = meshioplusplus::run_sequence_pipeline(pipeline);
 
     if (has_flag(p, "json")) {
-        std::cout << "{\n  \"steps\": [";
-        for (std::size_t i = 0; i < report.mSteps.size(); ++i) {
-            const auto& step = report.mSteps[i];
-            std::cout << (i ? ",\n    " : "\n    ") << "{\"op\": \"" << step.mOp << "\"";
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Key("steps");
+        json.BeginArray();
+        for (const auto& step : report.mSteps) {
+            json.BeginObject();
+            json.Field("op", step.mOp);
             for (const auto& counter : step.mCounters) {
-                std::cout << ", \"" << counter.first << "\": ";
-                pipeline_print_counter(std::cout, counter.second);
+                // A counter is a count unless it has a fractional part.
+                const double v = counter.second;
+                json.Key(counter.first);
+                if (std::isfinite(v) && v == std::floor(v) && std::fabs(v) < 9.0e15)
+                    json.Int(static_cast<std::int64_t>(v));
+                else
+                    json.Number(v);
             }
-            std::cout << "}";
+            json.EndObject();
         }
-        std::cout << (report.mSteps.empty() ? "" : "\n  ") << "],\n  \"warnings\": [";
-        for (std::size_t i = 0; i < report.mWarnings.size(); ++i)
-            std::cout << (i ? ", " : "") << "\"" << report.mWarnings[i] << "\"";
-        std::cout << "]\n}\n";
+        json.EndArray();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const auto& warning : report.mWarnings)
+            json.String(warning);
+        json.EndArray();
+        json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         for (std::size_t i = 0; i < report.mSteps.size(); ++i) {
             const auto& step = report.mSteps[i];
@@ -3916,6 +4246,78 @@ void print_data_diff(const std::string& rSection, const meshioplusplus::DataDiff
     }
 }
 
+// `diff --json`: the Python `diff` report (the pybind dict), with `regions`;
+// the object is left open so the caller can add `equal`.
+void cli_diff_json(meshioplusplus::cli::JsonOut& rJson, const meshioplusplus::DiffReport& rRep) {
+    auto array_diff = [&](const meshioplusplus::ArrayDiff& rAd) {
+        rJson.BeginObject();
+        rJson.Field("name", rAd.mName);
+        rJson.Field("shape_mismatch", rAd.mShapeMismatch);
+        rJson.Field("size_a", static_cast<std::int64_t>(rAd.mSizeA));
+        rJson.Field("size_b", static_cast<std::int64_t>(rAd.mSizeB));
+        rJson.Field("max_abs_error", rAd.mMaxAbsError);
+        rJson.Field("max_rel_error", rAd.mMaxRelError);
+        rJson.Field("worst_index", static_cast<std::int64_t>(rAd.mWorstIndex));
+        rJson.Field("num_exceeding", static_cast<std::int64_t>(rAd.mNumExceeding));
+        rJson.Field("exact", rAd.mExact);
+        rJson.EndObject();
+    };
+    auto data_diff = [&](const char* pKey, const meshioplusplus::DataDiff& rDd) {
+        rJson.Key(pKey);
+        rJson.BeginObject();
+        cli_names_json(rJson, "only_in_a", rDd.mOnlyInA);
+        cli_names_json(rJson, "only_in_b", rDd.mOnlyInB);
+        rJson.Key("shared");
+        rJson.BeginArray();
+        for (const auto& ad : rDd.mShared)
+            array_diff(ad);
+        rJson.EndArray();
+        rJson.EndObject();
+    };
+    rJson.BeginObject();
+    rJson.Field("verdict", meshioplusplus::diff_verdict_name(rRep.mVerdict));
+    rJson.Field("unordered", rRep.mUnordered);
+    rJson.Field("correspondence_failed", rRep.mCorrespondenceFailed);
+    rJson.Field("point_count_mismatch", rRep.mPointCountMismatch);
+    rJson.Field("num_points_a", static_cast<std::int64_t>(rRep.mNumPointsA));
+    rJson.Field("num_points_b", static_cast<std::int64_t>(rRep.mNumPointsB));
+    rJson.Key("points");
+    array_diff(rRep.mPoints);
+    rJson.Field("block_count_mismatch", rRep.mBlockCountMismatch);
+    rJson.Field("num_blocks_a", static_cast<std::int64_t>(rRep.mNumBlocksA));
+    rJson.Field("num_blocks_b", static_cast<std::int64_t>(rRep.mNumBlocksB));
+    rJson.Key("blocks");
+    rJson.BeginArray();
+    for (const auto& bd : rRep.mBlocks) {
+        rJson.BeginObject();
+        rJson.Field("block", static_cast<std::int64_t>(bd.mBlock));
+        rJson.Field("type_a", bd.mTypeA);
+        rJson.Field("type_b", bd.mTypeB);
+        rJson.Field("count_a", static_cast<std::int64_t>(bd.mCountA));
+        rJson.Field("count_b", static_cast<std::int64_t>(bd.mCountB));
+        rJson.Field("type_mismatch", bd.mTypeMismatch);
+        rJson.Field("count_mismatch", bd.mCountMismatch);
+        rJson.Field("conn_mismatch_count", static_cast<std::int64_t>(bd.mConnMismatchCount));
+        rJson.Key("first_mismatches");
+        rJson.BeginArray();
+        for (auto f : bd.mFirstMismatches)
+            rJson.Int(static_cast<std::int64_t>(f));
+        rJson.EndArray();
+        rJson.EndObject();
+    }
+    rJson.EndArray();
+    data_diff("point_data", rRep.mPointData);
+    data_diff("cell_data", rRep.mCellData);
+    data_diff("field_data", rRep.mFieldData);
+    rJson.Key("regions");
+    rJson.BeginObject();
+    cli_names_json(rJson, "only_in_a", rRep.mRegions.mOnlyInA);
+    cli_names_json(rJson, "only_in_b", rRep.mRegions.mOnlyInB);
+    cli_names_json(rJson, "changed", rRep.mRegions.mChanged);
+    rJson.EndObject();
+    cli_names_json(rJson, "messages", rRep.mMessages);
+}
+
 int cmd_diff(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format-a", {}, true},
@@ -3925,6 +4327,7 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
                                   {"unordered", {}, false},
                                   {"exact", {}, false},
                                   {"quiet", {"-q"}, false},
+                                  {"json", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("diff requires exactly two mesh files A and B");
@@ -3938,6 +4341,17 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
         opts.rtol = meshioplusplus::detail::stod_c(opt_value(p, "rtol"));
     opts.unordered = has_flag(p, "unordered");
     auto report = meshioplusplus::diff(a, b, opts);
+    if (has_flag(p, "json")) {
+        const bool equal = report.mVerdict == meshioplusplus::DiffVerdict::Identical ||
+                           (report.mVerdict == meshioplusplus::DiffVerdict::EqualWithinTolerance &&
+                            !has_flag(p, "exact"));
+        meshioplusplus::cli::JsonOut json(std::cout);
+        cli_diff_json(json, report);
+        // cli_diff_json leaves the object open for the CLI's own key.
+        json.Field("equal", equal);
+        json.EndObject();
+        return equal ? 0 : 1;
+    }
 
     if (!has_flag(p, "quiet")) {
         std::cout << "verdict: " << meshioplusplus::diff_verdict_name(report.mVerdict) << "\n";
@@ -4119,6 +4533,8 @@ int main(int argc, char** argv) {
             return cmd_curvature(rest);
         if (cmd == "normals")
             return cmd_normals(rest);
+        if (cmd == "check")
+            return cmd_check(rest);
         if (cmd == "feature-edges")
             return cmd_feature_edges(rest);
         if (cmd == "hausdorff")

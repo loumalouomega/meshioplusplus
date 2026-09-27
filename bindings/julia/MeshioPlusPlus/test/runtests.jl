@@ -1238,6 +1238,13 @@ end
     @test p.master == [5, 6, 7, 8]
     @test p.num_fixed == 0
     @test_throws MeshioError match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 0.5))
+
+    q = check_quality(cube; require="min_angle >= 30")
+    @test q.passed
+    @test q.num_checks == 3
+    @test occursin("PASS", q.summary)
+    @test !check_quality(cube; require="min_angle >= 50").passed
+    @test_throws MeshioError check_quality(cube; require="bogus >= 1")
     close(cube)
 end
 

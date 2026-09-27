@@ -4251,3 +4251,24 @@ TEST(CApi, EditRegionsAndPeriodicPairs) {
     EXPECT_EQ(mio_match_periodic_nodes(m, &in[0], &in[1], &opts), nullptr);
     mio_mesh_free(m);
 }
+
+TEST(CApi, CheckQualityGates) {
+    mio_mesh* m = capi_cube_surface();
+    mio_quality_gate_report report;
+    char summary[512];
+    ASSERT_EQ(mio_check_quality(m, "min_angle >= 30", 0, 0, &report, summary, sizeof(summary)),
+              MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(report.passed, 1);
+    EXPECT_EQ(report.num_checks, 3);
+    EXPECT_EQ(report.num_failed, 0);
+    EXPECT_EQ(report.num_cells, 12);
+    EXPECT_GT(report.summary_length, 0);
+    EXPECT_NE(std::string(summary).find("PASS"), std::string::npos);
+    ASSERT_EQ(mio_check_quality(m, "min_angle >= 50", -1, -1, &report, nullptr, 0), MIO_OK);
+    EXPECT_EQ(report.passed, 0);
+    EXPECT_EQ(report.num_checks, 1);
+    EXPECT_NE(mio_check_quality(m, "bogus >= 1", 0, 0, &report, nullptr, 0), MIO_OK);
+    EXPECT_NE(mio_check_quality(m, nullptr, 0, 0, nullptr, nullptr, 0), MIO_OK);
+    mio_mesh_free(m);
+}

@@ -1286,4 +1286,10 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(p$master, c(5, 6, 7, 8))
   expect_equal(p$num_fixed, 0)
   expect_error(mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 0.5)))
+
+  q <- mio_check_quality(m, "min_angle >= 30")
+  expect_true(q$passed)
+  expect_equal(q$num_checks, 3)
+  expect_false(mio_check_quality(m, "min_angle >= 50")$passed)
+  expect_error(mio_check_quality(m, "bogus >= 1"))
 })

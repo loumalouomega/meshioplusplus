@@ -1828,6 +1828,30 @@ function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
      worst_point_b=collect(rep.worst_point_b))
 end
 
+"""
+    check_quality(m; require="", max_inverted=0, max_degenerate=0)
+        -> (; passed, num_checks, num_failed, num_cells, num_inverted, num_degenerate, summary)
+
+Quality gate: score the cells and test the `require` thresholds (text such as
+`"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"`) plus the inverted and
+degenerate counts (negative disables). `summary` is the text both CLIs print.
+See `doc/mesh_quality.md`.
+"""
+function check_quality(m::Mesh; require::AbstractString="", max_inverted::Integer=0,
+                       max_degenerate::Integer=0)
+    report = Ref{_CQualityGateReport}()
+    buf = zeros(UInt8, 8192)
+    _check(ccall(_sym(:mio_check_quality), Cint,
+                 (Ptr{Cvoid}, Cstring, Int64, Int64, Ptr{_CQualityGateReport}, Ptr{UInt8}, Int64),
+                 _handle(m), String(require), Int64(max_inverted), Int64(max_degenerate),
+                 report, buf, Int64(length(buf))))
+    r = report[]
+    n = min(Int(r.summary_length), length(buf) - 1)
+    (passed=r.passed != 0, num_checks=Int(r.num_checks), num_failed=Int(r.num_failed),
+     num_cells=Int(r.num_cells), num_inverted=Int(r.num_inverted),
+     num_degenerate=Int(r.num_degenerate), summary=String(buf[1:n]))
+end
+
 _quality_tuple(q::_CSurfaceQuality) =
     (boundary_edges=Int(q.boundary_edges), non_manifold_edges=Int(q.non_manifold_edges),
      inconsistent_pairs=Int(q.inconsistent_pairs),

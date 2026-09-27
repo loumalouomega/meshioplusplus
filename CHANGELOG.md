@@ -8,6 +8,19 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.24.0 (2026-09-27)
+
+**Roadmap §5 "Analysis and editing", second part: a quality gate, the `check` verb and uniform `--json`.** ABI 18, pure additions.
+
+- **`check_quality(mesh, require, max_inverted=0, max_degenerate=0)`** ([quality gate](doc/mesh_quality.md#quality-gate)) tests thresholds against every cell's `compute_quality` values — not the histograms, whose bins span each metric's own range — plus the inverted and degenerate counts. Thresholds are one specification text on every surface: `"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"` (clauses separated by `;`, `,` or newlines, `#` comments, `@` an allowed violating fraction). Each check reports its violations, the fraction, and the worst value with its cell; a threshold that applies to no cell passes vacuously with a warning. C++ `operations/quality_gate.hpp` (`check_quality`, `parse_quality_thresholds`, `quality_gate_summary`), Python with a numpy twin pinned to the core, C `mio_check_quality` (report struct plus the summary text into a caller buffer), Fortran, Julia, R, WASM, MCP `check_quality`, and the pipeline step `QualityGate`, which stops a pipeline with the summary as its error.
+- **The `check` verb in both CLIs** — `check part.vtu -r "scaled_jacobian >= 0.2" [--gate FILE] [--max-inverted N] [--max-degenerate N] [--json]` — exits 0 on pass, 1 on failure and 2 when the check could not run, so a CI job can tell "the mesh is bad" from "the gate is broken".
+- **Uniform `--json`** ([JSON output](doc/cli.md#json-output)): `info` (full and `--fast`), `quality`, `diff` and `convert` gain it; every JSON-printing verb of both CLIs goes through one emitter per CLI (`_cli/_json.py`, `src/cpp/cli/json_out.hpp`), so the output is always strict JSON (non-finite numbers are `null` — the Python CLI used to print a bare `NaN`, and the native `stats`/`data info`/`data integrate`/`pipeline` printed `nan` and unescaped names) and the two CLIs print one shape. `tests/python/test_cli_json.py` runs every shared verb through both and compares them. The native `data info --json` gains the fields the Python one had (`shape`, the per-component ranges, `inconsistent_blocks`).
+- **`diff` reports regions everywhere:** the Python report (and so the MCP `diff` tool) gains the `regions` section (`only_in_a`, `only_in_b`, `changed`) the native CLI already folded into its verdict.
+- **Fixed:** the C header declared `mio_extract_surface`, `mio_extract_skin`, `mio_attach_quality`, `mio_quality_counts` and `mio_sniff_format` twice; the duplicate block is gone.
+- Docs: `doc/mesh_quality.md` "Quality gate", `doc/cli.md` "JSON output" and `check`, the MCP, pipeline, C, Fortran, Julia, R and WASM references, `README.md`; the roadmap drops the quality-gate item (and the map its row).
+- ABI: new installed header `operations/quality_gate.hpp`; the C header gains `mio_quality_gate_report` (88 bytes, reserved tail, `static_assert`ed) and `mio_check_quality` and loses a duplicated declaration block. `MESHIOPLUSPLUS_ABI_VERSION` stays 18 ([ABI reviews](doc/abi_reviews.md)).
+- Version bump across the ten files (minor 23 -> 24), the `find_package` pins, `src/viewer/package-lock.json`, and the four `BASELINE_HASHES` (verified against the old hashes with the old version substituted back in).
+
 ## v16.23.0 (2026-09-27)
 
 **Roadmap §5 "Analysis and editing", first half: feature edges, the Hausdorff distance, region set algebra and periodic node pairs.** Four new operations, each on every surface — C++, Python (with a numpy twin pinned to the core), C, Fortran, Julia, R, WebAssembly, both CLIs, MCP, and the settings pipeline where a single-mesh step fits. ABI 18, pure additions.

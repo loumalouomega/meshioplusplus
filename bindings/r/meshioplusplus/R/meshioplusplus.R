@@ -1144,6 +1144,27 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
   )
 }
 
+#' Quality gate
+#'
+#' Scores every cell with the quality metrics and tests `require`
+#' thresholds -- clauses such as `"scaled_jacobian >= 0.2; aspect_ratio <= 5
+#' @ 1%"` -- plus the inverted and degenerate cell counts. See
+#' `doc/mesh_quality.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param require The thresholds as text; `""` checks only the counts.
+#' @param max_inverted,max_degenerate The most such cells allowed; negative
+#'   disables the check.
+#' @return A list of `passed`, `num_checks`, `num_failed`, `num_cells`,
+#'   `num_inverted`, `num_degenerate` and `summary` (the text both CLIs print).
+#' @export
+mio_check_quality <- function(mesh, require = "", max_inverted = 0, max_degenerate = 0) {
+  .Call(
+    R_mio_check_quality, mesh, as.character(require), as.numeric(max_inverted),
+    as.numeric(max_degenerate)
+  )
+}
+
 #' Hausdorff distance between two surfaces
 #'
 #' Samples each surface -- its vertices, plus the centroids of the

@@ -223,6 +223,19 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
+    !> Interop mirror of C `mio_quality_gate_report` (v16.24.0).
+    type, bind(c) :: mio_quality_gate_report_t
+        integer(c_int32_t) :: passed = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_checks = 0
+        integer(c_int64_t) :: num_failed = 0
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_inverted = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: summary_length = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_repair_opts`. Field order/types are ABI; the
     !> defaults mirror `mio_repair_opts_init` (every pass on), which is called
     !> anyway -- an all-zero struct is NOT the default.
@@ -718,6 +731,7 @@ module meshioplusplus
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
         procedure :: match_periodic_nodes => mesh_match_periodic_nodes
+        procedure :: check_quality => mesh_check_quality
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: remesh_volume => mesh_remesh_volume
@@ -1554,6 +1568,18 @@ module meshioplusplus
             import :: c_ptr
             type(c_ptr), value :: p
         end subroutine
+
+        function c_mio_check_quality(h, spec, max_inverted, max_degenerate, report, summary, &
+                                     summary_len) bind(c, name="mio_check_quality") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char, mio_quality_gate_report_t
+            type(c_ptr), value :: h
+            character(kind=c_char), intent(in) :: spec(*)
+            integer(c_int64_t), value :: max_inverted, max_degenerate
+            type(mio_quality_gate_report_t), intent(out) :: report
+            character(kind=c_char), intent(out) :: summary(*)
+            integer(c_int64_t), value :: summary_len
+            integer(c_int) :: r
+        end function
 
         subroutine c_mio_repair_opts_init(opts) bind(c, name="mio_repair_opts_init")
             import :: mio_repair_opts_t
@@ -4308,6 +4334,53 @@ contains
         call c_mio_periodic_pairs_free(pairs)
         call clear_status(stat, errmsg)
     end subroutine
+
+    !> Quality gate: score the cells and test `spec` thresholds
+    !> ("scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"), plus the inverted
+    !> and degenerate counts (`max_inverted`/`max_degenerate`, default 0,
+    !> negative disables). Returns whether every check passed; `summary`
+    !> receives the text both CLIs print. See doc/mesh_quality.md.
+    function mesh_check_quality(self, spec, max_inverted, max_degenerate, num_checks, &
+                                num_failed, summary, stat, errmsg) result(passed)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: spec
+        integer(int64), intent(in), optional :: max_inverted, max_degenerate
+        integer(int64), intent(out), optional :: num_checks, num_failed
+        character(:), allocatable, intent(out), optional :: summary
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical :: passed
+        type(mio_quality_gate_report_t) :: report
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: mi, md
+        integer :: s, i
+
+        passed = .false.
+        mi = 0_c_int64_t
+        md = 0_c_int64_t
+        if (present(max_inverted)) mi = int(max_inverted, c_int64_t)
+        if (present(max_degenerate)) md = int(max_degenerate, c_int64_t)
+        allocate (buf(4096))
+        if (present(spec)) then
+            s = c_mio_check_quality(self%handle, c_str(spec), mi, md, report, buf, 4096_c_int64_t)
+        else
+            s = c_mio_check_quality(self%handle, c_str(''), mi, md, report, buf, 4096_c_int64_t)
+        end if
+        if (s /= 0) then
+            call handle_failure('check_quality', mio_error_message(), stat, errmsg)
+            return
+        end if
+        passed = report%passed /= 0
+        if (present(num_checks)) num_checks = int(report%num_checks, int64)
+        if (present(num_failed)) num_failed = int(report%num_failed, int64)
+        if (present(summary)) then
+            allocate (character(int(min(report%summary_length, 4095_c_int64_t))) :: summary)
+            do i = 1, len(summary)
+                summary(i:i) = buf(i)
+            end do
+        end if
+        call clear_status(stat, errmsg)
+    end function
 
     !> Point and/or cell normals of this surface, optionally splitting
     !> vertices at creases so every point carries exactly one normal.

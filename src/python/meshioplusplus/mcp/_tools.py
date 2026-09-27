@@ -49,6 +49,7 @@ from .. import (
     agglomerate,
     attach_quality,
     cell_data_to_point_data,
+    check_quality,
     clean,
     compute_bandwidth,
     compute_curvature,
@@ -504,6 +505,19 @@ def tool_quality(input_path, file_format=None, output_path=None, output_format=N
         annotated = attach_quality(mesh)
         report["output_path"] = _store(annotated, output_path, output_format)
     return _json_safe(report)
+
+
+def tool_check_quality(
+    input_path, require=None, max_inverted=0, max_degenerate=0, file_format=None
+):
+    """Quality gate: pass/fail thresholds over the per-cell quality metrics and
+    the inverted/degenerate counts; the report names every check."""
+    mesh = _load(input_path, file_format)
+    return _json_safe(
+        check_quality(
+            mesh, require, max_inverted=max_inverted, max_degenerate=max_degenerate
+        )
+    )
 
 
 def tool_data_info(input_path, file_format=None):
@@ -3720,6 +3734,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "periodic",
             {"fn": tool_periodic, "wraps": ("match_periodic_nodes",), "gated": None},
+        ),
+        (
+            "check_quality",
+            {"fn": tool_check_quality, "wraps": ("check_quality",), "gated": None},
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (

@@ -1113,6 +1113,39 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def check_quality(
+        input_path: str,
+        require: Optional[Union[str, List[str]]] = None,
+        max_inverted: int = 0,
+        max_degenerate: int = 0,
+        file_format: Optional[str] = None,
+    ) -> dict:
+        """Quality gate: pass/fail thresholds over every cell's quality metrics
+        -- what a CI job over meshes asserts on.
+
+        require is the threshold text (or a list of texts): clauses separated
+        by ";", "," or newlines, each "METRIC >= VALUE" or "METRIC <= VALUE",
+        optionally "@ FRACTION" -- the fraction of evaluated cells allowed to
+        violate it, a number in [0, 1] or a percentage like "@1%". METRIC is a
+        compute_quality metric (scaled_jacobian, aspect_ratio, skewness,
+        min_angle, max_angle, warpage, min_dihedral, max_dihedral, volume,
+        inverted, degenerate), with or without "quality:". Values are tested
+        per cell, not against the histograms; cells where a metric does not
+        apply are not evaluated. max_inverted / max_degenerate bound those
+        counts (default 0; negative disables). Reports passed, num_cells,
+        num_inverted, num_degenerate and one entry per check: name, metric,
+        min, max, max_fraction, evaluated, violations, fraction, worst,
+        worst_cell and passed."""
+        return _guard(
+            _tools.tool_check_quality,
+            input_path=input_path,
+            require=require,
+            max_inverted=max_inverted,
+            max_degenerate=max_degenerate,
+            file_format=file_format,
+        )
+
+    @server.tool()
     def feature_edges(
         input_path: str,
         output_path: str,

@@ -181,6 +181,7 @@ from ._proximity import (
     proximity_graph,
 )
 from ._quality import attach_quality, compute_quality
+from ._quality_gate import check_quality
 from ._refine import refine
 from ._region_ops import edit_regions
 from ._regions import Region
@@ -322,6 +323,7 @@ __all__ = [
     "match_periodic_nodes",
     "edit_regions",
     "attach_quality",
+    "check_quality",
     "sniff_format",
     "reorder",
     "compute_bandwidth",

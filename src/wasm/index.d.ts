@@ -1961,6 +1961,40 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Quality gate: score every cell and test the `require` thresholds (text
+   * such as `'scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%'`) plus the
+   * inverted and degenerate cell counts (`maxInverted`/`maxDegenerate`,
+   * default 0, negative disables). `summary` is the text both CLIs print. See
+   * doc/mesh_quality.md.
+   * @throws {Error} on a malformed specification or an unknown metric.
+   */
+  checkQuality(
+    mesh: Mesh,
+    require?: string,
+    maxInverted?: number,
+    maxDegenerate?: number,
+  ): {
+    passed: boolean;
+    numCells: number;
+    numInverted: number;
+    numDegenerate: number;
+    checks: Array<{
+      name: string;
+      metric: string;
+      min: number;
+      max: number;
+      maxFraction: number;
+      evaluated: number;
+      violations: number;
+      fraction: number;
+      worst: number;
+      worstCell: number;
+      passed: boolean;
+    }>;
+    summary: string;
+  };
+
+  /**
    * The sharp, open, non-manifold and inconsistently wound edges of a surface
    * (or of a volume mesh's skin) as a mesh of `line` cells over the input's
    * points, with cell data `feature:kind` (1 feature, 2 boundary,

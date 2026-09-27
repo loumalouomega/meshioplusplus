@@ -91,6 +91,7 @@ Formats whose reader follows other files are never cached, because the entry fil
 | `info` | fast file summary via `read_metadata` — counts, cell blocks, data names, regions, time steps |
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |
+| `check_quality` | the quality gate: `require` thresholds (`"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"`) tested per cell plus `max_inverted`/`max_degenerate`; `passed` and one entry per check (violations, fraction, worst value and cell) — see [quality gate](/mesh_quality#quality-gate) |
 | `data_info` | every data array's dtype/shape/ranges/NaN counts |
 | `data_integrate` | cell-measure-weighted total/mean of one or more `cell_data` arrays, whole-mesh and per named Cell region |
 | `regions` | named point/cell/side groups with kind/dim/tag and an entries preview |

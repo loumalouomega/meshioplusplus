@@ -1,5 +1,6 @@
 from .._diff import _format_report, diff
 from .._helpers import read, reader_map
+from ._json import emit_json
 
 
 def add_args(parser):
@@ -47,6 +48,9 @@ def add_args(parser):
         action="store_true",
         help="print nothing; communicate equality only via the exit code",
     )
+    parser.add_argument(
+        "--json", action="store_true", help="emit the report as JSON (plus 'equal')"
+    )
 
 
 def diff_cmd(args):
@@ -61,11 +65,12 @@ def diff_cmd(args):
         unordered=args.unordered,
     )
 
-    if not args.quiet:
-        print(_format_report(report))
-
     verdict = report["verdict"]
     equal = verdict == "identical" or (
         verdict == "equal within tolerance" and not args.exact
     )
+    if args.json:
+        emit_json({**report, "equal": equal})
+    elif not args.quiet:
+        print(_format_report(report))
     return 0 if equal else 1

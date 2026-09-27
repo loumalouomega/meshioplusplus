@@ -1621,6 +1621,9 @@ contains
         integer(int64), allocatable :: s_ids(:), m_ids(:)
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
+        logical :: passed
+        integer(int64) :: nchecks
+        character(:), allocatable :: text
         integer(int64) :: cube_conn(4, 6)
 
         cube_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
@@ -1685,6 +1688,17 @@ contains
         call sq%match_periodic_nodes('bottom', 'top', s_ids, m_ids, &
                                      translate=[0.0_real64, 0.0_real64, 0.5_real64], stat=ierr)
         call check(ierr /= 0, 'an incomplete periodic match fails')
+
+        ! Quality gate: a unit cube of squares passes aspect_ratio <= 1.5.
+        passed = sq%check_quality('aspect_ratio <= 1.5', num_checks=nchecks, summary=text, &
+                                  stat=ierr)
+        call check(ierr == 0 .and. passed, 'check_quality passes a cube')
+        call check(nchecks == 3_int64, 'check_quality reports three checks')
+        call check(index(text, 'PASS') > 0, 'check_quality summary says PASS')
+        passed = sq%check_quality('aspect_ratio <= 0.5', stat=ierr)
+        call check(ierr == 0 .and. .not. passed, 'check_quality fails a tight bound')
+        passed = sq%check_quality('bogus >= 1', stat=ierr)
+        call check(ierr /= 0, 'check_quality rejects an unknown metric')
         call sq%free()
     end subroutine
 

@@ -33,8 +33,6 @@ parser overrides the outer one, so the existing ``args.func(args)`` call
 already reaches the right handler.
 """
 
-import json
-
 from .._data_average import cell_data_to_point_data, point_data_to_cell_data
 from .._data_calc import data_calc
 from .._data_condition import data_condition
@@ -46,6 +44,7 @@ from .._gradient import gradient
 from .._helpers import _writer_map, read, reader_map, write
 from .._hessian import hessian
 from .._tensor_invariants import tensor_invariants
+from ._json import emit_json
 
 _LOCATION_FLAGS = ("point", "cell", "field")
 
@@ -125,7 +124,7 @@ def info_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
     arrays = data_info(mesh)
     if args.json:
-        print(json.dumps(arrays, indent=2))
+        emit_json(arrays)
         return 0
     print("<meshio++ data summary>")
     if not arrays:
@@ -860,7 +859,7 @@ def integrate_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
     report = data_integrate(mesh, arrays=args.arrays)
     if args.json:
-        print(json.dumps(report, indent=2))
+        emit_json(report)
         return 0
     print("<meshio++ field integration>")
     if not report:

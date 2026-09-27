@@ -29,6 +29,7 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--float-format FMT` | `-f` | Float format string for ASCII output (default: `.16e`) |
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
+| `--json` | | Print a JSON summary of what was written (see [JSON output](#json-output)) |
 
 **Transient sequences** — treat a set of files, or the steps inside one file, as one dataset (see [sequences](sequences.md)):
 
@@ -91,6 +92,21 @@ meshioplusplus convert part.vtu part.glb --split-angle 45 --up-axis z
 
 Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
 
+## JSON output
+
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `hausdorff` and `periodic`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the two to it). The shapes are the Python API's own reports:
+
+| Verb | JSON |
+|---|---|
+| `info --fast` | `read_metadata`'s dict: `num_points`, `point_dim`, `num_cells`, `cell_blocks` (`type`, `num_cells`, `nodes_per_cell`, `ragged`), the three `*_data_names`, `format`, `time_values`, `regions`, `provenance`, `provenance_recognised`, `fell_back_to_full_read`, and `bbox_min`/`bbox_max` when the header gives them |
+| `info` | the same counts and names from a full read, plus `consistent` and `num_unused_points` (`null` when inconsistent) |
+| `quality` | `compute_quality`'s dict without the per-cell arrays |
+| `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
+| `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
+| `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
+
+The exit codes are unchanged by `--json`.
+
 ---
 
 ## meshioplusplus info
@@ -104,6 +120,8 @@ meshioplusplus info [options] INFILE
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--input-format FORMAT` | `-i` | Force input format |
+| `--fast` | | Summarize from the file header instead of loading it |
+| `--json` | | Print the summary as JSON (see [JSON output](#json-output)) |
 
 Output includes: number of points, cell blocks and their types/counts, point/cell/**side** sets (see [Named regions](./regions.md)), point/cell data names, field data names. It also warns if cells reference nonexistent points or if there are unused points.
 
@@ -127,12 +145,39 @@ meshioplusplus quality [options] INFILE
 |--------|-------|-------------|
 | `--input-format FORMAT` | `-i` | Force input format |
 | `--output FILE` | `-o` | Also write the metrics into `FILE` as `cell_data` |
+| `--json` | | Print the report as JSON |
 
 **Examples:**
 
 ```sh
 meshioplusplus quality part.vtu
 meshioplusplus quality part.vtu -o part_quality.vtu
+```
+
+---
+
+## meshioplusplus check
+
+The [quality gate](./mesh_quality.md#quality-gate): score every cell and test thresholds on the per-cell values. Exits **0** when every check passes, **1** when one fails, **2** when the check could not run (an unreadable file, a malformed specification).
+
+```
+meshioplusplus check [options] INFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--require SPEC` | `-r` | Thresholds, e.g. `"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"` (repeatable) |
+| `--gate FILE` | | Read thresholds from `FILE`, one clause per line, `#` comments |
+| `--max-inverted N` | | The most inverted cells allowed; negative disables (default `0`) |
+| `--max-degenerate N` | | The most degenerate cells allowed; negative disables (default `0`) |
+| `--json` | | Print every check as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+
+**Example** — a CI step:
+
+```sh
+meshioplusplus check part.vtu -r "scaled_jacobian >= 0.2" -r "aspect_ratio <= 5 @ 1%" \
+    || { echo "mesh failed its quality gate"; exit 1; }
 ```
 
 ---
@@ -202,6 +247,7 @@ meshioplusplus diff [options] INFILE_A INFILE_B
 | `--unordered` | | Match points by spatial proximity (tolerant to a shuffled node order) |
 | `--exact` | | Only a bitwise-identical result passes (tolerated drift exits nonzero) |
 | `--quiet` | `-q` | Print nothing; communicate equality only via the exit code |
+| `--json` | | Print the report as JSON, plus `equal` |
 | `--input-format-a FORMAT` | | Force the format of the first file |
 | `--input-format-b FORMAT` | | Force the format of the second file |
 

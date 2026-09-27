@@ -4326,6 +4326,16 @@ step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
     assert.equal(surf.cells[0].data.length, 6 * 4);
 });
 
+step('checkQuality gates on thresholds', () => {
+    const ok = m.checkQuality(cubeSurface, 'min_angle >= 30');
+    assert.equal(ok.passed, true);
+    assert.equal(ok.checks.length, 3); // the threshold plus the two counts
+    const bad = m.checkQuality(cubeSurface, 'min_angle >= 50');
+    assert.equal(bad.passed, false);
+    assert.ok(bad.summary.includes('FAIL'));
+    assert.throws(() => m.checkQuality(cubeSurface, 'bogus >= 1'));
+});
+
 step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     const fe = m.featureEdges(cubeSurface);
     assert.equal(fe.numFeature, 12);
