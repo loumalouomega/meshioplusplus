@@ -295,7 +295,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
-        {"Agglomerate", {"TargetGroupSize"}},
+        {"Agglomerate",
+         {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -1088,8 +1089,13 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         AgglomerateOptions opts;
         opts.mTargetGroupSize =
             static_cast<std::size_t>(pipe_number(rStep, "TargetGroupSize", 8.0));
+        opts.mMergeCoplanarFaces = pipe_flag(rStep, "MergeCoplanarFaces", false);
+        opts.mCoplanarAngleDeg = pipe_number(rStep, "CoplanarAngle", 1.0);
+        opts.mMinSphericity = pipe_number(rStep, "MinSphericity", 0.0);
         auto result = agglomerate(mesh, opts);
-        pipe_push_step(rReport, rStep);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFacesMerged", static_cast<double>(result.mNumFacesMerged)},
+                        {"NumRejected", static_cast<double>(result.mNumRejected)}});
         return std::move(result.mMesh);
     }
     if (op == "Crop") {
@@ -1596,8 +1602,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(doc, "the settings document",
-                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"});
+    pipe_check_keys(
+        doc, "the settings document",
+        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -1626,6 +1633,49 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
         pipeline.mWorkers = v->get<int>();
         if (pipeline.mWorkers < 0)
             pipe_schema_error("Workers must not be negative (0 means one per core)");
+    }
+
+    if (const pipe_json* r = pipe_get(doc, "Resample")) {
+        parsed.mSequenceKeys = true;
+        if (!r->is_object())
+            pipe_schema_error("Resample must be an object");
+        pipe_check_keys(*r, "Resample",
+                        {"Times", "TimesFrom", "Method", "Extrapolate", "BlendPoints"});
+        SequenceResample rs;
+        if (const pipe_json* t = pipe_get(*r, "Times")) {
+            if (t->is_array()) {
+                for (const pipe_json& v : *t) {
+                    if (!v.is_number())
+                        pipe_schema_error("Resample.Times must be numbers");
+                    rs.mTimes.push_back(v.get<double>());
+                }
+            } else if (t->is_object()) {
+                pipe_check_keys(*t, "Resample.Times", {"Start", "Stop", "Step"});
+                auto num = [&](const char* pKey) {
+                    const pipe_json* v = pipe_get(*t, pKey);
+                    if (!v || !v->is_number())
+                        pipe_schema_error(std::string("Resample.Times.") + pKey +
+                                          " must be a number");
+                    return v->get<double>();
+                };
+                rs.mTimes = resample_times_range(num("Start"), num("Stop"), num("Step"));
+            } else {
+                pipe_schema_error("Resample.Times must be an array or {Start, Stop, Step}");
+            }
+        }
+        rs.mTimesFrom = pipe_get_string(*r, "TimesFrom", "Resample");
+        if (rs.mTimes.empty() == rs.mTimesFrom.empty())
+            pipe_schema_error("Resample needs exactly one of Times and TimesFrom");
+        const std::string method = pipe_get_string(*r, "Method", "Resample");
+        if (!method.empty())
+            rs.mMethod = resample_method_from_name(method);
+        const std::string extrap = pipe_get_string(*r, "Extrapolate", "Resample");
+        if (extrap == "clamp")
+            rs.mExtrapolate = ResampleExtrapolate::Clamp;
+        else if (!extrap.empty() && extrap != "error")
+            pipe_schema_error("Resample.Extrapolate must be \"error\" or \"clamp\"");
+        rs.mBlendPoints = pipe_get_bool(*r, "BlendPoints", "Resample", false);
+        pipeline.mResample = rs;
     }
 
     const pipe_json* input = pipe_get(doc, "Input");

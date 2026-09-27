@@ -384,6 +384,69 @@ def _register_conversion(server: FastMCP) -> None:
             output_format=output_format,
         )
 
+    @server.tool()
+    def resample_sequence(
+        output_path: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        times: Optional[List[float]] = None,
+        times_from_pattern: Optional[str] = None,
+        method: str = "linear",
+        clamp: bool = False,
+        blend_points: bool = False,
+        time_from: str = "auto",
+        input_format: Optional[str] = None,
+    ) -> dict:
+        """Resample a transient sequence onto new times -- align two solvers'
+        timelines. Give exactly one of input_pattern (a glob) or input_paths,
+        and exactly one of times or times_from_pattern (a second sequence whose
+        step times are the targets). method is 'linear' (blend the bracketing
+        steps' float data), 'nearest' or 'previous'; clamp takes the end steps
+        for targets outside the source range instead of failing; blend_points
+        also blends the coordinates. A '{step}'/'{index}' output_path writes
+        one file per target time, a plain path one series file. At most two
+        source meshes are held at once. See doc/sequences.md."""
+        return _guard(
+            _tools.tool_resample_sequence,
+            output_path=output_path,
+            input_pattern=input_pattern,
+            input_paths=input_paths,
+            times=times,
+            times_from_pattern=times_from_pattern,
+            method=method,
+            clamp=clamp,
+            blend_points=blend_points,
+            time_from=time_from,
+            input_format=input_format,
+        )
+
+    @server.tool()
+    def blend_steps(
+        path_a: str,
+        path_b: str,
+        output_path: str,
+        weight: float,
+        blend_points: bool = False,
+        format_a: Optional[str] = None,
+        format_b: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Blend two steps of one topology: every floating-point data array
+        becomes (1 - weight) a + weight b, integer data comes from the nearer
+        step, and points/cells stay a's unless blend_points. The steps must
+        have the same point count and cell blocks. See doc/sequences.md."""
+        return _guard(
+            _tools.tool_blend_steps,
+            path_a=path_a,
+            path_b=path_b,
+            output_path=output_path,
+            weight=weight,
+            blend_points=blend_points,
+            format_a=format_a,
+            format_b=format_b,
+            output_format=output_format,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Mesh operations                                                             #
@@ -1628,12 +1691,19 @@ def _register_operations(server: FastMCP) -> None:
         input_format: Optional[str] = None,
         output_format: Optional[str] = None,
         target_group_size: int = 8,
+        merge_coplanar_faces: bool = False,
+        coplanar_angle: float = 1.0,
+        min_sphericity: float = 0.0,
     ) -> dict:
         """Polyhedrally coarsen: merge groups of cells into single larger
         polyhedral cells via greedy seed-and-grow over the shared-face dual.
         Non-volume blocks pass through unchanged; points are never pruned or
         renumbered (clean with remove_orphans=True is the follow-up for
-        that)."""
+        that). merge_coplanar_faces fuses the coplanar faces two groups (or a
+        group and the boundary) share into one polygon, within coplanar_angle
+        degrees; min_sphericity (0 = off) refuses an absorption that would make
+        a group less round than that. Reports num_faces_merged and
+        num_rejected. See doc/agglomerate.md."""
         return _guard(
             _tools.tool_agglomerate,
             input_path=input_path,
@@ -1641,6 +1711,9 @@ def _register_operations(server: FastMCP) -> None:
             input_format=input_format,
             output_format=output_format,
             target_group_size=target_group_size,
+            merge_coplanar_faces=merge_coplanar_faces,
+            coplanar_angle=coplanar_angle,
+            min_sphericity=min_sphericity,
         )
 
     @server.tool()

@@ -94,7 +94,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `hausdorff` and `periodic`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the two to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the two to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -104,6 +104,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
+| `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
+| `resample` | `method`, `num_steps` and the target `times` |
 
 The exit codes are unchanged by `--json`.
 
@@ -624,6 +626,10 @@ meshioplusplus agglomerate [options] INFILE OUTFILE
 | Option | Description |
 |--------|-------------|
 | `--target-group-size N` | Approximate member cells per output group (default `8`) |
+| `--merge-coplanar-faces` | Fuse the coplanar faces two groups (or a group and the boundary) share into one polygon |
+| `--coplanar-angle DEG` | Largest normal deviation still coplanar (default `1`) |
+| `--min-sphericity S` | Refuse an absorption that would drop a group's sphericity below `S` (default `0`, off) |
+| `--json` | Print `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` as JSON |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 Non-volume blocks pass through unchanged; points are never pruned or renumbered (`clean --remove-orphans` is the follow-up for a minimal point set). Conserves volume exactly. `--target-group-size 1` groups every cell by itself.
@@ -632,6 +638,38 @@ Non-volume blocks pass through unchanged; points are never pruned or renumbered 
 
 ```sh
 meshioplusplus agglomerate fine.vtu coarse.vtu --target-group-size 8
+meshioplusplus agglomerate fine.vtu coarse.vtu --merge-coplanar-faces --min-sphericity 0.7 --json
+```
+
+---
+
+## meshioplusplus resample
+
+Resample a transient sequence onto new times, holding at most two source steps in memory (see [Resampling onto new times](./sequences.md#resampling-onto-new-times)).
+
+```
+meshioplusplus resample [options] INPUT OUTPUT (--times SPEC | --times-from PATTERN)
+```
+
+`INPUT` is a quoted glob (`'out_*.vtu'`) or the first file, with `--input` for each further one. `OUTPUT` is a `{step}`/`{index}` pattern (one file per target time) or a series file of a format that carries time.
+
+| Option | Description |
+|--------|-------------|
+| `--times SPEC` | The target times: `START:STOP:STEP` (`STOP` included) or a comma list `T1,T2,...` |
+| `--times-from PATTERN` | Take the target times from another sequence (a quoted glob), resolved with the same `--time-from` |
+| `--method M` | `linear` (default; blend the bracketing steps), `nearest` or `previous` |
+| `--clamp` | A target outside the source range takes the end step instead of failing |
+| `--blend-points` | Blend the point coordinates too (a moving mesh) |
+| `--time-from SRC` | Where the source times come from: `auto` (default), `file`, `filename` or `index` |
+| `--input FILE` | An extra input file, appended after `INPUT`; repeatable |
+| `--input-format` (`-i`) | Force the input format |
+| `--json` | Print `method`, `num_steps` and the target `times` as JSON |
+
+**Examples:**
+
+```sh
+meshioplusplus resample 'run/out_*.vtu' 'uniform/u_{index}.vtu' --times 0:2:0.1
+meshioplusplus resample 'fine/out_*.vtu' fine_on_coarse.xdmf --times-from 'coarse/out_*.vtu'
 ```
 
 ---

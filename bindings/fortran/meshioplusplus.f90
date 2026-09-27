@@ -84,6 +84,7 @@ module meshioplusplus
     public :: MIO_NAN_IGNORE, MIO_NAN_REPLACE, MIO_NAN_FAIL
     ! Named regions (see doc/regions.md).
     public :: MIO_REGION_POINT, MIO_REGION_CELL, MIO_REGION_SIDE
+    public :: mio_blend_steps
     public :: mio_region_info
     public :: MIO_TINV_MISES, MIO_TINV_PRINCIPAL, MIO_TINV_HYDROSTATIC, MIO_TINV_DEVIATORIC
     public :: MIO_TINV_ALL
@@ -219,6 +220,27 @@ module meshioplusplus
         real(c_double) :: matrix(16) = 0.0_c_double
         real(c_double) :: atol = 1.0e-8_c_double
         integer(c_int32_t) :: require_complete = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_agglomerate_opts` (v16.25.0).
+    type, bind(c) :: mio_agglomerate_opts_t
+        integer(c_int64_t) :: target_group_size = 8
+        integer(c_int32_t) :: merge_coplanar_faces = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        real(c_double) :: coplanar_angle = 1.0_c_double
+        real(c_double) :: min_sphericity = 0.0_c_double
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_resample_opts` (v16.25.0).
+    type, bind(c) :: mio_resample_opts_t
+        type(c_ptr) :: times = c_null_ptr
+        integer(c_int64_t) :: num_times = 0
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: extrapolate = 0
+        integer(c_int32_t) :: blend_points = 0
         integer(c_int32_t) :: reserved_pad = 0
         integer(c_int64_t) :: reserved(6) = 0
     end type
@@ -850,6 +872,7 @@ module meshioplusplus
         procedure :: time_source => sequence_time_source
         procedure :: read_step => sequence_read_step
         procedure :: to_timeseries => sequence_to_timeseries
+        procedure :: resample => sequence_resample
     end type mio_sequence
 
     !> A transient (time-series) XDMF writer: the write half of what the
@@ -1179,6 +1202,16 @@ module meshioplusplus
             import :: c_ptr
             type(c_ptr), value :: seq
         end subroutine
+
+        function c_mio_sequence_resample(seq, out_path, out_format, opts) &
+                bind(c, name="mio_sequence_resample") result(s)
+            import :: c_ptr, c_char, c_int, mio_resample_opts_t
+            type(c_ptr), value :: seq
+            character(kind=c_char), dimension(*), intent(in) :: out_path
+            character(kind=c_char), dimension(*), intent(in) :: out_format
+            type(mio_resample_opts_t), intent(in) :: opts
+            integer(c_int) :: s
+        end function
 
         function c_mio_sequence_to_timeseries(seq, out_path, out_format) &
                 bind(c, name="mio_sequence_to_timeseries") result(s)
@@ -1730,6 +1763,23 @@ module meshioplusplus
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
+
+        function c_mio_agglomerate_ex(h, opts, num_faces_merged, num_rejected) &
+                bind(c, name="mio_agglomerate_ex") result(r)
+            import :: c_ptr, c_int64_t, mio_agglomerate_opts_t
+            type(c_ptr), value :: h
+            type(mio_agglomerate_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: num_faces_merged, num_rejected
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_blend_steps(a, b, w, blend_points) bind(c, name="mio_blend_steps") result(r)
+            import :: c_ptr, c_double, c_int32_t
+            type(c_ptr), value :: a, b
+            real(c_double), value :: w
+            integer(c_int32_t), value :: blend_points
+            type(c_ptr) :: r
+        end function
 
         function c_mio_agglomerate(h, target_group_size) &
                 bind(c, name="mio_agglomerate") result(r)
@@ -4382,6 +4432,28 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> Linear interpolation between two steps of one mesh (v16.25.0): `a` with
+    !> every floating-point data array replaced by (1 - w) a + w b. The steps
+    !> must share a topology; `blend_points` also blends the coordinates. See
+    !> doc/sequences.md.
+    function mio_blend_steps(a, b, w, blend_points, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: a, b
+        real(real64), intent(in) :: w
+        logical, intent(in), optional :: blend_points
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int32_t) :: bp
+        bp = 0
+        if (present(blend_points)) bp = merge(1_c_int32_t, 0_c_int32_t, blend_points)
+        out%handle = c_mio_blend_steps(a%handle, b%handle, real(w, c_double), bp)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('blend_steps', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
     !> Point and/or cell normals of this surface, optionally splitting
     !> vertices at creases so every point carries exactly one normal.
     !>
@@ -4927,17 +4999,28 @@ contains
     !> unchanged; points are never pruned or renumbered (`clean` with
     !> `remove_orphans=.true.` is the follow-up for a minimal point set).
     !> `target_group_size=1` groups every cell by itself.
-    function mesh_agglomerate(self, target_group_size, stat, errmsg) result(out)
+    function mesh_agglomerate(self, target_group_size, stat, errmsg, merge_coplanar_faces, &
+                              coplanar_angle, min_sphericity, num_faces_merged, &
+                              num_rejected) result(out)
         class(mio_mesh), intent(in) :: self
         integer(int64), intent(in), optional :: target_group_size
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: merge_coplanar_faces
+        real(real64), intent(in), optional :: coplanar_angle, min_sphericity
+        integer(int64), intent(out), optional :: num_faces_merged, num_rejected
         type(mio_mesh) :: out
         type(c_ptr) :: res
-        integer(c_int64_t) :: tgs
-        tgs = 8_c_int64_t
-        if (present(target_group_size)) tgs = int(target_group_size, c_int64_t)
-        res = c_mio_agglomerate(self%handle, tgs)
+        type(mio_agglomerate_opts_t) :: opts
+        integer(c_int64_t) :: nmerged, nrejected
+        if (present(target_group_size)) opts%target_group_size = int(target_group_size, c_int64_t)
+        if (present(merge_coplanar_faces)) &
+            opts%merge_coplanar_faces = merge(1_c_int32_t, 0_c_int32_t, merge_coplanar_faces)
+        if (present(coplanar_angle)) opts%coplanar_angle = real(coplanar_angle, c_double)
+        if (present(min_sphericity)) opts%min_sphericity = real(min_sphericity, c_double)
+        res = c_mio_agglomerate_ex(self%handle, opts, nmerged, nrejected)
+        if (present(num_faces_merged)) num_faces_merged = int(nmerged, int64)
+        if (present(num_rejected)) num_rejected = int(nrejected, int64)
         if (.not. c_associated(res)) then
             call handle_failure('agglomerate', mio_error_message(), stat, errmsg)
             return
@@ -7614,6 +7697,47 @@ contains
         call handle_status(c_mio_sequence_to_timeseries(self%handle, c_str(out_path), &
                                                         c_str(fmt)), &
                            'sequence to_timeseries', stat, errmsg)
+    end subroutine
+
+    !> Resample the sequence onto `times` and write it (v16.25.0): one file per
+    !> target time when `out_path` carries '{step}'/'{index}', else a series.
+    !> `method` is 'linear' (default), 'nearest' or 'previous'; `clamp` takes
+    !> the end steps for a time outside the source range (else it fails).
+    subroutine sequence_resample(self, out_path, times, method, clamp, blend_points, &
+                                 out_format, stat, errmsg)
+        class(mio_sequence), intent(in) :: self
+        character(*), intent(in) :: out_path
+        real(real64), intent(in), target :: times(:)
+        character(*), intent(in), optional :: method, out_format
+        logical, intent(in), optional :: clamp, blend_points
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_resample_opts_t) :: opts
+        real(c_double), allocatable, target :: t(:)
+        character(:), allocatable :: fmt
+        fmt = ''
+        if (present(out_format)) fmt = out_format
+        if (present(method)) then
+            select case (trim(method))
+            case ('linear')
+                opts%method = 0
+            case ('nearest')
+                opts%method = 1
+            case ('previous')
+                opts%method = 2
+            case default
+                call handle_failure('sequence resample', "meshio++: resample: unknown method '"// &
+                                    trim(method)//"'", stat, errmsg)
+                return
+            end select
+        end if
+        if (present(clamp)) opts%extrapolate = merge(1_c_int32_t, 0_c_int32_t, clamp)
+        if (present(blend_points)) opts%blend_points = merge(1_c_int32_t, 0_c_int32_t, blend_points)
+        t = real(times, c_double)
+        opts%num_times = int(size(t), c_int64_t)
+        if (size(t) > 0) opts%times = c_loc(t(1))
+        call handle_status(c_mio_sequence_resample(self%handle, c_str(out_path), c_str(fmt), opts), &
+                           'sequence resample', stat, errmsg)
     end subroutine
 
     !> Fan-out: write each step of a multi-step file to `out_pattern`, which

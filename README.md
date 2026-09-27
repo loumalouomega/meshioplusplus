@@ -441,6 +441,10 @@ out = meshioplusplus.subdivide(mesh, record_parent_ids=True)
 
 ```python
 coarse = meshioplusplus.agglomerate(mesh, target_group_size=8)
+# fuse coplanar faces and keep groups compact
+coarse, report = meshioplusplus.agglomerate(
+    mesh, merge_coplanar_faces=True, min_sphericity=0.7, return_report=True
+)
 ```
 
 #### Refinement
@@ -767,9 +771,12 @@ Ordering is **natural-numeric**, so `out_10.vtu` follows `out_9.vtu`; each step'
 time comes from an explicit list, the file, its filename or its index, and which
 one applied is reported. Fan-in and fan-out **stream** — one mesh is alive at a
 time, whatever the step count — and a multi-step input aimed at a single-step
-output is an error naming `{step}`, never a silent write of step 0. Available
-from Python, both CLIs, C, Fortran, Julia and R. See
-[`doc/sequences.md`](doc/sequences.md).
+output is an error naming `{step}`, never a silent write of step 0.
+`meshioplusplus.resample_sequence("out_*.vtu", "u_{index}.vtu", times="0:2:0.1")`
+puts a run on new times (a linear blend, nearest or previous step, or
+another run's own times with `times_from`) holding at most two steps in memory,
+which aligns two solvers before a `diff`. Available from Python, both CLIs, C,
+Fortran, Julia and R. See [`doc/sequences.md`](doc/sequences.md).
 
 </details>
 
@@ -1079,7 +1086,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.24.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.25.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

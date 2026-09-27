@@ -480,6 +480,27 @@ struct _CPeriodicOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_agglomerate_opts` (v16.25.0)."""
+struct _CAgglomerateOpts
+    target_group_size::Int64
+    merge_coplanar_faces::Int32
+    reserved_pad::Int32
+    coplanar_angle::Cdouble
+    min_sphericity::Cdouble
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_resample_opts` (v16.25.0)."""
+struct _CResampleOpts
+    times::Ptr{Cdouble}
+    num_times::Int64
+    method::Int32
+    extrapolate::Int32
+    blend_points::Int32
+    reserved_pad::Int32
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_quality_gate_report` (v16.24.0)."""
 struct _CQualityGateReport
     passed::Int32
@@ -682,6 +703,10 @@ function _check_abi_layout()
               "($(sizeof(_CRegionSelector)) bytes)")
     sizeof(_CPeriodicOpts) == 192 ||
         error("meshio++: mio_periodic_opts layout mismatch ($(sizeof(_CPeriodicOpts)) bytes)")
+    sizeof(_CAgglomerateOpts) == 80 ||
+        error("meshio++: mio_agglomerate_opts layout mismatch ($(sizeof(_CAgglomerateOpts)) bytes)")
+    sizeof(_CResampleOpts) == 80 ||
+        error("meshio++: mio_resample_opts layout mismatch ($(sizeof(_CResampleOpts)) bytes)")
     sizeof(_CQualityGateReport) == 88 ||
         error("meshio++: mio_quality_gate_report layout mismatch " *
               "($(sizeof(_CQualityGateReport)) bytes)")

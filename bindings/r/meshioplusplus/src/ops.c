@@ -983,9 +983,16 @@ SEXP R_mio_subdivide(SEXP mesh, SEXP record_parent_ids) {
 /* agglomerate's cell map is a single FLAT array (unlike subdivide's
  * per-block cell_maps), so it needs no per-block loop at all -- just one
  * mio_r_shift_map() call. */
-SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size) {
-    mio_agglomerate_result *r =
-        mio_agglomerate(mio_r_mesh(mesh), mio_r_int64(target_group_size, "target_group_size"));
+SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size, SEXP merge_coplanar_faces,
+                       SEXP coplanar_angle, SEXP min_sphericity) {
+    mio_agglomerate_opts opts;
+    mio_agglomerate_opts_init(&opts);
+    opts.target_group_size = mio_r_int64(target_group_size, "target_group_size");
+    opts.merge_coplanar_faces = mio_r_bool(merge_coplanar_faces, "merge_coplanar_faces");
+    opts.coplanar_angle = mio_r_double(coplanar_angle, "coplanar_angle");
+    opts.min_sphericity = mio_r_double(min_sphericity, "min_sphericity");
+    int64_t merged = 0, rejected = 0;
+    mio_agglomerate_result *r = mio_agglomerate_ex(mio_r_mesh(mesh), &opts, &merged, &rejected);
     if (r == NULL) mio_r_fail("agglomerate");
     const void *d = NULL;
     mio_dtype dt;
@@ -1003,11 +1010,20 @@ SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size) {
         mio_r_fail("agglomerate take_mesh");
     }
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
-    const char *names[] = {"mesh", "cell_map"};
-    SEXP values[] = {mo, cm};
-    SEXP res = PROTECT(mio_r_named_list(2, names, values));
-    UNPROTECT(3);
+    SEXP nm = PROTECT(Rf_ScalarReal((double)merged));
+    SEXP nr = PROTECT(Rf_ScalarReal((double)rejected));
+    const char *names[] = {"mesh", "cell_map", "num_faces_merged", "num_rejected"};
+    SEXP values[] = {mo, cm, nm, nr};
+    SEXP res = PROTECT(mio_r_named_list(4, names, values));
+    UNPROTECT(5);
     return res;
+}
+
+SEXP R_mio_blend_steps(SEXP a, SEXP b, SEXP w, SEXP blend_points) {
+    mio_mesh *out = mio_blend_steps(mio_r_mesh(a), mio_r_mesh(b), mio_r_double(w, "w"),
+                                    mio_r_bool(blend_points, "blend_points"));
+    if (out == NULL) mio_r_fail("blend_steps");
+    return mio_r_wrap_mesh(out);
 }
 
 SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {

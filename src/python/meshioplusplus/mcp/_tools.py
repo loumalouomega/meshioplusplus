@@ -925,18 +925,8 @@ def _resolve_pattern(pattern):
     return [_resolve(path, must_exist=True) for path in matched]
 
 
-def tool_sequence(
-    input_pattern=None,
-    input_paths=None,
-    output_path=None,
-    mode=None,
-    times=None,
-    time_from="auto",
-    input_format=None,
-    output_format=None,
-):
-    """Run a multi-file / transient sequence: fan-in, fan-out or N->N."""
-    from .. import run_sequence_pipeline, sequence_entries
+def _resolve_sequence_io(input_pattern, input_paths, output_path):
+    """The sandboxed input file list and output path of a sequence tool."""
     from .._sequence import pattern_has_token
 
     if (input_pattern is None) == (input_paths is None):
@@ -961,6 +951,25 @@ def tool_sequence(
         )
     else:
         resolved_out = _resolve(output_path, for_write=True)
+    return resolved_in, resolved_out
+
+
+def tool_sequence(
+    input_pattern=None,
+    input_paths=None,
+    output_path=None,
+    mode=None,
+    times=None,
+    time_from="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Run a multi-file / transient sequence: fan-in, fan-out or N->N."""
+    from .. import run_sequence_pipeline, sequence_entries
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
 
     doc = {
         "Version": 1,
@@ -991,6 +1000,74 @@ def tool_sequence(
     ]
     report["output_path"] = resolved_out
     return _json_safe(report)
+
+
+def tool_resample_sequence(
+    output_path,
+    input_pattern=None,
+    input_paths=None,
+    times=None,
+    times_from_pattern=None,
+    method="linear",
+    clamp=False,
+    blend_points=False,
+    time_from="auto",
+    input_format=None,
+):
+    """Resample a sequence onto new times (linear blend, nearest or previous)."""
+    from .. import resample_sequence
+    from .._sequence import parse_times, sequence_times
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
+    if (times is None) == (times_from_pattern is None):
+        raise ValueError(
+            "meshio++: mcp: give exactly one of times or times_from_pattern"
+        )
+    if times is None:
+        targets = sequence_times(
+            _resolve_pattern(times_from_pattern), time_from=time_from
+        )
+    elif isinstance(times, str):
+        targets = parse_times(times)
+    else:
+        targets = [float(t) for t in times]
+    report = resample_sequence(
+        resolved_in,
+        resolved_out,
+        times=targets,
+        method=method,
+        extrapolate="clamp" if clamp else "error",
+        blend_points=blend_points,
+        file_format=input_format,
+        time_from=time_from,
+    )
+    report["times"] = [float(t) for t in targets]
+    report["output_path"] = resolved_out
+    return _json_safe(report)
+
+
+def tool_blend_steps(
+    path_a,
+    path_b,
+    output_path,
+    weight,
+    blend_points=False,
+    format_a=None,
+    format_b=None,
+    output_format=None,
+):
+    """Blend two steps of one topology: (1 - weight) a + weight b."""
+    from .. import blend_steps
+
+    out = blend_steps(
+        _load(path_a, format_a),
+        _load(path_b, format_b),
+        float(weight),
+        blend_points=blend_points,
+    )
+    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_pipeline(settings_path, input_path=None, output_path=None):
@@ -2092,11 +2169,26 @@ def tool_agglomerate(
     input_format=None,
     output_format=None,
     target_group_size=8,
+    merge_coplanar_faces=False,
+    coplanar_angle=1.0,
+    min_sphericity=0.0,
 ):
     """Polyhedrally coarsen: merge groups of cells into larger polyhedra."""
     mesh = _load(input_path, input_format)
-    out = agglomerate(mesh, target_group_size=target_group_size)
-    return _result(_store(out, output_path, output_format), out)
+    out, report = agglomerate(
+        mesh,
+        target_group_size=target_group_size,
+        merge_coplanar_faces=merge_coplanar_faces,
+        coplanar_angle=coplanar_angle,
+        min_sphericity=min_sphericity,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_faces_merged=report["num_faces_merged"],
+        num_rejected=report["num_rejected"],
+    )
 
 
 def tool_refine(
@@ -3692,6 +3784,18 @@ TOOL_REGISTRY = OrderedDict(
                 ),
                 "gated": None,
             },
+        ),
+        (
+            "resample_sequence",
+            {
+                "fn": tool_resample_sequence,
+                "wraps": ("resample_sequence",),
+                "gated": None,
+            },
+        ),
+        (
+            "blend_steps",
+            {"fn": tool_blend_steps, "wraps": ("blend_steps",), "gated": None},
         ),
         (
             "extract_surface",

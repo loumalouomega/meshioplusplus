@@ -92,12 +92,26 @@
  * shaped this operation understands and is dropped with a warning rather than
  * guessed at.
  *
- * ### What this does not do (yet)
+ * ### Shape gate and coplanar merging (v16.25.0)
  *
- * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
- * the same plane into one larger polygon, rather than leaving the edge
- * between them) and a shape-quality (e.g. sphericity) absorption gate are
- * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §5.
+ * `mMinSphericity > 0` refuses to absorb a candidate cell when the union would
+ * be less round than that: the sphericity `pi^(1/3) (6V)^(2/3) / A` (1 for a
+ * ball, about 0.81 for a cube) of the group plus the candidate, from its exact
+ * volume and external area, both kept incrementally. A refused candidate is
+ * skipped for this group only and may seed or join another, so groups stay
+ * compact instead of growing long arms along the dual. Groups may then end up
+ * smaller than `mTargetGroupSize`.
+ *
+ * `mMergeCoplanarFaces` fuses the faces two groups (or a group and the mesh
+ * boundary) share, where they lie on one plane, into a single polygon -- a
+ * coarsened volume then has one face where a flat wall was tiled by many.
+ * Faces are grouped per pair of sides, so both groups get the identical fused
+ * polygon (reversed) and the mesh stays conforming; within a pair, faces that
+ * share an edge and whose normals lie within `mCoplanarAngleDeg` of the patch's
+ * first face fuse when the patch's outline is one simple loop (no holes, no
+ * pinch). Every polyhedron a fusion touches is checked to still be closed; a
+ * patch whose fusion would break that is left as it was. Volume is conserved
+ * either way.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is
@@ -121,6 +135,15 @@ struct AgglomerateOptions {
     /// must be at least 1. `1` means every cell is its own group (an
     /// identity transform in everything but representation).
     std::size_t mTargetGroupSize = 8;
+    /// Fuse the coplanar faces two groups (or a group and the boundary) share
+    /// into single polygons.
+    bool mMergeCoplanarFaces = false;
+    /// The largest angle, in degrees, between face normals still treated as
+    /// coplanar; in `[0, 90)`.
+    double mCoplanarAngleDeg = 1.0;
+    /// Refuse a candidate whose union with the group would have a lower
+    /// sphericity than this; 0 disables the gate. In `[0, 1]`.
+    double mMinSphericity = 0.0;
 };
 
 /// The result of `agglomerate`: the coarsened mesh plus the cell index map.
@@ -134,6 +157,11 @@ struct AgglomerateResult {
     /// is a function of which group it joined, not which input block it came
     /// from.
     NDArray mCellMap;
+    /// Faces removed by coplanar merging (fused faces minus the polygons
+    /// replacing them, counted once per group side).
+    std::int64_t mNumFacesMerged = 0;
+    /// Absorptions the sphericity gate refused.
+    std::int64_t mNumRejected = 0;
 };
 
 /**

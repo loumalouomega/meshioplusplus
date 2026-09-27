@@ -976,17 +976,36 @@ Unlike [`subdivide`](@ref)'s per-block `cell_maps`, `cell_map` is a single
 output cell's index is a function of which group it joined, not which
 input block it came from. See `doc/agglomerate.md`.
 """
-function agglomerate(m::Mesh; target_group_size::Integer=8)
-    result = _check_ptr(ccall(_sym(:mio_agglomerate), Ptr{Cvoid},
-                              (Ptr{Cvoid}, Int64), _handle(m), Int64(target_group_size)))
+function agglomerate(m::Mesh; target_group_size::Integer=8, merge_coplanar_faces::Bool=false,
+                     coplanar_angle::Real=1.0, min_sphericity::Real=0.0)
+    opts = _CAgglomerateOpts(Int64(target_group_size), Int32(merge_coplanar_faces), Int32(0),
+                             Float64(coplanar_angle), Float64(min_sphericity),
+                             ntuple(_ -> Int64(0), 6))
+    merged, rejected = Ref{Int64}(0), Ref{Int64}(0)
+    result = _check_ptr(ccall(_sym(:mio_agglomerate_ex), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Ref{_CAgglomerateOpts}, Ptr{Int64}, Ptr{Int64}),
+                              _handle(m), Ref(opts), merged, rejected))
     try
         cm = _result_map(result, :mio_agglomerate_result_cell_map)
         out = Mesh(_check_ptr(ccall(_sym(:mio_agglomerate_result_take_mesh), Ptr{Cvoid},
                                     (Ptr{Cvoid},), result)))
-        (mesh=out, cell_map=cm)
+        (mesh=out, cell_map=cm, num_faces_merged=Int(merged[]), num_rejected=Int(rejected[]))
     finally
         ccall(_sym(:mio_agglomerate_result_free), Cvoid, (Ptr{Cvoid},), result)
     end
+end
+
+"""
+    blend_steps(a, b, w; blend_points=false) -> Mesh
+
+`a` with every floating-point data array replaced by `(1 - w) a + w b`; the two
+steps must share a topology. The kernel sequence resampling builds on. See
+`doc/sequences.md`.
+"""
+function blend_steps(a::Mesh, b::Mesh, w::Real; blend_points::Bool=false)
+    Mesh(_check_ptr(ccall(_sym(:mio_blend_steps), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Ptr{Cvoid}, Cdouble, Int32),
+                          _handle(a), _handle(b), Float64(w), Int32(blend_points))))
 end
 
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),

@@ -210,6 +210,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   sequenceEntries: (source: string|string[], options?: object) => object[],
  *   sequenceToTimeseries: (source: string|string[], outPath: string, outFormat?: string, options?: object) => number,
  *   timeseriesToSequence: (inPath: string, outPattern: string, inFormat?: string, outFormat?: string) => string[],
+ *   resampleSequence: (source: string|string[], outPath: string, resample: object, outFormat?: string, options?: object) => number,
+ *   blendSteps: (a: Mesh, b: Mesh, w: number, blendPoints?: boolean) => Mesh,
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
@@ -261,7 +263,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   subdivide: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMaps: Int32Array[]},
- *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMap: Int32Array},
+ *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean, options?: {mergeCoplanarFaces?: boolean, coplanarAngle?: number, minSphericity?: number}) => Mesh | {mesh: Mesh, cellMap: Int32Array, numFacesMerged: number, numRejected: number},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
@@ -465,6 +467,12 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // Streams -- one mesh alive at a time, whatever the step count.
         sequenceToTimeseries: (source, outPath, outFormat = '', options = undefined) =>
             Module.sequenceToTimeseries(source, outPath, outFormat, options),
+        // Resample onto new times: `resample` is {Times | TimesFrom, Method,
+        // Extrapolate, BlendPoints}. At most two meshes alive at a time.
+        resampleSequence: (source, outPath, resample, outFormat = '', options = undefined) =>
+            Module.resampleSequence(source, outPath, resample, outFormat, options),
+        // `a` with its float data blended to (1 - w) a + w b; same topology.
+        blendSteps: (a, b, w, blendPoints = false) => Module.blendSteps(a, b, w, blendPoints),
         // Fan-out: one multi-step file -> one file per step. `outPattern` must
         // contain '{step}' or '{index}'; returns the MEMFS paths written.
         timeseriesToSequence: (inPath, outPattern, inFormat = '', outFormat = '') =>
@@ -853,8 +861,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // `returnMaps` (default false): when true, returns `{mesh, cellMap}`
         // instead of a bare mesh -- a single FLAT array (global cell index ->
         // global cell index), unlike the other ops' per-block `cellMaps`.
-        agglomerate: (mesh, targetGroupSize = 8, returnMaps = false) =>
-            Module.agglomerate(mesh, targetGroupSize, returnMaps),
+        // `options`: {mergeCoplanarFaces, coplanarAngle, minSphericity}.
+        agglomerate: (mesh, targetGroupSize = 8, returnMaps = false, options = undefined) =>
+            Module.agglomerate(mesh, targetGroupSize, returnMaps, options),
         // `returnMaps` (default false): when true, returns
         // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
         refine: (mesh, levels = 1, recordParentIds = false, options = undefined,

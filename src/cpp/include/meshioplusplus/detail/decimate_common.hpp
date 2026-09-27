@@ -107,24 +107,6 @@ MESHIOPLUSPLUS_API std::vector<double> decim_accumulate_quadrics(const DecimCsr&
                                                                  std::size_t n,
                                                                  const std::vector<double>& rQuadK);
 
-/**
- * @brief Pins vertices whose incident face unit normals pairwise differ by
- * more than the feature angle (`CosThreshold = cos(angle)`).
- *
- * Every face participates, not just boundary facets: the creases of a closed
- * surface are interior. O(d^2) in the valence; each iteration writes only its
- * own slot, so this is safe to call under `parallel_for`.
- *
- * @deprecated No operation calls this since v16.23.0: `decimate`,
- * `decimate_volume` and `smooth` share the per-edge crease test behind
- * `feature_edges` instead, which compares only the two faces sharing an edge.
- * Kept, unchanged, for ABI stability; removed at the next ABI bump.
- */
-MESHIOPLUSPLUS_API void decim_mark_features(const DecimCsr& rCsr, std::size_t n,
-                                            const std::vector<double>& rNormals,
-                                            double CosThreshold,
-                                            std::vector<std::uint8_t>& rPinned);
-
 /// x^T Q x for the homogeneous point (x, y, z, 1), `q` the 10-entry
 /// `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]` quadric. The literal parenthesization is
 /// the parity contract with the numpy twins.

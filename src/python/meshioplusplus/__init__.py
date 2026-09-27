@@ -197,7 +197,9 @@ from ._sdf import (
 )
 from ._sequence import (
     TimeSeries,
+    blend_steps,
     read_sequence,
+    resample_sequence,
     run_sequence_pipeline,
     sequence_entries,
     write_sequence,
@@ -371,6 +373,8 @@ __all__ = [
     "write_sequence",
     "sequence_entries",
     "run_sequence_pipeline",
+    "resample_sequence",
+    "blend_steps",
     "TimeSeries",
     "compute_stats",
     "data_manage",

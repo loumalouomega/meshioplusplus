@@ -38,6 +38,22 @@ export interface RegionEdit {
   keepInputs?: boolean;
 }
 
+/** `agglomerate`'s options (see doc/agglomerate.md). */
+export interface AgglomerateOptions {
+  mergeCoplanarFaces?: boolean;
+  coplanarAngle?: number;
+  minSphericity?: number;
+}
+
+/** `resampleSequence`'s options: the settings document's `Resample` object. */
+export interface ResampleOptions {
+  Times?: number[] | { Start: number; Stop: number; Step: number };
+  TimesFrom?: string;
+  Method?: 'linear' | 'nearest' | 'previous';
+  Extrapolate?: 'error' | 'clamp';
+  BlendPoints?: boolean;
+}
+
 /**
  * A `point_data`/`cell_data`/`field_data` array's JS type: it carries its
  * source dtype crossing the WASM boundary instead of always widening to
@@ -1210,6 +1226,34 @@ export interface MeshioPlusPlusModule {
    *
    * @returns the number of steps written.
    */
+  /**
+   * Resample `source` onto new times and write it to `outPath`: one file per
+   * target time when it carries `{step}`/`{index}`, else one series file.
+   * `resample` is the settings document's `Resample` object. At most two
+   * source meshes are alive at once. See doc/sequences.md.
+   *
+   * @returns the number of target times written.
+   */
+  resampleSequence(
+    source: string | string[],
+    outPath: string,
+    resample: ResampleOptions,
+    outFormat?: string,
+    options?: {
+      format?: string;
+      times?: number[];
+      timeFrom?: 'auto' | 'file' | 'filename' | 'index';
+      sort?: boolean;
+    },
+  ): number;
+
+  /**
+   * `a` with every floating-point data array replaced by `(1 - w) a + w b`
+   * (integer data from the nearer step); both steps must share a topology.
+   * `blendPoints` blends the coordinates too.
+   */
+  blendSteps(a: Mesh, b: Mesh, w: number, blendPoints?: boolean): Mesh;
+
   sequenceToTimeseries(
     source: string | string[],
     outPath: string,
@@ -2227,10 +2271,26 @@ export interface MeshioPlusPlusModule {
    *
    * With `returnMaps: true`, returns `{mesh, cellMap}` instead of a bare
    * mesh -- a single FLAT array (global input cell index -> global output
-   * cell index), unlike the other ops' per-block `cellMaps`.
+   * cell index), unlike the other ops' per-block `cellMaps` -- plus
+   * `numFacesMerged` and `numRejected` for the `options` below.
+   *
+   * `options.mergeCoplanarFaces` fuses coplanar shared and boundary faces
+   * (within `coplanarAngle` degrees, default 1) into one polygon;
+   * `options.minSphericity` (0 = off) refuses an absorption that would drop a
+   * group's sphericity below it. See doc/agglomerate.md.
    */
-  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: false): Mesh;
-  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: true): { mesh: Mesh; cellMap: Int32Array };
+  agglomerate(
+    mesh: Mesh,
+    targetGroupSize?: number,
+    returnMaps?: false,
+    options?: AgglomerateOptions,
+  ): Mesh;
+  agglomerate(
+    mesh: Mesh,
+    targetGroupSize: number | undefined,
+    returnMaps: true,
+    options?: AgglomerateOptions,
+  ): { mesh: Mesh; cellMap: Int32Array; numFacesMerged: number; numRejected: number };
 
   /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,

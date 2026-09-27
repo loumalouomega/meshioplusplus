@@ -186,6 +186,8 @@ An explicit `--time-step` / `Input.Options.TimeStep` **is** a deliberate single-
 
 > At most **one** `Mesh` is alive at any point inside a fan-in, a fan-out or a per-step run, and `read_sequence` yields at most one live mesh per iteration.
 
+> **Resampling** is the one exception, and it is bounded: a resampled run holds at most **two** source meshes (the pair bracketing the current target time) plus the blended step being written, whatever the step count. See [Resampling onto new times](#resampling-onto-new-times).
+
 This is a **contract, not an optimization** — the whole feature exists so a 500-step dataset is traversable on a laptop. No implementation may buffer the sequence, including "just for sorting" or "just to compute the time range": expansion returns the *plan* (paths, step indices and times), never meshes.
 
 It is pinned rather than asserted in prose. A gtest measures the peak through the `BufferAllocator` hook and requires it to be **O(1) in the step count** (the real assertion is that the 40-file peak matches the 20-file one, not that either is small); the Python suite uses weak references, so a regression names the retainer rather than merely being slow.
@@ -193,6 +195,58 @@ It is pinned rather than asserted in prose. A gtest measures the peak through th
 The C ABI expresses the same rule: `mio_sequence_read` hands back an **owned** mesh, deliberately unlike `mio_split_result_mesh`'s borrow, because a borrow would force the handle to cache every mesh it produced.
 
 **What does not stream**: `list(read_sequence(...))` is your choice and your memory, and an operation's own internals are unchanged — a single step that does not fit in memory still does not fit.
+
+## Resampling onto new times
+
+Two solvers rarely write on the same timeline, and a surrogate is often trained on a uniform one. Before a pairwise `diff` or a training pair, the steps have to be put on shared times. `resample_sequence` does that in one streaming pass:
+
+```python
+# every 0.1 s from 0 to 2, blending the two bracketing steps
+mp.resample_sequence("run/out_*.vtu", "uniform/u_{index}.vtu", times="0:2:0.1")
+
+# onto another run's own step times -- align two solvers
+mp.resample_sequence("fine/out_*.vtu", "fine_on_coarse.xdmf", times_from="coarse/out_*.vtu")
+```
+
+```sh
+meshioplusplus resample 'run/out_*.vtu' 'uniform/u_{index}.vtu' --times 0:2:0.1
+meshioplusplus resample 'fine/out_*.vtu' fine_on_coarse.xdmf --times-from 'coarse/out_*.vtu' --json
+```
+
+**How a target is made.** The source times are resolved first, exactly as the rest of the engine resolves them ([Time values](#time-values)). A single-step file whose time lives only in its `field_data["meshio:time"]` is read once to find it. `resample_plan` then locates each target in the source range, and each target is made by one of three methods:
+
+| `method` | A target between source steps *i* and *i+1* | Use for |
+|---|---|---|
+| `linear` (default) | every floating-point array is `(1 − w)·a + w·b`, with `w` the target's position in the interval | smooth fields on a fixed mesh |
+| `nearest` | the closer step, copied (a tie takes the earlier step) | categorical or integer-heavy data |
+| `previous` | step *i*, copied (sample and hold) | piecewise-constant inputs such as loads or controls |
+
+A target equal to a source time copies that step exactly, whatever the method. A target outside the source range is an error naming the range, unless `extrapolate="clamp"` (`--clamp`) takes the end step. The source times must increase strictly.
+
+**What is blended.** The blending kernel is `blend_steps(a, b, w, blend_points=False)`, also public. The two steps must share a topology: the same point count, the same cell blocks and the same data array names and shapes. A solver's output series has that; a remeshing run does not, and fails naming the mismatch. Floating-point `point_data`, `cell_data` and `field_data` are blended in double precision and stored back in their own dtype. Integer and boolean arrays (ids, tags, flags) are never interpolated: they come from the nearer step. Points, connectivity and regions come from the earlier step, so a data-only resample leaves the geometry bit-identical. `blend_points=True` (`--blend-points`) blends the coordinates too, for a moving mesh. Each output step carries its target time in `field_data["meshio:time"]`, like every other step the engine writes.
+
+**Where it goes.** A `{step}`/`{index}` output writes one file per target time. A plain path writes one series file, for formats that carry time ([Which formats carry time](#which-formats-carry-time)). `Operations` in a settings document run on each resampled step before it is written.
+
+**Memory.** Targets are made in the order given, and the plan names the one or two source steps each needs. The driver keeps a two-slot cache, so ascending targets read every source step once and evict it when the sweep moves past it. Targets in another order stay correct but may read a step again. At most two source meshes are alive, whatever the step count. Finding the times can cost one extra read: a single-step file whose time lives only inside it is read once for that.
+
+In a settings document the same thing is a top-level `Resample` object:
+
+```jsonc
+{
+  "Version": 1,
+  "Input": { "Pattern": "run/out_*.vtu" },
+  "Resample": {
+    "Times": { "Start": 0, "Stop": 2, "Step": 0.1 },  // or [0, 0.5, ...], or "TimesFrom": "other/out_*.vtu"
+    "Method": "linear",                              // linear | nearest | previous
+    "Extrapolate": "error",                          // error | clamp
+    "BlendPoints": false
+  },
+  "Operations": [ { "Op": "Quality" } ],
+  "Output": { "Path": "uniform/u_{index}.vtu" }
+}
+```
+
+`Times` and `TimesFrom` are mutually exclusive, and exactly one is required. A `{Start, Stop, Step}` range includes `Stop` to within a relative `1e-9` of a step, so `0:1:0.1` ends at 1. `TimesFrom` resolves the other sequence's times with the same `TimeFrom` rule as the input. Resampling is always serial: it is ordered by construction, and `Parallel` would break the two-mesh bound.
 
 ## Holding a series as one value: `TimeSeries`
 
@@ -212,7 +266,7 @@ It closes the one item [`doc/roadmap.md`](roadmap.md) had left open for this fea
 
 ## Sequences in a settings document
 
-The v9.11.0 pipeline schema, plus seven keys. See [the settings pipeline](pipeline.md) for everything else.
+The v9.11.0 pipeline schema, plus eight keys (`Resample` is described in [Resampling onto new times](#resampling-onto-new-times)). See [the settings pipeline](pipeline.md) for everything else.
 
 ```jsonc
 {
@@ -252,15 +306,15 @@ Two deliberate restrictions:
 
 | Surface | Call |
 |---|---|
-| Python CLI | `meshioplusplus convert 'in_*.vtu' out.xdmf`, `… in.xdmf 'out_{step}.vtu'`, `meshioplusplus pipeline settings.json` |
+| Python CLI | `meshioplusplus convert 'in_*.vtu' out.xdmf`, `… in.xdmf 'out_{step}.vtu'`, `meshioplusplus resample 'in_*.vtu' 'out_{index}.vtu' --times 0:1:0.1`, `meshioplusplus pipeline settings.json` |
 | Native CLI | the same words |
-| Python | `read_sequence`, `write_sequence`, `sequence_entries`, `run_sequence_pipeline`, `TimeSeries` (and `run_pipeline`, which routes here) |
-| C | `mio_sequence_open`/`_open_list`/`_count`/`_path`/`_step`/`_time`/`_time_source`/`_read`/`_free`, `mio_sequence_to_timeseries`/`_ex`, `mio_timeseries_to_sequence`, `mio_sequence_pipeline_run_file`/`_json` |
-| Fortran | `type(mio_sequence)` with `%open`/`%count`/`%path`/`%time`/`%read_step`/`%to_timeseries`/`%free`, plus `mio_timeseries_to_sequence` |
-| Julia | `Sequence`, `read_step`, `to_timeseries`, `timeseries_to_sequence`, `run_sequence_file`/`_json` |
-| R | `mio_sequence()`, `mio_sequence_read()`, `mio_sequence_to_timeseries()`, `mio_timeseries_to_sequence()`, … |
-| MCP | the `sequence` tool |
-| WASM | `sequenceEntries`, `openSequence` (stateful, per-step reads), `sequenceToTimeseries`, `timeseriesToSequence`, and `runPipeline` (which routes) — over MEMFS paths |
+| Python | `read_sequence`, `write_sequence`, `sequence_entries`, `run_sequence_pipeline`, `TimeSeries`, `resample_sequence`, `blend_steps` (and `run_pipeline`, which routes here) |
+| C | `mio_sequence_open`/`_open_list`/`_count`/`_path`/`_step`/`_time`/`_time_source`/`_read`/`_free`, `mio_sequence_to_timeseries`/`_ex`, `mio_timeseries_to_sequence`, `mio_sequence_resample` (with `mio_resample_opts`), `mio_blend_steps`, `mio_sequence_pipeline_run_file`/`_json` |
+| Fortran | `type(mio_sequence)` with `%open`/`%count`/`%path`/`%time`/`%read_step`/`%to_timeseries`/`%resample`/`%free`, plus `mio_timeseries_to_sequence` and `mio_blend_steps` |
+| Julia | `Sequence`, `read_step`, `to_timeseries`, `timeseries_to_sequence`, `resample`, `blend_steps`, `run_sequence_file`/`_json` |
+| R | `mio_sequence()`, `mio_sequence_read()`, `mio_sequence_to_timeseries()`, `mio_timeseries_to_sequence()`, `mio_sequence_resample()`, `mio_blend_steps()`, … |
+| MCP | the `sequence`, `resample_sequence` and `blend_steps` tools |
+| WASM | `sequenceEntries`, `openSequence` (stateful, per-step reads), `sequenceToTimeseries`, `timeseriesToSequence`, `resampleSequence`, `blendSteps`, and `runPipeline` (which routes) — over MEMFS paths |
 
 ### WASM
 
@@ -270,6 +324,7 @@ The browser surface has these too, over MEMFS paths — the same filesystem `con
 m.sequenceEntries('/seq/out_*.vtu');                      // the ordered plan
 m.sequenceToTimeseries('/seq/out_*.vtu', '/seq/s.xdmf');  // fan-in
 m.timeseriesToSequence('/seq/s.xdmf', '/seq/b_{step}.vtu');  // fan-out -> paths
+m.resampleSequence('/seq/out_*.vtu', '/seq/r_{index}.vtu', { Times: { Start: 0, Stop: 1, Step: 0.1 } });
 
 // Stateful, lazy per-step reads (mirrors the C API's mio_sequence_* handle):
 const seq = m.openSequence('/seq/out_*.vtu');

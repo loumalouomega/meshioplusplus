@@ -280,6 +280,7 @@ for (i in seq_len(mio_sequence_count(seq))) {
   cat(mio_sequence_time(seq, i), mio_sequence_time_source(seq, i), "\n")
 }
 mio_sequence_to_timeseries(seq, "series.xdmf")            # fan-in
+mio_sequence_resample(seq, "u_{index}.vtu", seq(0, 2, by = 0.1))  # onto new times
 mio_sequence_free(seq)
 
 # ascii=TRUE selects XDMF's "XML" data format (no HDF5 needed) -- the option
@@ -290,6 +291,8 @@ mio_sequence_pipeline_run_file("transient.json")               # per-step chain
 ```
 
 Indices are 1-based, like every other R accessor. The external pointer has its own tag, so a `mio_mesh`, a `mio_xdmf_series` and a `mio_sequence` can never be passed for one another; a released handle is an R error, never a dereference.
+
+`mio_sequence_resample(seq, out_path, times, method = "linear", clamp = FALSE, blend_points = FALSE, out_format = NULL)` resamples onto new times (`"nearest"` and `"previous"` too) holding at most two source meshes, and `mio_blend_steps(a, b, w, blend_points = FALSE)` blends two steps of one topology. `mio_agglomerate()` takes `merge_coplanar_faces`, `coplanar_angle` and `min_sphericity` and reports `num_faces_merged` and `num_rejected` (see [agglomerate](/agglomerate)). See [Resampling onto new times](sequences.md#resampling-onto-new-times).
 
 See [sequences](sequences.md) for the ordering rule, the time-value precedence and the streaming guarantee.
 
