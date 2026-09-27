@@ -393,6 +393,8 @@ struct Mesh {
 
     /** @brief Adds a region, replacing one with the same (kind, name, dim, tag). */
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+    /// Drop region @p i (the `Region(i)` numbering); out of range is a no-op.
+    void RemoveRegion(std::size_t i) { mRegions.Remove(i); }
 
     // --- uniform API: property sets (properties.hpp) -----------------------
     //

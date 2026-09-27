@@ -122,6 +122,9 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
@@ -2024,6 +2027,136 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
         py::arg("boundary") = true, py::arg("non_manifold") = true,
         py::arg("inconsistent") = true, py::arg("region") = "");
+
+    // The (sampled) Hausdorff distance between two surfaces. See
+    // operations/hausdorff.hpp.
+    m.def(
+        "hausdorff_distance",
+        [](py::object pya, py::object pyb, std::int64_t face_samples, const std::string& region_a,
+           const std::string& region_b, double grid_cell_size) {
+            meshioplusplus_py::PyMeshRefs refs_a;
+            meshioplusplus_py::PyMeshRefs refs_b;
+            meshioplusplus::Mesh a = meshioplusplus_py::py_to_mesh(
+                pya, refs_a, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::Mesh b = meshioplusplus_py::py_to_mesh(
+                pyb, refs_b, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::HausdorffOptions options;
+            options.mFaceSamples = face_samples;
+            options.mRegionA = region_a;
+            options.mRegionB = region_b;
+            options.mGridCellSize = grid_cell_size;
+            meshioplusplus::HausdorffResult r;
+            {
+                py::gil_scoped_release release;
+                r = meshioplusplus::hausdorff_distance(a, b, options);
+            }
+            py::dict out;
+            out["distance"] = r.mDistance;
+            out["a_to_b"] = r.mAtoB;
+            out["b_to_a"] = r.mBtoA;
+            out["mean_a_to_b"] = r.mMeanAtoB;
+            out["rms_a_to_b"] = r.mRmsAtoB;
+            out["mean_b_to_a"] = r.mMeanBtoA;
+            out["rms_b_to_a"] = r.mRmsBtoA;
+            out["num_samples_a"] = r.mNumSamplesA;
+            out["num_samples_b"] = r.mNumSamplesB;
+            out["worst_point_a"] = py::make_tuple(r.mWorstPointA[0], r.mWorstPointA[1],
+                                                  r.mWorstPointA[2]);
+            out["worst_point_b"] = py::make_tuple(r.mWorstPointB[0], r.mWorstPointB[1],
+                                                  r.mWorstPointB[2]);
+            return out;
+        },
+        py::arg("a"), py::arg("b"), py::arg("face_samples") = 0, py::arg("region_a") = "",
+        py::arg("region_b") = "", py::arg("grid_cell_size") = 0.0);
+
+    // Region set algebra and bookkeeping. `edits` is a list of dicts
+    // {op, inputs: [{name, kind?, dim?, tag?}], output?, dim?, tag?,
+    // keep_inputs?}. See operations/region_ops.hpp.
+    m.def(
+        "edit_regions",
+        [](py::object pymesh, py::list edits) {
+            auto selector = [](py::handle h) {
+                meshioplusplus::RegionSelector s;
+                if (py::isinstance<py::str>(h)) {
+                    s.mName = h.cast<std::string>();
+                    return s;
+                }
+                py::dict d = py::reinterpret_borrow<py::dict>(h);
+                s.mName = d["name"].cast<std::string>();
+                if (d.contains("kind") && !d["kind"].is_none())
+                    s.mKind = static_cast<std::int32_t>(
+                        meshioplusplus::region_kind_from_name(d["kind"].cast<std::string>()));
+                if (d.contains("dim") && !d["dim"].is_none())
+                    s.mDim = d["dim"].cast<std::int64_t>();
+                if (d.contains("tag") && !d["tag"].is_none())
+                    s.mTag = d["tag"].cast<std::int64_t>();
+                return s;
+            };
+            std::vector<meshioplusplus::RegionEdit> list;
+            for (py::handle h : edits) {
+                py::dict d = py::reinterpret_borrow<py::dict>(h);
+                meshioplusplus::RegionEdit e;
+                e.mOp = meshioplusplus::region_op_from_name(d["op"].cast<std::string>());
+                for (py::handle in : d["inputs"])
+                    e.mInputs.push_back(selector(in));
+                if (d.contains("output") && !d["output"].is_none())
+                    e.mOutputName = d["output"].cast<std::string>();
+                if (d.contains("dim") && !d["dim"].is_none())
+                    e.mOutputDim = d["dim"].cast<std::int64_t>();
+                if (d.contains("tag") && !d["tag"].is_none())
+                    e.mOutputTag = d["tag"].cast<std::int64_t>();
+                if (d.contains("keep_inputs"))
+                    e.mKeepInputs = d["keep_inputs"].cast<bool>();
+                list.push_back(std::move(e));
+            }
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::edit_regions(cpp, list));
+        },
+        py::arg("mesh"), py::arg("edits"));
+
+    // Periodic node pairs between two regions under an affine transform. See
+    // operations/periodic.hpp.
+    m.def(
+        "match_periodic_nodes",
+        [](py::object pymesh, py::dict slave, py::dict master, std::vector<double> matrix,
+           double atol, bool require_complete) {
+            auto selector = [](const py::dict& d) {
+                meshioplusplus::RegionSelector s;
+                s.mName = d["name"].cast<std::string>();
+                if (d.contains("kind") && !d["kind"].is_none())
+                    s.mKind = static_cast<std::int32_t>(
+                        meshioplusplus::region_kind_from_name(d["kind"].cast<std::string>()));
+                if (d.contains("dim") && !d["dim"].is_none())
+                    s.mDim = d["dim"].cast<std::int64_t>();
+                if (d.contains("tag") && !d["tag"].is_none())
+                    s.mTag = d["tag"].cast<std::int64_t>();
+                return s;
+            };
+            if (matrix.size() != 16)
+                throw std::invalid_argument(
+                    "meshio++: match_periodic_nodes: the transform must be 16 numbers (a "
+                    "row-major 4x4 matrix)");
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::PeriodicOptions options;
+            options.mTransform = meshioplusplus::transform_from_matrix(matrix.data());
+            options.mAtol = atol;
+            options.mRequireComplete = require_complete;
+            meshioplusplus::PeriodicPairs r = meshioplusplus::match_periodic_nodes(
+                cpp, selector(slave), selector(master), options);
+            py::dict out;
+            out["slave"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mSlave));
+            out["master"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mMaster));
+            out["unmatched"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mUnmatched));
+            out["num_fixed"] = r.mNumFixed;
+            out["max_residual"] = r.mMaxResidual;
+            return out;
+        },
+        py::arg("mesh"), py::arg("slave"), py::arg("master"), py::arg("matrix"),
+        py::arg("atol") = 1e-8, py::arg("require_complete") = true);
 
     // Surface repair: orientation, holes, bowties. {mesh, point_map, cell_maps,
     // counters, quality_before, quality_after}. See operations/repair.hpp.

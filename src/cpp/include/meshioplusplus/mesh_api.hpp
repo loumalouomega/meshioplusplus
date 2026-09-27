@@ -101,6 +101,9 @@
  *  - `void AddRegion(Region region)` — insert, or replace the region with the
  *    same `(kind, name, dim, tag)` key. Entries are canonicalized (sorted,
  *    de-duplicated) on the way in.
+ *  - `void RemoveRegion(std::size_t i)` (v16.23.0) — drop region `i`; the rest
+ *    keep their order. Renaming or retagging a region is a remove plus an add,
+ *    since the name and tag are part of its key (`operations/region_ops.hpp`).
  *  - `std::size_t NumRegions() const`, and
  *    `const meshioplusplus::Region& Region(std::size_t i) const` — indexed in
  *    `(kind, name, dim, tag)` order, so the sequence is identical on every

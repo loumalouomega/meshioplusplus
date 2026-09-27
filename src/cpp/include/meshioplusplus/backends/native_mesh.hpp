@@ -342,6 +342,8 @@ public:
     static constexpr std::size_t npos = detail::RegionList::npos;
 
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+    /// Drop region @p i (the `Region(i)` numbering); out of range is a no-op.
+    void RemoveRegion(std::size_t i) { mRegions.Remove(i); }
 
     // --- uniform API: property sets (properties.hpp) -----------------------
     //

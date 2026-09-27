@@ -132,6 +132,7 @@ from ._grid_transfer import (
     squeeze_grid,
 )
 from ._guard import GeometryGuard, geometry_descriptors
+from ._hausdorff import hausdorff_distance
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -170,6 +171,7 @@ from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_data
 from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
+from ._periodic import match_periodic_nodes
 from ._pipeline import run_pipeline
 from ._point_budget import PointBudget, select_points, subsample_points
 from ._proximity import (
@@ -180,6 +182,7 @@ from ._proximity import (
 )
 from ._quality import attach_quality, compute_quality
 from ._refine import refine
+from ._region_ops import edit_regions
 from ._regions import Region
 from ._remesh import remesh
 from ._remesh_volume import remesh_volume
@@ -315,6 +318,9 @@ __all__ = [
     "compute_curvature",
     "compute_normals",
     "feature_edges",
+    "hausdorff_distance",
+    "match_periodic_nodes",
+    "edit_regions",
     "attach_quality",
     "sniff_format",
     "reorder",

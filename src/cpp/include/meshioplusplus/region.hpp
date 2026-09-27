@@ -227,6 +227,14 @@ public:
     const std::vector<Region>& All() const { return mRegions; }
     /** @brief Drop every stored region. */
     void Clear() { mRegions.clear(); }
+    /**
+     * @brief Drop region @p i (an index into the sorted order `At` uses); the
+     * rest keep their relative order. Out-of-range indices are ignored.
+     */
+    void Remove(std::size_t i) {
+        if (i < mRegions.size())
+            mRegions.erase(mRegions.begin() + static_cast<std::ptrdiff_t>(i));
+    }
 
     /**
      * @brief Sorted, de-duplicated region names.
