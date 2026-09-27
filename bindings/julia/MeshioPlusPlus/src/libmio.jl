@@ -415,6 +415,71 @@ struct _CNormalsOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_feature_edges_opts` (v16.23.0). ABI; build through
+[`feature_edges`](@ref): every category defaults ON and the angle to 30."""
+struct _CFeatureEdgesOpts
+    region::Cstring
+    feature_angle::Cdouble
+    feature::Int32
+    boundary::Int32
+    non_manifold::Int32
+    inconsistent::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_feature_edges_report`."""
+struct _CFeatureEdgesReport
+    num_feature::Int64
+    num_boundary::Int64
+    num_non_manifold::Int64
+    num_inconsistent::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_hausdorff_opts` (v16.23.0)."""
+struct _CHausdorffOpts
+    region_a::Cstring
+    region_b::Cstring
+    face_samples::Int64
+    grid_cell_size::Cdouble
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_hausdorff_report`."""
+struct _CHausdorffReport
+    distance::Cdouble
+    a_to_b::Cdouble
+    b_to_a::Cdouble
+    mean_a_to_b::Cdouble
+    rms_a_to_b::Cdouble
+    mean_b_to_a::Cdouble
+    rms_b_to_a::Cdouble
+    num_samples_a::Int64
+    num_samples_b::Int64
+    worst_point_a::NTuple{3,Cdouble}
+    worst_point_b::NTuple{3,Cdouble}
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_region_selector` (v16.23.0); `-2` is `MIO_REGION_ANY`."""
+struct _CRegionSelector
+    name::Cstring
+    kind::Int32
+    reserved_pad::Int32
+    dim::Int64
+    tag::Int64
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_periodic_opts` (v16.23.0): a row-major 4x4 matrix."""
+struct _CPeriodicOpts
+    matrix::NTuple{16,Cdouble}
+    atol::Cdouble
+    require_complete::Int32
+    reserved_pad::Int32
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_normals_report`."""
 struct _CNormalsReport
     quality::_CSurfaceQuality
@@ -588,6 +653,22 @@ function _check_abi_layout()
         error("meshio++: mio_normals_opts layout mismatch ($(sizeof(_CNormalsOpts)) bytes)")
     sizeof(_CNormalsReport) == 144 ||
         error("meshio++: mio_normals_report layout mismatch ($(sizeof(_CNormalsReport)) bytes)")
+    sizeof(_CFeatureEdgesOpts) == 80 ||
+        error("meshio++: mio_feature_edges_opts layout mismatch " *
+              "($(sizeof(_CFeatureEdgesOpts)) bytes)")
+    sizeof(_CFeatureEdgesReport) == 64 ||
+        error("meshio++: mio_feature_edges_report layout mismatch " *
+              "($(sizeof(_CFeatureEdgesReport)) bytes)")
+    sizeof(_CHausdorffOpts) == 80 ||
+        error("meshio++: mio_hausdorff_opts layout mismatch ($(sizeof(_CHausdorffOpts)) bytes)")
+    sizeof(_CHausdorffReport) == 152 ||
+        error("meshio++: mio_hausdorff_report layout mismatch " *
+              "($(sizeof(_CHausdorffReport)) bytes)")
+    sizeof(_CRegionSelector) == 48 ||
+        error("meshio++: mio_region_selector layout mismatch " *
+              "($(sizeof(_CRegionSelector)) bytes)")
+    sizeof(_CPeriodicOpts) == 192 ||
+        error("meshio++: mio_periodic_opts layout mismatch ($(sizeof(_CPeriodicOpts)) bytes)")
     sizeof(_CRepairOpts) == 80 ||
         error("meshio++: mio_repair_opts layout mismatch ($(sizeof(_CRepairOpts)) bytes)")
     sizeof(_CRepairReport) == 272 ||

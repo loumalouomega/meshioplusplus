@@ -157,6 +157,72 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_feature_edges_opts`. Field order/types are ABI;
+    !> the defaults mirror `mio_feature_edges_opts_init` (called anyway).
+    type, bind(c) :: mio_feature_edges_opts_t
+        type(c_ptr) :: region = c_null_ptr
+        real(c_double) :: feature_angle = 30.0_c_double
+        integer(c_int32_t) :: feature = 1
+        integer(c_int32_t) :: boundary = 1
+        integer(c_int32_t) :: non_manifold = 1
+        integer(c_int32_t) :: inconsistent = 1
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_feature_edges_report`.
+    type, bind(c) :: mio_feature_edges_report_t
+        integer(c_int64_t) :: num_feature = 0
+        integer(c_int64_t) :: num_boundary = 0
+        integer(c_int64_t) :: num_non_manifold = 0
+        integer(c_int64_t) :: num_inconsistent = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_hausdorff_opts`.
+    type, bind(c) :: mio_hausdorff_opts_t
+        type(c_ptr) :: region_a = c_null_ptr
+        type(c_ptr) :: region_b = c_null_ptr
+        integer(c_int64_t) :: face_samples = 0
+        real(c_double) :: grid_cell_size = 0.0_c_double
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_hausdorff_report`.
+    type, bind(c) :: mio_hausdorff_report_t
+        real(c_double) :: distance = 0.0_c_double
+        real(c_double) :: a_to_b = 0.0_c_double
+        real(c_double) :: b_to_a = 0.0_c_double
+        real(c_double) :: mean_a_to_b = 0.0_c_double
+        real(c_double) :: rms_a_to_b = 0.0_c_double
+        real(c_double) :: mean_b_to_a = 0.0_c_double
+        real(c_double) :: rms_b_to_a = 0.0_c_double
+        integer(c_int64_t) :: num_samples_a = 0
+        integer(c_int64_t) :: num_samples_b = 0
+        real(c_double) :: worst_point_a(3) = 0.0_c_double
+        real(c_double) :: worst_point_b(3) = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_region_selector` (`MIO_REGION_ANY` = -2).
+    type, bind(c) :: mio_region_selector_t
+        type(c_ptr) :: name = c_null_ptr
+        integer(c_int32_t) :: kind = -1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: dim = -2
+        integer(c_int64_t) :: tag = -2
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_periodic_opts`; `mio_periodic_opts_init` sets
+    !> the identity matrix, atol 1e-8 and require_complete.
+    type, bind(c) :: mio_periodic_opts_t
+        real(c_double) :: matrix(16) = 0.0_c_double
+        real(c_double) :: atol = 1.0e-8_c_double
+        integer(c_int32_t) :: require_complete = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
     !> Interop mirror of C `mio_repair_opts`. Field order/types are ABI; the
     !> defaults mirror `mio_repair_opts_init` (every pass on), which is called
     !> anyway -- an all-zero struct is NOT the default.
@@ -647,6 +713,11 @@ module meshioplusplus
         procedure :: remesh => mesh_remesh
         procedure :: curvature => mesh_curvature
         procedure :: normals => mesh_normals
+        procedure :: feature_edges => mesh_feature_edges
+        procedure :: hausdorff_distance => mesh_hausdorff_distance
+        procedure :: edit_regions => mesh_edit_regions
+        procedure :: remove_region => mesh_remove_region
+        procedure :: match_periodic_nodes => mesh_match_periodic_nodes
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: remesh_volume => mesh_remesh_volume
@@ -1385,6 +1456,104 @@ module meshioplusplus
             type(mio_normals_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
+
+        subroutine c_mio_feature_edges_opts_init(opts) &
+                bind(c, name="mio_feature_edges_opts_init")
+            import :: mio_feature_edges_opts_t
+            type(mio_feature_edges_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_feature_edges(h, opts, report) &
+                bind(c, name="mio_feature_edges") result(r)
+            import :: c_ptr, mio_feature_edges_opts_t, mio_feature_edges_report_t
+            type(c_ptr), value :: h
+            type(mio_feature_edges_opts_t), intent(in) :: opts
+            type(mio_feature_edges_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_hausdorff_distance(a, b, opts, report) &
+                bind(c, name="mio_hausdorff_distance") result(r)
+            import :: c_ptr, c_int, mio_hausdorff_opts_t, mio_hausdorff_report_t
+            type(c_ptr), value :: a, b
+            type(mio_hausdorff_opts_t), intent(in) :: opts
+            type(mio_hausdorff_report_t), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_edit_regions(h, op, inputs, num_inputs, output, dim, tag, &
+                                    keep_inputs) bind(c, name="mio_edit_regions") result(r)
+            import :: c_ptr, c_int32_t, c_int64_t, mio_region_selector_t
+            type(c_ptr), value :: h
+            integer(c_int32_t), value :: op
+            type(mio_region_selector_t), intent(in) :: inputs(*)
+            integer(c_int64_t), value :: num_inputs
+            type(c_ptr), value :: output
+            integer(c_int64_t), value :: dim, tag
+            integer(c_int32_t), value :: keep_inputs
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_mesh_remove_region(h, index) &
+                bind(c, name="mio_mesh_remove_region") result(r)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index
+            integer(c_int) :: r
+        end function
+
+        subroutine c_mio_periodic_opts_init(opts) bind(c, name="mio_periodic_opts_init")
+            import :: mio_periodic_opts_t
+            type(mio_periodic_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_match_periodic_nodes(h, slave, master, opts) &
+                bind(c, name="mio_match_periodic_nodes") result(r)
+            import :: c_ptr, mio_region_selector_t, mio_periodic_opts_t
+            type(c_ptr), value :: h
+            type(mio_region_selector_t), intent(in) :: slave, master
+            type(mio_periodic_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_periodic_pairs_info(p, num_pairs, num_unmatched, num_fixed, &
+                                           max_residual) &
+                bind(c, name="mio_periodic_pairs_info") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: num_pairs, num_unmatched, num_fixed
+            real(c_double), intent(out) :: max_residual
+            integer(c_int) :: r
+        end function
+
+        function c_mio_periodic_pairs_slave(p, count) &
+                bind(c, name="mio_periodic_pairs_slave") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_periodic_pairs_master(p, count) &
+                bind(c, name="mio_periodic_pairs_master") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_periodic_pairs_unmatched(p, count) &
+                bind(c, name="mio_periodic_pairs_unmatched") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_periodic_pairs_free(p) bind(c, name="mio_periodic_pairs_free")
+            import :: c_ptr
+            type(c_ptr), value :: p
+        end subroutine
 
         subroutine c_mio_repair_opts_init(opts) bind(c, name="mio_repair_opts_init")
             import :: mio_repair_opts_t
@@ -3867,6 +4036,278 @@ contains
         if (present(watertight)) watertight = (report%quality%watertight /= 0)
         call clear_status(stat, errmsg)
     end function
+
+    !> The sharp, open, non-manifold and inconsistently wound edges of this
+    !> surface (or of a volume mesh's skin), as a mesh of `line` cells over the
+    !> input's points, with cell data `feature:kind` (1 feature, 2 boundary,
+    !> 3 non-manifold, 4 inconsistent) and `feature:angle` (degrees). Each
+    !> category is reported unless its flag is `.false.`; `feature_angle`
+    !> defaults to 30. See doc/feature_edges.md.
+    function mesh_feature_edges(self, feature_angle, feature, boundary, non_manifold, &
+                                inconsistent, region, num_feature, num_boundary, &
+                                num_non_manifold, num_inconsistent, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: feature_angle
+        logical, intent(in), optional :: feature, boundary, non_manifold, inconsistent
+        character(*), intent(in), optional :: region
+        integer(int64), intent(out), optional :: num_feature, num_boundary
+        integer(int64), intent(out), optional :: num_non_manifold, num_inconsistent
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_feature_edges_opts_t) :: opts
+        type(mio_feature_edges_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf
+
+        call c_mio_feature_edges_opts_init(opts)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(feature)) opts%feature = merge(1_c_int32_t, 0_c_int32_t, feature)
+        if (present(boundary)) opts%boundary = merge(1_c_int32_t, 0_c_int32_t, boundary)
+        if (present(non_manifold)) &
+            opts%non_manifold = merge(1_c_int32_t, 0_c_int32_t, non_manifold)
+        if (present(inconsistent)) &
+            opts%inconsistent = merge(1_c_int32_t, 0_c_int32_t, inconsistent)
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            opts%region = c_loc(region_buf(1:1))
+        end if
+        res = c_mio_feature_edges(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('feature_edges', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_feature)) num_feature = int(report%num_feature, int64)
+        if (present(num_boundary)) num_boundary = int(report%num_boundary, int64)
+        if (present(num_non_manifold)) num_non_manifold = int(report%num_non_manifold, int64)
+        if (present(num_inconsistent)) num_inconsistent = int(report%num_inconsistent, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The (sampled) Hausdorff distance between this surface and `other`; a
+    !> volume mesh contributes its skin. `face_samples = s > 0` also samples
+    !> the centroids of the s*s sub-triangles of every triangle (vertices only
+    !> is a lower bound). See doc/hausdorff.md.
+    function mesh_hausdorff_distance(self, other, face_samples, region_a, region_b, &
+                                     a_to_b, b_to_a, mean_a_to_b, mean_b_to_a, &
+                                     rms_a_to_b, rms_b_to_a, stat, errmsg) result(d)
+        class(mio_mesh), intent(in) :: self
+        type(mio_mesh), intent(in) :: other
+        integer(int64), intent(in), optional :: face_samples
+        character(*), intent(in), optional :: region_a, region_b
+        real(real64), intent(out), optional :: a_to_b, b_to_a, mean_a_to_b, mean_b_to_a
+        real(real64), intent(out), optional :: rms_a_to_b, rms_b_to_a
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64) :: d
+        type(mio_hausdorff_opts_t) :: opts
+        type(mio_hausdorff_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_a, buf_b
+        integer(c_int) :: s
+
+        d = -1.0_real64
+        if (present(face_samples)) opts%face_samples = int(face_samples, c_int64_t)
+        if (present(region_a)) then
+            buf_a = trim(region_a)//c_null_char
+            opts%region_a = c_loc(buf_a(1:1))
+        end if
+        if (present(region_b)) then
+            buf_b = trim(region_b)//c_null_char
+            opts%region_b = c_loc(buf_b(1:1))
+        end if
+        s = c_mio_hausdorff_distance(self%handle, other%handle, opts, report)
+        if (s /= 0_c_int) then
+            call handle_failure('hausdorff_distance', mio_error_message(), stat, errmsg)
+            return
+        end if
+        d = real(report%distance, real64)
+        if (present(a_to_b)) a_to_b = real(report%a_to_b, real64)
+        if (present(b_to_a)) b_to_a = real(report%b_to_a, real64)
+        if (present(mean_a_to_b)) mean_a_to_b = real(report%mean_a_to_b, real64)
+        if (present(mean_b_to_a)) mean_b_to_a = real(report%mean_b_to_a, real64)
+        if (present(rms_a_to_b)) rms_a_to_b = real(report%rms_a_to_b, real64)
+        if (present(rms_b_to_a)) rms_b_to_a = real(report%rms_b_to_a, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The C value of a region kind name ('point', 'cell', 'side'), or -1 for
+    !> any other string.
+    pure function region_kind_code(kind) result(k)
+        character(*), intent(in) :: kind
+        integer(c_int32_t) :: k
+        select case (trim(kind))
+        case ('point')
+            k = 0
+        case ('cell')
+            k = 1
+        case ('side')
+            k = 2
+        case default
+            k = -1
+        end select
+    end function
+
+    !> Apply one region edit to a copy of this mesh: `op` is 'union',
+    !> 'intersection', 'difference' (two or more `inputs`, one kind, result
+    !> named `output`), 'rename' (one input, to `output`), 'retag' (one input,
+    !> new `tag` and/or `dim`) or 'delete'. `kind` pins the inputs' kind
+    !> ('point', 'cell', 'side'). Points, cells and data are untouched. See
+    !> doc/regions.md.
+    function mesh_edit_regions(self, op, inputs, output, kind, dim, tag, keep_inputs, &
+                               stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: op
+        character(*), intent(in) :: inputs(:)
+        character(*), intent(in), optional :: output, kind
+        integer, intent(in), optional :: dim
+        integer(int64), intent(in), optional :: tag
+        logical, intent(in), optional :: keep_inputs
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr, res, out_ptr
+        integer(c_int64_t) :: n, c_dim, c_tag
+        type(mio_region_selector_t), allocatable :: sel(:)
+        character(kind=c_char, len=STRBUF_LEN), target :: out_buf
+        integer(c_int32_t) :: c_op, keep
+        integer :: i
+
+        select case (trim(op))
+        case ('union')
+            c_op = 0
+        case ('intersection', 'intersect')
+            c_op = 1
+        case ('difference')
+            c_op = 2
+        case ('rename')
+            c_op = 3
+        case ('retag')
+            c_op = 4
+        case ('delete')
+            c_op = 5
+        case default
+            call handle_failure('edit_regions', "meshio++: edit_regions: unknown operation '"// &
+                                trim(op)//"'", stat, errmsg)
+            return
+        end select
+        call c_str_array(inputs, storage, cptrs, arr, n)
+        allocate (sel(max(size(inputs), 1)))
+        do i = 1, size(inputs)
+            sel(i)%name = cptrs(i)
+            if (present(kind)) sel(i)%kind = region_kind_code(kind)
+        end do
+        out_ptr = c_null_ptr
+        if (present(output)) then
+            out_buf = trim(output)//c_null_char
+            out_ptr = c_loc(out_buf(1:1))
+        end if
+        c_dim = -2_c_int64_t
+        if (present(dim)) c_dim = int(dim, c_int64_t)
+        c_tag = -2_c_int64_t
+        if (present(tag)) c_tag = int(tag, c_int64_t)
+        keep = 1
+        if (present(keep_inputs)) keep = merge(1_c_int32_t, 0_c_int32_t, keep_inputs)
+        res = c_mio_edit_regions(self%handle, c_op, sel, n, out_ptr, c_dim, c_tag, keep)
+        if (.not. c_associated(res)) then
+            call handle_failure('edit_regions', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove the `index`-th region (1-based, `regions()` order).
+    subroutine mesh_remove_region(self, index, stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (c_mio_mesh_remove_region(self%handle, int(index - 1, c_int64_t)) /= 0_c_int) then
+            call handle_failure('remove_region', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> The master node each node of region `slave` maps onto, under the affine
+    !> transform `translate` (3) or `matrix` (16, row-major 4x4), within `atol`.
+    !> `slave_ids`/`master_ids` receive the pairs (1-based, ascending in the
+    !> slave id). With `require_complete = .false.` unmatched slave nodes are
+    !> returned in `unmatched` instead of failing. See doc/periodic.md.
+    subroutine mesh_match_periodic_nodes(self, slave, master, slave_ids, master_ids, &
+                                         translate, matrix, atol, require_complete, &
+                                         unmatched, num_fixed, max_residual, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: slave, master
+        integer(int64), allocatable, intent(out) :: slave_ids(:), master_ids(:)
+        real(real64), intent(in), optional :: translate(3), matrix(16)
+        real(real64), intent(in), optional :: atol
+        logical, intent(in), optional :: require_complete
+        integer(int64), allocatable, intent(out), optional :: unmatched(:)
+        integer(int64), intent(out), optional :: num_fixed
+        real(real64), intent(out), optional :: max_residual
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_periodic_opts_t) :: opts
+        type(mio_region_selector_t) :: s_sel, m_sel
+        character(kind=c_char, len=STRBUF_LEN), target :: s_buf, m_buf
+        type(c_ptr) :: pairs, p
+        integer(c_int64_t) :: np, nu, nf, cnt
+        real(c_double) :: res
+        integer(c_int64_t), pointer :: ids(:)
+
+        call c_mio_periodic_opts_init(opts)
+        if (present(matrix)) then
+            opts%matrix = real(matrix, c_double)
+        else if (present(translate)) then
+            opts%matrix(4) = real(translate(1), c_double)
+            opts%matrix(8) = real(translate(2), c_double)
+            opts%matrix(12) = real(translate(3), c_double)
+        end if
+        if (present(atol)) opts%atol = real(atol, c_double)
+        if (present(require_complete)) &
+            opts%require_complete = merge(1_c_int32_t, 0_c_int32_t, require_complete)
+        s_buf = trim(slave)//c_null_char
+        m_buf = trim(master)//c_null_char
+        s_sel%name = c_loc(s_buf(1:1))
+        m_sel%name = c_loc(m_buf(1:1))
+        pairs = c_mio_match_periodic_nodes(self%handle, s_sel, m_sel, opts)
+        if (.not. c_associated(pairs)) then
+            allocate (slave_ids(0), master_ids(0))
+            call handle_failure('match_periodic_nodes', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (c_mio_periodic_pairs_info(pairs, np, nu, nf, res) /= 0_c_int) then
+            allocate (slave_ids(0), master_ids(0))
+            call c_mio_periodic_pairs_free(pairs)
+            call handle_failure('match_periodic_nodes', mio_error_message(), stat, errmsg)
+            return
+        end if
+        allocate (slave_ids(np), master_ids(np))
+        if (np > 0) then
+            p = c_mio_periodic_pairs_slave(pairs, cnt)
+            call c_f_pointer(p, ids, [cnt])
+            slave_ids = int(ids, int64) + 1_int64
+            p = c_mio_periodic_pairs_master(pairs, cnt)
+            call c_f_pointer(p, ids, [cnt])
+            master_ids = int(ids, int64) + 1_int64
+        end if
+        if (present(unmatched)) then
+            allocate (unmatched(nu))
+            if (nu > 0) then
+                p = c_mio_periodic_pairs_unmatched(pairs, cnt)
+                call c_f_pointer(p, ids, [cnt])
+                unmatched = int(ids, int64) + 1_int64
+            end if
+        end if
+        if (present(num_fixed)) num_fixed = int(nf, int64)
+        if (present(max_residual)) max_residual = real(res, real64)
+        call c_mio_periodic_pairs_free(pairs)
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Point and/or cell normals of this surface, optionally splitting
     !> vertices at creases so every point carries exactly one normal.

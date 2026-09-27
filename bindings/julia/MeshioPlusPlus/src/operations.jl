@@ -1768,6 +1768,66 @@ function compute_normals(m::Mesh; point_normals::Bool=true, cell_normals::Bool=f
      num_added_points=Int(rep.num_added_points))
 end
 
+"""
+    feature_edges(m; feature_angle=30.0, feature=true, boundary=true,
+                  non_manifold=true, inconsistent=true, region="")
+        -> (; mesh, num_feature, num_boundary, num_non_manifold, num_inconsistent)
+
+The sharp, open, non-manifold and inconsistently wound edges of a surface (or of
+a volume mesh's skin) as a mesh of `line` cells over the input's points, with
+cell data `feature:kind` (1 feature, 2 boundary, 3 non-manifold,
+4 inconsistent) and `feature:angle` (degrees). The counts are over the whole
+surface, whether or not a category was selected. See `doc/feature_edges.md`.
+"""
+function feature_edges(m::Mesh; feature_angle::Real=30.0, feature::Bool=true,
+                       boundary::Bool=true, non_manifold::Bool=true,
+                       inconsistent::Bool=true, region::AbstractString="")
+    report = Ref{_CFeatureEdgesReport}()
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    ptr = GC.@preserve region_c begin
+        opts = _CFeatureEdgesOpts(Cstring(pointer(region_c)), Float64(feature_angle),
+                                  Int32(feature), Int32(boundary), Int32(non_manifold),
+                                  Int32(inconsistent), ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_feature_edges), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CFeatureEdgesOpts}, Ptr{_CFeatureEdgesReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_feature=Int(rep.num_feature), num_boundary=Int(rep.num_boundary),
+     num_non_manifold=Int(rep.num_non_manifold), num_inconsistent=Int(rep.num_inconsistent))
+end
+
+"""
+    hausdorff_distance(a, b; face_samples=0, region_a="", region_b="")
+        -> (; distance, a_to_b, b_to_a, mean_a_to_b, rms_a_to_b, mean_b_to_a,
+             rms_b_to_a, num_samples_a, num_samples_b, worst_point_a, worst_point_b)
+
+The (sampled) Hausdorff distance between the surfaces of two meshes; a volume
+mesh contributes its skin. `face_samples = s > 0` also samples the centroids of
+the `s*s` sub-triangles of every triangle -- vertex sampling alone is a lower
+bound. See `doc/hausdorff.md`.
+"""
+function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
+                            region_a::AbstractString="", region_b::AbstractString="")
+    report = Ref{_CHausdorffReport}()
+    ra = Vector{UInt8}(codeunits(String(region_a) * "\0"))
+    rb = Vector{UInt8}(codeunits(String(region_b) * "\0"))
+    GC.@preserve ra rb begin
+        opts = _CHausdorffOpts(Cstring(pointer(ra)), Cstring(pointer(rb)), Int64(face_samples),
+                               0.0, ntuple(_ -> Int64(0), 6))
+        _check(ccall(_sym(:mio_hausdorff_distance), Cint,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CHausdorffOpts}, Ptr{_CHausdorffReport}),
+                     _handle(a), _handle(b), Ref(opts), report))
+    end
+    rep = report[]
+    (distance=rep.distance, a_to_b=rep.a_to_b, b_to_a=rep.b_to_a,
+     mean_a_to_b=rep.mean_a_to_b, rms_a_to_b=rep.rms_a_to_b, mean_b_to_a=rep.mean_b_to_a,
+     rms_b_to_a=rep.rms_b_to_a, num_samples_a=Int(rep.num_samples_a),
+     num_samples_b=Int(rep.num_samples_b), worst_point_a=collect(rep.worst_point_a),
+     worst_point_b=collect(rep.worst_point_b))
+end
+
 _quality_tuple(q::_CSurfaceQuality) =
     (boundary_edges=Int(q.boundary_edges), non_manifold_edges=Int(q.non_manifold_edges),
      inconsistent_pairs=Int(q.inconsistent_pairs),

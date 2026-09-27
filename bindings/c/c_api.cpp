@@ -103,6 +103,10 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
@@ -122,6 +126,10 @@ struct mio_regions {
     // A snapshot, not a borrow: the KRATOS backend serves Region(i) from lazily
     // rebuilt staging, so a pointer into the mesh would not stay valid.
     std::vector<meshioplusplus::Region> mRegions;
+};
+
+struct mio_periodic_pairs {
+    meshioplusplus::PeriodicPairs mPairs;
 };
 
 struct mio_poly_conn {
@@ -455,6 +463,32 @@ mio_status add_named_array(mio_mesh* pMesh, const char* pName, mio_dtype dtype, 
 
 bool block_in_range(const mio_mesh* pMesh, int64_t block) {
     return pMesh && block >= 0 && static_cast<std::size_t>(block) < pMesh->mMesh.NumCellBlocks();
+}
+
+}  // namespace
+
+// Helpers for the analysis-and-editing entry points (v16.23.0).
+namespace {
+
+meshioplusplus::RegionSelector capi_selector(const mio_region_selector* pSel) {
+    if (!pSel || !pSel->name)
+        throw std::invalid_argument("meshio++: a region selector or its name is NULL");
+    if (pSel->kind < -1 || pSel->kind > 2)
+        throw std::invalid_argument(
+            "meshio++: a region selector's kind must be -1 or a "
+            "mio_region_kind");
+    meshioplusplus::RegionSelector s;
+    s.mName = pSel->name;
+    s.mKind = pSel->kind;
+    s.mDim = pSel->dim;
+    s.mTag = pSel->tag;
+    return s;
+}
+
+const int64_t* capi_periodic_ids(const meshioplusplus::NDArray& rIds, int64_t* pCount) {
+    if (pCount)
+        *pCount = static_cast<int64_t>(rIds.Size());
+    return rIds.Size() == 0 ? nullptr : rIds.As<std::int64_t>();
 }
 
 }  // namespace
@@ -4705,6 +4739,208 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
 
 int32_t mio_pipeline_has_json(void) {
     return meshioplusplus::pipeline_has_json() ? 1 : 0;
+}
+
+// --- analysis and editing (v16.23.0) ----------------------------------------
+
+static_assert(sizeof(mio_feature_edges_opts) == 80,
+              "mio_feature_edges_opts grew outside its reserved tail");
+static_assert(sizeof(mio_feature_edges_report) == 64,
+              "mio_feature_edges_report grew outside its reserved tail");
+static_assert(sizeof(mio_hausdorff_opts) == 80,
+              "mio_hausdorff_opts grew outside its reserved tail");
+static_assert(sizeof(mio_hausdorff_report) == 152,
+              "mio_hausdorff_report grew outside its reserved tail");
+static_assert(sizeof(mio_region_selector) == 48,
+              "mio_region_selector grew outside its reserved tail");
+static_assert(sizeof(mio_periodic_opts) == 192, "mio_periodic_opts grew outside its reserved tail");
+
+void mio_feature_edges_opts_init(mio_feature_edges_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_feature_edges_opts{};
+    opts->feature_angle = 30.0;
+    opts->feature = 1;
+    opts->boundary = 1;
+    opts->non_manifold = 1;
+    opts->inconsistent = 1;
+}
+
+mio_mesh* mio_feature_edges(const mio_mesh* mesh, const mio_feature_edges_opts* opts,
+                            mio_feature_edges_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::FeatureEdgeOptions options;
+        if (opts) {
+            options.mFeatureAngleDeg = opts->feature_angle;
+            options.mFeature = opts->feature != 0;
+            options.mBoundary = opts->boundary != 0;
+            options.mNonManifold = opts->non_manifold != 0;
+            options.mInconsistent = opts->inconsistent != 0;
+            if (opts->region)
+                options.mRegion = opts->region;
+        }
+        meshioplusplus::FeatureEdgeResult r = meshioplusplus::feature_edges(mesh->mMesh, options);
+        if (report) {
+            *report = mio_feature_edges_report{};
+            report->num_feature = r.mNumFeature;
+            report->num_boundary = r.mNumBoundary;
+            report->num_non_manifold = r.mNumNonManifold;
+            report->num_inconsistent = r.mNumInconsistent;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_hausdorff_opts_init(mio_hausdorff_opts* opts) {
+    if (opts)
+        *opts = mio_hausdorff_opts{};
+}
+
+mio_status mio_hausdorff_distance(const mio_mesh* a, const mio_mesh* b,
+                                  const mio_hausdorff_opts* opts, mio_hausdorff_report* report) {
+    return guarded([&]() -> mio_status {
+        if (!a || !b || !report)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: hausdorff_distance: a/b/report is NULL");
+        meshioplusplus::HausdorffOptions options;
+        if (opts) {
+            options.mFaceSamples = opts->face_samples;
+            options.mGridCellSize = opts->grid_cell_size;
+            if (opts->region_a)
+                options.mRegionA = opts->region_a;
+            if (opts->region_b)
+                options.mRegionB = opts->region_b;
+        }
+        const meshioplusplus::HausdorffResult r =
+            meshioplusplus::hausdorff_distance(a->mMesh, b->mMesh, options);
+        *report = mio_hausdorff_report{};
+        report->distance = r.mDistance;
+        report->a_to_b = r.mAtoB;
+        report->b_to_a = r.mBtoA;
+        report->mean_a_to_b = r.mMeanAtoB;
+        report->rms_a_to_b = r.mRmsAtoB;
+        report->mean_b_to_a = r.mMeanBtoA;
+        report->rms_b_to_a = r.mRmsBtoA;
+        report->num_samples_a = r.mNumSamplesA;
+        report->num_samples_b = r.mNumSamplesB;
+        for (int k = 0; k < 3; ++k) {
+            report->worst_point_a[k] = r.mWorstPointA[static_cast<std::size_t>(k)];
+            report->worst_point_b[k] = r.mWorstPointB[static_cast<std::size_t>(k)];
+        }
+        return MIO_OK;
+    });
+}
+
+void mio_region_selector_init(mio_region_selector* sel, const char* name) {
+    if (!sel)
+        return;
+    *sel = mio_region_selector{};
+    sel->name = name;
+    sel->kind = -1;
+    sel->dim = MIO_REGION_ANY;
+    sel->tag = MIO_REGION_ANY;
+}
+
+mio_mesh* mio_edit_regions(const mio_mesh* mesh, int32_t op, const mio_region_selector* inputs,
+                           int64_t num_inputs, const char* output, int64_t dim, int64_t tag,
+                           int32_t keep_inputs) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (op < MIO_REGION_UNION || op > MIO_REGION_DELETE)
+            throw std::invalid_argument("meshio++: edit_regions: op is not a mio_region_op");
+        if (num_inputs < 0 || (num_inputs > 0 && !inputs))
+            throw std::invalid_argument("meshio++: edit_regions: inputs is NULL");
+        meshioplusplus::RegionEdit e;
+        e.mOp = static_cast<meshioplusplus::RegionOp>(op);
+        for (int64_t i = 0; i < num_inputs; ++i)
+            e.mInputs.push_back(capi_selector(inputs + i));
+        if (output)
+            e.mOutputName = output;
+        e.mOutputDim = dim;
+        e.mOutputTag = tag;
+        e.mKeepInputs = keep_inputs != 0;
+        return new mio_mesh{meshioplusplus::edit_regions(mesh->mMesh, {e})};
+    });
+}
+
+mio_status mio_mesh_remove_region(mio_mesh* mesh, int64_t index) {
+    return guarded([&]() -> mio_status {
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= mesh->mMesh.NumRegions())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: region index out of range");
+        mesh->mMesh.RemoveRegion(static_cast<std::size_t>(index));
+        return MIO_OK;
+    });
+}
+
+void mio_periodic_opts_init(mio_periodic_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_periodic_opts{};
+    for (int k = 0; k < 4; ++k)
+        opts->matrix[k * 5] = 1.0;
+    opts->atol = 1e-8;
+    opts->require_complete = 1;
+}
+
+mio_periodic_pairs* mio_match_periodic_nodes(const mio_mesh* mesh, const mio_region_selector* slave,
+                                             const mio_region_selector* master,
+                                             const mio_periodic_opts* opts) {
+    return guarded_ptr(static_cast<mio_periodic_pairs*>(nullptr), [&]() -> mio_periodic_pairs* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::PeriodicOptions options;
+        if (opts) {
+            options.mTransform = meshioplusplus::transform_from_matrix(opts->matrix);
+            options.mAtol = opts->atol;
+            options.mRequireComplete = opts->require_complete != 0;
+        }
+        return new mio_periodic_pairs{meshioplusplus::match_periodic_nodes(
+            mesh->mMesh, capi_selector(slave), capi_selector(master), options)};
+    });
+}
+
+mio_status mio_periodic_pairs_info(const mio_periodic_pairs* pairs, int64_t* num_pairs,
+                                   int64_t* num_unmatched, int64_t* num_fixed,
+                                   double* max_residual) {
+    return guarded([&]() -> mio_status {
+        if (!pairs)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: pairs is NULL");
+        if (num_pairs)
+            *num_pairs = static_cast<int64_t>(pairs->mPairs.mSlave.Size());
+        if (num_unmatched)
+            *num_unmatched = static_cast<int64_t>(pairs->mPairs.mUnmatched.Size());
+        if (num_fixed)
+            *num_fixed = pairs->mPairs.mNumFixed;
+        if (max_residual)
+            *max_residual = pairs->mPairs.mMaxResidual;
+        return MIO_OK;
+    });
+}
+
+const int64_t* mio_periodic_pairs_slave(const mio_periodic_pairs* pairs, int64_t* count) {
+    if (count)
+        *count = 0;
+    return pairs ? capi_periodic_ids(pairs->mPairs.mSlave, count) : nullptr;
+}
+
+const int64_t* mio_periodic_pairs_master(const mio_periodic_pairs* pairs, int64_t* count) {
+    if (count)
+        *count = 0;
+    return pairs ? capi_periodic_ids(pairs->mPairs.mMaster, count) : nullptr;
+}
+
+const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pairs, int64_t* count) {
+    if (count)
+        *count = 0;
+    return pairs ? capi_periodic_ids(pairs->mPairs.mUnmatched, count) : nullptr;
+}
+
+void mio_periodic_pairs_free(mio_periodic_pairs* pairs) {
+    delete pairs;
 }
 
 }  // extern "C"

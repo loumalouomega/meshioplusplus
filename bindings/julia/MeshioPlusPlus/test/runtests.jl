@@ -1201,6 +1201,46 @@ end
     close(cube)
 end
 
+@testset "operations: feature edges, Hausdorff, regions, periodic" begin
+    conn = Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                 3 4 6 7 2 6 3 7 4 8 1 5;
+                 2 3 7 8 6 5 7 6 8 7 5 8]
+    pts = Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1]
+    cube = Mesh()
+    set_points!(cube, pts)
+    add_cell_block!(cube, "triangle", conn)
+
+    fe = feature_edges(cube)
+    @test fe.num_feature == 12
+    @test fe.num_boundary == 0
+    close(fe.mesh)
+    @test_throws MeshioError feature_edges(cube; feature_angle=200)
+
+    other = Mesh()
+    set_points!(other, pts)
+    add_cell_block!(other, "triangle", conn)
+    h = hausdorff_distance(cube, other; face_samples=2)
+    @test h.distance == 0.0
+    @test h.num_samples_a == 8 + 12 * 4
+    close(other)
+
+    add_region!(cube, "bottom", :point, [1, 2, 3, 4])
+    add_region!(cube, "top", :point, [5, 6, 7, 8])
+    u = edit_regions(cube, :union, ["bottom", "top"]; output="all")
+    @test length(regions(u)) == 3
+    remove_region!(u, 1)
+    @test length(regions(u)) == 2
+    close(u)
+    @test_throws ArgumentError edit_regions(cube, :xor, ["bottom"])
+
+    p = match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 1))
+    @test p.slave == [1, 2, 3, 4]
+    @test p.master == [5, 6, 7, 8]
+    @test p.num_fixed == 0
+    @test_throws MeshioError match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 0.5))
+    close(cube)
+end
+
 @testset "operations: repair, shrinkwrap, sobolev_deform" begin
     # The unit cube surface with two facets flipped: repair rewinds exactly
     # those and reports a watertight output; minus one facet, the hole is

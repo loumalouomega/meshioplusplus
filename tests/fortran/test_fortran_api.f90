@@ -1298,6 +1298,7 @@ program test_fortran_api
     ! ---- per-vertex curvature --------------------------------------------
     call check_curvature()
     call check_normals()
+    call check_analysis_editing()
     call check_repair_shrinkwrap_sobolev()
 
     if (fails /= 0) then
@@ -1611,6 +1612,79 @@ contains
         call check(ierr /= 0, 'normals rejects an unknown weight')
         bad = sq%normals(split_angle=270.0_real64, stat=ierr)
         call check(ierr /= 0, 'normals rejects a split angle above 180')
+        call sq%free()
+    end subroutine
+
+    subroutine check_analysis_editing()
+        type(mio_mesh) :: sq, other, edges, edited, bad
+        integer(int64) :: nfeat, nbound, nfixed
+        integer(int64), allocatable :: s_ids(:), m_ids(:)
+        integer :: ierr
+        real(real64) :: cube_points(3, 8), d, ab
+        integer(int64) :: cube_conn(4, 6)
+
+        cube_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 1.0_real64, 1.0_real64, &
+                               0.0_real64, 1.0_real64, 1.0_real64], [3, 8])
+        cube_conn = reshape([1_int64, 4_int64, 3_int64, 2_int64, &
+                             5_int64, 6_int64, 7_int64, 8_int64, &
+                             1_int64, 2_int64, 6_int64, 5_int64, &
+                             4_int64, 8_int64, 7_int64, 3_int64, &
+                             1_int64, 5_int64, 8_int64, 4_int64, &
+                             2_int64, 3_int64, 7_int64, 6_int64], [4, 6])
+        call sq%create()
+        call sq%set_points(cube_points)
+        call sq%add_cell_block('quad', cube_conn)
+
+        ! Feature edges: the 12 edges of the cube.
+        edges = sq%feature_edges(num_feature=nfeat, num_boundary=nbound, stat=ierr)
+        call check(ierr == 0, 'feature_edges succeeded')
+        call check(nfeat == 12_int64, 'a cube has 12 feature edges')
+        call check(nbound == 0_int64, 'a closed cube has no boundary edges')
+        call check(edges%cell_block_type(1) == 'line', 'feature edges are lines')
+        call edges%free()
+        bad = sq%feature_edges(feature_angle=200.0_real64, stat=ierr)
+        call check(ierr /= 0, 'feature_edges rejects an angle above 180')
+
+        ! Hausdorff: a cube against itself.
+        call other%create()
+        call other%set_points(cube_points)
+        call other%add_cell_block('quad', cube_conn)
+        d = sq%hausdorff_distance(other, a_to_b=ab, stat=ierr)
+        call check(ierr == 0, 'hausdorff_distance succeeded')
+        call check(d == 0.0_real64 .and. ab == 0.0_real64, 'a cube is at distance 0 from itself')
+        call other%free()
+
+        ! Regions: bottom and top faces' nodes, then their union, then periodic
+        ! pairs under a +1 z translation (1-based ids).
+        call sq%add_region('bottom', MIO_REGION_POINT, [1_int64, 2_int64, 3_int64, 4_int64])
+        call sq%add_region('top', MIO_REGION_POINT, [5_int64, 6_int64, 7_int64, 8_int64])
+        edited = sq%edit_regions('union', [character(len=6) :: 'bottom', 'top'], output='all', &
+                                 stat=ierr)
+        call check(ierr == 0, 'edit_regions union succeeded')
+        call edited%remove_region(1, stat=ierr)
+        call check(ierr == 0, 'remove_region succeeded')
+        call edited%free()
+        bad = sq%edit_regions('xor', [character(len=6) :: 'bottom'], stat=ierr)
+        call check(ierr /= 0, 'edit_regions rejects an unknown operation')
+
+        call sq%match_periodic_nodes('bottom', 'top', s_ids, m_ids, &
+                                     translate=[0.0_real64, 0.0_real64, 1.0_real64], &
+                                     num_fixed=nfixed, stat=ierr)
+        call check(ierr == 0, 'match_periodic_nodes succeeded')
+        call check(size(s_ids) == 4, 'four periodic pairs')
+        if (size(s_ids) == 4) then
+            call check(all(m_ids == s_ids + 4_int64), 'each bottom node pairs with the one above')
+        end if
+        call check(nfixed == 0_int64, 'a translation has no fixed points')
+        call sq%match_periodic_nodes('bottom', 'top', s_ids, m_ids, &
+                                     translate=[0.0_real64, 0.0_real64, 0.5_real64], stat=ierr)
+        call check(ierr /= 0, 'an incomplete periodic match fails')
         call sq%free()
     end subroutine
 

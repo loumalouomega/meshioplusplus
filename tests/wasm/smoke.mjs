@@ -4326,6 +4326,41 @@ step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
     assert.equal(surf.cells[0].data.length, 6 * 4);
 });
 
+step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
+    const fe = m.featureEdges(cubeSurface);
+    assert.equal(fe.numFeature, 12);
+    assert.equal(fe.numBoundary, 0);
+    assert.equal(fe.mesh.cells[0].type, 'line');
+    assert.throws(() => m.featureEdges(cubeSurface, 200));
+
+    const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
+    assert.equal(h.distance, 0);
+    assert.equal(h.numSamplesA, 8 + 12 * 4);
+
+    const tagged = {
+        ...cubeSurface,
+        regions: [
+            { name: 'bottom', kind: 'point', entries: Int32Array.from([0, 1, 2, 3]) },
+            { name: 'top', kind: 'point', entries: Int32Array.from([4, 5, 6, 7]) },
+        ],
+    };
+    const edited = m.editRegions(tagged, [
+        { op: 'union', inputs: ['bottom', 'top'], output: 'all' },
+        { op: 'retag', inputs: [{ name: 'all', kind: 'point' }], tag: 5 },
+    ]);
+    assert.equal(edited.regions.length, 3);
+    assert.equal(edited.regions.find((r) => r.name === 'all').tag, 5);
+    assert.throws(() => m.editRegions(tagged, [{ op: 'xor', inputs: ['bottom'] }]));
+
+    const shift = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1];
+    const p = m.matchPeriodicNodes(tagged, 'bottom', 'top', shift);
+    assert.deepEqual(Array.from(p.slave), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(p.master), [4, 5, 6, 7]);
+    assert.equal(p.numFixed, 0);
+    shift[11] = 0.5;
+    assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
+});
+
 if (failed) {
     console.error('\nSMOKE TEST FAILED');
     process.exit(1);

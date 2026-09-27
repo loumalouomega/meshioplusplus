@@ -52,6 +52,9 @@ extern SEXP R_mio_append_cell_data(SEXP, SEXP, SEXP);
 extern SEXP R_mio_add_field_data(SEXP, SEXP, SEXP);
 extern SEXP R_mio_regions(SEXP);
 extern SEXP R_mio_add_region(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_edit_regions(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_remove_region(SEXP, SEXP);
+extern SEXP R_mio_match_periodic_nodes(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 
 /* ops.c */
 extern SEXP R_mio_extract_surface(SEXP, SEXP);
@@ -73,6 +76,8 @@ extern SEXP R_mio_estimate_error(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP)
 extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_curvature(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_normals(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_feature_edges(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_hausdorff_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_shrinkwrap(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sobolev_deform(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -190,6 +195,9 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_add_field_data, 3),
     CALLDEF(R_mio_regions, 1),
     CALLDEF(R_mio_add_region, 6),
+    CALLDEF(R_mio_edit_regions, 8),
+    CALLDEF(R_mio_remove_region, 2),
+    CALLDEF(R_mio_match_periodic_nodes, 6),
     CALLDEF(R_mio_extract_surface, 2),
     CALLDEF(R_mio_extract_skin, 2),
     CALLDEF(R_mio_attach_quality, 1),
@@ -209,6 +217,8 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_remesh, 11),
     CALLDEF(R_mio_compute_curvature, 8),
     CALLDEF(R_mio_compute_normals, 7),
+    CALLDEF(R_mio_feature_edges, 7),
+    CALLDEF(R_mio_hausdorff_distance, 5),
     CALLDEF(R_mio_repair, 8),
     CALLDEF(R_mio_shrinkwrap, 9),
     CALLDEF(R_mio_sobolev_deform, 8),

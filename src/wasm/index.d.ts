@@ -20,6 +20,24 @@ export interface SurfaceQualityInfo {
   watertight: boolean;
 }
 
+/** Names one region: its name plus, optionally, its kind, dimension and tag. */
+export interface RegionSelector {
+  name: string;
+  kind?: 'point' | 'cell' | 'side';
+  dim?: number;
+  tag?: number;
+}
+
+/** One `editRegions` edit. */
+export interface RegionEdit {
+  op: 'union' | 'intersection' | 'difference' | 'rename' | 'retag' | 'delete';
+  inputs: Array<string | RegionSelector>;
+  output?: string;
+  dim?: number;
+  tag?: number;
+  keepInputs?: boolean;
+}
+
 /**
  * A `point_data`/`cell_data`/`field_data` array's JS type: it carries its
  * source dtype crossing the WASM boundary instead of always widening to
@@ -1940,6 +1958,91 @@ export interface MeshioPlusPlusModule {
     numSplitPoints: number;
     numAddedPoints: number;
     quality: SurfaceQualityInfo;
+  };
+
+  /**
+   * The sharp, open, non-manifold and inconsistently wound edges of a surface
+   * (or of a volume mesh's skin) as a mesh of `line` cells over the input's
+   * points, with cell data `feature:kind` (1 feature, 2 boundary,
+   * 3 non-manifold, 4 inconsistent) and `feature:angle` (degrees). The counts
+   * cover the whole surface, selected or not. See doc/feature_edges.md.
+   * @throws {Error} on an angle outside [0, 180] or an unknown region.
+   */
+  featureEdges(
+    mesh: Mesh,
+    featureAngle?: number,
+    feature?: boolean,
+    boundary?: boolean,
+    nonManifold?: boolean,
+    inconsistent?: boolean,
+    region?: string,
+  ): {
+    mesh: Mesh;
+    numFeature: number;
+    numBoundary: number;
+    numNonManifold: number;
+    numInconsistent: number;
+  };
+
+  /**
+   * The (sampled) Hausdorff distance between the surfaces of two meshes; a
+   * volume mesh contributes its skin. `faceSamples = s > 0` also samples the
+   * centroids of the `s*s` sub-triangles of every triangle (vertices alone
+   * give a lower bound). See doc/hausdorff.md.
+   * @throws {Error} when a mesh has no surface triangles.
+   */
+  hausdorffDistance(
+    a: Mesh,
+    b: Mesh,
+    faceSamples?: number,
+    regionA?: string,
+    regionB?: string,
+  ): {
+    distance: number;
+    aToB: number;
+    bToA: number;
+    meanAToB: number;
+    rmsAToB: number;
+    meanBToA: number;
+    rmsBToA: number;
+    numSamplesA: number;
+    numSamplesB: number;
+    worstPointA: Float64Array;
+    worstPointB: Float64Array;
+  };
+
+  /**
+   * Apply region edits, in order, to a copy of `mesh` (points, cells and data
+   * untouched): `union`, `intersection`, `difference` (two or more inputs of
+   * one kind, result named `output`), `rename`, `retag` (`tag`/`dim`) and
+   * `delete`. An input names exactly one region; pin `kind`/`dim`/`tag` when a
+   * name is shared. See doc/regions.md.
+   * @throws {Error} on a missing or ambiguous region, mixed kinds, or a result
+   *   that would replace an unrelated region.
+   */
+  editRegions(mesh: Mesh, edits: RegionEdit | RegionEdit[]): Mesh;
+
+  /**
+   * The master node each node of the `slave` region maps onto under the
+   * row-major 4x4 affine `matrix` (16 numbers), within `atol`. `slave` is
+   * ascending and `master` aligned with it (0-based point ids). See
+   * doc/periodic.md.
+   * @throws {Error} on a master claimed twice or, with `requireComplete`, an
+   *   unmatched slave node.
+   */
+  matchPeriodicNodes(
+    mesh: Mesh,
+    slave: string | RegionSelector,
+    master: string | RegionSelector,
+    matrix: ArrayLike<number>,
+    atol?: number,
+    requireComplete?: boolean,
+  ): {
+    slave: Int32Array;
+    master: Int32Array;
+    unmatched: Int32Array;
+    numFixed: number;
+    maxResidual: number;
   };
 
   /**

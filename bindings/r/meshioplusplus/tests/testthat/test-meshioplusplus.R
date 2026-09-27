@@ -1246,3 +1246,44 @@ test_that("sobolev_deform filters a displacement field", {
   expect_equal(mio_points(k$mesh)[1, ], pts[1, ] + 0.4)
   expect_error(mio_sobolev_deform(m, "missing", 1.0))
 })
+
+test_that("feature edges, Hausdorff, region edits and periodic pairs", {
+  conn <- matrix(c(
+    1, 3, 2, 1, 4, 3, 5, 6, 7, 5, 7, 8,
+    1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6,
+    3, 4, 8, 3, 8, 7, 4, 1, 5, 4, 5, 8
+  ), nrow = 3)
+  pts <- matrix(c(
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1
+  ), nrow = 3)
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, pts)
+  mio_add_cell_block(m, "triangle", conn)
+
+  fe <- mio_feature_edges(m)
+  on.exit(mio_release(fe$mesh), add = TRUE)
+  expect_equal(fe$num_feature, 12)
+  expect_equal(fe$num_boundary, 0)
+  expect_error(mio_feature_edges(m, feature_angle = 200))
+
+  h <- mio_hausdorff_distance(m, m, face_samples = 2)
+  expect_equal(h$distance, 0)
+  expect_equal(h$num_samples_a, 8 + 12 * 4)
+
+  mio_add_region(m, "bottom", "point", c(1, 2, 3, 4))
+  mio_add_region(m, "top", "point", c(5, 6, 7, 8))
+  u <- mio_edit_regions(m, "union", c("bottom", "top"), output = "all")
+  on.exit(mio_release(u), add = TRUE)
+  expect_length(mio_regions(u), 3)
+  mio_remove_region(u, 1)
+  expect_length(mio_regions(u), 2)
+  expect_error(mio_edit_regions(m, "xor", "bottom"), "unknown operation")
+
+  p <- mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 1))
+  expect_equal(p$slave, c(1, 2, 3, 4))
+  expect_equal(p$master, c(5, 6, 7, 8))
+  expect_equal(p$num_fixed, 0)
+  expect_error(mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 0.5)))
+})

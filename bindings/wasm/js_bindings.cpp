@@ -105,7 +105,11 @@
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -3160,6 +3164,145 @@ val compute_normals_js(const val& rMeshObj, bool pointNormals, bool cellNormals,
 }
 
 /**
+ * @brief Sharp, open, non-manifold and inconsistently wound edges as a line
+ * mesh. See operations/feature_edges.hpp.
+ */
+val feature_edges_js(const val& rMeshObj, double featureAngle, bool feature, bool boundary,
+                     bool nonManifold, bool inconsistent, const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FeatureEdgeOptions options;
+        options.mFeatureAngleDeg = featureAngle;
+        options.mFeature = feature;
+        options.mBoundary = boundary;
+        options.mNonManifold = nonManifold;
+        options.mInconsistent = inconsistent;
+        options.mRegion = rRegion;
+        meshioplusplus::FeatureEdgeResult r =
+            meshioplusplus::feature_edges(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFeature", static_cast<double>(r.mNumFeature));
+        out.set("numBoundary", static_cast<double>(r.mNumBoundary));
+        out.set("numNonManifold", static_cast<double>(r.mNumNonManifold));
+        out.set("numInconsistent", static_cast<double>(r.mNumInconsistent));
+        return out;
+    });
+}
+
+/**
+ * @brief The (sampled) Hausdorff distance between two surfaces. See
+ * operations/hausdorff.hpp.
+ */
+val hausdorff_distance_js(const val& rA, const val& rB, double faceSamples,
+                          const std::string& rRegionA, const std::string& rRegionB) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::HausdorffOptions options;
+        options.mFaceSamples = static_cast<std::int64_t>(faceSamples);
+        options.mRegionA = rRegionA;
+        options.mRegionB = rRegionB;
+        const meshioplusplus::HausdorffResult r =
+            meshioplusplus::hausdorff_distance(val_to_mesh(rA), val_to_mesh(rB), options);
+        val out = val::object();
+        out.set("distance", r.mDistance);
+        out.set("aToB", r.mAtoB);
+        out.set("bToA", r.mBtoA);
+        out.set("meanAToB", r.mMeanAtoB);
+        out.set("rmsAToB", r.mRmsAtoB);
+        out.set("meanBToA", r.mMeanBtoA);
+        out.set("rmsBToA", r.mRmsBtoA);
+        out.set("numSamplesA", static_cast<double>(r.mNumSamplesA));
+        out.set("numSamplesB", static_cast<double>(r.mNumSamplesB));
+        out.set("worstPointA", float64_array_from(r.mWorstPointA.data(), 3));
+        out.set("worstPointB", float64_array_from(r.mWorstPointB.data(), 3));
+        return out;
+    });
+}
+
+// A region selector from a JS string (a name) or {name, kind?, dim?, tag?}.
+meshioplusplus::RegionSelector js_region_selector(const val& rSel) {
+    meshioplusplus::RegionSelector s;
+    if (rSel.isString()) {
+        s.mName = rSel.as<std::string>();
+        return s;
+    }
+    s.mName = rSel["name"].as<std::string>();
+    const val kind = rSel["kind"];
+    if (!kind.isUndefined() && !kind.isNull())
+        s.mKind = static_cast<std::int32_t>(
+            meshioplusplus::region_kind_from_name(kind.as<std::string>()));
+    const val dim = rSel["dim"];
+    if (!dim.isUndefined() && !dim.isNull())
+        s.mDim = static_cast<std::int64_t>(dim.as<double>());
+    const val tag = rSel["tag"];
+    if (!tag.isUndefined() && !tag.isNull())
+        s.mTag = static_cast<std::int64_t>(tag.as<double>());
+    return s;
+}
+
+/**
+ * @brief Region set algebra and bookkeeping: `edits` is an array of
+ * {op, inputs, output?, dim?, tag?, keepInputs?}. See
+ * operations/region_ops.hpp.
+ */
+val edit_regions_js(const val& rMeshObj, const val& rEdits) {
+    return with_js_errors([&]() -> val {
+        std::vector<meshioplusplus::RegionEdit> edits;
+        const std::size_t n = rEdits["length"].as<std::size_t>();
+        for (std::size_t i = 0; i < n; ++i) {
+            const val e = rEdits[i];
+            meshioplusplus::RegionEdit edit;
+            edit.mOp = meshioplusplus::region_op_from_name(e["op"].as<std::string>());
+            const val inputs = e["inputs"];
+            const std::size_t ni = inputs["length"].as<std::size_t>();
+            for (std::size_t k = 0; k < ni; ++k)
+                edit.mInputs.push_back(js_region_selector(inputs[k]));
+            const val output = e["output"];
+            if (!output.isUndefined() && !output.isNull())
+                edit.mOutputName = output.as<std::string>();
+            const val dim = e["dim"];
+            if (!dim.isUndefined() && !dim.isNull())
+                edit.mOutputDim = static_cast<std::int64_t>(dim.as<double>());
+            const val tag = e["tag"];
+            if (!tag.isUndefined() && !tag.isNull())
+                edit.mOutputTag = static_cast<std::int64_t>(tag.as<double>());
+            const val keep = e["keepInputs"];
+            if (!keep.isUndefined() && !keep.isNull())
+                edit.mKeepInputs = keep.as<bool>();
+            edits.push_back(std::move(edit));
+        }
+        return mesh_to_val(meshioplusplus::edit_regions(val_to_mesh(rMeshObj), edits));
+    });
+}
+
+/**
+ * @brief Periodic node pairs between two regions under a row-major 4x4
+ * affine `matrix` (16 numbers). See operations/periodic.hpp.
+ */
+val match_periodic_nodes_js(const val& rMeshObj, const val& rSlave, const val& rMaster,
+                            const val& rMatrix, double atol, bool requireComplete) {
+    return with_js_errors([&]() -> val {
+        const std::vector<double> m = emscripten::vecFromJSArray<double>(rMatrix);
+        if (m.size() != 16)
+            throw std::invalid_argument(
+                "meshio++: match_periodic_nodes: the matrix must be 16 numbers (row-major 4x4)");
+        meshioplusplus::PeriodicOptions options;
+        options.mTransform = meshioplusplus::transform_from_matrix(m.data());
+        options.mAtol = atol;
+        options.mRequireComplete = requireComplete;
+        const meshioplusplus::PeriodicPairs r =
+            meshioplusplus::match_periodic_nodes(val_to_mesh(rMeshObj), js_region_selector(rSlave),
+                                                 js_region_selector(rMaster), options);
+        val out = val::object();
+        out.set("slave", ndarray_to_int32_array(r.mSlave));
+        out.set("master", ndarray_to_int32_array(r.mMaster));
+        out.set("unmatched", ndarray_to_int32_array(r.mUnmatched));
+        out.set("numFixed", static_cast<double>(r.mNumFixed));
+        out.set("maxResidual", r.mMaxResidual);
+        return out;
+    });
+}
+
+/**
  * @brief Surface repair: orientation by the topological half-edge rule,
  * fan-filled holes wound to agree with the surrounding surface, and bowtie
  * splitting. See operations/repair.hpp.
@@ -4441,6 +4584,10 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("optimizeVolume", &optimize_volume_js);
     emscripten::function("computeCurvature", &compute_curvature_js);
     emscripten::function("computeNormals", &compute_normals_js);
+    emscripten::function("featureEdges", &feature_edges_js);
+    emscripten::function("hausdorffDistance", &hausdorff_distance_js);
+    emscripten::function("editRegions", &edit_regions_js);
+    emscripten::function("matchPeriodicNodes", &match_periodic_nodes_js);
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);

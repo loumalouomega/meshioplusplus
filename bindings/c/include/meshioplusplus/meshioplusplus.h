@@ -3923,6 +3923,198 @@ MIO_API mio_status mio_sequence_pipeline_run_file(const char* settings_path);
 /** mio_sequence_pipeline_run_file over JSON text. */
 MIO_API mio_status mio_sequence_pipeline_run_json(const char* json_text);
 
+/* ---------------------------------------------------------------------
+ * Analysis and editing (v16.23.0): feature edges, the Hausdorff distance,
+ * region set algebra and periodic node pairs. See doc/feature_edges.md,
+ * doc/hausdorff.md, doc/regions.md#editing-regions and doc/periodic.md.
+ * --------------------------------------------------------------------- */
+
+/**
+ * Options for mio_feature_edges.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always initialize through
+ * mio_feature_edges_opts_init(): every category defaults to ON and the angle to
+ * 30, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_feature_edges_opts {
+    /** Restrict to this named cell region; NULL or "" takes every cell. */
+    const char* region;
+    /** The largest dihedral angle, in degrees, still treated as smooth; [0, 180]. */
+    double feature_angle;
+    int32_t feature;      /**< nonzero reports sharp edges */
+    int32_t boundary;     /**< nonzero reports open edges */
+    int32_t non_manifold; /**< nonzero reports edges used by three or more faces */
+    int32_t inconsistent; /**< nonzero reports pairs wound the same way */
+    int64_t reserved[6];  /**< must be zero; room for additive growth */
+} mio_feature_edges_opts;
+
+/** Initialize feature-edge options: 30 degrees, every category on, no region. */
+MIO_API void mio_feature_edges_opts_init(mio_feature_edges_opts* opts);
+
+/** How many edges of each category the surface has (selected or not). */
+typedef struct mio_feature_edges_report {
+    int64_t num_feature;
+    int64_t num_boundary;
+    int64_t num_non_manifold;
+    int64_t num_inconsistent;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_feature_edges_report;
+
+/**
+ * The sharp, open, non-manifold and inconsistently wound edges of a surface
+ * (or of a volume mesh's skin), as a mesh of `line` cells over the input's
+ * points, with Int32 cell data "feature:kind" (1 feature, 2 boundary,
+ * 3 non-manifold, 4 inconsistent) and Float64 "feature:angle" (degrees).
+ *
+ * @param mesh   a surface or volume mesh.
+ * @param opts   options; NULL means every mio_feature_edges_opts_init() default.
+ * @param report optional out: the per-category edge counts.
+ * @return the edge mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_feature_edges(const mio_mesh* mesh, const mio_feature_edges_opts* opts,
+                                    mio_feature_edges_report* report);
+
+/**
+ * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero
+ * struct IS the default here, but initialize through mio_hausdorff_opts_init().
+ */
+typedef struct mio_hausdorff_opts {
+    const char* region_a; /**< cell region of surface cells of A; NULL or "" for all */
+    const char* region_b; /**< likewise for B */
+    /** 0 samples vertices only; s > 0 also the centroids of s*s sub-triangles
+     *  of every triangle. */
+    int64_t face_samples;
+    double grid_cell_size; /**< nearest-triangle bucket size; 0 = automatic */
+    int64_t reserved[6];   /**< must be zero; room for additive growth */
+} mio_hausdorff_opts;
+
+/** Initialize Hausdorff options: vertices only, no regions, automatic grid. */
+MIO_API void mio_hausdorff_opts_init(mio_hausdorff_opts* opts);
+
+/** The distances between two surfaces. */
+typedef struct mio_hausdorff_report {
+    double distance;    /**< max(a_to_b, b_to_a) */
+    double a_to_b;      /**< largest distance from a sample of A to B */
+    double b_to_a;      /**< largest distance from a sample of B to A */
+    double mean_a_to_b; /**< mean distance of A's samples to B */
+    double rms_a_to_b;  /**< root-mean-square distance of A's samples to B */
+    double mean_b_to_a;
+    double rms_b_to_a;
+    int64_t num_samples_a;
+    int64_t num_samples_b;
+    double worst_point_a[3]; /**< the sample of A farthest from B */
+    double worst_point_b[3]; /**< the sample of B farthest from A */
+    int64_t reserved[4];     /**< zero; room for additive growth */
+} mio_hausdorff_report;
+
+/**
+ * The (sampled) Hausdorff distance between the surfaces of two meshes; a
+ * volume mesh contributes its skin. Vertex sampling is a lower bound unless the
+ * farthest point is a vertex.
+ * @param report required out.
+ */
+MIO_API mio_status mio_hausdorff_distance(const mio_mesh* a, const mio_mesh* b,
+                                          const mio_hausdorff_opts* opts,
+                                          mio_hausdorff_report* report);
+
+/** "Any" in a mio_region_selector, "inherit" in mio_edit_regions. */
+#define MIO_REGION_ANY (-2)
+
+/**
+ * Names one region: a name plus, optionally, its kind, dim and tag. It must
+ * match exactly one region. Initialize through mio_region_selector_init().
+ */
+typedef struct mio_region_selector {
+    const char* name;
+    int32_t kind;         /**< a mio_region_kind, or -1 for any kind */
+    int32_t reserved_pad; /**< must be zero */
+    int64_t dim;          /**< the dimension to match, or MIO_REGION_ANY */
+    int64_t tag;          /**< the tag to match, or MIO_REGION_ANY */
+    int64_t reserved[2];  /**< must be zero; room for additive growth */
+} mio_region_selector;
+
+/** Initialize a selector for `name` (borrowed) with any kind, dim and tag. */
+MIO_API void mio_region_selector_init(mio_region_selector* sel, const char* name);
+
+/** What mio_edit_regions does. */
+typedef enum mio_region_op {
+    MIO_REGION_UNION = 0,
+    MIO_REGION_INTERSECTION = 1,
+    MIO_REGION_DIFFERENCE = 2,
+    MIO_REGION_RENAME = 3,
+    MIO_REGION_RETAG = 4,
+    MIO_REGION_DELETE = 5
+} mio_region_op;
+
+/**
+ * Apply one region edit to a copy of `mesh` (points, cells and data are
+ * untouched). Union/intersection/difference take two or more regions of one
+ * kind and add `output`; rename moves one region to `output`; retag sets its
+ * `dim` and/or `tag`; delete removes the inputs. See doc/regions.md.
+ *
+ * @param output      the result's name (NULL for retag/delete).
+ * @param dim         the result's dimension, or MIO_REGION_ANY to inherit.
+ * @param tag         the result's tag, or MIO_REGION_ANY to inherit.
+ * @param keep_inputs set operations: nonzero keeps the input regions.
+ * @return the edited copy (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_edit_regions(const mio_mesh* mesh, int32_t op,
+                                   const mio_region_selector* inputs, int64_t num_inputs,
+                                   const char* output, int64_t dim, int64_t tag,
+                                   int32_t keep_inputs);
+
+/** Remove the `index`-th region (mio_regions_create order) from `mesh`. */
+MIO_API mio_status mio_mesh_remove_region(mio_mesh* mesh, int64_t index);
+
+/**
+ * Options for mio_match_periodic_nodes. Initialize through
+ * mio_periodic_opts_init(): the matrix defaults to the identity.
+ */
+typedef struct mio_periodic_opts {
+    /** Row-major 4x4 affine matrix mapping a slave node onto its master. */
+    double matrix[16];
+    double atol;              /**< match tolerance, > 0; default 1e-8 */
+    int32_t require_complete; /**< nonzero (the default) fails on an unmatched slave node */
+    int32_t reserved_pad;     /**< must be zero */
+    int64_t reserved[6];      /**< must be zero; room for additive growth */
+} mio_periodic_opts;
+
+/** Initialize periodic options: identity matrix, atol 1e-8, require complete. */
+MIO_API void mio_periodic_opts_init(mio_periodic_opts* opts);
+
+/** Opaque matched pairs. Destroy with mio_periodic_pairs_free(). */
+typedef struct mio_periodic_pairs mio_periodic_pairs;
+
+/**
+ * The master node each node of the `slave` region maps onto under
+ * `opts->matrix`, within `opts->atol`. See doc/periodic.md.
+ * @return the pairs (free with mio_periodic_pairs_free), or NULL on failure.
+ */
+MIO_API mio_periodic_pairs* mio_match_periodic_nodes(const mio_mesh* mesh,
+                                                     const mio_region_selector* slave,
+                                                     const mio_region_selector* master,
+                                                     const mio_periodic_opts* opts);
+
+/** Counters of a pairs handle; any out pointer may be NULL. */
+MIO_API mio_status mio_periodic_pairs_info(const mio_periodic_pairs* pairs, int64_t* num_pairs,
+                                           int64_t* num_unmatched, int64_t* num_fixed,
+                                           double* max_residual);
+
+/** Borrow the slave node ids (ascending), valid until mio_periodic_pairs_free(). */
+MIO_API const int64_t* mio_periodic_pairs_slave(const mio_periodic_pairs* pairs, int64_t* count);
+
+/** Borrow the master node ids, aligned with mio_periodic_pairs_slave(). */
+MIO_API const int64_t* mio_periodic_pairs_master(const mio_periodic_pairs* pairs, int64_t* count);
+
+/** Borrow the unmatched slave node ids (only without require_complete). */
+MIO_API const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pairs,
+                                                    int64_t* count);
+
+/** Destroy a pairs handle. Safe to call with NULL. */
+MIO_API void mio_periodic_pairs_free(mio_periodic_pairs* pairs);
+
 #ifdef __cplusplus
 }
 #endif

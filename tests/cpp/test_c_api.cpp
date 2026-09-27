@@ -4159,3 +4159,95 @@ TEST(CApi, WriteToADatNeverLetsTheOldFileChoose) {
     mio_mesh_free(m);
     std::remove(dat.c_str());
 }
+
+// --- analysis and editing (v16.23.0) ----------------------------------------
+
+TEST(CApi, FeatureEdgesOfACube) {
+    mio_mesh* m = capi_cube_surface();
+    mio_feature_edges_opts opts;
+    mio_feature_edges_opts_init(&opts);
+    EXPECT_DOUBLE_EQ(opts.feature_angle, 30.0);
+    EXPECT_EQ(opts.boundary, 1);  // ON by default -- an all-zero struct is NOT the default
+    mio_feature_edges_report report;
+    mio_mesh* edges = mio_feature_edges(m, &opts, &report);
+    ASSERT_NE(edges, nullptr) << mio_last_error();
+    // The fan diagonals of each face are flat; the 12 cube edges are sharp.
+    EXPECT_EQ(report.num_feature, 12);
+    EXPECT_EQ(report.num_boundary, 0);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(edges), 1);
+    EXPECT_EQ(block_type(edges, 0), "line");
+    mio_mesh_free(edges);
+    opts.feature_angle = 200.0;
+    EXPECT_EQ(mio_feature_edges(m, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_feature_edges(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, HausdorffOfAMeshWithItselfIsZero) {
+    mio_mesh* a = capi_cube_surface();
+    mio_mesh* b = capi_cube_surface();
+    mio_hausdorff_opts opts;
+    mio_hausdorff_opts_init(&opts);
+    opts.face_samples = 2;
+    mio_hausdorff_report report;
+    ASSERT_EQ(mio_hausdorff_distance(a, b, &opts, &report), MIO_OK) << mio_last_error();
+    EXPECT_EQ(report.distance, 0.0);
+    EXPECT_EQ(report.num_samples_a, 8 + 12 * 4);
+    EXPECT_NE(mio_hausdorff_distance(a, b, &opts, nullptr), MIO_OK);
+    mio_mesh_free(a);
+    mio_mesh_free(b);
+}
+
+TEST(CApi, EditRegionsAndPeriodicPairs) {
+    mio_mesh* m = capi_cube_surface();
+    const std::int64_t bottom[] = {0, 1, 2, 3};
+    const std::int64_t top[] = {4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_add_region(m, "bottom", MIO_REGION_POINT, 0, -1, bottom, 4), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(m, "top", MIO_REGION_POINT, 0, -1, top, 4), MIO_OK);
+
+    mio_region_selector in[2];
+    mio_region_selector_init(&in[0], "bottom");
+    mio_region_selector_init(&in[1], "top");
+    EXPECT_EQ(in[0].kind, -1);
+    EXPECT_EQ(in[0].dim, MIO_REGION_ANY);
+    mio_mesh* u =
+        mio_edit_regions(m, MIO_REGION_UNION, in, 2, "all", MIO_REGION_ANY, MIO_REGION_ANY, 1);
+    ASSERT_NE(u, nullptr) << mio_last_error();
+    mio_regions* regs = mio_regions_create(u);
+    EXPECT_EQ(mio_regions_count(regs), 3);
+    mio_regions_free(regs);
+    ASSERT_EQ(mio_mesh_remove_region(u, 0), MIO_OK);
+    regs = mio_regions_create(u);
+    EXPECT_EQ(mio_regions_count(regs), 2);
+    mio_regions_free(regs);
+    EXPECT_NE(mio_mesh_remove_region(u, 9), MIO_OK);
+    mio_mesh_free(u);
+    EXPECT_EQ(mio_edit_regions(m, 42, in, 2, "x", MIO_REGION_ANY, MIO_REGION_ANY, 1), nullptr);
+
+    mio_periodic_opts opts;
+    mio_periodic_opts_init(&opts);
+    EXPECT_EQ(opts.matrix[0], 1.0);
+    EXPECT_EQ(opts.matrix[15], 1.0);
+    opts.matrix[11] = 1.0;  // translate +1 in z
+    mio_periodic_pairs* pairs = mio_match_periodic_nodes(m, &in[0], &in[1], &opts);
+    ASSERT_NE(pairs, nullptr) << mio_last_error();
+    std::int64_t n = 0, unmatched = -1, fixed = -1;
+    double residual = -1.0;
+    ASSERT_EQ(mio_periodic_pairs_info(pairs, &n, &unmatched, &fixed, &residual), MIO_OK);
+    EXPECT_EQ(n, 4);
+    EXPECT_EQ(unmatched, 0);
+    EXPECT_EQ(fixed, 0);
+    EXPECT_EQ(residual, 0.0);
+    std::int64_t count = 0;
+    const std::int64_t* s = mio_periodic_pairs_slave(pairs, &count);
+    const std::int64_t* t = mio_periodic_pairs_master(pairs, nullptr);
+    ASSERT_EQ(count, 4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(s[i], i);
+        EXPECT_EQ(t[i], i + 4);
+    }
+    mio_periodic_pairs_free(pairs);
+    opts.matrix[11] = 0.5;  // nothing lands on a master
+    EXPECT_EQ(mio_match_periodic_nodes(m, &in[0], &in[1], &opts), nullptr);
+    mio_mesh_free(m);
+}

@@ -419,6 +419,70 @@ SEXP R_mio_compute_normals(SEXP mesh, SEXP point_normals, SEXP cell_normals, SEX
     return res;
 }
 
+SEXP R_mio_feature_edges(SEXP mesh, SEXP feature_angle, SEXP feature, SEXP boundary,
+                         SEXP non_manifold, SEXP inconsistent, SEXP region) {
+    mio_feature_edges_opts opts;
+    mio_feature_edges_report report;
+    mio_mesh *out;
+
+    mio_feature_edges_opts_init(&opts);
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.feature = mio_r_bool(feature, "feature") ? 1 : 0;
+    opts.boundary = mio_r_bool(boundary, "boundary") ? 1 : 0;
+    opts.non_manifold = mio_r_bool(non_manifold, "non_manifold") ? 1 : 0;
+    opts.inconsistent = mio_r_bool(inconsistent, "inconsistent") ? 1 : 0;
+    opts.region = mio_r_opt_string(region);
+
+    out = mio_feature_edges(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("feature_edges");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nf = PROTECT(Rf_ScalarReal((double)report.num_feature));
+    SEXP nb = PROTECT(Rf_ScalarReal((double)report.num_boundary));
+    SEXP nn = PROTECT(Rf_ScalarReal((double)report.num_non_manifold));
+    SEXP ni = PROTECT(Rf_ScalarReal((double)report.num_inconsistent));
+    const char *names[] = {"mesh", "num_feature", "num_boundary", "num_non_manifold",
+                           "num_inconsistent"};
+    SEXP values[] = {mo, nf, nb, nn, ni};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
+}
+
+SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
+                              SEXP region_b) {
+    mio_hausdorff_opts opts;
+    mio_hausdorff_report r;
+
+    mio_hausdorff_opts_init(&opts);
+    opts.face_samples = (int64_t)mio_r_double(face_samples, "face_samples");
+    opts.region_a = mio_r_opt_string(region_a);
+    opts.region_b = mio_r_opt_string(region_b);
+    mio_r_check(mio_hausdorff_distance(mio_r_mesh(a), mio_r_mesh(b), &opts, &r),
+                "hausdorff_distance");
+    SEXP wa = PROTECT(Rf_allocVector(REALSXP, 3));
+    SEXP wb = PROTECT(Rf_allocVector(REALSXP, 3));
+    for (int k = 0; k < 3; ++k) {
+        REAL(wa)[k] = r.worst_point_a[k];
+        REAL(wb)[k] = r.worst_point_b[k];
+    }
+    SEXP v0 = PROTECT(Rf_ScalarReal(r.distance));
+    SEXP v1 = PROTECT(Rf_ScalarReal(r.a_to_b));
+    SEXP v2 = PROTECT(Rf_ScalarReal(r.b_to_a));
+    SEXP v3 = PROTECT(Rf_ScalarReal(r.mean_a_to_b));
+    SEXP v4 = PROTECT(Rf_ScalarReal(r.rms_a_to_b));
+    SEXP v5 = PROTECT(Rf_ScalarReal(r.mean_b_to_a));
+    SEXP v6 = PROTECT(Rf_ScalarReal(r.rms_b_to_a));
+    SEXP v7 = PROTECT(Rf_ScalarReal((double)r.num_samples_a));
+    SEXP v8 = PROTECT(Rf_ScalarReal((double)r.num_samples_b));
+    const char *names[] = {"distance",    "a_to_b",        "b_to_a",        "mean_a_to_b",
+                           "rms_a_to_b",  "mean_b_to_a",   "rms_b_to_a",    "num_samples_a",
+                           "num_samples_b", "worst_point_a", "worst_point_b"};
+    SEXP values[] = {v0, v1, v2, v3, v4, v5, v6, v7, v8, wa, wb};
+    SEXP res = PROTECT(mio_r_named_list(11, names, values));
+    UNPROTECT(12);
+    return res;
+}
+
 SEXP R_mio_repair(SEXP mesh, SEXP fix_orientation, SEXP orient_outward, SEXP fill_holes,
                   SEXP split_non_manifold, SEXP max_hole_edges, SEXP weld_tolerance,
                   SEXP record_provenance) {

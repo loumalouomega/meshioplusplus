@@ -250,6 +250,10 @@ export class MeshioPlusPlusLoadError extends Error {
  *   optimizeVolume: (mesh: Mesh, maxIterations?: number, relocate?: boolean, flip?: boolean, preserveBoundary?: boolean, minImprovement?: number) => {mesh: Mesh, numFlips: number, num23Flips: number, num32Flips: number, numVerticesMoved: number, numTets: number, minQualityBefore: number, minQualityAfter: number},
  *   computeCurvature: (mesh: Mesh, mean?: boolean, gaussian?: boolean, dualArea?: string, includeBoundary?: boolean, recordArea?: boolean, recordPrincipal?: boolean, region?: string) => {mesh: Mesh, numBoundary: number, numIsolated: number, numDegenerate: number, totalAngleDefect: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
+ *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
+ *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
+ *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
+ *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
@@ -775,6 +779,24 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.computeNormals(mesh, pointNormals, cellNormals, weight, splitAngle,
                 recordParentIds, region),
+        featureEdges: (
+            mesh,
+            featureAngle = 30,
+            feature = true,
+            boundary = true,
+            nonManifold = true,
+            inconsistent = true,
+            region = '',
+        ) =>
+            Module.featureEdges(mesh, featureAngle, feature, boundary, nonManifold,
+                inconsistent, region),
+        hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
+            Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
+        editRegions: (mesh, edits) =>
+            Module.editRegions(mesh, Array.isArray(edits) ? edits : [edits]),
+        matchPeriodicNodes: (mesh, slave, master, matrix, atol = 1e-8, requireComplete = true) =>
+            Module.matchPeriodicNodes(mesh, slave, master, Array.from(matrix), atol,
+                requireComplete),
         repair: (
             mesh,
             fixOrientation = true,
