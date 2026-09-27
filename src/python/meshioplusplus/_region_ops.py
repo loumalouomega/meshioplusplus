@@ -229,4 +229,52 @@ def edit_regions(mesh, edits):
     return out
 
 
+def _spec_selector(text):
+    """``name`` or ``kind:name`` -> an input selector."""
+    kind, sep, name = text.partition(":")
+    if sep and kind in KINDS:
+        return {"name": name, "kind": kind}
+    return {"name": text}
+
+
+def parse_edit(op, text, keep_inputs=True):
+    """One edit from the CLI spelling (shared by both CLIs and the MCP tool).
+
+    - ``union`` / ``intersection`` / ``difference``: ``OUT=A,B[,...]``
+    - ``rename``: ``OLD=NEW``
+    - ``retag``: ``NAME=TAG`` or ``NAME=TAG:DIM`` (``NAME=:DIM`` keeps the tag)
+    - ``delete``: ``NAME``
+
+    A region name may be prefixed ``point:``, ``cell:`` or ``side:`` to pin
+    its kind.
+    """
+    op = _op_name(op)
+    if op == "delete":
+        return {"op": op, "inputs": [_spec_selector(text)]}
+    left, sep, right = text.partition("=")
+    if not sep or not left or not right:
+        raise ValueError(f"{_PREFIX}{op}: expected NAME=VALUE, got '{text}'")
+    if op in ("union", "intersection", "difference"):
+        return {
+            "op": op,
+            "inputs": [_spec_selector(t) for t in right.split(",") if t],
+            "output": left,
+            "keep_inputs": bool(keep_inputs),
+        }
+    if op == "rename":
+        return {"op": op, "inputs": [_spec_selector(left)], "output": right}
+    tag, _, dim = right.partition(":")
+    edit = {"op": op, "inputs": [_spec_selector(left)]}
+    try:
+        if tag:
+            edit["tag"] = int(tag)
+        if dim:
+            edit["dim"] = int(dim)
+    except ValueError:
+        raise ValueError(
+            f"{_PREFIX}retag: expected NAME=TAG[:DIM], got '{text}'"
+        ) from None
+    return edit
+
+
 __all__ = ["edit_regions"]

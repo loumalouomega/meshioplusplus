@@ -32,6 +32,7 @@
  */
 
 // System includes
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -96,7 +97,12 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -130,6 +136,8 @@
 #define MESHIOPLUSPLUS_CLI_VERSION "unknown"
 #endif
 
+// CLI-private
+#include "json_out.hpp"
 namespace {
 
 using meshioplusplus::DType;
@@ -160,6 +168,9 @@ struct cli_parsed {
     /// verb changes behaviour; the `data` verbs read this instead because they
     /// accept repeated `--point`/`--cell`/`--field`.
     std::unordered_map<std::string, std::vector<std::string>> multi;
+    /// Every value-option occurrence as (canonical name, value), in
+    /// command-line order across options -- what `regions`' edit flags need.
+    std::vector<std::pair<std::string, std::string>> ordered;
 };
 
 /// Parse `args` against `specs`. Throws std::runtime_error on an unknown option
@@ -216,6 +227,7 @@ cli_parsed cli_parse(const std::vector<std::string>& rArgs,
             }
             out.values[match->canonical] = value;
             out.multi[match->canonical].push_back(value);
+            out.ordered.emplace_back(match->canonical, value);
         } else {
             out.flags.insert(match->canonical);
         }
@@ -451,6 +463,10 @@ void print_usage(std::ostream& os) {
           "  quality (q)             Print mesh quality metrics\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
+          "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
+          "  hausdorff               Hausdorff distance between two surfaces\n"
+          "                            (--max D: nonzero exit when it is exceeded)\n"
+          "  periodic                Match the nodes of two regions a transform maps together\n"
           "  repair                  Fix a surface's orientation, holes and bowties\n"
           "  shrinkwrap              Project a mesh's points onto a target surface\n"
           "  sobolev-deform          Filter a displacement field and apply it\n"
@@ -474,7 +490,10 @@ void print_usage(std::ostream& os) {
           "(type/region/regions/component)\n"
           "                            --by regions is one piece per named Cell region\n"
           "                            (not a partition -- overlapping regions overlap)\n"
-          "  regions                 List a mesh's named regions (name/kind/dim/tag/entries)\n"
+          "  regions                 List a mesh's named regions (name/kind/dim/tag/entries),\n"
+          "                            or edit them into OUTFILE: --union/--intersection/\n"
+          "                            --difference OUT=A,B --rename OLD=NEW\n"
+          "                            --retag NAME=TAG[:DIM] --delete NAME\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  subdivide               Polyhedrally refine: one polyhedral child per 3D\n"
           "                            cell face, connected to a new interior point\n"
@@ -946,10 +965,132 @@ int cmd_info(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// One region edit from the CLI spelling (the Python CLI's `parse_edit`):
+// union/intersection/difference OUT=A,B[,...]; rename OLD=NEW; retag
+// NAME=TAG[:DIM]; delete NAME. A name may be prefixed point:/cell:/side:.
+meshioplusplus::RegionEdit cli_region_edit(const std::string& rOp, const std::string& rText,
+                                           bool KeepInputs) {
+    auto selector = [](const std::string& rSpec) {
+        meshioplusplus::RegionSelector sel;
+        const auto colon = rSpec.find(':');
+        const std::string kind = colon == std::string::npos ? "" : rSpec.substr(0, colon);
+        if (kind == "point" || kind == "cell" || kind == "side") {
+            sel.mKind = static_cast<std::int32_t>(meshioplusplus::region_kind_from_name(kind));
+            sel.mName = rSpec.substr(colon + 1);
+        } else {
+            sel.mName = rSpec;
+        }
+        return sel;
+    };
+    meshioplusplus::RegionEdit e;
+    e.mOp = meshioplusplus::region_op_from_name(rOp);
+    if (e.mOp == meshioplusplus::RegionOp::Delete) {
+        e.mInputs.push_back(selector(rText));
+        return e;
+    }
+    const auto eq = rText.find('=');
+    if (eq == std::string::npos || eq == 0 || eq + 1 == rText.size())
+        throw std::runtime_error("regions: --" + rOp + " expects NAME=VALUE, got '" + rText + "'");
+    const std::string left = rText.substr(0, eq);
+    const std::string right = rText.substr(eq + 1);
+    switch (e.mOp) {
+        case meshioplusplus::RegionOp::Union:
+        case meshioplusplus::RegionOp::Intersection:
+        case meshioplusplus::RegionOp::Difference: {
+            std::size_t start = 0;
+            while (start <= right.size()) {
+                const auto comma = right.find(',', start);
+                const std::string name = right.substr(start, comma - start);
+                if (!name.empty())
+                    e.mInputs.push_back(selector(name));
+                if (comma == std::string::npos)
+                    break;
+                start = comma + 1;
+            }
+            e.mOutputName = left;
+            e.mKeepInputs = KeepInputs;
+            break;
+        }
+        case meshioplusplus::RegionOp::Rename:
+            e.mInputs.push_back(selector(left));
+            e.mOutputName = right;
+            break;
+        default: {
+            e.mInputs.push_back(selector(left));
+            const auto colon = right.find(':');
+            const std::string tag = right.substr(0, colon);
+            try {
+                if (!tag.empty())
+                    e.mOutputTag = std::stoll(tag);
+                if (colon != std::string::npos)
+                    e.mOutputDim = std::stoll(right.substr(colon + 1));
+            } catch (const std::exception&) {
+                throw std::runtime_error("regions: --retag expects NAME=TAG[:DIM], got '" + rText +
+                                         "'");
+            }
+        }
+    }
+    return e;
+}
+
+void cli_print_regions_json(meshioplusplus::cli::JsonOut& rJson, const Mesh& rMesh) {
+    rJson.BeginArray();
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        rJson.BeginObject();
+        rJson.Field("name", r.mName);
+        rJson.Field("kind", meshioplusplus::region_kind_name(r.mKind));
+        rJson.Field("dim", r.mDim);
+        rJson.Field("tag", r.mTag);
+        rJson.Field("num_entries", r.NumEntries());
+        rJson.EndObject();
+    }
+    rJson.EndArray();
+}
+
 int cmd_regions(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}, {"json", {}, false}});
+    static const char* const kEdits[] = {"union",  "intersection", "difference",
+                                         "rename", "retag",        "delete"};
+    std::vector<cli_opt_spec> specs = {{"input-format", {"-i"}, true},
+                                       {"output-format", {"-o"}, true},
+                                       {"json", {}, false},
+                                       {"drop-inputs", {}, false}};
+    for (const char* e : kEdits)
+        specs.push_back({e, {}, true});
+    auto p = cli_parse(rArgs, specs);
+    if (!p.ordered.empty() && std::any_of(p.ordered.begin(), p.ordered.end(), [](const auto& rKv) {
+            return rKv.first != "input-format" && rKv.first != "output-format";
+        })) {
+        if (p.positionals.size() != 2)
+            throw std::runtime_error("regions: edits need exactly INFILE and OUTFILE");
+        std::vector<meshioplusplus::RegionEdit> edits;
+        for (const auto& [name, value] : p.ordered)
+            if (name != "input-format" && name != "output-format")
+                edits.push_back(cli_region_edit(name, value, !has_flag(p, "drop-inputs")));
+        Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        Mesh out = meshioplusplus::edit_regions(mesh, edits);
+        write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+        if (has_flag(p, "json")) {
+            meshioplusplus::cli::JsonOut json(std::cout);
+            cli_print_regions_json(json, out);
+            return 0;
+        }
+        std::cout << "<meshio++ mesh regions> (" << out.NumRegions() << ") after " << edits.size()
+                  << " edit(s)\n";
+        for (std::size_t i = 0; i < out.NumRegions(); ++i) {
+            const meshioplusplus::Region& r = out.Region(i);
+            std::cout << "  " << r.mName << " (" << meshioplusplus::region_kind_name(r.mKind)
+                      << ", " << r.NumEntries() << " entries";
+            if (r.mDim >= 0)
+                std::cout << ", dim=" << r.mDim;
+            if (r.mTag >= 0)
+                std::cout << ", tag=" << r.mTag;
+            std::cout << ")\n";
+        }
+        return 0;
+    }
     if (p.positionals.size() != 1)
-        throw std::runtime_error("regions requires exactly INFILE");
+        throw std::runtime_error("regions requires exactly INFILE (and OUTFILE with edits)");
 
     // Goes through registry_read_metadata rather than a full read: a native
     // metadata path costs nothing extra to report regions from an
@@ -967,14 +1108,18 @@ int cmd_regions(const std::vector<std::string>& rArgs) {
         meshioplusplus::registry_read_metadata(p.positionals[0], fmt, {});
 
     if (has_flag(p, "json")) {
-        std::cout << "[";
-        for (std::size_t i = 0; i < meta.mRegions.size(); ++i) {
-            const auto& r = meta.mRegions[i];
-            std::cout << (i ? ", " : "") << "{\"name\": \"" << r.mName << "\", \"kind\": \""
-                      << meshioplusplus::region_kind_name(r.mKind) << "\", \"dim\": " << r.mDim
-                      << ", \"tag\": " << r.mTag << ", \"num_entries\": " << r.mNumEntries << "}";
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginArray();
+        for (const auto& r : meta.mRegions) {
+            json.BeginObject();
+            json.Field("name", r.mName);
+            json.Field("kind", meshioplusplus::region_kind_name(r.mKind));
+            json.Field("dim", r.mDim);
+            json.Field("tag", r.mTag);
+            json.Field("num_entries", r.mNumEntries);
+            json.EndObject();
         }
-        std::cout << "]\n";
+        json.EndArray();
         return 0;
     }
 
@@ -1259,6 +1404,262 @@ int cmd_normals(const std::vector<std::string>& rArgs) {
     }
 
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_feature_edges(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"angle", {}, true},
+                                  {"no-feature", {}, false},
+                                  {"no-boundary", {}, false},
+                                  {"no-non-manifold", {}, false},
+                                  {"no-inconsistent", {}, false},
+                                  {"region", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("feature-edges requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::FeatureEdgeOptions options;
+    if (has_opt(p, "angle"))
+        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
+    options.mFeature = !has_flag(p, "no-feature");
+    options.mBoundary = !has_flag(p, "no-boundary");
+    options.mNonManifold = !has_flag(p, "no-non-manifold");
+    options.mInconsistent = !has_flag(p, "no-inconsistent");
+    options.mRegion = opt_value(p, "region");
+    meshioplusplus::FeatureEdgeResult r = meshioplusplus::feature_edges(mesh, options);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    const std::size_t edges = r.mMesh.NumCellBlocks() ? r.mMesh.Cells(0).NumCells() : 0;
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("edges", edges);
+        json.Field("num_feature", r.mNumFeature);
+        json.Field("num_boundary", r.mNumBoundary);
+        json.Field("num_non_manifold", r.mNumNonManifold);
+        json.Field("num_inconsistent", r.mNumInconsistent);
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        char deg[32];
+        meshioplusplus::detail::snprintf_c(deg, sizeof(deg), "%g", options.mFeatureAngleDeg);
+        std::cout << "feature edges (" << deg << " degrees): " << edges << " written\n";
+        std::cout << "  sharp:        " << r.mNumFeature << "\n";
+        std::cout << "  boundary:     " << r.mNumBoundary << "\n";
+        std::cout << "  non-manifold: " << r.mNumNonManifold << "\n";
+        std::cout << "  inconsistent: " << r.mNumInconsistent << "\n";
+    }
+    return 0;
+}
+
+int cmd_hausdorff(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format-a", {}, true},
+                                  {"input-format-b", {}, true},
+                                  {"region-a", {}, true},
+                                  {"region-b", {}, true},
+                                  {"face-samples", {}, true},
+                                  {"max", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("hausdorff requires exactly INFILE_A and INFILE_B");
+    Mesh a = read_mesh_cli(p.positionals[0], opt_value(p, "input-format-a"));
+    Mesh b = read_mesh_cli(p.positionals[1], opt_value(p, "input-format-b"));
+    meshioplusplus::HausdorffOptions options;
+    options.mRegionA = opt_value(p, "region-a");
+    options.mRegionB = opt_value(p, "region-b");
+    if (has_opt(p, "face-samples"))
+        options.mFaceSamples = std::stoll(opt_value(p, "face-samples"));
+    const meshioplusplus::HausdorffResult r = meshioplusplus::hausdorff_distance(a, b, options);
+    const bool has_max = has_opt(p, "max");
+    const double limit = has_max ? meshioplusplus::detail::stod_c(opt_value(p, "max")) : 0.0;
+    const bool failed = has_max && r.mDistance > limit;
+    // "%.9g" / "%g", the Python CLI's own formats.
+    auto g = [](double v) {
+        char buf[32];
+        meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.9g", v);
+        return std::string(buf);
+    };
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("distance", r.mDistance);
+        json.Field("a_to_b", r.mAtoB);
+        json.Field("b_to_a", r.mBtoA);
+        json.Field("mean_a_to_b", r.mMeanAtoB);
+        json.Field("rms_a_to_b", r.mRmsAtoB);
+        json.Field("mean_b_to_a", r.mMeanBtoA);
+        json.Field("rms_b_to_a", r.mRmsBtoA);
+        json.Field("num_samples_a", r.mNumSamplesA);
+        json.Field("num_samples_b", r.mNumSamplesB);
+        json.Key("worst_point_a");
+        json.BeginArray();
+        for (double v : r.mWorstPointA)
+            json.Number(v);
+        json.EndArray();
+        json.Key("worst_point_b");
+        json.BeginArray();
+        for (double v : r.mWorstPointB)
+            json.Number(v);
+        json.EndArray();
+        if (has_max) {
+            json.Field("max", limit);
+            json.Field("passed", !failed);
+        }
+        json.EndObject();
+    } else {
+        std::cout << "Hausdorff distance: " << g(r.mDistance) << "\n";
+        std::cout << "  A -> B: max " << g(r.mAtoB) << ", mean " << g(r.mMeanAtoB) << ", rms "
+                  << g(r.mRmsAtoB) << " (" << r.mNumSamplesA << " samples)\n";
+        std::cout << "  B -> A: max " << g(r.mBtoA) << ", mean " << g(r.mMeanBtoA) << ", rms "
+                  << g(r.mRmsBtoA) << " (" << r.mNumSamplesB << " samples)\n";
+        if (has_max) {
+            char lim[32];
+            meshioplusplus::detail::snprintf_c(lim, sizeof(lim), "%g", limit);
+            std::cout << "  " << (failed ? "FAIL" : "pass") << ": limit " << lim << "\n";
+        }
+    }
+    return failed ? 1 : 0;
+}
+
+// Comma-separated numbers, exactly `Count` of them (any count when 0).
+std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, const char* pFlag) {
+    std::vector<double> out;
+    std::size_t start = 0;
+    while (true) {
+        const auto comma = rText.find(',', start);
+        out.push_back(meshioplusplus::detail::stod_c(rText.substr(start, comma - start)));
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    if (Count != 0 && out.size() != Count)
+        throw std::runtime_error(std::string("periodic: ") + pFlag + " expects " +
+                                 std::to_string(Count) + " numbers, got " +
+                                 std::to_string(out.size()));
+    return out;
+}
+
+int cmd_periodic(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"slave", {}, true},
+                                  {"master", {}, true},
+                                  {"translate", {}, true},
+                                  {"rotate", {}, true},
+                                  {"origin", {}, true},
+                                  {"matrix", {}, true},
+                                  {"atol", {}, true},
+                                  {"allow-incomplete", {}, false},
+                                  {"output", {"-o"}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("periodic requires exactly INFILE");
+    if (!has_opt(p, "slave") || !has_opt(p, "master"))
+        throw std::runtime_error("periodic requires --slave and --master");
+    if (!has_opt(p, "matrix") && !has_opt(p, "translate") && !has_opt(p, "rotate"))
+        throw std::runtime_error("periodic: give a transform: --translate, --rotate or --matrix");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::PeriodicOptions options;
+    if (has_opt(p, "matrix")) {
+        const std::vector<double> m = cli_numbers(opt_value(p, "matrix"), 16, "--matrix");
+        options.mTransform = meshioplusplus::transform_from_matrix(m.data());
+    } else {
+        meshioplusplus::AffineTransform xf;
+        if (has_opt(p, "rotate")) {
+            const std::string text = opt_value(p, "rotate");
+            double ax = 0.0, ay = 0.0, az = 0.0, deg = 0.0;
+            const auto comma = text.find(',');
+            const std::string head = text.substr(0, comma);
+            if (comma != std::string::npos && (head == "x" || head == "y" || head == "z")) {
+                (head == "x" ? ax : head == "y" ? ay : az) = 1.0;
+                deg = meshioplusplus::detail::stod_c(text.substr(comma + 1));
+            } else {
+                const std::vector<double> v = cli_numbers(text, 4, "--rotate");
+                ax = v[0];
+                ay = v[1];
+                az = v[2];
+                deg = v[3];
+            }
+            std::vector<double> o = {0.0, 0.0, 0.0};
+            if (has_opt(p, "origin"))
+                o = cli_numbers(opt_value(p, "origin"), 3, "--origin");
+            const double rad = deg * 3.14159265358979323846 / 180.0;
+            xf = meshioplusplus::transform_compose(
+                meshioplusplus::transform_translation(o[0], o[1], o[2]),
+                meshioplusplus::transform_compose(
+                    meshioplusplus::transform_rotation(ax, ay, az, rad),
+                    meshioplusplus::transform_translation(-o[0], -o[1], -o[2])));
+        }
+        if (has_opt(p, "translate")) {
+            const std::vector<double> t = cli_numbers(opt_value(p, "translate"), 3, "--translate");
+            xf = meshioplusplus::transform_compose(
+                meshioplusplus::transform_translation(t[0], t[1], t[2]), xf);
+        }
+        options.mTransform = xf;
+    }
+    if (has_opt(p, "atol"))
+        options.mAtol = meshioplusplus::detail::stod_c(opt_value(p, "atol"));
+    options.mRequireComplete = !has_flag(p, "allow-incomplete");
+    meshioplusplus::RegionSelector slave;
+    slave.mName = opt_value(p, "slave");
+    meshioplusplus::RegionSelector master;
+    master.mName = opt_value(p, "master");
+    const meshioplusplus::PeriodicPairs r =
+        meshioplusplus::match_periodic_nodes(mesh, slave, master, options);
+    const std::size_t n = r.mSlave.Size();
+    const std::int64_t* ps = n ? r.mSlave.As<std::int64_t>() : nullptr;
+    const std::int64_t* pm = n ? r.mMaster.As<std::int64_t>() : nullptr;
+
+    if (has_opt(p, "output")) {
+        auto out = meshioplusplus::detail::make_classic_ofstream(opt_value(p, "output"));
+        if (!out)
+            throw std::runtime_error("periodic: cannot open '" + opt_value(p, "output") + "'");
+        out << "# slave,master\n";
+        for (std::size_t i = 0; i < n; ++i)
+            out << ps[i] << "," << pm[i] << "\n";
+    }
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_pairs", n);
+        json.Key("pairs");
+        json.BeginArray();
+        for (std::size_t i = 0; i < n; ++i) {
+            json.BeginArray();
+            json.Int(ps[i]);
+            json.Int(pm[i]);
+            json.EndArray();
+        }
+        json.EndArray();
+        json.Key("unmatched");
+        json.BeginArray();
+        for (std::size_t i = 0; i < r.mUnmatched.Size(); ++i)
+            json.Int(r.mUnmatched.As<std::int64_t>()[i]);
+        json.EndArray();
+        json.Field("num_fixed", r.mNumFixed);
+        json.Field("max_residual", r.mMaxResidual);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "periodic pairs " << slave.mName << " -> " << master.mName << ": " << n << "\n";
+    std::cout << "  unmatched slave nodes: " << r.mUnmatched.Size() << "\n";
+    std::cout << "  fixed points:          " << r.mNumFixed << "\n";
+    char res[32];
+    meshioplusplus::detail::snprintf_c(res, sizeof(res), "%.3g", r.mMaxResidual);
+    std::cout << "  max residual:          " << res << "\n";
+    if (!has_opt(p, "output")) {
+        for (std::size_t i = 0; i < n && i < 20; ++i)
+            std::cout << "  " << ps[i] << " -> " << pm[i] << "\n";
+        if (n > 20)
+            std::cout << "  ... (" << n - 20 << " more; use --output or --json)\n";
+    }
     return 0;
 }
 
@@ -3718,6 +4119,12 @@ int main(int argc, char** argv) {
             return cmd_curvature(rest);
         if (cmd == "normals")
             return cmd_normals(rest);
+        if (cmd == "feature-edges")
+            return cmd_feature_edges(rest);
+        if (cmd == "hausdorff")
+            return cmd_hausdorff(rest);
+        if (cmd == "periodic")
+            return cmd_periodic(rest);
         if (cmd == "extract-surface" || cmd == "surface")
             return cmd_extract_surface(rest);
         if (cmd == "reorder")

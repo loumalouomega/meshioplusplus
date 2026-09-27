@@ -1006,6 +1006,101 @@ def test_normals(mesh_file, tmp_path):
         _tools.tool_normals(mesh_file, str(tmp_path / "x.vtu"))
 
 
+def _unit_cube_quads():
+    return meshioplusplus.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+            ],
+            dtype=float,
+        ),
+        [
+            (
+                "quad",
+                np.array(
+                    [
+                        [0, 3, 2, 1],
+                        [4, 5, 6, 7],
+                        [0, 1, 5, 4],
+                        [3, 7, 6, 2],
+                        [0, 4, 7, 3],
+                        [1, 2, 6, 5],
+                    ]
+                ),
+            )
+        ],
+    )
+
+
+def test_feature_edges_and_hausdorff(tmp_path):
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(_tools.tool_feature_edges(src, str(tmp_path / "fe.vtu")))
+    assert out["num_edges"] == 12
+    assert out["num_feature"] == 12
+    assert out["num_boundary"] == 0
+    assert "feature:kind" in out["cell_data"]
+    with pytest.raises(ValueError, match="180"):
+        _tools.tool_feature_edges(src, str(tmp_path / "x.vtu"), feature_angle=200)
+
+    moved = _unit_cube_quads()
+    moved.points = moved.points + [0.0, 0.0, 0.25]
+    other = str(tmp_path / "moved.vtu")
+    meshioplusplus.write(other, moved)
+    h = _dump(_tools.tool_hausdorff(src, other, max_distance=0.1))
+    assert h["distance"] == pytest.approx(0.25)
+    assert h["passed"] is False
+    assert _dump(_tools.tool_hausdorff(src, src))["distance"] == 0.0
+
+
+def test_edit_regions_and_periodic(tmp_path):
+    from meshioplusplus._regions import Region
+
+    cube = _unit_cube_quads()
+    cube.regions = [
+        Region("bottom", "point", [0, 1, 2, 3]),
+        Region("top", "point", [4, 5, 6, 7]),
+        Region("sides", "cell", [2, 3]),
+    ]
+    src = str(tmp_path / "cube.inp")
+    meshioplusplus.write(src, cube)
+    out = _dump(
+        _tools.tool_edit_regions(
+            src,
+            str(tmp_path / "e.inp"),
+            [
+                {"op": "union", "inputs": ["bottom", "top"], "output": "all"},
+                {"op": "rename", "inputs": ["sides"], "output": "walls"},
+            ],
+        )
+    )
+    names = sorted(r["name"] for r in out["regions"])
+    assert names == ["all", "bottom", "top", "walls"]
+    with pytest.raises(ValueError, match="no region matches"):
+        _tools.tool_edit_regions(
+            src, str(tmp_path / "x.inp"), [{"op": "delete", "inputs": ["nope"]}]
+        )
+
+    pairs_csv = str(tmp_path / "pairs.csv")
+    per = _dump(
+        _tools.tool_periodic(
+            src, "bottom", "top", translate=[0, 0, 1], pairs_path=pairs_csv
+        )
+    )
+    assert per["num_pairs"] == 4
+    assert per["pairs"] == [[0, 4], [1, 5], [2, 6], [3, 7]]
+    assert np.loadtxt(pairs_csv, delimiter=",", dtype=int).tolist() == per["pairs"]
+    with pytest.raises(ValueError, match="no master node"):
+        _tools.tool_periodic(src, "bottom", "top", translate=[0, 0, 0.5])
+
+
 def test_export_gltf(tmp_path):
     src = str(tmp_path / "in.vtu")
     meshioplusplus.write(

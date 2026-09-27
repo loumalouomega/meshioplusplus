@@ -43,7 +43,9 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -260,6 +262,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Region"}},
         {"Normals",
          {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
+        {"FeatureEdges",
+         {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
+        {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -727,6 +732,45 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 " edge pair(s) wind the same way, so the sign of 'curvature:mean' is not "
                 "trustworthy");
         return std::move(cr.mMesh);
+    }
+    if (op == "FeatureEdges") {
+        FeatureEdgeOptions opts;
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mFeature = pipe_flag(rStep, "Feature", true);
+        opts.mBoundary = pipe_flag(rStep, "Boundary", true);
+        opts.mNonManifold = pipe_flag(rStep, "NonManifold", true);
+        opts.mInconsistent = pipe_flag(rStep, "Inconsistent", true);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        FeatureEdgeResult fr = feature_edges(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFeature", static_cast<double>(fr.mNumFeature)},
+                        {"NumBoundary", static_cast<double>(fr.mNumBoundary)},
+                        {"NumNonManifold", static_cast<double>(fr.mNumNonManifold)},
+                        {"NumInconsistent", static_cast<double>(fr.mNumInconsistent)}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "EditRegions") {
+        // One edit per step: a pipeline value is flat, and a list of edits is
+        // just a list of steps.
+        RegionEdit edit;
+        edit.mOp = region_op_from_name(pipe_text(rStep, "Edit", ""));
+        const std::string kind = pipe_text(rStep, "Kind", "");
+        for (const std::string& name : pipe_svec(rStep, "Inputs")) {
+            RegionSelector sel;
+            sel.mName = name;
+            if (!kind.empty())
+                sel.mKind = static_cast<std::int32_t>(region_kind_from_name(kind));
+            edit.mInputs.push_back(sel);
+        }
+        edit.mOutputName = pipe_text(rStep, "Output", "");
+        if (pipe_find(rStep, "Dim"))
+            edit.mOutputDim = static_cast<std::int64_t>(pipe_number(rStep, "Dim", -1.0));
+        if (pipe_find(rStep, "Tag"))
+            edit.mOutputTag = static_cast<std::int64_t>(pipe_number(rStep, "Tag", -1.0));
+        edit.mKeepInputs = pipe_flag(rStep, "KeepInputs", true);
+        Mesh out = edit_regions(mesh, {edit});
+        pipe_push_step(rReport, rStep, {{"NumRegions", static_cast<double>(out.NumRegions())}});
+        return out;
     }
     if (op == "Normals") {
         // An absent SplitAngle means one smooth normal per point; a number is

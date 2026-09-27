@@ -1113,6 +1113,156 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def feature_edges(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        feature_angle: float = 30.0,
+        feature: bool = True,
+        boundary: bool = True,
+        non_manifold: bool = True,
+        inconsistent: bool = True,
+        region: str = "",
+    ) -> dict:
+        """The sharp, open, non-manifold and inconsistently wound edges of a
+        surface -- or, for a volume mesh, of its boundary skin -- written as a
+        mesh of `line` cells over the input's points.
+
+        Each edge shared by two faces is compared by the dihedral angle
+        between their normals: above feature_angle degrees (0-180, default 30)
+        it is a feature edge. An edge used by one face is a boundary edge, by
+        three or more non-manifold, and a pair that walks the edge the same
+        way is inconsistent (its angle is measured after reorienting one
+        face). Each category can be switched off. The output carries cell data
+        feature:kind (1 feature, 2 boundary, 3 non-manifold, 4 inconsistent)
+        and feature:angle (degrees, NaN where undefined); region restricts to
+        a named cell region. Reports num_edges written and num_feature /
+        num_boundary / num_non_manifold / num_inconsistent over the whole
+        surface. This is the crease test decimate and smooth pin nodes with."""
+        return _guard(
+            _tools.tool_feature_edges,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            feature_angle=feature_angle,
+            feature=feature,
+            boundary=boundary,
+            non_manifold=non_manifold,
+            inconsistent=inconsistent,
+            region=region,
+        )
+
+    @server.tool()
+    def hausdorff(
+        path_a: str,
+        path_b: str,
+        format_a: Optional[str] = None,
+        format_b: Optional[str] = None,
+        face_samples: int = 0,
+        region_a: str = "",
+        region_b: str = "",
+        max_distance: Optional[float] = None,
+    ) -> dict:
+        """The Hausdorff distance between the surfaces of two mesh files (a
+        volume mesh contributes its skin): how far apart they are at their
+        worst. Each surface is sampled -- its vertices, plus with
+        face_samples = s > 0 the centroids of the s*s sub-triangles of every
+        triangle -- and each sample's unsigned distance to the other surface
+        measured. Vertex sampling alone is exact when the farthest point is a
+        vertex and a lower bound otherwise. Reports distance, the one-sided
+        a_to_b / b_to_a maxima with their means and RMS, the sample counts and
+        the worst sample of each side; with max_distance, also passed."""
+        return _guard(
+            _tools.tool_hausdorff,
+            path_a=path_a,
+            path_b=path_b,
+            format_a=format_a,
+            format_b=format_b,
+            face_samples=face_samples,
+            region_a=region_a,
+            region_b=region_b,
+            max_distance=max_distance,
+        )
+
+    @server.tool()
+    def edit_regions(
+        input_path: str,
+        output_path: str,
+        edits: List[Dict[str, object]],
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Edit a mesh's named regions and write the result; points, cells
+        and data are untouched.
+
+        edits is a list applied in order, each {"op", "inputs", ...}: op is
+        union / intersection / difference (two or more inputs of one kind; the
+        result is named "output", keeps its inputs unless "keep_inputs" is
+        false, and may set "dim"/"tag"), rename (one input, to "output"),
+        retag (one input; new "tag" and/or "dim") or delete. An input is a
+        region name or {"name", "kind", "dim", "tag"} and must match exactly
+        one region; side regions combine their (cell, facet) pairs, and an
+        empty result is kept. A result that would overwrite an unrelated
+        region is an error. Reports the resulting region list."""
+        return _guard(
+            _tools.tool_edit_regions,
+            input_path=input_path,
+            output_path=output_path,
+            edits=edits,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def periodic(
+        input_path: str,
+        slave: str,
+        master: str,
+        input_format: Optional[str] = None,
+        translate: Optional[List[float]] = None,
+        rotate_axis: Optional[Union[str, List[float]]] = None,
+        rotate_degrees: Optional[float] = None,
+        origin: Optional[List[float]] = None,
+        matrix: Optional[List[float]] = None,
+        atol: float = 1e-8,
+        require_complete: bool = True,
+        pairs_path: Optional[str] = None,
+    ) -> dict:
+        """Periodic node pairs: which master-region node each slave-region
+        node maps onto under an affine transform, within atol -- what a
+        periodic boundary condition (a Kratos periodic condition, a Gmsh
+        $Periodic section) ties together.
+
+        The transform is translate [dx, dy, dz], and/or a rotation of
+        rotate_degrees about rotate_axis ("x", "y", "z" or a 3-vector) turning
+        about origin (applied first), or a row-major 4x4 matrix of 16 numbers
+        overriding both. Point regions contribute their nodes, cell regions
+        their cells' nodes, side regions their facets' nodes. The nearest
+        master within atol wins; a master claimed twice is an error, as is an
+        unmatched slave node unless require_complete is false. Slave nodes the
+        transform leaves in place that are also master nodes (on a rotation
+        axis) are counted as num_fixed. Reports num_pairs, pairs
+        ([slave, master], 0-based, ascending in the slave id), unmatched and
+        max_residual; pairs_path also writes them as 'slave,master' CSV."""
+        return _guard(
+            _tools.tool_periodic,
+            input_path=input_path,
+            slave=slave,
+            master=master,
+            input_format=input_format,
+            translate=translate,
+            rotate_axis=rotate_axis,
+            rotate_degrees=rotate_degrees,
+            origin=origin,
+            matrix=matrix,
+            atol=atol,
+            require_complete=require_complete,
+            pairs_path=pairs_path,
+        )
+
+    @server.tool()
     def repair(
         input_path: str,
         output_path: str,

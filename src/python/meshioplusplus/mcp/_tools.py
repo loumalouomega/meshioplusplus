@@ -68,15 +68,19 @@ from .. import (
     decimate_volume,
     diff,
     distance_to_surface,
+    edit_regions,
     estimate_error,
     extract_skin,
     extract_surface,
+    feature_edges,
     geometry_descriptors,
     gradient,
     grid,
+    hausdorff_distance,
     hessian,
     interpolate,
     isosurface,
+    match_periodic_nodes,
     merge,
     optimize_volume,
     partition,
@@ -1659,6 +1663,141 @@ def tool_normals(
         num_split_points=int(report["num_split_points"]),
         num_added_points=int(report["num_added_points"]),
         quality=report["quality"],
+    )
+
+
+def tool_feature_edges(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    feature_angle=30.0,
+    feature=True,
+    boundary=True,
+    non_manifold=True,
+    inconsistent=True,
+    region="",
+):
+    """The sharp, open, non-manifold and inconsistently wound edges of a
+    surface (or of a volume mesh's skin), written as a line mesh with cell data
+    feature:kind (1 feature, 2 boundary, 3 non-manifold, 4 inconsistent) and
+    feature:angle (degrees). The counts cover the whole surface."""
+    mesh = _load(input_path, input_format)
+    out, report = feature_edges(
+        mesh,
+        feature_angle=feature_angle,
+        feature=feature,
+        boundary=boundary,
+        non_manifold=non_manifold,
+        inconsistent=inconsistent,
+        region=region,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_edges=int(len(out.cells[0].data)) if out.cells else 0,
+        **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_hausdorff(
+    path_a,
+    path_b,
+    format_a=None,
+    format_b=None,
+    face_samples=0,
+    region_a="",
+    region_b="",
+    max_distance=None,
+):
+    """The (sampled) Hausdorff distance between the surfaces of two mesh files;
+    with max_distance, also whether it stays within that limit."""
+    report = hausdorff_distance(
+        _load(path_a, format_a),
+        _load(path_b, format_b),
+        face_samples=face_samples,
+        region_a=region_a,
+        region_b=region_b,
+    )
+    if max_distance is not None:
+        report["max"] = float(max_distance)
+        report["passed"] = bool(report["distance"] <= float(max_distance))
+    return _json_safe(report)
+
+
+def tool_edit_regions(
+    input_path,
+    output_path,
+    edits,
+    input_format=None,
+    output_format=None,
+):
+    """Apply region edits (union, intersection, difference, rename, retag,
+    delete), in order, and write the result; points, cells and data are
+    untouched. Reports the resulting region list."""
+    out = edit_regions(_load(input_path, input_format), edits)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        regions=[
+            {
+                "name": r.name,
+                "kind": r.kind,
+                "dim": r.dim,
+                "tag": r.tag,
+                "num_entries": int(len(r.entries)),
+            }
+            for r in out.regions
+        ],
+    )
+
+
+def tool_periodic(
+    input_path,
+    slave,
+    master,
+    input_format=None,
+    translate=None,
+    rotate_axis=None,
+    rotate_degrees=None,
+    origin=None,
+    matrix=None,
+    atol=1e-8,
+    require_complete=True,
+    pairs_path=None,
+):
+    """Match the nodes of the slave region onto the master region under an
+    affine transform; optionally writes the pairs as 'slave,master' CSV."""
+    mesh = _load(input_path, input_format)
+    rotate = None
+    if rotate_axis is not None:
+        rotate = (rotate_axis, float(rotate_degrees or 0.0))
+    pairs, report = match_periodic_nodes(
+        mesh,
+        slave,
+        master,
+        translate=translate,
+        rotate=rotate,
+        matrix=matrix,
+        origin=origin,
+        atol=atol,
+        require_complete=require_complete,
+        return_report=True,
+    )
+    written = None
+    if pairs_path:
+        written = _resolve(pairs_path, for_write=True)
+        np.savetxt(written, pairs, fmt="%d", delimiter=",", header="slave,master")
+    return _json_safe(
+        {
+            "num_pairs": int(len(pairs)),
+            "pairs": pairs.tolist(),
+            "unmatched": report["unmatched"].tolist(),
+            "num_fixed": report["num_fixed"],
+            "max_residual": report["max_residual"],
+            "pairs_path": str(written) if written else None,
+        }
     )
 
 
@@ -3565,6 +3704,22 @@ TOOL_REGISTRY = OrderedDict(
         (
             "normals",
             {"fn": tool_normals, "wraps": ("compute_normals",), "gated": None},
+        ),
+        (
+            "feature_edges",
+            {"fn": tool_feature_edges, "wraps": ("feature_edges",), "gated": None},
+        ),
+        (
+            "hausdorff",
+            {"fn": tool_hausdorff, "wraps": ("hausdorff_distance",), "gated": None},
+        ),
+        (
+            "edit_regions",
+            {"fn": tool_edit_regions, "wraps": ("edit_regions",), "gated": None},
+        ),
+        (
+            "periodic",
+            {"fn": tool_periodic, "wraps": ("match_periodic_nodes",), "gated": None},
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (
