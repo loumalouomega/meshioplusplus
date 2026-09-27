@@ -49,6 +49,7 @@
 
 // Project includes (private, not installed)
 #include "smooth_odt.hpp"
+#include "../detail/crease_edges.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -561,7 +562,19 @@ struct SmoothFacetRecord {
     std::uint32_t mSlot = 0;
 };
 
-// A boundary facet, kept only when feature detection needs its normal.
+// Face rings, CSR: what the shared crease test (detail/crease_edges.hpp) reads.
+struct SmoothRings {
+    std::vector<std::int64_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+
+    void Push(const std::int64_t* pIds, std::size_t Size) {
+        mNodes.insert(mNodes.end(), pIds, pIds + Size);
+        mStart.push_back(static_cast<std::int64_t>(mNodes.size()));
+    }
+};
+
+// A boundary edge of a 2D mesh, kept only when the polyline corner test needs
+// its direction.
 struct SmoothBoundaryFacet {
     std::array<std::int64_t, 4> mNodes = {-1, -1, -1, -1};
     std::uint8_t mNumCorners = 0;
@@ -590,8 +603,9 @@ std::vector<SmoothFacetDef> smooth_facets_for(CellType Type, bool FaceMode) {
     return out;
 }
 
-// Marks boundary nodes, and (when rpFacets is non-null) collects the boundary
-// facets with their normals for the feature pass.
+// Marks boundary nodes and, for the feature pass, collects the boundary faces
+// as rings into `pRings` (face mode) or the boundary edges with their
+// directions into `pFacets` (edge mode), each when non-null.
 //
 // This is surface.cpp's phase-split idiom re-implemented locally with smooth_
 // prefixes, following the v7.6.0 partition precedent: surface.cpp's
@@ -601,7 +615,7 @@ std::vector<SmoothFacetDef> smooth_facets_for(CellType Type, bool FaceMode) {
 // concurrent hash insert.
 void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
                           const std::vector<double>& rXyz, std::vector<std::uint8_t>& rBoundary,
-                          std::vector<SmoothBoundaryFacet>* pFacets) {
+                          std::vector<SmoothBoundaryFacet>* pFacets, SmoothRings* pRings) {
     std::vector<SmoothFacetBlock> blocks;
     std::size_t total_facets = 0;
     std::size_t block_index = 0;
@@ -710,25 +724,8 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
                 }
                 rBoundary[static_cast<std::size_t>(id)] = 1;
             }
-            if (!ok || pFacets == nullptr || face.second < 3)
-                continue;
-            // One normal for the whole face, computed over ALL its corners.
-            // SmoothBoundaryFacet holds at most four node ids, so an n-gon is
-            // emitted as several records sharing that normal -- every corner
-            // then takes part in the feature test, which a single truncated
-            // record would silently deny to corners 5+.
-            std::vector<std::int64_t> ids(face.first, face.first + face.second);
-            const SmoothCornerReader at{&rXyz, ids.data(), -1, nullptr};
-            const Vec3 nrm = detail::vec3_normalize(smooth_newell_normal(at, ids.size()));
-            for (std::size_t base = 0; base < ids.size(); base += 4) {
-                SmoothBoundaryFacet bf;
-                bf.mNormal = nrm;
-                const std::size_t take = std::min<std::size_t>(4, ids.size() - base);
-                bf.mNumCorners = static_cast<std::uint8_t>(take);
-                for (std::size_t k = 0; k < take; ++k)
-                    bf.mNodes[k] = ids[base + k];
-                pFacets->push_back(bf);
-            }
+            if (ok && pRings != nullptr && face.second >= 3)
+                pRings->Push(face.first, face.second);  // the whole ring, every corner
             continue;
         }
         const SmoothFacetDef& fd = b.mFacets[r.mSlot];
@@ -746,26 +743,28 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             bf.mNodes[k] = id;
             rBoundary[static_cast<std::size_t>(id)] = 1;
         }
-        if (!ok || pFacets == nullptr)
+        if (!ok)
             continue;
-
-        // Facet normal: Newell for a face, the in-plane perpendicular for a 2D
-        // boundary edge (so a polyline's corners read as features too).
-        const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
         if (fd.mNumCorners >= 3) {
-            bf.mNormal = detail::vec3_normalize(smooth_newell_normal(at, fd.mNumCorners));
-        } else {
-            const Vec3 p0 = at(0);
-            const Vec3 p1 = at(1);
-            bf.mNormal = detail::vec3_normalize(Vec3{p1[1] - p0[1], p0[0] - p1[0], 0.0});
+            if (pRings != nullptr)
+                pRings->Push(bf.mNodes.data(), std::min<std::size_t>(fd.mNumCorners, 4));
+            continue;
         }
+        if (pFacets == nullptr)
+            continue;
+        // A 2D boundary edge: its 3-D direction, so the corners of the
+        // boundary polyline read as features (in the XY plane this is the
+        // pre-v16.23.0 in-plane perpendicular test, dot for dot).
+        const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
+        bf.mNormal = detail::vec3_normalize(detail::vec3_sub(at(1), at(0)));
         pFacets->push_back(bf);
     }
 }
 
-// Pin boundary nodes whose incident boundary facets disagree in orientation by
-// more than the feature angle. O(d^2) in the boundary valence d, which is 4-8 in
-// practice; each iteration writes only its own slot, so it parallelizes cleanly.
+// Pin the corners of a 2D mesh's boundary polyline: nodes whose incident
+// boundary edges turn by more than the feature angle. O(d^2) in the boundary
+// valence d (2 on a manifold boundary); each iteration writes only its own
+// slot, so it parallelizes cleanly.
 void smooth_mark_features(const std::vector<SmoothBoundaryFacet>& rFacets, std::size_t n,
                           double CosThreshold, std::vector<std::uint8_t>& rFrozen) {
     if (rFacets.empty())
@@ -804,6 +803,62 @@ void smooth_mark_features(const std::vector<SmoothBoundaryFacet>& rFacets, std::
             }
         }
     });
+}
+
+// The rings of a 2D mesh's own cells -- corners only, in order -- for the crease
+// test. Blocks with no known edge topology are skipped (smooth pins their
+// nodes anyway).
+SmoothRings smooth_surface_rings(const Mesh& rMesh, std::size_t n) {
+    SmoothRings rings;
+    std::vector<std::int64_t> ids;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            continue;
+        const std::string type(cb.Type());
+        const bool polygon = cb.IsRagged() || type.rfind("polygon", 0) == 0;
+        std::vector<std::uint8_t> corners;
+        if (!polygon) {
+            const CellType ct = cell_type_from_name(type);
+            if (cell_type_dimension(ct) != 2)
+                continue;
+            for (const detail::CellEdgeDef& ed : detail::cell_edges(ct))
+                corners.push_back(static_cast<std::uint8_t>(ed.mNodes[0]));
+            if (corners.size() < 3)
+                continue;
+        }
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            ids.clear();
+            if (polygon) {
+                ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            } else {
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::uint8_t k : corners)
+                    ids.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            }
+            bool ok = ids.size() >= 3;
+            for (std::int64_t id : ids)
+                ok = ok && id >= 0 && static_cast<std::size_t>(id) < n;
+            if (ok)
+                rings.Push(ids.data(), ids.size());
+        }
+    }
+    return rings;
+}
+
+// Pin both endpoints of every crease edge of @p rRings (the shared test,
+// detail/crease_edges.hpp).
+void smooth_pin_creases(const SmoothRings& rRings, const std::vector<double>& rXyz,
+                        double FeatureAngleDeg, std::vector<std::uint8_t>& rFrozen) {
+    const std::size_t nf = rRings.mStart.size() - 1;
+    std::vector<double> normals(nf * 3);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t b = rRings.mStart[f];
+        detail::ring_unit_normal(rXyz.data(), rRings.mNodes.data() + b,
+                                 static_cast<std::size_t>(rRings.mStart[f + 1] - b),
+                                 &normals[f * 3]);
+    });
+    detail::pin_crease_endpoints(
+        detail::crease_edges(rRings.mStart, rRings.mNodes, normals, FeatureAngleDeg), rFrozen);
 }
 
 // Does the mesh contain any 3D block? Selects face mode vs edge mode, mirroring
@@ -970,23 +1025,32 @@ std::vector<std::uint8_t> smooth_pin_mask(const Mesh& rMesh, const SmoothOptions
         const bool face_mode = smooth_has_volume_cells(rMesh);
         std::vector<std::uint8_t> boundary(n, 0);
         std::vector<SmoothBoundaryFacet> facets;
-        smooth_mark_boundary(rMesh, n, face_mode, rXyz, boundary,
-                             rOptions.mPreserveFeatures ? &facets : nullptr);
+        SmoothRings rings;
+        const bool features = rOptions.mPreserveFeatures;
+        smooth_mark_boundary(rMesh, n, face_mode, rXyz, boundary, features ? &facets : nullptr,
+                             features ? &rings : nullptr);
         for (std::size_t i = 0; i < n; ++i)
             if (boundary[i])
                 frozen[i] = 1;
-        if (rOptions.mPreserveFeatures) {
-            const double cos_thr =
-                std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
-            smooth_mark_features(facets, n, cos_thr, frozen);
+        if (features) {
+            if (face_mode) {
+                // The creases of the boundary skin.
+                smooth_pin_creases(rings, rXyz, rOptions.mFeatureAngleDeg, frozen);
+            } else {
+                // The corners of the boundary polyline, and the creases of the
+                // surface itself (a 2D mesh bent in 3-D space).
+                const double cos_thr =
+                    std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
+                smooth_mark_features(facets, n, cos_thr, frozen);
+                smooth_pin_creases(smooth_surface_rings(rMesh, n), rXyz, rOptions.mFeatureAngleDeg,
+                                   frozen);
+            }
         }
     } else if (rOptions.mPreserveFeatures) {
-        // Features are a subset of the boundary, so asking to preserve them
-        // while explicitly freeing the boundary is contradictory rather than
-        // merely redundant -- say so instead of silently doing nothing.
-        log::warn(
-            "smooth: preserve_features has no effect when fix_boundary is off (feature nodes "
-            "are boundary nodes)");
+        // Features are pinned alongside the boundary, so asking to preserve
+        // them while explicitly freeing the boundary is contradictory rather
+        // than merely redundant -- say so instead of silently doing nothing.
+        log::warn("smooth: preserve_features has no effect when fix_boundary is off");
     }
 
     return frozen;

@@ -105,6 +105,7 @@ from ._decimate_volume import decimate_volume
 from ._diff import diff, meshes_equal
 from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
+from ._feature_edges import feature_edges
 from ._gpu import (
     from_cupy,
     has_cuda_device,
@@ -313,6 +314,7 @@ __all__ = [
     "compute_quality",
     "compute_curvature",
     "compute_normals",
+    "feature_edges",
     "attach_quality",
     "sniff_format",
     "reorder",

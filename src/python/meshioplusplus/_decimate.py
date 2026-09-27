@@ -330,24 +330,14 @@ def _decimate_py(
     if preserve_boundary:
         pinned |= boundary
     if preserve_features:
-        cos_thr = math.cos(feature_angle * 3.14159265358979323846 / 180.0)
-        for v in range(n):
-            row = faces_of[xadj[v] : xadj[v + 1]]
-            nrm = [normals[f] for f in row if not (normals[f] == 0.0).all()]
-            done = False
-            for i in range(len(nrm)):
-                for j in range(i + 1, len(nrm)):
-                    dot = (
-                        nrm[i][0] * nrm[j][0]
-                        + nrm[i][1] * nrm[j][1]
-                        + nrm[i][2] * nrm[j][2]
-                    )
-                    if dot < cos_thr:
-                        pinned[v] = True
-                        done = True
-                        break
-                if done:
-                    break
+        # The shared per-edge crease test (``_feature_edges.crease_edges``,
+        # the twin of ``detail/crease_edges.hpp``): only the two faces sharing
+        # an edge are compared, and non-manifold edges pin too.
+        from ._feature_edges import crease_edges, crease_nodes
+
+        start = np.arange(num_faces + 1, dtype=np.int64) * 3
+        edges = crease_edges(start, corners_np.reshape(-1), normals, feature_angle)
+        pinned |= crease_nodes(edges, n)
 
     # Per-vertex quadrics: np.add.at is unbuffered and processes indices in
     # order, so each vertex accumulates its faces ascending -- the same FP

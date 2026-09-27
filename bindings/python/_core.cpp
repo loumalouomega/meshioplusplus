@@ -121,6 +121,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/neighbors.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
@@ -1994,6 +1995,35 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("point_normals") = true, py::arg("cell_normals") = false,
         py::arg("weight") = "angle", py::arg("split") = false, py::arg("split_angle") = 30.0,
         py::arg("record_parent_ids") = false, py::arg("region") = "");
+
+    // Sharp, open, non-manifold and inconsistently wound edges as a line mesh.
+    // See operations/feature_edges.hpp.
+    m.def(
+        "feature_edges",
+        [](py::object pymesh, double feature_angle, bool feature, bool boundary,
+           bool non_manifold, bool inconsistent, const std::string& region) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::FeatureEdgeOptions options;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mFeature = feature;
+            options.mBoundary = boundary;
+            options.mNonManifold = non_manifold;
+            options.mInconsistent = inconsistent;
+            options.mRegion = region;
+            meshioplusplus::FeatureEdgeResult r = meshioplusplus::feature_edges(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_feature"] = r.mNumFeature;
+            out["num_boundary"] = r.mNumBoundary;
+            out["num_non_manifold"] = r.mNumNonManifold;
+            out["num_inconsistent"] = r.mNumInconsistent;
+            return out;
+        },
+        py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
+        py::arg("boundary") = true, py::arg("non_manifold") = true,
+        py::arg("inconsistent") = true, py::arg("region") = "");
 
     // Surface repair: orientation, holes, bowties. {mesh, point_map, cell_maps,
     // counters, quality_before, quality_after}. See operations/repair.hpp.
