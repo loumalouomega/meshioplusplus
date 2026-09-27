@@ -625,8 +625,9 @@ void cli_metadata_json(meshioplusplus::cli::JsonOut& rJson,
     cli_names_json(rJson, "provenance", rMeta.mProvenance);
     rJson.Field("provenance_recognised", rMeta.mProvenanceRecognised);
     if (rMeta.mHasBBox) {
-        for (const auto& [key, v] : {std::pair<const char*, const double*>{"bbox_min", rMeta.mBBoxMin},
-                                     {"bbox_max", rMeta.mBBoxMax}}) {
+        for (const auto& [key, v] :
+             {std::pair<const char*, const double*>{"bbox_min", rMeta.mBBoxMin},
+              {"bbox_max", rMeta.mBBoxMax}}) {
             rJson.Key(key);
             rJson.BeginArray();
             for (int k = 0; k < 3; ++k)
@@ -1460,9 +1461,8 @@ std::string left(const std::string& rS, int w) {
 }
 
 int cmd_quality(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true},
-                               {"output", {"-o"}, true},
-                               {"json", {}, false}});
+    auto p = cli_parse(
+        rArgs, {{"input-format", {"-i"}, true}, {"output", {"-o"}, true}, {"json", {}, false}});
     if (p.positionals.size() != 1)
         throw std::runtime_error("quality requires exactly INFILE");
     const std::string& infile = p.positionals[0];
@@ -1676,7 +1676,8 @@ int cmd_check(const std::vector<std::string>& rArgs) {
             auto in = meshioplusplus::detail::make_classic_ifstream(opt_value(p, "gate"));
             if (!in)
                 throw std::runtime_error("check: cannot open '" + opt_value(p, "gate") + "'");
-            specs.emplace_back(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            specs.emplace_back(std::istreambuf_iterator<char>(in),
+                               std::istreambuf_iterator<char>());
         }
         for (const std::string& spec : specs) {
             const auto t = meshioplusplus::parse_quality_thresholds(spec);
@@ -4341,10 +4342,9 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
     opts.unordered = has_flag(p, "unordered");
     auto report = meshioplusplus::diff(a, b, opts);
     if (has_flag(p, "json")) {
-        const bool equal =
-            report.mVerdict == meshioplusplus::DiffVerdict::Identical ||
-            (report.mVerdict == meshioplusplus::DiffVerdict::EqualWithinTolerance &&
-             !has_flag(p, "exact"));
+        const bool equal = report.mVerdict == meshioplusplus::DiffVerdict::Identical ||
+                           (report.mVerdict == meshioplusplus::DiffVerdict::EqualWithinTolerance &&
+                            !has_flag(p, "exact"));
         meshioplusplus::cli::JsonOut json(std::cout);
         cli_diff_json(json, report);
         // cli_diff_json leaves the object open for the CLI's own key.

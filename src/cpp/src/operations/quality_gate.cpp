@@ -49,8 +49,7 @@ const char* const kQgMetrics[] = {
 };
 
 std::string qg_full_name(const std::string& rMetric) {
-    const std::string full =
-        rMetric.rfind("quality:", 0) == 0 ? rMetric : "quality:" + rMetric;
+    const std::string full = rMetric.rfind("quality:", 0) == 0 ? rMetric : "quality:" + rMetric;
     for (const char* m : kQgMetrics)
         if (full == m)
             return full;
@@ -206,9 +205,9 @@ QualityGateResult check_quality(const Mesh& rMesh, const QualityGateOptions& rOp
                 }
             }
         }
-        c.mFraction = c.mEvaluated > 0 ? static_cast<double>(c.mViolations) /
-                                             static_cast<double>(c.mEvaluated)
-                                       : 0.0;
+        c.mFraction = c.mEvaluated > 0
+                          ? static_cast<double>(c.mViolations) / static_cast<double>(c.mEvaluated)
+                          : 0.0;
         c.mPassed = c.mViolations == 0 || c.mFraction <= t.mMaxFraction;
         if (c.mEvaluated == 0)
             log::warn(

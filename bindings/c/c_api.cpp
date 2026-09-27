@@ -4950,8 +4950,8 @@ static_assert(sizeof(mio_quality_gate_report) == 88,
               "mio_quality_gate_report grew outside its reserved tail");
 
 mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int64_t max_inverted,
-                             int64_t max_degenerate, mio_quality_gate_report* report,
-                             char* summary, int64_t summary_len) {
+                             int64_t max_degenerate, mio_quality_gate_report* report, char* summary,
+                             int64_t summary_len) {
     return guarded([&]() -> mio_status {
         if (!mesh || !report)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: check_quality: mesh/report is NULL");
@@ -4973,8 +4973,7 @@ mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int64_t max
         report->num_degenerate = r.mReport.mNumDegenerate;
         report->summary_length = static_cast<int64_t>(text.size());
         if (summary && summary_len > 0) {
-            const std::size_t n =
-                std::min(text.size(), static_cast<std::size_t>(summary_len - 1));
+            const std::size_t n = std::min(text.size(), static_cast<std::size_t>(summary_len - 1));
             std::memcpy(summary, text.data(), n);
             summary[n] = '\0';
         }
