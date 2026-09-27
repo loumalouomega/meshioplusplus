@@ -44,6 +44,7 @@ from . import (
     _remesh_volume,
     _reorder,
     _repair,
+    _resample,
     _sdf,
     _shrinkwrap,
     _slice,
@@ -362,6 +363,16 @@ def main(argv=None):
     )
     _agglomerate.add_args(parser)
     parser.set_defaults(func=_agglomerate.agglomerate_cmd)
+
+    parser = subparsers.add_parser(
+        "resample",
+        help=(
+            "Resample a sequence onto new times (linear blend, nearest or previous), "
+            "holding at most two steps in memory"
+        ),
+    )
+    _resample.add_args(parser)
+    parser.set_defaults(func=_resample.resample_cmd)
 
     parser = subparsers.add_parser(
         "refine",

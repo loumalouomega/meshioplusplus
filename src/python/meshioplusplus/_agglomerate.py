@@ -31,7 +31,14 @@ import numpy as np  # noqa: F401
 __all__ = ["agglomerate"]
 
 
-def agglomerate(mesh, target_group_size: int = 8):
+def agglomerate(
+    mesh,
+    target_group_size: int = 8,
+    merge_coplanar_faces: bool = False,
+    coplanar_angle: float = 1.0,
+    min_sphericity: float = 0.0,
+    return_report: bool = False,
+):
     """Polyhedrally coarsen a mesh: merge groups of cells into single larger
     polyhedral cells.
 
@@ -54,7 +61,18 @@ def agglomerate(mesh, target_group_size: int = 8):
     :param mesh: the mesh to coarsen (never modified).
     :param target_group_size: approximate member cells per output group;
         must be at least 1.
-    :returns: the coarsened mesh.
+    :param merge_coplanar_faces: fuse the coplanar faces two groups (or a group
+        and the boundary) share into single polygons, identically on both
+        sides, when their outline is one simple loop and every touched
+        polyhedron stays closed.
+    :param coplanar_angle: the largest angle, in degrees, between face normals
+        still treated as coplanar; in ``[0, 90)``.
+    :param min_sphericity: refuse to absorb a cell when the union would be
+        less round than this (``pi^(1/3) (6V)^(2/3) / A``: 1 for a ball, about
+        0.81 for a cube); 0 disables the gate.
+    :param return_report: also return ``{"cell_map", "num_faces_merged",
+        "num_rejected"}``.
+    :returns: the coarsened mesh; with ``return_report``, ``(mesh, report)``.
     :raises ValueError: when ``target_group_size`` is 0, or when the mesh
         contains a face shared by three or more cells (non-manifold) -- the
         owner/neighbour classification the merge relies on is only
@@ -77,5 +95,17 @@ def agglomerate(mesh, target_group_size: int = 8):
             "the compiled meshioplusplus._core extension"
         )
 
-    res = _core.agglomerate(mesh, int(target_group_size))
+    res = _core.agglomerate(
+        mesh,
+        int(target_group_size),
+        bool(merge_coplanar_faces),
+        float(coplanar_angle),
+        float(min_sphericity),
+    )
+    if return_report:
+        return res["mesh"], {
+            "cell_map": res["cell_map"],
+            "num_faces_merged": int(res["num_faces_merged"]),
+            "num_rejected": int(res["num_rejected"]),
+        }
     return res["mesh"]

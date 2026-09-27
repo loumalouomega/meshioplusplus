@@ -121,6 +121,39 @@ def files(tmp_path_factory):
         "moved": str(d / "moved.vtu"),
         "tagged": str(d / "tagged.inp"),
     }
+    # a 3x3x3 hexahedral block, for agglomerate
+    xs, ys, zs = np.meshgrid(*(np.arange(n + 1.0),) * 3, indexing="ij")
+    hpts = np.column_stack([xs.ravel(), ys.ravel(), zs.ravel()])
+
+    def vid(i, j, k):
+        return (i * (n + 1) + j) * (n + 1) + k
+
+    hexes = np.array(
+        [
+            [
+                vid(i, j, k),
+                vid(i + 1, j, k),
+                vid(i + 1, j + 1, k),
+                vid(i, j + 1, k),
+                vid(i, j, k + 1),
+                vid(i + 1, j, k + 1),
+                vid(i + 1, j + 1, k + 1),
+                vid(i, j + 1, k + 1),
+            ]
+            for i in range(n)
+            for j in range(n)
+            for k in range(n)
+        ]
+    )
+    paths["hexes"] = str(d / "hexes.vtu")
+    mio.write(paths["hexes"], mio.Mesh(hpts, [("hexahedron", hexes)]))
+    # a two-step sequence (times 0 and 1 by index), for resample
+    for k in range(2):
+        mio.write(
+            str(d / f"seq_{k}.vtu"),
+            mio.Mesh(pts, [("quad", quads)], point_data={"u": pts[:, 0] + 10.0 * k}),
+        )
+    paths["seq"] = str(d / "seq_*.vtu")
     mio.write(paths["grid"], grid)
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
@@ -173,6 +206,59 @@ WRITING = [
         lambda f, out: ["feature-edges", f["grid"], out + ".vtu", "--json"],
     ),
     ("convert", lambda f, out: ["convert", f["grid"], out + ".vtk", "--json"]),
+    (
+        "agglomerate",
+        lambda f, out: [
+            "agglomerate",
+            f["hexes"],
+            out + ".vtu",
+            "--merge-coplanar-faces",
+            "--min-sphericity",
+            "0.3",
+            "--json",
+        ],
+    ),
+    (
+        "resample",
+        lambda f, out: [
+            "resample",
+            f["seq"],
+            out + "_{index}.vtu",
+            "--time-from",
+            "index",
+            "--times",
+            "0:1:0.25",
+            "--json",
+        ],
+    ),
+    (
+        "resample_times_from",
+        lambda f, out: [
+            "resample",
+            f["seq"],
+            out + "_{index}.vtu",
+            "--time-from",
+            "index",
+            "--times-from",
+            f["seq"],
+            "--json",
+        ],
+    ),
+    (
+        "resample_nearest",
+        lambda f, out: [
+            "resample",
+            f["seq"],
+            out + "_{index}.vtu",
+            "--time-from",
+            "index",
+            "--times",
+            "0.2,0.9",
+            "--method",
+            "nearest",
+            "--json",
+        ],
+    ),
     (
         "regions_edit",
         lambda f, out: [

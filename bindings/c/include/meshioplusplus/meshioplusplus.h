@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 24
+#define MIO_VERSION_MINOR 25
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1512,6 +1512,36 @@ MIO_API void mio_subdivide_result_free(mio_subdivide_result* result);
  *         guessing a boundary classification for.
  */
 MIO_API mio_agglomerate_result* mio_agglomerate(const mio_mesh* mesh, int64_t target_group_size);
+
+/**
+ * Options for mio_agglomerate_ex (v16.25.0). Same ABI rules as every option
+ * struct: fields are only appended, replacing `reserved`. Initialize through
+ * mio_agglomerate_opts_init(): the group size defaults to 8 and the coplanar
+ * angle to 1 degree, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_agglomerate_opts {
+    int64_t target_group_size;    /**< approximate members per group; >= 1 */
+    int32_t merge_coplanar_faces; /**< nonzero fuses coplanar shared faces into one polygon */
+    int32_t reserved_pad;         /**< must be zero */
+    double coplanar_angle;        /**< degrees in [0, 90); default 1 */
+    double min_sphericity;        /**< refuse less-round unions; 0 (default) disables */
+    int64_t reserved[6];          /**< must be zero; room for additive growth */
+} mio_agglomerate_opts;
+
+/** Initialize agglomerate options: groups of 8, no merging, no gate. */
+MIO_API void mio_agglomerate_opts_init(mio_agglomerate_opts* opts);
+
+/**
+ * mio_agglomerate with the coplanar-merge and sphericity-gate options (see
+ * doc/agglomerate.md). NULL `opts` means every mio_agglomerate_opts_init()
+ * default, which is exactly mio_agglomerate(mesh, 8).
+ * @param num_faces_merged optional out: faces removed by coplanar merging.
+ * @param num_rejected     optional out: absorptions the gate refused.
+ */
+MIO_API mio_agglomerate_result* mio_agglomerate_ex(const mio_mesh* mesh,
+                                                   const mio_agglomerate_opts* opts,
+                                                   int64_t* num_faces_merged,
+                                                   int64_t* num_rejected);
 
 /**
  * Borrow the coarsened mesh. Owned by the result: valid until
@@ -3905,6 +3935,38 @@ MIO_API mio_status mio_timeseries_to_sequence(const char* in_path, const char* i
  *
  * Needs the JSON parser, like the pipeline entry points above.
  */
+/**
+ * Linear interpolation between two steps of one mesh: `a` with every floating-
+ * point data array replaced by (1 - w) a + w b (v16.25.0; see
+ * doc/sequences.md#resampling). The steps must share a topology.
+ * @param blend_points nonzero blends the point coordinates too.
+ * @return the blended mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_blend_steps(const mio_mesh* a, const mio_mesh* b, double w,
+                                  int32_t blend_points);
+
+/** Options for mio_sequence_resample. Initialize through mio_resample_opts_init(). */
+typedef struct mio_resample_opts {
+    const double* times;  /**< the target times; one output step each */
+    int64_t num_times;    /**< length of `times` */
+    int32_t method;       /**< 0 linear (default), 1 nearest, 2 previous */
+    int32_t extrapolate;  /**< 0 error (default), 1 clamp */
+    int32_t blend_points; /**< nonzero blends the point coordinates too */
+    int32_t reserved_pad; /**< must be zero */
+    int64_t reserved[6];  /**< must be zero; room for additive growth */
+} mio_resample_opts;
+
+/** Initialize resample options: no times, linear, error outside the range. */
+MIO_API void mio_resample_opts_init(mio_resample_opts* opts);
+
+/**
+ * Resample a sequence onto new times and write it: one file per target time
+ * when `out_path` carries `{step}`/`{index}`, else one series file of a format
+ * that carries time. At most two source meshes are held at once.
+ */
+MIO_API mio_status mio_sequence_resample(const mio_sequence* seq, const char* out_path,
+                                         const char* out_format, const mio_resample_opts* opts);
+
 MIO_API mio_status mio_sequence_pipeline_run_file(const char* settings_path);
 
 /** mio_sequence_pipeline_run_file over JSON text. */

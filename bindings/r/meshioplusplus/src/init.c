@@ -103,7 +103,8 @@ extern SEXP R_mio_reorder(SEXP, SEXP);
 extern SEXP R_mio_split(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
 extern SEXP R_mio_subdivide(SEXP, SEXP);
-extern SEXP R_mio_agglomerate(SEXP, SEXP);
+extern SEXP R_mio_agglomerate(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_blend_steps(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -129,6 +130,7 @@ extern SEXP R_mio_sequence_time_source(SEXP, SEXP);
 extern SEXP R_mio_sequence_read(SEXP, SEXP);
 extern SEXP R_mio_sequence_free(SEXP);
 extern SEXP R_mio_sequence_to_timeseries(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_sequence_resample(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_timeseries_to_sequence(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sequence_pipeline_run_file(SEXP);
 extern SEXP R_mio_sequence_pipeline_run_json(SEXP);
@@ -243,7 +245,8 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_split, 3),
     CALLDEF(R_mio_convert_cells, 3),
     CALLDEF(R_mio_subdivide, 2),
-    CALLDEF(R_mio_agglomerate, 2),
+    CALLDEF(R_mio_agglomerate, 5),
+    CALLDEF(R_mio_blend_steps, 4),
     CALLDEF(R_mio_refine, 11),
     CALLDEF(R_mio_decimate, 9),
     CALLDEF(R_mio_partition, 9),
@@ -269,6 +272,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_sequence_read, 2),
     CALLDEF(R_mio_sequence_free, 1),
     CALLDEF(R_mio_sequence_to_timeseries, 4),
+    CALLDEF(R_mio_sequence_resample, 7),
     CALLDEF(R_mio_timeseries_to_sequence, 4),
     CALLDEF(R_mio_sequence_pipeline_run_file, 1),
     CALLDEF(R_mio_sequence_pipeline_run_json, 1),

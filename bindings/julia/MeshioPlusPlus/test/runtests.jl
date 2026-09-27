@@ -1248,6 +1248,38 @@ end
     close(cube)
 end
 
+@testset "operations: agglomerate options, blend_steps, resample" begin
+    m = fixture()
+    a = agglomerate(m; target_group_size=2, merge_coplanar_faces=true, min_sphericity=0.1)
+    @test a.num_faces_merged >= 0
+    @test a.num_rejected >= 0
+    close(a.mesh)
+
+    n = num_points(m)
+    mktempdir() do dir
+        steps = Mesh[]
+        for k in 0:1
+            add_point_data!(m, "u", fill(10.0 * k, n))
+            mio.write(m, joinpath(dir, "step_$k.vtu"))
+            push!(steps, mio.read(joinpath(dir, "step_$k.vtu")))
+        end
+        h = blend_steps(steps[1], steps[2], 0.25)
+        @test point_data(h, "u") ≈ fill(2.5, n)
+        close(h)
+        foreach(close, steps)
+
+        s = Sequence(joinpath(dir, "step_*.vtu"); time_from="index")
+        resample(s, joinpath(dir, "out_{index}.vtu"), [0.0, 0.5, 1.0])
+        r = mio.read(joinpath(dir, "out_1.vtu"))
+        @test point_data(r, "u") ≈ fill(5.0, n)
+        close(r)
+        @test_throws MeshioError resample(s, joinpath(dir, "bad_{index}.vtu"), [2.0])
+        @test_throws ArgumentError resample(s, joinpath(dir, "x_{index}.vtu"), [0.0]; method=:cubic)
+        close(s)
+    end
+    close(m)
+end
+
 @testset "operations: repair, shrinkwrap, sobolev_deform" begin
     # The unit cube surface with two facets flipped: repair rewinds exactly
     # those and reports a watertight output; minus one facet, the hole is

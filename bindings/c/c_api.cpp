@@ -103,6 +103,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
@@ -1824,6 +1825,42 @@ mio_agglomerate_result* mio_agglomerate(const mio_mesh* mesh, int64_t target_gro
             meshioplusplus::AgglomerateOptions options;
             options.mTargetGroupSize = static_cast<std::size_t>(target_group_size);
             meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(mesh->mMesh, options);
+            auto* out = new mio_agglomerate_result{};
+            out->mMesh = mio_mesh{std::move(r.mMesh)};
+            out->mCellMap = std::move(r.mCellMap);
+            return out;
+        });
+}
+
+void mio_agglomerate_opts_init(mio_agglomerate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_agglomerate_opts{};
+    opts->target_group_size = 8;
+    opts->coplanar_angle = 1.0;
+}
+
+mio_agglomerate_result* mio_agglomerate_ex(const mio_mesh* mesh, const mio_agglomerate_opts* opts,
+                                           int64_t* num_faces_merged, int64_t* num_rejected) {
+    return guarded_ptr(
+        static_cast<mio_agglomerate_result*>(nullptr), [&]() -> mio_agglomerate_result* {
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            meshioplusplus::AgglomerateOptions options;
+            if (opts) {
+                if (opts->target_group_size < 1)
+                    throw std::invalid_argument(
+                        "meshio++: agglomerate: target_group_size must be >= 1");
+                options.mTargetGroupSize = static_cast<std::size_t>(opts->target_group_size);
+                options.mMergeCoplanarFaces = opts->merge_coplanar_faces != 0;
+                options.mCoplanarAngleDeg = opts->coplanar_angle;
+                options.mMinSphericity = opts->min_sphericity;
+            }
+            meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(mesh->mMesh, options);
+            if (num_faces_merged)
+                *num_faces_merged = r.mNumFacesMerged;
+            if (num_rejected)
+                *num_rejected = r.mNumRejected;
             auto* out = new mio_agglomerate_result{};
             out->mMesh = mio_mesh{std::move(r.mMesh)};
             out->mCellMap = std::move(r.mCellMap);
@@ -4057,6 +4094,55 @@ mio_mesh* mio_sequence_read(mio_sequence* seq, int64_t index) {
 
 void mio_sequence_free(mio_sequence* seq) {
     delete seq;
+}
+
+static_assert(sizeof(mio_agglomerate_opts) == 80,
+              "mio_agglomerate_opts grew outside its reserved tail");
+static_assert(sizeof(mio_resample_opts) == 80, "mio_resample_opts grew outside its reserved tail");
+
+mio_mesh* mio_blend_steps(const mio_mesh* a, const mio_mesh* b, double w, int32_t blend_points) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!a || !b)
+            throw meshioplusplus::ReadError("meshio++: blend_steps: a/b is NULL");
+        meshioplusplus::BlendOptions options;
+        options.mBlendPoints = blend_points != 0;
+        return new mio_mesh{meshioplusplus::blend_steps(a->mMesh, b->mMesh, w, options)};
+    });
+}
+
+void mio_resample_opts_init(mio_resample_opts* opts) {
+    if (opts)
+        *opts = mio_resample_opts{};
+}
+
+mio_status mio_sequence_resample(const mio_sequence* seq, const char* out_path,
+                                 const char* out_format, const mio_resample_opts* opts) {
+    return guarded([&]() -> mio_status {
+        if (!seq || !out_path || !opts)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: resample: sequence/out_path/opts is NULL");
+        if (opts->num_times < 1 || !opts->times)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: resample: no target times");
+        if (opts->method < 0 || opts->method > 2 || opts->extrapolate < 0 || opts->extrapolate > 1)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: resample: method/extrapolate out of range");
+        meshioplusplus::SequencePipeline p;
+        for (const meshioplusplus::SequenceEntry& e : seq->mEntries) {
+            p.mInput.mPaths.push_back(e.mPath);
+            p.mInput.mTimes.push_back(e.mTime);
+        }
+        p.mInput.mFormat = seq->mFormat;
+        p.mInput.mOptions = seq->mOptions;
+        p.mOutput.mPath = out_path;
+        if (out_format)
+            p.mOutput.mFormat = out_format;
+        meshioplusplus::SequenceResample rs;
+        rs.mTimes.assign(opts->times, opts->times + opts->num_times);
+        rs.mMethod = static_cast<meshioplusplus::ResampleMethod>(opts->method);
+        rs.mExtrapolate = static_cast<meshioplusplus::ResampleExtrapolate>(opts->extrapolate);
+        rs.mBlendPoints = opts->blend_points != 0;
+        p.mResample = rs;
+        meshioplusplus::run_sequence_pipeline(p);
+        return MIO_OK;
+    });
 }
 
 mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const char* out_path,

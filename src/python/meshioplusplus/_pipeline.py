@@ -236,7 +236,12 @@ _OP_TABLE = {
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
     "Subdivide": ("RecordParentIds",),
-    "Agglomerate": ("TargetGroupSize",),
+    "Agglomerate": (
+        "TargetGroupSize",
+        "MergeCoplanarFaces",
+        "CoplanarAngle",
+        "MinSphericity",
+    ),
     "Crop": (
         "Bbox",
         "Point",
@@ -941,10 +946,16 @@ def _apply_step(mesh, step, steps, warnings):
             record_parent_ids=_flag(step, "RecordParentIds", False),
         )
     elif op == "Agglomerate":
-        mesh = agglomerate(
+        mesh, report = agglomerate(
             mesh,
             target_group_size=int(_number(step, "TargetGroupSize", 8.0)),
+            merge_coplanar_faces=_flag(step, "MergeCoplanarFaces", False),
+            coplanar_angle=_number(step, "CoplanarAngle", 1.0),
+            min_sphericity=_number(step, "MinSphericity", 0.0),
+            return_report=True,
         )
+        entry["NumFacesMerged"] = float(report["num_faces_merged"])
+        entry["NumRejected"] = float(report["num_rejected"])
     elif op == "Crop":
         has_bbox = "Bbox" in step
         has_plane = "Point" in step or "Normal" in step

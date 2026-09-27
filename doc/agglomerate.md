@@ -1,6 +1,6 @@
 # Polyhedral coarsening (agglomerate)
 
-`meshioplusplus.agglomerate(mesh, target_group_size=8)` merges groups of cells into single larger polyhedral cells — the many-to-one counterpart to [`subdivide`](/subdivide). It is a mesh **operation**, not a file format, uses only standard C++, and runs under every mesh backend.
+`meshioplusplus.agglomerate(mesh, target_group_size=8, merge_coplanar_faces=False, coplanar_angle=1.0, min_sphericity=0.0)` merges groups of cells into single larger polyhedral cells — the many-to-one counterpart to [`subdivide`](/subdivide). It is a mesh **operation**, not a file format, uses only standard C++, and runs under every mesh backend.
 
 `decimate` raises by name on a polyhedron, pointing at `convert_cells(mode="simplexify")` — its fixed-template QEM edge collapse has no analogue for merging arbitrary polyhedral cells. `agglomerate` is a genuinely different algorithm: greedy seed-and-grow over the mesh's shared-face dual, then one polyhedron per group whose faces are exactly that group's *external* boundary.
 
@@ -21,6 +21,21 @@ mp.write("bracket_coarse.vtu", coarse)
 3. Each group emits **one** polyhedron cell: walk every member's faces. A face whose other side is also in the group is internal and dropped (this happens from both sides, so it is never emitted twice); every other face is the group's own external boundary and is kept, wound exactly as the member's own local orientation already records it — no new orientation logic is needed.
 
 This is deliberately **face-adjacency**, never node-adjacency (the kind `partition`'s ghost layers and `gradient`'s stencil use): merging on shared-node adjacency could fuse two cells touching only at a single pinch-point vertex, producing a non-manifold union.
+
+## Compact groups: the sphericity gate
+
+Greedy growth by shared area favours compact groups, but on a stretched or graded mesh a group can still grow a long arm along the dual. `min_sphericity` (default `0`, off) refuses to absorb a candidate when the union would be less round than that. The measure is the sphericity `π^(1/3) (6V)^(2/3) / A`: 1 for a ball, about 0.81 for a cube, lower for anything elongated or flat. The group's volume `V` and external area `A` are kept incrementally and exactly: absorbing a cell adds its volume, adds its area and subtracts twice the area it shares with the group. A refused candidate is skipped for that group only and can still seed or join another group, so the grouping stays deterministic. Groups may end up smaller than `target_group_size`. The report's `num_rejected` counts the refusals.
+
+```python
+coarse, report = mp.agglomerate(mesh, target_group_size=8, min_sphericity=0.7, return_report=True)
+report["num_rejected"]
+```
+
+## Fusing coplanar faces
+
+Without merging, a coarse cell keeps every fine face on its boundary: a flat wall that eight hexahedra tiled stays as eight quads. `merge_coplanar_faces=True` fuses such faces into one polygon. Faces are grouped by the pair of sides they separate (two groups, or a group and the mesh boundary), so both neighbours get the identical fused polygon (reversed) and the mesh stays conforming. Within a pair, edge-adjacent faces whose normals lie within `coplanar_angle` degrees (default 1) of the patch's first face fuse when the patch's outline is one simple loop, with no hole and no pinch point. Every polyhedron a fusion touches is checked to remain closed; if a fusion would break that, the patch keeps its original faces. Volume is conserved either way, since the fused polygon covers exactly the faces it replaces. The report's `num_faces_merged` counts the faces removed (fused faces minus the polygons that replace them, per group side).
+
+Fusing drops the edge-interior nodes of the patch from the face lists. Points are still never renumbered, so the result is valid; [`clean`](/clean) with `remove_orphans=True` compacts the point set if a node is no longer referenced at all.
 
 ## Output structure
 
@@ -56,8 +71,11 @@ This operation is **C++-core only**, with no pure-Python reference implementatio
 ## CLI
 
 ```sh
-meshioplusplus agglomerate IN OUT [--target-group-size N]
+meshioplusplus agglomerate IN OUT [--target-group-size N] [--merge-coplanar-faces]
+                             [--coplanar-angle DEG] [--min-sphericity S] [--json]
 ```
+
+`--json` prints `{cells_in, cells_out, num_faces_merged, num_rejected}`.
 
 Both CLIs produce byte-identical output (there being only one implementation). See the [CLI reference](/cli#meshioplusplus).
 
@@ -71,25 +89,36 @@ mio_mesh* owned = mio_agglomerate_result_take_mesh(r);
 mio_agglomerate_result_free(r);
 ```
 
+```c
+mio_agglomerate_opts opts;
+mio_agglomerate_opts_init(&opts);           /* groups of 8, no merging, no gate */
+opts.merge_coplanar_faces = 1;
+opts.min_sphericity = 0.7;
+int64_t merged = 0, rejected = 0;
+mio_agglomerate_result* r = mio_agglomerate_ex(mesh, &opts, &merged, &rejected);
+```
+
 ```fortran
 type(mio_mesh) :: c
-c = m%agglomerate(target_group_size=8_int64, stat=st)
+c = m%agglomerate(target_group_size=8_int64, stat=st, merge_coplanar_faces=.true., &
+                  min_sphericity=0.7_real64, num_faces_merged=merged, num_rejected=rejected)
 ```
 
 ```julia
-a = agglomerate(mesh; target_group_size=8)
-a.mesh, a.cell_map
+a = agglomerate(mesh; target_group_size=8, merge_coplanar_faces=true, min_sphericity=0.7)
+a.mesh, a.cell_map, a.num_faces_merged, a.num_rejected
 ```
 
 ```r
-a <- mio_agglomerate(mesh, target_group_size = 8)
-a$mesh; a$cell_map
+a <- mio_agglomerate(mesh, target_group_size = 8, merge_coplanar_faces = TRUE, min_sphericity = 0.7)
+a$mesh; a$cell_map; a$num_faces_merged; a$num_rejected
 ```
 
 ```js
 const out = await m.agglomerate(mesh, 8);
+const r = await m.agglomerate(mesh, 8, true, { mergeCoplanarFaces: true, minSphericity: 0.7 });
 ```
 
-On the flat ABIs, `AgglomerateResult` carries a single **flat** cell map (unlike `SubdivideResult`'s per-block one) — an output cell's index is a function of which group it joined, not which input block it came from. The C API's `mio_agglomerate_result_cell_map` accordingly takes **no `block` parameter**, and there is correspondingly no `mio_agglomerate_result_num_cell_maps` (there is exactly one array). WASM's `agglomerate(mesh, targetGroupSize, returnMaps)` returns `{mesh, cellMap}` (the same flat shape) when `returnMaps` is set.
+On the flat ABIs, `AgglomerateResult` carries a single **flat** cell map (unlike `SubdivideResult`'s per-block one) — an output cell's index is a function of which group it joined, not which input block it came from. The C API's `mio_agglomerate_result_cell_map` accordingly takes **no `block` parameter**, and there is correspondingly no `mio_agglomerate_result_num_cell_maps` (there is exactly one array). WASM's `agglomerate(mesh, targetGroupSize, returnMaps, options)` returns `{mesh, cellMap, numFacesMerged, numRejected}` (the same flat map) when `returnMaps` is set.
 
-This operation is also reachable as an `Agglomerate` step in the [settings pipeline](/pipeline) and in the browser viewer's `convertSurfaceOps` chain (`{op: 'agglomerate', targetGroupSize: 8}`).
+This operation is also reachable as an `Agglomerate` step in the [settings pipeline](/pipeline) (keys `TargetGroupSize`, `MergeCoplanarFaces`, `CoplanarAngle`, `MinSphericity`) and in the browser viewer's `convertSurfaceOps` chain (`{op: 'agglomerate', targetGroupSize: 8, mergeCoplanarFaces: true}`).

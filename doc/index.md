@@ -4,7 +4,7 @@ layout: home
 hero:
   name: meshio++
   text: I/O and operations for many mesh formats
-  tagline: One unified mesh data model, 84 file formats, 39 mesh and 6 data operations, a fast C++ core with pure-Python fallbacks, and six language surfaces over it.
+  tagline: One unified mesh data model, 84 file formats, 45 mesh and 6 data operations, a fast C++ core with pure-Python fallbacks, and six language surfaces over it.
   image:
     src: /logo-icon.svg
     alt: meshio++
@@ -36,7 +36,7 @@ features:
     details: A C++20 core behind a pybind11 extension with zero-copy numpy at the I/O boundary, optional HDF5, netCDF and compression codecs, and a pure-Python reference implementation for every format.
     link: /architecture
   - icon: 🛠️
-    title: 39 mesh + 6 data operations
+    title: 45 mesh + 6 data operations
     details: Quality, skin and surface extraction, reordering, cleaning, cropping, splitting, partitioning, refinement and coarsening, decimation, remeshing, smoothing, slicing, isosurfaces, gradients, interpolation, curvature, normals, repair, shrinkwrap, Sobolev deformation and tensor invariants, on every surface.
     link: /architecture#the-operations-layer
   - icon: 🌐

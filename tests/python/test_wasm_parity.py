@@ -77,6 +77,7 @@ _JS_TO_C = {
     "provenanceBegin": "provenance_scope_begin",
     "provenanceEnd": "provenance_scope_end",
     "runPipeline": "pipeline_run_json",
+    "resampleSequence": "sequence_resample",
 }
 
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no
