@@ -153,3 +153,113 @@ function add_region!(m::Mesh, name::AbstractString, kind::Symbol,
         "a :side region needs (cell, facet) pairs: pass a 2xN matrix"))
     add_region!(m, name, kind, reshape(collect(entries), 1, :); kwargs...)
 end
+
+const _REGION_OPS = Dict(:union => Int32(0), :intersection => Int32(1),
+                         :intersect => Int32(1), :difference => Int32(2),
+                         :rename => Int32(3), :retag => Int32(4), :delete => Int32(5))
+
+"""
+    edit_regions(mesh, op, inputs; output="", kind=nothing, dim=nothing, tag=nothing,
+                 keep_inputs=true) -> Mesh
+
+Apply one region edit to a copy of `mesh` (points, cells and data untouched).
+`op` is `:union`, `:intersection`, `:difference` (two or more `inputs` of one
+kind, the result named `output`), `:rename` (one input, to `output`), `:retag`
+(one input, new `tag` and/or `dim`) or `:delete`. `inputs` are region names;
+`kind` (`:point`, `:cell`, `:side`) pins their kind when a name is shared. See
+`doc/regions.md`.
+"""
+function edit_regions(m::Mesh, op::Symbol, inputs::AbstractVector{<:AbstractString};
+                      output::AbstractString="", kind::Union{Nothing,Symbol}=nothing,
+                      dim::Union{Nothing,Integer}=nothing,
+                      tag::Union{Nothing,Integer}=nothing, keep_inputs::Bool=true)
+    haskey(_REGION_OPS, op) ||
+        throw(ArgumentError("meshio++: edit_regions: unknown operation :$op"))
+    names = [Vector{UInt8}(codeunits(String(n) * "\0")) for n in inputs]
+    out_c = Vector{UInt8}(codeunits(String(output) * "\0"))
+    k = kind === nothing ? Int32(-1) : Int32(_kind_val(kind))
+    ptr = GC.@preserve names out_c begin
+        sels = [_CRegionSelector(Cstring(pointer(n)), k, Int32(0), Int64(-2), Int64(-2),
+                                 (Int64(0), Int64(0))) for n in names]
+        ccall(_sym(:mio_edit_regions), Ptr{Cvoid},
+              (Ptr{Cvoid}, Int32, Ptr{_CRegionSelector}, Int64, Cstring, Int64, Int64, Int32),
+              _handle(m), _REGION_OPS[op], sels, Int64(length(sels)),
+              isempty(output) ? C_NULL : Cstring(pointer(out_c)),
+              dim === nothing ? Int64(-2) : Int64(dim),
+              tag === nothing ? Int64(-2) : Int64(tag), Int32(keep_inputs))
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    remove_region!(mesh, index)
+
+Remove the `index`-th region (1-based, [`regions`](@ref) order). Invalidates
+every outstanding borrow into `mesh`.
+"""
+function remove_region!(m::Mesh, index::Integer)
+    _check(ccall(_sym(:mio_mesh_remove_region), Cint, (Ptr{Cvoid}, Int64),
+                 _handle(m), Int64(index - 1)))
+    m
+end
+
+"""
+    match_periodic_nodes(mesh, slave, master; translate=nothing, matrix=nothing,
+                         atol=1e-8, require_complete=true)
+        -> (; slave, master, unmatched, num_fixed, max_residual)
+
+The master node each node of the `slave` region maps onto under an affine
+transform -- `translate` (3 numbers) or `matrix` (16 numbers, a row-major 4x4)
+-- within `atol`. Node ids are **1-based**; `slave` is ascending and `master`
+aligned with it. With `require_complete=false` unmatched slave nodes are
+returned instead of failing. See `doc/periodic.md`.
+"""
+function match_periodic_nodes(m::Mesh, slave::AbstractString, master::AbstractString;
+                              translate=nothing, matrix=nothing, atol::Real=1e-8,
+                              require_complete::Bool=true)
+    mat = zeros(16)
+    mat[1] = mat[6] = mat[11] = mat[16] = 1.0
+    if matrix !== nothing
+        length(matrix) == 16 ||
+            throw(ArgumentError("meshio++: match_periodic_nodes: matrix needs 16 numbers"))
+        mat .= Float64.(vec(collect(matrix)))
+    elseif translate !== nothing
+        length(translate) == 3 ||
+            throw(ArgumentError("meshio++: match_periodic_nodes: translate needs 3 numbers"))
+        mat[4], mat[8], mat[12] = Float64.(collect(translate))
+    end
+    s_c = Vector{UInt8}(codeunits(String(slave) * "\0"))
+    m_c = Vector{UInt8}(codeunits(String(master) * "\0"))
+    handle = GC.@preserve s_c m_c begin
+        ss = _CRegionSelector(Cstring(pointer(s_c)), Int32(-1), Int32(0), Int64(-2), Int64(-2),
+                              (Int64(0), Int64(0)))
+        ms = _CRegionSelector(Cstring(pointer(m_c)), Int32(-1), Int32(0), Int64(-2), Int64(-2),
+                              (Int64(0), Int64(0)))
+        opts = _CPeriodicOpts(Tuple(mat), Float64(atol), Int32(require_complete), Int32(0),
+                              ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_match_periodic_nodes), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRegionSelector}, Ref{_CRegionSelector}, Ref{_CPeriodicOpts}),
+              _handle(m), Ref(ss), Ref(ms), Ref(opts))
+    end
+    _check_ptr(handle)
+    try
+        np, nu, nf = Ref{Int64}(0), Ref{Int64}(0), Ref{Int64}(0)
+        res = Ref{Cdouble}(0.0)
+        _check(ccall(_sym(:mio_periodic_pairs_info), Cint,
+                     (Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Cdouble}),
+                     handle, np, nu, nf, res))
+        take(sym, n) = begin
+            n == 0 && return Int64[]
+            cnt = Ref{Int64}(0)
+            p = ccall(_sym(sym), Ptr{Int64}, (Ptr{Cvoid}, Ptr{Int64}), handle, cnt)
+            p == C_NULL && _throw_status(MIO_ERR_INTERNAL)
+            unsafe_wrap(Array, p, (Int(cnt[]),); own=false) .+ 1
+        end
+        (slave=take(:mio_periodic_pairs_slave, np[]),
+         master=take(:mio_periodic_pairs_master, np[]),
+         unmatched=take(:mio_periodic_pairs_unmatched, nu[]),
+         num_fixed=Int(nf[]), max_residual=res[])
+    finally
+        ccall(_sym(:mio_periodic_pairs_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end

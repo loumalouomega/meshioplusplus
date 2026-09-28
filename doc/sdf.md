@@ -44,6 +44,8 @@ A *reentrant* corner does **not** expose the difference — at a concave edge bo
 
 `winding-number` has no acceleration structure short of a fast-multipole expansion, so `max_winding_work` (default 2e9 on `n_queries × n_triangles`) refuses by name rather than silently running for an hour. Pair it with a band.
 
+The worst-case distance between two whole surfaces, both ways, is [`hausdorff_distance`](/hausdorff), which samples each surface and reduces this kernel's unsigned distances.
+
 ## Is your surface even closed?
 
 ```python

@@ -38,6 +38,7 @@ from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
+from ._feature_edges import feature_edges
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
 from ._hessian import hessian
@@ -49,7 +50,9 @@ from ._provenance import add_operation as _prov_add_operation
 from ._provenance import set_source as _prov_set_source
 from ._provenance import set_target as _prov_set_target
 from ._quality import attach_quality
+from ._quality_gate import check_quality, format_quality_gate
 from ._refine import refine
+from ._region_ops import edit_regions
 from ._remesh import remesh
 from ._remesh_volume import remesh_volume
 from ._reorder import reorder
@@ -134,6 +137,16 @@ _OP_TABLE = {
         "RecordParentIds",
         "Region",
     ),
+    "FeatureEdges": (
+        "FeatureAngle",
+        "Feature",
+        "Boundary",
+        "NonManifold",
+        "Inconsistent",
+        "Region",
+    ),
+    "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
+    "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
     "Repair": (
         "FixOrientation",
         "OrientOutward",
@@ -223,7 +236,12 @@ _OP_TABLE = {
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
     "Subdivide": ("RecordParentIds",),
-    "Agglomerate": ("TargetGroupSize",),
+    "Agglomerate": (
+        "TargetGroupSize",
+        "MergeCoplanarFaces",
+        "CoplanarAngle",
+        "MinSphericity",
+    ),
     "Crop": (
         "Bbox",
         "Point",
@@ -625,6 +643,50 @@ def _apply_step(mesh, step, steps, warnings):
                 "pair(s) wind the same way, so the sign of 'curvature:mean' is "
                 "not trustworthy"
             )
+    elif op == "FeatureEdges":
+        mesh, report = feature_edges(
+            mesh,
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            feature=_flag(step, "Feature", True),
+            boundary=_flag(step, "Boundary", True),
+            non_manifold=_flag(step, "NonManifold", True),
+            inconsistent=_flag(step, "Inconsistent", True),
+            region=_text(step, "Region", ""),
+            return_report=True,
+        )
+        entry["NumFeature"] = report["num_feature"]
+        entry["NumBoundary"] = report["num_boundary"]
+        entry["NumNonManifold"] = report["num_non_manifold"]
+        entry["NumInconsistent"] = report["num_inconsistent"]
+    elif op == "QualityGate":
+        # A gate, not a transform: the mesh passes through untouched, and a
+        # failed check stops the pipeline with the summary as the error.
+        result = check_quality(
+            mesh,
+            _svec(step, "Require"),
+            max_inverted=int(_number(step, "MaxInverted", 0)),
+            max_degenerate=int(_number(step, "MaxDegenerate", 0)),
+        )
+        if not result["passed"]:
+            raise RuntimeError(
+                "meshio++: pipeline: QualityGate failed\n" + format_quality_gate(result)
+            )
+        entry["NumChecks"] = len(result["checks"])
+        entry["NumFailed"] = sum(not c["passed"] for c in result["checks"])
+    elif op == "EditRegions":
+        kind = _text(step, "Kind", "") or None
+        edit = {
+            "op": _text(step, "Edit", ""),
+            "inputs": [{"name": n, "kind": kind} for n in _svec(step, "Inputs")],
+            "output": _text(step, "Output", ""),
+            "keep_inputs": _flag(step, "KeepInputs", True),
+        }
+        if "Dim" in step:
+            edit["dim"] = int(_number(step, "Dim", -1))
+        if "Tag" in step:
+            edit["tag"] = int(_number(step, "Tag", -1))
+        mesh = edit_regions(mesh, [edit])
+        entry["NumRegions"] = len(mesh.regions)
     elif op == "Normals":
         # An absent SplitAngle means one smooth normal per point; a number is
         # the crease angle in degrees, and the split appends points.
@@ -884,10 +946,16 @@ def _apply_step(mesh, step, steps, warnings):
             record_parent_ids=_flag(step, "RecordParentIds", False),
         )
     elif op == "Agglomerate":
-        mesh = agglomerate(
+        mesh, report = agglomerate(
             mesh,
             target_group_size=int(_number(step, "TargetGroupSize", 8.0)),
+            merge_coplanar_faces=_flag(step, "MergeCoplanarFaces", False),
+            coplanar_angle=_number(step, "CoplanarAngle", 1.0),
+            min_sphericity=_number(step, "MinSphericity", 0.0),
+            return_report=True,
         )
+        entry["NumFacesMerged"] = float(report["num_faces_merged"])
+        entry["NumRejected"] = float(report["num_rejected"])
     elif op == "Crop":
         has_bbox = "Bbox" in step
         has_plane = "Point" in step or "Normal" in step

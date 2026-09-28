@@ -57,6 +57,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/crease_edges.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -71,7 +72,6 @@ using detail::decim_accumulate_quadrics;
 using detail::decim_count_common;
 using detail::decim_face_normal;
 using detail::decim_face_planes;
-using detail::decim_mark_features;
 using detail::decim_place;
 using detail::decim_quadric_error;
 using detail::decim_sorted_erase;
@@ -331,8 +331,11 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
             if (boundary[i])
                 pinned[i] = 1;
     if (rOptions.mPreserveFeatures) {
-        const double cos_thr = std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
-        decim_mark_features(csr, n, fnormals, cos_thr, pinned);
+        // The shared per-edge crease test (v16.23.0): only the two faces that
+        // share an edge are compared, and non-manifold edges pin too.
+        detail::pin_crease_endpoints(
+            detail::crease_edges_triangles(faces.mCorners, fnormals, rOptions.mFeatureAngleDeg),
+            pinned);
     }
 
     // --- phase 3: per-vertex quadrics (fixed ascending-face FP order) --------

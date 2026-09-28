@@ -2,6 +2,7 @@ import numpy as np
 
 from .._common import warn
 from .._helpers import read, read_metadata, reader_map
+from ._json import emit_json
 
 
 def add_args(parser):
@@ -26,6 +27,7 @@ def add_args(parser):
             "connectivity."
         ),
     )
+    parser.add_argument("--json", action="store_true", help="emit the summary as JSON")
 
 
 def _print_metadata(meta):
@@ -85,13 +87,74 @@ def _print_metadata(meta):
         print("  (no header-only path for this format; the file was read in full)")
 
 
+def _block_ids(cells):
+    data = cells.data
+    if isinstance(data, list):
+        return np.concatenate(
+            [np.asarray(r).ravel() for r in data] or [np.empty(0, int)]
+        )
+    return np.asarray(data).ravel()
+
+
+def _mesh_summary(mesh):
+    """The JSON shape of a full-read ``info`` (the native CLI emits the same)."""
+    n = len(mesh.points)
+    blocks = []
+    for cb in mesh.cells:
+        ragged = isinstance(cb.data, list)
+        blocks.append(
+            {
+                "type": cb.type,
+                "num_cells": len(cb.data),
+                "nodes_per_cell": 0 if ragged else int(np.asarray(cb.data).shape[1]),
+                "ragged": ragged,
+            }
+        )
+    ids = [_block_ids(cb) for cb in mesh.cells]
+    consistent = all(not np.any(i > n) for i in ids)
+    unused = None
+    if consistent:
+        used = np.zeros(n, dtype=bool)
+        for i in ids:
+            used[i[(i >= 0) & (i < n)]] = True
+        unused = int((~used).sum())
+    return {
+        "num_points": n,
+        "point_dim": int(np.asarray(mesh.points).shape[1]) if n else 0,
+        "num_cells": sum(b["num_cells"] for b in blocks),
+        "cell_blocks": blocks,
+        "point_data_names": sorted(mesh.point_data),
+        "cell_data_names": sorted(mesh.cell_data),
+        "field_data_names": sorted(mesh.field_data),
+        "regions": [
+            {
+                "name": r.name,
+                "kind": r.kind,
+                "dim": r.dim,
+                "tag": r.tag,
+                "num_entries": len(r.entries),
+            }
+            for r in sorted(getattr(mesh, "regions", None) or [], key=lambda r: r.key)
+        ],
+        "consistent": consistent,
+        "num_unused_points": unused,
+    }
+
+
 def info(args):
     if args.fast:
-        _print_metadata(read_metadata(args.infile, file_format=args.input_format))
+        meta = read_metadata(args.infile, file_format=args.input_format)
+        if args.json:
+            emit_json(meta)
+        else:
+            _print_metadata(meta)
         return 0
 
     # read mesh data
     mesh = read(args.infile, file_format=args.input_format)
+    if args.json:
+        emit_json(_mesh_summary(mesh))
+        return 0
     print(mesh)
 
     # check if the cell arrays are consistent with the points

@@ -218,9 +218,19 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v16.25.0 additions
+
+- `agglomerate(mesh; target_group_size=8, merge_coplanar_faces=false, coplanar_angle=1.0, min_sphericity=0.0) -> (; mesh, cell_map, num_faces_merged, num_rejected)` — the coplanar-face merge and sphericity gate of [agglomerate](/agglomerate).
+- `resample(seq, out_path, times; method=:linear, clamp=false, blend_points=false, format="")` — resample a `Sequence` onto new times (`:linear`, `:nearest` or `:previous`), at most two source meshes live; and `blend_steps(a, b, w; blend_points=false) -> Mesh`. See [Resampling onto new times](/sequences#resampling-onto-new-times). Both are exported.
+
 ## v15.4.0 additions
 
 - `compute_normals(mesh; point_normals=true, cell_normals=false, weight=:angle, split_angle=nothing, record_parent_ids=false, region="") -> (; mesh, quality, num_isolated, num_undefined, num_degenerate, num_split_points, num_added_points)` — point and cell normals of a surface, written as `normals` (`(n, 3)` point data; `(cells, 3)` cell data with `cell_normals`). `split_angle=nothing` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Never reorients: check `quality.inconsistent_pairs`. See [normals](/normals).
+- `check_quality(mesh; require="", max_inverted=0, max_degenerate=0) -> (; passed, num_checks, num_failed, num_cells, num_inverted, num_degenerate, summary)` — the [quality gate](/mesh_quality#quality-gate).
+- `feature_edges(mesh; feature_angle=30.0, feature=true, boundary=true, non_manifold=true, inconsistent=true, region="") -> (; mesh, num_feature, num_boundary, num_non_manifold, num_inconsistent)` — the sharp, open, non-manifold and inconsistently wound edges of a surface (or of a volume mesh's skin) as a `line` mesh with `feature:kind`/`feature:angle`. See [feature edges](/feature_edges).
+- `hausdorff_distance(a, b; face_samples=0, region_a="", region_b="") -> (; distance, a_to_b, b_to_a, mean_a_to_b, rms_a_to_b, mean_b_to_a, rms_b_to_a, num_samples_a, num_samples_b, worst_point_a, worst_point_b)`. See [Hausdorff distance](/hausdorff).
+- `edit_regions(mesh, op, inputs; output="", kind=nothing, dim=nothing, tag=nothing, keep_inputs=true) -> Mesh` (`op` one of `:union`, `:intersection`, `:difference`, `:rename`, `:retag`, `:delete`) and `remove_region!(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
+- `match_periodic_nodes(mesh, slave, master; translate=nothing, matrix=nothing, atol=1e-8, require_complete=true) -> (; slave, master, unmatched, num_fixed, max_residual)` — 1-based node ids; `matrix` is 16 numbers, row-major. See [periodic node pairs](/periodic).
 
 ## v10.9.0 additions
 
@@ -307,6 +317,7 @@ for i in 1:length(seq)
 end
 to_timeseries(seq, "series.xdmf")         # fan-in
 to_timeseries(seq, "series2.xdmf"; ascii=true)  # "XML" data format, no HDF5 needed
+resample(seq, "u_{index}.vtu", 0:0.1:2)   # onto new times, two meshes live
 close(seq)
 
 timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out

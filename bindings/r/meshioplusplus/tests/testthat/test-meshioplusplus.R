@@ -1246,3 +1246,86 @@ test_that("sobolev_deform filters a displacement field", {
   expect_equal(mio_points(k$mesh)[1, ], pts[1, ] + 0.4)
   expect_error(mio_sobolev_deform(m, "missing", 1.0))
 })
+
+test_that("feature edges, Hausdorff, region edits and periodic pairs", {
+  conn <- matrix(c(
+    1, 3, 2, 1, 4, 3, 5, 6, 7, 5, 7, 8,
+    1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6,
+    3, 4, 8, 3, 8, 7, 4, 1, 5, 4, 5, 8
+  ), nrow = 3)
+  pts <- matrix(c(
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1
+  ), nrow = 3)
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, pts)
+  mio_add_cell_block(m, "triangle", conn)
+
+  fe <- mio_feature_edges(m)
+  on.exit(mio_release(fe$mesh), add = TRUE)
+  expect_equal(fe$num_feature, 12)
+  expect_equal(fe$num_boundary, 0)
+  expect_error(mio_feature_edges(m, feature_angle = 200))
+
+  h <- mio_hausdorff_distance(m, m, face_samples = 2)
+  expect_equal(h$distance, 0)
+  expect_equal(h$num_samples_a, 8 + 12 * 4)
+
+  mio_add_region(m, "bottom", "point", c(1, 2, 3, 4))
+  mio_add_region(m, "top", "point", c(5, 6, 7, 8))
+  u <- mio_edit_regions(m, "union", c("bottom", "top"), output = "all")
+  on.exit(mio_release(u), add = TRUE)
+  expect_length(mio_regions(u), 3)
+  mio_remove_region(u, 1)
+  expect_length(mio_regions(u), 2)
+  expect_error(mio_edit_regions(m, "xor", "bottom"), "unknown operation")
+
+  p <- mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 1))
+  expect_equal(p$slave, c(1, 2, 3, 4))
+  expect_equal(p$master, c(5, 6, 7, 8))
+  expect_equal(p$num_fixed, 0)
+  expect_error(mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 0.5)))
+
+  q <- mio_check_quality(m, "min_angle >= 30")
+  expect_true(q$passed)
+  expect_equal(q$num_checks, 3)
+  expect_false(mio_check_quality(m, "min_angle >= 50")$passed)
+  expect_error(mio_check_quality(m, "bogus >= 1"))
+})
+
+test_that("agglomerate options, blend_steps and sequence resampling", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  a <- mio_agglomerate(m, target_group_size = 2, merge_coplanar_faces = TRUE,
+                       min_sphericity = 0.1)
+  expect_true(a$num_faces_merged >= 0)
+  expect_true(a$num_rejected >= 0)
+  mio_release(a$mesh)
+
+  n <- mio_num_points(m)
+  dir <- tempfile()
+  dir.create(dir)
+  for (k in 0:1) {
+    mk <- fixture()
+    mio_add_point_data(mk, "u", rep(k * 10, n))
+    mio_write(mk, file.path(dir, sprintf("step_%d.vtu", k)))
+    mio_release(mk)
+  }
+  b0 <- mio_read(file.path(dir, "step_0.vtu"))
+  b1 <- mio_read(file.path(dir, "step_1.vtu"))
+  on.exit({ mio_release(b0); mio_release(b1) }, add = TRUE)
+  h <- mio_blend_steps(b0, b1, 0.25)
+  expect_equal(as.numeric(mio_point_data(h, "u")), rep(2.5, n))
+  mio_release(h)
+
+  seq <- mio_sequence(file.path(dir, "step_*.vtu"), time_from = "index")
+  on.exit(mio_sequence_free(seq), add = TRUE)
+  mio_sequence_resample(seq, file.path(dir, "out_{index}.vtu"), c(0, 0.5, 1))
+  r <- mio_read(file.path(dir, "out_1.vtu"))
+  expect_equal(as.numeric(mio_point_data(r, "u")), rep(5, n))
+  mio_release(r)
+  expect_error(mio_sequence_resample(seq, file.path(dir, "bad_{index}.vtu"), 2))
+  expect_error(mio_sequence_resample(seq, file.path(dir, "x_{index}.vtu"), 0, method = "cubic"))
+})

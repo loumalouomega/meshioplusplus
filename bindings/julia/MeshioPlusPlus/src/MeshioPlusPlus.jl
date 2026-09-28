@@ -91,7 +91,7 @@ export cell_data_num_blocks
 # Building
 export set_points!, add_cell_block!, add_point_data!, append_cell_data!, add_field_data!
 export add_polygon_block!, add_polyhedron_block!
-export regions, add_region!
+export regions, add_region!, remove_region!, edit_regions, match_periodic_nodes
 
 # Operations
 export extract_surface, extract_skin, attach_quality, quality_counts
@@ -103,7 +103,7 @@ export remesh
 export remesh_volume
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
-export compute_curvature, compute_normals
+export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
@@ -113,7 +113,7 @@ export run_pipeline_file, run_pipeline_json, pipeline_has_json
 # Sequences (multi-file / transient datasets). `read`/`step`/`time`/`path` and
 # friends would shadow Base, so only the non-colliding names are exported;
 # reach the rest as MeshioPlusPlus.step(seq, i) etc.
-export Sequence, read_step, to_timeseries, timeseries_to_sequence
+export Sequence, read_step, to_timeseries, timeseries_to_sequence, resample, blend_steps
 export run_sequence_file, run_sequence_json
 
 # Transient (time-series) XDMF writing

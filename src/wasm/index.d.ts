@@ -20,6 +20,40 @@ export interface SurfaceQualityInfo {
   watertight: boolean;
 }
 
+/** Names one region: its name plus, optionally, its kind, dimension and tag. */
+export interface RegionSelector {
+  name: string;
+  kind?: 'point' | 'cell' | 'side';
+  dim?: number;
+  tag?: number;
+}
+
+/** One `editRegions` edit. */
+export interface RegionEdit {
+  op: 'union' | 'intersection' | 'difference' | 'rename' | 'retag' | 'delete';
+  inputs: Array<string | RegionSelector>;
+  output?: string;
+  dim?: number;
+  tag?: number;
+  keepInputs?: boolean;
+}
+
+/** `agglomerate`'s options (see doc/agglomerate.md). */
+export interface AgglomerateOptions {
+  mergeCoplanarFaces?: boolean;
+  coplanarAngle?: number;
+  minSphericity?: number;
+}
+
+/** `resampleSequence`'s options: the settings document's `Resample` object. */
+export interface ResampleOptions {
+  Times?: number[] | { Start: number; Stop: number; Step: number };
+  TimesFrom?: string;
+  Method?: 'linear' | 'nearest' | 'previous';
+  Extrapolate?: 'error' | 'clamp';
+  BlendPoints?: boolean;
+}
+
 /**
  * A `point_data`/`cell_data`/`field_data` array's JS type: it carries its
  * source dtype crossing the WASM boundary instead of always widening to
@@ -1192,6 +1226,34 @@ export interface MeshioPlusPlusModule {
    *
    * @returns the number of steps written.
    */
+  /**
+   * Resample `source` onto new times and write it to `outPath`: one file per
+   * target time when it carries `{step}`/`{index}`, else one series file.
+   * `resample` is the settings document's `Resample` object. At most two
+   * source meshes are alive at once. See doc/sequences.md.
+   *
+   * @returns the number of target times written.
+   */
+  resampleSequence(
+    source: string | string[],
+    outPath: string,
+    resample: ResampleOptions,
+    outFormat?: string,
+    options?: {
+      format?: string;
+      times?: number[];
+      timeFrom?: 'auto' | 'file' | 'filename' | 'index';
+      sort?: boolean;
+    },
+  ): number;
+
+  /**
+   * `a` with every floating-point data array replaced by `(1 - w) a + w b`
+   * (integer data from the nearer step); both steps must share a topology.
+   * `blendPoints` blends the coordinates too.
+   */
+  blendSteps(a: Mesh, b: Mesh, w: number, blendPoints?: boolean): Mesh;
+
   sequenceToTimeseries(
     source: string | string[],
     outPath: string,
@@ -1943,6 +2005,125 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Quality gate: score every cell and test the `require` thresholds (text
+   * such as `'scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%'`) plus the
+   * inverted and degenerate cell counts (`maxInverted`/`maxDegenerate`,
+   * default 0, negative disables). `summary` is the text both CLIs print. See
+   * doc/mesh_quality.md.
+   * @throws {Error} on a malformed specification or an unknown metric.
+   */
+  checkQuality(
+    mesh: Mesh,
+    require?: string,
+    maxInverted?: number,
+    maxDegenerate?: number,
+  ): {
+    passed: boolean;
+    numCells: number;
+    numInverted: number;
+    numDegenerate: number;
+    checks: Array<{
+      name: string;
+      metric: string;
+      min: number;
+      max: number;
+      maxFraction: number;
+      evaluated: number;
+      violations: number;
+      fraction: number;
+      worst: number;
+      worstCell: number;
+      passed: boolean;
+    }>;
+    summary: string;
+  };
+
+  /**
+   * The sharp, open, non-manifold and inconsistently wound edges of a surface
+   * (or of a volume mesh's skin) as a mesh of `line` cells over the input's
+   * points, with cell data `feature:kind` (1 feature, 2 boundary,
+   * 3 non-manifold, 4 inconsistent) and `feature:angle` (degrees). The counts
+   * cover the whole surface, selected or not. See doc/feature_edges.md.
+   * @throws {Error} on an angle outside [0, 180] or an unknown region.
+   */
+  featureEdges(
+    mesh: Mesh,
+    featureAngle?: number,
+    feature?: boolean,
+    boundary?: boolean,
+    nonManifold?: boolean,
+    inconsistent?: boolean,
+    region?: string,
+  ): {
+    mesh: Mesh;
+    numFeature: number;
+    numBoundary: number;
+    numNonManifold: number;
+    numInconsistent: number;
+  };
+
+  /**
+   * The (sampled) Hausdorff distance between the surfaces of two meshes; a
+   * volume mesh contributes its skin. `faceSamples = s > 0` also samples the
+   * centroids of the `s*s` sub-triangles of every triangle (vertices alone
+   * give a lower bound). See doc/hausdorff.md.
+   * @throws {Error} when a mesh has no surface triangles.
+   */
+  hausdorffDistance(
+    a: Mesh,
+    b: Mesh,
+    faceSamples?: number,
+    regionA?: string,
+    regionB?: string,
+  ): {
+    distance: number;
+    aToB: number;
+    bToA: number;
+    meanAToB: number;
+    rmsAToB: number;
+    meanBToA: number;
+    rmsBToA: number;
+    numSamplesA: number;
+    numSamplesB: number;
+    worstPointA: Float64Array;
+    worstPointB: Float64Array;
+  };
+
+  /**
+   * Apply region edits, in order, to a copy of `mesh` (points, cells and data
+   * untouched): `union`, `intersection`, `difference` (two or more inputs of
+   * one kind, result named `output`), `rename`, `retag` (`tag`/`dim`) and
+   * `delete`. An input names exactly one region; pin `kind`/`dim`/`tag` when a
+   * name is shared. See doc/regions.md.
+   * @throws {Error} on a missing or ambiguous region, mixed kinds, or a result
+   *   that would replace an unrelated region.
+   */
+  editRegions(mesh: Mesh, edits: RegionEdit | RegionEdit[]): Mesh;
+
+  /**
+   * The master node each node of the `slave` region maps onto under the
+   * row-major 4x4 affine `matrix` (16 numbers), within `atol`. `slave` is
+   * ascending and `master` aligned with it (0-based point ids). See
+   * doc/periodic.md.
+   * @throws {Error} on a master claimed twice or, with `requireComplete`, an
+   *   unmatched slave node.
+   */
+  matchPeriodicNodes(
+    mesh: Mesh,
+    slave: string | RegionSelector,
+    master: string | RegionSelector,
+    matrix: ArrayLike<number>,
+    atol?: number,
+    requireComplete?: boolean,
+  ): {
+    slave: Int32Array;
+    master: Int32Array;
+    unmatched: Int32Array;
+    numFixed: number;
+    maxResidual: number;
+  };
+
+  /**
    * Surface repair beyond `clean`: weld (opt-in) -> triangulate -> split
    * bowties -> orient by the topological half-edge rule per connected
    * component -> fan-fill boundary loops of at most `maxHoleEdges` edges,
@@ -2090,10 +2271,26 @@ export interface MeshioPlusPlusModule {
    *
    * With `returnMaps: true`, returns `{mesh, cellMap}` instead of a bare
    * mesh -- a single FLAT array (global input cell index -> global output
-   * cell index), unlike the other ops' per-block `cellMaps`.
+   * cell index), unlike the other ops' per-block `cellMaps` -- plus
+   * `numFacesMerged` and `numRejected` for the `options` below.
+   *
+   * `options.mergeCoplanarFaces` fuses coplanar shared and boundary faces
+   * (within `coplanarAngle` degrees, default 1) into one polygon;
+   * `options.minSphericity` (0 = off) refuses an absorption that would drop a
+   * group's sphericity below it. See doc/agglomerate.md.
    */
-  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: false): Mesh;
-  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: true): { mesh: Mesh; cellMap: Int32Array };
+  agglomerate(
+    mesh: Mesh,
+    targetGroupSize?: number,
+    returnMaps?: false,
+    options?: AgglomerateOptions,
+  ): Mesh;
+  agglomerate(
+    mesh: Mesh,
+    targetGroupSize: number | undefined,
+    returnMaps: true,
+    options?: AgglomerateOptions,
+  ): { mesh: Mesh; cellMap: Int32Array; numFacesMerged: number; numRejected: number };
 
   /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,

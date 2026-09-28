@@ -101,11 +101,17 @@
 #include "meshioplusplus/properties.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
+#include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -1992,10 +1998,50 @@ struct SettingsDocument {
 /// does: `run_pipeline_js` projects it down to the single-mesh `Pipeline` when
 /// no sequence key was used, so a plain document takes the physically
 /// unchanged path and a transient one is routed to the sequence driver.
+/// The `Resample` settings object (or `resampleSequence`'s options):
+/// `{Times: [...] | {Start, Stop, Step}, TimesFrom, Method, Extrapolate,
+/// BlendPoints}` -- the same keys and rules as the core settings parser.
+meshioplusplus::SequenceResample val_to_resample(const val& rObject, const char* pWhere) {
+    check_settings_keys(rObject, pWhere,
+                        {"Times", "TimesFrom", "Method", "Extrapolate", "BlendPoints"});
+    meshioplusplus::SequenceResample rs;
+    val times = rObject["Times"];
+    if (!times.isUndefined() && !times.isNull()) {
+        if (val::global("Array").call<bool>("isArray", times) ||
+            val::global("ArrayBuffer").call<bool>("isView", times)) {
+            const unsigned n = times["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i)
+                rs.mTimes.push_back(times[i].as<double>());
+        } else {
+            check_settings_keys(times, "Resample.Times", {"Start", "Stop", "Step"});
+            rs.mTimes = meshioplusplus::resample_times_range(times["Start"].as<double>(),
+                                                             times["Stop"].as<double>(),
+                                                             times["Step"].as<double>());
+        }
+    }
+    rs.mTimesFrom = settings_string(rObject, "TimesFrom", pWhere);
+    if (rs.mTimes.empty() == rs.mTimesFrom.empty())
+        throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere +
+                                        " needs exactly one of Times and TimesFrom");
+    const std::string method = settings_string(rObject, "Method", pWhere);
+    if (!method.empty())
+        rs.mMethod = meshioplusplus::resample_method_from_name(method);
+    const std::string extrap = settings_string(rObject, "Extrapolate", pWhere);
+    if (extrap == "clamp")
+        rs.mExtrapolate = meshioplusplus::ResampleExtrapolate::Clamp;
+    else if (!extrap.empty() && extrap != "error")
+        throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere +
+                                        ".Extrapolate must be \"error\" or \"clamp\"");
+    val blend = rObject["BlendPoints"];
+    if (!blend.isUndefined() && !blend.isNull())
+        rs.mBlendPoints = blend.as<bool>();
+    return rs;
+}
+
 SettingsDocument val_to_settings(const val& rSettings) {
     check_settings_keys(
         rSettings, "the settings object",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"});
+        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
     SettingsDocument parsed;
     meshioplusplus::SequencePipeline& pipeline = parsed.mSeq;
     val version = rSettings["Version"];
@@ -2016,6 +2062,12 @@ SettingsDocument val_to_settings(const val& rSettings) {
     if (!workers.isUndefined() && !workers.isNull()) {
         parsed.mSequenceKeys = true;
         pipeline.mWorkers = static_cast<int>(workers.as<double>());
+    }
+
+    val resample = rSettings["Resample"];
+    if (!resample.isUndefined() && !resample.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mResample = val_to_resample(resample, "Resample");
     }
 
     val input = rSettings["Input"];
@@ -2243,6 +2295,45 @@ double sequence_to_timeseries_js(const val& rSource, const std::string& rOutPath
         const std::size_t n = meshioplusplus::sequence_expand(in).size();
         meshioplusplus::sequence_to_timeseries(in, out);
         return static_cast<double>(n);
+    });
+}
+
+/**
+ * @brief Resample `source` onto new times and write it to `outPath`: one file
+ * per target time when it carries `{step}`/`{index}`, else one series file.
+ * `resample` is the `Resample` settings object (`{Times, TimesFrom, Method,
+ * Extrapolate, BlendPoints}`); `options` the sequence options. At most two
+ * source meshes are alive at once. See doc/sequences.md.
+ *
+ * @return the number of target times written.
+ */
+double resample_sequence_js(const val& rSource, const std::string& rOutPath, const val& rResample,
+                            const std::string& rOutFormat, const val& rOptions) {
+    return with_js_errors([&]() -> double {
+        meshioplusplus::SequencePipeline p;
+        p.mInput = val_to_sequence_input(rSource, rOptions);
+        p.mOutput.mPath = rOutPath;
+        p.mOutput.mFormat = rOutFormat;
+        p.mResample = val_to_resample(rResample, "the resample options");
+        meshioplusplus::run_sequence_pipeline(p);
+        if (!p.mResample->mTimes.empty())
+            return static_cast<double>(p.mResample->mTimes.size());
+        meshioplusplus::SequenceInput other;
+        other.mPattern = p.mResample->mTimesFrom;
+        return static_cast<double>(meshioplusplus::sequence_expand(other).size());
+    });
+}
+
+/**
+ * @brief `a` with every floating-point data array blended to `(1 - w) a + w b`
+ * (integer data from the nearer step); the steps must share a topology.
+ * See operations/blend.hpp.
+ */
+val blend_steps_js(const val& rA, const val& rB, double w, bool blendPoints) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::BlendOptions opts;
+        opts.mBlendPoints = blendPoints;
+        return mesh_to_val(meshioplusplus::blend_steps(val_to_mesh(rA), val_to_mesh(rB), w, opts));
     });
 }
 
@@ -3160,6 +3251,186 @@ val compute_normals_js(const val& rMeshObj, bool pointNormals, bool cellNormals,
 }
 
 /**
+ * @brief Quality gate: thresholds (the specification text) and inverted /
+ * degenerate count limits over compute_quality's per-cell metrics. See
+ * operations/quality_gate.hpp.
+ */
+val check_quality_js(const val& rMeshObj, const std::string& rRequire, double maxInverted,
+                     double maxDegenerate) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::QualityGateOptions options;
+        options.mThresholds = meshioplusplus::parse_quality_thresholds(rRequire);
+        options.mMaxInverted = static_cast<std::int64_t>(maxInverted);
+        options.mMaxDegenerate = static_cast<std::int64_t>(maxDegenerate);
+        const meshioplusplus::QualityGateResult r =
+            meshioplusplus::check_quality(val_to_mesh(rMeshObj), options);
+        val checks = val::array();
+        for (const meshioplusplus::QualityCheck& c : r.mChecks) {
+            val o = val::object();
+            o.set("name", c.mName);
+            o.set("metric", c.mMetric);
+            o.set("min", c.mMin);
+            o.set("max", c.mMax);
+            o.set("maxFraction", c.mMaxFraction);
+            o.set("evaluated", static_cast<double>(c.mEvaluated));
+            o.set("violations", static_cast<double>(c.mViolations));
+            o.set("fraction", c.mFraction);
+            o.set("worst", c.mWorst);
+            o.set("worstCell", static_cast<double>(c.mWorstCell));
+            o.set("passed", c.mPassed);
+            checks.call<void>("push", o);
+        }
+        val out = val::object();
+        out.set("passed", r.mPassed);
+        out.set("numCells", static_cast<double>(r.mReport.mNumCells));
+        out.set("numInverted", static_cast<double>(r.mReport.mNumInverted));
+        out.set("numDegenerate", static_cast<double>(r.mReport.mNumDegenerate));
+        out.set("checks", checks);
+        out.set("summary", meshioplusplus::quality_gate_summary(r));
+        return out;
+    });
+}
+
+/**
+ * @brief Sharp, open, non-manifold and inconsistently wound edges as a line
+ * mesh. See operations/feature_edges.hpp.
+ */
+val feature_edges_js(const val& rMeshObj, double featureAngle, bool feature, bool boundary,
+                     bool nonManifold, bool inconsistent, const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FeatureEdgeOptions options;
+        options.mFeatureAngleDeg = featureAngle;
+        options.mFeature = feature;
+        options.mBoundary = boundary;
+        options.mNonManifold = nonManifold;
+        options.mInconsistent = inconsistent;
+        options.mRegion = rRegion;
+        meshioplusplus::FeatureEdgeResult r =
+            meshioplusplus::feature_edges(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFeature", static_cast<double>(r.mNumFeature));
+        out.set("numBoundary", static_cast<double>(r.mNumBoundary));
+        out.set("numNonManifold", static_cast<double>(r.mNumNonManifold));
+        out.set("numInconsistent", static_cast<double>(r.mNumInconsistent));
+        return out;
+    });
+}
+
+/**
+ * @brief The (sampled) Hausdorff distance between two surfaces. See
+ * operations/hausdorff.hpp.
+ */
+val hausdorff_distance_js(const val& rA, const val& rB, double faceSamples,
+                          const std::string& rRegionA, const std::string& rRegionB) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::HausdorffOptions options;
+        options.mFaceSamples = static_cast<std::int64_t>(faceSamples);
+        options.mRegionA = rRegionA;
+        options.mRegionB = rRegionB;
+        const meshioplusplus::HausdorffResult r =
+            meshioplusplus::hausdorff_distance(val_to_mesh(rA), val_to_mesh(rB), options);
+        val out = val::object();
+        out.set("distance", r.mDistance);
+        out.set("aToB", r.mAtoB);
+        out.set("bToA", r.mBtoA);
+        out.set("meanAToB", r.mMeanAtoB);
+        out.set("rmsAToB", r.mRmsAtoB);
+        out.set("meanBToA", r.mMeanBtoA);
+        out.set("rmsBToA", r.mRmsBtoA);
+        out.set("numSamplesA", static_cast<double>(r.mNumSamplesA));
+        out.set("numSamplesB", static_cast<double>(r.mNumSamplesB));
+        out.set("worstPointA", float64_array_from(r.mWorstPointA.data(), 3));
+        out.set("worstPointB", float64_array_from(r.mWorstPointB.data(), 3));
+        return out;
+    });
+}
+
+// A region selector from a JS string (a name) or {name, kind?, dim?, tag?}.
+meshioplusplus::RegionSelector js_region_selector(const val& rSel) {
+    meshioplusplus::RegionSelector s;
+    if (rSel.isString()) {
+        s.mName = rSel.as<std::string>();
+        return s;
+    }
+    s.mName = rSel["name"].as<std::string>();
+    const val kind = rSel["kind"];
+    if (!kind.isUndefined() && !kind.isNull())
+        s.mKind = static_cast<std::int32_t>(
+            meshioplusplus::region_kind_from_name(kind.as<std::string>()));
+    const val dim = rSel["dim"];
+    if (!dim.isUndefined() && !dim.isNull())
+        s.mDim = static_cast<std::int64_t>(dim.as<double>());
+    const val tag = rSel["tag"];
+    if (!tag.isUndefined() && !tag.isNull())
+        s.mTag = static_cast<std::int64_t>(tag.as<double>());
+    return s;
+}
+
+/**
+ * @brief Region set algebra and bookkeeping: `edits` is an array of
+ * {op, inputs, output?, dim?, tag?, keepInputs?}. See
+ * operations/region_ops.hpp.
+ */
+val edit_regions_js(const val& rMeshObj, const val& rEdits) {
+    return with_js_errors([&]() -> val {
+        std::vector<meshioplusplus::RegionEdit> edits;
+        const std::size_t n = rEdits["length"].as<std::size_t>();
+        for (std::size_t i = 0; i < n; ++i) {
+            const val e = rEdits[i];
+            meshioplusplus::RegionEdit edit;
+            edit.mOp = meshioplusplus::region_op_from_name(e["op"].as<std::string>());
+            const val inputs = e["inputs"];
+            const std::size_t ni = inputs["length"].as<std::size_t>();
+            for (std::size_t k = 0; k < ni; ++k)
+                edit.mInputs.push_back(js_region_selector(inputs[k]));
+            const val output = e["output"];
+            if (!output.isUndefined() && !output.isNull())
+                edit.mOutputName = output.as<std::string>();
+            const val dim = e["dim"];
+            if (!dim.isUndefined() && !dim.isNull())
+                edit.mOutputDim = static_cast<std::int64_t>(dim.as<double>());
+            const val tag = e["tag"];
+            if (!tag.isUndefined() && !tag.isNull())
+                edit.mOutputTag = static_cast<std::int64_t>(tag.as<double>());
+            const val keep = e["keepInputs"];
+            if (!keep.isUndefined() && !keep.isNull())
+                edit.mKeepInputs = keep.as<bool>();
+            edits.push_back(std::move(edit));
+        }
+        return mesh_to_val(meshioplusplus::edit_regions(val_to_mesh(rMeshObj), edits));
+    });
+}
+
+/**
+ * @brief Periodic node pairs between two regions under a row-major 4x4
+ * affine `matrix` (16 numbers). See operations/periodic.hpp.
+ */
+val match_periodic_nodes_js(const val& rMeshObj, const val& rSlave, const val& rMaster,
+                            const val& rMatrix, double atol, bool requireComplete) {
+    return with_js_errors([&]() -> val {
+        const std::vector<double> m = emscripten::vecFromJSArray<double>(rMatrix);
+        if (m.size() != 16)
+            throw std::invalid_argument(
+                "meshio++: match_periodic_nodes: the matrix must be 16 numbers (row-major 4x4)");
+        meshioplusplus::PeriodicOptions options;
+        options.mTransform = meshioplusplus::transform_from_matrix(m.data());
+        options.mAtol = atol;
+        options.mRequireComplete = requireComplete;
+        const meshioplusplus::PeriodicPairs r =
+            meshioplusplus::match_periodic_nodes(val_to_mesh(rMeshObj), js_region_selector(rSlave),
+                                                 js_region_selector(rMaster), options);
+        val out = val::object();
+        out.set("slave", ndarray_to_int32_array(r.mSlave));
+        out.set("master", ndarray_to_int32_array(r.mMaster));
+        out.set("unmatched", ndarray_to_int32_array(r.mUnmatched));
+        out.set("numFixed", static_cast<double>(r.mNumFixed));
+        out.set("maxResidual", r.mMaxResidual);
+        return out;
+    });
+}
+
+/**
  * @brief Surface repair: orientation by the topological half-edge rule,
  * fan-filled holes wound to agree with the surrounding surface, and bowtie
  * splitting. See operations/repair.hpp.
@@ -3364,18 +3635,32 @@ val subdivide_js(const val& rMeshObj, bool recordParentIds, bool returnMaps) {
  * set -- `cellMap` is a single **flat** array (global input cell index ->
  * global output cell index), unlike the other ops' per-block `cellMaps`,
  * since an output cell's index depends on which group it joined, not which
- * input block it came from.
+ * input block it came from, plus `numFacesMerged` and `numRejected`.
+ * `options` is an optional `{mergeCoplanarFaces, coplanarAngle,
+ * minSphericity}` (see doc/agglomerate.md).
  */
-val agglomerate_js(const val& rMeshObj, int targetGroupSize, bool returnMaps) {
+val agglomerate_js(const val& rMeshObj, int targetGroupSize, bool returnMaps, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::AgglomerateOptions options;
         options.mTargetGroupSize = static_cast<std::size_t>(targetGroupSize);
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the agglomerate options",
+                                {"mergeCoplanarFaces", "coplanarAngle", "minSphericity"});
+            if (!rOptions["mergeCoplanarFaces"].isUndefined())
+                options.mMergeCoplanarFaces = rOptions["mergeCoplanarFaces"].as<bool>();
+            if (!rOptions["coplanarAngle"].isUndefined())
+                options.mCoplanarAngleDeg = rOptions["coplanarAngle"].as<double>();
+            if (!rOptions["minSphericity"].isUndefined())
+                options.mMinSphericity = rOptions["minSphericity"].as<double>();
+        }
         meshioplusplus::AgglomerateResult r =
             meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options);
         if (!returnMaps) return mesh_to_val(r.mMesh);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("cellMap", ndarray_to_int32_array(r.mCellMap));
+        out.set("numFacesMerged", static_cast<double>(r.mNumFacesMerged));
+        out.set("numRejected", static_cast<double>(r.mNumRejected));
         return out;
     });
 }
@@ -4404,6 +4689,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sequenceEntries", &sequence_entries_js);
     emscripten::function("sequenceToTimeseries", &sequence_to_timeseries_js);
     emscripten::function("timeseriesToSequence", &timeseries_to_sequence_js);
+    emscripten::function("resampleSequence", &resample_sequence_js);
+    emscripten::function("blendSteps", &blend_steps_js);
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
@@ -4441,6 +4728,11 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("optimizeVolume", &optimize_volume_js);
     emscripten::function("computeCurvature", &compute_curvature_js);
     emscripten::function("computeNormals", &compute_normals_js);
+    emscripten::function("featureEdges", &feature_edges_js);
+    emscripten::function("checkQuality", &check_quality_js);
+    emscripten::function("hausdorffDistance", &hausdorff_distance_js);
+    emscripten::function("editRegions", &edit_regions_js);
+    emscripten::function("matchPeriodicNodes", &match_periodic_nodes_js);
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);

@@ -196,6 +196,24 @@ SEXP R_mio_sequence_to_timeseries(SEXP seq, SEXP out_path, SEXP out_format, SEXP
     return R_NilValue;
 }
 
+SEXP R_mio_sequence_resample(SEXP seq, SEXP out_path, SEXP out_format, SEXP times,
+                             SEXP method, SEXP clamp, SEXP blend_points) {
+    if (!Rf_isNumeric(times)) Rf_error("meshio++: times must be numeric");
+    SEXP t = PROTECT(Rf_coerceVector(times, REALSXP));
+    mio_resample_opts opts;
+    mio_resample_opts_init(&opts);
+    opts.times = REAL(t);
+    opts.num_times = (int64_t)XLENGTH(t);
+    opts.method = (int32_t)mio_r_int64(method, "method");
+    opts.extrapolate = mio_r_bool(clamp, "clamp");
+    opts.blend_points = mio_r_bool(blend_points, "blend_points");
+    mio_status st = mio_sequence_resample(sequence_of(seq), mio_r_string(out_path, "out_path"),
+                                          mio_r_opt_string(out_format), &opts);
+    UNPROTECT(1);
+    mio_r_check(st, "sequence_resample");
+    return R_NilValue;
+}
+
 SEXP R_mio_timeseries_to_sequence(SEXP in_path, SEXP in_format, SEXP out_pattern, SEXP out_format) {
     mio_r_check(mio_timeseries_to_sequence(
                     mio_r_string(in_path, "in_path"), mio_r_opt_string(in_format),

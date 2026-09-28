@@ -61,7 +61,7 @@ Five element types need a node-order permutation between Gmsh and meshio++ (ever
 - `cell_sets["gmsh:bounding_entities"]` — v4.1 only. Signed entity tags (the sign is the boundary's orientation), so these are *not* cell indices and cannot be a [region](../regions.md); they take the `cell_sets` verbatim passthrough. In C++ they ride the `GmshInfo` side channel (see below).
 - `field_data[name] = [phys_num, phys_dim]` — from `$PhysicalNames`.
 - Arbitrary `point_data`/`cell_data` from `$NodeData`/`$ElementData`.
-- `mesh.gmsh_periodic` — a mesh-level attribute (not a data-dict key) holding `[dim, (slave_tag, master_tag), affine_or_None, node_pairs]` per periodic relation, from `$Periodic`.
+- `mesh.gmsh_periodic` — a mesh-level attribute (not a data-dict key) holding `[dim, (slave_tag, master_tag), affine_or_None, node_pairs]` per periodic relation, from `$Periodic`. [`match_periodic_nodes`](/periodic) computes the node pairs of such a record from two named regions and a transform.
 
 ## Named regions
 

@@ -49,6 +49,7 @@ from .. import (
     agglomerate,
     attach_quality,
     cell_data_to_point_data,
+    check_quality,
     clean,
     compute_bandwidth,
     compute_curvature,
@@ -68,15 +69,19 @@ from .. import (
     decimate_volume,
     diff,
     distance_to_surface,
+    edit_regions,
     estimate_error,
     extract_skin,
     extract_surface,
+    feature_edges,
     geometry_descriptors,
     gradient,
     grid,
+    hausdorff_distance,
     hessian,
     interpolate,
     isosurface,
+    match_periodic_nodes,
     merge,
     optimize_volume,
     partition,
@@ -502,6 +507,19 @@ def tool_quality(input_path, file_format=None, output_path=None, output_format=N
     return _json_safe(report)
 
 
+def tool_check_quality(
+    input_path, require=None, max_inverted=0, max_degenerate=0, file_format=None
+):
+    """Quality gate: pass/fail thresholds over the per-cell quality metrics and
+    the inverted/degenerate counts; the report names every check."""
+    mesh = _load(input_path, file_format)
+    return _json_safe(
+        check_quality(
+            mesh, require, max_inverted=max_inverted, max_degenerate=max_degenerate
+        )
+    )
+
+
 def tool_data_info(input_path, file_format=None):
     """Describe every data array: dtype, shape, ranges, NaN/Inf counts."""
     mesh = _load(input_path, file_format)
@@ -907,18 +925,8 @@ def _resolve_pattern(pattern):
     return [_resolve(path, must_exist=True) for path in matched]
 
 
-def tool_sequence(
-    input_pattern=None,
-    input_paths=None,
-    output_path=None,
-    mode=None,
-    times=None,
-    time_from="auto",
-    input_format=None,
-    output_format=None,
-):
-    """Run a multi-file / transient sequence: fan-in, fan-out or N->N."""
-    from .. import run_sequence_pipeline, sequence_entries
+def _resolve_sequence_io(input_pattern, input_paths, output_path):
+    """The sandboxed input file list and output path of a sequence tool."""
     from .._sequence import pattern_has_token
 
     if (input_pattern is None) == (input_paths is None):
@@ -943,6 +951,25 @@ def tool_sequence(
         )
     else:
         resolved_out = _resolve(output_path, for_write=True)
+    return resolved_in, resolved_out
+
+
+def tool_sequence(
+    input_pattern=None,
+    input_paths=None,
+    output_path=None,
+    mode=None,
+    times=None,
+    time_from="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Run a multi-file / transient sequence: fan-in, fan-out or N->N."""
+    from .. import run_sequence_pipeline, sequence_entries
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
 
     doc = {
         "Version": 1,
@@ -973,6 +1000,74 @@ def tool_sequence(
     ]
     report["output_path"] = resolved_out
     return _json_safe(report)
+
+
+def tool_resample_sequence(
+    output_path,
+    input_pattern=None,
+    input_paths=None,
+    times=None,
+    times_from_pattern=None,
+    method="linear",
+    clamp=False,
+    blend_points=False,
+    time_from="auto",
+    input_format=None,
+):
+    """Resample a sequence onto new times (linear blend, nearest or previous)."""
+    from .. import resample_sequence
+    from .._sequence import parse_times, sequence_times
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
+    if (times is None) == (times_from_pattern is None):
+        raise ValueError(
+            "meshio++: mcp: give exactly one of times or times_from_pattern"
+        )
+    if times is None:
+        targets = sequence_times(
+            _resolve_pattern(times_from_pattern), time_from=time_from
+        )
+    elif isinstance(times, str):
+        targets = parse_times(times)
+    else:
+        targets = [float(t) for t in times]
+    report = resample_sequence(
+        resolved_in,
+        resolved_out,
+        times=targets,
+        method=method,
+        extrapolate="clamp" if clamp else "error",
+        blend_points=blend_points,
+        file_format=input_format,
+        time_from=time_from,
+    )
+    report["times"] = [float(t) for t in targets]
+    report["output_path"] = resolved_out
+    return _json_safe(report)
+
+
+def tool_blend_steps(
+    path_a,
+    path_b,
+    output_path,
+    weight,
+    blend_points=False,
+    format_a=None,
+    format_b=None,
+    output_format=None,
+):
+    """Blend two steps of one topology: (1 - weight) a + weight b."""
+    from .. import blend_steps
+
+    out = blend_steps(
+        _load(path_a, format_a),
+        _load(path_b, format_b),
+        float(weight),
+        blend_points=blend_points,
+    )
+    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_pipeline(settings_path, input_path=None, output_path=None):
@@ -1662,6 +1757,141 @@ def tool_normals(
     )
 
 
+def tool_feature_edges(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    feature_angle=30.0,
+    feature=True,
+    boundary=True,
+    non_manifold=True,
+    inconsistent=True,
+    region="",
+):
+    """The sharp, open, non-manifold and inconsistently wound edges of a
+    surface (or of a volume mesh's skin), written as a line mesh with cell data
+    feature:kind (1 feature, 2 boundary, 3 non-manifold, 4 inconsistent) and
+    feature:angle (degrees). The counts cover the whole surface."""
+    mesh = _load(input_path, input_format)
+    out, report = feature_edges(
+        mesh,
+        feature_angle=feature_angle,
+        feature=feature,
+        boundary=boundary,
+        non_manifold=non_manifold,
+        inconsistent=inconsistent,
+        region=region,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_edges=int(len(out.cells[0].data)) if out.cells else 0,
+        **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_hausdorff(
+    path_a,
+    path_b,
+    format_a=None,
+    format_b=None,
+    face_samples=0,
+    region_a="",
+    region_b="",
+    max_distance=None,
+):
+    """The (sampled) Hausdorff distance between the surfaces of two mesh files;
+    with max_distance, also whether it stays within that limit."""
+    report = hausdorff_distance(
+        _load(path_a, format_a),
+        _load(path_b, format_b),
+        face_samples=face_samples,
+        region_a=region_a,
+        region_b=region_b,
+    )
+    if max_distance is not None:
+        report["max"] = float(max_distance)
+        report["passed"] = bool(report["distance"] <= float(max_distance))
+    return _json_safe(report)
+
+
+def tool_edit_regions(
+    input_path,
+    output_path,
+    edits,
+    input_format=None,
+    output_format=None,
+):
+    """Apply region edits (union, intersection, difference, rename, retag,
+    delete), in order, and write the result; points, cells and data are
+    untouched. Reports the resulting region list."""
+    out = edit_regions(_load(input_path, input_format), edits)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        regions=[
+            {
+                "name": r.name,
+                "kind": r.kind,
+                "dim": r.dim,
+                "tag": r.tag,
+                "num_entries": int(len(r.entries)),
+            }
+            for r in out.regions
+        ],
+    )
+
+
+def tool_periodic(
+    input_path,
+    slave,
+    master,
+    input_format=None,
+    translate=None,
+    rotate_axis=None,
+    rotate_degrees=None,
+    origin=None,
+    matrix=None,
+    atol=1e-8,
+    require_complete=True,
+    pairs_path=None,
+):
+    """Match the nodes of the slave region onto the master region under an
+    affine transform; optionally writes the pairs as 'slave,master' CSV."""
+    mesh = _load(input_path, input_format)
+    rotate = None
+    if rotate_axis is not None:
+        rotate = (rotate_axis, float(rotate_degrees or 0.0))
+    pairs, report = match_periodic_nodes(
+        mesh,
+        slave,
+        master,
+        translate=translate,
+        rotate=rotate,
+        matrix=matrix,
+        origin=origin,
+        atol=atol,
+        require_complete=require_complete,
+        return_report=True,
+    )
+    written = None
+    if pairs_path:
+        written = _resolve(pairs_path, for_write=True)
+        np.savetxt(written, pairs, fmt="%d", delimiter=",", header="slave,master")
+    return _json_safe(
+        {
+            "num_pairs": int(len(pairs)),
+            "pairs": pairs.tolist(),
+            "unmatched": report["unmatched"].tolist(),
+            "num_fixed": report["num_fixed"],
+            "max_residual": report["max_residual"],
+            "pairs_path": str(written) if written else None,
+        }
+    )
+
+
 def tool_repair(
     input_path,
     output_path,
@@ -1939,11 +2169,26 @@ def tool_agglomerate(
     input_format=None,
     output_format=None,
     target_group_size=8,
+    merge_coplanar_faces=False,
+    coplanar_angle=1.0,
+    min_sphericity=0.0,
 ):
     """Polyhedrally coarsen: merge groups of cells into larger polyhedra."""
     mesh = _load(input_path, input_format)
-    out = agglomerate(mesh, target_group_size=target_group_size)
-    return _result(_store(out, output_path, output_format), out)
+    out, report = agglomerate(
+        mesh,
+        target_group_size=target_group_size,
+        merge_coplanar_faces=merge_coplanar_faces,
+        coplanar_angle=coplanar_angle,
+        min_sphericity=min_sphericity,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_faces_merged=report["num_faces_merged"],
+        num_rejected=report["num_rejected"],
+    )
 
 
 def tool_refine(
@@ -3541,6 +3786,18 @@ TOOL_REGISTRY = OrderedDict(
             },
         ),
         (
+            "resample_sequence",
+            {
+                "fn": tool_resample_sequence,
+                "wraps": ("resample_sequence",),
+                "gated": None,
+            },
+        ),
+        (
+            "blend_steps",
+            {"fn": tool_blend_steps, "wraps": ("blend_steps",), "gated": None},
+        ),
+        (
             "extract_surface",
             {"fn": tool_extract_surface, "wraps": ("extract_surface",), "gated": None},
         ),
@@ -3565,6 +3822,26 @@ TOOL_REGISTRY = OrderedDict(
         (
             "normals",
             {"fn": tool_normals, "wraps": ("compute_normals",), "gated": None},
+        ),
+        (
+            "feature_edges",
+            {"fn": tool_feature_edges, "wraps": ("feature_edges",), "gated": None},
+        ),
+        (
+            "hausdorff",
+            {"fn": tool_hausdorff, "wraps": ("hausdorff_distance",), "gated": None},
+        ),
+        (
+            "edit_regions",
+            {"fn": tool_edit_regions, "wraps": ("edit_regions",), "gated": None},
+        ),
+        (
+            "periodic",
+            {"fn": tool_periodic, "wraps": ("match_periodic_nodes",), "gated": None},
+        ),
+        (
+            "check_quality",
+            {"fn": tool_check_quality, "wraps": ("check_quality",), "gated": None},
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (

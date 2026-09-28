@@ -29,6 +29,7 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--float-format FMT` | `-f` | Float format string for ASCII output (default: `.16e`) |
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
+| `--json` | | Print a JSON summary of what was written (see [JSON output](#json-output)) |
 
 **Transient sequences** — treat a set of files, or the steps inside one file, as one dataset (see [sequences](sequences.md)):
 
@@ -91,6 +92,23 @@ meshioplusplus convert part.vtu part.glb --split-angle 45 --up-axis z
 
 Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
 
+## JSON output
+
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the two to it). The shapes are the Python API's own reports:
+
+| Verb | JSON |
+|---|---|
+| `info --fast` | `read_metadata`'s dict: `num_points`, `point_dim`, `num_cells`, `cell_blocks` (`type`, `num_cells`, `nodes_per_cell`, `ragged`), the three `*_data_names`, `format`, `time_values`, `regions`, `provenance`, `provenance_recognised`, `fell_back_to_full_read`, and `bbox_min`/`bbox_max` when the header gives them |
+| `info` | the same counts and names from a full read, plus `consistent` and `num_unused_points` (`null` when inconsistent) |
+| `quality` | `compute_quality`'s dict without the per-cell arrays |
+| `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
+| `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
+| `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
+| `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
+| `resample` | `method`, `num_steps` and the target `times` |
+
+The exit codes are unchanged by `--json`.
+
 ---
 
 ## meshioplusplus info
@@ -104,6 +122,8 @@ meshioplusplus info [options] INFILE
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--input-format FORMAT` | `-i` | Force input format |
+| `--fast` | | Summarize from the file header instead of loading it |
+| `--json` | | Print the summary as JSON (see [JSON output](#json-output)) |
 
 Output includes: number of points, cell blocks and their types/counts, point/cell/**side** sets (see [Named regions](./regions.md)), point/cell data names, field data names. It also warns if cells reference nonexistent points or if there are unused points.
 
@@ -127,12 +147,39 @@ meshioplusplus quality [options] INFILE
 |--------|-------|-------------|
 | `--input-format FORMAT` | `-i` | Force input format |
 | `--output FILE` | `-o` | Also write the metrics into `FILE` as `cell_data` |
+| `--json` | | Print the report as JSON |
 
 **Examples:**
 
 ```sh
 meshioplusplus quality part.vtu
 meshioplusplus quality part.vtu -o part_quality.vtu
+```
+
+---
+
+## meshioplusplus check
+
+The [quality gate](./mesh_quality.md#quality-gate): score every cell and test thresholds on the per-cell values. Exits **0** when every check passes, **1** when one fails, **2** when the check could not run (an unreadable file, a malformed specification).
+
+```
+meshioplusplus check [options] INFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--require SPEC` | `-r` | Thresholds, e.g. `"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"` (repeatable) |
+| `--gate FILE` | | Read thresholds from `FILE`, one clause per line, `#` comments |
+| `--max-inverted N` | | The most inverted cells allowed; negative disables (default `0`) |
+| `--max-degenerate N` | | The most degenerate cells allowed; negative disables (default `0`) |
+| `--json` | | Print every check as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+
+**Example** — a CI step:
+
+```sh
+meshioplusplus check part.vtu -r "scaled_jacobian >= 0.2" -r "aspect_ratio <= 5 @ 1%" \
+    || { echo "mesh failed its quality gate"; exit 1; }
 ```
 
 ---
@@ -202,6 +249,7 @@ meshioplusplus diff [options] INFILE_A INFILE_B
 | `--unordered` | | Match points by spatial proximity (tolerant to a shuffled node order) |
 | `--exact` | | Only a bitwise-identical result passes (tolerated drift exits nonzero) |
 | `--quiet` | `-q` | Print nothing; communicate equality only via the exit code |
+| `--json` | | Print the report as JSON, plus `equal` |
 | `--input-format-a FORMAT` | | Force the format of the first file |
 | `--input-format-b FORMAT` | | Force the format of the second file |
 
@@ -430,13 +478,23 @@ meshioplusplus split in.inp 'part_{key}.vtu' --by regions
 List a mesh's named [regions](/regions) — name, kind, dimension, tag, and entry count (not the entries themselves).
 
 ```
-meshioplusplus regions [options] INFILE
+meshioplusplus regions [options] INFILE [OUTFILE]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--input-format` (`-i`) | Force input format |
+| `--output-format` (`-o`) | Force output format (with edits) |
 | `--json` | Emit the regions as JSON |
+| `--union OUT=A,B[,...]` | Add `OUT`, the union of regions `A`, `B`, ... |
+| `--intersection OUT=A,B[,...]` | Add `OUT`, the entries in every one of them |
+| `--difference OUT=A,B[,...]` | Add `OUT`, the entries of `A` in none of the others |
+| `--rename OLD=NEW` | Rename a region |
+| `--retag NAME=TAG[:DIM]` | Set a region's tag (and dimension); `NAME=:DIM` keeps the tag |
+| `--delete NAME` | Remove a region |
+| `--drop-inputs` | The set operations remove their input regions |
+
+With any edit flag it [edits the regions](/regions#editing-regions) instead of listing them: the edits apply in command-line order to the mesh read from `INFILE`, the result is written to `OUTFILE`, and the resulting region list is printed. A region name may be prefixed `point:`, `cell:` or `side:` to pick one of several regions sharing a name; a name that still matches several, or none, is an error.
 
 Goes through the same cheap path `info --fast`/`read_metadata` use rather than a full read: whenever the summary already comes from an in-memory mesh (every format lacking a native metadata path, plus Exodus, which always falls back), regions cost nothing extra to report; a native metadata path (VTU/VTP/XDMF/Gmsh 4.1) reports none, since none of those currently map regions at all.
 
@@ -447,6 +505,11 @@ meshioplusplus regions bracket.inp
 # <meshio++ mesh regions> (2)
 #   fixed (point, 12 entries, tag=1)
 #   solid (cell, 340 entries, dim=3, tag=2)
+```
+
+```sh
+meshioplusplus regions model.msh bc.msh --union inlet=inlet_a,inlet_b \
+    --difference wall=skin,inlet,outlet --retag side:wall=10 --delete scratch
 ```
 
 ---
@@ -563,6 +626,10 @@ meshioplusplus agglomerate [options] INFILE OUTFILE
 | Option | Description |
 |--------|-------------|
 | `--target-group-size N` | Approximate member cells per output group (default `8`) |
+| `--merge-coplanar-faces` | Fuse the coplanar faces two groups (or a group and the boundary) share into one polygon |
+| `--coplanar-angle DEG` | Largest normal deviation still coplanar (default `1`) |
+| `--min-sphericity S` | Refuse an absorption that would drop a group's sphericity below `S` (default `0`, off) |
+| `--json` | Print `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` as JSON |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 Non-volume blocks pass through unchanged; points are never pruned or renumbered (`clean --remove-orphans` is the follow-up for a minimal point set). Conserves volume exactly. `--target-group-size 1` groups every cell by itself.
@@ -571,6 +638,38 @@ Non-volume blocks pass through unchanged; points are never pruned or renumbered 
 
 ```sh
 meshioplusplus agglomerate fine.vtu coarse.vtu --target-group-size 8
+meshioplusplus agglomerate fine.vtu coarse.vtu --merge-coplanar-faces --min-sphericity 0.7 --json
+```
+
+---
+
+## meshioplusplus resample
+
+Resample a transient sequence onto new times, holding at most two source steps in memory (see [Resampling onto new times](./sequences.md#resampling-onto-new-times)).
+
+```
+meshioplusplus resample [options] INPUT OUTPUT (--times SPEC | --times-from PATTERN)
+```
+
+`INPUT` is a quoted glob (`'out_*.vtu'`) or the first file, with `--input` for each further one. `OUTPUT` is a `{step}`/`{index}` pattern (one file per target time) or a series file of a format that carries time.
+
+| Option | Description |
+|--------|-------------|
+| `--times SPEC` | The target times: `START:STOP:STEP` (`STOP` included) or a comma list `T1,T2,...` |
+| `--times-from PATTERN` | Take the target times from another sequence (a quoted glob), resolved with the same `--time-from` |
+| `--method M` | `linear` (default; blend the bracketing steps), `nearest` or `previous` |
+| `--clamp` | A target outside the source range takes the end step instead of failing |
+| `--blend-points` | Blend the point coordinates too (a moving mesh) |
+| `--time-from SRC` | Where the source times come from: `auto` (default), `file`, `filename` or `index` |
+| `--input FILE` | An extra input file, appended after `INPUT`; repeatable |
+| `--input-format` (`-i`) | Force the input format |
+| `--json` | Print `method`, `num_steps` and the target `times` as JSON |
+
+**Examples:**
+
+```sh
+meshioplusplus resample 'run/out_*.vtu' 'uniform/u_{index}.vtu' --times 0:2:0.1
+meshioplusplus resample 'fine/out_*.vtu' fine_on_coarse.xdmf --times-from 'coarse/out_*.vtu'
 ```
 
 ---
@@ -862,6 +961,83 @@ The arrays are named `normals`, so writing to `.pcd` or `.xyz` emits the normal 
 meshioplusplus normals scan.stl scan_n.vtu
 meshioplusplus normals part.vtu part_split.vtu --split-angle 30 --cell
 meshioplusplus normals part.vtu cloud.xyz --record-parent-ids
+```
+
+---
+
+## meshioplusplus feature-edges
+
+Write the sharp, open, non-manifold and inconsistently wound edges of a surface — or of a volume mesh's skin — as a mesh of `line` cells (see [feature edges](/feature_edges)).
+
+```
+meshioplusplus feature-edges [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--angle DEG` | Largest dihedral angle still treated as smooth, `0` to `180` (default `30`) |
+| `--no-feature` / `--no-boundary` / `--no-non-manifold` / `--no-inconsistent` | Do not report that category |
+| `--region NAME` | Restrict to this named cell region |
+| `--json` | Emit the edge count and per-category counts as JSON |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output keeps the input's points and carries cell data `feature:kind` (1 feature, 2 boundary, 3 non-manifold, 4 inconsistent) and `feature:angle`.
+
+```sh
+meshioplusplus feature-edges part.stl part_edges.vtp --angle 45
+```
+
+---
+
+## meshioplusplus hausdorff
+
+Print the Hausdorff distance between the surfaces of two meshes — how far apart they are at their worst (see [Hausdorff distance](/hausdorff)).
+
+```
+meshioplusplus hausdorff [options] INFILE_A INFILE_B
+```
+
+| Option | Description |
+|--------|-------------|
+| `--face-samples S` | Also sample the centroids of the `S*S` sub-triangles of every triangle (default `0`: vertices only, a lower bound) |
+| `--region-a NAME` / `--region-b NAME` | Restrict a side to this named cell region of surface cells |
+| `--input-format-a FMT` / `--input-format-b FMT` | Force a side's input format |
+| `--max D` | Exit with status 1 when the distance exceeds `D` |
+| `--json` | Emit the report as JSON (with `--max`, also `max` and `passed`) |
+
+```sh
+meshioplusplus hausdorff part.stl part_decimated.stl --face-samples 4 --max 1e-3
+```
+
+---
+
+## meshioplusplus periodic
+
+Match the nodes of two regions that an affine transform maps onto each other — the node pairs of a periodic boundary condition (see [periodic node pairs](/periodic)).
+
+```
+meshioplusplus periodic [options] INFILE --slave NAME --master NAME
+```
+
+| Option | Description |
+|--------|-------------|
+| `--slave NAME` / `--master NAME` | The region whose nodes are mapped, and the one they map onto |
+| `--translate DX,DY,DZ` | Slave-to-master translation |
+| `--rotate AXIS,DEG` | Rotation by `DEG` degrees about `AXIS` (`x`, `y`, `z`, or `AX,AY,AZ`), applied before `--translate` |
+| `--origin X,Y,Z` | The point the rotation turns about (default: the origin) |
+| `--matrix M00,...,M33` | A row-major 4x4 affine matrix, overriding `--translate`/`--rotate` |
+| `--atol TOL` | Match tolerance (default `1e-8`) |
+| `--allow-incomplete` | Report unmatched slave nodes instead of failing |
+| `--output FILE` (`-o`) | Write the pairs as `slave,master` CSV rows (0-based ids) |
+| `--json` | Emit the pairs as JSON |
+| `--input-format` (`-i`) | Force input format |
+
+Numbers are comma-separated; write a value with a leading minus as `--translate=-2,0,0`.
+
+```sh
+meshioplusplus periodic channel.msh --slave inlet --master outlet --translate 2,0,0 -o pairs.csv
+meshioplusplus periodic rotor.msh --slave cut_a --master cut_b --rotate z,60 --json
 ```
 
 ---

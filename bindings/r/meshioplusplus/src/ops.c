@@ -419,6 +419,93 @@ SEXP R_mio_compute_normals(SEXP mesh, SEXP point_normals, SEXP cell_normals, SEX
     return res;
 }
 
+SEXP R_mio_feature_edges(SEXP mesh, SEXP feature_angle, SEXP feature, SEXP boundary,
+                         SEXP non_manifold, SEXP inconsistent, SEXP region) {
+    mio_feature_edges_opts opts;
+    mio_feature_edges_report report;
+    mio_mesh *out;
+
+    mio_feature_edges_opts_init(&opts);
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.feature = mio_r_bool(feature, "feature") ? 1 : 0;
+    opts.boundary = mio_r_bool(boundary, "boundary") ? 1 : 0;
+    opts.non_manifold = mio_r_bool(non_manifold, "non_manifold") ? 1 : 0;
+    opts.inconsistent = mio_r_bool(inconsistent, "inconsistent") ? 1 : 0;
+    opts.region = mio_r_opt_string(region);
+
+    out = mio_feature_edges(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("feature_edges");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nf = PROTECT(Rf_ScalarReal((double)report.num_feature));
+    SEXP nb = PROTECT(Rf_ScalarReal((double)report.num_boundary));
+    SEXP nn = PROTECT(Rf_ScalarReal((double)report.num_non_manifold));
+    SEXP ni = PROTECT(Rf_ScalarReal((double)report.num_inconsistent));
+    const char *names[] = {"mesh", "num_feature", "num_boundary", "num_non_manifold",
+                           "num_inconsistent"};
+    SEXP values[] = {mo, nf, nb, nn, ni};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
+}
+
+SEXP R_mio_check_quality(SEXP mesh, SEXP require, SEXP max_inverted, SEXP max_degenerate) {
+    mio_quality_gate_report r;
+    char buf[8192];
+    mio_r_check(mio_check_quality(mio_r_mesh(mesh), mio_r_opt_string(require),
+                                  (int64_t)mio_r_double(max_inverted, "max_inverted"),
+                                  (int64_t)mio_r_double(max_degenerate, "max_degenerate"), &r,
+                                  buf, (int64_t)sizeof(buf)),
+                "check_quality");
+    SEXP v0 = PROTECT(Rf_ScalarLogical(r.passed != 0));
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)r.num_checks));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)r.num_failed));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)r.num_cells));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)r.num_inverted));
+    SEXP v5 = PROTECT(Rf_ScalarReal((double)r.num_degenerate));
+    SEXP v6 = PROTECT(Rf_mkString(buf));
+    const char *names[] = {"passed", "num_checks", "num_failed", "num_cells",
+                           "num_inverted", "num_degenerate", "summary"};
+    SEXP values[] = {v0, v1, v2, v3, v4, v5, v6};
+    SEXP res = PROTECT(mio_r_named_list(7, names, values));
+    UNPROTECT(8);
+    return res;
+}
+
+SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
+                              SEXP region_b) {
+    mio_hausdorff_opts opts;
+    mio_hausdorff_report r;
+
+    mio_hausdorff_opts_init(&opts);
+    opts.face_samples = (int64_t)mio_r_double(face_samples, "face_samples");
+    opts.region_a = mio_r_opt_string(region_a);
+    opts.region_b = mio_r_opt_string(region_b);
+    mio_r_check(mio_hausdorff_distance(mio_r_mesh(a), mio_r_mesh(b), &opts, &r),
+                "hausdorff_distance");
+    SEXP wa = PROTECT(Rf_allocVector(REALSXP, 3));
+    SEXP wb = PROTECT(Rf_allocVector(REALSXP, 3));
+    for (int k = 0; k < 3; ++k) {
+        REAL(wa)[k] = r.worst_point_a[k];
+        REAL(wb)[k] = r.worst_point_b[k];
+    }
+    SEXP v0 = PROTECT(Rf_ScalarReal(r.distance));
+    SEXP v1 = PROTECT(Rf_ScalarReal(r.a_to_b));
+    SEXP v2 = PROTECT(Rf_ScalarReal(r.b_to_a));
+    SEXP v3 = PROTECT(Rf_ScalarReal(r.mean_a_to_b));
+    SEXP v4 = PROTECT(Rf_ScalarReal(r.rms_a_to_b));
+    SEXP v5 = PROTECT(Rf_ScalarReal(r.mean_b_to_a));
+    SEXP v6 = PROTECT(Rf_ScalarReal(r.rms_b_to_a));
+    SEXP v7 = PROTECT(Rf_ScalarReal((double)r.num_samples_a));
+    SEXP v8 = PROTECT(Rf_ScalarReal((double)r.num_samples_b));
+    const char *names[] = {"distance",    "a_to_b",        "b_to_a",        "mean_a_to_b",
+                           "rms_a_to_b",  "mean_b_to_a",   "rms_b_to_a",    "num_samples_a",
+                           "num_samples_b", "worst_point_a", "worst_point_b"};
+    SEXP values[] = {v0, v1, v2, v3, v4, v5, v6, v7, v8, wa, wb};
+    SEXP res = PROTECT(mio_r_named_list(11, names, values));
+    UNPROTECT(12);
+    return res;
+}
+
 SEXP R_mio_repair(SEXP mesh, SEXP fix_orientation, SEXP orient_outward, SEXP fill_holes,
                   SEXP split_non_manifold, SEXP max_hole_edges, SEXP weld_tolerance,
                   SEXP record_provenance) {
@@ -896,9 +983,16 @@ SEXP R_mio_subdivide(SEXP mesh, SEXP record_parent_ids) {
 /* agglomerate's cell map is a single FLAT array (unlike subdivide's
  * per-block cell_maps), so it needs no per-block loop at all -- just one
  * mio_r_shift_map() call. */
-SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size) {
-    mio_agglomerate_result *r =
-        mio_agglomerate(mio_r_mesh(mesh), mio_r_int64(target_group_size, "target_group_size"));
+SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size, SEXP merge_coplanar_faces,
+                       SEXP coplanar_angle, SEXP min_sphericity) {
+    mio_agglomerate_opts opts;
+    mio_agglomerate_opts_init(&opts);
+    opts.target_group_size = mio_r_int64(target_group_size, "target_group_size");
+    opts.merge_coplanar_faces = mio_r_bool(merge_coplanar_faces, "merge_coplanar_faces");
+    opts.coplanar_angle = mio_r_double(coplanar_angle, "coplanar_angle");
+    opts.min_sphericity = mio_r_double(min_sphericity, "min_sphericity");
+    int64_t merged = 0, rejected = 0;
+    mio_agglomerate_result *r = mio_agglomerate_ex(mio_r_mesh(mesh), &opts, &merged, &rejected);
     if (r == NULL) mio_r_fail("agglomerate");
     const void *d = NULL;
     mio_dtype dt;
@@ -916,11 +1010,20 @@ SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size) {
         mio_r_fail("agglomerate take_mesh");
     }
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
-    const char *names[] = {"mesh", "cell_map"};
-    SEXP values[] = {mo, cm};
-    SEXP res = PROTECT(mio_r_named_list(2, names, values));
-    UNPROTECT(3);
+    SEXP nm = PROTECT(Rf_ScalarReal((double)merged));
+    SEXP nr = PROTECT(Rf_ScalarReal((double)rejected));
+    const char *names[] = {"mesh", "cell_map", "num_faces_merged", "num_rejected"};
+    SEXP values[] = {mo, cm, nm, nr};
+    SEXP res = PROTECT(mio_r_named_list(4, names, values));
+    UNPROTECT(5);
     return res;
+}
+
+SEXP R_mio_blend_steps(SEXP a, SEXP b, SEXP w, SEXP blend_points) {
+    mio_mesh *out = mio_blend_steps(mio_r_mesh(a), mio_r_mesh(b), mio_r_double(w, "w"),
+                                    mio_r_bool(blend_points, "blend_points"));
+    if (out == NULL) mio_r_fail("blend_steps");
+    return mio_r_wrap_mesh(out);
 }
 
 SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {

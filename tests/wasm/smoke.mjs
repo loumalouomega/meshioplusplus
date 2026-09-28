@@ -1170,6 +1170,28 @@ step('returnMaps: agglomerate has one flat cellMap, not per-block cellMaps', () 
     assert.equal(out.cellMaps, undefined);
 });
 
+step('agglomerate options: coplanar merge and sphericity gate report their counts', () => {
+    const grid = m.refine(m.refine(cube)); // 64 hexahedra
+    const out = m.agglomerate(grid, 8, true, { mergeCoplanarFaces: true, minSphericity: 0.5 });
+    assert.ok(out.numFacesMerged > 0, 'coplanar hex faces fuse');
+    assert.ok(out.numRejected >= 0);
+    assert.throws(() => m.agglomerate(grid, 8, false, { bogus: 1 }), /unknown key 'bogus'/);
+});
+
+step('blendSteps and resampleSequence', () => {
+    const at = (u) => ({ ...tet, point_data: { u: new Float64Array([u, u, u, u]) } });
+    m.writeMesh('/rsin_0.vtu', at(0));
+    m.writeMesh('/rsin_1.vtu', at(10));
+    const h = m.blendSteps(at(0), at(10), 0.25);
+    assert.deepEqual(Array.from(h.point_data.u), [2.5, 2.5, 2.5, 2.5]);
+    const n = m.resampleSequence('/rsin_*.vtu', '/rs_out_{index}.vtu',
+        { Times: [0, 0.5, 1] }, '', { timeFrom: 'index' });
+    assert.equal(n, 3);
+    assert.deepEqual(Array.from(m.readMesh('/rs_out_1.vtu').point_data.u), [5, 5, 5, 5]);
+    assert.throws(() => m.resampleSequence('/rsin_*.vtu', '/rs_bad_{index}.vtu',
+        { Times: [2] }, '', { timeFrom: 'index' }));
+});
+
 step('returnMaps: refine pointMap is the identity, cellMaps map 1 -> 8 children', () => {
     const out = m.refine(cube, 1, false, undefined, true);
     assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7]);
@@ -4324,6 +4346,51 @@ step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
     const surf = mSeq.extractSurface(cube);
     assert.equal(surf.cells[0].type, 'quad');
     assert.equal(surf.cells[0].data.length, 6 * 4);
+});
+
+step('checkQuality gates on thresholds', () => {
+    const ok = m.checkQuality(cubeSurface, 'min_angle >= 30');
+    assert.equal(ok.passed, true);
+    assert.equal(ok.checks.length, 3); // the threshold plus the two counts
+    const bad = m.checkQuality(cubeSurface, 'min_angle >= 50');
+    assert.equal(bad.passed, false);
+    assert.ok(bad.summary.includes('FAIL'));
+    assert.throws(() => m.checkQuality(cubeSurface, 'bogus >= 1'));
+});
+
+step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
+    const fe = m.featureEdges(cubeSurface);
+    assert.equal(fe.numFeature, 12);
+    assert.equal(fe.numBoundary, 0);
+    assert.equal(fe.mesh.cells[0].type, 'line');
+    assert.throws(() => m.featureEdges(cubeSurface, 200));
+
+    const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
+    assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0
+    assert.equal(h.numSamplesA, 8 + 12 * 4);
+
+    const tagged = {
+        ...cubeSurface,
+        regions: [
+            { name: 'bottom', kind: 'point', entries: Int32Array.from([0, 1, 2, 3]) },
+            { name: 'top', kind: 'point', entries: Int32Array.from([4, 5, 6, 7]) },
+        ],
+    };
+    const edited = m.editRegions(tagged, [
+        { op: 'union', inputs: ['bottom', 'top'], output: 'all' },
+        { op: 'retag', inputs: [{ name: 'all', kind: 'point' }], tag: 5 },
+    ]);
+    assert.equal(edited.regions.length, 3);
+    assert.equal(edited.regions.find((r) => r.name === 'all').tag, 5);
+    assert.throws(() => m.editRegions(tagged, [{ op: 'xor', inputs: ['bottom'] }]));
+
+    const shift = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1];
+    const p = m.matchPeriodicNodes(tagged, 'bottom', 'top', shift);
+    assert.deepEqual(Array.from(p.slave), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(p.master), [4, 5, 6, 7]);
+    assert.equal(p.numFixed, 0);
+    shift[11] = 0.5;
+    assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
 if (failed) {

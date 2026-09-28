@@ -562,6 +562,70 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
   ))
 }
 
+#' Edit named regions
+#'
+#' `mio_edit_regions()` applies one edit to a copy of the mesh (points, cells
+#' and data are untouched): `"union"`, `"intersection"` and `"difference"` take
+#' two or more `inputs` of one kind and add a region named `output`;
+#' `"rename"` moves one region to `output`; `"retag"` sets its `tag` and/or
+#' `dim`; `"delete"` removes the inputs. Each input name must match exactly one
+#' region -- pin `kind` (`"point"`, `"cell"`, `"side"`) when a name is shared.
+#' `mio_remove_region()` removes the `index`-th region (1-based, `mio_regions()`
+#' order) in place. See `doc/regions.md`.
+#'
+#' `mio_match_periodic_nodes()` pairs each node of the `slave` region with the
+#' `master` node the affine `matrix` (a 4x4, `M %*% c(p, 1)`) maps it onto,
+#' within `atol`; node ids are 1-based. See `doc/periodic.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param op The edit: `"union"`, `"intersection"`, `"difference"`,
+#'   `"rename"`, `"retag"` or `"delete"`.
+#' @param inputs Character vector of region names.
+#' @param output The result's name.
+#' @param kind Pin the inputs' kind; `NULL` matches any.
+#' @param dim,tag The result's dimension and tag; `NULL` inherits.
+#' @param keep_inputs Set operations: keep the input regions.
+#' @param index 1-based region index.
+#' @param slave,master Region names.
+#' @param matrix A 4x4 affine matrix mapping a slave node onto its master.
+#' @param translate A 3-vector translation, used when `matrix` is `NULL`.
+#' @param atol Match tolerance (positive).
+#' @param require_complete Fail when a slave node has no master.
+#' @return `mio_edit_regions()` returns the edited copy;
+#'   `mio_remove_region()` returns `NULL` invisibly;
+#'   `mio_match_periodic_nodes()` returns a list of `slave`, `master`,
+#'   `unmatched`, `num_fixed` and `max_residual`.
+#' @export
+mio_edit_regions <- function(mesh, op, inputs, output = "", kind = NULL, dim = NULL,
+                             tag = NULL, keep_inputs = TRUE) {
+  .Call(
+    R_mio_edit_regions, mesh, as.character(op), as.character(inputs),
+    as.character(output), if (is.null(kind)) NULL else as.character(kind),
+    if (is.null(dim)) NULL else as.numeric(dim),
+    if (is.null(tag)) NULL else as.numeric(tag), isTRUE(keep_inputs)
+  )
+}
+
+#' @rdname mio_edit_regions
+#' @export
+mio_remove_region <- function(mesh, index) {
+  invisible(.Call(R_mio_remove_region, mesh, as.numeric(index)))
+}
+
+#' @rdname mio_edit_regions
+#' @export
+mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, translate = NULL,
+                                     atol = 1e-8, require_complete = TRUE) {
+  if (is.null(matrix)) {
+    matrix <- diag(4)
+    if (!is.null(translate)) matrix[1:3, 4] <- as.numeric(translate)
+  }
+  .Call(
+    R_mio_match_periodic_nodes, mesh, as.character(slave), as.character(master),
+    matrix, as.numeric(atol), isTRUE(require_complete)
+  )
+}
+
 # --- operations ---------------------------------------------------------------
 
 #' Mesh operations
@@ -664,6 +728,13 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param convert_mode `"linearize"`, `"simplexify"` or `"elevate"`.
 #' @param target_group_size Approximate member cells per `mio_agglomerate()`
 #'   output group; must be at least 1 (`1` groups every cell by itself).
+#' @param merge_coplanar_faces `mio_agglomerate()`: fuse the faces two groups
+#'   share, and a group's boundary faces, into one polygon where they are
+#'   coplanar; the result also reports `num_faces_merged`.
+#' @param coplanar_angle Largest normal deviation (degrees) still coplanar.
+#' @param min_sphericity `mio_agglomerate()`: refuse an absorption that would
+#'   drop the group's sphericity below this (0 disables the gate); the result
+#'   reports `num_rejected`.
 #' @param levels How many times to apply the refinement templates.
 #' @param ratio Fraction of faces to KEEP, in (0, 1]; negative = unset.
 #' @param target_faces Absolute face count to stop at; negative = unset.
@@ -1053,6 +1124,77 @@ mio_compute_normals <- function(mesh, point_normals = TRUE, cell_normals = FALSE
   )
 }
 
+#' Feature edges of a surface as a line mesh
+#'
+#' The sharp, open, non-manifold and inconsistently wound edges of a surface
+#' (or of a volume mesh's skin), as a mesh of `line` cells over the input's
+#' points. Each edge shared by two faces is compared by the dihedral angle
+#' between their normals; a pair wound the same way is reoriented before the
+#' angle is measured. This is the crease test `decimate` and `smooth` pin
+#' nodes with. See `doc/feature_edges.md`.
+#'
+#' @param mesh A `mio_mesh` (surface, or volume whose skin is examined).
+#' @param feature_angle The largest dihedral angle, in degrees, still treated
+#'   as smooth; in `[0, 180]`.
+#' @param feature,boundary,non_manifold,inconsistent Report that category.
+#' @param region Restrict to this named cell region; `""` takes every cell.
+#' @return A list of `mesh` (with cell data `feature:kind` -- 1 feature,
+#'   2 boundary, 3 non-manifold, 4 inconsistent -- and `feature:angle`),
+#'   `num_feature`, `num_boundary`, `num_non_manifold` and `num_inconsistent`
+#'   (over the whole surface, selected or not).
+#' @export
+mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary = TRUE,
+                              non_manifold = TRUE, inconsistent = TRUE, region = "") {
+  .Call(
+    R_mio_feature_edges, mesh, as.numeric(feature_angle), isTRUE(feature),
+    isTRUE(boundary), isTRUE(non_manifold), isTRUE(inconsistent), as.character(region)
+  )
+}
+
+#' Quality gate
+#'
+#' Scores every cell with the quality metrics and tests `require`
+#' thresholds -- clauses such as `"scaled_jacobian >= 0.2; aspect_ratio <= 5
+#' @ 1%"` -- plus the inverted and degenerate cell counts. See
+#' `doc/mesh_quality.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param require The thresholds as text; `""` checks only the counts.
+#' @param max_inverted,max_degenerate The most such cells allowed; negative
+#'   disables the check.
+#' @return A list of `passed`, `num_checks`, `num_failed`, `num_cells`,
+#'   `num_inverted`, `num_degenerate` and `summary` (the text both CLIs print).
+#' @export
+mio_check_quality <- function(mesh, require = "", max_inverted = 0, max_degenerate = 0) {
+  .Call(
+    R_mio_check_quality, mesh, as.character(require), as.numeric(max_inverted),
+    as.numeric(max_degenerate)
+  )
+}
+
+#' Hausdorff distance between two surfaces
+#'
+#' Samples each surface -- its vertices, plus the centroids of the
+#' `face_samples^2` sub-triangles of every triangle when `face_samples > 0` --
+#' and measures each sample's unsigned distance to the other surface. The
+#' Hausdorff distance is the larger one-sided maximum. Vertex sampling alone is
+#' a lower bound unless the farthest point is a vertex. A volume mesh
+#' contributes its skin. See `doc/hausdorff.md`.
+#'
+#' @param a,b `mio_mesh` objects.
+#' @param face_samples Sub-triangle sampling level; `0` samples vertices only.
+#' @param region_a,region_b Restrict to this named cell region of surface cells.
+#' @return A list of `distance`, `a_to_b`, `b_to_a`, `mean_a_to_b`,
+#'   `rms_a_to_b`, `mean_b_to_a`, `rms_b_to_a`, `num_samples_a`,
+#'   `num_samples_b`, `worst_point_a` and `worst_point_b`.
+#' @export
+mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region_b = "") {
+  .Call(
+    R_mio_hausdorff_distance, a, b, as.numeric(face_samples), as.character(region_a),
+    as.character(region_b)
+  )
+}
+
 #' Repair a surface mesh's orientation, holes and pinched vertices
 #'
 #' Surface repair beyond `mio_clean()`: weld (opt-in) -> triangulate (blocks
@@ -1334,8 +1476,12 @@ mio_subdivide <- function(mesh, record_parent_ids = FALSE) {
 
 #' @rdname mio_extract_surface
 #' @export
-mio_agglomerate <- function(mesh, target_group_size = 8) {
-  .Call(R_mio_agglomerate, mesh, as.numeric(target_group_size))
+mio_agglomerate <- function(mesh, target_group_size = 8, merge_coplanar_faces = FALSE,
+                            coplanar_angle = 1, min_sphericity = 0) {
+  .Call(
+    R_mio_agglomerate, mesh, as.numeric(target_group_size), isTRUE(merge_coplanar_faces),
+    as.numeric(coplanar_angle), as.numeric(min_sphericity)
+  )
 }
 
 #' @rdname mio_extract_surface
@@ -1827,6 +1973,45 @@ mio_sequence_free <- function(seq) invisible(.Call(R_mio_sequence_free, seq))
 mio_sequence_to_timeseries <- function(seq, out_path, out_format = NULL, ascii = FALSE) {
   invisible(.Call(R_mio_sequence_to_timeseries, seq, as.character(out_path), out_format,
                   isTRUE(ascii)))
+}
+
+#' Resample a sequence onto new times
+#'
+#' Writes one file per target time when `out_path` carries \code{\{step\}} or
+#' \code{\{index\}}, else one series file. At most two source meshes are held
+#' at once. See doc/sequences.md.
+#' @param seq a \code{mio_sequence}.
+#' @param out_path the output pattern or series file.
+#' @param times the target times.
+#' @param method \code{"linear"} (blend the bracketing steps), \code{"nearest"}
+#'   or \code{"previous"}.
+#' @param clamp if TRUE, a time outside the source range takes the end step
+#'   instead of failing.
+#' @param blend_points if TRUE, linear resampling also blends point coordinates.
+#' @param out_format forced output format, or NULL.
+#' @return NULL, invisibly.
+#' @export
+mio_sequence_resample <- function(seq, out_path, times, method = "linear", clamp = FALSE,
+                                  blend_points = FALSE, out_format = NULL) {
+  m <- match(method, c("linear", "nearest", "previous"))
+  if (is.na(m)) stop("meshio++: unknown resample method '", method, "'")
+  invisible(.Call(
+    R_mio_sequence_resample, seq, as.character(out_path), out_format, as.numeric(times),
+    as.numeric(m - 1), isTRUE(clamp), isTRUE(blend_points)
+  ))
+}
+
+#' Blend two steps of one topology
+#'
+#' `a` with every floating-point data array replaced by `(1 - w) a + w b`;
+#' integer data comes from the nearer step. See doc/sequences.md.
+#' @param a,b two \code{mio_mesh} steps with the same points count and blocks.
+#' @param w the blend weight.
+#' @param blend_points if TRUE, the point coordinates are blended too.
+#' @return a new \code{mio_mesh}.
+#' @export
+mio_blend_steps <- function(a, b, w, blend_points = FALSE) {
+  .Call(R_mio_blend_steps, a, b, as.numeric(w), isTRUE(blend_points))
 }
 
 #' Fan-out: write each step of a multi-step file to a pattern

@@ -116,7 +116,7 @@ See [mesh backends](/cpp_backends) for `KratosMesh` and the `ModelPart` material
 
 `BUILD_SHARED_LIBS` picks the library kind, as usual. The C++ libraries are built `-fvisibility=hidden` (`VISIBILITY_INLINES_HIDDEN` too) and the public surface is annotated with `MESHIOPLUSPLUS_API` (`export.hpp`), which also drives `__declspec(dllexport/dllimport)` on Windows — so a shared build exports its documented API and nothing else, on every platform.
 
-`SOVERSION` tracks [`MESHIOPLUSPLUS_ABI_VERSION`](/abi) (18), so the SONAME becomes `libmeshioplusplus_core_<backend>.so.18` and the dynamic linker refuses an incompatible library on its own. This is unlike the C API, whose `libmeshioplusplus` keeps a flat `SOVERSION 0` — its contract is append-only option structs and pin-the-major instead, since no C consumer compiles a header that defines a layout. Pin the ABI version (or the exact release) for `COMPONENTS CXX` as below.
+`SOVERSION` tracks [`MESHIOPLUSPLUS_ABI_VERSION`](/abi) (19), so the SONAME becomes `libmeshioplusplus_core_<backend>.so.19` and the dynamic linker refuses an incompatible library on its own. This is unlike the C API, whose `libmeshioplusplus` keeps a flat `SOVERSION 0` — its contract is append-only option structs and pin-the-major instead, since no C consumer compiles a header that defines a layout. Pin the ABI version (or the exact release) for `COMPONENTS CXX` as below.
 
 ## Dependencies
 
@@ -217,16 +217,16 @@ Nothing in the rest of this section applies to it: a C consumer compiles no mesh
 
 ```cmake
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 18)
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 19)
   message(FATAL_ERROR
-    "this project needs meshio++ ABI 18, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+    "this project needs meshio++ ABI 19, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 
 The conservative pin is still fully supported, and is the right choice if you would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 16.22.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.25.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a full *string* comparison against the package version, so `9.4 EXACT` does not match an installed `9.5.0` — it fails with "no configuration file … exactly matches requested version". (Through v9.1.0 this page printed the two-component form, which could never succeed.)

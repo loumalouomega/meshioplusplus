@@ -43,7 +43,10 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -260,6 +263,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Region"}},
         {"Normals",
          {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
+        {"FeatureEdges",
+         {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
+        {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
+        {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -288,7 +295,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
-        {"Agglomerate", {"TargetGroupSize"}},
+        {"Agglomerate",
+         {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -728,6 +736,67 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 "trustworthy");
         return std::move(cr.mMesh);
     }
+    if (op == "FeatureEdges") {
+        FeatureEdgeOptions opts;
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mFeature = pipe_flag(rStep, "Feature", true);
+        opts.mBoundary = pipe_flag(rStep, "Boundary", true);
+        opts.mNonManifold = pipe_flag(rStep, "NonManifold", true);
+        opts.mInconsistent = pipe_flag(rStep, "Inconsistent", true);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        FeatureEdgeResult fr = feature_edges(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFeature", static_cast<double>(fr.mNumFeature)},
+                        {"NumBoundary", static_cast<double>(fr.mNumBoundary)},
+                        {"NumNonManifold", static_cast<double>(fr.mNumNonManifold)},
+                        {"NumInconsistent", static_cast<double>(fr.mNumInconsistent)}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "QualityGate") {
+        // A gate, not a transform: the mesh passes through untouched, and a
+        // failed check stops the pipeline with the summary as the error.
+        QualityGateOptions opts;
+        for (const std::string& spec : pipe_svec(rStep, "Require")) {
+            std::vector<QualityThreshold> t = parse_quality_thresholds(spec);
+            opts.mThresholds.insert(opts.mThresholds.end(), t.begin(), t.end());
+        }
+        opts.mMaxInverted = static_cast<std::int64_t>(pipe_number(rStep, "MaxInverted", 0.0));
+        opts.mMaxDegenerate = static_cast<std::int64_t>(pipe_number(rStep, "MaxDegenerate", 0.0));
+        const QualityGateResult qr = check_quality(mesh, opts);
+        std::int64_t failed = 0;
+        for (const QualityCheck& c : qr.mChecks)
+            failed += c.mPassed ? 0 : 1;
+        if (!qr.mPassed)
+            throw std::runtime_error("meshio++: pipeline: QualityGate failed\n" +
+                                     quality_gate_summary(qr));
+        pipe_push_step(rReport, rStep,
+                       {{"NumChecks", static_cast<double>(qr.mChecks.size())},
+                        {"NumFailed", static_cast<double>(failed)}});
+        return mesh;
+    }
+    if (op == "EditRegions") {
+        // One edit per step: a pipeline value is flat, and a list of edits is
+        // just a list of steps.
+        RegionEdit edit;
+        edit.mOp = region_op_from_name(pipe_text(rStep, "Edit", ""));
+        const std::string kind = pipe_text(rStep, "Kind", "");
+        for (const std::string& name : pipe_svec(rStep, "Inputs")) {
+            RegionSelector sel;
+            sel.mName = name;
+            if (!kind.empty())
+                sel.mKind = static_cast<std::int32_t>(region_kind_from_name(kind));
+            edit.mInputs.push_back(sel);
+        }
+        edit.mOutputName = pipe_text(rStep, "Output", "");
+        if (pipe_find(rStep, "Dim"))
+            edit.mOutputDim = static_cast<std::int64_t>(pipe_number(rStep, "Dim", -1.0));
+        if (pipe_find(rStep, "Tag"))
+            edit.mOutputTag = static_cast<std::int64_t>(pipe_number(rStep, "Tag", -1.0));
+        edit.mKeepInputs = pipe_flag(rStep, "KeepInputs", true);
+        Mesh out = edit_regions(mesh, {edit});
+        pipe_push_step(rReport, rStep, {{"NumRegions", static_cast<double>(out.NumRegions())}});
+        return out;
+    }
     if (op == "Normals") {
         // An absent SplitAngle means one smooth normal per point; a number is
         // the crease angle in degrees, and the split appends points.
@@ -1020,8 +1089,13 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         AgglomerateOptions opts;
         opts.mTargetGroupSize =
             static_cast<std::size_t>(pipe_number(rStep, "TargetGroupSize", 8.0));
+        opts.mMergeCoplanarFaces = pipe_flag(rStep, "MergeCoplanarFaces", false);
+        opts.mCoplanarAngleDeg = pipe_number(rStep, "CoplanarAngle", 1.0);
+        opts.mMinSphericity = pipe_number(rStep, "MinSphericity", 0.0);
         auto result = agglomerate(mesh, opts);
-        pipe_push_step(rReport, rStep);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFacesMerged", static_cast<double>(result.mNumFacesMerged)},
+                        {"NumRejected", static_cast<double>(result.mNumRejected)}});
         return std::move(result.mMesh);
     }
     if (op == "Crop") {
@@ -1528,8 +1602,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(doc, "the settings document",
-                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"});
+    pipe_check_keys(
+        doc, "the settings document",
+        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -1558,6 +1633,49 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
         pipeline.mWorkers = v->get<int>();
         if (pipeline.mWorkers < 0)
             pipe_schema_error("Workers must not be negative (0 means one per core)");
+    }
+
+    if (const pipe_json* r = pipe_get(doc, "Resample")) {
+        parsed.mSequenceKeys = true;
+        if (!r->is_object())
+            pipe_schema_error("Resample must be an object");
+        pipe_check_keys(*r, "Resample",
+                        {"Times", "TimesFrom", "Method", "Extrapolate", "BlendPoints"});
+        SequenceResample rs;
+        if (const pipe_json* t = pipe_get(*r, "Times")) {
+            if (t->is_array()) {
+                for (const pipe_json& v : *t) {
+                    if (!v.is_number())
+                        pipe_schema_error("Resample.Times must be numbers");
+                    rs.mTimes.push_back(v.get<double>());
+                }
+            } else if (t->is_object()) {
+                pipe_check_keys(*t, "Resample.Times", {"Start", "Stop", "Step"});
+                auto num = [&](const char* pKey) {
+                    const pipe_json* v = pipe_get(*t, pKey);
+                    if (!v || !v->is_number())
+                        pipe_schema_error(std::string("Resample.Times.") + pKey +
+                                          " must be a number");
+                    return v->get<double>();
+                };
+                rs.mTimes = resample_times_range(num("Start"), num("Stop"), num("Step"));
+            } else {
+                pipe_schema_error("Resample.Times must be an array or {Start, Stop, Step}");
+            }
+        }
+        rs.mTimesFrom = pipe_get_string(*r, "TimesFrom", "Resample");
+        if (rs.mTimes.empty() == rs.mTimesFrom.empty())
+            pipe_schema_error("Resample needs exactly one of Times and TimesFrom");
+        const std::string method = pipe_get_string(*r, "Method", "Resample");
+        if (!method.empty())
+            rs.mMethod = resample_method_from_name(method);
+        const std::string extrap = pipe_get_string(*r, "Extrapolate", "Resample");
+        if (extrap == "clamp")
+            rs.mExtrapolate = ResampleExtrapolate::Clamp;
+        else if (!extrap.empty() && extrap != "error")
+            pipe_schema_error("Resample.Extrapolate must be \"error\" or \"clamp\"");
+        rs.mBlendPoints = pipe_get_bool(*r, "BlendPoints", "Resample", false);
+        pipeline.mResample = rs;
     }
 
     const pipe_json* input = pipe_get(doc, "Input");

@@ -108,12 +108,9 @@ def _soup(mesh):
         if name.startswith("polyhedron") or (
             not name.startswith("polygon") and name not in ("triangle", "quad")
         ):
-            from ._common import topological_dimension
+            from ._mesh import topological_dimension
 
-            try:
-                dim = topological_dimension(name)
-            except Exception:
-                dim = 2
+            dim = topological_dimension.get(name, 2)
             if dim == 3 or name.startswith("polyhedron"):
                 raise ValueError(
                     f"{_SD_PREFIX}cell block '{name}' is a volume; distance is measured to a "

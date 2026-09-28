@@ -485,6 +485,7 @@ program test_fortran_api
     block
         type(mio_mesh) :: agg
         integer :: st
+        integer(int64) :: merged, rejected
 
         ! The two tetra share a face (nodes 2,3,4 1-based), so target=2
         ! merges them into one polyhedron.
@@ -494,7 +495,18 @@ program test_fortran_api
         call check(agg%cell_block_type(1) == 'polyhedron', 'agglomerate produced polyhedron cells')
         call check(agg%cell_block_num_cells(1) == 1_int64, 'agglomerate merged both tetra')
         call check(agg%num_points() == m%num_points(), 'agglomerate never prunes points')
+        call agg%free()
 
+        agg = m%agglomerate(target_group_size=2_int64, stat=st, merge_coplanar_faces=.true., &
+                            min_sphericity=0.1_real64, num_faces_merged=merged, &
+                            num_rejected=rejected)
+        call check(st == 0, 'agglomerate with options succeeded')
+        call check(merged >= 0_int64 .and. rejected >= 0_int64, 'agglomerate reports its counts')
+        call agg%free()
+
+        agg = mio_blend_steps(m, m, 0.5_real64, stat=st)
+        call check(st == 0, 'blend_steps of a mesh with itself')
+        call check(agg%num_points() == m%num_points(), 'blend_steps keeps the points')
         call agg%free()
     end block
 
@@ -1272,6 +1284,18 @@ program test_fortran_api
     call seq%to_timeseries(prefix//'_seq_series.xdmf', stat=ierr)
     call check(ierr == 0, 'sequence fan-in')
 
+    ! Resample onto new times (the filename times are 1, 2, 10). The stem
+    ! must not match '_seq_*.vtu' either.
+    call seq%resample(prefix//'_rs_{index}.vtu', [1.0_real64, 1.5_real64, 10.0_real64], stat=ierr)
+    call check(ierr == 0, 'sequence resample')
+    call r%read(prefix//'_rs_1.vtu', stat=ierr)
+    call check(ierr == 0, 'resample wrote the blended step')
+    call r%free()
+    call seq%resample(prefix//'_rs_bad_{index}.vtu', [20.0_real64], stat=ierr)
+    call check(ierr /= 0, 'resample outside the range fails without clamp')
+    call seq%resample(prefix//'_rs_bad_{index}.vtu', [1.0_real64], method='cubic', stat=ierr)
+    call check(ierr /= 0, 'resample rejects an unknown method')
+
     ! A format that cannot hold a series must fail by name, not truncate.
     call seq%to_timeseries(prefix//'_seq_bad.vtu', stat=ierr, errmsg=msg)
     call check(ierr /= 0, 'fan-in to a non-series format fails')
@@ -1298,6 +1322,7 @@ program test_fortran_api
     ! ---- per-vertex curvature --------------------------------------------
     call check_curvature()
     call check_normals()
+    call check_analysis_editing()
     call check_repair_shrinkwrap_sobolev()
 
     if (fails /= 0) then
@@ -1611,6 +1636,93 @@ contains
         call check(ierr /= 0, 'normals rejects an unknown weight')
         bad = sq%normals(split_angle=270.0_real64, stat=ierr)
         call check(ierr /= 0, 'normals rejects a split angle above 180')
+        call sq%free()
+    end subroutine
+
+    subroutine check_analysis_editing()
+        type(mio_mesh) :: sq, other, edges, edited, bad
+        integer(int64) :: nfeat, nbound, nfixed
+        integer(int64), allocatable :: s_ids(:), m_ids(:)
+        integer :: ierr
+        real(real64) :: cube_points(3, 8), d, ab
+        logical :: passed
+        integer(int64) :: nchecks
+        character(:), allocatable :: text
+        integer(int64) :: cube_conn(4, 6)
+
+        cube_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 1.0_real64, 1.0_real64, &
+                               0.0_real64, 1.0_real64, 1.0_real64], [3, 8])
+        cube_conn = reshape([1_int64, 4_int64, 3_int64, 2_int64, &
+                             5_int64, 6_int64, 7_int64, 8_int64, &
+                             1_int64, 2_int64, 6_int64, 5_int64, &
+                             4_int64, 8_int64, 7_int64, 3_int64, &
+                             1_int64, 5_int64, 8_int64, 4_int64, &
+                             2_int64, 3_int64, 7_int64, 6_int64], [4, 6])
+        call sq%create()
+        call sq%set_points(cube_points)
+        call sq%add_cell_block('quad', cube_conn)
+
+        ! Feature edges: the 12 edges of the cube.
+        edges = sq%feature_edges(num_feature=nfeat, num_boundary=nbound, stat=ierr)
+        call check(ierr == 0, 'feature_edges succeeded')
+        call check(nfeat == 12_int64, 'a cube has 12 feature edges')
+        call check(nbound == 0_int64, 'a closed cube has no boundary edges')
+        call check(edges%cell_block_type(1) == 'line', 'feature edges are lines')
+        call edges%free()
+        bad = sq%feature_edges(feature_angle=200.0_real64, stat=ierr)
+        call check(ierr /= 0, 'feature_edges rejects an angle above 180')
+
+        ! Hausdorff: a cube against itself.
+        call other%create()
+        call other%set_points(cube_points)
+        call other%add_cell_block('quad', cube_conn)
+        d = sq%hausdorff_distance(other, a_to_b=ab, stat=ierr)
+        call check(ierr == 0, 'hausdorff_distance succeeded')
+        call check(d == 0.0_real64 .and. ab == 0.0_real64, 'a cube is at distance 0 from itself')
+        call other%free()
+
+        ! Regions: bottom and top faces' nodes, then their union, then periodic
+        ! pairs under a +1 z translation (1-based ids).
+        call sq%add_region('bottom', MIO_REGION_POINT, [1_int64, 2_int64, 3_int64, 4_int64])
+        call sq%add_region('top', MIO_REGION_POINT, [5_int64, 6_int64, 7_int64, 8_int64])
+        edited = sq%edit_regions('union', [character(len=6) :: 'bottom', 'top'], output='all', &
+                                 stat=ierr)
+        call check(ierr == 0, 'edit_regions union succeeded')
+        call edited%remove_region(1, stat=ierr)
+        call check(ierr == 0, 'remove_region succeeded')
+        call edited%free()
+        bad = sq%edit_regions('xor', [character(len=6) :: 'bottom'], stat=ierr)
+        call check(ierr /= 0, 'edit_regions rejects an unknown operation')
+
+        call sq%match_periodic_nodes('bottom', 'top', s_ids, m_ids, &
+                                     translate=[0.0_real64, 0.0_real64, 1.0_real64], &
+                                     num_fixed=nfixed, stat=ierr)
+        call check(ierr == 0, 'match_periodic_nodes succeeded')
+        call check(size(s_ids) == 4, 'four periodic pairs')
+        if (size(s_ids) == 4) then
+            call check(all(m_ids == s_ids + 4_int64), 'each bottom node pairs with the one above')
+        end if
+        call check(nfixed == 0_int64, 'a translation has no fixed points')
+        call sq%match_periodic_nodes('bottom', 'top', s_ids, m_ids, &
+                                     translate=[0.0_real64, 0.0_real64, 0.5_real64], stat=ierr)
+        call check(ierr /= 0, 'an incomplete periodic match fails')
+
+        ! Quality gate: a unit cube of squares passes aspect_ratio <= 1.5.
+        passed = sq%check_quality('aspect_ratio <= 1.5', num_checks=nchecks, summary=text, &
+                                  stat=ierr)
+        call check(ierr == 0 .and. passed, 'check_quality passes a cube')
+        call check(nchecks == 3_int64, 'check_quality reports three checks')
+        call check(index(text, 'PASS') > 0, 'check_quality summary says PASS')
+        passed = sq%check_quality('aspect_ratio <= 0.5', stat=ierr)
+        call check(ierr == 0 .and. .not. passed, 'check_quality fails a tight bound')
+        passed = sq%check_quality('bogus >= 1', stat=ierr)
+        call check(ierr /= 0, 'check_quality rejects an unknown metric')
         call sq%free()
     end subroutine
 

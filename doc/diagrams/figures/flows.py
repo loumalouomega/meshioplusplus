@@ -988,8 +988,8 @@ def roadmap_map():
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
-                ("feature edges · Hausdorff", "S"),
-                ("quality gate · check · --json", "M"),
+                ("time resampling · agglomerate", "M"),
+                ("Delaunay backend (optional)", "L"),
             ],
             [(0, 1)],
         ),

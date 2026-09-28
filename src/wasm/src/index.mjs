@@ -210,6 +210,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   sequenceEntries: (source: string|string[], options?: object) => object[],
  *   sequenceToTimeseries: (source: string|string[], outPath: string, outFormat?: string, options?: object) => number,
  *   timeseriesToSequence: (inPath: string, outPattern: string, inFormat?: string, outFormat?: string) => string[],
+ *   resampleSequence: (source: string|string[], outPath: string, resample: object, outFormat?: string, options?: object) => number,
+ *   blendSteps: (a: Mesh, b: Mesh, w: number, blendPoints?: boolean) => Mesh,
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
@@ -250,13 +252,18 @@ export class MeshioPlusPlusLoadError extends Error {
  *   optimizeVolume: (mesh: Mesh, maxIterations?: number, relocate?: boolean, flip?: boolean, preserveBoundary?: boolean, minImprovement?: number) => {mesh: Mesh, numFlips: number, num23Flips: number, num32Flips: number, numVerticesMoved: number, numTets: number, minQualityBefore: number, minQualityAfter: number},
  *   computeCurvature: (mesh: Mesh, mean?: boolean, gaussian?: boolean, dualArea?: string, includeBoundary?: boolean, recordArea?: boolean, recordPrincipal?: boolean, region?: string) => {mesh: Mesh, numBoundary: number, numIsolated: number, numDegenerate: number, totalAngleDefect: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
+ *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
+ *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
+ *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
+ *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
+ *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
  *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   subdivide: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMaps: Int32Array[]},
- *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMap: Int32Array},
+ *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean, options?: {mergeCoplanarFaces?: boolean, coplanarAngle?: number, minSphericity?: number}) => Mesh | {mesh: Mesh, cellMap: Int32Array, numFacesMerged: number, numRejected: number},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
@@ -460,6 +467,12 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // Streams -- one mesh alive at a time, whatever the step count.
         sequenceToTimeseries: (source, outPath, outFormat = '', options = undefined) =>
             Module.sequenceToTimeseries(source, outPath, outFormat, options),
+        // Resample onto new times: `resample` is {Times | TimesFrom, Method,
+        // Extrapolate, BlendPoints}. At most two meshes alive at a time.
+        resampleSequence: (source, outPath, resample, outFormat = '', options = undefined) =>
+            Module.resampleSequence(source, outPath, resample, outFormat, options),
+        // `a` with its float data blended to (1 - w) a + w b; same topology.
+        blendSteps: (a, b, w, blendPoints = false) => Module.blendSteps(a, b, w, blendPoints),
         // Fan-out: one multi-step file -> one file per step. `outPattern` must
         // contain '{step}' or '{index}'; returns the MEMFS paths written.
         timeseriesToSequence: (inPath, outPattern, inFormat = '', outFormat = '') =>
@@ -775,6 +788,26 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.computeNormals(mesh, pointNormals, cellNormals, weight, splitAngle,
                 recordParentIds, region),
+        checkQuality: (mesh, require = '', maxInverted = 0, maxDegenerate = 0) =>
+            Module.checkQuality(mesh, require, maxInverted, maxDegenerate),
+        featureEdges: (
+            mesh,
+            featureAngle = 30,
+            feature = true,
+            boundary = true,
+            nonManifold = true,
+            inconsistent = true,
+            region = '',
+        ) =>
+            Module.featureEdges(mesh, featureAngle, feature, boundary, nonManifold,
+                inconsistent, region),
+        hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
+            Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
+        editRegions: (mesh, edits) =>
+            Module.editRegions(mesh, Array.isArray(edits) ? edits : [edits]),
+        matchPeriodicNodes: (mesh, slave, master, matrix, atol = 1e-8, requireComplete = true) =>
+            Module.matchPeriodicNodes(mesh, slave, master, Array.from(matrix), atol,
+                requireComplete),
         repair: (
             mesh,
             fixOrientation = true,
@@ -828,8 +861,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // `returnMaps` (default false): when true, returns `{mesh, cellMap}`
         // instead of a bare mesh -- a single FLAT array (global cell index ->
         // global cell index), unlike the other ops' per-block `cellMaps`.
-        agglomerate: (mesh, targetGroupSize = 8, returnMaps = false) =>
-            Module.agglomerate(mesh, targetGroupSize, returnMaps),
+        // `options`: {mergeCoplanarFaces, coplanarAngle, minSphericity}.
+        agglomerate: (mesh, targetGroupSize = 8, returnMaps = false, options = undefined) =>
+            Module.agglomerate(mesh, targetGroupSize, returnMaps, options),
         // `returnMaps` (default false): when true, returns
         // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
         refine: (mesh, levels = 1, recordParentIds = false, options = undefined,

@@ -180,6 +180,11 @@ public:
         ResetModelPartOnly();
         mStage.AddRegion(std::move(region));
     }
+    /// Drop region @p i (the `Region(i)` numbering); out of range is a no-op.
+    void RemoveRegion(std::size_t i) {
+        ResetModelPartOnly();
+        mStage.RemoveRegion(i);
+    }
     void AddPropertySet(PropertySet propertySet) {
         ResetModelPartOnly();
         mStage.AddPropertySet(std::move(propertySet));

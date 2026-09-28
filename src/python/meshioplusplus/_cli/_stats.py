@@ -1,7 +1,6 @@
-import json
-
 from .._helpers import read, reader_map
 from .._stats import compute_stats
+from ._json import emit_json
 
 
 def add_args(parser):
@@ -28,7 +27,7 @@ def stats_cmd(args):
     s = compute_stats(mesh)
 
     if args.json:
-        print(json.dumps(s, indent=2))
+        emit_json(s)
         return 0
 
     print("<meshio++ geometric stats>")

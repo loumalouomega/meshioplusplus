@@ -204,6 +204,11 @@ with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The 
 ## v15.4.0 additions
 
 - `mio_compute_normals(mesh, point_normals = TRUE, cell_normals = FALSE, weight = "angle", split_angle = NULL, record_parent_ids = FALSE, region = "")` — point and cell normals of a surface, written as `normals` (an `(n, 3)` point-data matrix; a cell-data array with `cell_normals`). `split_angle = NULL` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Returns a list of `mesh`, `quality`, `num_isolated`, `num_undefined`, `num_degenerate`, `num_split_points` and `num_added_points`. Never reorients: check `quality$inconsistent_pairs`. See [normals](/normals).
+- `mio_check_quality(mesh, require = "", max_inverted = 0, max_degenerate = 0)` — the [quality gate](/mesh_quality#quality-gate); a list of `passed`, the counts and `summary`.
+- `mio_feature_edges(mesh, feature_angle = 30, feature = TRUE, boundary = TRUE, non_manifold = TRUE, inconsistent = TRUE, region = "")` — the sharp, open, non-manifold and inconsistently wound edges as a `line` mesh; returns a list of `mesh` and the per-category counts. See [feature edges](/feature_edges).
+- `mio_hausdorff_distance(a, b, face_samples = 0, region_a = "", region_b = "")` — a list of `distance`, the one-sided maxima with means and RMS, the sample counts and the worst points. See [Hausdorff distance](/hausdorff).
+- `mio_edit_regions(mesh, op, inputs, output = "", kind = NULL, dim = NULL, tag = NULL, keep_inputs = TRUE)` and `mio_remove_region(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
+- `mio_match_periodic_nodes(mesh, slave, master, matrix = NULL, translate = NULL, atol = 1e-8, require_complete = TRUE)` — a list of 1-based `slave` / `master` ids, `unmatched`, `num_fixed` and `max_residual`; `matrix` is an R 4x4 (`M %*% c(p, 1)`). See [periodic node pairs](/periodic).
 
 ## v10.9.0 additions
 
@@ -275,6 +280,7 @@ for (i in seq_len(mio_sequence_count(seq))) {
   cat(mio_sequence_time(seq, i), mio_sequence_time_source(seq, i), "\n")
 }
 mio_sequence_to_timeseries(seq, "series.xdmf")            # fan-in
+mio_sequence_resample(seq, "u_{index}.vtu", seq(0, 2, by = 0.1))  # onto new times
 mio_sequence_free(seq)
 
 # ascii=TRUE selects XDMF's "XML" data format (no HDF5 needed) -- the option
@@ -285,6 +291,8 @@ mio_sequence_pipeline_run_file("transient.json")               # per-step chain
 ```
 
 Indices are 1-based, like every other R accessor. The external pointer has its own tag, so a `mio_mesh`, a `mio_xdmf_series` and a `mio_sequence` can never be passed for one another; a released handle is an R error, never a dereference.
+
+`mio_sequence_resample(seq, out_path, times, method = "linear", clamp = FALSE, blend_points = FALSE, out_format = NULL)` resamples onto new times (`"nearest"` and `"previous"` too) holding at most two source meshes, and `mio_blend_steps(a, b, w, blend_points = FALSE)` blends two steps of one topology. `mio_agglomerate()` takes `merge_coplanar_faces`, `coplanar_angle` and `min_sphericity` and reports `num_faces_merged` and `num_rejected` (see [agglomerate](/agglomerate)). See [Resampling onto new times](sequences.md#resampling-onto-new-times).
 
 See [sequences](sequences.md) for the ordering rule, the time-value precedence and the streaming guarantee.
 

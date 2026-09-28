@@ -4159,3 +4159,158 @@ TEST(CApi, WriteToADatNeverLetsTheOldFileChoose) {
     mio_mesh_free(m);
     std::remove(dat.c_str());
 }
+
+// --- analysis and editing (v16.23.0) ----------------------------------------
+
+TEST(CApi, FeatureEdgesOfACube) {
+    mio_mesh* m = capi_cube_surface();
+    mio_feature_edges_opts opts;
+    mio_feature_edges_opts_init(&opts);
+    EXPECT_DOUBLE_EQ(opts.feature_angle, 30.0);
+    EXPECT_EQ(opts.boundary, 1);  // ON by default -- an all-zero struct is NOT the default
+    mio_feature_edges_report report;
+    mio_mesh* edges = mio_feature_edges(m, &opts, &report);
+    ASSERT_NE(edges, nullptr) << mio_last_error();
+    // The fan diagonals of each face are flat; the 12 cube edges are sharp.
+    EXPECT_EQ(report.num_feature, 12);
+    EXPECT_EQ(report.num_boundary, 0);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(edges), 1);
+    EXPECT_EQ(block_type(edges, 0), "line");
+    mio_mesh_free(edges);
+    opts.feature_angle = 200.0;
+    EXPECT_EQ(mio_feature_edges(m, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_feature_edges(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, HausdorffOfAMeshWithItselfIsZero) {
+    mio_mesh* a = capi_cube_surface();
+    mio_mesh* b = capi_cube_surface();
+    mio_hausdorff_opts opts;
+    mio_hausdorff_opts_init(&opts);
+    opts.face_samples = 2;
+    mio_hausdorff_report report;
+    ASSERT_EQ(mio_hausdorff_distance(a, b, &opts, &report), MIO_OK) << mio_last_error();
+    EXPECT_NEAR(report.distance, 0.0, 1e-12);  // face samples: rounding, not exactly 0
+    EXPECT_EQ(report.num_samples_a, 8 + 12 * 4);
+    EXPECT_NE(mio_hausdorff_distance(a, b, &opts, nullptr), MIO_OK);
+    mio_mesh_free(a);
+    mio_mesh_free(b);
+}
+
+TEST(CApi, EditRegionsAndPeriodicPairs) {
+    mio_mesh* m = capi_cube_surface();
+    const std::int64_t bottom[] = {0, 1, 2, 3};
+    const std::int64_t top[] = {4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_add_region(m, "bottom", MIO_REGION_POINT, 0, -1, bottom, 4), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(m, "top", MIO_REGION_POINT, 0, -1, top, 4), MIO_OK);
+
+    mio_region_selector in[2];
+    mio_region_selector_init(&in[0], "bottom");
+    mio_region_selector_init(&in[1], "top");
+    EXPECT_EQ(in[0].kind, -1);
+    EXPECT_EQ(in[0].dim, MIO_REGION_ANY);
+    mio_mesh* u =
+        mio_edit_regions(m, MIO_REGION_UNION, in, 2, "all", MIO_REGION_ANY, MIO_REGION_ANY, 1);
+    ASSERT_NE(u, nullptr) << mio_last_error();
+    mio_regions* regs = mio_regions_create(u);
+    EXPECT_EQ(mio_regions_count(regs), 3);
+    mio_regions_free(regs);
+    ASSERT_EQ(mio_mesh_remove_region(u, 0), MIO_OK);
+    regs = mio_regions_create(u);
+    EXPECT_EQ(mio_regions_count(regs), 2);
+    mio_regions_free(regs);
+    EXPECT_NE(mio_mesh_remove_region(u, 9), MIO_OK);
+    mio_mesh_free(u);
+    EXPECT_EQ(mio_edit_regions(m, 42, in, 2, "x", MIO_REGION_ANY, MIO_REGION_ANY, 1), nullptr);
+
+    mio_periodic_opts opts;
+    mio_periodic_opts_init(&opts);
+    EXPECT_EQ(opts.matrix[0], 1.0);
+    EXPECT_EQ(opts.matrix[15], 1.0);
+    opts.matrix[11] = 1.0;  // translate +1 in z
+    mio_periodic_pairs* pairs = mio_match_periodic_nodes(m, &in[0], &in[1], &opts);
+    ASSERT_NE(pairs, nullptr) << mio_last_error();
+    std::int64_t n = 0, unmatched = -1, fixed = -1;
+    double residual = -1.0;
+    ASSERT_EQ(mio_periodic_pairs_info(pairs, &n, &unmatched, &fixed, &residual), MIO_OK);
+    EXPECT_EQ(n, 4);
+    EXPECT_EQ(unmatched, 0);
+    EXPECT_EQ(fixed, 0);
+    EXPECT_EQ(residual, 0.0);
+    std::int64_t count = 0;
+    const std::int64_t* s = mio_periodic_pairs_slave(pairs, &count);
+    const std::int64_t* t = mio_periodic_pairs_master(pairs, nullptr);
+    ASSERT_EQ(count, 4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(s[i], i);
+        EXPECT_EQ(t[i], i + 4);
+    }
+    mio_periodic_pairs_free(pairs);
+    opts.matrix[11] = 0.5;  // nothing lands on a master
+    EXPECT_EQ(mio_match_periodic_nodes(m, &in[0], &in[1], &opts), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, CheckQualityGates) {
+    mio_mesh* m = capi_cube_surface();
+    mio_quality_gate_report report;
+    char summary[512];
+    ASSERT_EQ(mio_check_quality(m, "min_angle >= 30", 0, 0, &report, summary, sizeof(summary)),
+              MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(report.passed, 1);
+    EXPECT_EQ(report.num_checks, 3);
+    EXPECT_EQ(report.num_failed, 0);
+    EXPECT_EQ(report.num_cells, 12);
+    EXPECT_GT(report.summary_length, 0);
+    EXPECT_NE(std::string(summary).find("PASS"), std::string::npos);
+    ASSERT_EQ(mio_check_quality(m, "min_angle >= 50", -1, -1, &report, nullptr, 0), MIO_OK);
+    EXPECT_EQ(report.passed, 0);
+    EXPECT_EQ(report.num_checks, 1);
+    EXPECT_NE(mio_check_quality(m, "bogus >= 1", 0, 0, &report, nullptr, 0), MIO_OK);
+    EXPECT_NE(mio_check_quality(m, nullptr, 0, 0, nullptr, nullptr, 0), MIO_OK);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, AgglomerateExAndBlendAndResample) {
+    // Two unit hexes in a row: one group, and with coplanar merging the four
+    // side faces pairs fuse (4 faces removed).
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1,
+                                     1, 1, 1, 0, 1, 1, 2, 0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1};
+    const std::vector<std::int64_t> hexes = {0, 1, 2, 3, 4, 5, 6, 7, 1, 8, 9, 2, 5, 10, 11, 6};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 2, 8, MIO_INT64, hexes.data()), MIO_OK);
+    mio_agglomerate_opts opts;
+    mio_agglomerate_opts_init(&opts);
+    EXPECT_EQ(opts.target_group_size, 8);
+    EXPECT_EQ(opts.coplanar_angle, 1.0);
+    opts.merge_coplanar_faces = 1;
+    std::int64_t merged = -1, rejected = -1;
+    mio_agglomerate_result* r = mio_agglomerate_ex(m, &opts, &merged, &rejected);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    EXPECT_EQ(merged, 4);
+    EXPECT_EQ(rejected, 0);
+    mio_agglomerate_result_free(r);
+    opts.min_sphericity = 2.0;
+    EXPECT_EQ(mio_agglomerate_ex(m, &opts, nullptr, nullptr), nullptr);
+
+    // blend_steps: a point field halfway between two steps.
+    const double u0[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const double u1[] = {4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4};
+    mio_mesh* b = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(b, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(b, "hexahedron", 2, 8, MIO_INT64, hexes.data()), MIO_OK);
+    const std::int64_t shape[] = {12};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 1, shape, u0), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(b, "u", MIO_FLOAT64, 1, shape, u1), MIO_OK);
+    mio_mesh* half = mio_blend_steps(m, b, 0.25, 0);
+    ASSERT_NE(half, nullptr) << mio_last_error();
+    mio_mesh_free(half);
+    mio_resample_opts ro;
+    mio_resample_opts_init(&ro);
+    EXPECT_NE(mio_sequence_resample(nullptr, "x_{index}.vtu", nullptr, &ro), MIO_OK);
+    mio_mesh_free(b);
+    mio_mesh_free(m);
+}

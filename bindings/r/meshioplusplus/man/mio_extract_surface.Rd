@@ -146,7 +146,13 @@ mio_convert_cells(mesh, convert_mode, record_parent_ids = FALSE)
 
 mio_subdivide(mesh, record_parent_ids = FALSE)
 
-mio_agglomerate(mesh, target_group_size = 8)
+mio_agglomerate(
+  mesh,
+  target_group_size = 8,
+  merge_coplanar_faces = FALSE,
+  coplanar_angle = 1,
+  min_sphericity = 0
+)
 
 mio_refine(mesh, levels = 1L, record_parent_ids = FALSE)
 
@@ -311,6 +317,16 @@ have used \code{record_hierarchy = TRUE, record_levels = TRUE}).}
 
 \item{target_group_size}{Approximate member cells per \code{mio_agglomerate()}
 output group; must be at least 1 (\code{1} groups every cell by itself).}
+
+\item{merge_coplanar_faces}{\code{mio_agglomerate()}: fuse the faces two groups
+share, and a group's boundary faces, into one polygon where they are
+coplanar; the result also reports \code{num_faces_merged}.}
+
+\item{coplanar_angle}{Largest normal deviation (degrees) still coplanar.}
+
+\item{min_sphericity}{\code{mio_agglomerate()}: refuse an absorption that would
+drop the group's sphericity below this (0 disables the gate); the result
+reports \code{num_rejected}.}
 
 \item{levels}{How many times to apply the refinement templates.}
 

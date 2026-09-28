@@ -71,6 +71,8 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
@@ -449,6 +451,20 @@ int main(int argc, char** argv) {
             [&](MeshDigest* pD) { of(pD, mio::compute_normals(surface).mMesh); });
         row("compute_curvature",
             [&](MeshDigest* pD) { of(pD, mio::compute_curvature(surface).mMesh); });
+        // Rows for roadmap §5's analysis operations (v16.23.0).
+        row("feature_edges",
+            [&](MeshDigest* pD) { of(pD, mio::feature_edges(volume).mMesh); });
+        row("hausdorff", [&](MeshDigest* pD) {
+            mio::HausdorffOptions o;
+            o.mFaceSamples = 2;
+            const mio::HausdorffResult r = mio::hausdorff_distance(inflated, surface, o);
+            if (!pD)
+                return;
+            pD->Bytes(&r.mDistance, sizeof r.mDistance);
+            pD->Bytes(&r.mMeanAtoB, sizeof r.mMeanAtoB);
+            pD->Bytes(&r.mRmsBtoA, sizeof r.mRmsBtoA);
+            pD->Bytes(r.mWorstPointA.data(), sizeof r.mWorstPointA);
+        });
         row("shrinkwrap",
             [&](MeshDigest* pD) { of(pD, mio::shrinkwrap(inflated, surface).mMesh); });
         row("voxelize", [&](MeshDigest* pD) {

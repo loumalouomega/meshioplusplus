@@ -138,58 +138,65 @@ def _boundary_and_features(mesh, xyz, n, face_mode, preserve_features, feature_a
             keys.append(np.hstack([pad, key]) if pad.size else key)
             facets.append(corners)
     boundary = np.zeros(n, dtype=bool)
-    if not keys:
-        return boundary, np.zeros(n, dtype=bool)
-
-    allkeys = np.vstack(keys)
-    allfacets = (
-        np.vstack([f for f in facets])
-        if len({f.shape[1] for f in facets}) == 1
-        else None
-    )
-    _uniq, inverse, counts = np.unique(
-        allkeys, axis=0, return_inverse=True, return_counts=True
-    )
-    once = counts[inverse] == 1
-
-    # Mark boundary nodes.
-    offset = 0
     bfacets = []
-    for corners in facets:
-        m = once[offset : offset + corners.shape[0]]
-        offset += corners.shape[0]
-        sel = corners[m]
-        if sel.size:
-            boundary[sel.ravel()] = True
-            bfacets.append(sel)
-    del allfacets
+    if keys:
+        allkeys = np.vstack(keys)
+        _uniq, inverse, counts = np.unique(
+            allkeys, axis=0, return_inverse=True, return_counts=True
+        )
+        once = counts[inverse] == 1
+
+        # Mark boundary nodes.
+        offset = 0
+        for corners in facets:
+            m = once[offset : offset + corners.shape[0]]
+            offset += corners.shape[0]
+            sel = corners[m]
+            if sel.size:
+                boundary[sel.ravel()] = True
+                bfacets.append(sel)
 
     features = np.zeros(n, dtype=bool)
-    if not preserve_features or not bfacets:
+    if not preserve_features:
         return boundary, features
 
-    # Facet normals: Newell for a face, the in-plane perpendicular for a 2D edge.
+    from ._feature_edges import crease_edges, crease_nodes, ring_unit_normals
+
+    def creases(rings):
+        rings = [r for r in rings if len(r) >= 3]
+        start = np.zeros(len(rings) + 1, dtype=np.int64)
+        if not rings:
+            return np.zeros(n, dtype=bool)
+        start[1:] = np.cumsum([len(r) for r in rings])
+        nodes = np.concatenate(rings).astype(np.int64)
+        edges = crease_edges(
+            start, nodes, ring_unit_normals(xyz, start, nodes), feature_angle
+        )
+        return crease_nodes(edges, n)
+
+    if face_mode:
+        # The creases of the boundary skin (the shared per-edge test).
+        rings = [row for sel in bfacets if sel.shape[1] >= 3 for row in sel]
+        return boundary, creases(rings)
+
+    # Edge mode: the corners of the boundary polyline (edge directions turning
+    # by more than the feature angle; in the XY plane this is the pre-v16.23.0
+    # in-plane perpendicular test, dot for dot) ...
     normals = []
     nodes_per = []
-    for sel in bfacets:
-        k = sel.shape[1]
-        if k >= 3:
-            p = xyz[sel]
-            nrm = np.zeros((sel.shape[0], 3), dtype=np.float64)
-            for i in range(k):
-                nrm += np.cross(p[:, i], p[:, (i + 1) % k])
-        else:
-            p0, p1 = xyz[sel[:, 0]], xyz[sel[:, 1]]
-            nrm = np.column_stack(
-                [p1[:, 1] - p0[:, 1], p0[:, 0] - p1[:, 0], np.zeros(sel.shape[0])]
-            )
-        length = np.linalg.norm(nrm, axis=1, keepdims=True)
-        nrm = np.divide(nrm, length, out=np.zeros_like(nrm), where=length > 0)
-        normals.append(nrm)
+    for sel in bfacets if bfacets else ():
+        p0, p1 = xyz[sel[:, 0]], xyz[sel[:, 1]]
+        nrm = p1 - p0
+        length = np.sqrt(
+            nrm[:, 0] * nrm[:, 0] + nrm[:, 1] * nrm[:, 1] + nrm[:, 2] * nrm[:, 2]
+        )
+        inv = np.zeros_like(length)
+        inv[length >= 1e-300] = 1.0 / length[length >= 1e-300]
+        normals.append(nrm * inv[:, None])
         nodes_per.append(sel)
 
-    allnorm = np.vstack(normals)
-    node_ids = np.concatenate([s.ravel() for s in nodes_per])
+    allnorm = np.vstack(normals) if normals else np.empty((0, 3))
+    node_ids = np.concatenate([s.ravel() for s in nodes_per] + [np.empty(0, np.int64)])
     facet_ids = np.concatenate(
         [
             np.repeat(np.arange(s.shape[0]) + off, s.shape[1])
@@ -197,8 +204,9 @@ def _boundary_and_features(mesh, xyz, n, face_mode, preserve_features, feature_a
                 np.cumsum([0] + [s.shape[0] for s in nodes_per[:-1]]), nodes_per
             )
         ]
+        + [np.empty(0, np.int64)]
     )
-    cos_thr = np.cos(np.deg2rad(feature_angle))
+    cos_thr = np.cos(feature_angle * 3.14159265358979323846 / 180.0)
     order = np.argsort(node_ids, kind="stable")
     node_ids, facet_ids = node_ids[order], facet_ids[order]
     starts = np.searchsorted(node_ids, np.arange(n), side="left")
@@ -210,7 +218,26 @@ def _boundary_and_features(mesh, xyz, n, face_mode, preserve_features, feature_a
         nn = allnorm[facet_ids[s:e]]
         if (nn @ nn.T).min() < cos_thr:
             features[i] = True
-    return boundary, features
+
+    # ... and the creases of the surface itself (a 2D mesh bent in 3-D space).
+    rings = []
+    for block in mesh.cells:
+        data = block.data
+        if block.type.startswith("polygon"):
+            rings.extend(np.asarray(r, dtype=np.int64) for r in data)
+            continue
+        defs = _CELL_EDGES.get(block.type)
+        if (
+            not defs
+            or len(defs) < 3
+            or not isinstance(data, np.ndarray)
+            or data.ndim != 2
+        ):
+            continue
+        corners = [nodes[0] for _name, _k, nodes in defs]
+        rings.extend(np.asarray(data, dtype=np.int64)[:, corners])
+    rings = [r for r in rings if r.min() >= 0 and r.max() < n]
+    return boundary, features | creases(rings)
 
 
 def _pinned_unknown_topology(mesh, n):

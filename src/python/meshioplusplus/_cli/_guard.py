@@ -1,10 +1,9 @@
 """``guard-fit`` / ``guard-check``: geometry guardrails over a dataset."""
 
-import json
-
 from .._dataset import DatasetManifest
 from .._guard import GeometryGuard
 from .._helpers import read, reader_map
+from ._json import emit_json
 
 
 def add_fit_args(parser):
@@ -67,7 +66,7 @@ def guard_check_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
     report = guard.check(mesh, top=args.top)
     if args.json:
-        print(json.dumps(report, indent=2))
+        emit_json(report)
         return 0
     print(f"{args.infile}: {report['verdict']}")
     print(f"  score:          {report['score']:.6g}")

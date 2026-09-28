@@ -105,6 +105,7 @@ from ._decimate_volume import decimate_volume
 from ._diff import diff, meshes_equal
 from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
+from ._feature_edges import feature_edges
 from ._gpu import (
     from_cupy,
     has_cuda_device,
@@ -131,6 +132,7 @@ from ._grid_transfer import (
     squeeze_grid,
 )
 from ._guard import GeometryGuard, geometry_descriptors
+from ._hausdorff import hausdorff_distance
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -169,6 +171,7 @@ from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_data
 from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
+from ._periodic import match_periodic_nodes
 from ._pipeline import run_pipeline
 from ._point_budget import PointBudget, select_points, subsample_points
 from ._proximity import (
@@ -178,7 +181,9 @@ from ._proximity import (
     proximity_graph,
 )
 from ._quality import attach_quality, compute_quality
+from ._quality_gate import check_quality
 from ._refine import refine
+from ._region_ops import edit_regions
 from ._regions import Region
 from ._remesh import remesh
 from ._remesh_volume import remesh_volume
@@ -192,7 +197,9 @@ from ._sdf import (
 )
 from ._sequence import (
     TimeSeries,
+    blend_steps,
     read_sequence,
+    resample_sequence,
     run_sequence_pipeline,
     sequence_entries,
     write_sequence,
@@ -313,7 +320,12 @@ __all__ = [
     "compute_quality",
     "compute_curvature",
     "compute_normals",
+    "feature_edges",
+    "hausdorff_distance",
+    "match_periodic_nodes",
+    "edit_regions",
     "attach_quality",
+    "check_quality",
     "sniff_format",
     "reorder",
     "compute_bandwidth",
@@ -361,6 +373,8 @@ __all__ = [
     "write_sequence",
     "sequence_entries",
     "run_sequence_pipeline",
+    "resample_sequence",
+    "blend_steps",
     "TimeSeries",
     "compute_stats",
     "data_manage",

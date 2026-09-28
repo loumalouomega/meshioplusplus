@@ -1201,6 +1201,85 @@ end
     close(cube)
 end
 
+@testset "operations: feature edges, Hausdorff, regions, periodic" begin
+    conn = Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                 3 4 6 7 2 6 3 7 4 8 1 5;
+                 2 3 7 8 6 5 7 6 8 7 5 8]
+    pts = Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1]
+    cube = Mesh()
+    set_points!(cube, pts)
+    add_cell_block!(cube, "triangle", conn)
+
+    fe = feature_edges(cube)
+    @test fe.num_feature == 12
+    @test fe.num_boundary == 0
+    close(fe.mesh)
+    @test_throws MeshioError feature_edges(cube; feature_angle=200)
+
+    other = Mesh()
+    set_points!(other, pts)
+    add_cell_block!(other, "triangle", conn)
+    h = hausdorff_distance(cube, other; face_samples=2)
+    @test h.distance < 1e-12  # face samples: rounding, not exactly 0
+    @test h.num_samples_a == 8 + 12 * 4
+    close(other)
+
+    add_region!(cube, "bottom", :point, [1, 2, 3, 4])
+    add_region!(cube, "top", :point, [5, 6, 7, 8])
+    u = edit_regions(cube, :union, ["bottom", "top"]; output="all")
+    @test length(regions(u)) == 3
+    remove_region!(u, 1)
+    @test length(regions(u)) == 2
+    close(u)
+    @test_throws ArgumentError edit_regions(cube, :xor, ["bottom"])
+
+    p = match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 1))
+    @test p.slave == [1, 2, 3, 4]
+    @test p.master == [5, 6, 7, 8]
+    @test p.num_fixed == 0
+    @test_throws MeshioError match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 0.5))
+
+    q = check_quality(cube; require="min_angle >= 30")
+    @test q.passed
+    @test q.num_checks == 3
+    @test occursin("PASS", q.summary)
+    @test !check_quality(cube; require="min_angle >= 50").passed
+    @test_throws MeshioError check_quality(cube; require="bogus >= 1")
+    close(cube)
+end
+
+@testset "operations: agglomerate options, blend_steps, resample" begin
+    m = fixture()
+    a = agglomerate(m; target_group_size=2, merge_coplanar_faces=true, min_sphericity=0.1)
+    @test a.num_faces_merged >= 0
+    @test a.num_rejected >= 0
+    close(a.mesh)
+
+    n = num_points(m)
+    mktempdir() do dir
+        steps = Mesh[]
+        for k in 0:1
+            add_point_data!(m, "u", fill(10.0 * k, n))
+            mio.write(m, joinpath(dir, "step_$k.vtu"))
+            push!(steps, mio.read(joinpath(dir, "step_$k.vtu")))
+        end
+        h = blend_steps(steps[1], steps[2], 0.25)
+        @test point_data(h, "u") ≈ fill(2.5, n)
+        close(h)
+        foreach(close, steps)
+
+        s = Sequence(joinpath(dir, "step_*.vtu"); time_from="index")
+        resample(s, joinpath(dir, "out_{index}.vtu"), [0.0, 0.5, 1.0])
+        r = mio.read(joinpath(dir, "out_1.vtu"))
+        @test point_data(r, "u") ≈ fill(5.0, n)
+        close(r)
+        @test_throws MeshioError resample(s, joinpath(dir, "bad_{index}.vtu"), [2.0])
+        @test_throws ArgumentError resample(s, joinpath(dir, "x_{index}.vtu"), [0.0]; method=:cubic)
+        close(s)
+    end
+    close(m)
+end
+
 @testset "operations: repair, shrinkwrap, sobolev_deform" begin
     # The unit cube surface with two facets flipped: repair rewinds exactly
     # those and reports a watertight output; minus one facet, the hole is

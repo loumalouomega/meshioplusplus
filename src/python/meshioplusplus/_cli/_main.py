@@ -6,6 +6,7 @@ from . import (
     _agglomerate,
     _ascii,
     _binary,
+    _check,
     _clean,
     _compress,
     _conservative_interpolate,
@@ -20,8 +21,10 @@ from . import (
     _decompress,
     _diff,
     _extract_surface,
+    _feature_edges,
     _grid_transfer,
     _guard,
+    _hausdorff,
     _info,
     _interpolate,
     _isosurface,
@@ -29,6 +32,7 @@ from . import (
     _normals,
     _optimize_volume,
     _partition,
+    _periodic,
     _pipeline,
     _point_budget,
     _predict,
@@ -40,6 +44,7 @@ from . import (
     _remesh_volume,
     _reorder,
     _repair,
+    _resample,
     _sdf,
     _shrinkwrap,
     _slice,
@@ -116,6 +121,34 @@ def main(argv=None):
     )
     _normals.add_args(parser)
     parser.set_defaults(func=_normals.normals_cmd)
+
+    parser = subparsers.add_parser(
+        "check",
+        help="Quality gate: exit 1 when cells break thresholds (2: could not check)",
+    )
+    _check.add_args(parser)
+    parser.set_defaults(func=_check.check_cmd)
+
+    parser = subparsers.add_parser(
+        "feature-edges",
+        help="Sharp, open and non-manifold edges of a surface as a line mesh",
+    )
+    _feature_edges.add_args(parser)
+    parser.set_defaults(func=_feature_edges.feature_edges_cmd)
+
+    parser = subparsers.add_parser(
+        "hausdorff",
+        help="Hausdorff distance between two surfaces (--max: nonzero exit above it)",
+    )
+    _hausdorff.add_args(parser)
+    parser.set_defaults(func=_hausdorff.hausdorff_cmd)
+
+    parser = subparsers.add_parser(
+        "periodic",
+        help="Match the nodes of two regions a transform maps onto each other",
+    )
+    _periodic.add_args(parser)
+    parser.set_defaults(func=_periodic.periodic_cmd)
 
     parser = subparsers.add_parser(
         "repair",
@@ -288,7 +321,7 @@ def main(argv=None):
 
     parser = subparsers.add_parser(
         "regions",
-        help="List a mesh's named regions (name/kind/dim/tag/entry count)",
+        help="List a mesh's named regions, or edit them (union, rename, retag, ...)",
     )
     _regions.add_args(parser)
     parser.set_defaults(func=_regions.regions_cmd)
@@ -330,6 +363,16 @@ def main(argv=None):
     )
     _agglomerate.add_args(parser)
     parser.set_defaults(func=_agglomerate.agglomerate_cmd)
+
+    parser = subparsers.add_parser(
+        "resample",
+        help=(
+            "Resample a sequence onto new times (linear blend, nearest or previous), "
+            "holding at most two steps in memory"
+        ),
+    )
+    _resample.add_args(parser)
+    parser.set_defaults(func=_resample.resample_cmd)
 
     parser = subparsers.add_parser(
         "refine",

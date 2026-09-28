@@ -876,3 +876,96 @@ SEXP R_mio_add_region(SEXP mesh, SEXP name, SEXP kind, SEXP entries, SEXP dim, S
     mio_r_check(st, "add_region");
     return R_NilValue;
 }
+
+/* --- region editing and periodic pairs (v16.23.0) ------------------------ */
+
+static int32_t mio_r_region_kind_or_any(SEXP kind) {
+    const char *k = mio_r_opt_string(kind);
+    if (k == NULL || k[0] == '\0') return -1;
+    if (strcmp(k, "point") == 0) return MIO_REGION_POINT;
+    if (strcmp(k, "cell") == 0) return MIO_REGION_CELL;
+    if (strcmp(k, "side") == 0) return MIO_REGION_SIDE;
+    Rf_error("`kind` must be \"point\", \"cell\" or \"side\", got \"%s\"", k);
+    return -1;
+}
+
+SEXP R_mio_edit_regions(SEXP mesh, SEXP op, SEXP inputs, SEXP output, SEXP kind, SEXP dim,
+                        SEXP tag, SEXP keep_inputs) {
+    static const char *const ops[] = {"union",  "intersection", "difference",
+                                      "rename", "retag",        "delete"};
+    const char *o = mio_r_string(op, "op");
+    int32_t code = -1;
+    for (int i = 0; i < 6; ++i)
+        if (strcmp(o, ops[i]) == 0) code = i;
+    if (strcmp(o, "intersect") == 0) code = 1;
+    if (code < 0)
+        Rf_error("meshio++: edit_regions: unknown operation '%s' (expected union, "
+                 "intersection, difference, rename, retag or delete)", o);
+    const int32_t k = mio_r_region_kind_or_any(kind);
+    int64_t n = 0;
+    SEXP shelter = R_NilValue;
+    const char *const *names = mio_r_names(inputs, &n, &shelter); /* shelter left PROTECT-ed */
+    mio_region_selector *sel =
+        (mio_region_selector *)R_alloc(n > 0 ? (size_t)n : 1, sizeof(mio_region_selector));
+    for (int64_t i = 0; i < n; ++i) {
+        mio_region_selector_init(&sel[i], names[i]);
+        sel[i].kind = k;
+    }
+    const char *out_name = mio_r_opt_string(output);
+    if (out_name != NULL && out_name[0] == '\0') out_name = NULL;
+    const int64_t d = dim == R_NilValue ? MIO_REGION_ANY : (int64_t)mio_r_double(dim, "dim");
+    const int64_t t = tag == R_NilValue ? MIO_REGION_ANY : (int64_t)mio_r_double(tag, "tag");
+    mio_mesh *out = mio_edit_regions(mio_r_mesh(mesh), code, sel, n, out_name, d, t,
+                                     mio_r_bool(keep_inputs, "keep_inputs") ? 1 : 0);
+    UNPROTECT(1);
+    if (out == NULL) mio_r_fail("edit_regions");
+    return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_remove_region(SEXP mesh, SEXP index) {
+    const int64_t i = (int64_t)mio_r_double(index, "index");
+    mio_r_check(mio_mesh_remove_region(mio_r_mesh(mesh), i - 1), "remove_region");
+    return R_NilValue;
+}
+
+SEXP R_mio_match_periodic_nodes(SEXP mesh, SEXP slave, SEXP master, SEXP matrix, SEXP atol,
+                                SEXP require_complete) {
+    mio_periodic_opts opts;
+    mio_periodic_opts_init(&opts);
+    SEXP m = PROTECT(Rf_coerceVector(matrix, REALSXP));
+    if (Rf_xlength(m) != 16) {
+        UNPROTECT(1);
+        Rf_error("`matrix` must be a 4x4 affine matrix (16 values)");
+    }
+    /* Row-major on the C side, column-major in R: transpose (see R_mio_transform). */
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) opts.matrix[i * 4 + j] = REAL(m)[j * 4 + i];
+    UNPROTECT(1);
+    opts.atol = mio_r_double(atol, "atol");
+    opts.require_complete = mio_r_bool(require_complete, "require_complete") ? 1 : 0;
+    mio_region_selector s, t;
+    mio_region_selector_init(&s, mio_r_string(slave, "slave"));
+    mio_region_selector_init(&t, mio_r_string(master, "master"));
+    mio_periodic_pairs *pairs = mio_match_periodic_nodes(mio_r_mesh(mesh), &s, &t, &opts);
+    if (pairs == NULL) mio_r_fail("match_periodic_nodes");
+    int64_t np = 0, nu = 0, nf = 0, cnt = 0;
+    double res = 0.0;
+    if (mio_periodic_pairs_info(pairs, &np, &nu, &nf, &res) != MIO_OK) {
+        mio_periodic_pairs_free(pairs);
+        mio_r_fail("match_periodic_nodes");
+    }
+    const int64_t *sp = mio_periodic_pairs_slave(pairs, &cnt);
+    SEXP vs = PROTECT(mio_r_shift_map(sp, cnt));
+    const int64_t *mp = mio_periodic_pairs_master(pairs, &cnt);
+    SEXP vm = PROTECT(mio_r_shift_map(mp, cnt));
+    const int64_t *up = mio_periodic_pairs_unmatched(pairs, &cnt);
+    SEXP vu = PROTECT(mio_r_shift_map(up, cnt));
+    mio_periodic_pairs_free(pairs);
+    SEXP vf = PROTECT(Rf_ScalarReal((double)nf));
+    SEXP vr = PROTECT(Rf_ScalarReal(res));
+    const char *names[] = {"slave", "master", "unmatched", "num_fixed", "max_residual"};
+    SEXP values[] = {vs, vm, vu, vf, vr};
+    SEXP out = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return out;
+}

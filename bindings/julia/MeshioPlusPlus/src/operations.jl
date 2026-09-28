@@ -976,17 +976,36 @@ Unlike [`subdivide`](@ref)'s per-block `cell_maps`, `cell_map` is a single
 output cell's index is a function of which group it joined, not which
 input block it came from. See `doc/agglomerate.md`.
 """
-function agglomerate(m::Mesh; target_group_size::Integer=8)
-    result = _check_ptr(ccall(_sym(:mio_agglomerate), Ptr{Cvoid},
-                              (Ptr{Cvoid}, Int64), _handle(m), Int64(target_group_size)))
+function agglomerate(m::Mesh; target_group_size::Integer=8, merge_coplanar_faces::Bool=false,
+                     coplanar_angle::Real=1.0, min_sphericity::Real=0.0)
+    opts = _CAgglomerateOpts(Int64(target_group_size), Int32(merge_coplanar_faces), Int32(0),
+                             Float64(coplanar_angle), Float64(min_sphericity),
+                             ntuple(_ -> Int64(0), 6))
+    merged, rejected = Ref{Int64}(0), Ref{Int64}(0)
+    result = _check_ptr(ccall(_sym(:mio_agglomerate_ex), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Ref{_CAgglomerateOpts}, Ptr{Int64}, Ptr{Int64}),
+                              _handle(m), Ref(opts), merged, rejected))
     try
         cm = _result_map(result, :mio_agglomerate_result_cell_map)
         out = Mesh(_check_ptr(ccall(_sym(:mio_agglomerate_result_take_mesh), Ptr{Cvoid},
                                     (Ptr{Cvoid},), result)))
-        (mesh=out, cell_map=cm)
+        (mesh=out, cell_map=cm, num_faces_merged=Int(merged[]), num_rejected=Int(rejected[]))
     finally
         ccall(_sym(:mio_agglomerate_result_free), Cvoid, (Ptr{Cvoid},), result)
     end
+end
+
+"""
+    blend_steps(a, b, w; blend_points=false) -> Mesh
+
+`a` with every floating-point data array replaced by `(1 - w) a + w b`; the two
+steps must share a topology. The kernel sequence resampling builds on. See
+`doc/sequences.md`.
+"""
+function blend_steps(a::Mesh, b::Mesh, w::Real; blend_points::Bool=false)
+    Mesh(_check_ptr(ccall(_sym(:mio_blend_steps), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Ptr{Cvoid}, Cdouble, Int32),
+                          _handle(a), _handle(b), Float64(w), Int32(blend_points))))
 end
 
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
@@ -1766,6 +1785,90 @@ function compute_normals(m::Mesh; point_normals::Bool=true, cell_normals::Bool=f
      num_isolated=Int(rep.num_isolated), num_undefined=Int(rep.num_undefined),
      num_degenerate=Int(rep.num_degenerate), num_split_points=Int(rep.num_split_points),
      num_added_points=Int(rep.num_added_points))
+end
+
+"""
+    feature_edges(m; feature_angle=30.0, feature=true, boundary=true,
+                  non_manifold=true, inconsistent=true, region="")
+        -> (; mesh, num_feature, num_boundary, num_non_manifold, num_inconsistent)
+
+The sharp, open, non-manifold and inconsistently wound edges of a surface (or of
+a volume mesh's skin) as a mesh of `line` cells over the input's points, with
+cell data `feature:kind` (1 feature, 2 boundary, 3 non-manifold,
+4 inconsistent) and `feature:angle` (degrees). The counts are over the whole
+surface, whether or not a category was selected. See `doc/feature_edges.md`.
+"""
+function feature_edges(m::Mesh; feature_angle::Real=30.0, feature::Bool=true,
+                       boundary::Bool=true, non_manifold::Bool=true,
+                       inconsistent::Bool=true, region::AbstractString="")
+    report = Ref{_CFeatureEdgesReport}()
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    ptr = GC.@preserve region_c begin
+        opts = _CFeatureEdgesOpts(Cstring(pointer(region_c)), Float64(feature_angle),
+                                  Int32(feature), Int32(boundary), Int32(non_manifold),
+                                  Int32(inconsistent), ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_feature_edges), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CFeatureEdgesOpts}, Ptr{_CFeatureEdgesReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_feature=Int(rep.num_feature), num_boundary=Int(rep.num_boundary),
+     num_non_manifold=Int(rep.num_non_manifold), num_inconsistent=Int(rep.num_inconsistent))
+end
+
+"""
+    hausdorff_distance(a, b; face_samples=0, region_a="", region_b="")
+        -> (; distance, a_to_b, b_to_a, mean_a_to_b, rms_a_to_b, mean_b_to_a,
+             rms_b_to_a, num_samples_a, num_samples_b, worst_point_a, worst_point_b)
+
+The (sampled) Hausdorff distance between the surfaces of two meshes; a volume
+mesh contributes its skin. `face_samples = s > 0` also samples the centroids of
+the `s*s` sub-triangles of every triangle -- vertex sampling alone is a lower
+bound. See `doc/hausdorff.md`.
+"""
+function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
+                            region_a::AbstractString="", region_b::AbstractString="")
+    report = Ref{_CHausdorffReport}()
+    ra = Vector{UInt8}(codeunits(String(region_a) * "\0"))
+    rb = Vector{UInt8}(codeunits(String(region_b) * "\0"))
+    GC.@preserve ra rb begin
+        opts = _CHausdorffOpts(Cstring(pointer(ra)), Cstring(pointer(rb)), Int64(face_samples),
+                               0.0, ntuple(_ -> Int64(0), 6))
+        _check(ccall(_sym(:mio_hausdorff_distance), Cint,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CHausdorffOpts}, Ptr{_CHausdorffReport}),
+                     _handle(a), _handle(b), Ref(opts), report))
+    end
+    rep = report[]
+    (distance=rep.distance, a_to_b=rep.a_to_b, b_to_a=rep.b_to_a,
+     mean_a_to_b=rep.mean_a_to_b, rms_a_to_b=rep.rms_a_to_b, mean_b_to_a=rep.mean_b_to_a,
+     rms_b_to_a=rep.rms_b_to_a, num_samples_a=Int(rep.num_samples_a),
+     num_samples_b=Int(rep.num_samples_b), worst_point_a=collect(rep.worst_point_a),
+     worst_point_b=collect(rep.worst_point_b))
+end
+
+"""
+    check_quality(m; require="", max_inverted=0, max_degenerate=0)
+        -> (; passed, num_checks, num_failed, num_cells, num_inverted, num_degenerate, summary)
+
+Quality gate: score the cells and test the `require` thresholds (text such as
+`"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"`) plus the inverted and
+degenerate counts (negative disables). `summary` is the text both CLIs print.
+See `doc/mesh_quality.md`.
+"""
+function check_quality(m::Mesh; require::AbstractString="", max_inverted::Integer=0,
+                       max_degenerate::Integer=0)
+    report = Ref{_CQualityGateReport}()
+    buf = zeros(UInt8, 8192)
+    _check(ccall(_sym(:mio_check_quality), Cint,
+                 (Ptr{Cvoid}, Cstring, Int64, Int64, Ptr{_CQualityGateReport}, Ptr{UInt8}, Int64),
+                 _handle(m), String(require), Int64(max_inverted), Int64(max_degenerate),
+                 report, buf, Int64(length(buf))))
+    r = report[]
+    n = min(Int(r.summary_length), length(buf) - 1)
+    (passed=r.passed != 0, num_checks=Int(r.num_checks), num_failed=Int(r.num_failed),
+     num_cells=Int(r.num_cells), num_inverted=Int(r.num_inverted),
+     num_degenerate=Int(r.num_degenerate), summary=String(buf[1:n]))
 end
 
 _quality_tuple(q::_CSurfaceQuality) =

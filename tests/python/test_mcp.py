@@ -1006,6 +1006,190 @@ def test_normals(mesh_file, tmp_path):
         _tools.tool_normals(mesh_file, str(tmp_path / "x.vtu"))
 
 
+def _unit_cube_quads():
+    return meshioplusplus.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+            ],
+            dtype=float,
+        ),
+        [
+            (
+                "quad",
+                np.array(
+                    [
+                        [0, 3, 2, 1],
+                        [4, 5, 6, 7],
+                        [0, 1, 5, 4],
+                        [3, 7, 6, 2],
+                        [0, 4, 7, 3],
+                        [1, 2, 6, 5],
+                    ]
+                ),
+            )
+        ],
+    )
+
+
+def test_feature_edges_and_hausdorff(tmp_path):
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(_tools.tool_feature_edges(src, str(tmp_path / "fe.vtu")))
+    assert out["num_edges"] == 12
+    assert out["num_feature"] == 12
+    assert out["num_boundary"] == 0
+    assert "feature:kind" in out["cell_data"]
+    with pytest.raises(ValueError, match="180"):
+        _tools.tool_feature_edges(src, str(tmp_path / "x.vtu"), feature_angle=200)
+
+    moved = _unit_cube_quads()
+    moved.points = moved.points + [0.0, 0.0, 0.25]
+    other = str(tmp_path / "moved.vtu")
+    meshioplusplus.write(other, moved)
+    h = _dump(_tools.tool_hausdorff(src, other, max_distance=0.1))
+    assert h["distance"] == pytest.approx(0.25)
+    assert h["passed"] is False
+    assert _dump(_tools.tool_hausdorff(src, src))["distance"] == 0.0
+
+
+def test_check_quality(tmp_path):
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    ok = _dump(_tools.tool_check_quality(src, "aspect_ratio <= 1.5"))
+    assert ok["passed"] is True
+    assert ok["checks"][0]["name"] == "aspect_ratio <= 1.5"
+    bad = _dump(
+        _tools.tool_check_quality(src, ["aspect_ratio <= 0.5"], max_inverted=-1)
+    )
+    assert bad["passed"] is False
+    assert len(bad["checks"]) == 2
+    with pytest.raises(ValueError, match="unknown metric"):
+        _tools.tool_check_quality(src, "bogus >= 1")
+
+
+def test_agglomerate_options_resample_and_blend(tmp_path):
+    import numpy as np
+
+    n = 3
+    xs, ys, zs = np.meshgrid(*(np.arange(n + 1.0),) * 3, indexing="ij")
+    pts = np.column_stack([xs.ravel(), ys.ravel(), zs.ravel()])
+
+    def vid(i, j, k):
+        return (i * (n + 1) + j) * (n + 1) + k
+
+    hexes = [
+        [
+            vid(i, j, k),
+            vid(i + 1, j, k),
+            vid(i + 1, j + 1, k),
+            vid(i, j + 1, k),
+            vid(i, j, k + 1),
+            vid(i + 1, j, k + 1),
+            vid(i + 1, j + 1, k + 1),
+            vid(i, j + 1, k + 1),
+        ]
+        for i in range(n)
+        for j in range(n)
+        for k in range(n)
+    ]
+    src = str(tmp_path / "hexes.vtu")
+    meshioplusplus.write(src, meshioplusplus.Mesh(pts, [("hexahedron", hexes)]))
+    out = _dump(
+        _tools.tool_agglomerate(
+            src, str(tmp_path / "agg.vtu"), merge_coplanar_faces=True
+        )
+    )
+    assert out["num_faces_merged"] > 0
+    assert out["num_rejected"] == 0
+
+    for k in range(2):
+        meshioplusplus.write(
+            str(tmp_path / f"s_{k}.vtu"),
+            meshioplusplus.Mesh(
+                pts,
+                [("hexahedron", hexes)],
+                point_data={"u": np.full(len(pts), 10.0 * k)},
+            ),
+        )
+    rep = _dump(
+        _tools.tool_resample_sequence(
+            str(tmp_path / "r_{index}.vtu"),
+            input_pattern=str(tmp_path / "s_*.vtu"),
+            times="0:1:0.5",
+            time_from="index",
+        )
+    )
+    assert rep["times"] == [0.0, 0.5, 1.0]
+    mid = meshioplusplus.read(str(tmp_path / "r_1.vtu"))
+    assert np.allclose(mid.point_data["u"], 5.0)
+    with pytest.raises(ValueError, match="exactly one of times"):
+        _tools.tool_resample_sequence(
+            str(tmp_path / "x_{index}.vtu"), input_pattern=str(tmp_path / "s_*.vtu")
+        )
+
+    b = _dump(
+        _tools.tool_blend_steps(
+            str(tmp_path / "s_0.vtu"),
+            str(tmp_path / "s_1.vtu"),
+            str(tmp_path / "b.vtu"),
+            0.25,
+        )
+    )
+    assert b["num_points"] == len(pts)
+    assert np.allclose(
+        meshioplusplus.read(str(tmp_path / "b.vtu")).point_data["u"], 2.5
+    )
+
+
+def test_edit_regions_and_periodic(tmp_path):
+    from meshioplusplus._regions import Region
+
+    cube = _unit_cube_quads()
+    cube.regions = [
+        Region("bottom", "point", [0, 1, 2, 3]),
+        Region("top", "point", [4, 5, 6, 7]),
+        Region("sides", "cell", [2, 3]),
+    ]
+    src = str(tmp_path / "cube.inp")
+    meshioplusplus.write(src, cube)
+    out = _dump(
+        _tools.tool_edit_regions(
+            src,
+            str(tmp_path / "e.inp"),
+            [
+                {"op": "union", "inputs": ["bottom", "top"], "output": "all"},
+                {"op": "rename", "inputs": ["sides"], "output": "walls"},
+            ],
+        )
+    )
+    names = sorted(r["name"] for r in out["regions"])
+    assert names == ["all", "bottom", "top", "walls"]
+    with pytest.raises(ValueError, match="no region matches"):
+        _tools.tool_edit_regions(
+            src, str(tmp_path / "x.inp"), [{"op": "delete", "inputs": ["nope"]}]
+        )
+
+    pairs_csv = str(tmp_path / "pairs.csv")
+    per = _dump(
+        _tools.tool_periodic(
+            src, "bottom", "top", translate=[0, 0, 1], pairs_path=pairs_csv
+        )
+    )
+    assert per["num_pairs"] == 4
+    assert per["pairs"] == [[0, 4], [1, 5], [2, 6], [3, 7]]
+    assert np.loadtxt(pairs_csv, delimiter=",", dtype=int).tolist() == per["pairs"]
+    with pytest.raises(ValueError, match="no master node"):
+        _tools.tool_periodic(src, "bottom", "top", translate=[0, 0, 0.5])
+
+
 def test_export_gltf(tmp_path):
     src = str(tmp_path / "in.vtu")
     meshioplusplus.write(
