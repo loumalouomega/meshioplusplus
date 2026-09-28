@@ -485,6 +485,7 @@ program test_fortran_api
     block
         type(mio_mesh) :: agg
         integer :: st
+        integer(int64) :: merged, rejected
 
         ! The two tetra share a face (nodes 2,3,4 1-based), so target=2
         ! merges them into one polyhedron.
@@ -494,7 +495,18 @@ program test_fortran_api
         call check(agg%cell_block_type(1) == 'polyhedron', 'agglomerate produced polyhedron cells')
         call check(agg%cell_block_num_cells(1) == 1_int64, 'agglomerate merged both tetra')
         call check(agg%num_points() == m%num_points(), 'agglomerate never prunes points')
+        call agg%free()
 
+        agg = m%agglomerate(target_group_size=2_int64, stat=st, merge_coplanar_faces=.true., &
+                            min_sphericity=0.1_real64, num_faces_merged=merged, &
+                            num_rejected=rejected)
+        call check(st == 0, 'agglomerate with options succeeded')
+        call check(merged >= 0_int64 .and. rejected >= 0_int64, 'agglomerate reports its counts')
+        call agg%free()
+
+        agg = mio_blend_steps(m, m, 0.5_real64, stat=st)
+        call check(st == 0, 'blend_steps of a mesh with itself')
+        call check(agg%num_points() == m%num_points(), 'blend_steps keeps the points')
         call agg%free()
     end block
 
@@ -1271,6 +1283,18 @@ program test_fortran_api
 
     call seq%to_timeseries(prefix//'_seq_series.xdmf', stat=ierr)
     call check(ierr == 0, 'sequence fan-in')
+
+    ! Resample onto new times (the filename times are 1, 2, 10). The stem
+    ! must not match '_seq_*.vtu' either.
+    call seq%resample(prefix//'_rs_{index}.vtu', [1.0_real64, 1.5_real64, 10.0_real64], stat=ierr)
+    call check(ierr == 0, 'sequence resample')
+    call r%read(prefix//'_rs_1.vtu', stat=ierr)
+    call check(ierr == 0, 'resample wrote the blended step')
+    call r%free()
+    call seq%resample(prefix//'_rs_bad_{index}.vtu', [20.0_real64], stat=ierr)
+    call check(ierr /= 0, 'resample outside the range fails without clamp')
+    call seq%resample(prefix//'_rs_bad_{index}.vtu', [1.0_real64], method='cubic', stat=ierr)
+    call check(ierr /= 0, 'resample rejects an unknown method')
 
     ! A format that cannot hold a series must fail by name, not truncate.
     call seq%to_timeseries(prefix//'_seq_bad.vtu', stat=ierr, errmsg=msg)

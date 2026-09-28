@@ -218,6 +218,11 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v16.25.0 additions
+
+- `agglomerate(mesh; target_group_size=8, merge_coplanar_faces=false, coplanar_angle=1.0, min_sphericity=0.0) -> (; mesh, cell_map, num_faces_merged, num_rejected)` — the coplanar-face merge and sphericity gate of [agglomerate](/agglomerate).
+- `resample(seq, out_path, times; method=:linear, clamp=false, blend_points=false, format="")` — resample a `Sequence` onto new times (`:linear`, `:nearest` or `:previous`), at most two source meshes live; and `blend_steps(a, b, w; blend_points=false) -> Mesh`. See [Resampling onto new times](/sequences#resampling-onto-new-times). Both are exported.
+
 ## v15.4.0 additions
 
 - `compute_normals(mesh; point_normals=true, cell_normals=false, weight=:angle, split_angle=nothing, record_parent_ids=false, region="") -> (; mesh, quality, num_isolated, num_undefined, num_degenerate, num_split_points, num_added_points)` — point and cell normals of a surface, written as `normals` (`(n, 3)` point data; `(cells, 3)` cell data with `cell_normals`). `split_angle=nothing` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Never reorients: check `quality.inconsistent_pairs`. See [normals](/normals).
@@ -312,6 +317,7 @@ for i in 1:length(seq)
 end
 to_timeseries(seq, "series.xdmf")         # fan-in
 to_timeseries(seq, "series2.xdmf"; ascii=true)  # "XML" data format, no HDF5 needed
+resample(seq, "u_{index}.vtu", 0:0.1:2)   # onto new times, two meshes live
 close(seq)
 
 timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out

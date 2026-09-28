@@ -35,9 +35,12 @@ than trusting the prose.
 See ``doc/sequences.md``.
 """
 
+import math
 import os
 import pathlib
 import re
+
+import numpy as np
 
 from ._exceptions import ReadError, WriteError
 from ._files import is_d3plot_member
@@ -48,6 +51,8 @@ __all__ = [
     "write_sequence",
     "sequence_entries",
     "run_sequence_pipeline",
+    "resample_sequence",
+    "blend_steps",
     "TimeSeries",
 ]
 
@@ -208,7 +213,7 @@ def is_sample_path(path) -> bool:
 
 
 _SEQUENCE_INPUT_KEYS = ("Pattern", "Paths", "Times", "TimeFrom")
-_SEQUENCE_DOC_KEYS = ("Mode", "Parallel", "Workers")
+_SEQUENCE_DOC_KEYS = ("Mode", "Parallel", "Workers", "Resample")
 
 _DIGITS = re.compile(r"\d+")
 
@@ -1091,8 +1096,18 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
     _check_keys(
         doc,
         "the settings document",
-        ("Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"),
+        (
+            "Version",
+            "Input",
+            "Operations",
+            "Output",
+            "Mode",
+            "Parallel",
+            "Workers",
+            "Resample",
+        ),
     )
+    resample = _resample_spec(doc.get("Resample"))
     version = doc.get("Version", 1)
     if not isinstance(version, int) or isinstance(version, bool) or version != 1:
         raise ValueError(
@@ -1147,6 +1162,18 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
         times=doc["Input"].get("Times") if "Times" in inp else None,
         time_from=inp.get("TimeFrom", "auto"),
     )
+    if resample is not None:
+        return _run_resampled(
+            entries,
+            resample,
+            inp,
+            read_kwargs,
+            steps_spec,
+            out_path,
+            out.get("Format"),
+            write_kwargs,
+            warnings,
+        )
     resolved_mode = _infer_mode(entries, out_path, mode)
 
     fallbacks = sum(1 for e in entries if e["time_source"] == "index")
@@ -1226,6 +1253,363 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
             steps_report.extend(job_steps)
             warnings.extend(job_warnings)
     return {"steps": steps_report, "warnings": warnings}
+
+
+# --------------------------------------------------------------------------- #
+# time resampling (v16.25.0)                                                   #
+# --------------------------------------------------------------------------- #
+_RESAMPLE_METHODS = ("linear", "nearest", "previous")
+
+
+def resample_times_range(start, stop, step):
+    """``start, start + step, ...`` up to ``stop`` inclusive (within a relative
+    ``1e-9`` of a step, so ``0:1:0.1`` ends at 1)."""
+    start, stop, step = float(start), float(stop), float(step)
+    if not step > 0.0 or not all(math.isfinite(v) for v in (start, stop, step)):
+        raise ValueError("meshio++: resample: a time range needs a positive step")
+    if stop < start:
+        raise ValueError("meshio++: resample: a time range needs Stop >= Start")
+    count = math.floor((stop - start) / step + 1e-9) + 1
+    if count > 10_000_000:
+        raise ValueError(
+            "meshio++: resample: a time range of more than ten million steps"
+        )
+    return [start + i * step for i in range(count)]
+
+
+def parse_times(text):
+    """Target times from the CLI spelling: ``START:STOP:STEP`` or ``T1,T2,...``."""
+    text = str(text).strip()
+    if text.count(":") == 2:
+        a, b, c = text.split(":")
+        return resample_times_range(float(a), float(b), float(c))
+    return [float(t) for t in text.split(",") if t.strip()]
+
+
+def resample_plan(source, targets, method="linear", extrapolate="error"):
+    """``(lo, hi, weight)`` per target time: blend source step ``lo`` toward
+    ``hi`` by ``weight`` (the twin of ``operations/sequence.hpp``'s)."""
+    import bisect
+
+    if method not in _RESAMPLE_METHODS:
+        raise ValueError(
+            f"meshio++: resample: unknown method '{method}' "
+            "(expected linear, nearest or previous)"
+        )
+    t = [float(v) for v in source]
+    if not t:
+        raise ValueError("meshio++: resample: the source sequence has no steps")
+    for i in range(1, len(t)):
+        if not t[i] > t[i - 1]:
+            raise ValueError(
+                f"meshio++: resample: the source times must increase strictly, but step "
+                f"{i} is at {t[i]:g} after {t[i - 1]:g}"
+            )
+    out = []
+    for target in targets:
+        target = float(target)
+        if not math.isfinite(target):
+            raise ValueError("meshio++: resample: a target time is not finite")
+        if target < t[0] or target > t[-1]:
+            if extrapolate != "clamp":
+                raise ValueError(
+                    f"meshio++: resample: target time {target:g} is outside the source range "
+                    f'[{t[0]:g}, {t[-1]:g}] (pass Extrapolate "clamp" to take the end steps)'
+                )
+            k = 0 if target < t[0] else len(t) - 1
+            out.append((k, k, 0.0))
+            continue
+        hi = bisect.bisect_left(t, target)
+        if t[hi] == target:
+            out.append((hi, hi, 0.0))
+            continue
+        lo = hi - 1
+        if method == "linear":
+            out.append((lo, hi, (target - t[lo]) / (t[hi] - t[lo])))
+        elif method == "nearest":
+            k = hi if t[hi] - target < target - t[lo] else lo
+            out.append((k, k, 0.0))
+        else:
+            out.append((lo, lo, 0.0))
+    return out
+
+
+def _blend_py(a, b, w, blend_points):
+    from ._mesh import Mesh
+
+    def blend(x, y, what):
+        x = np.asarray(x)
+        y = np.asarray(y)
+        if x.shape != y.shape:
+            raise ValueError(
+                f"meshio++: blend_steps: {what} has different shapes in the two steps"
+            )
+        if x.dtype.kind != "f" or y.dtype.kind != "f":
+            return np.array(x if w < 0.5 else y, copy=True)
+        out = (1.0 - w) * x.astype(np.float64) + w * y.astype(np.float64)
+        return out.astype(x.dtype)
+
+    if len(a.points) != len(b.points):
+        raise ValueError(
+            f"meshio++: blend_steps: the steps have {len(a.points)} and {len(b.points)} "
+            "points; blending needs one topology across the steps"
+        )
+    if [(c.type, len(c.data)) for c in a.cells] != [
+        (c.type, len(c.data)) for c in b.cells
+    ]:
+        raise ValueError("meshio++: blend_steps: the steps have different cell blocks")
+    for what in ("point_data", "cell_data", "field_data"):
+        if sorted(getattr(a, what)) != sorted(getattr(b, what)):
+            raise ValueError(
+                f"meshio++: blend_steps: the steps carry different {what} arrays"
+            )
+    out = Mesh(
+        (
+            blend(a.points, b.points, "the point array")
+            if blend_points
+            else a.points.copy()
+        ),
+        [c for c in a.cells],
+        point_data={
+            k: blend(v, b.point_data[k], f"point_data '{k}'")
+            for k, v in a.point_data.items()
+        },
+        cell_data={
+            k: [blend(x, y, f"cell_data '{k}'") for x, y in zip(v, b.cell_data[k])]
+            for k, v in a.cell_data.items()
+        },
+        field_data={
+            k: blend(v, b.field_data[k], f"field_data '{k}'")
+            for k, v in a.field_data.items()
+        },
+    )
+    out.regions = [r.copy() for r in (getattr(a, "regions", None) or [])]
+    return out
+
+
+def blend_steps(a, b, w: float, blend_points: bool = False):
+    """``a`` with every floating-point data array blended toward ``b``:
+    ``(1 - w) * a + w * b``.
+
+    The two steps must share a topology -- the same point count, cell blocks
+    and data arrays -- which a solver's output series has. Points,
+    connectivity and regions come from ``a`` unless ``blend_points`` also
+    blends the coordinates (a moving mesh); an integer array is taken from the
+    nearer step. The kernel ``resample_sequence`` builds on.
+    """
+    from ._fallback import core_op_declined
+
+    try:
+        from . import _core
+
+        return _core.blend_steps(a, b, float(w), bool(blend_points))
+    except Exception as exc:
+        if not core_op_declined(exc, "blend_steps"):
+            raise
+    return _blend_py(a, b, float(w), bool(blend_points))
+
+
+def _resample_spec(spec):
+    """The validated ``Resample`` block of a settings document, or None."""
+    if spec is None:
+        return None
+    from ._pipeline import _check_keys
+
+    if not isinstance(spec, dict):
+        raise ValueError("meshio++: pipeline: Resample must be an object")
+    _check_keys(
+        spec, "Resample", ("Times", "TimesFrom", "Method", "Extrapolate", "BlendPoints")
+    )
+    times = spec.get("Times")
+    if isinstance(times, dict):
+        _check_keys(times, "Resample.Times", ("Start", "Stop", "Step"))
+        times = resample_times_range(
+            times.get("Start"), times.get("Stop"), times.get("Step")
+        )
+    elif times is not None:
+        if not isinstance(times, list) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in times
+        ):
+            raise ValueError("meshio++: pipeline: Resample.Times must be numbers")
+        times = [float(v) for v in times]
+    times_from = spec.get("TimesFrom")
+    if (not times) == (not times_from):
+        raise ValueError(
+            "meshio++: pipeline: Resample needs exactly one of Times and TimesFrom"
+        )
+    method = spec.get("Method", "linear") or "linear"
+    if method not in _RESAMPLE_METHODS:
+        raise ValueError(
+            f"meshio++: resample: unknown method '{method}' (expected linear, nearest or previous)"
+        )
+    extrapolate = spec.get("Extrapolate", "error") or "error"
+    if extrapolate not in ("error", "clamp"):
+        raise ValueError(
+            'meshio++: pipeline: Resample.Extrapolate must be "error" or "clamp"'
+        )
+    return {
+        "times": times,
+        "times_from": times_from,
+        "method": method,
+        "extrapolate": extrapolate,
+        "blend_points": bool(spec.get("BlendPoints", False)),
+    }
+
+
+def sequence_times(source, file_format=None, times=None, time_from="auto"):
+    """The resolved time of every step of a sequence: ``sequence_entries``'
+    times, except that a single-step file whose only time is inside it
+    (``field_data["meshio:time"]``) is read to find it."""
+    entries = sequence_entries(
+        source, file_format=file_format, times=times, time_from=time_from
+    )
+    return [_entry_time(e, file_format, time_from) for e in entries]
+
+
+def _entry_time(entry, file_format, time_from, read_kwargs=None):
+    if entry["time_source"] != "index" or time_from == "index":
+        return float(entry["time"])
+    mesh = read(
+        entry["path"],
+        file_format=file_format or None,
+        time_step=entry["step"],
+        **(read_kwargs or {}),
+    )
+    return float(_resolve_time(entry, mesh, time_from))
+
+
+def _run_resampled(
+    entries,
+    rs,
+    inp,
+    read_kwargs,
+    steps_spec,
+    out_path,
+    out_format,
+    write_kwargs,
+    warnings,
+):
+    """The resample stage: each target time from at most two source meshes."""
+    fmt = inp.get("Format")
+    time_from = inp.get("TimeFrom", "auto")
+    targets = rs["times"]
+    if not targets:
+        targets = sequence_times(rs["times_from"], time_from=time_from)
+    source = [_entry_time(e, fmt, time_from, read_kwargs) for e in entries]
+    plan = resample_plan(source, targets, rs["method"], rs["extrapolate"])
+    cache = []  # [(index, mesh)], at most two live meshes
+    steps_report = []
+
+    def fetch(i):
+        for k, m in cache:
+            if k == i:
+                return m
+        if len(cache) == 2:
+            cache.pop(0)
+        e = entries[i]
+        cache.append(
+            (
+                i,
+                read(
+                    e["path"],
+                    file_format=fmt or None,
+                    time_step=e["step"],
+                    **read_kwargs,
+                ),
+            )
+        )
+        return cache[-1][1]
+
+    def target(k):
+        lo, hi, w = plan[k]
+        if lo == hi or w == 0.0:
+            mesh = fetch(lo).copy()
+        else:
+            a = fetch(lo)
+            b = fetch(hi)
+            mesh = blend_steps(a, b, w, rs["blend_points"])
+        for step in steps_spec:
+            mesh = _apply_step_shim(mesh, step, steps_report, warnings)
+        mesh.field_data[TIME_KEY] = _time_array(targets[k])
+        return mesh
+
+    n = len(targets)
+    if pattern_has_token(out_path):
+        for k in range(n):
+            write(
+                expand_pattern(out_path, k, n),
+                target(k),
+                file_format=out_format or None,
+                **write_kwargs,
+            )
+    else:
+        _check_series_target(out_path, out_format)
+        write_sequence(
+            out_path,
+            ((targets[k], target(k)) for k in range(n)),
+            file_format=out_format or None,
+        )
+    return {"steps": steps_report, "warnings": warnings}
+
+
+def resample_sequence(
+    source,
+    output,
+    times=None,
+    times_from=None,
+    method="linear",
+    extrapolate="error",
+    blend_points=False,
+    file_format=None,
+    time_from="auto",
+    operations=None,
+):
+    """Resample a sequence onto new times -- align two solvers' timelines.
+
+    :param source: the input sequence: a glob pattern or a list of paths.
+    :param output: a ``{step}``/``{index}`` pattern (one file per target time)
+        or a single series file of a format that carries time (XDMF, PVD, ...).
+    :param times: the target times (a list, or ``"START:STOP:STEP"``).
+    :param times_from: instead of ``times``, a second sequence's glob whose
+        step times are the targets.
+    :param method: ``"linear"`` (blend the bracketing steps), ``"nearest"`` or
+        ``"previous"`` (sample and hold).
+    :param extrapolate: ``"error"`` or ``"clamp"`` for targets outside the
+        source range.
+    :param blend_points: blend the point coordinates too (a moving mesh).
+    :param file_format: the input format, when the extension does not say.
+    :param time_from: where the source times come from (``"auto"``,
+        ``"file"``, ``"filename"``, ``"index"``).
+    :param operations: pipeline steps to run on every resampled step.
+    :returns: the run report ``{"steps", "warnings"}``.
+    """
+    if isinstance(times, str):
+        times = parse_times(times)
+    inp = {"TimeFrom": time_from}
+    if isinstance(source, (list, tuple)):
+        inp["Paths"] = [str(p) for p in source]
+    else:
+        inp["Pattern"] = str(source)
+    if file_format:
+        inp["Format"] = file_format
+    resample = {
+        "Method": method,
+        "Extrapolate": extrapolate,
+        "BlendPoints": bool(blend_points),
+    }
+    if times is not None:
+        resample["Times"] = [float(t) for t in times]
+    if times_from is not None:
+        resample["TimesFrom"] = str(times_from)
+    return run_sequence_pipeline(
+        {
+            "Version": 1,
+            "Input": inp,
+            "Operations": list(operations or []),
+            "Output": {"Path": str(output)},
+            "Resample": resample,
+        }
+    )
 
 
 def _apply_step_shim(mesh, step, steps, warnings):

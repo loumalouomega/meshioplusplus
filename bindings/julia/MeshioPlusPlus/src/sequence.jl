@@ -245,6 +245,33 @@ function to_timeseries(s::Sequence, out_path::AbstractString; format::AbstractSt
     nothing
 end
 
+const _RESAMPLE_METHODS = Dict(:linear => Int32(0), :nearest => Int32(1), :previous => Int32(2))
+
+"""
+    resample(seq, out_path, times; method=:linear, clamp=false, blend_points=false, format="")
+
+Resample the sequence onto `times` and write it: one file per target time when
+`out_path` carries `{step}`/`{index}`, else one series file. `method` is
+`:linear` (blend the bracketing steps), `:nearest` or `:previous`; `clamp` takes
+the end steps for a time outside the source range instead of failing. At most
+two source meshes are held at once. See `doc/sequences.md`.
+"""
+function resample(s::Sequence, out_path::AbstractString, times::AbstractVector{<:Real};
+                  method::Symbol=:linear, clamp::Bool=false, blend_points::Bool=false,
+                  format::AbstractString="")
+    haskey(_RESAMPLE_METHODS, method) ||
+        throw(ArgumentError("meshio++: resample: unknown method :$method"))
+    t = Float64.(collect(times))
+    GC.@preserve t begin
+        opts = _CResampleOpts(pointer(t), Int64(length(t)), _RESAMPLE_METHODS[method],
+                              Int32(clamp), Int32(blend_points), Int32(0), ntuple(_ -> Int64(0), 6))
+        _check(ccall(_sym(:mio_sequence_resample), Cint,
+                     (Ptr{Cvoid}, Cstring, Cstring, Ref{_CResampleOpts}),
+                     _handle(s), out_path, format, Ref(opts)))
+    end
+    nothing
+end
+
 """
     timeseries_to_sequence(in_path, out_pattern; in_format="", out_format="")
 

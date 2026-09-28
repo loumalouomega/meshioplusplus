@@ -17,7 +17,9 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -35,12 +37,15 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 
 namespace meshioplusplus {
@@ -857,6 +862,215 @@ SequenceTimeFrom sequence_time_from_name(const std::string& rName) {
         rName + "'");
 }
 
+namespace {
+
+std::string seq_g(double V) {
+    char buf[32];
+    detail::snprintf_c(buf, sizeof(buf), "%g", V);
+    return buf;
+}
+
+}  // namespace
+
+std::vector<ResampleSlot> resample_plan(const std::vector<double>& rSourceTimes,
+                                        const std::vector<double>& rTargets, ResampleMethod Method,
+                                        ResampleExtrapolate Extrapolate) {
+    const std::vector<double>& t = rSourceTimes;
+    if (t.empty())
+        throw std::invalid_argument("meshio++: resample: the source sequence has no steps");
+    for (std::size_t i = 1; i < t.size(); ++i)
+        if (!(t[i] > t[i - 1]))
+            throw std::invalid_argument(
+                "meshio++: resample: the source times must increase strictly, but step " +
+                std::to_string(i) + " is at " + seq_g(t[i]) + " after " + seq_g(t[i - 1]));
+    std::vector<ResampleSlot> out;
+    out.reserve(rTargets.size());
+    for (const double target : rTargets) {
+        if (!std::isfinite(target))
+            throw std::invalid_argument("meshio++: resample: a target time is not finite");
+        ResampleSlot slot;
+        if (target < t.front() || target > t.back()) {
+            if (Extrapolate == ResampleExtrapolate::Error)
+                throw std::invalid_argument("meshio++: resample: target time " + seq_g(target) +
+                                            " is outside the source range [" + seq_g(t.front()) +
+                                            ", " + seq_g(t.back()) +
+                                            "] (pass Extrapolate \"clamp\" to take the end steps)");
+            slot.mLo = slot.mHi = target < t.front() ? 0 : t.size() - 1;
+            out.push_back(slot);
+            continue;
+        }
+        // The first source time >= target.
+        const std::size_t hi =
+            static_cast<std::size_t>(std::lower_bound(t.begin(), t.end(), target) - t.begin());
+        if (t[hi] == target) {
+            slot.mLo = slot.mHi = hi;
+        } else {
+            const std::size_t lo = hi - 1;  // hi > 0: target > t.front() here
+            switch (Method) {
+                case ResampleMethod::Linear:
+                    slot.mLo = lo;
+                    slot.mHi = hi;
+                    slot.mWeight = (target - t[lo]) / (t[hi] - t[lo]);
+                    break;
+                case ResampleMethod::Nearest:
+                    slot.mLo = slot.mHi = (t[hi] - target < target - t[lo]) ? hi : lo;
+                    break;
+                case ResampleMethod::Previous:
+                    slot.mLo = slot.mHi = lo;
+                    break;
+            }
+        }
+        out.push_back(slot);
+    }
+    return out;
+}
+
+std::vector<double> resample_times_range(double Start, double Stop, double Step) {
+    if (!(Step > 0.0) || !std::isfinite(Start) || !std::isfinite(Stop) || !std::isfinite(Step))
+        throw std::invalid_argument("meshio++: resample: a time range needs a positive step");
+    if (Stop < Start)
+        throw std::invalid_argument("meshio++: resample: a time range needs Stop >= Start");
+    const double count = std::floor((Stop - Start) / Step + 1e-9) + 1.0;
+    if (count > 1e7)
+        throw std::invalid_argument(
+            "meshio++: resample: a time range of more than ten million "
+            "steps");
+    std::vector<double> out(static_cast<std::size_t>(count));
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = Start + static_cast<double>(i) * Step;
+    return out;
+}
+
+ResampleMethod resample_method_from_name(const std::string& rName) {
+    if (rName == "linear")
+        return ResampleMethod::Linear;
+    if (rName == "nearest")
+        return ResampleMethod::Nearest;
+    if (rName == "previous")
+        return ResampleMethod::Previous;
+    throw std::invalid_argument("meshio++: resample: unknown method '" + rName +
+                                "' (expected linear, nearest or previous)");
+}
+
+namespace {
+
+// The resolved times of @p rEntries: an index-fallback entry whose file
+// carries `meshio:time` is read for it (the streaming driver's rule).
+std::vector<double> seq_resolved_times(const std::vector<SequenceEntry>& rEntries,
+                                       const SequenceInput& rInput) {
+    std::vector<double> times(rEntries.size());
+    for (std::size_t i = 0; i < rEntries.size(); ++i) {
+        times[i] = rEntries[i].mTime;
+        if (rEntries[i].mTimeSource == SequenceTimeSource::Index &&
+            rInput.mTimeFrom != SequenceTimeFrom::Index) {
+            double value = 0.0;
+            if (seq_time_from_mesh(sequence_read_step(rEntries, i, rInput.mFormat, rInput.mOptions),
+                                   value))
+                times[i] = value;
+        }
+    }
+    return times;
+}
+
+}  // namespace
+
+std::vector<double> sequence_times(const SequenceInput& rInput) {
+    return seq_resolved_times(sequence_expand(rInput), rInput);
+}
+
+namespace {
+
+// The resample stage of run_sequence_pipeline: every target time is built
+// from at most two source meshes (a two-entry cache), run through the steps,
+// and written -- one file per target (a pattern output) or one series.
+PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
+                                 const std::vector<SequenceEntry>& rEntries,
+                                 PipelineReport report) {
+    SequenceResample rs = *rPipeline.mResample;
+    if (rs.mTimes.empty()) {
+        if (rs.mTimesFrom.empty())
+            throw std::invalid_argument(
+                "meshio++: resample: give the target Times or a TimesFrom sequence");
+        SequenceInput other;
+        other.mPattern = rs.mTimesFrom;
+        other.mTimeFrom = rPipeline.mInput.mTimeFrom;
+        rs.mTimes = sequence_times(other);
+    }
+    const std::vector<double> source = seq_resolved_times(rEntries, rPipeline.mInput);
+    const std::vector<ResampleSlot> plan =
+        resample_plan(source, rs.mTimes, rs.mMethod, rs.mExtrapolate);
+
+    // Two fixed slots: at most two live source meshes, and a slot is only
+    // refilled when it holds neither step the current target needs, so the
+    // references handed out below stay valid.
+    std::array<std::size_t, 2> slot_step = {SIZE_MAX, SIZE_MAX};
+    std::array<Mesh, 2> slot_mesh;
+    auto load = [&](std::size_t i, std::size_t Keep) {
+        for (std::size_t s = 0; s < 2; ++s)
+            if (slot_step[s] == i)
+                return;
+        const std::size_t victim = slot_step[0] == Keep ? 1 : 0;
+        slot_mesh[victim] =
+            sequence_read_step(rEntries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+        slot_step[victim] = i;
+    };
+    auto get = [&](std::size_t i) -> const Mesh& {
+        return slot_step[0] == i ? slot_mesh[0] : slot_mesh[1];
+    };
+    BlendOptions blend;
+    blend.mBlendPoints = rs.mBlendPoints;
+    auto target = [&](std::size_t k) {
+        const ResampleSlot& slot = plan[k];
+        Mesh mesh;
+        if (slot.mLo == slot.mHi || slot.mWeight == 0.0) {
+            load(slot.mLo, SIZE_MAX);
+            mesh = detail::clone_mesh(get(slot.mLo));
+        } else {
+            load(slot.mLo, SIZE_MAX);
+            load(slot.mHi, slot.mLo);
+            mesh = blend_steps(get(slot.mLo), get(slot.mHi), slot.mWeight, blend);
+        }
+        mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+        seq_attach_time(mesh, rs.mTimes[k]);
+        return mesh;
+    };
+
+    const std::size_t n = rs.mTimes.size();
+    if (sequence_pattern_has_token(rPipeline.mOutput.mPath)) {
+        for (std::size_t k = 0; k < n; ++k)
+            registry_write_ex(sequence_expand_pattern(rPipeline.mOutput.mPath, k, n), target(k),
+                              rPipeline.mOutput.mFormat, rPipeline.mOutput.mOptions);
+        return report;
+    }
+    const std::string ofmt = seq_resolve_write_format(rPipeline.mOutput, n);
+    std::string why;
+    if (!sequence_write_supports_time(ofmt, why))
+        throw WriteError(why + " (a resampled sequence needs a {step} pattern or a series)");
+    seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
+    if (ofmt == "gid") {
+        write_gid_series(rPipeline.mOutput.mPath, [&](std::size_t k, double& rTime, Mesh& rMesh) {
+            if (k >= n)
+                return false;
+            rMesh = target(k);
+            rTime = rs.mTimes[k];
+            return true;
+        });
+        return report;
+    }
+    const std::unique_ptr<SeqSeriesSink> writer =
+        seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
+    for (std::size_t k = 0; k < n; ++k) {
+        Mesh mesh = target(k);
+        if (k == 0)
+            writer->WritePointsCells(mesh);
+        writer->WriteData(rs.mTimes[k], mesh);
+    }
+    writer->Finalize();
+    return report;
+}
+
+}  // namespace
+
 PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
     if (rPipeline.mVersion != 1)
         throw std::invalid_argument("meshio++: sequence: unsupported Version " +
@@ -885,6 +1099,8 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         report.mWarnings.push_back(
             "sequence: Parallel is a Python-driver feature; this engine runs the steps "
             "serially (every operation already parallelizes internally)");
+    if (rPipeline.mResample)
+        return seq_run_resampled(rPipeline, entries, std::move(report));
 
     if (mode == SequenceMode::FanIn) {
         const std::string ofmt = seq_resolve_write_format(rPipeline.mOutput, entries.size());

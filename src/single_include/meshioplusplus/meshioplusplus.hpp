@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 18
+#define MESHIOPLUSPLUS_ABI_VERSION 19
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -7785,24 +7785,6 @@ MESHIOPLUSPLUS_API std::vector<double> decim_accumulate_quadrics(const DecimCsr&
                                                                  std::size_t n,
                                                                  const std::vector<double>& rQuadK);
 
-/**
- * @brief Pins vertices whose incident face unit normals pairwise differ by
- * more than the feature angle (`CosThreshold = cos(angle)`).
- *
- * Every face participates, not just boundary facets: the creases of a closed
- * surface are interior. O(d^2) in the valence; each iteration writes only its
- * own slot, so this is safe to call under `parallel_for`.
- *
- * @deprecated No operation calls this since v16.23.0: `decimate`,
- * `decimate_volume` and `smooth` share the per-edge crease test behind
- * `feature_edges` instead, which compares only the two faces sharing an edge.
- * Kept, unchanged, for ABI stability; removed at the next ABI bump.
- */
-MESHIOPLUSPLUS_API void decim_mark_features(const DecimCsr& rCsr, std::size_t n,
-                                            const std::vector<double>& rNormals,
-                                            double CosThreshold,
-                                            std::vector<std::uint8_t>& rPinned);
-
 /// x^T Q x for the homogeneous point (x, y, z, 1), `q` the 10-entry
 /// `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]` quadric. The literal parenthesization is
 /// the parity contract with the numpy twins.
@@ -11269,7 +11251,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 24
+#define MESHIOPLUSPLUS_VERSION_MINOR 25
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11279,7 +11261,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.24.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.25.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -22762,12 +22744,26 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
  * shaped this operation understands and is dropped with a warning rather than
  * guessed at.
  *
- * ### What this does not do (yet)
+ * ### Shape gate and coplanar merging (v16.25.0)
  *
- * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
- * the same plane into one larger polygon, rather than leaving the edge
- * between them) and a shape-quality (e.g. sphericity) absorption gate are
- * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §5.
+ * `mMinSphericity > 0` refuses to absorb a candidate cell when the union would
+ * be less round than that: the sphericity `pi^(1/3) (6V)^(2/3) / A` (1 for a
+ * ball, about 0.81 for a cube) of the group plus the candidate, from its exact
+ * volume and external area, both kept incrementally. A refused candidate is
+ * skipped for this group only and may seed or join another, so groups stay
+ * compact instead of growing long arms along the dual. Groups may then end up
+ * smaller than `mTargetGroupSize`.
+ *
+ * `mMergeCoplanarFaces` fuses the faces two groups (or a group and the mesh
+ * boundary) share, where they lie on one plane, into a single polygon -- a
+ * coarsened volume then has one face where a flat wall was tiled by many.
+ * Faces are grouped per pair of sides, so both groups get the identical fused
+ * polygon (reversed) and the mesh stays conforming; within a pair, faces that
+ * share an edge and whose normals lie within `mCoplanarAngleDeg` of the patch's
+ * first face fuse when the patch's outline is one simple loop (no holes, no
+ * pinch). Every polyhedron a fusion touches is checked to still be closed; a
+ * patch whose fusion would break that is left as it was. Volume is conserved
+ * either way.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is
@@ -22788,6 +22784,15 @@ struct AgglomerateOptions {
     /// must be at least 1. `1` means every cell is its own group (an
     /// identity transform in everything but representation).
     std::size_t mTargetGroupSize = 8;
+    /// Fuse the coplanar faces two groups (or a group and the boundary) share
+    /// into single polygons.
+    bool mMergeCoplanarFaces = false;
+    /// The largest angle, in degrees, between face normals still treated as
+    /// coplanar; in `[0, 90)`.
+    double mCoplanarAngleDeg = 1.0;
+    /// Refuse a candidate whose union with the group would have a lower
+    /// sphericity than this; 0 disables the gate. In `[0, 1]`.
+    double mMinSphericity = 0.0;
 };
 
 /// The result of `agglomerate`: the coarsened mesh plus the cell index map.
@@ -22801,6 +22806,11 @@ struct AgglomerateResult {
     /// is a function of which group it joined, not which input block it came
     /// from.
     NDArray mCellMap;
+    /// Faces removed by coplanar merging (fused faces minus the polygons
+    /// replacing them, counted once per group side).
+    std::int64_t mNumFacesMerged = 0;
+    /// Absorptions the sphericity gate refused.
+    std::int64_t mNumRejected = 0;
 };
 
 /**
@@ -22816,6 +22826,47 @@ MESHIOPLUSPLUS_API AgglomerateResult agglomerate(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/agglomerate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/blend.hpp =====
+/**
+ * @file operations/blend.hpp
+ * @brief Linear interpolation between two steps of one mesh -- the kernel time
+ * resampling of a sequence is built on.
+ *
+ * `blend_steps(a, b, w)` returns `a` with every floating-point data array
+ * replaced by `(1 - w) * a + w * b`: point data, cell data and field data.
+ * The two steps must share a topology -- the same point count, the same cell
+ * blocks (type and count) and the same arrays with the same shapes -- which is
+ * what a solver's output series has; a mismatch throws naming it rather than
+ * blending unrelated rows. Points, connectivity and regions come from `a`,
+ * bit for bit, unless `mBlendPoints` also moves the points (a series on a
+ * moving mesh). An integer array (a material id, a flag) is not blended: it is
+ * taken from the nearer step (`a` when `w < 0.5`). A Float32 array stays
+ * Float32; the blend is computed in double.
+ *
+ * `w` outside `[0, 1]` extrapolates linearly; the sequence resampler never
+ * passes one (see `SequenceResample`).
+ */
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How `blend_steps` blends.
+struct BlendOptions {
+    /// Also blend the point coordinates (a moving mesh).
+    bool mBlendPoints = false;
+};
+
+/**
+ * @brief `a` with its floating-point data linearly blended toward `b` by `w`.
+ * @throws std::invalid_argument when the two steps differ in point count, cell
+ *         blocks, or the names or shapes of their data arrays.
+ */
+MESHIOPLUSPLUS_API Mesh blend_steps(const Mesh& rA, const Mesh& rB, double W,
+                                    const BlendOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/blend.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -28104,6 +28155,8 @@ MESHIOPLUSPLUS_API RepairResult repair(const Mesh& rMesh, const RepairOptions& r
 
 // System includes
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28195,6 +28248,84 @@ struct SequenceOutput {
     WriteOptions mOptions;
 };
 
+/// How a resampled step is made from the source steps around its time.
+enum class ResampleMethod : std::uint8_t {
+    Linear = 0,    ///< Blend the two bracketing steps (`blend_steps`).
+    Nearest = 1,   ///< The closest source step (the earlier on a tie).
+    Previous = 2,  ///< The latest source step at or before the time (sample and hold).
+};
+
+/// What a target time outside the source range does.
+enum class ResampleExtrapolate : std::uint8_t {
+    Error = 0,  ///< Throw, naming the time and the range.
+    Clamp = 1,  ///< Take the first / last source step.
+};
+
+/**
+ * @brief Resample a sequence onto new times (`Resample` in settings.json).
+ *
+ * Aligns two solvers' timelines -- or a solver's and a surrogate's -- before a
+ * pairwise `diff` or a training pair. Each target time is made from the
+ * source steps around it (see `ResampleMethod`); the source steps must share a
+ * topology when they are blended. At most **two** source meshes are held at
+ * once, where the unresampled driver holds one.
+ */
+struct SequenceResample {
+    /// The target times, ascending or not; one output step each.
+    std::vector<double> mTimes;
+    /// When `mTimes` is empty: a sequence glob whose step times are the
+    /// targets (`sequence_times` of it) -- how two solvers' timelines are
+    /// aligned. Resolved when the pipeline runs.
+    std::string mTimesFrom;
+    ResampleMethod mMethod = ResampleMethod::Linear;
+    ResampleExtrapolate mExtrapolate = ResampleExtrapolate::Error;
+    /// Blend the point coordinates too (a moving mesh); see `BlendOptions`.
+    bool mBlendPoints = false;
+};
+
+/// One target time of a `resample_plan`: blend step `mLo` toward `mHi` by
+/// `mWeight` (`mLo == mHi` and weight 0 for a single step).
+struct ResampleSlot {
+    std::size_t mLo = 0;
+    std::size_t mHi = 0;
+    double mWeight = 0.0;
+};
+
+/**
+ * @brief Which source steps, blended by how much, make each target time.
+ *
+ * A pure unit. @p rSourceTimes must be strictly increasing (the order a
+ * sequence's steps are in); a target equal to a source time takes that step
+ * alone, whatever the method.
+ * @throws std::invalid_argument on non-increasing source times, an empty
+ *         source, or (with `Error`) a target outside the source range.
+ */
+MESHIOPLUSPLUS_API std::vector<ResampleSlot> resample_plan(const std::vector<double>& rSourceTimes,
+                                                           const std::vector<double>& rTargets,
+                                                           ResampleMethod Method,
+                                                           ResampleExtrapolate Extrapolate);
+
+/**
+ * @brief `Start, Start + Step, ...` up to `Stop` inclusive (within a relative
+ * `1e-9` of a step, so `0:1:0.1` ends at 1).
+ * @throws std::invalid_argument on a non-positive step, `Stop < Start`, or more
+ *         than ten million times.
+ */
+MESHIOPLUSPLUS_API std::vector<double> resample_times_range(double Start, double Stop, double Step);
+
+/// `linear`, `nearest` or `previous`; throws on anything else.
+MESHIOPLUSPLUS_API ResampleMethod resample_method_from_name(const std::string& rName);
+
+/**
+ * @brief The resolved time of every step of a sequence.
+ *
+ * `sequence_expand`'s times, except that a single-step file whose only time is
+ * inside it (`field_data["meshio:time"]`) is read to find it -- the value the
+ * streaming driver would find, known up front. That read is the cost of
+ * resampling such a sequence: every such file is read once more.
+ */
+MESHIOPLUSPLUS_API std::vector<double> sequence_times(const SequenceInput& rInput);
+
 /** @brief A whole sequence settings document. */
 struct SequencePipeline {
     int mVersion = 1;
@@ -28214,6 +28345,10 @@ struct SequencePipeline {
     /// Worker count for `mParallel`; 0 means "as many as there are cores".
     /// Ignored, with `mParallel`, by the C++ engine.
     int mWorkers = 0;
+    /// Resample onto new times before the steps run (v16.25.0, ABI 19). With
+    /// it, the output is one file per *target* time (a pattern output) or one
+    /// series holding them (a single output of a format that carries time).
+    std::optional<SequenceResample> mResample;
 };
 
 /**
@@ -50607,31 +50742,6 @@ std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr, std::size_t 
         }
     });
     return q;
-}
-
-void decim_mark_features(const DecimCsr& rCsr, std::size_t n, const std::vector<double>& rNormals,
-                         double CosThreshold, std::vector<std::uint8_t>& rPinned) {
-    parallel_for(n, [&](std::size_t v) {
-        const std::int64_t b = rCsr.mXadj[v];
-        const std::int64_t e = rCsr.mXadj[v + 1];
-        for (std::int64_t p = b; p < e; ++p) {
-            const double* na = rNormals.data() +
-                               static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(p)]) * 3;
-            if (na[0] == 0.0 && na[1] == 0.0 && na[2] == 0.0)
-                continue;
-            for (std::int64_t q = p + 1; q < e; ++q) {
-                const double* nb =
-                    rNormals.data() +
-                    static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(q)]) * 3;
-                if (nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0)
-                    continue;
-                if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < CosThreshold) {
-                    rPinned[v] = 1;
-                    return;
-                }
-            }
-        }
-    });
 }
 
 double decim_quadric_error(const double* q, double x, double y, double z) {
@@ -134875,12 +134985,15 @@ void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)() {}
 // ===== end src/cpp/src/mesh_backend_check.cpp =====
 // ===== begin src/cpp/src/operations/agglomerate.cpp =====
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -134971,6 +135084,222 @@ double agg_face_area(const detail::GlobalFaces& rFaces, std::size_t f, const NDA
     return detail::polygon_area(coords.data(), n);
 }
 
+/// Newell area vector and vertex centroid of global face `f`, as stored
+/// (wound out of its owner).
+void agg_face_geometry(const detail::GlobalFaces& rFaces, std::size_t f, const NDArray& rPoints,
+                       std::size_t PointDim, detail::Vec3& rArea, detail::Vec3& rCentroid) {
+    const std::size_t n = rFaces.FaceSize(f);
+    const std::int64_t* ring = rFaces.Face(f);
+    std::vector<detail::Vec3> p(n);
+    for (std::size_t k = 0; k < n; ++k) {
+        const auto pid = static_cast<std::size_t>(ring[k]);
+        for (std::size_t d = 0; d < 3; ++d)
+            p[k][d] = d < PointDim ? detail::read_double(rPoints, pid * PointDim + d) : 0.0;
+    }
+    rArea = {0.0, 0.0, 0.0};
+    rCentroid = {0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < n; ++k) {
+        rArea = detail::vec3_add(rArea, detail::vec3_cross(p[k], p[(k + 1) % n]));
+        rCentroid = detail::vec3_add(rCentroid, p[k]);
+    }
+    rArea = detail::vec3_scale(rArea, 0.5);
+    rCentroid = detail::vec3_scale(rCentroid, n ? 1.0 / static_cast<double>(n) : 0.0);
+}
+
+/// Sphericity `pi^(1/3) (6V)^(2/3) / A`: 1 for a ball.
+double agg_sphericity(double Volume, double Area) {
+    if (!(Area > 0.0) || !(Volume > 0.0))
+        return 0.0;
+    return std::cbrt(3.14159265358979323846) * std::pow(6.0 * Volume, 2.0 / 3.0) / Area;
+}
+
+/// Whether a polyhedron's faces close up: every undirected edge used by
+/// exactly two of its faces.
+bool agg_closed(const std::vector<std::vector<std::int64_t>>& rFaces) {
+    std::vector<std::array<std::int64_t, 2>> edges;
+    for (const auto& face : rFaces)
+        for (std::size_t k = 0; k < face.size(); ++k) {
+            std::int64_t u = face[k];
+            std::int64_t v = face[(k + 1) % face.size()];
+            if (u == v)
+                continue;
+            if (u > v)
+                std::swap(u, v);
+            edges.push_back({u, v});
+        }
+    std::sort(edges.begin(), edges.end());
+    for (std::size_t i = 0; i < edges.size();) {
+        std::size_t j = i + 1;
+        while (j < edges.size() && edges[j] == edges[i])
+            ++j;
+        if (j - i != 2)
+            return false;
+        i = j;
+    }
+    return true;
+}
+
+/// Coplanar patches of external faces. Faces separating the same two sides
+/// (group, group-or-boundary) that share an edge and lie on one plane fuse
+/// into one ring, wound out of `mSideA` (the lower group; the group itself
+/// against the boundary).
+struct AggPatches {
+    std::vector<std::int64_t> mPatchOfFace;  // per global face, -1 when unfused
+    std::vector<std::vector<std::int64_t>> mRing;
+    std::vector<std::int64_t> mSideA;
+    std::vector<std::int64_t> mSideB;  // -1 for the boundary
+    std::vector<std::size_t> mNumFaces;
+};
+
+AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
+                                const std::vector<std::int64_t>& rGroupOf,
+                                const std::vector<detail::Vec3>& rAreaVec, double CosTol,
+                                const std::vector<std::uint8_t>& rRejectedFace) {
+    const std::size_t nf = rFaces.NumFaces();
+    AggPatches out;
+    out.mPatchOfFace.assign(nf, -1);
+    // Side keys and orientation of every external face.
+    std::vector<std::int64_t> side_a(nf, -2);
+    std::vector<std::int64_t> side_b(nf, -2);
+    std::vector<std::uint8_t> flip(nf, 0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t go = rGroupOf[static_cast<std::size_t>(rFaces.mOwner[f])];
+        const std::int64_t nb = rFaces.mNeighbour[f];
+        const std::int64_t gn = nb >= 0 ? rGroupOf[static_cast<std::size_t>(nb)] : -1;
+        if (go == gn || rRejectedFace[f])
+            continue;
+        side_a[f] = gn < 0 ? go : std::min(go, gn);
+        side_b[f] = gn < 0 ? -1 : std::max(go, gn);
+        flip[f] = go == side_a[f] ? 0 : 1;
+    }
+    auto unit = [&](std::size_t f) {
+        detail::Vec3 n = detail::vec3_normalize(rAreaVec[f]);
+        return flip[f] ? detail::vec3_scale(n, -1.0) : n;
+    };
+    // Faces grouped by (side a, side b, undirected edge).
+    struct EdgeUse {
+        std::int64_t mA, mB, mLo, mHi, mFace;
+        bool operator<(const EdgeUse& o) const {
+            return std::tie(mA, mB, mLo, mHi, mFace) < std::tie(o.mA, o.mB, o.mLo, o.mHi, o.mFace);
+        }
+    };
+    std::vector<EdgeUse> uses;
+    for (std::size_t f = 0; f < nf; ++f) {
+        if (side_a[f] == -2)
+            continue;
+        const std::size_t n = rFaces.FaceSize(f);
+        const std::int64_t* ring = rFaces.Face(f);
+        for (std::size_t k = 0; k < n; ++k) {
+            const std::int64_t u = ring[k];
+            const std::int64_t v = ring[(k + 1) % n];
+            uses.push_back({side_a[f], side_b[f], std::min(u, v), std::max(u, v),
+                            static_cast<std::int64_t>(f)});
+        }
+    }
+    std::sort(uses.begin(), uses.end());
+    std::vector<std::int64_t> parent(nf);
+    for (std::size_t f = 0; f < nf; ++f)
+        parent[f] = static_cast<std::int64_t>(f);
+    auto find = [&](std::int64_t x) {
+        while (parent[static_cast<std::size_t>(x)] != x) {
+            parent[static_cast<std::size_t>(x)] =
+                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(x)])];
+            x = parent[static_cast<std::size_t>(x)];
+        }
+        return x;
+    };
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i + 1;
+        while (j < uses.size() && uses[j].mA == uses[i].mA && uses[j].mB == uses[i].mB &&
+               uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 2) {
+            const auto fa = static_cast<std::size_t>(uses[i].mFace);
+            const auto fb = static_cast<std::size_t>(uses[i + 1].mFace);
+            if (detail::vec3_dot(unit(fa), unit(fb)) >= CosTol) {
+                const std::int64_t ra = find(static_cast<std::int64_t>(fa));
+                const std::int64_t rb = find(static_cast<std::int64_t>(fb));
+                if (ra != rb)
+                    parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+            }
+        }
+        i = j;
+    }
+    // Components with two or more faces, in ascending root order.
+    std::vector<std::vector<std::size_t>> members(nf);
+    for (std::size_t f = 0; f < nf; ++f)
+        if (side_a[f] != -2)
+            members[static_cast<std::size_t>(find(static_cast<std::int64_t>(f)))].push_back(f);
+    for (std::size_t root = 0; root < nf; ++root) {
+        const std::vector<std::size_t>& comp = members[root];
+        if (comp.size() < 2)
+            continue;
+        const detail::Vec3 n0 = unit(comp.front());
+        bool planar = true;
+        for (std::size_t f : comp)
+            planar = planar && detail::vec3_dot(unit(f), n0) >= CosTol;
+        if (!planar)
+            continue;
+        // The outline: directed edges (wound out of side a) used once.
+        std::vector<std::array<std::int64_t, 2>> dir;
+        for (std::size_t f : comp) {
+            const std::size_t n = rFaces.FaceSize(f);
+            const std::int64_t* ring = rFaces.Face(f);
+            for (std::size_t k = 0; k < n; ++k) {
+                std::int64_t u = ring[k];
+                std::int64_t v = ring[(k + 1) % n];
+                if (flip[f])
+                    std::swap(u, v);
+                if (u != v)
+                    dir.push_back({u, v});
+            }
+        }
+        std::vector<std::array<std::int64_t, 2>> sorted = dir;
+        std::sort(sorted.begin(), sorted.end());
+        std::vector<std::array<std::int64_t, 2>> outline;
+        for (const auto& e : dir)
+            if (!std::binary_search(sorted.begin(), sorted.end(),
+                                    std::array<std::int64_t, 2>{e[1], e[0]}))
+                outline.push_back(e);
+        std::sort(outline.begin(), outline.end());
+        // A single simple loop: every vertex leaves once and is reached once.
+        bool simple = outline.size() >= 3;
+        for (std::size_t k = 1; simple && k < outline.size(); ++k)
+            simple = outline[k][0] != outline[k - 1][0];
+        std::vector<std::int64_t> heads;
+        for (const auto& e : outline)
+            heads.push_back(e[1]);
+        std::sort(heads.begin(), heads.end());
+        for (std::size_t k = 1; simple && k < heads.size(); ++k)
+            simple = heads[k] != heads[k - 1];
+        std::vector<std::int64_t> ring;
+        if (simple) {
+            std::int64_t at = outline.front()[0];
+            for (std::size_t steps = 0; steps < outline.size(); ++steps) {
+                ring.push_back(at);
+                const auto it = std::lower_bound(outline.begin(), outline.end(),
+                                                 std::array<std::int64_t, 2>{at, INT64_MIN});
+                if (it == outline.end() || (*it)[0] != at) {
+                    simple = false;
+                    break;
+                }
+                at = (*it)[1];
+            }
+            simple = simple && at == outline.front()[0];
+        }
+        if (!simple)
+            continue;
+        const auto pid = static_cast<std::int64_t>(out.mRing.size());
+        for (std::size_t f : comp)
+            out.mPatchOfFace[f] = pid;
+        out.mRing.push_back(std::move(ring));
+        out.mSideA.push_back(side_a[comp.front()]);
+        out.mSideB.push_back(side_b[comp.front()]);
+        out.mNumFaces.push_back(comp.size());
+    }
+    return out;
+}
+
 /// Frontier entry ordered by DESCENDING accumulated shared-face area, ties
 /// broken by ASCENDING compact cell id -- storing the negated area keeps a
 /// plain ascending std::set a max-by-area, min-by-id priority structure.
@@ -134989,6 +135318,11 @@ struct FrontierKey {
 AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOptions) {
     if (rOptions.mTargetGroupSize == 0)
         throw std::invalid_argument(std::string(kAggPrefix) + "mTargetGroupSize must be >= 1");
+    if (!(rOptions.mCoplanarAngleDeg >= 0.0 && rOptions.mCoplanarAngleDeg < 90.0))
+        throw std::invalid_argument(std::string(kAggPrefix) +
+                                    "mCoplanarAngleDeg must lie in [0, 90)");
+    if (!(rOptions.mMinSphericity >= 0.0 && rOptions.mMinSphericity <= 1.0))
+        throw std::invalid_argument(std::string(kAggPrefix) + "mMinSphericity must lie in [0, 1]");
 
     const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
     if (gf.mNumNonManifold > 0)
@@ -135007,6 +135341,41 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
     parallel_for(gf.NumFaces(),
                  [&](std::size_t f) { face_area[f] = agg_face_area(gf, f, points, pdim); });
 
+    // Face area vectors and centroids, for the cells' volumes (the gate) and
+    // the face normals (coplanar merging); only when either is asked for.
+    const bool gate = rOptions.mMinSphericity > 0.0;
+    std::vector<detail::Vec3> area_vec;
+    std::vector<double> cell_volume;
+    std::vector<double> cell_area;
+    if (gate || rOptions.mMergeCoplanarFaces) {
+        area_vec.resize(gf.NumFaces());
+        std::vector<detail::Vec3> centroid(gf.NumFaces());
+        parallel_for(gf.NumFaces(), [&](std::size_t f) {
+            agg_face_geometry(gf, f, points, pdim, area_vec[f], centroid[f]);
+        });
+        if (gate) {
+            // Divergence theorem over each cell's outward faces.
+            cell_volume.assign(n_compact, 0.0);
+            cell_area.assign(n_compact, 0.0);
+            parallel_for(n_compact, [&](std::size_t c) {
+                const std::size_t nfc = gf.NumCellFaces(c);
+                const std::int64_t* row = gf.CellFaces(c);
+                double v = 0.0;
+                double a = 0.0;
+                for (std::size_t k = 0; k < nfc; ++k) {
+                    const std::int64_t sid = row[k];
+                    const auto f = static_cast<std::size_t>((sid > 0 ? sid : -sid) - 1);
+                    const double d = detail::vec3_dot(centroid[f], area_vec[f]) / 3.0;
+                    v += sid > 0 ? d : -d;
+                    a += face_area[f];
+                }
+                cell_volume[c] = v;
+                cell_area[c] = a;
+            });
+        }
+    }
+    std::int64_t num_rejected = 0;
+
     // --- greedy seed-and-grow over the face dual --------------------------
     std::vector<std::int64_t> group_of(n_compact, -1);
     std::vector<std::vector<std::int64_t>> groups;
@@ -135015,6 +135384,10 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
     // through the ids a seed touched -- no hash map allocated per seed. Same
     // sums, in the same order.
     std::vector<double> pending(n_compact, 0.0);
+    // 0 not on the frontier, 1 on it, kRefused refused by the gate for this
+    // seed's group (never pushed again: a re-push would restart its shared
+    // area from one face and misjudge the union).
+    constexpr std::uint8_t kRefused = 2;
     std::vector<std::uint8_t> is_pending(n_compact, 0);
     std::vector<std::int64_t> touched;
     std::set<FrontierKey> frontier;
@@ -135043,6 +135416,8 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
                     continue;  // mesh boundary
                 if (group_of[static_cast<std::size_t>(other)] != -1)
                     continue;  // already claimed (by this group or would be a bug otherwise)
+                if (is_pending[static_cast<std::size_t>(other)] == kRefused)
+                    continue;  // refused for this group
                 const double a = face_area[f];
                 double& acc = pending[static_cast<std::size_t>(other)];
                 if (is_pending[static_cast<std::size_t>(other)]) {
@@ -135058,6 +135433,8 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
         };
 
         push_neighbours(static_cast<std::int64_t>(seed));
+        double group_volume = gate ? cell_volume[seed] : 0.0;
+        double group_area = gate ? cell_area[seed] : 0.0;
 
         while (members.size() < rOptions.mTargetGroupSize && !frontier.empty()) {
             const auto fit = frontier.begin();
@@ -135066,6 +135443,20 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
             is_pending[static_cast<std::size_t>(c)] = 0;
             if (group_of[static_cast<std::size_t>(c)] != -1)
                 continue;  // defensive; unreachable given the push-time check above
+            if (gate) {
+                // The union's volume and external area: the shared faces leave
+                // the surface from both sides.
+                const auto ci = static_cast<std::size_t>(c);
+                const double v = group_volume + cell_volume[ci];
+                const double a = group_area + cell_area[ci] - 2.0 * pending[ci];
+                if (agg_sphericity(v, a) < rOptions.mMinSphericity) {
+                    ++num_rejected;
+                    is_pending[ci] = kRefused;  // skipped for this group only
+                    continue;
+                }
+                group_volume = v;
+                group_area = a;
+            }
             group_of[static_cast<std::size_t>(c)] = gid;
             members.push_back(c);
             push_neighbours(c);
@@ -135075,29 +135466,86 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
         groups.push_back(std::move(members));
     }
 
+    // --- coplanar patches (optional) -----------------------------------------
+    AggPatches patches;
+    patches.mPatchOfFace.assign(gf.NumFaces(), -1);
+    std::vector<std::uint8_t> rejected_face(gf.NumFaces(), 0);
+    const double cos_tol = std::cos(rOptions.mCoplanarAngleDeg * 3.14159265358979323846 / 180.0);
+    std::int64_t num_faces_merged = 0;
+
     // --- emit: one polyhedron cell per group, external faces only ---------
     std::vector<std::vector<std::vector<std::int64_t>>> merged_cells(groups.size());
-    for (std::size_t g = 0; g < groups.size(); ++g) {
-        auto& faces_out = merged_cells[g];
-        for (std::int64_t c : groups[g]) {
-            const std::size_t nf = gf.NumCellFaces(static_cast<std::size_t>(c));
-            const std::int64_t* row = gf.CellFaces(static_cast<std::size_t>(c));
-            for (std::size_t k = 0; k < nf; ++k) {
-                const std::int64_t sid = row[k];
-                const auto f = static_cast<std::size_t>((sid > 0 ? sid : -sid) - 1);
-                const std::int64_t owner = gf.mOwner[f];
-                const std::int64_t neigh = gf.mNeighbour[f];
-                const std::int64_t other = (owner == c) ? neigh : owner;
-                if (other >= 0 && group_of[static_cast<std::size_t>(other)] ==
-                                      group_of[static_cast<std::size_t>(c)])
-                    continue;  // internal to the group: dropped from both sides
-                const std::size_t n = gf.FaceSize(f);
-                const std::int64_t* ring = gf.Face(f);
-                std::vector<std::int64_t> face_nodes(ring, ring + n);
-                if (sid < 0)
-                    std::reverse(face_nodes.begin(), face_nodes.end());
-                faces_out.push_back(std::move(face_nodes));
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (rOptions.mMergeCoplanarFaces)
+            patches = agg_coplanar_patches(gf, group_of, area_vec, cos_tol, rejected_face);
+        num_faces_merged = 0;
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+            auto& faces_out = merged_cells[g];
+            faces_out.clear();
+            std::vector<std::uint8_t> patch_done(patches.mRing.size(), 0);
+            for (std::int64_t c : groups[g]) {
+                const std::size_t nf = gf.NumCellFaces(static_cast<std::size_t>(c));
+                const std::int64_t* row = gf.CellFaces(static_cast<std::size_t>(c));
+                for (std::size_t k = 0; k < nf; ++k) {
+                    const std::int64_t sid = row[k];
+                    const auto f = static_cast<std::size_t>((sid > 0 ? sid : -sid) - 1);
+                    const std::int64_t owner = gf.mOwner[f];
+                    const std::int64_t neigh = gf.mNeighbour[f];
+                    const std::int64_t other = (owner == c) ? neigh : owner;
+                    if (other >= 0 && group_of[static_cast<std::size_t>(other)] ==
+                                          group_of[static_cast<std::size_t>(c)])
+                        continue;  // internal to the group: dropped from both sides
+                    const std::int64_t pid = patches.mPatchOfFace[f];
+                    if (pid >= 0) {
+                        // A fused patch: its ring once, wound out of this group.
+                        const auto pi = static_cast<std::size_t>(pid);
+                        if (!patch_done[pi]) {
+                            patch_done[pi] = 1;
+                            std::vector<std::int64_t> ring_nodes = patches.mRing[pi];
+                            if (patches.mSideA[pi] != static_cast<std::int64_t>(g))
+                                std::reverse(ring_nodes.begin(), ring_nodes.end());
+                            faces_out.push_back(std::move(ring_nodes));
+                            num_faces_merged +=
+                                static_cast<std::int64_t>(patches.mNumFaces[pi]) - 1;
+                        }
+                        continue;
+                    }
+                    const std::size_t n = gf.FaceSize(f);
+                    const std::int64_t* ring = gf.Face(f);
+                    std::vector<std::int64_t> face_nodes(ring, ring + n);
+                    if (sid < 0)
+                        std::reverse(face_nodes.begin(), face_nodes.end());
+                    faces_out.push_back(std::move(face_nodes));
+                }
             }
+        }
+        if (patches.mRing.empty())
+            break;
+        // A fusion must leave every polyhedron it touches closed; a patch of a
+        // group that no longer closes is withdrawn (both sides) and the emit rerun.
+        bool all_closed = true;
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+            if (agg_closed(merged_cells[g]))
+                continue;
+            all_closed = false;
+            for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+                const std::int64_t pid = patches.mPatchOfFace[f];
+                if (pid < 0)
+                    continue;
+                const auto pi = static_cast<std::size_t>(pid);
+                if (patches.mSideA[pi] == static_cast<std::int64_t>(g) ||
+                    patches.mSideB[pi] == static_cast<std::int64_t>(g))
+                    rejected_face[f] = 1;
+            }
+        }
+        if (all_closed)
+            break;
+        if (attempt == 2) {
+            // Give up on fusion rather than emit an open polyhedron.
+            log::warn("{}coplanar merging left an open polyhedron; faces kept unmerged",
+                      kAggPrefix);
+            std::fill(rejected_face.begin(), rejected_face.end(), std::uint8_t{1});
+            attempt = 1;  // one more pass, with every face rejected
         }
     }
 
@@ -135228,6 +135676,8 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
     AgglomerateResult res;
     res.mMesh = std::move(out);
     res.mCellMap = std::move(cell_map);
+    res.mNumFacesMerged = num_faces_merged;
+    res.mNumRejected = num_rejected;
 
     detail::RegionRemap rmap;
     rmap.mCellMapKind = detail::CellMapKind::Global;
@@ -135240,6 +135690,98 @@ AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/agglomerate.cpp =====
+// ===== begin src/cpp/src/operations/blend.cpp =====
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kBlPrefix = "meshio++: blend_steps: ";
+
+bool bl_is_float(DType Dt) {
+    return Dt == DType::Float32 || Dt == DType::Float64;
+}
+
+// (1 - w) a + w b over two arrays of one shape; integers from the nearer one.
+NDArray bl_blend(const NDArray& rA, const NDArray& rB, double W, const std::string& rWhat) {
+    if (rA.Shape() != rB.Shape())
+        throw std::invalid_argument(std::string(kBlPrefix) + rWhat +
+                                    " has different shapes in the two steps");
+    if (!bl_is_float(rA.Dtype()) || !bl_is_float(rB.Dtype()))
+        return detail::data_owned_copy(W < 0.5 ? rA : rB);
+    NDArray out = NDArray::Uninit(rA.Dtype(), rA.Shape());
+    const double wa = 1.0 - W;
+    parallel_for_bw(rA.Size(), [&](std::size_t i) {
+        detail::write_double(out, i,
+                             wa * detail::read_double(rA, i) + W * detail::read_double(rB, i));
+    });
+    return out;
+}
+
+void bl_check_topology(const Mesh& rA, const Mesh& rB) {
+    if (rA.NumPoints() != rB.NumPoints() || rA.PointDim() != rB.PointDim())
+        throw std::invalid_argument(std::string(kBlPrefix) + "the steps have " +
+                                    std::to_string(rA.NumPoints()) + " and " +
+                                    std::to_string(rB.NumPoints()) +
+                                    " points; blending needs one topology across the steps");
+    if (rA.NumCellBlocks() != rB.NumCellBlocks())
+        throw std::invalid_argument(std::string(kBlPrefix) +
+                                    "the steps have different numbers of cell blocks");
+    for (std::size_t b = 0; b < rA.NumCellBlocks(); ++b) {
+        const auto ca = rA.Cells(b);
+        const auto cb = rB.Cells(b);
+        if (std::string(ca.Type()) != std::string(cb.Type()) || ca.NumCells() != cb.NumCells())
+            throw std::invalid_argument(std::string(kBlPrefix) + "cell block " + std::to_string(b) +
+                                        " differs between the steps (" + std::string(ca.Type()) +
+                                        " x" + std::to_string(ca.NumCells()) + " vs " +
+                                        std::string(cb.Type()) + " x" +
+                                        std::to_string(cb.NumCells()) + ")");
+    }
+    auto same_names = [&](const std::vector<std::string>& rX, const std::vector<std::string>& rY,
+                          const char* pWhat) {
+        if (rX != rY)
+            throw std::invalid_argument(std::string(kBlPrefix) + "the steps carry different " +
+                                        pWhat + " arrays");
+    };
+    same_names(rA.PointDataNames(), rB.PointDataNames(), "point_data");
+    same_names(rA.CellDataNames(), rB.CellDataNames(), "cell_data");
+    same_names(rA.FieldDataNames(), rB.FieldDataNames(), "field_data");
+}
+
+}  // namespace
+
+Mesh blend_steps(const Mesh& rA, const Mesh& rB, double W, const BlendOptions& rOptions) {
+    bl_check_topology(rA, rB);
+    Mesh out = detail::clone_geometry(rA);
+    if (rOptions.mBlendPoints)
+        out.AssignPoints(bl_blend(rA.Points(), rB.Points(), W, "the point array"));
+    for (const std::string& name : rA.PointDataNames())
+        out.AddPointData(
+            name, bl_blend(rA.PointData(name), rB.PointData(name), W, "point_data '" + name + "'"));
+    for (const std::string& name : rA.CellDataNames()) {
+        if (rA.CellDataNumBlocks(name) != rB.CellDataNumBlocks(name))
+            throw std::invalid_argument(std::string(kBlPrefix) + "cell_data '" + name +
+                                        "' has different block counts in the two steps");
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rA.CellDataNumBlocks(name); ++b)
+            blocks.push_back(bl_blend(rA.CellData(name, b), rB.CellData(name, b), W,
+                                      "cell_data '" + name + "'"));
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rA.FieldDataNames())
+        out.AddFieldData(
+            name, bl_blend(rA.FieldData(name), rB.FieldData(name), W, "field_data '" + name + "'"));
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/blend.cpp =====
 // ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -147745,7 +148287,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
-        {"Agglomerate", {"TargetGroupSize"}},
+        {"Agglomerate",
+         {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -148538,8 +149081,13 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         AgglomerateOptions opts;
         opts.mTargetGroupSize =
             static_cast<std::size_t>(pipe_number(rStep, "TargetGroupSize", 8.0));
+        opts.mMergeCoplanarFaces = pipe_flag(rStep, "MergeCoplanarFaces", false);
+        opts.mCoplanarAngleDeg = pipe_number(rStep, "CoplanarAngle", 1.0);
+        opts.mMinSphericity = pipe_number(rStep, "MinSphericity", 0.0);
         auto result = agglomerate(mesh, opts);
-        pipe_push_step(rReport, rStep);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFacesMerged", static_cast<double>(result.mNumFacesMerged)},
+                        {"NumRejected", static_cast<double>(result.mNumRejected)}});
         return std::move(result.mMesh);
     }
     if (op == "Crop") {
@@ -149046,8 +149594,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(doc, "the settings document",
-                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"});
+    pipe_check_keys(
+        doc, "the settings document",
+        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -149076,6 +149625,49 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
         pipeline.mWorkers = v->get<int>();
         if (pipeline.mWorkers < 0)
             pipe_schema_error("Workers must not be negative (0 means one per core)");
+    }
+
+    if (const pipe_json* r = pipe_get(doc, "Resample")) {
+        parsed.mSequenceKeys = true;
+        if (!r->is_object())
+            pipe_schema_error("Resample must be an object");
+        pipe_check_keys(*r, "Resample",
+                        {"Times", "TimesFrom", "Method", "Extrapolate", "BlendPoints"});
+        SequenceResample rs;
+        if (const pipe_json* t = pipe_get(*r, "Times")) {
+            if (t->is_array()) {
+                for (const pipe_json& v : *t) {
+                    if (!v.is_number())
+                        pipe_schema_error("Resample.Times must be numbers");
+                    rs.mTimes.push_back(v.get<double>());
+                }
+            } else if (t->is_object()) {
+                pipe_check_keys(*t, "Resample.Times", {"Start", "Stop", "Step"});
+                auto num = [&](const char* pKey) {
+                    const pipe_json* v = pipe_get(*t, pKey);
+                    if (!v || !v->is_number())
+                        pipe_schema_error(std::string("Resample.Times.") + pKey +
+                                          " must be a number");
+                    return v->get<double>();
+                };
+                rs.mTimes = resample_times_range(num("Start"), num("Stop"), num("Step"));
+            } else {
+                pipe_schema_error("Resample.Times must be an array or {Start, Stop, Step}");
+            }
+        }
+        rs.mTimesFrom = pipe_get_string(*r, "TimesFrom", "Resample");
+        if (rs.mTimes.empty() == rs.mTimesFrom.empty())
+            pipe_schema_error("Resample needs exactly one of Times and TimesFrom");
+        const std::string method = pipe_get_string(*r, "Method", "Resample");
+        if (!method.empty())
+            rs.mMethod = resample_method_from_name(method);
+        const std::string extrap = pipe_get_string(*r, "Extrapolate", "Resample");
+        if (extrap == "clamp")
+            rs.mExtrapolate = ResampleExtrapolate::Clamp;
+        else if (!extrap.empty() && extrap != "error")
+            pipe_schema_error("Resample.Extrapolate must be \"error\" or \"clamp\"");
+        rs.mBlendPoints = pipe_get_bool(*r, "BlendPoints", "Resample", false);
+        pipeline.mResample = rs;
     }
 
     const pipe_json* input = pipe_get(doc, "Input");
@@ -155848,7 +156440,9 @@ SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
 // ===== end src/cpp/src/operations/sdf.cpp =====
 // ===== begin src/cpp/src/operations/sequence.cpp =====
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -156677,6 +157271,215 @@ SequenceTimeFrom sequence_time_from_name(const std::string& rName) {
         rName + "'");
 }
 
+namespace {
+
+std::string seq_g(double V) {
+    char buf[32];
+    detail::snprintf_c(buf, sizeof(buf), "%g", V);
+    return buf;
+}
+
+}  // namespace
+
+std::vector<ResampleSlot> resample_plan(const std::vector<double>& rSourceTimes,
+                                        const std::vector<double>& rTargets, ResampleMethod Method,
+                                        ResampleExtrapolate Extrapolate) {
+    const std::vector<double>& t = rSourceTimes;
+    if (t.empty())
+        throw std::invalid_argument("meshio++: resample: the source sequence has no steps");
+    for (std::size_t i = 1; i < t.size(); ++i)
+        if (!(t[i] > t[i - 1]))
+            throw std::invalid_argument(
+                "meshio++: resample: the source times must increase strictly, but step " +
+                std::to_string(i) + " is at " + seq_g(t[i]) + " after " + seq_g(t[i - 1]));
+    std::vector<ResampleSlot> out;
+    out.reserve(rTargets.size());
+    for (const double target : rTargets) {
+        if (!std::isfinite(target))
+            throw std::invalid_argument("meshio++: resample: a target time is not finite");
+        ResampleSlot slot;
+        if (target < t.front() || target > t.back()) {
+            if (Extrapolate == ResampleExtrapolate::Error)
+                throw std::invalid_argument("meshio++: resample: target time " + seq_g(target) +
+                                            " is outside the source range [" + seq_g(t.front()) +
+                                            ", " + seq_g(t.back()) +
+                                            "] (pass Extrapolate \"clamp\" to take the end steps)");
+            slot.mLo = slot.mHi = target < t.front() ? 0 : t.size() - 1;
+            out.push_back(slot);
+            continue;
+        }
+        // The first source time >= target.
+        const std::size_t hi =
+            static_cast<std::size_t>(std::lower_bound(t.begin(), t.end(), target) - t.begin());
+        if (t[hi] == target) {
+            slot.mLo = slot.mHi = hi;
+        } else {
+            const std::size_t lo = hi - 1;  // hi > 0: target > t.front() here
+            switch (Method) {
+                case ResampleMethod::Linear:
+                    slot.mLo = lo;
+                    slot.mHi = hi;
+                    slot.mWeight = (target - t[lo]) / (t[hi] - t[lo]);
+                    break;
+                case ResampleMethod::Nearest:
+                    slot.mLo = slot.mHi = (t[hi] - target < target - t[lo]) ? hi : lo;
+                    break;
+                case ResampleMethod::Previous:
+                    slot.mLo = slot.mHi = lo;
+                    break;
+            }
+        }
+        out.push_back(slot);
+    }
+    return out;
+}
+
+std::vector<double> resample_times_range(double Start, double Stop, double Step) {
+    if (!(Step > 0.0) || !std::isfinite(Start) || !std::isfinite(Stop) || !std::isfinite(Step))
+        throw std::invalid_argument("meshio++: resample: a time range needs a positive step");
+    if (Stop < Start)
+        throw std::invalid_argument("meshio++: resample: a time range needs Stop >= Start");
+    const double count = std::floor((Stop - Start) / Step + 1e-9) + 1.0;
+    if (count > 1e7)
+        throw std::invalid_argument(
+            "meshio++: resample: a time range of more than ten million "
+            "steps");
+    std::vector<double> out(static_cast<std::size_t>(count));
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = Start + static_cast<double>(i) * Step;
+    return out;
+}
+
+ResampleMethod resample_method_from_name(const std::string& rName) {
+    if (rName == "linear")
+        return ResampleMethod::Linear;
+    if (rName == "nearest")
+        return ResampleMethod::Nearest;
+    if (rName == "previous")
+        return ResampleMethod::Previous;
+    throw std::invalid_argument("meshio++: resample: unknown method '" + rName +
+                                "' (expected linear, nearest or previous)");
+}
+
+namespace {
+
+// The resolved times of @p rEntries: an index-fallback entry whose file
+// carries `meshio:time` is read for it (the streaming driver's rule).
+std::vector<double> seq_resolved_times(const std::vector<SequenceEntry>& rEntries,
+                                       const SequenceInput& rInput) {
+    std::vector<double> times(rEntries.size());
+    for (std::size_t i = 0; i < rEntries.size(); ++i) {
+        times[i] = rEntries[i].mTime;
+        if (rEntries[i].mTimeSource == SequenceTimeSource::Index &&
+            rInput.mTimeFrom != SequenceTimeFrom::Index) {
+            double value = 0.0;
+            if (seq_time_from_mesh(sequence_read_step(rEntries, i, rInput.mFormat, rInput.mOptions),
+                                   value))
+                times[i] = value;
+        }
+    }
+    return times;
+}
+
+}  // namespace
+
+std::vector<double> sequence_times(const SequenceInput& rInput) {
+    return seq_resolved_times(sequence_expand(rInput), rInput);
+}
+
+namespace {
+
+// The resample stage of run_sequence_pipeline: every target time is built
+// from at most two source meshes (a two-entry cache), run through the steps,
+// and written -- one file per target (a pattern output) or one series.
+PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
+                                 const std::vector<SequenceEntry>& rEntries,
+                                 PipelineReport report) {
+    SequenceResample rs = *rPipeline.mResample;
+    if (rs.mTimes.empty()) {
+        if (rs.mTimesFrom.empty())
+            throw std::invalid_argument(
+                "meshio++: resample: give the target Times or a TimesFrom sequence");
+        SequenceInput other;
+        other.mPattern = rs.mTimesFrom;
+        other.mTimeFrom = rPipeline.mInput.mTimeFrom;
+        rs.mTimes = sequence_times(other);
+    }
+    const std::vector<double> source = seq_resolved_times(rEntries, rPipeline.mInput);
+    const std::vector<ResampleSlot> plan =
+        resample_plan(source, rs.mTimes, rs.mMethod, rs.mExtrapolate);
+
+    // Two fixed slots: at most two live source meshes, and a slot is only
+    // refilled when it holds neither step the current target needs, so the
+    // references handed out below stay valid.
+    std::array<std::size_t, 2> slot_step = {SIZE_MAX, SIZE_MAX};
+    std::array<Mesh, 2> slot_mesh;
+    auto load = [&](std::size_t i, std::size_t Keep) {
+        for (std::size_t s = 0; s < 2; ++s)
+            if (slot_step[s] == i)
+                return;
+        const std::size_t victim = slot_step[0] == Keep ? 1 : 0;
+        slot_mesh[victim] =
+            sequence_read_step(rEntries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+        slot_step[victim] = i;
+    };
+    auto get = [&](std::size_t i) -> const Mesh& {
+        return slot_step[0] == i ? slot_mesh[0] : slot_mesh[1];
+    };
+    BlendOptions blend;
+    blend.mBlendPoints = rs.mBlendPoints;
+    auto target = [&](std::size_t k) {
+        const ResampleSlot& slot = plan[k];
+        Mesh mesh;
+        if (slot.mLo == slot.mHi || slot.mWeight == 0.0) {
+            load(slot.mLo, SIZE_MAX);
+            mesh = detail::clone_mesh(get(slot.mLo));
+        } else {
+            load(slot.mLo, SIZE_MAX);
+            load(slot.mHi, slot.mLo);
+            mesh = blend_steps(get(slot.mLo), get(slot.mHi), slot.mWeight, blend);
+        }
+        mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+        seq_attach_time(mesh, rs.mTimes[k]);
+        return mesh;
+    };
+
+    const std::size_t n = rs.mTimes.size();
+    if (sequence_pattern_has_token(rPipeline.mOutput.mPath)) {
+        for (std::size_t k = 0; k < n; ++k)
+            registry_write_ex(sequence_expand_pattern(rPipeline.mOutput.mPath, k, n), target(k),
+                              rPipeline.mOutput.mFormat, rPipeline.mOutput.mOptions);
+        return report;
+    }
+    const std::string ofmt = seq_resolve_write_format(rPipeline.mOutput, n);
+    std::string why;
+    if (!sequence_write_supports_time(ofmt, why))
+        throw WriteError(why + " (a resampled sequence needs a {step} pattern or a series)");
+    seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
+    if (ofmt == "gid") {
+        write_gid_series(rPipeline.mOutput.mPath, [&](std::size_t k, double& rTime, Mesh& rMesh) {
+            if (k >= n)
+                return false;
+            rMesh = target(k);
+            rTime = rs.mTimes[k];
+            return true;
+        });
+        return report;
+    }
+    const std::unique_ptr<SeqSeriesSink> writer =
+        seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
+    for (std::size_t k = 0; k < n; ++k) {
+        Mesh mesh = target(k);
+        if (k == 0)
+            writer->WritePointsCells(mesh);
+        writer->WriteData(rs.mTimes[k], mesh);
+    }
+    writer->Finalize();
+    return report;
+}
+
+}  // namespace
+
 PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
     if (rPipeline.mVersion != 1)
         throw std::invalid_argument("meshio++: sequence: unsupported Version " +
@@ -156705,6 +157508,8 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         report.mWarnings.push_back(
             "sequence: Parallel is a Python-driver feature; this engine runs the steps "
             "serially (every operation already parallelizes internally)");
+    if (rPipeline.mResample)
+        return seq_run_resampled(rPipeline, entries, std::move(report));
 
     if (mode == SequenceMode::FanIn) {
         const std::string ofmt = seq_resolve_write_format(rPipeline.mOutput, entries.size());

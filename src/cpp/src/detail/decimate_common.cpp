@@ -116,31 +116,6 @@ std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr, std::size_t 
     return q;
 }
 
-void decim_mark_features(const DecimCsr& rCsr, std::size_t n, const std::vector<double>& rNormals,
-                         double CosThreshold, std::vector<std::uint8_t>& rPinned) {
-    parallel_for(n, [&](std::size_t v) {
-        const std::int64_t b = rCsr.mXadj[v];
-        const std::int64_t e = rCsr.mXadj[v + 1];
-        for (std::int64_t p = b; p < e; ++p) {
-            const double* na = rNormals.data() +
-                               static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(p)]) * 3;
-            if (na[0] == 0.0 && na[1] == 0.0 && na[2] == 0.0)
-                continue;
-            for (std::int64_t q = p + 1; q < e; ++q) {
-                const double* nb =
-                    rNormals.data() +
-                    static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(q)]) * 3;
-                if (nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0)
-                    continue;
-                if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < CosThreshold) {
-                    rPinned[v] = 1;
-                    return;
-                }
-            }
-        }
-    });
-}
-
 double decim_quadric_error(const double* q, double x, double y, double z) {
     return q[0] * x * x + q[4] * y * y + q[7] * z * z +
            2.0 * (q[1] * x * y + q[2] * x * z + q[5] * y * z) +

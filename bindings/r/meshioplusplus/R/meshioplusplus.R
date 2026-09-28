@@ -728,6 +728,13 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
 #' @param convert_mode `"linearize"`, `"simplexify"` or `"elevate"`.
 #' @param target_group_size Approximate member cells per `mio_agglomerate()`
 #'   output group; must be at least 1 (`1` groups every cell by itself).
+#' @param merge_coplanar_faces `mio_agglomerate()`: fuse the faces two groups
+#'   share, and a group's boundary faces, into one polygon where they are
+#'   coplanar; the result also reports `num_faces_merged`.
+#' @param coplanar_angle Largest normal deviation (degrees) still coplanar.
+#' @param min_sphericity `mio_agglomerate()`: refuse an absorption that would
+#'   drop the group's sphericity below this (0 disables the gate); the result
+#'   reports `num_rejected`.
 #' @param levels How many times to apply the refinement templates.
 #' @param ratio Fraction of faces to KEEP, in (0, 1]; negative = unset.
 #' @param target_faces Absolute face count to stop at; negative = unset.
@@ -1469,8 +1476,12 @@ mio_subdivide <- function(mesh, record_parent_ids = FALSE) {
 
 #' @rdname mio_extract_surface
 #' @export
-mio_agglomerate <- function(mesh, target_group_size = 8) {
-  .Call(R_mio_agglomerate, mesh, as.numeric(target_group_size))
+mio_agglomerate <- function(mesh, target_group_size = 8, merge_coplanar_faces = FALSE,
+                            coplanar_angle = 1, min_sphericity = 0) {
+  .Call(
+    R_mio_agglomerate, mesh, as.numeric(target_group_size), isTRUE(merge_coplanar_faces),
+    as.numeric(coplanar_angle), as.numeric(min_sphericity)
+  )
 }
 
 #' @rdname mio_extract_surface
@@ -1962,6 +1973,45 @@ mio_sequence_free <- function(seq) invisible(.Call(R_mio_sequence_free, seq))
 mio_sequence_to_timeseries <- function(seq, out_path, out_format = NULL, ascii = FALSE) {
   invisible(.Call(R_mio_sequence_to_timeseries, seq, as.character(out_path), out_format,
                   isTRUE(ascii)))
+}
+
+#' Resample a sequence onto new times
+#'
+#' Writes one file per target time when `out_path` carries \code{\{step\}} or
+#' \code{\{index\}}, else one series file. At most two source meshes are held
+#' at once. See doc/sequences.md.
+#' @param seq a \code{mio_sequence}.
+#' @param out_path the output pattern or series file.
+#' @param times the target times.
+#' @param method \code{"linear"} (blend the bracketing steps), \code{"nearest"}
+#'   or \code{"previous"}.
+#' @param clamp if TRUE, a time outside the source range takes the end step
+#'   instead of failing.
+#' @param blend_points if TRUE, linear resampling also blends point coordinates.
+#' @param out_format forced output format, or NULL.
+#' @return NULL, invisibly.
+#' @export
+mio_sequence_resample <- function(seq, out_path, times, method = "linear", clamp = FALSE,
+                                  blend_points = FALSE, out_format = NULL) {
+  m <- match(method, c("linear", "nearest", "previous"))
+  if (is.na(m)) stop("meshio++: unknown resample method '", method, "'")
+  invisible(.Call(
+    R_mio_sequence_resample, seq, as.character(out_path), out_format, as.numeric(times),
+    as.numeric(m - 1), isTRUE(clamp), isTRUE(blend_points)
+  ))
+}
+
+#' Blend two steps of one topology
+#'
+#' `a` with every floating-point data array replaced by `(1 - w) a + w b`;
+#' integer data comes from the nearer step. See doc/sequences.md.
+#' @param a,b two \code{mio_mesh} steps with the same points count and blocks.
+#' @param w the blend weight.
+#' @param blend_points if TRUE, the point coordinates are blended too.
+#' @return a new \code{mio_mesh}.
+#' @export
+mio_blend_steps <- function(a, b, w, blend_points = FALSE) {
+  .Call(R_mio_blend_steps, a, b, as.numeric(w), isTRUE(blend_points))
 }
 
 #' Fan-out: write each step of a multi-step file to a pattern

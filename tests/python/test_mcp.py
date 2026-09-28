@@ -1075,6 +1075,80 @@ def test_check_quality(tmp_path):
         _tools.tool_check_quality(src, "bogus >= 1")
 
 
+def test_agglomerate_options_resample_and_blend(tmp_path):
+    import numpy as np
+
+    n = 3
+    xs, ys, zs = np.meshgrid(*(np.arange(n + 1.0),) * 3, indexing="ij")
+    pts = np.column_stack([xs.ravel(), ys.ravel(), zs.ravel()])
+
+    def vid(i, j, k):
+        return (i * (n + 1) + j) * (n + 1) + k
+
+    hexes = [
+        [
+            vid(i, j, k),
+            vid(i + 1, j, k),
+            vid(i + 1, j + 1, k),
+            vid(i, j + 1, k),
+            vid(i, j, k + 1),
+            vid(i + 1, j, k + 1),
+            vid(i + 1, j + 1, k + 1),
+            vid(i, j + 1, k + 1),
+        ]
+        for i in range(n)
+        for j in range(n)
+        for k in range(n)
+    ]
+    src = str(tmp_path / "hexes.vtu")
+    meshioplusplus.write(src, meshioplusplus.Mesh(pts, [("hexahedron", hexes)]))
+    out = _dump(
+        _tools.tool_agglomerate(
+            src, str(tmp_path / "agg.vtu"), merge_coplanar_faces=True
+        )
+    )
+    assert out["num_faces_merged"] > 0
+    assert out["num_rejected"] == 0
+
+    for k in range(2):
+        meshioplusplus.write(
+            str(tmp_path / f"s_{k}.vtu"),
+            meshioplusplus.Mesh(
+                pts,
+                [("hexahedron", hexes)],
+                point_data={"u": np.full(len(pts), 10.0 * k)},
+            ),
+        )
+    rep = _dump(
+        _tools.tool_resample_sequence(
+            str(tmp_path / "r_{index}.vtu"),
+            input_pattern=str(tmp_path / "s_*.vtu"),
+            times="0:1:0.5",
+            time_from="index",
+        )
+    )
+    assert rep["times"] == [0.0, 0.5, 1.0]
+    mid = meshioplusplus.read(str(tmp_path / "r_1.vtu"))
+    assert np.allclose(mid.point_data["u"], 5.0)
+    with pytest.raises(ValueError, match="exactly one of times"):
+        _tools.tool_resample_sequence(
+            str(tmp_path / "x_{index}.vtu"), input_pattern=str(tmp_path / "s_*.vtu")
+        )
+
+    b = _dump(
+        _tools.tool_blend_steps(
+            str(tmp_path / "s_0.vtu"),
+            str(tmp_path / "s_1.vtu"),
+            str(tmp_path / "b.vtu"),
+            0.25,
+        )
+    )
+    assert b["num_points"] == len(pts)
+    assert np.allclose(
+        meshioplusplus.read(str(tmp_path / "b.vtu")).point_data["u"], 2.5
+    )
+
+
 def test_edit_regions_and_periodic(tmp_path):
     from meshioplusplus._regions import Region
 

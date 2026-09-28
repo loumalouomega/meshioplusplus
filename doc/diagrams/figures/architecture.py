@@ -133,7 +133,7 @@ def architecture():
         358,
         280,
         66,
-        ["operations layer: 39 mesh", "+ 6 data operations"],
+        ["operations layer: 45 mesh", "+ 6 data operations"],
         color=P.CORE,
         sub="uniform-mesh-API only; parallel_for hot loops",
         size=P.SIZE_SMALL,
@@ -235,7 +235,7 @@ def mesh_backends():
     # left: the callers
     callers = [
         (["format readers / writers", "79 formats, src/cpp/src/formats/"], P.FORMATS),
-        (["operations", "39 mesh + 6 data, operations/"], P.CORE),
+        (["operations", "45 mesh + 6 data, operations/"], P.CORE),
         (["bindings", "pybind11 · C API · embind"], P.PYTHON),
     ]
     for k, (label, colour) in enumerate(callers):

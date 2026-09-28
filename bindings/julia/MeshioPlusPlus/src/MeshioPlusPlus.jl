@@ -113,7 +113,7 @@ export run_pipeline_file, run_pipeline_json, pipeline_has_json
 # Sequences (multi-file / transient datasets). `read`/`step`/`time`/`path` and
 # friends would shadow Base, so only the non-colliding names are exported;
 # reach the rest as MeshioPlusPlus.step(seq, i) etc.
-export Sequence, read_step, to_timeseries, timeseries_to_sequence
+export Sequence, read_step, to_timeseries, timeseries_to_sequence, resample, blend_steps
 export run_sequence_file, run_sequence_json
 
 # Transient (time-series) XDMF writing

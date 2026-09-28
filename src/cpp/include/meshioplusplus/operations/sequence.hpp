@@ -72,6 +72,8 @@
 
 // System includes
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -168,6 +170,84 @@ struct SequenceOutput {
     WriteOptions mOptions;
 };
 
+/// How a resampled step is made from the source steps around its time.
+enum class ResampleMethod : std::uint8_t {
+    Linear = 0,    ///< Blend the two bracketing steps (`blend_steps`).
+    Nearest = 1,   ///< The closest source step (the earlier on a tie).
+    Previous = 2,  ///< The latest source step at or before the time (sample and hold).
+};
+
+/// What a target time outside the source range does.
+enum class ResampleExtrapolate : std::uint8_t {
+    Error = 0,  ///< Throw, naming the time and the range.
+    Clamp = 1,  ///< Take the first / last source step.
+};
+
+/**
+ * @brief Resample a sequence onto new times (`Resample` in settings.json).
+ *
+ * Aligns two solvers' timelines -- or a solver's and a surrogate's -- before a
+ * pairwise `diff` or a training pair. Each target time is made from the
+ * source steps around it (see `ResampleMethod`); the source steps must share a
+ * topology when they are blended. At most **two** source meshes are held at
+ * once, where the unresampled driver holds one.
+ */
+struct SequenceResample {
+    /// The target times, ascending or not; one output step each.
+    std::vector<double> mTimes;
+    /// When `mTimes` is empty: a sequence glob whose step times are the
+    /// targets (`sequence_times` of it) -- how two solvers' timelines are
+    /// aligned. Resolved when the pipeline runs.
+    std::string mTimesFrom;
+    ResampleMethod mMethod = ResampleMethod::Linear;
+    ResampleExtrapolate mExtrapolate = ResampleExtrapolate::Error;
+    /// Blend the point coordinates too (a moving mesh); see `BlendOptions`.
+    bool mBlendPoints = false;
+};
+
+/// One target time of a `resample_plan`: blend step `mLo` toward `mHi` by
+/// `mWeight` (`mLo == mHi` and weight 0 for a single step).
+struct ResampleSlot {
+    std::size_t mLo = 0;
+    std::size_t mHi = 0;
+    double mWeight = 0.0;
+};
+
+/**
+ * @brief Which source steps, blended by how much, make each target time.
+ *
+ * A pure unit. @p rSourceTimes must be strictly increasing (the order a
+ * sequence's steps are in); a target equal to a source time takes that step
+ * alone, whatever the method.
+ * @throws std::invalid_argument on non-increasing source times, an empty
+ *         source, or (with `Error`) a target outside the source range.
+ */
+MESHIOPLUSPLUS_API std::vector<ResampleSlot> resample_plan(const std::vector<double>& rSourceTimes,
+                                                           const std::vector<double>& rTargets,
+                                                           ResampleMethod Method,
+                                                           ResampleExtrapolate Extrapolate);
+
+/**
+ * @brief `Start, Start + Step, ...` up to `Stop` inclusive (within a relative
+ * `1e-9` of a step, so `0:1:0.1` ends at 1).
+ * @throws std::invalid_argument on a non-positive step, `Stop < Start`, or more
+ *         than ten million times.
+ */
+MESHIOPLUSPLUS_API std::vector<double> resample_times_range(double Start, double Stop, double Step);
+
+/// `linear`, `nearest` or `previous`; throws on anything else.
+MESHIOPLUSPLUS_API ResampleMethod resample_method_from_name(const std::string& rName);
+
+/**
+ * @brief The resolved time of every step of a sequence.
+ *
+ * `sequence_expand`'s times, except that a single-step file whose only time is
+ * inside it (`field_data["meshio:time"]`) is read to find it -- the value the
+ * streaming driver would find, known up front. That read is the cost of
+ * resampling such a sequence: every such file is read once more.
+ */
+MESHIOPLUSPLUS_API std::vector<double> sequence_times(const SequenceInput& rInput);
+
 /** @brief A whole sequence settings document. */
 struct SequencePipeline {
     int mVersion = 1;
@@ -187,6 +267,10 @@ struct SequencePipeline {
     /// Worker count for `mParallel`; 0 means "as many as there are cores".
     /// Ignored, with `mParallel`, by the C++ engine.
     int mWorkers = 0;
+    /// Resample onto new times before the steps run (v16.25.0, ABI 19). With
+    /// it, the output is one file per *target* time (a pattern output) or one
+    /// series holding them (a single output of a format that carries time).
+    std::optional<SequenceResample> mResample;
 };
 
 /**

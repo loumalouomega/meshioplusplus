@@ -1170,6 +1170,28 @@ step('returnMaps: agglomerate has one flat cellMap, not per-block cellMaps', () 
     assert.equal(out.cellMaps, undefined);
 });
 
+step('agglomerate options: coplanar merge and sphericity gate report their counts', () => {
+    const grid = m.refine(m.refine(cube)); // 64 hexahedra
+    const out = m.agglomerate(grid, 8, true, { mergeCoplanarFaces: true, minSphericity: 0.5 });
+    assert.ok(out.numFacesMerged > 0, 'coplanar hex faces fuse');
+    assert.ok(out.numRejected >= 0);
+    assert.throws(() => m.agglomerate(grid, 8, false, { bogus: 1 }), /unknown key 'bogus'/);
+});
+
+step('blendSteps and resampleSequence', () => {
+    const at = (u) => ({ ...tet, point_data: { u: new Float64Array([u, u, u, u]) } });
+    m.writeMesh('/rsin_0.vtu', at(0));
+    m.writeMesh('/rsin_1.vtu', at(10));
+    const h = m.blendSteps(at(0), at(10), 0.25);
+    assert.deepEqual(Array.from(h.point_data.u), [2.5, 2.5, 2.5, 2.5]);
+    const n = m.resampleSequence('/rsin_*.vtu', '/rs_out_{index}.vtu',
+        { Times: [0, 0.5, 1] }, '', { timeFrom: 'index' });
+    assert.equal(n, 3);
+    assert.deepEqual(Array.from(m.readMesh('/rs_out_1.vtu').point_data.u), [5, 5, 5, 5]);
+    assert.throws(() => m.resampleSequence('/rsin_*.vtu', '/rs_bad_{index}.vtu',
+        { Times: [2] }, '', { timeFrom: 'index' }));
+});
+
 step('returnMaps: refine pointMap is the identity, cellMaps map 1 -> 8 children', () => {
     const out = m.refine(cube, 1, false, undefined, true);
     assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7]);

@@ -70,7 +70,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 | `Transform` | exactly one of `Translate[3]`, `Scale` (number or `[3]`), `RotateAxis[3]`+`RotateDegrees`, `Matrix[16]` (row-major), `ScaleUnits` (a factor, e.g. `0.001` for mm→m); plus `RotateData` (false) | |
 | `ConvertCells` | `Mode` ("linearize" \| "simplexify" \| "elevate"), `RecordParentIds` (false) | |
 | `Subdivide` | `RecordParentIds` (false) | one polyhedral child per 3D cell face, connected to a new interior point; no per-type template table |
-| `Agglomerate` | `TargetGroupSize` (8) | greedy seed-and-grow over the shared-face dual, merging face-adjacent cells into one polyhedron per group; the many-to-one counterpart to `Subdivide` |
+| `Agglomerate` | `TargetGroupSize` (8), `MergeCoplanarFaces` (false), `CoplanarAngle` (1), `MinSphericity` (0) | greedy seed-and-grow over the shared-face dual, merging face-adjacent cells into one polyhedron per group; the many-to-one counterpart to `Subdivide`; counters `NumFacesMerged`, `NumRejected`; see [agglomerate](/agglomerate) |
 | `Crop` | one of `Bbox[6]` (`[xmin,ymin,zmin,xmax,ymax,zmax]`), `Point[3]`+`Normal[3]`, or `Where` (a scalar `cell_data` name) + `Compare` ("<") + `Value` (0); `Mode` ("all" \| "any", **not** with `Where`), `RecordIds` (false) | counter `CellsKept` |
 | `ExtractSurface` | `RecordParentIds` (false) | |
 | `ExtractSkin` | `Linearize` (false) | |
@@ -85,7 +85,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 
 ## Sequences (transient / multi-file runs)
 
-Since v9.12.0 the same document can describe a whole **transient** run: a glob/list input, the chain applied per step, and a fan-out or fan-in output. Seven additional keys, all optional:
+Since v9.12.0 the same document can describe a whole **transient** run: a glob/list input, the chain applied per step, and a fan-out or fan-in output. Eight additional keys, all optional:
 
 | Key | Where | Meaning |
 | --- | --- | --- |
@@ -96,6 +96,7 @@ Since v9.12.0 the same document can describe a whole **transient** run: a glob/l
 | `Paths` | `Input` | an explicit, ordered list; not re-sorted |
 | `Times` | `Input` | explicit per-step times; the count must match |
 | `TimeFrom` | `Input` | `"auto"` (the documented precedence) / `"file"` / `"filename"` / `"index"` |
+| `Resample` | top level | resample onto new times: `Times` (an array or `{Start, Stop, Step}`) or `TimesFrom` (another sequence's glob), `Method` (`"linear"` \| `"nearest"` \| `"previous"`), `Extrapolate` (`"error"` \| `"clamp"`), `BlendPoints` (false); at most two source meshes live — see [Resampling onto new times](sequences.md#resampling-onto-new-times) |
 
 `Output.Path` may carry `{step}` or `{index}` to write one file per step.
 

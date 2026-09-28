@@ -4272,3 +4272,45 @@ TEST(CApi, CheckQualityGates) {
     EXPECT_NE(mio_check_quality(m, nullptr, 0, 0, nullptr, nullptr, 0), MIO_OK);
     mio_mesh_free(m);
 }
+
+TEST(CApi, AgglomerateExAndBlendAndResample) {
+    // Two unit hexes in a row: one group, and with coplanar merging the four
+    // side faces pairs fuse (4 faces removed).
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1,
+                                     1, 1, 1, 0, 1, 1, 2, 0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1};
+    const std::vector<std::int64_t> hexes = {0, 1, 2, 3, 4, 5, 6, 7, 1, 8, 9, 2, 5, 10, 11, 6};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 2, 8, MIO_INT64, hexes.data()), MIO_OK);
+    mio_agglomerate_opts opts;
+    mio_agglomerate_opts_init(&opts);
+    EXPECT_EQ(opts.target_group_size, 8);
+    EXPECT_EQ(opts.coplanar_angle, 1.0);
+    opts.merge_coplanar_faces = 1;
+    std::int64_t merged = -1, rejected = -1;
+    mio_agglomerate_result* r = mio_agglomerate_ex(m, &opts, &merged, &rejected);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    EXPECT_EQ(merged, 4);
+    EXPECT_EQ(rejected, 0);
+    mio_agglomerate_result_free(r);
+    opts.min_sphericity = 2.0;
+    EXPECT_EQ(mio_agglomerate_ex(m, &opts, nullptr, nullptr), nullptr);
+
+    // blend_steps: a point field halfway between two steps.
+    const double u0[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const double u1[] = {4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4};
+    mio_mesh* b = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(b, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(b, "hexahedron", 2, 8, MIO_INT64, hexes.data()), MIO_OK);
+    const std::int64_t shape[] = {12};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 1, shape, u0), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(b, "u", MIO_FLOAT64, 1, shape, u1), MIO_OK);
+    mio_mesh* half = mio_blend_steps(m, b, 0.25, 0);
+    ASSERT_NE(half, nullptr) << mio_last_error();
+    mio_mesh_free(half);
+    mio_resample_opts ro;
+    mio_resample_opts_init(&ro);
+    EXPECT_NE(mio_sequence_resample(nullptr, "x_{index}.vtu", nullptr, &ro), MIO_OK);
+    mio_mesh_free(b);
+    mio_mesh_free(m);
+}

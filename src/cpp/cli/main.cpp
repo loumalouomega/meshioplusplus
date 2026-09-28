@@ -504,6 +504,8 @@ void print_usage(std::ostream& os) {
           "                            cell face, connected to a new interior point\n"
           "  agglomerate             Polyhedrally coarsen: merge groups of cells into\n"
           "                            single larger polyhedral cells\n"
+          "  resample                Resample a sequence onto new times (--times\n"
+          "                            START:STOP:STEP | --times-from PATTERN)\n"
           "  refine                  Subdivide cells into same-type children (all, or a\n"
           "                          selected subset with a conforming closure)\n"
           "  undo-green              Restore a transitional (green) cell to its coarse\n"
@@ -2686,11 +2688,22 @@ int cmd_subdivide(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+std::int64_t total_cells(const Mesh& rMesh) {
+    std::int64_t n = 0;
+    for (const auto cb : rMesh.CellRange())
+        n += static_cast<std::int64_t>(cb.NumCells());
+    return n;
+}
+
 int cmd_agglomerate(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
                                   {"output-format", {"-o"}, true},
                                   {"target-group-size", {}, true},
+                                  {"merge-coplanar-faces", {}, false},
+                                  {"coplanar-angle", {}, true},
+                                  {"min-sphericity", {}, true},
+                                  {"json", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("agglomerate requires exactly INFILE and OUTFILE");
@@ -2699,9 +2712,104 @@ int cmd_agglomerate(const std::vector<std::string>& rArgs) {
     meshioplusplus::AgglomerateOptions options;
     options.mTargetGroupSize =
         static_cast<std::size_t>(std::stoull(opt_value(p, "target-group-size", "8")));
+    options.mMergeCoplanarFaces = has_flag(p, "merge-coplanar-faces");
+    if (has_opt(p, "coplanar-angle"))
+        options.mCoplanarAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "coplanar-angle"));
+    if (has_opt(p, "min-sphericity"))
+        options.mMinSphericity = meshioplusplus::detail::stod_c(opt_value(p, "min-sphericity"));
 
     auto result = meshioplusplus::agglomerate(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("cells_in", total_cells(mesh));
+        json.Field("cells_out", total_cells(result.mMesh));
+        json.Field("num_faces_merged", result.mNumFacesMerged);
+        json.Field("num_rejected", result.mNumRejected);
+        json.EndObject();
+    }
+    return 0;
+}
+
+int cmd_resample(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input", {}, true},
+                                  {"input-format", {"-i"}, true},
+                                  {"time-from", {}, true},
+                                  {"times", {}, true},
+                                  {"times-from", {}, true},
+                                  {"method", {}, true},
+                                  {"clamp", {}, false},
+                                  {"blend-points", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("resample requires exactly INFILE and OUTFILE");
+    if (has_opt(p, "times") == has_opt(p, "times-from"))
+        throw std::runtime_error("resample needs exactly one of --times and --times-from");
+    meshioplusplus::SequencePipeline pipeline;
+    meshioplusplus::SequenceInput& in = pipeline.mInput;
+    const std::string& infile = p.positionals[0];
+    const std::vector<std::string>& extra_inputs = opt_values(p, "input");
+    if (!extra_inputs.empty()) {
+        in.mPaths.push_back(infile);
+        for (const std::string& extra : extra_inputs)
+            in.mPaths.push_back(extra);
+    } else if (infile.find('*') != std::string::npos || infile.find('?') != std::string::npos) {
+        in.mPattern = infile;
+    } else {
+        in.mPaths.push_back(infile);
+    }
+    in.mFormat = opt_value(p, "input-format");
+    in.mTimeFrom = meshioplusplus::sequence_time_from_name(opt_value(p, "time-from"));
+    pipeline.mOutput.mPath = p.positionals[1];
+
+    // The targets: START:STOP:STEP or a comma list, or another sequence's times.
+    meshioplusplus::SequenceResample rs;
+    if (has_opt(p, "times")) {
+        const std::string spec = opt_value(p, "times");
+        if (std::count(spec.begin(), spec.end(), ':') == 2) {
+            const std::size_t a = spec.find(':');
+            const std::size_t b = spec.find(':', a + 1);
+            rs.mTimes = meshioplusplus::resample_times_range(
+                meshioplusplus::detail::stod_c(spec.substr(0, a)),
+                meshioplusplus::detail::stod_c(spec.substr(a + 1, b - a - 1)),
+                meshioplusplus::detail::stod_c(spec.substr(b + 1)));
+        } else {
+            for (const std::string& t : data_split_names(spec))
+                rs.mTimes.push_back(meshioplusplus::detail::stod_c(t));
+        }
+    } else {
+        meshioplusplus::SequenceInput other;
+        other.mPattern = opt_value(p, "times-from");
+        other.mTimeFrom = in.mTimeFrom;  // as the pipeline's TimesFrom resolves it
+        rs.mTimes = meshioplusplus::sequence_times(other);
+    }
+    const std::string method = opt_value(p, "method", "linear");
+    rs.mMethod = meshioplusplus::resample_method_from_name(method);
+    if (has_flag(p, "clamp"))
+        rs.mExtrapolate = meshioplusplus::ResampleExtrapolate::Clamp;
+    rs.mBlendPoints = has_flag(p, "blend-points");
+    const std::vector<double> targets = rs.mTimes;
+    pipeline.mResample = rs;
+    meshioplusplus::run_sequence_pipeline(pipeline);
+
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("method", method);
+        json.Field("num_steps", targets.size());
+        json.Key("times");
+        json.BeginArray();
+        for (double t : targets)
+            json.Number(t);
+        json.EndArray();
+        json.EndObject();
+    } else {
+        std::cout << "resample (" << method << "): " << targets.size() << " step(s) -> "
+                  << pipeline.mOutput.mPath << "\n";
+    }
     return 0;
 }
 
@@ -4415,13 +4523,6 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
     return equal ? 0 : 1;
 }
 
-std::int64_t total_cells(const Mesh& rMesh) {
-    std::int64_t n = 0;
-    for (const auto cb : rMesh.CellRange())
-        n += static_cast<std::int64_t>(cb.NumCells());
-    return n;
-}
-
 int cmd_merge(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -4573,6 +4674,8 @@ int main(int argc, char** argv) {
             return cmd_subdivide(rest);
         if (cmd == "agglomerate")
             return cmd_agglomerate(rest);
+        if (cmd == "resample")
+            return cmd_resample(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
         if (cmd == "undo-green")

@@ -123,6 +123,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/neighbors.hpp"
+#include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
@@ -1151,19 +1152,61 @@ PYBIND11_MODULE(_core, m) {
     // came from. See operations/agglomerate.hpp.
     m.def(
         "agglomerate",
-        [](py::object pymesh, std::size_t target_group_size) {
+        [](py::object pymesh, std::size_t target_group_size, bool merge_coplanar_faces,
+           double coplanar_angle, double min_sphericity) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
             meshioplusplus::AgglomerateOptions options;
             options.mTargetGroupSize = target_group_size;
+            options.mMergeCoplanarFaces = merge_coplanar_faces;
+            options.mCoplanarAngleDeg = coplanar_angle;
+            options.mMinSphericity = min_sphericity;
             meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(cpp, options);
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
             out["cell_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mCellMap));
+            out["num_faces_merged"] = r.mNumFacesMerged;
+            out["num_rejected"] = r.mNumRejected;
             return out;
         },
-        py::arg("mesh"), py::arg("target_group_size") = 8);
+        py::arg("mesh"), py::arg("target_group_size") = 8, py::arg("merge_coplanar_faces") = false,
+        py::arg("coplanar_angle") = 1.0, py::arg("min_sphericity") = 0.0);
+
+    // Linear interpolation between two steps of one mesh. See
+    // operations/blend.hpp.
+    m.def(
+        "blend_steps",
+        [](py::object pya, py::object pyb, double w, bool blend_points) {
+            meshioplusplus_py::PyMeshRefs ra;
+            meshioplusplus_py::PyMeshRefs rb;
+            meshioplusplus::Mesh a = meshioplusplus_py::py_to_mesh(
+                pya, ra, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::Mesh b = meshioplusplus_py::py_to_mesh(
+                pyb, rb, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::BlendOptions options;
+            options.mBlendPoints = blend_points;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::blend_steps(a, b, w, options));
+        },
+        py::arg("a"), py::arg("b"), py::arg("w"), py::arg("blend_points") = false);
+
+    // Which source steps make each resampled time. See
+    // operations/sequence.hpp's resample_plan.
+    m.def(
+        "resample_plan",
+        [](const std::vector<double>& source, const std::vector<double>& targets,
+           const std::string& method, bool clamp) {
+            const auto plan = meshioplusplus::resample_plan(
+                source, targets, meshioplusplus::resample_method_from_name(method),
+                clamp ? meshioplusplus::ResampleExtrapolate::Clamp
+                      : meshioplusplus::ResampleExtrapolate::Error);
+            py::list out;
+            for (const auto& slot : plan)
+                out.append(py::make_tuple(slot.mLo, slot.mHi, slot.mWeight));
+            return out;
+        },
+        py::arg("source"), py::arg("targets"), py::arg("method") = "linear",
+        py::arg("clamp") = false);
 
     // Polyhedral refinement: one polyhedral child per face, connected to a new
     // interior point. Returns a dict {mesh, cell_maps} -- no point_map, since
