@@ -60,9 +60,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#permas) |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#ply) |
 | [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — | [1/8 cells · data PCF](./conformance.md#pmsh) |
-| [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#pvd) |
-| [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF](./conformance.md#pvtp) |
-| [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#pvtu) |
+| [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvd) |
+| [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#pvtp) |
+| [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
 | [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-th) |
@@ -83,11 +83,11 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — | [fails](./conformance.md#vts) |
 | [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — | [fails](./conformance.md#vtr) |
 | [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#vtm) |
-| [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — | [4/8 cells · data PCF](./conformance.md#vtp) |
-| [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — | [8/8 cells · data PCF](./conformance.md#vtu) |
+| [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#vtp) |
+| [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#vtu) |
 | [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | — | ADIOS2 (a core built with it, or `adios2`) | [read-only](./conformance.md#vtx) |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#wkt) |
-| [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) | [8/8 cells · data PC](./conformance.md#xdmf) |
+| [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) | [8/8 cells · data PC · regions CPS](./conformance.md#xdmf) |
 | [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) | [read-only](./conformance.md#xplt) |
 | [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#xyz) |
 | [`z88`](./formats/z88.md) | `z88i1.txt`, `z88structure.txt` (by file name), results `z88o2.txt`/`z88o3.txt` | ✓ | ✓ (structure file) | — | [3/8 cells · no data · regions CP](./conformance.md#z88) |

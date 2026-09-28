@@ -10,9 +10,10 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
-from .._common import cell_data_from_raw, raw_from_cell_data, write_xml
+from .._common import cell_data_from_raw, raw_from_cell_data, warn, write_xml
 from .._exceptions import ReadError, WriteError
-from .._mesh import CellBlock, Mesh
+from .._mesh import CellBlock, Mesh, topological_dimension
+from .._regions import Region, block_bases
 from .common import (
     attribute_type,
     dtype_to_format_string,
@@ -27,6 +28,67 @@ from .common import (
 
 def read(filename):
     return XdmfReader(filename).read()
+
+
+def _block_dim(block):
+    """A block's topological dimension (a polyhedron is 3, a polygon 2)."""
+    if block.type.startswith("polyhedron"):
+        return 3
+    if block.type.startswith("polygon"):
+        return 2
+    return topological_dimension.get(block.type, 3)
+
+
+_SET_KIND = {"Node": "point", "Cell": "cell", "Face": "side", "Edge": "side"}
+
+
+def _read_set(reader, c, regions):
+    """One ``<Set>`` into ``regions`` (name -> Region), the twin of the core's
+    ``xdmf_read_set``: Node/Cell/Face/Edge -> point/cell/side, the cell ids
+    first and the cell-local face/edge ids second."""
+    name = c.attrib.get("Name", "")
+    set_type = c.attrib.get("SetType", "")
+    kind = _SET_KIND.get(set_type)
+    if kind is None:
+        warn(f"xdmf: skipping set '{name}' of SetType '{set_type}'")
+        return
+    dim, tag = -1, -1
+    for info in c.findall("Information"):
+        if info.attrib.get("Name") == "meshio++:dim":
+            dim = int(info.attrib["Value"])
+        elif info.attrib.get("Name") == "meshio++:tag":
+            tag = int(info.attrib["Value"])
+    if c.find("Attribute") is not None:
+        warn(f"xdmf: set '{name}' carries attributes, which are not read")
+    items = c.findall("DataItem")
+    need = 2 if kind == "side" else 1
+    if len(items) < need:
+        raise ReadError(
+            f"XDMF: set '{name}' of SetType '{set_type}' needs {need} DataItem(s)"
+        )
+
+    def ids(item):
+        if item.attrib.get("Dimensions") == "0":
+            return np.empty(0, dtype=np.int64)
+        return np.asarray(reader._read_data_item(item), dtype=np.int64).reshape(-1)
+
+    first = ids(items[0])
+    if kind == "side":
+        local = ids(items[1]) if len(first) else np.empty(0, dtype=np.int64)
+        if len(local) != len(first):
+            raise ReadError(
+                f"XDMF: set '{name}' has {len(first)} cells but {len(local)} "
+                "local face/edge indices"
+            )
+        entries = np.stack([first, local], axis=1)
+    else:
+        entries = first
+    key = (name, kind)
+    if key in regions:
+        prev = regions[key]
+        entries = np.concatenate([np.asarray(prev.entries), entries])
+        dim, tag = prev.dim, prev.tag
+    regions[key] = Region(name, kind, entries, dim, tag)
 
 
 class XdmfReader:
@@ -151,6 +213,7 @@ class XdmfReader:
         point_data = {}
         cell_data_raw = {}
         field_data = {}
+        regions = {}
 
         for c in grid:
             if c.tag == "Topology":
@@ -216,18 +279,23 @@ class XdmfReader:
                     # TODO field data?
                     if c.attrib["Center"] != "Grid":
                         raise ReadError()
+            elif c.tag == "Set":
+                _read_set(self, c, regions)
             else:
                 raise ReadError(f"Unknown section '{c.tag}'.")
 
         cell_data = cell_data_from_raw(cells, cell_data_raw)
 
-        return Mesh(
+        mesh = Mesh(
             points,
             cells,
             point_data=point_data,
             cell_data=cell_data,
             field_data=field_data,
         )
+        if regions:
+            mesh.regions = list(regions.values())
+        return mesh
 
     def read_xdmf3(self, root):  # noqa: C901
         domains = list(root)
@@ -249,6 +317,7 @@ class XdmfReader:
         point_data = {}
         cell_data_raw = {}
         field_data = {}
+        regions = {}
 
         for c in grid:
             if c.tag == "Topology":
@@ -317,18 +386,23 @@ class XdmfReader:
                 else:
                     cell_data_raw[name] = data
 
+            elif c.tag == "Set":
+                _read_set(self, c, regions)
             else:
                 raise ReadError(f"Unknown section '{c.tag}'.")
 
         cell_data = cell_data_from_raw(cells, cell_data_raw)
 
-        return Mesh(
+        mesh = Mesh(
             points,
             cells,
             point_data=point_data,
             cell_data=cell_data,
             field_data=field_data,
         )
+        if regions:
+            mesh.regions = list(regions.values())
+        return mesh
 
 
 class XdmfWriter:
@@ -366,6 +440,7 @@ class XdmfWriter:
         self.write_cells(mesh.cells, grid)
         self.write_point_data(mesh.point_data, grid)
         self.write_cell_data(mesh.cell_data, grid)
+        self.write_sets(mesh, grid)
 
         ET.register_namespace("xi", "https://www.w3.org/2001/XInclude/")
 
@@ -397,6 +472,69 @@ class XdmfWriter:
             compression_opts=self.compression_opts,
         )
         return os.path.basename(self.h5_filename) + ":/" + name
+
+    def _write_ids(self, parent, ids):
+        ids = np.asarray(ids, dtype=np.int64).reshape(-1)
+        if ids.size == 0:
+            ET.SubElement(
+                parent,
+                "DataItem",
+                DataType="Int",
+                Dimensions="0",
+                Format="XML",
+                Precision="8",
+            )
+            return
+        dt, prec = numpy_to_xdmf_dtype[ids.dtype.name]
+        data_item = ET.SubElement(
+            parent,
+            "DataItem",
+            DataType=dt,
+            Dimensions=str(ids.size),
+            Format=self.data_format,
+            Precision=prec,
+        )
+        data_item.text = self.numpy_to_xml_string(ids)
+
+    def _write_set(self, grid, region, set_type, ids, local=None):
+        s = ET.SubElement(grid, "Set", Name=region.name, SetType=set_type)
+        if region.dim != -1:
+            ET.SubElement(s, "Information", Name="meshio++:dim", Value=str(region.dim))
+        if region.tag != -1:
+            ET.SubElement(s, "Information", Name="meshio++:tag", Value=str(region.tag))
+        self._write_ids(s, ids)
+        if local is not None:
+            self._write_ids(s, local)
+
+    def write_sets(self, mesh, grid):
+        """Regions as ``<Set>`` s, the twin of the core's ``xdmf_write_sets``
+        (same order: the regions' canonical ``(kind, name, dim, tag)`` order)."""
+        order = {"point": 0, "cell": 1, "side": 2}
+        regions = sorted(
+            getattr(mesh, "regions", []),
+            key=lambda r: (order[r.kind], r.name, r.dim, r.tag),
+        )
+        bases = block_bases(mesh.cells)
+        for region in regions:
+            if region.kind != "side":
+                self._write_set(
+                    grid,
+                    region,
+                    "Node" if region.kind == "point" else "Cell",
+                    region.entries,
+                )
+                continue
+            pairs = np.asarray(region.entries, dtype=np.int64).reshape(-1, 2)
+            is_edge = np.zeros(len(pairs), dtype=bool)
+            for i, cell in enumerate(pairs[:, 0].tolist()):
+                b = int(np.searchsorted(bases, cell, side="right")) - 1
+                if 0 <= b < len(mesh.cells):
+                    is_edge[i] = _block_dim(mesh.cells[b]) == 2
+            faces, edges = pairs[~is_edge], pairs[is_edge]
+            if len(faces) or not len(edges):
+                self._write_set(grid, region, "Face", faces[:, 0], faces[:, 1])
+            if len(edges):
+                self._write_set(grid, region, "Edge", edges[:, 0], edges[:, 1])
 
     def write_points(self, grid, points):
         if points.shape[1] > 3:

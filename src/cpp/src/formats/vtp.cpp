@@ -24,12 +24,14 @@
 
 // Project includes
 #include "meshioplusplus/formats/vtp.hpp"
+#include "../detail/region_field_data.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
@@ -174,10 +176,35 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<PolyData>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
-    if (rMesh.NumFieldData() != 0) {
+    // Named regions ride here too (detail/region_field_data.hpp), their cells
+    // numbered in the file's (Verts, Lines, Polys) order.
+    std::vector<std::int64_t> global_to_file;
+    if (rMesh.NumRegions() != 0) {
+        std::vector<std::int64_t> bases(nblocks + 1, 0);
+        for (std::size_t bi = 0; bi < nblocks; ++bi)
+            bases[bi + 1] = bases[bi] + static_cast<std::int64_t>(rMesh.Cells(bi).NumCells());
+        global_to_file.assign(static_cast<std::size_t>(bases[nblocks]), -1);
+        std::int64_t next_file = 0;
+        for (std::size_t bi : block_order)
+            for (std::int64_t g = bases[bi]; g < bases[bi + 1]; ++g)
+                global_to_file[static_cast<std::size_t>(g)] = next_file++;
+    }
+    const std::vector<std::pair<std::string, NDArray>> region_arrays =
+        detail::regions_to_field_arrays(rMesh, &global_to_file);
+    std::vector<std::pair<std::string, const NDArray*>> field_arrays;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        if (detail::is_region_field_name(name)) {
+            log::warn("vtp: field_data '{}' uses the region naming convention; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+    }
+    for (const auto& [name, arr] : region_arrays)
+        field_arrays.emplace_back(name, &arr);
+    if (!field_arrays.empty()) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames())
-            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
+        for (const auto& [name, p_arr] : field_arrays)
+            detail::vtu_write_field_array(os, name, *p_arr, binary,
                                           binary ? codec : detail::VtkCodec::None, hsz);
         os << "</FieldData>\n";
     }

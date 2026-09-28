@@ -186,8 +186,28 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw,
                        const std::vector<std::int64_t>* pFaces,
                        const std::vector<std::int64_t>& rFaceOffsets, Mesh& rMesh) {
+    reconstruct_cells(pConn, rOffsets, rTypes, rCellDataRaw, pFaces, rFaceOffsets, rMesh, nullptr);
+}
+
+void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                       const std::vector<std::int64_t>& rTypes,
+                       const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+                       const std::vector<std::int64_t>* pFaces,
+                       const std::vector<std::int64_t>& rFaceOffsets, Mesh& rMesh,
+                       std::vector<std::int64_t>* pFileToGlobal) {
     const auto& vmap = vtk_to_meshio_type();
     const std::size_t ncells = rTypes.size();
+    // The next global cell index a file cell will take.
+    std::int64_t next_global = 0;
+    for (const auto cb : rMesh.CellRange())
+        next_global += static_cast<std::int64_t>(cb.NumCells());
+    if (pFileToGlobal)
+        pFileToGlobal->assign(ncells, -1);
+    auto place = [&](std::size_t FileCell) {
+        if (pFileToGlobal)
+            (*pFileToGlobal)[FileCell] = next_global;
+        ++next_global;
+    };
 
     auto add_cd = [&](std::size_t start, std::size_t end) {
         for (const auto& kv : rCellDataRaw)
@@ -298,8 +318,10 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                 // when the run mixes node counts: slicing [at_row, at_row + m) would hand
                 // each block another block's cell_data.
                 std::vector<std::size_t> file_rows(cells.size());
-                for (std::size_t k = 0; k < cells.size(); ++k)
+                for (std::size_t k = 0; k < cells.size(); ++k) {
                     file_rows[k] = start + cells[k];
+                    place(file_rows[k]);
+                }
                 rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(order[g]), std::move(flat),
                                          std::move(row_offsets), std::move(cell_face));
                 for (const auto& kv : rCellDataRaw)
@@ -354,6 +376,8 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                 }
                 rMesh.AddCellBlock(meshio_type, std::move(data));
                 add_cd(start + i, start + j);
+                for (std::size_t c = start + i; c < start + j; ++c)
+                    place(c);
                 i = j;
             }
         } else {
@@ -396,6 +420,8 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             }
             rMesh.AddCellBlock(meshio_type, std::move(data));
             add_cd(start, end);
+            for (std::size_t c = start; c < end; ++c)
+                place(c);
         }
         start = end;
     }

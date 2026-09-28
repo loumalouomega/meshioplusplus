@@ -13,9 +13,16 @@ import zlib
 import numpy as np
 
 from .. import _provenance
-from .._common import info, join_strings, raw_from_cell_data, replace_space, warn
+from .._common import raw_from_cell_data, warn
 from .._exceptions import CorruptionError, ReadError, WriteError
 from .._mesh import CellBlock, Mesh
+from .._region_field_data import (
+    FILE_INDEX_KEY,
+    file_to_global_from,
+    is_region_field_name,
+    regions_from_field_arrays,
+    regions_to_field_arrays,
+)
 from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
 
 
@@ -685,10 +692,20 @@ class VtuReader:
             key: np.concatenate([pd[key] for pd in point_data]) for key in sorted(names)
         } or None
 
+        # A hidden file-index array rides through the cell reconstruction, so
+        # region arrays (file cell order) can be translated to the built blocks.
+        running = 0
+        for raw, piece_cells in zip(cell_data_raw, cells):
+            n = len(np.asarray(piece_cells["types"]).reshape(-1))
+            raw[FILE_INDEX_KEY] = np.arange(running, running + n, dtype=np.int64)
+            running += n
         self.cells, self.cell_data = _organize_cells(
             point_offsets, cells, cell_data_raw
         )
-        self.field_data = field_data
+        file_to_global = file_to_global_from(self.cell_data)
+        self.regions, self.field_data = regions_from_field_arrays(
+            field_data, len(self.points), file_to_global, "vtu"
+        )
 
     def _ordered(self, dtype):
         if self.byte_order is None:
@@ -871,13 +888,16 @@ class VtuReader:
 
 def read(filename):
     reader = VtuReader(filename)
-    return Mesh(
+    mesh = Mesh(
         reader.points,
         reader.cells,
         point_data=reader.point_data,
         cell_data=reader.cell_data,
         field_data=reader.field_data,
     )
+    if reader.regions:
+        mesh.regions = reader.regions
+    return mesh
 
 
 def _chunk_it(array, n):
@@ -922,24 +942,6 @@ def write(
         points = np.column_stack([mesh.points, np.zeros_like(mesh.points[:, 0])])
     else:
         points = mesh.points
-
-    if mesh.point_sets:
-        info(
-            "VTU format cannot write point_sets. Converting them to point_data...",
-            highlight=False,
-        )
-        key, _ = join_strings(list(mesh.point_sets.keys()))
-        key, _ = replace_space(key)
-        mesh.point_sets_to_data(key)
-
-    if mesh.cell_sets:
-        info(
-            "VTU format cannot write cell_sets. Converting them to cell_data...",
-            highlight=False,
-        )
-        key, _ = join_strings(list(mesh.cell_sets.keys()))
-        key, _ = replace_space(key)
-        mesh.cell_sets_to_data(key)
 
     vtk_file = ET.Element(
         "VTKFile",
@@ -1002,6 +1004,11 @@ def write(
     # skipped with a warning instead of failing the write.
     field_data = {}
     for key in sorted(mesh.field_data):
+        if is_region_field_name(key):
+            warn(
+                f"VTU: field_data '{key}' uses the region naming convention; not written"
+            )
+            continue
         try:
             arr = np.asarray(mesh.field_data[key])
             arr = arr.astype(arr.dtype.newbyteorder("="), copy=False)
@@ -1013,6 +1020,9 @@ def write(
         if arr.ndim > 2:
             arr = arr.reshape(arr.shape[0], -1)
         field_data[key] = arr
+    # Named regions, after the field data (the core's order); a VTU's file cell
+    # order is block-major, so no translation.
+    field_data.update(regions_to_field_arrays(mesh))
 
     appended_bytes = []  # the raw <AppendedData> payload, in array order
 

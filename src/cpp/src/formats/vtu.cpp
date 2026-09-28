@@ -25,12 +25,14 @@
 
 // Project includes
 #include "meshioplusplus/formats/vtu.hpp"
+#include "../detail/region_field_data.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -104,10 +106,24 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<UnstructuredGrid>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
-    if (rMesh.NumFieldData() != 0) {
+    // Named regions ride here too (detail/region_field_data.hpp); a VTU's file
+    // cell order is block-major, so no cell translation is needed.
+    const std::vector<std::pair<std::string, NDArray>> region_arrays =
+        detail::regions_to_field_arrays(rMesh, nullptr);
+    std::vector<std::pair<std::string, const NDArray*>> field_arrays;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        if (detail::is_region_field_name(name)) {
+            log::warn("vtu: field_data '{}' uses the region naming convention; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+    }
+    for (const auto& [name, arr] : region_arrays)
+        field_arrays.emplace_back(name, &arr);
+    if (!field_arrays.empty()) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames()) {
-            const NDArray& arr = rMesh.FieldData(name);
+        for (const auto& [name, p_arr] : field_arrays) {
+            const NDArray& arr = *p_arr;
             if (!Appended) {
                 detail::vtu_write_field_array(os, name, arr, binary,
                                               binary ? codec : detail::VtkCodec::None, hsz);
