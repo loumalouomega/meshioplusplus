@@ -257,7 +257,7 @@ def _feature_edges_py(mesh, angle, want, region):
 
     boundary = edges["uses"] == 1
     non_manifold = edges["uses"] >= 3
-    kind = np.zeros(len(edges["lo"]), dtype=np.int32)
+    kind = np.zeros(len(edges["lo"]), dtype=np.int64)
     for flag, mask, value in (
         (want["feature"], edges["sharp"], FEATURE),
         (want["inconsistent"], edges["inconsistent"], INCONSISTENT),

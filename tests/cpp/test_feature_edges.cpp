@@ -69,15 +69,15 @@ Mesh folded_grid(double FoldDeg, int Half = 1, int Rows = 2) {
     return make_mesh(pts, "quad", quads);
 }
 
-std::vector<std::int32_t> kinds(const Mesh& rMesh) {
+std::vector<std::int64_t> kinds(const Mesh& rMesh) {
     const NDArray& a = rMesh.CellData(kFeatureKindName, 0);
-    return std::vector<std::int32_t>(a.As<std::int32_t>(), a.As<std::int32_t>() + a.Size());
+    return std::vector<std::int64_t>(a.As<std::int64_t>(), a.As<std::int64_t>() + a.Size());
 }
 
 std::size_t count_kind(const Mesh& rMesh, FeatureEdgeKind Kind) {
     std::size_t c = 0;
-    for (std::int32_t k : kinds(rMesh))
-        c += k == static_cast<std::int32_t>(Kind) ? 1 : 0;
+    for (std::int64_t k : kinds(rMesh))
+        c += k == static_cast<std::int64_t>(Kind) ? 1 : 0;
     return c;
 }
 

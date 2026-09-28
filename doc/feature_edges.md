@@ -41,7 +41,7 @@ The input's points, verbatim and not compacted, so a line's node ids are the inp
 
 | Array | Type | Content |
 |---|---|---|
-| `feature:kind` | `int32` | 1 feature, 2 boundary, 3 non-manifold, 4 inconsistent |
+| `feature:kind` | `int64` | 1 feature, 2 boundary, 3 non-manifold, 4 inconsistent |
 | `feature:angle` | `float64` | the dihedral angle in degrees; `NaN` where it is undefined |
 
 Point data, field data and point regions ride through; cell and side regions name cells the edge mesh does not have and are dropped with a warning. The report counts every category over the whole surface, whether or not it was selected for output.

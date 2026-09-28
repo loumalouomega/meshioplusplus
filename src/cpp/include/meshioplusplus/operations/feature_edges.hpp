@@ -36,12 +36,18 @@
  * input's own), one `line` block in ascending `(low, high)` endpoint order, and
  * two cell-data arrays:
  *
- *  - `feature:kind` (Int32): 1 feature, 2 boundary, 3 non-manifold,
+ *  - `feature:kind` (Int64): 1 feature, 2 boundary, 3 non-manifold,
  *    4 inconsistent. An edge in several categories is labelled by the first
  *    selected one in the order non-manifold, boundary, inconsistent, feature.
  *  - `feature:angle` (Float64): the dihedral in degrees, measured after
  *    reorienting an inconsistent pair; NaN on edges that are not a pair of two
  *    non-degenerate faces.
+ *
+ * `feature:kind` is Int64, not the enum's own Int32 backing type: NativeMesh
+ * (and KratosMesh, which delegates to it) canonicalize every integer array
+ * -- within kind -- to Int64 on `AddCellData`, while MeshioMesh does not;
+ * requesting Int64 up front keeps the output dtype identical on every
+ * backend instead of silently depending on which one is compiled in.
  *
  * Point data, field data and Point regions ride through; Cell and Side regions
  * name cells that no longer exist and are dropped with a warning.
@@ -57,7 +63,7 @@
 
 namespace meshioplusplus {
 
-/// Cell data (Int32): the category of each output edge; see `FeatureEdgeKind`.
+/// Cell data (Int64): the category of each output edge; see `FeatureEdgeKind`.
 inline constexpr const char* kFeatureKindName = "feature:kind";
 /// Cell data (Float64): the dihedral angle of each output edge, in degrees.
 inline constexpr const char* kFeatureAngleName = "feature:angle";

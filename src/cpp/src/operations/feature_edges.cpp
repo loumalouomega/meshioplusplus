@@ -181,7 +181,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
     FeatureEdgeResult result;
     std::vector<std::int64_t> conn;
-    std::vector<std::int32_t> kind;
+    std::vector<std::int64_t> kind;
     std::vector<double> angle;
     for (const detail::CreaseEdge& e : edges) {
         result.mNumNonManifold += e.IsNonManifold() ? 1 : 0;
@@ -201,7 +201,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
             continue;
         conn.push_back(e.mLo);
         conn.push_back(e.mHi);
-        kind.push_back(static_cast<std::int32_t>(k));
+        kind.push_back(static_cast<std::int64_t>(k));
         angle.push_back(e.mAngleDeg);
     }
 
@@ -211,8 +211,11 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
     NDArray line = NDArray::Uninit(DType::Int64, {ne, std::size_t{2}});
     std::copy(conn.begin(), conn.end(), line.As<std::int64_t>());
     out.AddCellBlock("line", std::move(line));
-    NDArray kind_a = NDArray::Uninit(DType::Int32, {ne});
-    std::copy(kind.begin(), kind.end(), kind_a.As<std::int32_t>());
+    // Int64, not the enum's Int32 backing type -- see the header comment: it
+    // keeps the dtype identical whether NativeMesh/KratosMesh canonicalize it or
+    // MeshioMesh leaves it alone.
+    NDArray kind_a = NDArray::Uninit(DType::Int64, {ne});
+    std::copy(kind.begin(), kind.end(), kind_a.As<std::int64_t>());
     NDArray angle_a = NDArray::Uninit(DType::Float64, {ne});
     std::copy(angle.begin(), angle.end(), angle_a.As<double>());
     std::vector<NDArray> kind_blocks;

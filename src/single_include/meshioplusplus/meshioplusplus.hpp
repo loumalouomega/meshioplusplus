@@ -25031,12 +25031,18 @@ MESHIOPLUSPLUS_API ErrorMarking error_marking_from_name(const std::string& rName
  * input's own), one `line` block in ascending `(low, high)` endpoint order, and
  * two cell-data arrays:
  *
- *  - `feature:kind` (Int32): 1 feature, 2 boundary, 3 non-manifold,
+ *  - `feature:kind` (Int64): 1 feature, 2 boundary, 3 non-manifold,
  *    4 inconsistent. An edge in several categories is labelled by the first
  *    selected one in the order non-manifold, boundary, inconsistent, feature.
  *  - `feature:angle` (Float64): the dihedral in degrees, measured after
  *    reorienting an inconsistent pair; NaN on edges that are not a pair of two
  *    non-degenerate faces.
+ *
+ * `feature:kind` is Int64, not the enum's own Int32 backing type: NativeMesh
+ * (and KratosMesh, which delegates to it) canonicalize every integer array
+ * -- within kind -- to Int64 on `AddCellData`, while MeshioMesh does not;
+ * requesting Int64 up front keeps the output dtype identical on every
+ * backend instead of silently depending on which one is compiled in.
  *
  * Point data, field data and Point regions ride through; Cell and Side regions
  * name cells that no longer exist and are dropped with a warning.
@@ -25050,7 +25056,7 @@ MESHIOPLUSPLUS_API ErrorMarking error_marking_from_name(const std::string& rName
 
 namespace meshioplusplus {
 
-/// Cell data (Int32): the category of each output edge; see `FeatureEdgeKind`.
+/// Cell data (Int64): the category of each output edge; see `FeatureEdgeKind`.
 inline constexpr const char* kFeatureKindName = "feature:kind";
 /// Cell data (Float64): the dihedral angle of each output edge, in degrees.
 inline constexpr const char* kFeatureAngleName = "feature:angle";
@@ -142503,7 +142509,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
     FeatureEdgeResult result;
     std::vector<std::int64_t> conn;
-    std::vector<std::int32_t> kind;
+    std::vector<std::int64_t> kind;
     std::vector<double> angle;
     for (const detail::CreaseEdge& e : edges) {
         result.mNumNonManifold += e.IsNonManifold() ? 1 : 0;
@@ -142523,7 +142529,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
             continue;
         conn.push_back(e.mLo);
         conn.push_back(e.mHi);
-        kind.push_back(static_cast<std::int32_t>(k));
+        kind.push_back(static_cast<std::int64_t>(k));
         angle.push_back(e.mAngleDeg);
     }
 
@@ -142533,8 +142539,11 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
     NDArray line = NDArray::Uninit(DType::Int64, {ne, std::size_t{2}});
     std::copy(conn.begin(), conn.end(), line.As<std::int64_t>());
     out.AddCellBlock("line", std::move(line));
-    NDArray kind_a = NDArray::Uninit(DType::Int32, {ne});
-    std::copy(kind.begin(), kind.end(), kind_a.As<std::int32_t>());
+    // Int64, not the enum's Int32 backing type -- see the header comment: it
+    // keeps the dtype identical whether NativeMesh/KratosMesh canonicalize it or
+    // MeshioMesh leaves it alone.
+    NDArray kind_a = NDArray::Uninit(DType::Int64, {ne});
+    std::copy(kind.begin(), kind.end(), kind_a.As<std::int64_t>());
     NDArray angle_a = NDArray::Uninit(DType::Float64, {ne});
     std::copy(angle.begin(), angle.end(), angle_a.As<double>());
     std::vector<NDArray> kind_blocks;
