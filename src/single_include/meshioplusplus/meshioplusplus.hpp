@@ -59816,7 +59816,9 @@ std::string zlib_inflate(std::string_view In, int WindowBits, std::size_t* pCons
 // ===== end src/cpp/src/detail/zlib_inflate.cpp =====
 // ===== begin src/cpp/src/file_source.cpp =====
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <utility>
 
 // Project includes
@@ -59882,15 +59884,26 @@ FileSource::Mode FileSource::FromMmapMode(MmapMode mmap_mode) {
 }
 
 void FileSource::LoadBuffered(const std::string& rPath) {
+    // The size comes from filesystem metadata, not a stream's tellg(): a
+    // directory (reachable when a caller-built path truncates at an embedded
+    // NUL, as an EnSight `model:` value can) opens as a stream on some
+    // platforms without ever failing, and its bogus tellg() would otherwise
+    // be trusted straight into `resize()`, the "count trusted before the
+    // bytes that back it" allocation this project's readers must not make.
+    std::error_code ec;
+    const auto status = std::filesystem::status(rPath, ec);
+    if (ec || !std::filesystem::is_regular_file(status))
+        throw ReadError("Could not open file: " + rPath);
+    const std::uintmax_t size = std::filesystem::file_size(rPath, ec);
+    if (ec)
+        throw ReadError("Could not open file: " + rPath);
+
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
-    in.seekg(0, std::ios::end);
-    const std::streamoff len = in.tellg();
-    in.seekg(0, std::ios::beg);
-    if (len > 0) {
-        mBuffer.resize(static_cast<std::size_t>(len));
-        in.read(mBuffer.data(), len);
+    if (size > 0) {
+        mBuffer.resize(static_cast<std::size_t>(size));
+        in.read(mBuffer.data(), static_cast<std::streamsize>(size));
     }
     mSize = mBuffer.size();
     mpData = nullptr;
@@ -82419,6 +82432,7 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -83012,10 +83026,24 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
                                 s + "'");
         }
     }
-    std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
-    std::vector<std::int64_t> itags(num_int);
+    const std::int64_t num_int = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
+    // The step index, component count and entity count below need at least
+    // three; a file that gives fewer is corrupt, not merely light on tags.
+    if (num_int < 3)
+        throw ReadError("Gmsh: " + rTag + " needs at least 3 integer tags (step, components, " +
+                        "entities), got " + std::to_string(num_int));
+    std::vector<std::int64_t> itags(static_cast<std::size_t>(num_int));
     for (std::int64_t i = 0; i < num_int; ++i)
-        itags[i] = std::stoll(gmsh_trim(rCur.read_line()));
+        itags[static_cast<std::size_t>(i)] = std::stoll(gmsh_trim(rCur.read_line()));
+    if (itags[1] < 0 || itags[2] < 0)
+        throw ReadError("Gmsh: " + rTag + " holds a negative component or entity count");
+    if (itags[1] != 0 && itags[2] > std::numeric_limits<std::int64_t>::max() / itags[1])
+        throw ReadError("Gmsh: " + rTag + "'s entity count overflows");
+    // Every value below takes at least a byte of what is left of the file
+    // (ascii) or of the section (binary); a bigger product is corruption, not
+    // an allocation size -- the same rule `count()` applies to the counts
+    // above it in this same section.
+    rCur.count(itags[1] * itags[2]);
     std::size_t ncomp = static_cast<std::size_t>(itags[1]);
     std::size_t nitems = static_cast<std::size_t>(itags[2]);
 
@@ -89640,6 +89668,13 @@ D3Geometry d3_geometry(const D3Words& rW, const D3Header& rH) {
         g.mAirbagVar = head[1];
         g.mAirbagParticles = head[2];
         g.mAirbagStateGeom = head[3];
+        // Each sizes an allocation below (particle points, geometry-data
+        // reads); a value the file cannot back is corrupt, matching the
+        // control block's own node/element/part counts (above).
+        for (const std::int64_t v :
+             {g.mAirbagGeom, g.mAirbagVar, g.mAirbagParticles, g.mAirbagStateGeom})
+            if (v < 0 || static_cast<std::uint64_t>(v) > rW.NumWords())
+                d3_fail("the airbag header counts more entities than the file holds");
         g.mHasAirbag = true;
         pos += 4;
         if (rH.mAirbagSubver == 4)
@@ -121226,6 +121261,7 @@ void write_triangle(const std::string& rPath, const Mesh& rMesh) {
 #include <string>
 #include <string_view>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -121431,13 +121467,21 @@ inline void bulk_read_ints(std::istream& rIn, std::size_t nrows, std::size_t k, 
     if (!pPerm && dtype_size(rDst.Dtype()) == static_cast<std::size_t>(int_size)) {
         read_exact(rIn, reinterpret_cast<char*>(rDst.Data()), nbytes);
         detail::dispatch_dtype(rDst.Dtype(), [&]<class T>() {
-            T* d = rDst.As<T>();
-            if (swap || shift != 0)
-                parallel_for_bw(total, [&](std::size_t i) {
-                    if (swap)
-                        swap_bytes(reinterpret_cast<char*>(d + i), int_size);
-                    d[i] = static_cast<T>(d[i] + shift);
-                });
+            if constexpr (std::is_integral_v<T>) {
+                using U = std::make_unsigned_t<T>;
+                T* d = rDst.As<T>();
+                if (swap || shift != 0)
+                    parallel_for_bw(total, [&](std::size_t i) {
+                        if (swap)
+                            swap_bytes(reinterpret_cast<char*>(d + i), int_size);
+                        // Unsigned wraparound, not `d[i] + shift`: a corrupt
+                        // on-disk INT32_MIN/INT64_MIN otherwise overflows the
+                        // signed 1-based->0-based shift. The reader's own
+                        // range check (validate_conn) rejects whatever this
+                        // wraps to.
+                        d[i] = static_cast<T>(static_cast<U>(d[i]) + static_cast<U>(shift));
+                    });
+            }
         });
     } else {
         // General strided path: dst column j <- source column perm[j] (or j),
@@ -121463,7 +121507,10 @@ inline void bulk_read_ints(std::istream& rIn, std::size_t nrows, std::size_t k, 
                     } else {
                         std::memcpy(&v, tmp, 8);
                     }
-                    d[r * k + j] = static_cast<T>(v + shift);
+                    // Unsigned wraparound: see the fast path above.
+                    const auto shifted =
+                        static_cast<std::uint64_t>(v) + static_cast<std::uint64_t>(shift);
+                    d[r * k + j] = static_cast<T>(shifted);
                 }
             });
         });
@@ -121559,6 +121606,19 @@ Mesh read_ugrid(const std::string& rPath) {
     DType fdt = (ft.mFloatSize == 8) ? DType::Float64 : DType::Float32;
     DType idt = (ft.mIntSize == 8) ? DType::Int64 : DType::Int32;
 
+    // A connectivity entry is a 1-based node id; `detail::zero_based` keeps
+    // `id - 1` from overflowing on a corrupt INT64_MIN, and this range check
+    // is the "reader's own range check" its doc comment expects to reject
+    // whatever that wraps to, and any id the file never backed with a point.
+    auto validate_conn = [&](const NDArray& rData) {
+        detail::dispatch_dtype(rData.Dtype(), [&]<class T>() {
+            const T* d = rData.As<T>();
+            for (std::size_t i = 0; i < rData.Size(); ++i)
+                if (d[i] < 0 || static_cast<std::int64_t>(d[i]) >= npoints)
+                    throw ReadError("UGRID: an element references a node outside the point table");
+        });
+    };
+
     skip_marker();  // start of second Fortran record
 
     // Points (always 3 coordinates).
@@ -121597,10 +121657,11 @@ Mesh read_ugrid(const std::string& rPath) {
         NDArray data(idt, {static_cast<std::size_t>(n), static_cast<std::size_t>(k)});
         if (ft.mAscii)
             for (std::int64_t i = 0; i < n * k; ++i)
-                store_int(data, i, next_int() - 1);
+                store_int(data, i, detail::zero_based(next_int()));
         else
             bulk_read_ints(in, static_cast<std::size_t>(n), static_cast<std::size_t>(k), nullptr,
                            data, ft.mIntSize, swap, -1);
+        validate_conn(data);
         mesh.AddCellBlock(surf[s].first, std::move(data));
     }
 
@@ -121633,7 +121694,7 @@ Mesh read_ugrid(const std::string& rPath) {
             for (std::int64_t i = 0; i < n; ++i) {
                 std::int64_t row[8];
                 for (int j = 0; j < k; ++j)
-                    row[j] = next_int() - 1;
+                    row[j] = detail::zero_based(next_int());
                 for (int j = 0; j < k; ++j)
                     store_int(data, i * k + j, row[perm ? perm[j] : j]);
             }
@@ -121641,6 +121702,7 @@ Mesh read_ugrid(const std::string& rPath) {
             bulk_read_ints(in, static_cast<std::size_t>(n), static_cast<std::size_t>(k), perm, data,
                            ft.mIntSize, swap, -1);
         }
+        validate_conn(data);
         mesh.AddCellBlock(kVolume[vi].mType, std::move(data));
         // Volume elements carry zero ref tags.
         NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});

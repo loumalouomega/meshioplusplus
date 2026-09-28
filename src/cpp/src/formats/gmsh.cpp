@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -634,10 +635,24 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
                                 s + "'");
         }
     }
-    std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
-    std::vector<std::int64_t> itags(num_int);
+    const std::int64_t num_int = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
+    // The step index, component count and entity count below need at least
+    // three; a file that gives fewer is corrupt, not merely light on tags.
+    if (num_int < 3)
+        throw ReadError("Gmsh: " + rTag + " needs at least 3 integer tags (step, components, " +
+                        "entities), got " + std::to_string(num_int));
+    std::vector<std::int64_t> itags(static_cast<std::size_t>(num_int));
     for (std::int64_t i = 0; i < num_int; ++i)
-        itags[i] = std::stoll(gmsh_trim(rCur.read_line()));
+        itags[static_cast<std::size_t>(i)] = std::stoll(gmsh_trim(rCur.read_line()));
+    if (itags[1] < 0 || itags[2] < 0)
+        throw ReadError("Gmsh: " + rTag + " holds a negative component or entity count");
+    if (itags[1] != 0 && itags[2] > std::numeric_limits<std::int64_t>::max() / itags[1])
+        throw ReadError("Gmsh: " + rTag + "'s entity count overflows");
+    // Every value below takes at least a byte of what is left of the file
+    // (ascii) or of the section (binary); a bigger product is corruption, not
+    // an allocation size -- the same rule `count()` applies to the counts
+    // above it in this same section.
+    rCur.count(itags[1] * itags[2]);
     std::size_t ncomp = static_cast<std::size_t>(itags[1]);
     std::size_t nitems = static_cast<std::size_t>(itags[2]);
 
