@@ -2579,3 +2579,228 @@ def test_write_shim_falls_back_for_misc_data(tmp_path):
     meshioplusplus.mdpa.write(out, mesh)
     # Only the reference writer reproduces the SubModelPart from `misc_data`.
     assert "Begin SubModelPart Parts_Parts_Auto1" in out.read_text()
+
+
+# --- The MdpaInfo side channel (v16.26.0) ------------------------------------
+#
+# `_core.mdpa_read_info` / `mdpa_write_info` carry what the C++ `Mesh` cannot
+# hold -- the same content the reference reader keeps in `misc_data` and
+# `field_data`, in the core's own (MdpaInfo) shape. These pin that the two
+# readers agree on it for every shipped fixture, and that each side reads what
+# the other writes.
+
+_MDPA_DIR = pathlib.Path(__file__).resolve().parent
+_MDPA_FIXTURES = sorted(
+    [*(_MDPA_DIR / "input" / "mdpa").glob("*.mdpa")],
+    key=lambda p: p.name,
+) + sorted((_MDPA_DIR / "meshes" / "mdpa").glob("*.mdpa"), key=lambda p: p.name)
+
+
+def _assert_same_cells_any_blocking(a, b):
+    """Same points and the same (type, row) sequence, however split into blocks.
+
+    The core starts a block wherever the Kratos entity name changes; the
+    reference only where the cell type does.
+    """
+    np.testing.assert_allclose(a.points, b.points[:, : a.points.shape[1]], atol=1e-14)
+
+    def rows(mesh):
+        return [
+            (blk.type, tuple(row)) for blk in mesh.cells for row in np.asarray(blk.data)
+        ]
+
+    assert rows(a) == rows(b)
+
+
+def _info_value(entry):
+    return entry["text"] if entry["text"] is not None else entry["values"]
+
+
+def _py_scalar(value):
+    """The reference's value spelling (int when integral) for a comparison."""
+    if isinstance(value, np.ndarray):
+        value = float(value.reshape(-1)[0])
+    return value
+
+
+def _assert_side_channel_matches_reference(py_mesh, info):
+    field_data = py_mesh.field_data or {}
+    misc = py_mesh.misc_data or {}
+    # Text ModelPartData: a str in the reference's field_data.
+    py_text = {k: v for k, v in field_data.items() if isinstance(v, str)}
+    assert {e["key"]: e["text"] for e in info["model_part_data"]} == py_text
+    # Top-level tables: "table_<id>" dicts (a Properties-inline one is not top level).
+    py_tables = {
+        k: v
+        for k, v in field_data.items()
+        if k.startswith("table_") and isinstance(v, dict)
+    }
+    assert len(info["tables"]) == len(py_tables)
+    for table in info["tables"]:
+        words = table["key"].split()
+        ref = py_tables[f"table_{words[0]}"]
+        assert words[1:] == list(ref["variables"])
+        np.testing.assert_allclose(table["values"], np.asarray(ref["data"]))
+    # Geometries: the same rows and ids in file order (the reference groups by
+    # cell type, the core by Kratos name, so compare the concatenation).
+    geos = py_mesh.geometries_block or []
+    assert sum(len(g["ids"]) for g in info["geometries"]) == sum(
+        len(b.data) for b in geos
+    )
+    if geos:
+        by_type = {}
+        for g in info["geometries"]:
+            by_type.setdefault(g["type"], []).append(np.asarray(g["conn"]))
+        for block in geos:
+            np.testing.assert_array_equal(
+                np.concatenate(by_type[block.type]), block.data
+            )
+        py_ids = [oid for oid, _, _ in misc.get("mdpa_geometry_ids_info", [])]
+        assert [i for g in info["geometries"] for i in g["ids"]] == py_ids
+    # Mesh blocks.
+    py_meshes = misc.get("meshes", {})
+    assert [mb["id"] for mb in info["mesh_blocks"]] == list(py_meshes)
+    for mb in info["mesh_blocks"]:
+        ref = py_meshes[mb["id"]]
+        np.testing.assert_array_equal(mb["nodes"], np.asarray(ref["nodes"], dtype=int))
+        assert list(mb["element_ids"]) == list(ref.get("elements_raw_ids", []))
+        assert list(mb["condition_ids"]) == list(ref.get("conditions_raw_ids", []))
+        assert {e["key"]: _py_scalar(_info_value(e)) for e in mb["data"]} == {
+            k: v for k, v in ref["mesh_data"].items()
+        }
+    # Sub-model-part data and tables (only parts that have any).
+    py_smps = {
+        name: smp
+        for name, smp in misc.get("submodelpart_info", {}).items()
+        if smp["data"] or smp["tables"]
+    }
+    assert {s["name"] for s in info["submodelparts"]} == set(py_smps)
+    for smp in info["submodelparts"]:
+        ref = py_smps[smp["name"]]
+        assert list(smp["tables"]) == list(ref["tables"])
+        assert {e["key"]: _py_scalar(_info_value(e)) for e in smp["data"]} == ref[
+            "data"
+        ]
+    # Raw blocks.
+    assert [(r["header"], r["body"], r["end"]) for r in info["raw_blocks"]] == [
+        (r["header"], r["body"], r["end"]) for r in misc.get("raw_blocks", [])
+    ]
+
+
+@pytest.mark.parametrize("path", _MDPA_FIXTURES, ids=lambda p: p.name)
+def test_core_side_channel_matches_the_reference(path):
+    py_mesh = _mdpa_py_read(str(path))
+    cpp_mesh, info = _core.mdpa_read_info(str(path))
+    _assert_same_cells_any_blocking(py_mesh, cpp_mesh)
+    assert info["skipped"] == []
+    _assert_side_channel_matches_reference(py_mesh, info)
+
+
+@pytest.mark.parametrize("path", _MDPA_FIXTURES, ids=lambda p: p.name)
+def test_core_side_channel_round_trips(path, tmp_path):
+    """C++ write -> both readers; the side channel is a fixed point."""
+    cpp_mesh, info = _core.mdpa_read_info(str(path))
+    out = tmp_path / "out.mdpa"
+    _core.mdpa_write_info(str(out), cpp_mesh, info)
+    back, info2 = _core.mdpa_read_info(str(out))
+    _assert_same_geometry(cpp_mesh, back)
+    for key in ("model_part_data", "tables", "geometries", "mesh_blocks", "raw_blocks"):
+        assert len(info2[key]) == len(info[key]), key
+    # ... and the reference reads the C++ output into the same misc_data.
+    _assert_side_channel_matches_reference(_mdpa_py_read(str(out)), info2)
+    # A second write is byte-identical: nothing drifts across round trips.
+    out2 = tmp_path / "out2.mdpa"
+    _core.mdpa_write_info(str(out2), back, info2)
+    assert out2.read_bytes() == out.read_bytes()
+
+
+_MDPA_CONSTRAINTS_DECK = """Begin ModelPartData
+    SOLVER_TYPE static
+End ModelPartData
+
+Begin Properties 0
+End Properties
+
+Begin Nodes
+ 1 0.0 0.0 0.0
+ 2 1.0 0.0 0.0
+ 3 0.0 1.0 0.0
+End Nodes
+
+Begin Elements Element2D3N
+  1 0 1 2 3
+End Elements
+
+Begin Constraints LinearMasterSlaveConstraint
+    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0 // weight, constant
+End Constraints
+"""
+
+
+def test_constraints_round_trip_on_both_sides(tmp_path):
+    """`Begin Constraints` is kept verbatim by the reference and by the core."""
+    p = tmp_path / "c.mdpa"
+    p.write_text(_MDPA_CONSTRAINTS_DECK)
+    body = "    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0 // weight, constant\n"
+
+    py_mesh = meshioplusplus.mdpa.read(p)
+    assert py_mesh.misc_data["raw_blocks"] == [
+        {
+            "header": "Begin Constraints LinearMasterSlaveConstraint",
+            "body": body,
+            "end": "End Constraints",
+        }
+    ]
+    py_out = tmp_path / "py.mdpa"
+    meshioplusplus.mdpa.write(py_out, py_mesh)
+    assert body in py_out.read_text()
+
+    # The core reads the reference's output, and the reference the core's.
+    _, info = _core.mdpa_read_info(str(py_out))
+    assert info["raw_blocks"][0]["body"] == body
+    cpp_mesh, info = _core.mdpa_read_info(str(p))
+    cpp_out = tmp_path / "cpp.mdpa"
+    _core.mdpa_write_info(str(cpp_out), cpp_mesh, info)
+    assert _mdpa_py_read(str(cpp_out)).misc_data["raw_blocks"][0]["body"] == body
+
+    # Without an info the core still refuses it by name, or skips it leniently.
+    with pytest.raises(meshioplusplus.ReadError, match="MdpaInfo"):
+        _core.mdpa_read(str(p))
+    _, lenient_info = _core.mdpa_read_info(str(p), lenient=True)
+    assert lenient_info["skipped"] == []  # the info path keeps it instead
+
+
+def test_reference_geometries_keep_the_kratos_node_order(tmp_path):
+    """A hexahedron20 geometry is permuted back to Kratos order on write.
+
+    The reader always applied the Kratos -> meshio++ permutation (through
+    `_prepare_cells`); the writer did not undo it, so a round trip scrambled
+    every quadratic hexahedron geometry.
+    """
+    text = ELEMENTS_PERMUTATIONS_FILE.read_text()
+    nodes = text[text.index("Begin Nodes") : text.index("End Nodes") + len("End Nodes")]
+    rows = [
+        ln.split()
+        for ln in text[text.index("Begin Elements") :].splitlines()
+        if ln.strip() and ln.split()[0].isdigit()
+    ]
+    hex20 = next(r for r in rows if len(r) == 22)
+    p = tmp_path / "geo.mdpa"
+    p.write_text(
+        nodes
+        + "\nBegin Geometries Hexahedra3D20\n"
+        + " ".join([hex20[0], *hex20[2:]])
+        + "\nEnd Geometries\n"
+    )
+    first = _mdpa_py_read(str(p))
+    out = tmp_path / "geo_out.mdpa"
+    _mdpa_py_write(str(out), first)
+    geo_line = (
+        out.read_text().split("Begin Geometries Hexahedra3D20\n")[1].splitlines()[0]
+    )
+    assert geo_line.split()[1:] == hex20[2:]
+    # ... and the core agrees on the meshio++ order it reads.
+    _, info = _core.mdpa_read_info(str(p))
+    np.testing.assert_array_equal(
+        info["geometries"][0]["conn"], first.geometries_block[0].data
+    )

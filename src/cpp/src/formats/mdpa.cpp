@@ -119,7 +119,23 @@ CellType mdpa_entity_cell_type(const std::string& rName) {
     // kratos_names.hpp owns both the tables and the exact-then-longest-suffix
     // rule, so this and ModelPart::CreateNewElement cannot disagree about which
     // names a deck may use.
-    return cell_type_from_kratos_name_or_suffix(rName);
+    const CellType t = cell_type_from_kratos_name_or_suffix(rName);
+    if (t != CellType::Custom || rName.size() < 3)
+        return t;
+    // Then the Python reference's last resort: the longest Kratos name found
+    // anywhere inside it (`Triangle2D3N` -> `Triangle2D3`). Plain meshio names
+    // (`quad`, `line`) are not Kratos names and never match here; a wrong
+    // guess still fails the per-row node-count check.
+    for (std::size_t len = rName.size() - 1; len >= 2; --len)
+        for (std::size_t i = 0; i + len <= rName.size(); ++i) {
+            const std::string sub = rName.substr(i, len);
+            if (cell_type_from_name(sub) != CellType::Custom)
+                continue;
+            const CellType s = cell_type_from_kratos_name(sub);
+            if (s != CellType::Custom)
+                return s;
+        }
+    return CellType::Custom;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +177,14 @@ struct MdpaCursor {
     std::string_view Next() { return (*mpLines)[mIndex++]; }
 };
 
+/// The refusal's tail when the caller could have kept the construct in an MdpaInfo.
+constexpr const char* kMdpaNeedsInfo =
+    " needs an MdpaInfo to be kept (read_mdpa(path, info), or mio_read_with_info on the flat "
+    "ABI); set ReadOptions::mLenient to skip it instead";
+/// The refusal's tail for what not even an MdpaInfo holds.
+constexpr const char* kMdpaUnsupported =
+    " is not supported by the C++ reader (set ReadOptions::mLenient to skip it instead)";
+
 /// Consume the rest of a block, ignoring blank/comment-only lines.
 void mdpa_consume_block(MdpaCursor& rCur, const std::string& rEnd) {
     while (!rCur.Done())
@@ -181,9 +205,7 @@ void mdpa_consume_block(MdpaCursor& rCur, const std::string& rEnd) {
 void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
                          bool Lenient, MdpaInfo* pInfo) {
     if (!Lenient)
-        throw ReadError("MDPA: " + rWhat +
-                        " is not supported by the C++ reader (set ReadOptions::mLenient to skip "
-                        "it instead)");
+        throw ReadError("MDPA: " + rWhat + (pInfo ? kMdpaUnsupported : kMdpaNeedsInfo));
     log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
     if (pInfo)
         pInfo->mSkippedConstructs.push_back(rWhat);
@@ -200,9 +222,8 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
         if (line == rEnd)
             return;
         if (!Lenient)
-            throw ReadError("MDPA: " + rWhat +
-                            " is not supported by the C++ reader (offending line: '" +
-                            std::string(line) + "'; set ReadOptions::mLenient to skip it instead)");
+            throw ReadError("MDPA: " + rWhat + " (offending line: '" + std::string(line) + "')" +
+                            (pInfo ? kMdpaUnsupported : kMdpaNeedsInfo));
         log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
         if (pInfo)
             pInfo->mSkippedConstructs.push_back(rWhat);
@@ -210,6 +231,30 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
         return;
     }
     throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief One `KEY value` line: a number becomes a Float64 `{1}`, anything else text.
+ *
+ * Key plus the rest of the line, the Python reference's `split(None, 1)`, so
+ * both readers agree on where the value starts. False for a valueless line.
+ */
+bool mdpa_parse_kv_line(std::string_view Line, PropertyValue& rOut) {
+    const std::size_t sep = Line.find_first_of(" \t");
+    if (sep == std::string_view::npos)
+        return false;
+    rOut = PropertyValue{};
+    rOut.mKey = Line.substr(0, sep);
+    const std::string_view rest = mdpa_strip(Line.substr(sep + 1));
+    double scalar = 0.0;
+    if (mdpa_parse_double(rest, scalar)) {
+        NDArray a(DType::Float64, {1});
+        a.As<double>()[0] = scalar;
+        rOut.mValues = std::move(a);
+    } else {
+        rOut.mText = rest;
+    }
+    return true;
 }
 
 /**
@@ -301,27 +346,56 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, std::string_view rHeader) {
             out.mValues.push_back(mdpa_parse_property_table(rCur, line));
             continue;
         }
-        // key + the rest of the line, exactly the Python reference's
-        // `split(None, 1)`, so both readers agree on where the value starts.
-        const std::size_t sep = line.find_first_of(" \t");
-        if (sep == std::string::npos) {
+        PropertyValue v;
+        if (!mdpa_parse_kv_line(line, v)) {
             log::warn("mdpa: skipping valueless Properties line: {}", line);
             continue;
-        }
-        PropertyValue v;
-        v.mKey = line.substr(0, sep);
-        const std::string_view rest = mdpa_strip(line.substr(sep + 1));
-        double scalar = 0.0;
-        if (mdpa_parse_double(rest, scalar)) {
-            NDArray a(DType::Float64, {1});
-            a.As<double>()[0] = scalar;
-            v.mValues = std::move(a);
-        } else {
-            v.mText = rest;
         }
         out.mValues.push_back(std::move(v));
     }
     return out;
+}
+
+/// A `KEY value` block body (`SubModelPartData`, `MeshData`) up to @p rEnd.
+std::vector<PropertyValue> mdpa_parse_kv_block(MdpaCursor& rCur, const std::string& rEnd) {
+    std::vector<PropertyValue> out;
+    while (!rCur.Done()) {
+        const std::string_view line = mdpa_clean(rCur.Next());
+        if (line.empty())
+            continue;
+        if (line == rEnd)
+            return out;
+        PropertyValue v;
+        if (!mdpa_parse_kv_line(line, v)) {
+            log::warn("mdpa: skipping valueless line in {} block: {}", rEnd.substr(4), line);
+            continue;
+        }
+        out.push_back(std::move(v));
+    }
+    throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief Keep a block verbatim: its header, its body lines and its terminator.
+ *
+ * The body is the file's own text (a trailing `\r` aside), so the block writes
+ * back exactly as it was read; only the terminator is matched comment-free.
+ */
+MdpaRawBlock mdpa_capture_raw_block(MdpaCursor& rCur, std::string_view Header,
+                                    const std::string& rEnd) {
+    MdpaRawBlock out;
+    out.mHeader = Header;
+    out.mEnd = rEnd;
+    while (!rCur.Done()) {
+        std::string_view raw = rCur.Next();
+        if (mdpa_clean(raw) == rEnd)
+            return out;
+        if (!raw.empty() && raw.back() == '\r')
+            raw.remove_suffix(1);
+        out.mBody.append(raw.data(), raw.size());
+        out.mBody += '\n';
+    }
+    throw ReadError("MDPA: EOF before '" + rEnd + "'");
 }
 
 /**
@@ -527,6 +601,28 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::map<std::string, StagedSmp> smps;
     std::vector<std::string> smp_stack;
 
+    // Side-channel content, staged only when there is an MdpaInfo to receive
+    // it. Geometry and Mesh-block node references stay raw file ids until the
+    // materialize pass, for the same reason MdpaBlock::mConn does.
+    struct StagedGeometry {
+        std::string mName;
+        CellType mType = CellType::Custom;
+        std::size_t mNodes = 0;
+        std::vector<std::int64_t> mConn;  // raw file node ids, meshio order
+        std::vector<std::int64_t> mIds;
+    };
+    std::vector<StagedGeometry> geometries;
+    std::vector<std::vector<std::int64_t>> mesh_block_nodes;      // raw ids, per MdpaMeshBlock
+    std::unordered_map<std::string, std::size_t> smp_info_index;  // name -> mSubModelParts slot
+    auto smp_info = [&](const std::string& rName) -> MdpaSubModelPart& {
+        const auto it = smp_info_index.find(rName);
+        if (it != smp_info_index.end())
+            return pInfo->mSubModelParts[it->second];
+        smp_info_index.emplace(rName, pInfo->mSubModelParts.size());
+        pInfo->mSubModelParts.push_back(MdpaSubModelPart{rName, {}, {}});
+        return pInfo->mSubModelParts.back();
+    };
+
     auto smp_name = [&]() -> std::string {
         std::string out;
         for (std::size_t i = 0; i < smp_stack.size(); ++i) {
@@ -585,27 +681,26 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     continue;
                 if (e == "End ModelPartData")
                     break;
-                const std::vector<std::string_view> t = mdpa_tokens(e);
-                if (t.size() < 2) {
+                PropertyValue v;
+                if (!mdpa_parse_kv_line(e, v)) {
                     log::warn("mdpa: skipping malformed ModelPartData line: {}", e);
                     continue;
                 }
-                double v = 0.0;
-                if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
+                if (v.IsText()) {
+                    // NDArray has no string dtype: the value goes to the side
+                    // channel, or -- without one -- is refused by name.
+                    if (pInfo) {
+                        pInfo->mModelPartData.push_back(std::move(v));
+                        continue;
+                    }
                     const std::string what =
-                        "a non-numeric ModelPartData value for '" + std::string(t[0]) + "'";
+                        "a non-numeric ModelPartData value for '" + v.mKey + "'";
                     if (!Lenient)
-                        throw ReadError("MDPA: " + what +
-                                        " is not supported by the C++ reader (set "
-                                        "ReadOptions::mLenient to skip it instead)");
+                        throw ReadError("MDPA: " + what + kMdpaNeedsInfo);
                     log::warn("mdpa: skipping {} (ReadOptions::mLenient)", what);
-                    if (pInfo)
-                        pInfo->mSkippedConstructs.push_back(what);
                     continue;
                 }
-                NDArray a(DType::Float64, {1});
-                a.As<double>()[0] = v;
-                field_data[std::string(t[0])] = std::move(a);
+                field_data[v.mKey] = std::move(v.mValues);
             }
         } else if (line == "Begin Nodes") {
             if (num_points)
@@ -820,11 +915,29 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             sd.mComponents = nc;
             cell_data.push_back(std::move(sd));
         } else if (mdpa_starts_with(line, "Begin SubModelPartData")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartData",
-                                    "a non-empty SubModelPartData block", Lenient, pInfo);
+            if (pInfo && !smp_stack.empty()) {
+                std::vector<PropertyValue> data = mdpa_parse_kv_block(cur, "End SubModelPartData");
+                if (!data.empty()) {
+                    MdpaSubModelPart& r_smp = smp_info(smp_name());
+                    for (PropertyValue& r_v : data)
+                        r_smp.mData.push_back(std::move(r_v));
+                }
+            } else {
+                mdpa_expect_empty_block(cur, "End SubModelPartData",
+                                        "a non-empty SubModelPartData block", Lenient, pInfo);
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartTables")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartTables",
-                                    "a non-empty SubModelPartTables block", Lenient, pInfo);
+            if (pInfo && !smp_stack.empty()) {
+                std::vector<std::int64_t> ids;
+                read_id_list("End SubModelPartTables", ids);
+                if (!ids.empty()) {
+                    MdpaSubModelPart& r_smp = smp_info(smp_name());
+                    r_smp.mTables.insert(r_smp.mTables.end(), ids.begin(), ids.end());
+                }
+            } else {
+                mdpa_expect_empty_block(cur, "End SubModelPartTables",
+                                        "a non-empty SubModelPartTables block", Lenient, pInfo);
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries")) {
             mdpa_expect_empty_block(cur, "End SubModelPartGeometries",
                                     "a non-empty SubModelPartGeometries block", Lenient, pInfo);
@@ -874,21 +987,127 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 throw ReadError("MDPA: 'End SubModelPart' without a matching 'Begin'");
             smp_stack.pop_back();
         } else if (mdpa_starts_with(line, "Begin Table")) {
-            mdpa_reject_or_skip(cur, "End Table", "a top-level Table block", Lenient, pInfo);
+            if (pInfo)
+                pInfo->mTables.push_back(mdpa_parse_property_table(cur, line));
+            else
+                mdpa_reject_or_skip(cur, "End Table", "a top-level Table block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin Geometries")) {
-            mdpa_reject_or_skip(cur, "End Geometries", "a Geometries block", Lenient, pInfo);
+            if (!pInfo) {
+                mdpa_reject_or_skip(cur, "End Geometries", "a Geometries block", Lenient, pInfo);
+                continue;
+            }
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string name = head.size() >= 3 ? std::string(head[2]) : std::string();
+            const CellType type = mdpa_entity_cell_type(name);
+            if (type == CellType::Custom)
+                throw ReadError("MDPA: unknown Kratos geometry name '" + name + "'");
+            const int nn = cell_type_num_nodes(type);
+            if (nn <= 0)
+                throw ReadError("MDPA: geometry '" + name +
+                                "' maps to a variable-node-count cell type");
+            const std::vector<int>& order = mdpa_kratos_node_order(type);
+            if (geometries.empty() || geometries.back().mName != name) {
+                StagedGeometry g;
+                g.mName = name;
+                g.mType = type;
+                g.mNodes = static_cast<std::size_t>(nn);
+                geometries.push_back(std::move(g));
+            }
+            StagedGeometry& r_geo = geometries.back();
+            bool terminated = false;
+            std::vector<std::string_view> t;
+            while (!cur.Done()) {
+                const std::string_view e = mdpa_clean(cur.Next());
+                if (e.empty())
+                    continue;
+                if (e == "End Geometries") {
+                    terminated = true;
+                    break;
+                }
+                detail::split_blanks(e, t);
+                if (static_cast<int>(t.size()) != nn + 1)
+                    throw ReadError("MDPA: " + name + " row with " +
+                                    std::to_string(t.empty() ? 0 : t.size() - 1) +
+                                    " nodes (expected " + std::to_string(nn) +
+                                    "): " + std::string(e));
+                std::int64_t id = 0;
+                if (!mdpa_parse_int(t[0], id))
+                    throw ReadError("MDPA: non-integer geometry id in: " + std::string(e));
+                const std::size_t base = r_geo.mConn.size();
+                r_geo.mConn.resize(base + static_cast<std::size_t>(nn));
+                for (int j = 0; j < nn; ++j) {
+                    std::int64_t node = 0;
+                    if (!mdpa_parse_int(t[static_cast<std::size_t>(j) + 1], node))
+                        throw ReadError("MDPA: non-integer node id in: " + std::string(e));
+                    const std::size_t slot =
+                        order.empty()
+                            ? static_cast<std::size_t>(j)
+                            : static_cast<std::size_t>(order[static_cast<std::size_t>(j)]);
+                    r_geo.mConn[base + slot] = node;
+                }
+                r_geo.mIds.push_back(id);
+            }
+            if (!terminated)
+                throw ReadError("MDPA: EOF before 'End Geometries'");
         } else if (mdpa_starts_with(line, "Begin Mesh")) {
-            mdpa_reject_or_skip(cur, "End Mesh", "a Mesh block", Lenient, pInfo);
+            if (!pInfo) {
+                mdpa_reject_or_skip(cur, "End Mesh", "a Mesh block", Lenient, pInfo);
+                continue;
+            }
+            // Kratos reserves mesh 0 for the model part itself; the Python
+            // reference warns and skips such a header, and so does this.
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            std::int64_t mesh_id = 0;
+            if (head.size() < 3 || !mdpa_parse_int(head[2], mesh_id) || mesh_id == 0) {
+                log::warn("mdpa: skipping Mesh block with a missing, non-integer or 0 id: {}",
+                          line);
+                mdpa_consume_block(cur, "End Mesh");
+                continue;
+            }
+            MdpaMeshBlock mb;
+            mb.mId = mesh_id;
+            std::vector<std::int64_t> nodes;
+            bool terminated = false;
+            while (!cur.Done()) {
+                const std::string_view e = mdpa_clean(cur.Next());
+                if (e.empty())
+                    continue;
+                if (e == "End Mesh") {
+                    terminated = true;
+                    break;
+                }
+                if (mdpa_starts_with(e, "Begin MeshData")) {
+                    std::vector<PropertyValue> data = mdpa_parse_kv_block(cur, "End MeshData");
+                    for (PropertyValue& r_v : data)
+                        mb.mData.push_back(std::move(r_v));
+                } else if (mdpa_starts_with(e, "Begin MeshNodes")) {
+                    read_id_list("End MeshNodes", nodes);
+                } else if (mdpa_starts_with(e, "Begin MeshElements")) {
+                    read_id_list("End MeshElements", mb.mElementIds);
+                } else if (mdpa_starts_with(e, "Begin MeshConditions")) {
+                    read_id_list("End MeshConditions", mb.mConditionIds);
+                } else {
+                    log::warn("mdpa: skipping unknown line in Mesh {}: {}", mesh_id, e);
+                }
+            }
+            if (!terminated)
+                throw ReadError("MDPA: EOF before 'End Mesh'");
+            pInfo->mMeshBlocks.push_back(std::move(mb));
+            mesh_block_nodes.push_back(std::move(nodes));
         } else if (mdpa_starts_with(line, "Begin ")) {
             // Everything unrecognized, which is how `Begin Constraints` and any
             // block a future Kratos adds are covered without a case each. The
             // terminator is the header's first word after `Begin`, so a nested
-            // `End <other>` cannot end the scan early.
+            // `End <other>` cannot end the scan early. A top-level one is kept
+            // verbatim when there is an MdpaInfo to hold it.
             const std::vector<std::string_view> head = mdpa_tokens(line);
             const std::string end_token =
                 "End " + (head.size() >= 2 ? std::string(head[1]) : std::string());
-            mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'", Lenient,
-                                pInfo);
+            if (pInfo && smp_stack.empty())
+                pInfo->mRawBlocks.push_back(mdpa_capture_raw_block(cur, line, end_token));
+            else
+                mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'",
+                                    Lenient, pInfo);
         } else {
             throw ReadError("MDPA: unexpected line outside a block: '" + std::string(line) + "'");
         }
@@ -1015,6 +1234,41 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    if (pInfo) {
+        for (const StagedGeometry& r_geo : geometries) {
+            MdpaGeometryBlock gb;
+            gb.mName = r_geo.mName;
+            gb.mType = cell_type_name(r_geo.mType);
+            gb.mConn = NDArray(DType::Int64, {r_geo.mIds.size(), r_geo.mNodes});
+            std::int64_t* gp = gb.mConn.As<std::int64_t>();
+            for (std::size_t i = 0; i < r_geo.mConn.size(); ++i) {
+                std::size_t row = 0;
+                if (!node_row(r_geo.mConn[i], row))
+                    throw ReadError("MDPA: geometry refers to node id " +
+                                    std::to_string(r_geo.mConn[i]) +
+                                    ", which the file's Nodes block does not define");
+                gp[i] = static_cast<std::int64_t>(row);
+            }
+            gb.mIds = r_geo.mIds;
+            pInfo->mGeometries.push_back(std::move(gb));
+        }
+        // Mesh-block nodes resolve like SubModelPart nodes: an id the file
+        // never defined is warned about and dropped (the Python reference's
+        // `_node_rows`).
+        for (std::size_t k = 0; k < mesh_block_nodes.size(); ++k) {
+            std::vector<std::int64_t>& r_rows = pInfo->mMeshBlocks[k].mNodes;
+            for (std::int64_t id : mesh_block_nodes[k]) {
+                std::size_t row = 0;
+                if (!node_row(id, row)) {
+                    log::warn("mdpa: Mesh {} references unknown node id {}",
+                              pInfo->mMeshBlocks[k].mId, id);
+                    continue;
+                }
+                r_rows.push_back(static_cast<std::int64_t>(row));
+            }
+        }
+    }
+
     // Properties last: they are keyed by id, so order relative to the cell
     // blocks and regions above does not matter.
     for (PropertySet& r_ps : property_sets)
@@ -1088,38 +1342,61 @@ bool mdpa_skip_cell_data(const std::string& rName) {
     return mdpa_starts_with(rName, "gmsh:");
 }
 
+/**
+ * @brief Emit one `Begin Table <mKey>` block at @p rIndent.
+ *
+ * `mKey` holds the header's arguments verbatim (id + variable names), so the
+ * block comes back out exactly as it went in.
+ */
+void mdpa_write_table(std::ostream& rOs, const PropertyValue& rTable, const char* pIndent) {
+    rOs << pIndent << "Begin Table " << rTable.mKey << "\n";
+    const std::size_t ncols = rTable.mValues.Shape().size() >= 2 ? rTable.mValues.Shape()[1] : 1;
+    const std::size_t nrows = ncols ? rTable.mValues.Size() / ncols : 0;
+    for (std::size_t r = 0; r < nrows; ++r) {
+        rOs << pIndent << "  ";
+        for (std::size_t c = 0; c < ncols; ++c)
+            rOs << " " << mdpa_format_value(rTable.mValues, r * ncols + c);
+        rOs << "\n";
+    }
+    rOs << pIndent << "End Table\n";
+}
+
+/// Emit one `KEY value` line of a Properties/ModelPartData/*Data body.
+void mdpa_write_kv(std::ostream& rOs, const PropertyValue& rValue, const char* pIndent) {
+    rOs << pIndent << rValue.mKey << " ";
+    if (rValue.IsText()) {
+        rOs << rValue.mText;
+    } else {
+        for (std::size_t i = 0; i < rValue.mValues.Size(); ++i) {
+            if (i)
+                rOs << " ";
+            rOs << mdpa_format_value(rValue.mValues, i);
+        }
+    }
+    rOs << "\n";
+}
+
 /// Emit one `Begin Properties <id>` block, bodies included.
 void mdpa_write_properties(std::ostream& rOs, const PropertySet& rSet) {
     rOs << "Begin Properties " << rSet.mId << "\n";
     for (const PropertyValue& v : rSet.mValues) {
-        if (v.mIsTable) {
-            // mKey holds the header's arguments verbatim (id + variable names),
-            // so the block comes back out exactly as it went in.
-            rOs << "  Begin Table " << v.mKey << "\n";
-            const std::size_t ncols = v.mValues.Shape().size() >= 2 ? v.mValues.Shape()[1] : 1;
-            const std::size_t nrows = ncols ? v.mValues.Size() / ncols : 0;
-            for (std::size_t r = 0; r < nrows; ++r) {
-                rOs << "   ";
-                for (std::size_t c = 0; c < ncols; ++c)
-                    rOs << " " << mdpa_format_value(v.mValues, r * ncols + c);
-                rOs << "\n";
-            }
-            rOs << "  End Table\n";
-            continue;
-        }
-        rOs << "  " << v.mKey << " ";
-        if (v.IsText()) {
-            rOs << v.mText;
-        } else {
-            for (std::size_t i = 0; i < v.mValues.Size(); ++i) {
-                if (i)
-                    rOs << " ";
-                rOs << mdpa_format_value(v.mValues, i);
-            }
-        }
-        rOs << "\n";
+        if (v.mIsTable)
+            mdpa_write_table(rOs, v, "  ");
+        else
+            mdpa_write_kv(rOs, v, "  ");
     }
     rOs << "End Properties\n\n";
+}
+
+/// Emit an id list sub-block (`SubModelPartNodes`, `MeshElements`, ...), if non-empty.
+void mdpa_write_id_list(std::ostream& rOs, const char* pTag,
+                        const std::vector<std::int64_t>& rIds) {
+    if (rIds.empty())
+        return;
+    rOs << "    Begin " << pTag << "\n";
+    for (std::int64_t id : rIds)
+        rOs << "        " << id << "\n";
+    rOs << "    End " << pTag << "\n";
 }
 
 }  // namespace
@@ -1217,6 +1494,16 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         }
         os << "    " << name << " " << mdpa_format_value(a, 0) << "\n";
     }
+    for (const PropertyValue& r_v : rInfo.mModelPartData) {
+        if (rMesh.HasFieldData(r_v.mKey)) {
+            log::warn(
+                "mdpa: ModelPartData '{}' is both field_data and MdpaInfo text; the "
+                "field_data value is written",
+                r_v.mKey);
+            continue;
+        }
+        mdpa_write_kv(os, r_v, "    ");
+    }
     os << "End ModelPartData\n\n";
 
     // ---- Properties -------------------------------------------------------
@@ -1260,6 +1547,12 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             referenced_ids.insert(0);
         for (std::int64_t id : referenced_ids)
             os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    }
+
+    // ---- Tables -----------------------------------------------------------
+    for (const PropertyValue& r_table : rInfo.mTables) {
+        mdpa_write_table(os, r_table, "");
+        os << "\n";
     }
 
     // ---- Nodes ------------------------------------------------------------
@@ -1327,8 +1620,41 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         os << "End " << kind << "\n\n";
     }
 
-    // ---- NodalData --------------------------------------------------------
+    // ---- Geometries -------------------------------------------------------
     const std::size_t np = rMesh.NumPoints();
+    std::int64_t next_geometry = 1;
+    for (const MdpaGeometryBlock& r_geo : rInfo.mGeometries) {
+        const CellType type = cell_type_from_name(r_geo.mType);
+        if (type == CellType::Custom)
+            throw WriteError("MDPA: geometry block of unknown cell type '" + r_geo.mType + "'");
+        const std::size_t k = r_geo.mConn.Shape().size() == 2 ? r_geo.mConn.Shape()[1] : 0;
+        if (static_cast<int>(k) != cell_type_num_nodes(type))
+            throw WriteError("MDPA: geometry block '" + r_geo.mType + "' has " + std::to_string(k) +
+                             " nodes per row");
+        const std::size_t rows = r_geo.mConn.Size() / k;
+        const bool keep_ids = r_geo.mIds.size() == rows;
+        if (!keep_ids && !r_geo.mIds.empty())
+            log::warn("mdpa: geometry block '{}' has {} ids for {} rows; renumbering", r_geo.mType,
+                      r_geo.mIds.size(), rows);
+        const std::vector<int>& order = mdpa_kratos_node_order(type);
+        os << "Begin Geometries "
+           << (r_geo.mName.empty() ? kratos_geometry_name(type) : r_geo.mName) << "\n";
+        for (std::size_t r = 0; r < rows; ++r) {
+            os << "  " << (keep_ids ? r_geo.mIds[r] : next_geometry++);
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                const std::int64_t row = detail::read_int(r_geo.mConn, r * k + slot);
+                if (row < 0 || static_cast<std::size_t>(row) >= np)
+                    throw WriteError("MDPA: geometry row names point " + std::to_string(row) +
+                                     " of a mesh with " + std::to_string(np) + " points");
+                os << " " << written_node_ids[static_cast<std::size_t>(row)];
+            }
+            os << "\n";
+        }
+        os << "End Geometries\n\n";
+    }
+
+    // ---- NodalData --------------------------------------------------------
     for (const auto& name : rMesh.PointDataNames()) {
         if (mdpa_skip_point_data(name))
             continue;
@@ -1393,6 +1719,25 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     }
 
     // ---- SubModelParts from named regions ---------------------------------
+    // The info's data/tables go inside the part of the same name; a part with
+    // data but no region left (an operation may have dropped it) is still
+    // written, so the data is not lost.
+    std::unordered_map<std::string, const MdpaSubModelPart*> smp_extras;
+    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts)
+        smp_extras.emplace(r_smp.mName, &r_smp);
+    auto write_smp_extras = [&](const std::string& rName) {
+        const auto it = smp_extras.find(rName);
+        if (it == smp_extras.end())
+            return;
+        if (!it->second->mData.empty()) {
+            os << "    Begin SubModelPartData\n";
+            for (const PropertyValue& r_v : it->second->mData)
+                mdpa_write_kv(os, r_v, "        ");
+            os << "    End SubModelPartData\n";
+        }
+        mdpa_write_id_list(os, "SubModelPartTables", it->second->mTables);
+        smp_extras.erase(it);
+    };
     for (const auto& name : rMesh.RegionNames()) {
         std::vector<std::int64_t> nodes;
         std::vector<std::int64_t> elements, conditions;
@@ -1433,19 +1778,49 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         if (!any)
             continue;
         os << "Begin SubModelPart " << name << "\n";
-        auto emit = [&](const char* pTag, const std::vector<std::int64_t>& rIds) {
-            if (rIds.empty())
-                return;
-            os << "    Begin SubModelPart" << pTag << "\n";
-            for (std::int64_t id : rIds)
-                os << "        " << id << "\n";
-            os << "    End SubModelPart" << pTag << "\n";
-        };
-        emit("Nodes", nodes);
-        emit("Elements", elements);
-        emit("Conditions", conditions);
+        write_smp_extras(name);
+        mdpa_write_id_list(os, "SubModelPartNodes", nodes);
+        mdpa_write_id_list(os, "SubModelPartElements", elements);
+        mdpa_write_id_list(os, "SubModelPartConditions", conditions);
         os << "End SubModelPart\n\n";
     }
+    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts) {
+        if (!smp_extras.count(r_smp.mName))
+            continue;
+        os << "Begin SubModelPart " << r_smp.mName << "\n";
+        write_smp_extras(r_smp.mName);
+        os << "End SubModelPart\n\n";
+    }
+
+    // ---- Mesh blocks ------------------------------------------------------
+    // Nodes go through the written numbering; element and condition members
+    // are the file's own ids, written verbatim (the Python reference's rule).
+    for (const MdpaMeshBlock& r_mb : rInfo.mMeshBlocks) {
+        os << "Begin Mesh " << r_mb.mId << "\n";
+        if (!r_mb.mData.empty()) {
+            os << "    Begin MeshData\n";
+            for (const PropertyValue& r_v : r_mb.mData)
+                mdpa_write_kv(os, r_v, "        ");
+            os << "    End MeshData\n";
+        }
+        std::vector<std::int64_t> node_ids;
+        node_ids.reserve(r_mb.mNodes.size());
+        for (std::int64_t row : r_mb.mNodes) {
+            if (row < 0 || static_cast<std::size_t>(row) >= np)
+                throw WriteError("MDPA: Mesh " + std::to_string(r_mb.mId) + " names point " +
+                                 std::to_string(row) + " of a mesh with " + std::to_string(np) +
+                                 " points");
+            node_ids.push_back(written_node_ids[static_cast<std::size_t>(row)]);
+        }
+        mdpa_write_id_list(os, "MeshNodes", node_ids);
+        mdpa_write_id_list(os, "MeshElements", r_mb.mElementIds);
+        mdpa_write_id_list(os, "MeshConditions", r_mb.mConditionIds);
+        os << "End Mesh\n\n";
+    }
+
+    // ---- Raw blocks, verbatim ---------------------------------------------
+    for (const MdpaRawBlock& r_raw : rInfo.mRawBlocks)
+        os << r_raw.mHeader << "\n" << r_raw.mBody << r_raw.mEnd << "\n\n";
 }
 
 }  // namespace meshioplusplus

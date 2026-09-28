@@ -239,13 +239,36 @@ export interface MedInfo {
   fieldTimeValues: Record<string, number[]>;
 }
 
-/** MDPA's side channel: per-block entity names. Properties ride on `mesh.propertySets` instead (see {@link PropertySet}), not here. */
+/**
+ * MDPA's side channel: per-block entity names and every block the mesh cannot
+ * hold. Properties ride on `mesh.propertySets` instead (see {@link PropertySet}),
+ * not here. Point references (`geometries[].conn`, `meshBlocks[].nodes`) are
+ * 0-based point rows; entity and table ids are the file's own.
+ */
 export interface MdpaInfo {
   format: 'mdpa';
   /** One entry per cell block, mesh block order. */
   entityNames: Array<{ name: string; isCondition: boolean }>;
   /** Lenient-mode only: constructs this read could not represent, verbatim. */
   skippedConstructs: string[];
+  /** The non-numeric `ModelPartData` entries (`text` set); numeric ones are `fieldData`. */
+  modelPartData?: PropertyValue[];
+  /** Top-level `Begin Table` blocks: `key` holds the header arguments (`"1 TIME VALUE"`). */
+  tables?: PropertyValue[];
+  /** `Begin Geometries` runs: `conn` is flat row-major `(n, nodes per geometry)`. */
+  geometries?: Array<{ name: string; type: string; conn: Float64Array; ids: number[] }>;
+  /** `Begin Mesh <id>` blocks. */
+  meshBlocks?: Array<{
+    id: number;
+    data: PropertyValue[];
+    nodes: number[];
+    elementIds: number[];
+    conditionIds: number[];
+  }>;
+  /** `SubModelPartData`/`SubModelPartTables` content, by hierarchical part name. */
+  subModelParts?: Array<{ name: string; data: PropertyValue[]; tables: number[] }>;
+  /** Every other top-level block (`Constraints`, ...), kept verbatim. */
+  rawBlocks?: Array<{ header: string; body: string; end: string }>;
 }
 
 /**

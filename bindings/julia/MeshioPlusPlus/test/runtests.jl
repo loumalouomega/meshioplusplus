@@ -1380,4 +1380,57 @@ end
     close(gridm)
 end
 
+@testset "format side channel (mdpa)" begin
+    mktempdir() do dir
+        path = joinpath(dir, "side.mdpa")
+        Base.write(path, """
+        Begin ModelPartData
+            SOLVER_TYPE static
+        End ModelPartData
+        Begin Table 1 TIME VALUE
+            0.0 1.0
+            2.0 3.0
+        End Table
+        Begin Nodes
+        1 0 0 0
+        2 1 0 0
+        3 0 1 0
+        4 0 0 1
+        End Nodes
+        Begin Elements Element3D4N
+        1 0 1 2 3 4
+        End Elements
+        Begin Geometries Triangle3D3
+        7 2 3 4
+        End Geometries
+        Begin Constraints LinearMasterSlaveConstraint
+            1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0
+        End Constraints
+        """)
+        @test_throws MeshioError mio.read(path)
+        m, info = read_with_info(path)
+        @test info isa FormatInfo
+        @test format_name(info) == "mdpa"
+        d = mdpa_info(info)
+        @test d.model_part_data == ["SOLVER_TYPE" => "static"]
+        @test d.tables[1].header == "1 TIME VALUE"
+        @test d.tables[1].values == [0.0 1.0; 2.0 3.0]
+        @test d.geometries[1].name == "Triangle3D3"
+        @test d.geometries[1].connectivity == reshape([2, 3, 4], 3, 1)
+        @test d.geometries[1].ids == [7]
+        @test d.raw_blocks[1].terminator == "End Constraints"
+        out = joinpath(dir, "out.mdpa")
+        write_with_info(m, info, out)
+        m2, info2 = read_with_info(out)
+        @test mdpa_info(info2).raw_blocks == d.raw_blocks
+        @test_throws MeshioError write_with_info(m, info, joinpath(dir, "out.vtu"))
+        # A format with no side channel: nothing, and a plain read.
+        vtu = joinpath(dir, "plain.vtu")
+        mio.write(m, vtu)
+        _, none = read_with_info(vtu)
+        @test none === nothing
+        close(info); close(info); close(info2); close(m); close(m2)
+    end
+end
+
 end # testset

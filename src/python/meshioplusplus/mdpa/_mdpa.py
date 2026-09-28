@@ -50,13 +50,14 @@ reconstruct the MDPA file as closely as possible to the original. If
 `misc_data` is missing, the writer falls back to standard meshio data,
 generating sequential IDs and default block names.
 
+- `raw_blocks`: Every other top-level block (`Constraints`, and any block a
+  future Kratos adds), kept verbatim as `{"header", "body", "end"}` dicts and
+  written back unchanged after the `Mesh` blocks.
+
 Unsupported MDPA Blocks:
 ------------------------
-While this module aims to support a wide range of MDPA features, the following
-blocks defined in the MDPA specification are not currently read or written:
-- `Constraints`: This block is not processed.
-- `SubModelPartGeometries`: This block, which can appear within a
-  `Begin SubModelPart` ... `End SubModelPart` block, is not processed.
+`SubModelPartGeometries` and `SubModelPartConstraints`, which can appear within
+a `Begin SubModelPart` ... `End SubModelPart` block, are not processed.
 
 Limitations:
 ------------
@@ -1585,6 +1586,24 @@ def read_buffer(f):
                         f"Unknown sub-block or line in Mesh {mesh_id}: {stripped_line}"
                     )
             misc_data["meshes"][mesh_id] = current_mesh_content
+        elif environ.startswith("Begin ") and not active_submodelpart_stack:
+            # Any other top-level block (`Constraints`, or one a future Kratos
+            # adds): kept verbatim, so a round trip loses nothing. The C++
+            # core's MdpaRawBlock twin.
+            header = environ.split("//", 1)[0].strip()
+            words = header.split()
+            end_token = "End " + (words[1] if len(words) > 1 else "")
+            body = []
+            while True:
+                line = f.readline().decode()
+                if not line:
+                    raise ReadError(f"EOF before '{end_token}'")
+                if line.split("//", 1)[0].strip() == end_token:
+                    break
+                body.append(line.rstrip("\r\n") + "\n")
+            misc_data.setdefault("raw_blocks", []).append(
+                {"header": header, "body": "".join(body), "end": end_token}
+            )
 
     # Store reader's ID info for the writer to use later
     misc_data["reader_element_ids_info"] = mdpa_element_ids_info
@@ -2085,7 +2104,12 @@ def _write_geometries(
             continue
 
         fh.write(f"Begin Geometries {mdpa_type}\n".encode())
-        for ie, node_indices_for_cell in enumerate(cell_block.data):
+        # meshio++'s node order -> Kratos's, undoing what the reader applied
+        # through _prepare_cells (the elements' rule, see write()).
+        kratos_data = _node_order.from_meshio(
+            "mdpa", cell_block.type, np.asarray(cell_block.data).copy()
+        )
+        for ie, node_indices_for_cell in enumerate(kratos_data):
             geom_id = id_lookup.get((cell_block.type, ie))
             if geom_id is None:
                 # Fallback: Use a sequential counter if original ID not found
@@ -2654,3 +2678,6 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                         fh.write(f"        {orig_id}\n".encode())  # Level 3, 8 spaces
                     fh.write(b"    End MeshConditions\n")  # Level 2, 4 spaces
                 fh.write(b"End Mesh\n\n")  # Level 1, 0 spaces
+
+        for raw in misc_data.get("raw_blocks", []) if misc_data else []:
+            fh.write(f"{raw['header']}\n{raw['body']}{raw['end']}\n\n".encode())

@@ -72,6 +72,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <type_traits>
@@ -85,6 +86,7 @@
 #include <emscripten/val.h>
 
 // Project includes
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
@@ -284,6 +286,19 @@ val cell_maps_to_val(const std::vector<NDArray>& rMaps) {
     return out;
 }
 
+// One PropertyValue as `{key, values, text, isTable, components?}` -- the
+// shape `mesh.propertySets` and the MDPA side channel share (index.d.ts).
+val property_value_to_val(const meshioplusplus::PropertyValue& rValue) {
+    val jv = val::object();
+    jv.set("key", rValue.mKey);
+    jv.set("values", ndarray_to_float64_array(rValue.mValues));
+    jv.set("text", rValue.mText);
+    jv.set("isTable", rValue.mIsTable);
+    if (cols_of(rValue.mValues) > 1)
+        jv.set("components", static_cast<double>(cols_of(rValue.mValues)));
+    return jv;
+}
+
 /**
  * @brief Convert a C++ `Mesh` into a plain JS object of typed arrays.
  *
@@ -447,16 +462,8 @@ val mesh_to_val(const Mesh& rMesh) {
         val jps = val::object();
         jps.set("id", static_cast<double>(ps.mId));
         val values = val::array();
-        for (const meshioplusplus::PropertyValue& v : ps.mValues) {
-            val jv = val::object();
-            jv.set("key", v.mKey);
-            jv.set("values", ndarray_to_float64_array(v.mValues));
-            jv.set("text", v.mText);
-            jv.set("isTable", v.mIsTable);
-            if (cols_of(v.mValues) > 1)
-                jv.set("components", static_cast<double>(cols_of(v.mValues)));
-            values.call<void>("push", jv);
-        }
+        for (const meshioplusplus::PropertyValue& v : ps.mValues)
+            values.call<void>("push", property_value_to_val(v));
         jps.set("values", values);
         property_sets.call<void>("push", jps);
     }
@@ -560,6 +567,24 @@ std::vector<std::size_t> js_data_shape(std::size_t rLen, std::size_t k, const st
             "meshio++ (wasm): data array '" + rName + "' has length " + std::to_string(rLen) +
             ", which is not a multiple of its declared " + std::to_string(k) + " components");
     return {rLen / k, k};
+}
+
+// The inverse of `property_value_to_val`. A value with no `values` array (or
+// an empty one) is text-only (`PropertyValue::IsText()`).
+meshioplusplus::PropertyValue val_to_property_value(const val& rJv) {
+    meshioplusplus::PropertyValue pv;
+    pv.mKey = rJv["key"].as<std::string>();
+    pv.mIsTable = rJv.hasOwnProperty("isTable") && rJv["isTable"].as<bool>();
+    pv.mText = rJv.hasOwnProperty("text") ? rJv["text"].as<std::string>() : std::string();
+    val arr = rJv["values"];
+    const std::size_t len =
+        (arr.isUndefined() || arr.isNull()) ? 0 : arr["length"].as<std::size_t>();
+    if (len > 0) {
+        const std::size_t cols = js_components_of(
+            rJv.hasOwnProperty("components") ? rJv["components"] : val::undefined(), pv.mKey);
+        pv.mValues = float64_ndarray_from_val(arr, js_data_shape(len, cols, pv.mKey));
+    }
+    return pv;
 }
 
 /**
@@ -754,23 +779,8 @@ Mesh val_to_mesh(const val& rObj) {
             ps.mId = static_cast<std::int64_t>(jps["id"].as<double>());
             val values = jps["values"];
             const auto n_values = values["length"].as<unsigned>();
-            for (unsigned k = 0; k < n_values; ++k) {
-                val jv = values[k];
-                meshioplusplus::PropertyValue pv;
-                pv.mKey = jv["key"].as<std::string>();
-                pv.mIsTable = jv.hasOwnProperty("isTable") && jv["isTable"].as<bool>();
-                pv.mText = jv.hasOwnProperty("text") ? jv["text"].as<std::string>() : std::string();
-                val arr = jv["values"];
-                const std::size_t len =
-                    (arr.isUndefined() || arr.isNull()) ? 0 : arr["length"].as<std::size_t>();
-                if (len > 0) {
-                    const std::size_t cols = js_components_of(
-                        jv.hasOwnProperty("components") ? jv["components"] : val::undefined(),
-                        pv.mKey);
-                    pv.mValues = float64_ndarray_from_val(arr, js_data_shape(len, cols, pv.mKey));
-                }
-                ps.mValues.push_back(std::move(pv));
-            }
+            for (unsigned k = 0; k < n_values; ++k)
+                ps.mValues.push_back(val_to_property_value(values[k]));
             mesh.AddPropertySet(std::move(ps));
         }
     }
@@ -959,6 +969,41 @@ meshioplusplus::MedInfo val_to_med_info(const val& rInfo) {
 
 // --- MDPA ------------------------------------------------------------------
 
+val property_values_to_val(const std::vector<meshioplusplus::PropertyValue>& rValues) {
+    val out = val::array();
+    for (const meshioplusplus::PropertyValue& v : rValues)
+        out.call<void>("push", property_value_to_val(v));
+    return out;
+}
+
+std::vector<meshioplusplus::PropertyValue> val_to_property_values(const val& rArr) {
+    std::vector<meshioplusplus::PropertyValue> out;
+    if (rArr.isUndefined() || rArr.isNull())
+        return out;
+    const auto n = rArr["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i)
+        out.push_back(val_to_property_value(rArr[i]));
+    return out;
+}
+
+val int64_ids_to_val(const std::vector<std::int64_t>& rIds) {
+    val arr = val::array();
+    for (std::int64_t id : rIds)
+        arr.call<void>("push", static_cast<double>(id));
+    return arr;
+}
+
+std::vector<std::int64_t> val_to_int64_ids(const val& rArr) {
+    std::vector<std::int64_t> out;
+    if (rArr.isUndefined() || rArr.isNull())
+        return out;
+    const auto n = rArr["length"].as<unsigned>();
+    out.reserve(n);
+    for (unsigned i = 0; i < n; ++i)
+        out.push_back(static_cast<std::int64_t>(rArr[i].as<double>()));
+    return out;
+}
+
 val mdpa_info_to_val(const meshioplusplus::MdpaInfo& rInfo) {
     val out = val::object();
     out.set("format", std::string("mdpa"));
@@ -971,6 +1016,50 @@ val mdpa_info_to_val(const meshioplusplus::MdpaInfo& rInfo) {
     }
     out.set("entityNames", entity_names);
     out.set("skippedConstructs", string_vec_to_val(rInfo.mSkippedConstructs));
+    // The blocks the Mesh cannot hold (v16.26.0). Point references (geometry
+    // connectivity, Mesh-block nodes) are 0-based rows, like every index in
+    // this API; entity and table ids are the file's own.
+    out.set("modelPartData", property_values_to_val(rInfo.mModelPartData));
+    out.set("tables", property_values_to_val(rInfo.mTables));
+    val geometries = val::array();
+    for (const meshioplusplus::MdpaGeometryBlock& g : rInfo.mGeometries) {
+        val jg = val::object();
+        jg.set("name", g.mName);
+        jg.set("type", g.mType);
+        jg.set("conn", ndarray_to_float64_array(g.mConn));
+        jg.set("ids", int64_ids_to_val(g.mIds));
+        geometries.call<void>("push", jg);
+    }
+    out.set("geometries", geometries);
+    val meshes = val::array();
+    for (const meshioplusplus::MdpaMeshBlock& mb : rInfo.mMeshBlocks) {
+        val jm = val::object();
+        jm.set("id", static_cast<double>(mb.mId));
+        jm.set("data", property_values_to_val(mb.mData));
+        jm.set("nodes", int64_ids_to_val(mb.mNodes));
+        jm.set("elementIds", int64_ids_to_val(mb.mElementIds));
+        jm.set("conditionIds", int64_ids_to_val(mb.mConditionIds));
+        meshes.call<void>("push", jm);
+    }
+    out.set("meshBlocks", meshes);
+    val smps = val::array();
+    for (const meshioplusplus::MdpaSubModelPart& smp : rInfo.mSubModelParts) {
+        val js = val::object();
+        js.set("name", smp.mName);
+        js.set("data", property_values_to_val(smp.mData));
+        js.set("tables", int64_ids_to_val(smp.mTables));
+        smps.call<void>("push", js);
+    }
+    out.set("subModelParts", smps);
+    val raws = val::array();
+    for (const meshioplusplus::MdpaRawBlock& r : rInfo.mRawBlocks) {
+        val jr = val::object();
+        jr.set("header", r.mHeader);
+        jr.set("body", r.mBody);
+        jr.set("end", r.mEnd);
+        raws.call<void>("push", jr);
+    }
+    out.set("rawBlocks", raws);
     return out;
 }
 
@@ -993,6 +1082,66 @@ meshioplusplus::MdpaInfo val_to_mdpa_info(const val& rInfo) {
     // mesh's own property sets (mesh.propertySets, via AddPropertySet) when
     // this is empty, which is always what a WASM caller means -- properties
     // ride on the mesh object itself here (see the section banner above).
+    info.mModelPartData = val_to_property_values(rInfo["modelPartData"]);
+    info.mTables = val_to_property_values(rInfo["tables"]);
+    for (meshioplusplus::PropertyValue& r_t : info.mTables)
+        r_t.mIsTable = true;
+    val geometries = rInfo["geometries"];
+    if (!geometries.isUndefined() && !geometries.isNull()) {
+        const auto n = geometries["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val jg = geometries[i];
+            meshioplusplus::MdpaGeometryBlock g;
+            g.mName = js_optional_string(jg, "name", "");
+            g.mType = jg["type"].as<std::string>();
+            const int k =
+                meshioplusplus::cell_type_num_nodes(meshioplusplus::cell_type_from_name(g.mType));
+            if (k <= 0)
+                throw std::invalid_argument("meshio++: MDPA geometry of unknown type '" + g.mType +
+                                            "'");
+            const std::vector<std::int64_t> flat = val_to_int64_ids(jg["conn"]);
+            const std::size_t rows = flat.size() / static_cast<std::size_t>(k);
+            g.mConn = NDArray(meshioplusplus::DType::Int64, {rows, static_cast<std::size_t>(k)});
+            std::copy(flat.begin(), flat.begin() + static_cast<std::ptrdiff_t>(rows * k),
+                      g.mConn.As<std::int64_t>());
+            g.mIds = val_to_int64_ids(jg["ids"]);
+            info.mGeometries.push_back(std::move(g));
+        }
+    }
+    val meshes = rInfo["meshBlocks"];
+    if (!meshes.isUndefined() && !meshes.isNull()) {
+        const auto n = meshes["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val jm = meshes[i];
+            meshioplusplus::MdpaMeshBlock mb;
+            mb.mId = static_cast<std::int64_t>(jm["id"].as<double>());
+            mb.mData = val_to_property_values(jm["data"]);
+            mb.mNodes = val_to_int64_ids(jm["nodes"]);
+            mb.mElementIds = val_to_int64_ids(jm["elementIds"]);
+            mb.mConditionIds = val_to_int64_ids(jm["conditionIds"]);
+            info.mMeshBlocks.push_back(std::move(mb));
+        }
+    }
+    val smps = rInfo["subModelParts"];
+    if (!smps.isUndefined() && !smps.isNull()) {
+        const auto n = smps["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val js = smps[i];
+            info.mSubModelParts.push_back(meshioplusplus::MdpaSubModelPart{
+                js["name"].as<std::string>(), val_to_property_values(js["data"]),
+                val_to_int64_ids(js["tables"])});
+        }
+    }
+    val raws = rInfo["rawBlocks"];
+    if (!raws.isUndefined() && !raws.isNull()) {
+        const auto n = raws["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val jr = raws[i];
+            info.mRawBlocks.push_back(meshioplusplus::MdpaRawBlock{jr["header"].as<std::string>(),
+                                                                   jr["body"].as<std::string>(),
+                                                                   jr["end"].as<std::string>()});
+        }
+    }
     return info;
 }
 

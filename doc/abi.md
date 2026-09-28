@@ -126,8 +126,8 @@ See [the C++ API page](/cpp_api#versioning-what-to-pin) for the full guidance. I
 ```cmake
 # Finer, and true: pin what actually constrains you.
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 19)
-  message(FATAL_ERROR "meshio++ ABI 19 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 20)
+  message(FATAL_ERROR "meshio++ ABI 20 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 

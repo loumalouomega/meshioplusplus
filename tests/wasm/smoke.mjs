@@ -3034,6 +3034,30 @@ step('info: mdpa entity names and property sets round-trip together', () => {
     assert.equal(back.propertySets[0].values[0].values[0], 2.1e11);
 });
 
+step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
+    m.FS.writeFile('/side.mdpa', [
+        'Begin ModelPartData', '    SOLVER_TYPE static', 'End ModelPartData',
+        'Begin Table 1 TIME VALUE', '    0.0 1.0', '    2.0 3.0', 'End Table',
+        'Begin Nodes', '1 0 0 0', '2 1 0 0', '3 0 1 0', '4 0 0 1', 'End Nodes',
+        'Begin Elements Element3D4N', '1 0 1 2 3 4', 'End Elements',
+        'Begin Geometries Triangle3D3', '7 2 3 4', 'End Geometries',
+        'Begin Mesh 5', '    Begin MeshNodes', '        4', '    End MeshNodes', 'End Mesh',
+        'Begin Constraints LinearMasterSlaveConstraint',
+        '    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0', 'End Constraints', '',
+    ].join('\n'));
+    const r = m.readMeshSelective('/side.mdpa', { format: 'mdpa', info: true });
+    assert.equal(r.info.modelPartData[0].text, 'static');
+    assert.equal(r.info.tables[0].key, '1 TIME VALUE');
+    assert.deepEqual(Array.from(r.info.geometries[0].conn), [1, 2, 3]);
+    assert.deepEqual(r.info.geometries[0].ids, [7]);
+    assert.deepEqual(r.info.meshBlocks[0].nodes, [3]);
+    assert.equal(r.info.rawBlocks[0].end, 'End Constraints');
+    m.writeMesh('/side_out.mdpa', r, 'mdpa', { info: r.info });
+    const back = m.readMeshSelective('/side_out.mdpa', { format: 'mdpa', info: true });
+    assert.deepEqual(back.info.rawBlocks, r.info.rawBlocks);
+    assert.equal(back.info.geometries[0].name, 'Triangle3D3');
+});
+
 step('info: gmsh bounding entities survive a real $Entities round trip', () => {
     // A real gmsh 4.1 file: two tagged curves and a tagged surface.
     const msh = [

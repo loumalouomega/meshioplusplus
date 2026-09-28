@@ -1329,3 +1329,51 @@ test_that("agglomerate options, blend_steps and sequence resampling", {
   expect_error(mio_sequence_resample(seq, file.path(dir, "bad_{index}.vtu"), 2))
   expect_error(mio_sequence_resample(seq, file.path(dir, "x_{index}.vtu"), 0, method = "cubic"))
 })
+
+test_that("an mdpa side channel survives read_with_info / write_with_info", {
+  dir <- tempfile("mio_side")
+  dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  path <- file.path(dir, "side.mdpa")
+  writeLines(c(
+    "Begin ModelPartData", "    SOLVER_TYPE static", "End ModelPartData",
+    "Begin Table 1 TIME VALUE", "    0.0 1.0", "    2.0 3.0", "End Table",
+    "Begin Nodes", "1 0 0 0", "2 1 0 0", "3 0 1 0", "4 0 0 1", "End Nodes",
+    "Begin Elements Element3D4N", "1 0 1 2 3 4", "End Elements",
+    "Begin Geometries Triangle3D3", "7 2 3 4", "End Geometries",
+    "Begin Mesh 5", "    Begin MeshNodes", "        4", "    End MeshNodes", "End Mesh",
+    "Begin Constraints LinearMasterSlaveConstraint",
+    "    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0", "End Constraints"
+  ), path)
+
+  expect_error(mio_read(path), "mio_read_with_info")
+  r <- mio_read_with_info(path)
+  on.exit({ mio_release(r$mesh); mio_format_info_release(r$info) }, add = TRUE)
+  expect_s3_class(r$info, "mio_format_info")
+  expect_equal(mio_format_info_format(r$info), "mdpa")
+  d <- mio_mdpa_info(r$info)
+  expect_equal(d$model_part_data$SOLVER_TYPE, "static")
+  expect_equal(d$tables[[1]]$header, "1 TIME VALUE")
+  expect_equal(d$tables[[1]]$values, matrix(c(0, 2, 1, 3), nrow = 2))
+  expect_equal(d$geometries[[1]]$connectivity, matrix(c(2, 3, 4), nrow = 3))
+  expect_equal(d$geometries[[1]]$ids, 7)
+  expect_equal(d$mesh_blocks[[1]]$id, 5)
+  expect_equal(d$mesh_blocks[[1]]$nodes, 4)
+  expect_equal(d$raw_blocks[[1]]$terminator, "End Constraints")
+
+  out <- file.path(dir, "out.mdpa")
+  mio_write_with_info(r$mesh, r$info, out)
+  r2 <- mio_read_with_info(out)
+  expect_equal(mio_mdpa_info(r2$info)$raw_blocks, d$raw_blocks)
+  expect_error(mio_write_with_info(r$mesh, r$info, file.path(dir, "out.vtu")))
+  mio_release(r2$mesh)
+  mio_format_info_release(r2$info)
+  mio_format_info_release(r2$info) # idempotent
+  expect_false(mio_format_info_is_open(r2$info))
+
+  vtu <- file.path(dir, "plain.vtu")
+  mio_write(r$mesh, vtu)
+  r3 <- mio_read_with_info(vtu)
+  expect_null(r3$info)
+  mio_release(r3$mesh)
+})

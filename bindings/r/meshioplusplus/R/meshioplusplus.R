@@ -1738,6 +1738,85 @@ mio_data_integrate <- function(mesh, names = NULL) {
 
 # --- transient (time-series) XDMF writing -------------------------------------
 
+#' Read and write a format's side channel
+#'
+#' Some formats carry content a mesh cannot hold: MDPA's top-level tables,
+#' geometries, `Mesh` blocks, sub-model-part data and blocks such as
+#' `Constraints`. [mio_read()] refuses such a file by name (or, with
+#' `lenient = TRUE`, skips the content); `mio_read_with_info()` keeps it in a
+#' `mio_format_info` handle that `mio_write_with_info()` puts back.
+#'
+#' `mio_mdpa_info()` **copies** an MDPA side channel into plain R values: a
+#' list with `properties` (`id`, `values`), `entity_names` (`name`,
+#' `is_condition`), `skipped`, `model_part_data` (a named list of the
+#' non-numeric entries), `tables` (`header`, `values` as a `(rows, columns)`
+#' matrix), `geometries` (`name`, `type`, 1-based `connectivity` as a
+#' `(nodes_per_geometry, num_geometries)` matrix, `ids`), `mesh_blocks` (`id`,
+#' `data`, 1-based `nodes`, `element_ids`, `condition_ids`), `submodelparts`
+#' (`name`, `data`, `tables`) and `raw_blocks` (`header`, `body`,
+#' `terminator`). File ids stay as the file spelled them; they arrive as
+#' `double`, since R has no native 64-bit integer.
+#'
+#' The handle is an external pointer with a registered finalizer, like
+#' [mio_mesh()]; `mio_format_info_release()` frees it immediately and is
+#' idempotent.
+#'
+#' @param path Path of the file to read or write.
+#' @param format Explicit format name, or `NULL` to infer it.
+#' @param lenient Skip (with a warning) what not even the side channel holds.
+#' @param mesh A `mio_mesh`.
+#' @param info A `mio_format_info`, or `NULL` (then `mio_write_with_info()` is
+#'   exactly [mio_write()]).
+#' @param x A `mio_format_info` object.
+#' @param ... Ignored.
+#' @return `mio_read_with_info()` returns `list(mesh = , info = )`, `info`
+#'   being `NULL` for a format with no side channel. `mio_mdpa_info()` returns
+#'   the list described above; `mio_format_info_format()` the format name;
+#'   `mio_format_info_is_open()` a single logical; the others `NULL`, invisibly.
+#' @examples
+#' \dontrun{
+#' r <- mio_read_with_info("model.mdpa")
+#' length(mio_mdpa_info(r$info)$geometries)
+#' mio_write_with_info(r$mesh, r$info, "copy.mdpa")
+#' }
+#' @export
+mio_read_with_info <- function(path, format = NULL, lenient = FALSE) {
+  .Call(R_mio_read_with_info, as.character(path), format, isTRUE(lenient))
+}
+
+#' @rdname mio_read_with_info
+#' @export
+mio_write_with_info <- function(mesh, info, path, format = NULL) {
+  invisible(.Call(R_mio_write_with_info, mesh, info, as.character(path), format))
+}
+
+#' @rdname mio_read_with_info
+#' @export
+mio_mdpa_info <- function(info) .Call(R_mio_mdpa_info, info)
+
+#' @rdname mio_read_with_info
+#' @export
+mio_format_info_format <- function(info) .Call(R_mio_format_info_format, info)
+
+#' @rdname mio_read_with_info
+#' @export
+mio_format_info_release <- function(info) invisible(.Call(R_mio_format_info_release, info))
+
+#' @rdname mio_read_with_info
+#' @export
+mio_format_info_is_open <- function(info) .Call(R_mio_format_info_is_open, info)
+
+#' @rdname mio_read_with_info
+#' @export
+print.mio_format_info <- function(x, ...) {
+  if (!mio_format_info_is_open(x)) {
+    cat("<mio_format_info: released>\n")
+  } else {
+    cat(sprintf("<mio_format_info: %s>\n", mio_format_info_format(x)))
+  }
+  invisible(x)
+}
+
 #' Write a transient (time-series) XDMF file
 #'
 #' The write half of what `mio_read(time_step = )` and
