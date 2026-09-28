@@ -771,8 +771,8 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
     }
 
     // Regions: FirstChild through the triangulation, points through the weld
-    // map; Side regions drop by name. Then a split copy joins its source's
-    // Point regions.
+    // map; a Side edge moves to the triangle edge it became. Then a split copy
+    // joins its source's Point regions.
     {
         detail::RegionRemap rmap;
         rmap.pPointMap = &result.mPointMap;

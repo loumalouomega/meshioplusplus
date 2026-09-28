@@ -435,7 +435,6 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     detail::RegionRemap rmap;
     rmap.mCellMapKind = detail::CellMapKind::Direct;
     rmap.pCellMaps = &res.mCellMaps;
-    rmap.mDropSideRegions = true;
     rmap.mOpName = "undo_green";
     detail::remap_regions(rFine, res.mMesh, rmap);
 

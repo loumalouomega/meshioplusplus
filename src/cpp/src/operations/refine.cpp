@@ -1330,9 +1330,8 @@ namespace {
 
 // Carry the input's named regions onto the output. The cell map is FirstChild:
 // a parent's children occupy a contiguous run -- of length 1 for a cell the
-// selection left untouched, which is still a run and still non-negative. Side
-// regions are dropped: a child cell is a new cell of a subdivided topology, so
-// its facets have no correspondence with the parent's. See
+// selection left untouched, which is still a run and still non-negative. A
+// side facet moves to the child facets lying within it. See
 // detail/region_remap.hpp.
 void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
     detail::RegionRemap rmap;

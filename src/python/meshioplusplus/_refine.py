@@ -57,6 +57,7 @@ from ._refine_templates import (
     template,
 )
 from ._regions import block_bases
+from ._side_carry import carry_side_regions, first_child_children
 
 __all__ = ["refine", "SUPPORTED_TYPES"]
 
@@ -1037,6 +1038,13 @@ def refine(
     # here would apply the maps twice. Only the numpy fallback needs it.
     if not used_cpp:
         _remap_sets(mesh, out, point_map, cell_maps)
+        carry_side_regions(
+            mesh,
+            out,
+            first_child_children(mesh, out, cell_maps),
+            point_map,
+            "refine",
+        )
     return out
 
 

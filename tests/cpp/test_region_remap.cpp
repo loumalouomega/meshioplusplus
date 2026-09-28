@@ -299,7 +299,9 @@ TEST(RegionRemap, BlockMapRedirectsToADifferentOutputBlock) {
 
 TEST(RegionRemap, SideEntrySurvivesWhenItsCellAndFacetDo) {
     Mesh in = mt::tet_mesh();  // 2 tetra, 4 faces each
-    Mesh out = mt::tet_mesh();
+    // The same two tets, swapped -- what a Direct permutation produces.
+    Mesh out = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 0.5}}, "tetra",
+                             {{0, 2, 3, 4}, {0, 1, 2, 4}});
     in.AddRegion(Region("wall", RegionKind::Side, i64_pairs({0, 2, 1, 0})));
 
     std::vector<NDArray> cell_maps{i64({1, 0})};  // swap the two tets
@@ -314,7 +316,9 @@ TEST(RegionRemap, SideEntrySurvivesWhenItsCellAndFacetDo) {
 
 TEST(RegionRemap, SideEntryVanishesWithItsCell) {
     Mesh in = mt::tet_mesh();
-    Mesh out = mt::tet_mesh();
+    // Only the second tet survives, as output cell 0.
+    Mesh out = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 0.5}}, "tetra",
+                             {{0, 2, 3, 4}});
     in.AddRegion(Region("wall", RegionKind::Side, i64_pairs({0, 1, 1, 3})));
 
     std::vector<NDArray> cell_maps{i64({-1, 0})};  // tet 0 dropped
@@ -324,6 +328,86 @@ TEST(RegionRemap, SideEntryVanishesWithItsCell) {
     meshioplusplus::detail::remap_regions(in, out, maps);
 
     EXPECT_EQ(got(out, "wall", RegionKind::Side), (std::vector<std::int64_t>{0, 3}));
+}
+
+TEST(RegionRemap, AFlippedCellsFacetIsFoundByItsNodes) {
+    // repair's case: the same triangle, reversed, renumbers its edges.
+    Mesh in = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, "triangle", {{0, 1, 2}});
+    Mesh out = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, "triangle", {{0, 2, 1}});
+    in.AddRegion(Region("bottom", RegionKind::Side, i64_pairs({0, 0})));  // edge (0, 1)
+
+    std::vector<NDArray> cell_maps{i64({0})};
+    RegionRemap maps;
+    maps.mCellMapKind = CellMapKind::FirstChild;
+    maps.pCellMaps = &cell_maps;
+    meshioplusplus::detail::remap_regions(in, out, maps);
+
+    // Edge (0, 1) of the reversed triangle (0, 2, 1) is its edge 2.
+    EXPECT_EQ(got(out, "bottom", RegionKind::Side), (std::vector<std::int64_t>{0, 2}));
+}
+
+TEST(RegionRemap, ARefinedFacetBecomesTheChildFacetsWithinIt) {
+    // One triangle split red into four; points 3, 4, 5 are the new midpoints
+    // of edges (0,1), (1,2), (2,0).
+    Mesh in = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {0, 2, 0}}, "triangle", {{0, 1, 2}});
+    Mesh out = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {0, 2, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}},
+                             "triangle", {{0, 3, 5}, {3, 1, 4}, {5, 4, 2}, {3, 4, 5}});
+    in.AddRegion(Region("bottom", RegionKind::Side, i64_pairs({0, 0})));  // edge (0, 1)
+    in.AddRegion(Region("hyp", RegionKind::Side, i64_pairs({0, 1})));     // edge (1, 2)
+
+    std::vector<NDArray> cell_maps{i64({0})};
+    RegionRemap maps;
+    maps.mCellMapKind = CellMapKind::FirstChild;
+    maps.pCellMaps = &cell_maps;
+    maps.mOpName = "refine";
+    meshioplusplus::detail::remap_regions(in, out, maps);
+
+    // (0,3) is edge 0 of child 0; (3,1) is edge 0 of child 1.
+    EXPECT_EQ(got(out, "bottom", RegionKind::Side), (std::vector<std::int64_t>{0, 0, 1, 0}));
+    // (1,4) is edge 1 of child 1; (4,2) is edge 1 of child 2. The interior
+    // child's edge (3,4) is not on it: 3 is new but off the hypotenuse.
+    EXPECT_EQ(got(out, "hyp", RegionKind::Side), (std::vector<std::int64_t>{1, 1, 2, 1}));
+}
+
+TEST(RegionRemap, MergedFacetsMoveToTheParentFacetContainingThem) {
+    // undo_green's case: two green halves (0,1,3) and (0,3,2) -- 3 the
+    // hanging midpoint of edge (1,2) -- collapse back onto triangle (0,1,2).
+    Mesh in = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {0, 2, 0}, {1, 1, 0}}, "triangle",
+                            {{0, 1, 3}, {0, 3, 2}});
+    Mesh out = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {0, 2, 0}, {1, 1, 0}}, "triangle", {{0, 1, 2}});
+    // Edge 1 of each half is its piece of the hypotenuse; edge 2 of the first
+    // half is the interior split edge (3, 0), which vanishes.
+    in.AddRegion(Region("hyp", RegionKind::Side, i64_pairs({0, 1, 1, 1})));
+    in.AddRegion(Region("split", RegionKind::Side, i64_pairs({0, 2})));
+
+    std::vector<NDArray> cell_maps{i64({0, 0})};
+    RegionRemap maps;
+    maps.mCellMapKind = CellMapKind::Direct;
+    maps.pCellMaps = &cell_maps;
+    maps.mOpName = "undo_green";
+    meshioplusplus::detail::remap_regions(in, out, maps);
+
+    EXPECT_EQ(got(out, "hyp", RegionKind::Side), (std::vector<std::int64_t>{0, 1}));
+    EXPECT_TRUE(got(out, "split", RegionKind::Side).empty());
+}
+
+TEST(RegionRemap, PolygonEdgesAreFacets) {
+    // A quad re-expressed as a polygon keeps its side: edge k of a polygon
+    // runs from node k to node k + 1.
+    Mesh in = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "quad", {{0, 1, 2, 3}});
+    Mesh out;
+    out.AssignPoints(in.Points());
+    out.AddPolygonBlock("polygon", std::vector<std::vector<std::int64_t>>{{1, 2, 3, 0}});
+    in.AddRegion(Region("bottom", RegionKind::Side, i64_pairs({0, 0})));  // edge (0, 1)
+
+    std::vector<NDArray> cell_maps{i64({0})};
+    RegionRemap maps;
+    maps.mCellMapKind = CellMapKind::Direct;
+    maps.pCellMaps = &cell_maps;
+    meshioplusplus::detail::remap_regions(in, out, maps);
+
+    // (0, 1) is the polygon's edge 3: from node 3 (= 0) to node 0 (= 1).
+    EXPECT_EQ(got(out, "bottom", RegionKind::Side), (std::vector<std::int64_t>{0, 3}));
 }
 
 TEST(RegionRemap, AnOutOfRangeFacetIsDropped) {
@@ -354,7 +438,7 @@ TEST(RegionRemap, SideEntryVanishesWhenTheCellTypeChanges) {
     EXPECT_TRUE(got(out, "wall", RegionKind::Side).empty());
 }
 
-TEST(RegionRemap, SideRegionsAreDroppedUnderAnExpandingMap) {
+TEST(RegionRemap, SideRegionsSurviveAOneChildFirstChildMap) {
     Mesh in = mt::tet_mesh();
     Mesh out = mt::tet_mesh();
     in.AddRegion(Region("wall", RegionKind::Side, i64_pairs({0, 1})));
@@ -367,8 +451,7 @@ TEST(RegionRemap, SideRegionsAreDroppedUnderAnExpandingMap) {
     maps.mOpName = "refine";
     meshioplusplus::detail::remap_regions(in, out, maps);
 
-    EXPECT_TRUE(got(out, "wall", RegionKind::Side).empty());
-    // ...but the cell region beside it is carried normally.
+    EXPECT_EQ(got(out, "wall", RegionKind::Side), (std::vector<std::int64_t>{0, 1}));
     EXPECT_EQ(got(out, "keep", RegionKind::Cell), (std::vector<std::int64_t>{0}));
 }
 

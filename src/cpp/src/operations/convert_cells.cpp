@@ -928,9 +928,9 @@ namespace {
 
 // Carry the input's named regions onto the output. The cell map is FirstChild:
 // a parent's children occupy a contiguous run, which is also correct for the
-// 1:1 modes (their maps are the monotone identity). Side regions are dropped —
-// a child cell is a new cell of a subdivided or different topology, so its
-// facets have no correspondence with the parent's. See detail/region_remap.hpp.
+// 1:1 modes (their maps are the monotone identity). A side facet moves to the
+// child facets lying within it, or -- linearize/elevate -- to the retyped
+// cell's facet containing it. See detail/region_remap.hpp.
 void ccells_carry_regions(const Mesh& rIn, ConvertCellsResult& rRes) {
     detail::RegionRemap rmap;
     rmap.pPointMap = &rRes.mPointMap;

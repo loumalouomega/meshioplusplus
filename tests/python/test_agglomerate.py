@@ -107,14 +107,24 @@ def test_non_volume_blocks_pass_through_unchanged_when_no_volume_cells_exist():
 
 
 @needs_core
-def test_point_and_cell_regions_survive_but_side_regions_are_dropped_empty():
+def test_point_cell_and_side_regions_survive():
+    from meshioplusplus._facets import facet_nodes
+
     mesh = _two_hexes()
     mesh.point_sets = {"corner": np.array([0], dtype=np.int64)}
     mesh.cell_sets = {"both": [np.array([0, 1], dtype=np.int64)]}
+    mesh.regions.append(
+        meshioplusplus.Region("bottom", "side", np.array([[0, 0]], dtype=np.int64))
+    )
 
     out = agglomerate(mesh, target_group_size=2)
     assert list(out.point_sets["corner"]) == [0]
     assert list(out.cell_sets["both"][0]) == [0]
+    # The merged polyhedron's face containing hexahedron 0's face 0.
+    bottom = next(r for r in out.regions if r.name == "bottom")
+    assert len(bottom.entries) == 1
+    cell, facet = (int(v) for v in bottom.entries[0])
+    assert set(facet_nodes(mesh, 0, 0)[1]) <= set(facet_nodes(out, cell, facet)[1])
 
 
 def test_agglomerate_is_exported():

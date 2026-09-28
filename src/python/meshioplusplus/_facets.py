@@ -81,8 +81,19 @@ def facet_nodes(mesh, cell, facet):
     for block in mesh.cells:
         n = len(block.data)
         if cell < base + n:
-            if isinstance(block.data, list) or facet < 0:
+            if facet < 0:
                 return None
+            if isinstance(block.data, list):
+                # A polyhedron's facet k is its face k; a polygon's its edge k,
+                # from node k to node k + 1 (the core's facet_nodes rule).
+                row = block.data[cell - base]
+                if facet >= len(row):
+                    return None
+                if block.type.startswith("polyhedron"):
+                    nodes = [int(v) for v in row[facet]]
+                    ftype = {3: "triangle", 4: "quad"}.get(len(nodes), "polygon")
+                    return ftype, nodes
+                return "line", [int(row[facet]), int(row[(facet + 1) % len(row)])]
             row = block.data[cell - base]
             table = _CELL_FACES.get(block.type) or _CELL_EDGES.get(block.type)
             if not table or facet >= len(table):

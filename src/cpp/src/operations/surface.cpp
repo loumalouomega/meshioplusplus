@@ -338,6 +338,11 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     // those go to a ragged `polygon` block emitted alongside the fixed ones.
     std::vector<std::vector<std::int64_t>> poly_rows;
     std::vector<std::int64_t> poly_parent;
+    // Each output facet's (input cell, facet slot), in output order, for the
+    // region carry -- the slot is the Side numbering (cell_faces/cell_edges
+    // order, a polyhedron's face index).
+    std::vector<std::vector<std::array<std::int64_t, 2>>> out_source(num_out);
+    std::vector<std::array<std::int64_t, 2>> poly_source;
     for (std::size_t ri = 0; ri < recs.size(); ++ri) {
         const SurfaceFacetRecord& r = recs[ri];
         if (face_count[ri] != 1)
@@ -355,10 +360,12 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
                     dst.push_back(face.first[k]);
                 if (recordParentIds)
                     out_parent[bucket].push_back(r.mParent);
+                out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
             } else {
                 poly_rows.emplace_back(face.first, face.first + face.second);
                 if (recordParentIds)
                     poly_parent.push_back(r.mParent);
+                poly_source.push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
             }
             continue;
         }
@@ -375,6 +382,7 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
             dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
         if (recordParentIds)
             out_parent[bucket].push_back(r.mParent);
+        out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
     }
 
     // --- compaction: keep only referenced points, ascending original index ---
@@ -461,11 +469,23 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         surface.AddPointData(name, std::move(b));
     }
 
-    // The extracted facets are newly created cells one dimension below the
-    // input's, so no named region can be carried across. Say so rather than
-    // dropping them silently; `record_parent_ids` is the escape hatch for a
-    // caller that wants to rebuild a group itself.
-    detail::warn_regions_dropped(rMesh, pOpName ? pOpName : "extract_surface");
+    // Regions: a Side region names exactly the facets extracted here, so it
+    // becomes a Cell region of the surface; Point regions follow the
+    // compaction; Cell regions name volume cells the surface does not hold.
+    if (rMesh.NumRegions() > 0) {
+        std::vector<std::int64_t> src_cell, src_facet;
+        for (std::size_t t = 0; t < num_out; ++t)
+            for (const auto& r_src : out_source[t]) {
+                src_cell.push_back(r_src[0]);
+                src_facet.push_back(r_src[1]);
+            }
+        for (const auto& r_src : poly_source) {
+            src_cell.push_back(r_src[0]);
+            src_facet.push_back(r_src[1]);
+        }
+        detail::carry_regions_to_facet_mesh(rMesh, surface, src_cell, src_facet, remap,
+                                            pOpName ? pOpName : "extract_surface");
+    }
 
     return surface;
 }

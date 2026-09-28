@@ -71,13 +71,12 @@
  * lacks that array, or its shape doesn't match, the WHOLE array is dropped
  * with a warning rather than guessing a value for the substituted row.
  *
- * **Named Side regions do not survive** (the `subdivide`/`agglomerate`
- * precedent): a removed green child's local facet numbering has no
- * correspondence to the substituted parent's own facets, even though the
- * cell type is unchanged. Point and Cell regions do survive -- Cell regions
- * through the first genuinely non-injective `CellMapKind::Direct` use in the
- * repo (several fine cells collapsing onto one output row), relying on
- * `Region::Canonicalize`'s existing sort+dedup.
+ * **Named regions survive.** Point and Cell regions through the first
+ * genuinely non-injective `CellMapKind::Direct` use in the repo (several fine
+ * cells collapsing onto one output row), relying on `Region::Canonicalize`'s
+ * existing sort+dedup; Side regions since v16.26.0, a green child's facet
+ * moving to the substituted parent's facet that contains it (a removed
+ * hanging node must lie on it; see `detail/region_remap.hpp`).
  *
  * **Two honest limitations, not gaps**: it can only undo the LAST generation
  * relative to the specific `coarse` mesh passed in (an untouched cell's

@@ -70,8 +70,9 @@
  * block gets NaN for float and 0 for integer arrays); `point_data` copies
  * inherit their source row and centroids the mean of their loop's rows,
  * dtype preserved. Point and Cell regions survive (a copy joins its source's
- * regions); Side regions are dropped by name, since a flip permutes a
- * triangle's edge numbering. There is deliberately no numpy twin: the
+ * regions), and so do Side regions: an edge a flip renumbers is found again
+ * by its nodes (`detail/region_remap.hpp`). There is deliberately no numpy
+ * twin: the
  * outward test is a branch on the sign of a rounded volume.
  */
 
