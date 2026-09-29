@@ -173,14 +173,19 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
     // expands a block by more than about 2^16, as vtk_codec_decompress_block
     // enforces per block.
     std::uint64_t comp_total = 0;
-    for (const std::uint64_t z : sizes)
-        comp_total += std::min<std::uint64_t>(z, std::uint64_t{1} << 40);
+    for (const std::uint64_t z : sizes) {
+        // The compressed blocks are read from the data that follows, so their
+        // total cannot exceed it.
+        if (z > rSrc.Remaining() || comp_total > rSrc.Remaining() - z)
+            throw ReadError("VTU: compressed blocks exceed the data");
+        comp_total += z;
+    }
     const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (comp_total + 1) + (1u << 20);
     if (num_blocks > 0 && max_block <= ceiling && last_block <= ceiling &&
         num_blocks - 1 <= ceiling / std::max<std::uint64_t>(max_block, 1)) {
         const std::uint64_t want = (num_blocks - 1) * max_block + last_block;
         if (want <= ceiling)
-            out.reserve(static_cast<std::size_t>(want));
+            out.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(want, 1u << 26)));
     }
     std::vector<unsigned char> comp;
     for (std::size_t k = 0; k < sizes.size(); ++k) {

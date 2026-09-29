@@ -192,6 +192,10 @@ struct GmshCursor {
     }
     // Read an unsigned integer of `sz` bytes (little-endian host).
     std::uint64_t read_uint(int sz) {
+        // `sz` is the header's data size: anything wider than the 8-byte result
+        // would overrun it.
+        if (sz < 1 || sz > 8)
+            throw ReadError("Gmsh: unsupported binary integer size " + std::to_string(sz));
         need(static_cast<std::size_t>(sz));
         std::uint64_t v = 0;
         std::memcpy(&v, mBuf.data() + mPos, static_cast<std::size_t>(sz));
@@ -210,8 +214,11 @@ struct EBlock {
 };
 
 void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArray>& rFieldData) {
-    std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num; ++i) {
+        // A count larger than the file would otherwise spin on empty lines at EOF.
+        if (rCur.eof())
+            throw ReadError("Gmsh: $PhysicalNames holds fewer names than it announces");
         std::string line = rCur.read_line();
         detail::TextStream iss(line);
         long long dim, tag;
@@ -504,7 +511,7 @@ std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh,
 
 void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
                 std::vector<std::int64_t>& rPointTags) {
-    std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
@@ -544,7 +551,7 @@ void append_element(std::vector<EBlock>& rBlocks, const std::string& rType, std:
 }
 
 void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks) {
-    std::int64_t total = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t total = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     const auto& g2m = gmsh_to_meshio_type();
     const auto& nnpc = num_nodes_per_cell();
 
@@ -613,7 +620,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
 void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
                std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts,
                const double* pTargetTime = nullptr) {
-    std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num_str = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
@@ -623,7 +630,7 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
             name = (q1 != std::string::npos && q2 > q1) ? s.substr(q1 + 1, q2 - q1 - 1) : s;
         }
     }
-    std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num_real = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     double time = 0.0;
     for (std::int64_t i = 0; i < num_real; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
@@ -1241,7 +1248,7 @@ struct GmshDataHeader {
 /// every section in the file, for `read_data`'s step selection).
 GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) {
     GmshDataHeader out;
-    const std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
+    const std::int64_t num_str = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num_str; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
@@ -1250,7 +1257,7 @@ GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) 
                 (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
         }
     }
-    const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
+    const std::int64_t num_real = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num_real; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {

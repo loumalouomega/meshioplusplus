@@ -218,6 +218,10 @@ std::vector<std::size_t> tecplot_parse_ranges(std::string rSpec) {
         } else {
             const int a = std::stoi(part.substr(0, dash));
             const int b = std::stoi(part.substr(dash + 1));
+            // A range names variables or zones, of which a file has few; an
+            // unbounded one would only exhaust memory.
+            if (b >= a && static_cast<long long>(b) - a > (1 << 20))
+                throw ReadError("Tecplot: the range '" + part + "' is implausibly large");
             for (int k = a; k <= b; ++k)
                 out.push_back(static_cast<std::size_t>(k - 1));
         }
@@ -779,7 +783,9 @@ public:
         const std::size_t nv = mNumVariables;
         const std::size_t want = tecplot_ascii_token_count(z, nv);
         std::vector<double> flat;
-        flat.reserve(want);
+        // `want` comes from the zone header, not from the bytes present: cap the
+        // reservation, the loop below stops at the end of the lines anyway.
+        flat.reserve(std::min<std::size_t>(want, 1u << 20));
         std::size_t li = z.mDataStart;
         std::vector<std::string_view> toks;  // reused
         while (flat.size() < want && li < mrLines.size()) {
@@ -815,7 +821,7 @@ public:
         if (z.IsPoly()) {
             const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
             std::vector<std::int64_t> ints;
-            ints.reserve(want_ints);
+            ints.reserve(std::min<std::size_t>(want_ints, 1u << 20));
             while (ints.size() < want_ints && li < mrLines.size()) {
                 tecplot_tokens_view(mrLines[li++], toks);
                 for (const std::string_view t : toks)
