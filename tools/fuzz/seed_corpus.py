@@ -45,8 +45,14 @@ SKIP = {
 _WRITER_NAME = {"dolfin": "dolfin-xml", "ansysinp": "ansysInp"}
 
 
-def _seed_mesh(surface=False):
+# Writers whose parsers have a region path the plain seed mesh never reaches:
+# XDMF <Set>s, the VTU/VTP <FieldData> convention, MDPA sub model parts.
+_REGION_SEED_WRITERS = ("mdpa", "xdmf", "vtu", "vtp")
+
+
+def _seed_mesh(surface=False, regions=False):
     import meshioplusplus
+    from meshioplusplus._regions import Region
 
     points = np.array(
         [
@@ -59,19 +65,34 @@ def _seed_mesh(surface=False):
         ]
     )
     if surface:
-        return meshioplusplus.Mesh(
+        mesh = meshioplusplus.Mesh(
             points[:4, :2], [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))]
         )
+        if regions:
+            mesh.regions = [
+                Region("fixed", "point", np.array([0, 3])),
+                Region("wall", "cell", np.array([1])),
+                Region("edge", "side", np.array([[0, 0], [1, 2]])),
+            ]
+        return mesh
     cells = [
         ("triangle", np.array([[0, 1, 2], [0, 2, 3]])),
         ("tetra", np.array([[0, 1, 3, 4]])),
     ]
-    return meshioplusplus.Mesh(
+    mesh = meshioplusplus.Mesh(
         points,
         cells,
         point_data={"u": np.arange(6, dtype=float)},
         cell_data={"id": [np.array([1, 2]), np.array([3])]},
     )
+    if regions:
+        mesh.regions = [
+            Region("fixed", "point", np.array([0, 1, 4])),
+            Region("skin", "cell", np.array([0, 1])),
+            Region("core", "cell", np.array([2])),
+            Region("face", "side", np.array([[2, 0], [2, 3]])),
+        ]
+    return mesh
 
 
 def native_readers(replay: pathlib.Path) -> list[str]:
@@ -128,24 +149,35 @@ def main(argv=None) -> int:
 
 
 def _generated(writer, ext, dst, max_bytes) -> int:
-    """Seeds meshio++ writes itself: the mixed mesh, else a 2-D triangle patch."""
+    """Seeds meshio++ writes itself: the mixed mesh, else a 2-D triangle patch.
+
+    A writer with a region path (``_REGION_SEED_WRITERS``) gets a second seed
+    from a mesh that carries point, cell and side regions.
+    """
     import meshioplusplus
 
-    for surface in (False, True):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / f"seed{ext}"
-            try:
-                meshioplusplus.write(path, _seed_mesh(surface), file_format=writer)
-            except Exception:  # a writer refusing this seed mesh: try the next
-                continue
-            n = 0
-            for f in sorted(pathlib.Path(tmp).iterdir()):
-                if f.is_file() and f.stat().st_size <= max_bytes:
-                    shutil.copyfile(f, dst / f"generated-{f.name}")
-                    n += 1
-            return n
-    print(f"{writer}: no generated seed (the writer refused both seed meshes)")
-    return 0
+    groups = [(False, "generated")]
+    if writer in _REGION_SEED_WRITERS:
+        groups.insert(0, (True, "generated-regions"))
+    total = 0
+    for regions, prefix in groups:
+        for surface in (False, True):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = pathlib.Path(tmp) / f"seed{ext}"
+                try:
+                    meshioplusplus.write(
+                        path, _seed_mesh(surface, regions), file_format=writer
+                    )
+                except Exception:  # a writer refusing this seed mesh: try the next
+                    continue
+                for f in sorted(pathlib.Path(tmp).iterdir()):
+                    if f.is_file() and f.stat().st_size <= max_bytes:
+                        shutil.copyfile(f, dst / f"{prefix}-{f.name}")
+                        total += 1
+                break
+        else:
+            print(f"{writer}: no {prefix} seed (the writer refused both seed meshes)")
+    return total
 
 
 def _extension_for(fmt: str) -> str:
