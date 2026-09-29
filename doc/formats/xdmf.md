@@ -71,6 +71,8 @@ Numeric Mixed-topology type indices (a subset shared with the per-type names): `
 
 `Attribute Name="..."` maps generically to `point_data`/`cell_data`; XDMF2 also supports `field_data` via an `Information` element holding `[num_tag, dim]` per key (XDMF2-read-only; never emitted on write, since an earlier attempt hit XML `CDATA` serialization bugs and was abandoned).
 
+`<Set>` elements ↔ [named regions](../regions.md#xdmf-sets) (v16.27.0): `SetType` `Node` → `point`, `Cell` → `cell`, `Face`/`Edge` → `side`. A side region spanning 3-D and 2-D cells is written as one `Face` and one `Edge` set and read back as one region; `dim` and `tag` ride in `<Information>` children. Read by both engines.
+
 ## Quirks & limitations
 
 - **XDMF2 vs XDMF3**: dispatched by the major version digit in the root `Version` attribute. **The C++ core only implements version 3** — any XDMF2 file (`Version="2.x"`) always falls back to Python.
