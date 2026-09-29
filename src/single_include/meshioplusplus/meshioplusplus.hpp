@@ -83533,6 +83533,10 @@ struct GmshCursor {
     }
     // Read an unsigned integer of `sz` bytes (little-endian host).
     std::uint64_t read_uint(int sz) {
+        // `sz` is the header's data size: anything wider than the 8-byte result
+        // would overrun it.
+        if (sz < 1 || sz > 8)
+            throw ReadError("Gmsh: unsupported binary integer size " + std::to_string(sz));
         need(static_cast<std::size_t>(sz));
         std::uint64_t v = 0;
         std::memcpy(&v, mBuf.data() + mPos, static_cast<std::size_t>(sz));
@@ -83551,8 +83555,11 @@ struct EBlock {
 };
 
 void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArray>& rFieldData) {
-    std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num; ++i) {
+        // A count larger than the file would otherwise spin on empty lines at EOF.
+        if (rCur.eof())
+            throw ReadError("Gmsh: $PhysicalNames holds fewer names than it announces");
         std::string line = rCur.read_line();
         detail::TextStream iss(line);
         long long dim, tag;
@@ -83845,7 +83852,7 @@ std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh,
 
 void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
                 std::vector<std::int64_t>& rPointTags) {
-    std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
@@ -83885,7 +83892,7 @@ void append_element(std::vector<EBlock>& rBlocks, const std::string& rType, std:
 }
 
 void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks) {
-    std::int64_t total = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t total = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     const auto& g2m = gmsh_to_meshio_type();
     const auto& nnpc = num_nodes_per_cell();
 
@@ -83954,7 +83961,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
 void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
                std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts,
                const double* pTargetTime = nullptr) {
-    std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num_str = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
@@ -83964,7 +83971,7 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
             name = (q1 != std::string::npos && q2 > q1) ? s.substr(q1 + 1, q2 - q1 - 1) : s;
         }
     }
-    std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
+    std::int64_t num_real = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     double time = 0.0;
     for (std::int64_t i = 0; i < num_real; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
@@ -84582,7 +84589,7 @@ struct GmshDataHeader {
 /// every section in the file, for `read_data`'s step selection).
 GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) {
     GmshDataHeader out;
-    const std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
+    const std::int64_t num_str = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num_str; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
@@ -84591,7 +84598,7 @@ GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) 
                 (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
         }
     }
-    const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
+    const std::int64_t num_real = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num_real; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
@@ -119072,6 +119079,10 @@ std::vector<std::size_t> tecplot_parse_ranges(std::string rSpec) {
         } else {
             const int a = std::stoi(part.substr(0, dash));
             const int b = std::stoi(part.substr(dash + 1));
+            // A range names variables or zones, of which a file has few; an
+            // unbounded one would only exhaust memory.
+            if (b >= a && static_cast<long long>(b) - a > (1 << 20))
+                throw ReadError("Tecplot: the range '" + part + "' is implausibly large");
             for (int k = a; k <= b; ++k)
                 out.push_back(static_cast<std::size_t>(k - 1));
         }
@@ -119633,7 +119644,9 @@ public:
         const std::size_t nv = mNumVariables;
         const std::size_t want = tecplot_ascii_token_count(z, nv);
         std::vector<double> flat;
-        flat.reserve(want);
+        // `want` comes from the zone header, not from the bytes present: cap the
+        // reservation, the loop below stops at the end of the lines anyway.
+        flat.reserve(std::min<std::size_t>(want, 1u << 20));
         std::size_t li = z.mDataStart;
         std::vector<std::string_view> toks;  // reused
         while (flat.size() < want && li < mrLines.size()) {
@@ -119669,7 +119682,7 @@ public:
         if (z.IsPoly()) {
             const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
             std::vector<std::int64_t> ints;
-            ints.reserve(want_ints);
+            ints.reserve(std::min<std::size_t>(want_ints, 1u << 20));
             while (ints.size() < want_ints && li < mrLines.size()) {
                 tecplot_tokens_view(mrLines[li++], toks);
                 for (const std::string_view t : toks)
@@ -130733,14 +130746,19 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
     // expands a block by more than about 2^16, as vtk_codec_decompress_block
     // enforces per block.
     std::uint64_t comp_total = 0;
-    for (const std::uint64_t z : sizes)
-        comp_total += std::min<std::uint64_t>(z, std::uint64_t{1} << 40);
+    for (const std::uint64_t z : sizes) {
+        // The compressed blocks are read from the data that follows, so their
+        // total cannot exceed it.
+        if (z > rSrc.Remaining() || comp_total > rSrc.Remaining() - z)
+            throw ReadError("VTU: compressed blocks exceed the data");
+        comp_total += z;
+    }
     const std::uint64_t ceiling = (std::uint64_t{1} << 16) * (comp_total + 1) + (1u << 20);
     if (num_blocks > 0 && max_block <= ceiling && last_block <= ceiling &&
         num_blocks - 1 <= ceiling / std::max<std::uint64_t>(max_block, 1)) {
         const std::uint64_t want = (num_blocks - 1) * max_block + last_block;
         if (want <= ceiling)
-            out.reserve(static_cast<std::size_t>(want));
+            out.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(want, 1u << 26)));
     }
     std::vector<unsigned char> comp;
     for (std::size_t k = 0; k < sizes.size(); ++k) {
