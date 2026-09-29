@@ -298,7 +298,7 @@ double xdmf_step_time(const pugi::xml_node& rStep) {
 }
 
 // ---------------------------------------------------------------------------
-// <Set> <-> regions (v16.26.0)
+// <Set> <-> regions (v16.27.0)
 //
 // SetType Node -> a Point region, Cell -> a Cell region, Face/Edge -> a Side
 // region: the first DataItem holds the cell indices and the second the

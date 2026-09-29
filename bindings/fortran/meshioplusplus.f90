@@ -7993,7 +7993,7 @@ contains
     end subroutine
 
     ! ------------------------------------------------------------------
-    ! mio_format_info: format side channels (v16.26.0)
+    ! mio_format_info: format side channels (v16.27.0)
     ! ------------------------------------------------------------------
 
     !> Read a mesh keeping its format's side channel in `info` (currently MDPA's

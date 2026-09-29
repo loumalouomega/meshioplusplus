@@ -48,7 +48,7 @@ assert abs(after - before) < 1e-9 * abs(before)
 
 ## Regions
 
-Point and Cell regions (and so `point_sets`/`cell_sets`) survive: a parent's children occupy a contiguous run in the output block, so the carry uses `CellMapKind::FirstChild` — the same shape `convert_cells` already uses for its own one-to-many splits. Named **Side** regions survive too (since v16.26.0): a parent facet becomes the child facet that tiles it, which here is the child whose base is the parent's face. See [how operations treat regions](/regions#how-operations-treat-regions).
+Point and Cell regions (and so `point_sets`/`cell_sets`) survive: a parent's children occupy a contiguous run in the output block, so the carry uses `CellMapKind::FirstChild` — the same shape `convert_cells` already uses for its own one-to-many splits. Named **Side** regions survive too (since v16.27.0): a parent facet becomes the child facet that tiles it, which here is the child whose base is the parent's face. See [how operations treat regions](/regions#how-operations-treat-regions).
 
 There is no point map to request (unlike `convert_cells`): `subdivide` never prunes or renumbers an original point, and new apex points are by construction unreferenced by any existing Point region.
 

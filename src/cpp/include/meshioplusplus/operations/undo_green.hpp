@@ -74,7 +74,7 @@
  * **Named regions survive.** Point and Cell regions through the first
  * genuinely non-injective `CellMapKind::Direct` use in the repo (several fine
  * cells collapsing onto one output row), relying on `Region::Canonicalize`'s
- * existing sort+dedup; Side regions since v16.26.0, a green child's facet
+ * existing sort+dedup; Side regions since v16.27.0, a green child's facet
  * moving to the substituted parent's facet that contains it (a removed
  * hanging node must lie on it; see `detail/region_remap.hpp`).
  *

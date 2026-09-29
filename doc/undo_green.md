@@ -44,7 +44,7 @@ The six reserved `refine:*` arrays (`refine:parent_cell`, `refine:level`, `refin
 
 ## Regions
 
-Named **Side** regions survive (since v16.26.0): a green child's facet moves to the substituted parent's facet that contains it, and the removed hanging node must lie on that facet. The split edge between two green children has no counterpart and is dropped, with a warning. See [how operations treat regions](/regions#how-operations-treat-regions). Point regions survive trivially (points are never renumbered). Cell regions survive through the first genuinely **non-injective** `CellMapKind::Direct` remap in the C++ core — several fine cells collapsing onto the same output row — deduplicated the same way `Region`'s entries are always sorted and de-duplicated.
+Named **Side** regions survive (since v16.27.0): a green child's facet moves to the substituted parent's facet that contains it, and the removed hanging node must lie on that facet. The split edge between two green children has no counterpart and is dropped, with a warning. See [how operations treat regions](/regions#how-operations-treat-regions). Point regions survive trivially (points are never renumbered). Cell regions survive through the first genuinely **non-injective** `CellMapKind::Direct` remap in the C++ core — several fine cells collapsing onto the same output row — deduplicated the same way `Region`'s entries are always sorted and de-duplicated.
 
 ## Limitations
 

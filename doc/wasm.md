@@ -182,7 +182,7 @@ Each format's `info` shape (see `doc/wasm.md`'s TypeScript-adjacent field names 
 | --- | --- | --- |
 | `openfoam` | `{patches: [{familyId, names, type?}]}` | yes |
 | `med` | `{pointTags, cellTags, meshName, description, unitTime, unitCoords, pointTagGroups, cellTagGroups, skippedConstructs, fieldUnits, stepMeta, fieldTimeValues}` (`skippedConstructs`/`fieldUnits`/`stepMeta` are read-side, lenient-mode diagnostics only; `fieldTimeValues` is always filled) | yes |
-| `mdpa` | `{entityNames: [{name, isCondition}], skippedConstructs}` — properties are `mesh.propertySets`, not here | yes Since v16.26.0 it also carries `modelPartData`, `tables`, `geometries`, `meshBlocks`, `subModelParts` and `rawBlocks` (see [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0)). |
+| `mdpa` | `{entityNames: [{name, isCondition}], skippedConstructs}` — properties are `mesh.propertySets`, not here | yes Since v16.27.0 it also carries `modelPartData`, `tables`, `geometries`, `meshBlocks`, `subModelParts` and `rawBlocks` (see [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0)). |
 | `ansysinp` / `unv` | `{pointSets: {name: number[]}, cellSets: {name: number[][]}}` (identical shape on both) | yes |
 | `gmsh` | `{boundingEntities: number[][]}`, one array per cell block | yes |
 | `exodus` | `{infoRecords: string[]}` | **no** (read-only; there is no Info-bearing Exodus writer) |

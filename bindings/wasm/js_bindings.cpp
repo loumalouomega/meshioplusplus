@@ -1016,7 +1016,7 @@ val mdpa_info_to_val(const meshioplusplus::MdpaInfo& rInfo) {
     }
     out.set("entityNames", entity_names);
     out.set("skippedConstructs", string_vec_to_val(rInfo.mSkippedConstructs));
-    // The blocks the Mesh cannot hold (v16.26.0). Point references (geometry
+    // The blocks the Mesh cannot hold (v16.27.0). Point references (geometry
     // connectivity, Mesh-block nodes) are 0-based rows, like every index in
     // this API; entity and table ids are the file's own.
     out.set("modelPartData", property_values_to_val(rInfo.mModelPartData));

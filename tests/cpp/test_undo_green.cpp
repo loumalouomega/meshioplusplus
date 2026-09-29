@@ -235,7 +235,7 @@ TEST(UndoGreen, RegionsSurviveTheNonInjectiveCollapse) {
     EXPECT_EQ(meshioplusplus::detail::read_int(apex.mEntries, 0), 0)
         << "points are never renumbered";
 
-    // Side regions survive too (v16.26.0): the edge moves to the output
+    // Side regions survive too (v16.27.0): the edge moves to the output
     // facet containing it.
     ASSERT_NE(undone.mMesh.FindRegion("edge", RegionKind::Side), Mesh::npos);
     EXPECT_GE(undone.mMesh.Region(undone.mMesh.FindRegion("edge", RegionKind::Side)).NumEntries(),

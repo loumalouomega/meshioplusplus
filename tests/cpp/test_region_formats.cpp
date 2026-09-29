@@ -14,7 +14,7 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// Named regions in the formats that gained them in v16.26.0: XDMF <Set>s and
+// Named regions in the formats that gained them in v16.27.0: XDMF <Set>s and
 // the VTU/VTP <FieldData> convention (detail/region_field_data.hpp).
 
 // System includes

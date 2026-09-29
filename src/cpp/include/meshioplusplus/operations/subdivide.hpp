@@ -81,7 +81,7 @@
  * Point and Cell regions survive (via `CellMapKind::FirstChild`, the same
  * shape `convert_cells` already uses for its own one-to-many splits — a
  * parent's children occupy a contiguous run in the corresponding output
- * block). Named **Side** regions survive too (v16.26.0): a parent facet
+ * block). Named **Side** regions survive too (v16.27.0): a parent facet
  * becomes the child facets lying within it (`detail/region_remap.hpp`), so a
  * boundary condition on a face stays on the sub-faces that tile it.
  *

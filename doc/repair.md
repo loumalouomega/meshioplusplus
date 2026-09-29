@@ -66,7 +66,7 @@ Nothing is attached unless `record_provenance=True`, which adds two Int64 arrays
 
 All-triangle at the surface, with blocks 1:1 with the input (a quad block becomes a triangle block of twice the rows). Lower-dimensional blocks — the boundary `line` blocks a gmsh surface routinely carries — ride along verbatim. Fill triangles land in **one trailing `triangle` block**, added only when there is one, so an already-closed input keeps its block count.
 
-Points are the originals, then the split copies, then the hole centroids. `point_data` copies inherit their source's row and centroids get the mean of their loop's rows, dtype preserved; the fill block's `cell_data` rows are NaN for float arrays and 0 for integer ones. Point and Cell regions survive — a split copy joins its source's regions — and so do Side regions (since v16.26.0): rewinding a triangle renumbers its edges, so each edge is found again by its nodes.
+Points are the originals, then the split copies, then the hole centroids. `point_data` copies inherit their source's row and centroids get the mean of their loop's rows, dtype preserved; the fill block's `cell_data` rows are NaN for float arrays and 0 for integer ones. Point and Cell regions survive — a split copy joins its source's regions — and so do Side regions (since v16.27.0): rewinding a triangle renumbers its edges, so each edge is found again by its nodes.
 
 ## No numpy fallback
 

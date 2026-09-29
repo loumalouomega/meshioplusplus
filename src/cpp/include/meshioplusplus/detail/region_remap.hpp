@@ -53,7 +53,7 @@
  * A side entry `(global cell, local facet)` whose cell keeps its identity --
  * one output cell of the same type, reached by no other input cell, whose
  * facet at that number still has the same nodes -- keeps its number. Any
- * other entry (since v16.26.0) is found again by what the facet is made of:
+ * other entry (since v16.27.0) is found again by what the facet is made of:
  *
  *  - **refined** (several children): every child facet lying within it -- each
  *    of the child facet's nodes the image of one of the facet's, or a point

@@ -219,7 +219,7 @@ MESHIOPLUSPLUS_API void reconstruct_cells(
  * @p rMesh, counted from the cells the mesh already held. It differs from `i`
  * only where a polyhedron run is bucketed by node count. The region
  * convention (`detail/region_field_data.hpp`) names cells in file order and
- * needs this to translate (v16.26.0).
+ * needs this to translate (v16.27.0).
  *
  * @param pFileToGlobal out: resized to the file's cell count; may be null.
  */

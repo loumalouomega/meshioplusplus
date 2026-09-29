@@ -16,7 +16,7 @@ the file's own ``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own
 bucket too rather than weakening this table's exact-name assertion. UNV joined
 in v15.6.0, mapping its permanent groups, and Ansys ``.cdb`` components in v16.3.0.
 XDMF (its ``<Set>`` elements) and VTU (a ``<FieldData>`` convention) joined in
-v16.26.0.
+v16.27.0.
 See ``doc/regions.md``.
 """
 
@@ -286,7 +286,7 @@ MATRIX = [
         ".xdmf",
         {"point": True, "cell": True, "side": True},
         {"tag": True},
-        "XDMF <Set>s map onto the three kinds (v16.26.0): SetType Node, Cell, and "
+        "XDMF <Set>s map onto the three kinds (v16.27.0): SetType Node, Cell, and "
         "Face/Edge -- the cell indices then the cell-local face or edge indices, "
         "the XDMF model's own layout, numbered as meshio++ numbers facets. dim "
         "and tag ride in the set's <Information> elements.",
@@ -298,7 +298,7 @@ MATRIX = [
         {"point": True, "cell": True, "side": True},
         {"tag": True},
         "VTK has no named-set concept, so regions ride in <FieldData> as the "
-        "documented `region:<kind>:<name>` Int64 arrays (v16.26.0), cells in the "
+        "documented `region:<kind>:<name>` Int64 arrays (v16.27.0), cells in the "
         "file's cell order, dim and tag in `region-meta:<kind>:<name>`.",
         id="vtu",
     ),

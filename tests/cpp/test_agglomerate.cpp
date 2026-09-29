@@ -308,7 +308,7 @@ TEST(Agglomerate, RegionsSurviveThroughTheGlobalMap) {
     ASSERT_EQ(both.NumEntries(), 1u) << "duplicate global-0 entries collapse via Canonicalize";
     EXPECT_EQ(meshioplusplus::detail::read_int(both.mEntries, 0), 0);
 
-    // The side survives (v16.26.0): the merged polyhedron's face containing
+    // The side survives (v16.27.0): the merged polyhedron's face containing
     // hexahedron 0's bottom face, found by its nodes.
     const std::size_t bottom_idx = r.mMesh.FindRegion("bottom", RegionKind::Side);
     ASSERT_NE(bottom_idx, Mesh::npos);

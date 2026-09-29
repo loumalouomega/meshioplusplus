@@ -142,7 +142,7 @@ std::string rremap_type_at(const Mesh& rMesh, const std::vector<std::int64_t>& r
 }
 
 // ---------------------------------------------------------------------------
-// Side facets by containment (v16.26.0)
+// Side facets by containment (v16.27.0)
 //
 // A side entry names a facet by (cell, local number). When an operation keeps
 // the cell 1:1 the number still names the same facet; otherwise the facet is
@@ -451,7 +451,7 @@ bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
                     !have_pre || preimages[static_cast<std::size_t>(child)] == 1;
                 const std::string in_type = rremap_type_at(rIn, in_bases, cell);
                 // The cell kept its identity: the local number still names
-                // the facet (the only rule before v16.26.0) -- provided its
+                // the facet (the only rule before v16.27.0) -- provided its
                 // nodes are still the facet's, which a flipped or collapsed
                 // cell's are not.
                 if (one_to_one && in_type == rremap_type_at(rOut, out_bases, child) &&

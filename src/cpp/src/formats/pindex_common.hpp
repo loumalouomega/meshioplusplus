@@ -276,7 +276,7 @@ inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string
     // The pieces of ONE dataset share their named regions (a partitioned
     // "wall" is one wall), so they are carried here and unioned by name
     // rather than left to merge(), which keeps two inputs' same-named regions
-    // apart as "0:wall", "1:wall" (v16.26.0).
+    // apart as "0:wall", "1:wall" (v16.27.0).
     std::vector<std::vector<Region>> piece_regions(Pieces.size());
     for (std::size_t m = 0; m < Pieces.size(); ++m) {
         for (std::size_t i = 0; i < Pieces[m].NumRegions(); ++i)

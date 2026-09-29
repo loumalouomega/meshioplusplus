@@ -332,7 +332,7 @@ struct MeshMetadata {
      * alongside geometry by every region-capable reader, so there is nothing
      * left to save by skipping them once a read has happened anyway. The
      * native metadata paths that do not read the mesh count them from headers
-     * and declared sizes: Gmsh 4.1, and XDMF, VTU and VTP since v16.26.0 (VTU
+     * and declared sizes: Gmsh 4.1, and XDMF, VTU and VTP since v16.27.0 (VTU
      * and VTP report `mDim`/`mTag` as -1, since those live in the payload).
      */
     std::vector<RegionSummary> mRegions;

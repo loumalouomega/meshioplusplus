@@ -219,7 +219,7 @@ The name is **reserved**, on the same policy as `refine:level`: an input that al
 - Every selected cell is fully split; every other cell is either untouched or minimally split by the closure.
 - New nodes are the **mean of their entity's corners**, which is order-independent, so neighbours agree bit-for-bit with no tie-break.
 - `cell_data` is replicated parent → children, transitional children included; `point_data` is interpolated onto the new nodes exactly as in the uniform case.
-- Named regions (and so `point_sets`/`cell_sets`) are remapped, with a refined cell's region membership expanding to its children, and a side region's facet to the child facets lying within it (since v16.26.0).
+- Named regions (and so `point_sets`/`cell_sets`) are remapped, with a refined cell's region membership expanding to its children, and a side region's facet to the child facets lying within it (since v16.27.0).
 - Output is byte-identical across the MESHIO/NATIVE/KRATOS backends, across thread counts, and across the C++-core/numpy-fallback boundary — pinned by `tests/python/test_refine.py::test_cpp_matches_python_selective`.
 
 ## Volume and orientation

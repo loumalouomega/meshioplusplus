@@ -107,7 +107,7 @@ private:
  * @brief The nodes of one `Side` facet: its cell type and node ids, corners
  * first, then mid-side and centre nodes as `cell_faces`/`cell_edges` list them.
  * A polyhedron's facet k is its face k (`triangle`, `quad` or `polygon`); a
- * polygon's is its edge k, from node k to node k + 1 (since v16.26.0).
+ * polygon's is its edge k, from node k to node k + 1 (since v16.27.0).
  * @param rMesh The mesh.
  * @param Cell Global (block-major) cell index.
  * @param Facet Local facet: a face of a 3-D cell, an edge of a 2-D one.

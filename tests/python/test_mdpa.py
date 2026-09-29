@@ -2581,7 +2581,7 @@ def test_write_shim_falls_back_for_misc_data(tmp_path):
     assert "Begin SubModelPart Parts_Parts_Auto1" in out.read_text()
 
 
-# --- The MdpaInfo side channel (v16.26.0) ------------------------------------
+# --- The MdpaInfo side channel (v16.27.0) ------------------------------------
 #
 # `_core.mdpa_read_info` / `mdpa_write_info` carry what the C++ `Mesh` cannot
 # hold -- the same content the reference reader keeps in `misc_data` and

@@ -4316,7 +4316,7 @@ TEST(CApi, AgglomerateExAndBlendAndResample) {
 }
 
 // ---------------------------------------------------------------------------
-// mio_format_info: the MDPA side channel on the flat ABI (v16.26.0)
+// mio_format_info: the MDPA side channel on the flat ABI (v16.27.0)
 // ---------------------------------------------------------------------------
 
 namespace {

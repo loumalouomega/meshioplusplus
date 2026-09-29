@@ -35,7 +35,7 @@ Face matching always uses the **corner nodes only**, so a mixed linear/quadratic
 
 - **Output block order** is fixed: `triangle`, `triangle6`, `quad`, `quad8`, `quad9` (only non-empty blocks appear), with faces in volume-cell enumeration order within each block.
 - **Points are compacted**: only nodes referenced by a boundary face are kept, in ascending original-index order. `point_data` rows are subset the same way; `cell_data`, `field_data` and `info` are **dropped** (a boundary face has no canonical 1:1 source cell).
-- **Named regions** (since v16.26.0): a `side` region becomes a `cell` region of the skin naming the faces it covered, a `point` region follows the kept points, and a `cell` region is dropped with a warning, as for [`extract_surface`](/extract_surface).
+- **Named regions** (since v16.27.0): a `side` region becomes a `cell` region of the skin naming the faces it covered, a `point` region follows the kept points, and a `cell` region is dropped with a warning, as for [`extract_surface`](/extract_surface).
 - **`linearize=True`** emits only the corner nodes of each face (`triangle`/`quad` output even for higher-order input); unused mid-edge/face-center nodes then compact away. This is what the STL/PLY/SVG/TikZ writers use.
 - **Unsupported volume blocks** (`polyhedron*`, ragged blocks, Lagrange and very-high-order types) are skipped with a warning. If the mesh has **no** supported volume block at all, `ValueError` is raised.
 - Existing 0/1/2-D blocks are ignored — the skin is derived from the volume cells only. (This also means the writers' `skin=True` mode drops pre-existing surface blocks, with a warning: a volume mesh's surface blocks are usually its boundary already, and writing both would duplicate every facet.)

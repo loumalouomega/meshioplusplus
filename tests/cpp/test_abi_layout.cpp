@@ -189,7 +189,7 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 // `MESHIOPLUSPLUS_ABI_VERSION` 12 -> 13 (see abi_version.hpp).
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
-// `MdpaInfo` gained six members in v16.26.0 (roadmap §4, the blocks the
+// `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
 // blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping
 // `MESHIOPLUSPLUS_ABI_VERSION` 19 -> 20. The four element types it holds are

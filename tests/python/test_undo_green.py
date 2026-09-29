@@ -193,7 +193,7 @@ def test_regions_survive_the_non_injective_collapse(engine):
     apex_out = next(r for r in undone.regions if r.name == "apex")
     assert apex_out.entries.tolist() == [0], "points are never renumbered"
 
-    # Side regions survive too (v16.26.0), identically on both engines.
+    # Side regions survive too (v16.27.0), identically on both engines.
     edge_out = next(r for r in undone.regions if r.name == "edge")
     assert len(edge_out.entries) >= 1
     if engine == "python" and _core is not None:

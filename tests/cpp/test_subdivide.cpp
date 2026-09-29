@@ -348,7 +348,7 @@ TEST(Subdivide, PointCellAndSideRegionsSurvive) {
         want_cells.push_back(i);
     EXPECT_EQ(region_entries(r.mMesh, "all", RegionKind::Cell), want_cells);
 
-    // The side survives (v16.26.0) as the child facet that IS the parent's
+    // The side survives (v16.27.0) as the child facet that IS the parent's
     // face: the same four nodes.
     const std::vector<std::int64_t> bottom = region_entries(r.mMesh, "bottom", RegionKind::Side);
     ASSERT_EQ(bottom.size(), 2u);

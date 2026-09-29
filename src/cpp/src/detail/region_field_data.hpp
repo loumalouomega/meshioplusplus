@@ -22,7 +22,7 @@
  * @brief Named regions in a VTK XML file's `<FieldData>` (`.vtu`, `.vtp`).
  *
  * VTK has no named-set concept, so meshio++ writes each region as one
- * dataset-level Int64 field array (v16.26.0, doc/regions.md):
+ * dataset-level Int64 field array (v16.27.0, doc/regions.md):
  *
  *  - `region:point:<name>` — point indices, one component;
  *  - `region:cell:<name>` — cell indices, one component;

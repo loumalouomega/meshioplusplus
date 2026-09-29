@@ -1,4 +1,4 @@
-"""Side regions surviving operations (v16.26.0): the C++ core against the numpy
+"""Side regions surviving operations (v16.27.0): the C++ core against the numpy
 twins in ``_side_carry.py``, and the geometric invariants a carry must keep."""
 
 import numpy as np

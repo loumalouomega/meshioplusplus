@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 26
+#define MIO_VERSION_MINOR 27
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -560,7 +560,7 @@ MIO_API mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const ch
                                 const mio_write_opts* opts);
 
 /* ---------------------------------------------------------------------
- * Format side channels (v16.26.0)
+ * Format side channels (v16.27.0)
  *
  * Some formats carry content a mesh cannot hold -- MDPA's tables,
  * geometries, Mesh blocks and constraints, for one. mio_read() refuses such

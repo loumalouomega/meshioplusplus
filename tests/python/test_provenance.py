@@ -521,7 +521,7 @@ def test_off_writer_records_dropped_cell_types(tmp_path):
 
 def test_warn_regions_dropped_records_a_note(tmp_path):
     """The operations layer's region-drop warnings record a provenance note;
-    pinned via `extract_surface`, which (since v16.26.0) keeps point and side
+    pinned via `extract_surface`, which (since v16.27.0) keeps point and side
     regions but drops a cell region -- it names volume cells the surface does
     not hold."""
     from meshioplusplus._surface import extract_surface

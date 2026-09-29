@@ -1,7 +1,7 @@
 # Format side channels: what a format carries that a mesh cannot hold (MDPA's
 # tables, geometries, Mesh blocks and constraints), kept by `read_with_info` in
 # an opaque handle for `write_with_info` to put back. The C API's
-# `mio_format_info` (v16.26.0).
+# `mio_format_info` (v16.27.0).
 
 const MIO_MDPA_PROPERTIES = Int32(0)
 const MIO_MDPA_ENTITY_NAMES = Int32(1)

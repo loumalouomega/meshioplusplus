@@ -136,7 +136,7 @@ def test_iter_samples_streams_and_filters_by_split(tmp_path):
     assert [entry_id for entry_id, _, _ in seen] == ["c0", "c1", "c2"]
     for _, _, sample in seen:
         assert isinstance(sample, mpn.GraphSample)
-        # VTU carries regions (since v16.26.0), so the manifest's "inlet"
+        # VTU carries regions (since v16.27.0), so the manifest's "inlet"
         # region comes back as its one-hot column.
         assert sample.x_columns == ("T", "region:inlet")
     assert len(list(mpn.iter_samples(manifest))) == 4
