@@ -8,6 +8,15 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.26.0 (2026-09-28)
+
+**Fuzz-found reader crash fixes, from the scheduled `fuzz` workflow (run 36405040811). ABI 19, unchanged.**
+
+- **Fixed**: EnSight's `FileSource::LoadBuffered` sized its read buffer from a stream's `tellg()`, but a `.case` file's `model:` value with an embedded NUL truncates the path an `open()` call actually sees, which could point at a directory; some platforms let an `ifstream` "open" and seek on a directory without ever failing, and its bogus size went straight into an uncaught `std::bad_alloc`. The size now comes from `std::filesystem::status`/`file_size`, matching the check `FileSource::TryMap` already makes. LS-DYNA `d3plot`'s airbag header counts (NGEOM/NVAR/NPART/NSTATEGEOM) were never bounded against the file's word count, unlike every other control-block count in the same reader, so a crafted particle count could allocate tens of gigabytes. Gmsh's `$NodeData`/`$ElementData` integer-tag count was never checked against the three tags the reader indexes right after it, so a file with fewer tags read past an undersized (or empty, null-buffer) vector; the component×entity product was likewise unbounded, the same allocation-size class as the `d3plot` fix. UGRID's 1-based-to-0-based node-index conversion overflowed signed arithmetic on a corrupt `INT32_MIN`/`INT64_MIN` index in both its ASCII and binary paths (now `detail::zero_based`'s unsigned wraparound), and never validated connectivity against the point count the way `lsdyna_d3plot` already does.
+- Four minimized regression inputs added under `tests/fuzz/regressions/{ensight,lsdyna_d3plot,gmsh,ugrid}/`.
+- Refreshed `BASELINE_HASHES` in `tests/python/test_io_baseline.py` for the version-string change (verified against the old hashes with the old version substituted back in — no unrelated output change). Regenerated the single header.
+- Version bump across the ten files (minor 25 -> 26), the `find_package` pins, and `src/viewer/package-lock.json`.
+
 ## v16.25.0 (2026-09-27)
 
 **Roadmap §5 "Analysis and editing", last part: time resampling of sequences and the `agglomerate` follow-ups.** This closes the roadmap's "Analysis and editing" group. **ABI 18 -> 19** (Tier A: two option structs grow).

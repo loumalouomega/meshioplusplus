@@ -538,6 +538,13 @@ D3Geometry d3_geometry(const D3Words& rW, const D3Header& rH) {
         g.mAirbagVar = head[1];
         g.mAirbagParticles = head[2];
         g.mAirbagStateGeom = head[3];
+        // Each sizes an allocation below (particle points, geometry-data
+        // reads); a value the file cannot back is corrupt, matching the
+        // control block's own node/element/part counts (above).
+        for (const std::int64_t v :
+             {g.mAirbagGeom, g.mAirbagVar, g.mAirbagParticles, g.mAirbagStateGeom})
+            if (v < 0 || static_cast<std::uint64_t>(v) > rW.NumWords())
+                d3_fail("the airbag header counts more entities than the file holds");
         g.mHasAirbag = true;
         pos += 4;
         if (rH.mAirbagSubver == 4)

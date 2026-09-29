@@ -17,7 +17,9 @@
 
 // System includes
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <utility>
 
 // Project includes
@@ -86,15 +88,26 @@ FileSource::Mode FileSource::FromMmapMode(MmapMode mmap_mode) {
 }
 
 void FileSource::LoadBuffered(const std::string& rPath) {
+    // The size comes from filesystem metadata, not a stream's tellg(): a
+    // directory (reachable when a caller-built path truncates at an embedded
+    // NUL, as an EnSight `model:` value can) opens as a stream on some
+    // platforms without ever failing, and its bogus tellg() would otherwise
+    // be trusted straight into `resize()`, the "count trusted before the
+    // bytes that back it" allocation this project's readers must not make.
+    std::error_code ec;
+    const auto status = std::filesystem::status(rPath, ec);
+    if (ec || !std::filesystem::is_regular_file(status))
+        throw ReadError("Could not open file: " + rPath);
+    const std::uintmax_t size = std::filesystem::file_size(rPath, ec);
+    if (ec)
+        throw ReadError("Could not open file: " + rPath);
+
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
-    in.seekg(0, std::ios::end);
-    const std::streamoff len = in.tellg();
-    in.seekg(0, std::ios::beg);
-    if (len > 0) {
-        mBuffer.resize(static_cast<std::size_t>(len));
-        in.read(mBuffer.data(), len);
+    if (size > 0) {
+        mBuffer.resize(static_cast<std::size_t>(size));
+        in.read(mBuffer.data(), static_cast<std::streamsize>(size));
     }
     mSize = mBuffer.size();
     mpData = nullptr;
