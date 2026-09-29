@@ -797,9 +797,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
     // Named regions. The cell map is FirstChild — an input quad/polygon becomes
     // a contiguous run of triangles, and a fully-collapsed parent maps to -1,
-    // which the run scan steps over. Side regions are dropped: the output is
-    // all-triangle, so an input facet has no counterpart. See
-    // detail/region_remap.hpp.
+    // which the run scan steps over. A side edge moves to the triangle edge
+    // joining its surviving nodes; one a collapse removed is lost, with a
+    // warning. See detail/region_remap.hpp.
     {
         detail::RegionRemap rmap;
         rmap.pPointMap = &result.mPointMap;

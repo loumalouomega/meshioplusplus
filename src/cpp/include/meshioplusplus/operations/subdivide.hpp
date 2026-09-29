@@ -81,10 +81,9 @@
  * Point and Cell regions survive (via `CellMapKind::FirstChild`, the same
  * shape `convert_cells` already uses for its own one-to-many splits — a
  * parent's children occupy a contiguous run in the corresponding output
- * block). Named **Side** regions do not: `FirstChild` drops them
- * unconditionally, since a child's facets have no correspondence with the
- * parent's — the same limitation `convert_cells(Simplexify)` already has and
- * documents, not a new gap this operation introduces.
+ * block). Named **Side** regions survive too (v16.27.0): a parent facet
+ * becomes the child facets lying within it (`detail/region_remap.hpp`), so a
+ * boundary condition on a face stays on the sub-faces that tile it.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is

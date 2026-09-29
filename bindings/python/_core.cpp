@@ -338,6 +338,210 @@ py::dict core_metadata_to_py(const meshioplusplus::MeshMetadata& rMeta) {
     return out;
 }
 
+// --- MdpaInfo <-> dict ------------------------------------------------------
+// The MDPA side channel crosses as plain dicts/lists of numpy arrays: nothing
+// here has a Python class of its own, and the pure-Python reference keeps its
+// own (different) misc_data shape, which this deliberately does not imitate.
+
+py::dict core_mdpa_value_to_py(const meshioplusplus::PropertyValue& rValue) {
+    py::dict out;
+    out["key"] = rValue.mKey;
+    out["is_table"] = rValue.mIsTable;
+    if (rValue.IsText() && !rValue.mIsTable) {
+        out["text"] = rValue.mText;
+        out["values"] = py::none();
+    } else {
+        out["text"] = py::none();
+        out["values"] =
+            meshioplusplus_py::numpy_from_ndarray(meshioplusplus::NDArray(rValue.mValues));
+    }
+    return out;
+}
+
+meshioplusplus::PropertyValue core_mdpa_value_from_py(py::handle rObj) {
+    const py::dict d = py::cast<py::dict>(rObj);
+    meshioplusplus::PropertyValue out;
+    out.mKey = py::cast<std::string>(d["key"]);
+    out.mIsTable = d.contains("is_table") && py::cast<bool>(d["is_table"]);
+    if (d.contains("text") && !d["text"].is_none()) {
+        out.mText = py::cast<std::string>(d["text"]);
+        return out;
+    }
+    const auto arr =
+        py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(d["values"]);
+    std::vector<std::size_t> shape(arr.shape(), arr.shape() + arr.ndim());
+    if (shape.empty())
+        shape = {1};
+    out.mValues = meshioplusplus::NDArray(meshioplusplus::DType::Float64, shape);
+    std::copy(arr.data(), arr.data() + arr.size(), out.mValues.As<double>());
+    return out;
+}
+
+py::list core_mdpa_values_to_py(const std::vector<meshioplusplus::PropertyValue>& rValues) {
+    py::list out;
+    for (const auto& v : rValues)
+        out.append(core_mdpa_value_to_py(v));
+    return out;
+}
+
+std::vector<meshioplusplus::PropertyValue> core_mdpa_values_from_py(py::handle rObj) {
+    std::vector<meshioplusplus::PropertyValue> out;
+    if (!rObj.is_none())
+        for (py::handle v : py::cast<py::sequence>(rObj))
+            out.push_back(core_mdpa_value_from_py(v));
+    return out;
+}
+
+py::array core_mdpa_ids_to_py(const std::vector<std::int64_t>& rIds) {
+    return py::array_t<std::int64_t>(static_cast<py::ssize_t>(rIds.size()), rIds.data());
+}
+
+std::vector<std::int64_t> core_mdpa_ids_from_py(py::handle rObj) {
+    if (rObj.is_none())
+        return {};
+    const auto arr =
+        py::cast<py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>>(rObj);
+    return std::vector<std::int64_t>(arr.data(), arr.data() + arr.size());
+}
+
+/// `d.get(key)` as a handle, `None` when absent.
+py::object core_dict_get(const py::dict& rDict, const char* pKey) {
+    return rDict.contains(pKey) ? py::object(rDict[pKey]) : py::object(py::none());
+}
+
+py::dict core_mdpa_info_to_py(const meshioplusplus::MdpaInfo& rInfo) {
+    py::dict out;
+    py::list props;
+    for (const auto& ps : rInfo.mProperties) {
+        py::dict p;
+        p["id"] = ps.mId;
+        p["values"] = core_mdpa_values_to_py(ps.mValues);
+        props.append(p);
+    }
+    out["properties"] = props;
+    py::list names;
+    for (const auto& en : rInfo.mEntityNames)
+        names.append(py::make_tuple(en.mName, en.mIsCondition));
+    out["entity_names"] = names;
+    out["skipped"] = rInfo.mSkippedConstructs;
+    out["model_part_data"] = core_mdpa_values_to_py(rInfo.mModelPartData);
+    out["tables"] = core_mdpa_values_to_py(rInfo.mTables);
+    py::list geos;
+    for (const auto& g : rInfo.mGeometries) {
+        py::dict d;
+        d["name"] = g.mName;
+        d["type"] = g.mType;
+        d["conn"] = meshioplusplus_py::numpy_from_ndarray(meshioplusplus::NDArray(g.mConn));
+        d["ids"] = core_mdpa_ids_to_py(g.mIds);
+        geos.append(d);
+    }
+    out["geometries"] = geos;
+    py::list meshes;
+    for (const auto& mb : rInfo.mMeshBlocks) {
+        py::dict d;
+        d["id"] = mb.mId;
+        d["data"] = core_mdpa_values_to_py(mb.mData);
+        d["nodes"] = core_mdpa_ids_to_py(mb.mNodes);
+        d["element_ids"] = core_mdpa_ids_to_py(mb.mElementIds);
+        d["condition_ids"] = core_mdpa_ids_to_py(mb.mConditionIds);
+        meshes.append(d);
+    }
+    out["mesh_blocks"] = meshes;
+    py::list smps;
+    for (const auto& smp : rInfo.mSubModelParts) {
+        py::dict d;
+        d["name"] = smp.mName;
+        d["data"] = core_mdpa_values_to_py(smp.mData);
+        d["tables"] = core_mdpa_ids_to_py(smp.mTables);
+        smps.append(d);
+    }
+    out["submodelparts"] = smps;
+    py::list raws;
+    for (const auto& r : rInfo.mRawBlocks) {
+        py::dict d;
+        d["header"] = r.mHeader;
+        d["body"] = r.mBody;
+        d["end"] = r.mEnd;
+        raws.append(d);
+    }
+    out["raw_blocks"] = raws;
+    return out;
+}
+
+meshioplusplus::MdpaInfo core_mdpa_info_from_py(const py::dict& rInfo) {
+    meshioplusplus::MdpaInfo info;
+    const py::object props = core_dict_get(rInfo, "properties");
+    if (!props.is_none())
+        for (py::handle h : py::cast<py::sequence>(props)) {
+            const py::dict d = py::cast<py::dict>(h);
+            meshioplusplus::PropertySet ps;
+            ps.mId = py::cast<std::int64_t>(d["id"]);
+            ps.mValues = core_mdpa_values_from_py(core_dict_get(d, "values"));
+            info.mProperties.push_back(std::move(ps));
+        }
+    const py::object names = core_dict_get(rInfo, "entity_names");
+    if (!names.is_none())
+        for (py::handle h : py::cast<py::sequence>(names)) {
+            const auto t = py::cast<py::sequence>(h);
+            info.mEntityNames.push_back(
+                meshioplusplus::MdpaEntityName{py::cast<std::string>(t[0]), py::cast<bool>(t[1])});
+        }
+    info.mModelPartData = core_mdpa_values_from_py(core_dict_get(rInfo, "model_part_data"));
+    info.mTables = core_mdpa_values_from_py(core_dict_get(rInfo, "tables"));
+    for (auto& t : info.mTables)
+        t.mIsTable = true;
+    const py::object geos = core_dict_get(rInfo, "geometries");
+    if (!geos.is_none())
+        for (py::handle h : py::cast<py::sequence>(geos)) {
+            const py::dict d = py::cast<py::dict>(h);
+            meshioplusplus::MdpaGeometryBlock g;
+            const py::object name = core_dict_get(d, "name");
+            g.mName = name.is_none() ? std::string() : py::cast<std::string>(name);
+            g.mType = py::cast<std::string>(d["type"]);
+            const auto conn =
+                py::cast<py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>>(
+                    d["conn"]);
+            if (conn.ndim() != 2)
+                throw py::value_error("meshio++: an MDPA geometry's conn must be 2-D");
+            g.mConn = meshioplusplus::NDArray(
+                meshioplusplus::DType::Int64,
+                {static_cast<std::size_t>(conn.shape(0)), static_cast<std::size_t>(conn.shape(1))});
+            std::copy(conn.data(), conn.data() + conn.size(), g.mConn.As<std::int64_t>());
+            g.mIds = core_mdpa_ids_from_py(core_dict_get(d, "ids"));
+            info.mGeometries.push_back(std::move(g));
+        }
+    const py::object meshes = core_dict_get(rInfo, "mesh_blocks");
+    if (!meshes.is_none())
+        for (py::handle h : py::cast<py::sequence>(meshes)) {
+            const py::dict d = py::cast<py::dict>(h);
+            meshioplusplus::MdpaMeshBlock mb;
+            mb.mId = py::cast<std::int64_t>(d["id"]);
+            mb.mData = core_mdpa_values_from_py(core_dict_get(d, "data"));
+            mb.mNodes = core_mdpa_ids_from_py(core_dict_get(d, "nodes"));
+            mb.mElementIds = core_mdpa_ids_from_py(core_dict_get(d, "element_ids"));
+            mb.mConditionIds = core_mdpa_ids_from_py(core_dict_get(d, "condition_ids"));
+            info.mMeshBlocks.push_back(std::move(mb));
+        }
+    const py::object smps = core_dict_get(rInfo, "submodelparts");
+    if (!smps.is_none())
+        for (py::handle h : py::cast<py::sequence>(smps)) {
+            const py::dict d = py::cast<py::dict>(h);
+            info.mSubModelParts.push_back(meshioplusplus::MdpaSubModelPart{
+                py::cast<std::string>(d["name"]),
+                core_mdpa_values_from_py(core_dict_get(d, "data")),
+                core_mdpa_ids_from_py(core_dict_get(d, "tables"))});
+        }
+    const py::object raws = core_dict_get(rInfo, "raw_blocks");
+    if (!raws.is_none())
+        for (py::handle h : py::cast<py::sequence>(raws)) {
+            const py::dict d = py::cast<py::dict>(h);
+            info.mRawBlocks.push_back(meshioplusplus::MdpaRawBlock{
+                py::cast<std::string>(d["header"]), py::cast<std::string>(d["body"]),
+                py::cast<std::string>(d["end"])});
+        }
+    return info;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
@@ -3228,6 +3432,28 @@ PYBIND11_MODULE(_core, m) {
     m.def("mdpa_read", guard_read("mdpa", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mdpa(path));
           }));
+    // The MdpaInfo overloads: (mesh, info dict) out, (mesh, info dict) in. The
+    // `mdpa.read` shim stays on the pure-Python reference (see its docstring);
+    // these are the explicit route to the core's side channel.
+    m.def("mdpa_read_info",
+          guard_read("mdpa",
+                     [](const std::string& path, bool lenient) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mLenient = lenient;
+                         meshioplusplus::MdpaInfo info;
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(
+                             meshioplusplus::read_mdpa(path, info, opts));
+                         return py::make_tuple(pymesh, core_mdpa_info_to_py(info));
+                     }),
+          py::arg("path"), py::arg("lenient") = false);
+    m.def(
+        "mdpa_write_info",
+        [](const std::string& path, py::object pymesh, const py::dict& info) {
+            meshioplusplus_py::PyMeshRefs refs;
+            const meshioplusplus::MdpaInfo cpp_info = core_mdpa_info_from_py(info);
+            meshioplusplus::write_mdpa(path, meshioplusplus_py::py_to_mesh(pymesh, refs), cpp_info);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("info"));
 
     // Abaqus writer / reader (.inp).
     m.def("abaqus_write", [](const std::string& path, py::object pymesh) {

@@ -15,7 +15,8 @@ FLAC3D round-trips a cell region's *membership* but rewrites its *name* into
 the file's own ``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own
 bucket too rather than weakening this table's exact-name assertion. UNV joined
 in v15.6.0, mapping its permanent groups, and Ansys ``.cdb`` components in v16.3.0.
-XDMF is deferred entirely.
+XDMF (its ``<Set>`` elements) and VTU (a ``<FieldData>`` convention) joined in
+v16.27.0.
 See ``doc/regions.md``.
 """
 
@@ -280,6 +281,27 @@ MATRIX = [
         "side regions are dropped.",
         id="marc",
     ),
+    pytest.param(
+        "xdmf",
+        ".xdmf",
+        {"point": True, "cell": True, "side": True},
+        {"tag": True},
+        "XDMF <Set>s map onto the three kinds (v16.27.0): SetType Node, Cell, and "
+        "Face/Edge -- the cell indices then the cell-local face or edge indices, "
+        "the XDMF model's own layout, numbered as meshio++ numbers facets. dim "
+        "and tag ride in the set's <Information> elements.",
+        id="xdmf",
+    ),
+    pytest.param(
+        "vtu",
+        ".vtu",
+        {"point": True, "cell": True, "side": True},
+        {"tag": True},
+        "VTK has no named-set concept, so regions ride in <FieldData> as the "
+        "documented `region:<kind>:<name>` Int64 arrays (v16.27.0), cells in the "
+        "file's cell order, dim and tag in `region-meta:<kind>:<name>`.",
+        id="vtu",
+    ),
 ]
 
 
@@ -406,8 +428,9 @@ def test_no_regions_writes_the_same_bytes(
 
     a = tmp_path / ("a" + suffix)
     b = tmp_path / ("b" + suffix)
-    if fmt == "radioss":
-        # The deck's run name is its file name: the same name, two directories.
+    if fmt in ("radioss", "xdmf"):
+        # The deck's run name is its file name, and an .xdmf names its .h5
+        # sibling: the same name, two directories.
         a = tmp_path / "a" / ("deck" + suffix)
         b = tmp_path / "b" / ("deck" + suffix)
         a.parent.mkdir()
@@ -425,29 +448,15 @@ def test_side_regions_are_the_new_capability():
     `cell_sets` equivalent at all — it is only reachable through `.regions`.
     """
     side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
-    assert side_capable == ["abaqus", "lsdyna", "openfoam", "febio", "radioss"]
-
-
-# --------------------------------------------------------------------------- #
-# Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
-# --------------------------------------------------------------------------- #
-PHASE_2 = {
-    "xdmf": "XDMF Sets",
-    "vtu": "no native set concept — a convention has to be chosen, not invented silently",
-}
-
-
-@pytest.mark.parametrize("fmt", sorted(PHASE_2))
-def test_phase_2_formats_do_not_carry_regions_yet(fmt, tmp_path):
-    """These formats keep working; they simply do not map regions yet.
-
-    The assertion is deliberately weak — it only pins that nothing *claims* to
-    round-trip a region it cannot. When a format graduates to Phase 2, move it
-    into MATRIX and delete its entry here.
-    """
-    assert fmt not in {
-        p.values[0] for p in MATRIX
-    }, f"{fmt} now carries regions: move it from PHASE_2 into MATRIX"
+    assert side_capable == [
+        "abaqus",
+        "lsdyna",
+        "openfoam",
+        "febio",
+        "radioss",
+        "xdmf",
+        "vtu",
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -528,7 +537,6 @@ def test_namespaced_region_formats_are_not_round_trip_rows(fmt):
     assert fmt not in {
         p.values[0] for p in MATRIX
     }, f"{fmt} now preserves region names: move it into MATRIX"
-    assert fmt not in PHASE_2, f"{fmt} carries regions: it is no longer a Phase-2 gap"
     assert fmt not in READ_ONLY_REGIONS, f"{fmt} writes regions too"
 
 
@@ -542,7 +550,6 @@ def test_read_only_region_formats_are_not_round_trip_rows(fmt):
     assert fmt not in {
         p.values[0] for p in MATRIX
     }, f"{fmt} now round-trips regions: move it from READ_ONLY_REGIONS into MATRIX"
-    assert fmt not in PHASE_2, f"{fmt} is read-capable: it is no longer a Phase-2 gap"
 
 
 # --------------------------------------------------------------------------- #

@@ -520,15 +520,16 @@ def test_off_writer_records_dropped_cell_types(tmp_path):
 
 
 def test_warn_regions_dropped_records_a_note(tmp_path):
-    """`detail::warn_regions_dropped` is the single choke point for the
-    operations layer's own region-drop warning (9 call sites); pinned via
-    `extract_surface`, which calls it whenever the input carries regions."""
+    """The operations layer's region-drop warnings record a provenance note;
+    pinned via `extract_surface`, which (since v16.27.0) keeps point and side
+    regions but drops a cell region -- it names volume cells the surface does
+    not hold."""
     from meshioplusplus._surface import extract_surface
 
     mesh = mp.Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
         [("tetra", np.array([[0, 1, 2, 3]]))],
-        point_sets={"corner": np.array([0])},
+        cell_sets={"solid": [np.array([0])]},
     )
     with _provenance.scope(_provenance.Mode.BEST_EFFORT) as s:
         extract_surface(mesh)

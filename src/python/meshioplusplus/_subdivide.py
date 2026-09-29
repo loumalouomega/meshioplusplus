@@ -47,9 +47,8 @@ def subdivide(mesh, record_parent_ids: bool = False):
 
     Non-3D blocks (2D/1D boundary markers) and 3D blocks with no face table
     (the full-Lagrange family) pass through unchanged. Point and Cell regions
-    (and so ``point_sets``/``cell_sets``) survive; named **Side** regions do
-    not, since a child's facets have no correspondence with the parent's --
-    the same limitation ``convert_cells(mode="simplexify")`` already has.
+    (and so ``point_sets``/``cell_sets``) survive, and so do named **Side**
+    regions: a parent facet becomes the child facets lying within it.
 
     :param mesh: the mesh to subdivide (never modified).
     :param record_parent_ids: when true, attach an Int64

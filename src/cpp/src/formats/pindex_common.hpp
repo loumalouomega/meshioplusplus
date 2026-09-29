@@ -35,6 +35,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <tuple>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,6 +51,7 @@
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -270,6 +273,18 @@ inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string
     if (Pieces.size() == 1)
         return std::move(Pieces.front());
 
+    // The pieces of ONE dataset share their named regions (a partitioned
+    // "wall" is one wall), so they are carried here and unioned by name
+    // rather than left to merge(), which keeps two inputs' same-named regions
+    // apart as "0:wall", "1:wall" (v16.27.0).
+    std::vector<std::vector<Region>> piece_regions(Pieces.size());
+    for (std::size_t m = 0; m < Pieces.size(); ++m) {
+        for (std::size_t i = 0; i < Pieces[m].NumRegions(); ++i)
+            piece_regions[m].push_back(Pieces[m].Region(i));
+        while (Pieces[m].NumRegions() > 0)
+            Pieces[m].RemoveRegion(Pieces[m].NumRegions() - 1);
+    }
+
     std::vector<const Mesh*> ptrs;
     ptrs.reserve(Pieces.size());
     for (const Mesh& m : Pieces)
@@ -280,6 +295,33 @@ inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string
     mopts.source_tag = false;
     mopts.data_policy = MergeDataPolicy::Fill;
     MergeResult result = merge_keeping_field_data(ptrs, mopts);
+
+    std::map<std::tuple<int, std::string, int, std::int64_t>, std::vector<std::int64_t>> unions;
+    for (std::size_t m = 0; m < Pieces.size(); ++m) {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMaps[m];
+        rmap.mCellMapKind = detail::CellMapKind::Global;
+        rmap.pGlobalCellMap = &result.mCellMaps[m];
+        rmap.mOpName = "merge";
+        for (const Region& r_src : piece_regions[m]) {
+            Region carried;
+            if (!detail::remap_region(Pieces[m], result.mMesh, r_src, rmap, carried))
+                continue;
+            std::vector<std::int64_t>& r_all = unions[{static_cast<int>(carried.mKind),
+                                                       carried.mName, carried.mDim, carried.mTag}];
+            const std::int64_t* e = carried.Entries();
+            r_all.insert(r_all.end(), e, e + carried.NumEntries() * carried.Stride());
+        }
+    }
+    for (auto& [key, flat] : unions) {
+        const auto kind = static_cast<RegionKind>(std::get<0>(key));
+        const std::size_t stride = kind == RegionKind::Side ? 2 : 1;
+        NDArray entries = stride == 1 ? NDArray(DType::Int64, {flat.size()})
+                                      : NDArray(DType::Int64, {flat.size() / 2, 2});
+        std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+        result.mMesh.AddRegion(
+            Region(std::get<1>(key), kind, std::get<2>(key), std::get<3>(key), std::move(entries)));
+    }
 
     for (std::size_t i = 0; i < Pieces.size(); ++i)
         result.mMesh.AddRegion(Region(rNames[i], RegionKind::Cell, std::move(result.mCellMaps[i])));
@@ -306,6 +348,17 @@ inline MeshMetadata aggregate_metadata(const std::vector<MeshMetadata>& rParts,
         merge_names(point_names, pm.mPointDataNames);
         merge_names(cell_names, pm.mCellDataNames);
         merge_names(field_names, pm.mFieldDataNames);
+        // The pieces' named regions are one region each (merge_pieces unions them).
+        for (const RegionSummary& rs : pm.mRegions) {
+            auto it = std::find_if(meta.mRegions.begin(), meta.mRegions.end(),
+                                   [&](const RegionSummary& rR) {
+                                       return rR.mKind == rs.mKind && rR.mName == rs.mName;
+                                   });
+            if (it == meta.mRegions.end())
+                meta.mRegions.push_back(rs);
+            else
+                it->mNumEntries += rs.mNumEntries;
+        }
         for (const CellBlockInfo& cb : pm.mCellBlocks) {
             auto it = std::find_if(blocks.begin(), blocks.end(),
                                    [&](const CellBlockInfo& rB) { return rB.mType == cb.mType; });

@@ -145,14 +145,26 @@ def test_an_open_face_set_raises_value_error():
 
 
 @needs_core
-def test_point_and_cell_regions_survive_but_side_regions_are_dropped():
+def test_point_cell_and_side_regions_survive():
+    from meshioplusplus._facets import facet_nodes
+
     mesh = _unit_cube()
     mesh.point_sets = {"corner": np.array([0], dtype=np.int64)}
     mesh.cell_sets = {"all": [np.array([0], dtype=np.int64)]}
+    mesh.regions.append(
+        meshioplusplus.Region("bottom", "side", np.array([[0, 0]], dtype=np.int64))
+    )
 
     out = subdivide(mesh)
     assert list(out.point_sets["corner"]) == [0]
     assert sorted(int(c) for c in out.cell_sets["all"][0]) == [0, 1, 2, 3, 4, 5]
+    # The side is the child facet that IS the parent's face 0.
+    bottom = next(r for r in out.regions if r.name == "bottom")
+    assert len(bottom.entries) == 1
+    cell, facet = (int(v) for v in bottom.entries[0])
+    assert sorted(facet_nodes(out, cell, facet)[1]) == sorted(
+        facet_nodes(mesh, 0, 0)[1]
+    )
 
 
 def test_subdivide_is_exported():

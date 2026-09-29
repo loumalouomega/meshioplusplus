@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 26
+#define MIO_VERSION_MINOR 27
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -335,7 +335,8 @@ typedef struct mio_read_opts {
     int64_t time_step;
     /** Nonzero downgrades "this reader cannot represent construct X" errors to
      *  a warning plus a skip, where the reader can do that and still return a
-     *  correct mesh (currently mdpa's Table/Geometries/Mesh/Constraints blocks).
+     *  correct mesh (currently mdpa's Table/Geometries/Mesh/Constraints blocks,
+     *  which mio_read_with_info() keeps instead).
      *  It is NOT "ignore all errors": a malformed file, a truncated block or a
      *  bad node reference still fails the call. 0 (the default) preserves the
      *  historical behaviour. Takes one of the former `reserved` slots, keeping
@@ -557,6 +558,133 @@ MIO_API void mio_write_opts_init(mio_write_opts* opts);
  */
 MIO_API mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                                 const mio_write_opts* opts);
+
+/* ---------------------------------------------------------------------
+ * Format side channels (v16.27.0)
+ *
+ * Some formats carry content a mesh cannot hold -- MDPA's tables,
+ * geometries, Mesh blocks and constraints, for one. mio_read() refuses such
+ * a file by name (or, with mio_read_opts.lenient, skips the content);
+ * mio_read_with_info() keeps it in an opaque mio_format_info handle that
+ * mio_write_with_info() puts back, and the per-format accessors below
+ * inspect. Every accessor borrows from the handle: pointers and strings stay
+ * valid until mio_format_info_free().
+ * --------------------------------------------------------------------- */
+
+/** Opaque side-channel handle. Destroy with mio_format_info_free(). */
+typedef struct mio_format_info mio_format_info;
+
+/**
+ * Read a mesh, keeping what it cannot hold in `*info`.
+ *
+ * Formats with a side channel (currently "mdpa") read through their full
+ * reader and set `*info` to a new handle; every other format reads exactly as
+ * mio_read_ex() and sets `*info` to NULL. `opts` may be NULL (the defaults).
+ * @return the mesh, or NULL on failure (`*info` is then NULL too).
+ */
+MIO_API mio_mesh* mio_read_with_info(const char* path, const char* format,
+                                     const mio_read_opts* opts, mio_format_info** info);
+
+/**
+ * Write a mesh, restoring the side channel `info` came back with.
+ *
+ * `info` NULL is exactly mio_write(). A non-NULL `info` must belong to the
+ * format being written (MIO_ERR_INVALID_ARG otherwise).
+ * @return MIO_OK, or an error code (see mio_last_error()).
+ */
+MIO_API mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const char* format,
+                                       const mio_format_info* info);
+
+/** Copy the handle's format name ("mdpa") into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_format_info_format(const mio_format_info* info, char* buf, int64_t buflen);
+
+/** Destroy a side-channel handle. NULL is a no-op. */
+MIO_API void mio_format_info_free(mio_format_info* info);
+
+/**
+ * The sections of an MDPA side channel. Each is a list; the accessors below
+ * take a section, an item index in [0, mio_mdpa_info_count()) and, where an
+ * item has several, a field number (named per section here).
+ *
+ *  - PROPERTIES: `Begin Properties <id>`. int field 0 = id; data entries.
+ *  - ENTITY_NAMES: one per cell block. string field 0 = Kratos name (empty =
+ *    derived); int field 0 = 1 for a Conditions block.
+ *  - SKIPPED: what mio_read_opts.lenient skipped. string field 0 = text.
+ *  - MODEL_PART_DATA: exactly one item, the non-numeric ModelPartData entries
+ *    (numeric ones are field_data on the mesh); data entries.
+ *  - TABLES: top-level `Begin Table`. string field 0 = header arguments
+ *    ("1 TIME VALUE"); array field 0 = Float64 (rows, columns).
+ *  - GEOMETRIES: `Begin Geometries` runs. string field 0 = Kratos name,
+ *    1 = meshio cell type; array field 0 = Int64 (n, k) 0-based point rows,
+ *    1 = Int64 geometry ids.
+ *  - MESH_BLOCKS: `Begin Mesh <id>`. int field 0 = id; array field 0 =
+ *    Int64 0-based point rows, 1 = element ids, 2 = condition ids (file ids);
+ *    data entries (MeshData).
+ *  - SUBMODELPARTS: parts with SubModelPartData/Tables. string field 0 =
+ *    hierarchical name; array field 0 = Int64 table ids; data entries.
+ *  - RAW_BLOCKS: blocks kept verbatim (Constraints, ...). string field 0 =
+ *    header line, 1 = body (lines ending in '\n'), 2 = terminator.
+ */
+typedef enum mio_mdpa_section {
+    MIO_MDPA_PROPERTIES = 0,
+    MIO_MDPA_ENTITY_NAMES = 1,
+    MIO_MDPA_SKIPPED = 2,
+    MIO_MDPA_MODEL_PART_DATA = 3,
+    MIO_MDPA_TABLES = 4,
+    MIO_MDPA_GEOMETRIES = 5,
+    MIO_MDPA_MESH_BLOCKS = 6,
+    MIO_MDPA_SUBMODELPARTS = 7,
+    MIO_MDPA_RAW_BLOCKS = 8
+} mio_mdpa_section;
+
+/** The kind of one key/value data entry (mio_mdpa_info_data_kind). */
+typedef enum mio_mdpa_value_kind {
+    MIO_MDPA_VALUE_NUMBER = 0, /**< numeric: the array is Float64 */
+    MIO_MDPA_VALUE_TEXT = 1,   /**< text only: string field 1 */
+    MIO_MDPA_VALUE_TABLE = 2   /**< an inline table: the key is its header arguments */
+} mio_mdpa_value_kind;
+
+/** @return the number of items in `section`, or -1 on error (not an MDPA
+ *  handle, unknown section). */
+MIO_API int64_t mio_mdpa_info_count(const mio_format_info* info, int32_t section);
+
+/** Copy string field `field` of item `index` into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_mdpa_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                                     int32_t field, char* buf, int64_t buflen);
+
+/** Integer field `field` of item `index` into `*value`. */
+MIO_API mio_status mio_mdpa_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                                     int32_t field, int64_t* value);
+
+/** Borrow array field `field` of item `index`. Any out pointer may be NULL;
+ *  `shape` must hold MIO_MAX_NDIM entries. */
+MIO_API mio_status mio_mdpa_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                       int32_t field, const void** data, mio_dtype* dtype,
+                                       int32_t* ndim, int64_t* shape);
+
+/** @return the number of key/value data entries of item `index` (sections
+ *  PROPERTIES, MODEL_PART_DATA, MESH_BLOCKS, SUBMODELPARTS), or -1 on error. */
+MIO_API int64_t mio_mdpa_info_data_count(const mio_format_info* info, int32_t section,
+                                         int64_t index);
+
+/** @return a mio_mdpa_value_kind for data entry `entry` of item `index`, or -1. */
+MIO_API int32_t mio_mdpa_info_data_kind(const mio_format_info* info, int32_t section, int64_t index,
+                                        int64_t entry);
+
+/** Copy data entry `entry`'s key (`field` 0) or text value (`field` 1, empty
+ *  unless the kind is TEXT) into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_mdpa_info_data_string(const mio_format_info* info, int32_t section,
+                                          int64_t index, int64_t entry, int32_t field, char* buf,
+                                          int64_t buflen);
+
+/** Borrow data entry `entry`'s numeric value: Float64, shape (1) for a number,
+ *  (rows, columns) for a table, 0 elements for text. */
+MIO_API mio_status mio_mdpa_info_data_array(const mio_format_info* info, int32_t section,
+                                            int64_t index, int64_t entry, const void** data,
+                                            mio_dtype* dtype, int32_t* ndim, int64_t* shape);
 
 /**
  * Provenance (v10.16.0, see detail/provenance.hpp for the full design): the

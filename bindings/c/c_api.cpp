@@ -51,6 +51,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 // Project includes
@@ -58,6 +59,7 @@
 
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -242,6 +244,13 @@ struct mio_data_integrate {
 /// since the summary is variable-length (cell blocks, name lists).
 struct mio_read_metadata {
     meshioplusplus::MeshMetadata mMeta;
+};
+
+// One side channel, tagged by format. Later formats add alternatives; the
+// accessors check the alternative they need, so a handle is never misread.
+struct mio_format_info {
+    std::string mFormat;
+    std::variant<std::monostate, meshioplusplus::MdpaInfo> mInfo;
 };
 
 namespace {
@@ -999,6 +1008,320 @@ mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* form
 
         meshioplusplus::registry_write_ex(path, mesh->mMesh, format_or_empty(format), w);
         return MIO_OK;
+    });
+}
+
+mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_read_opts* opts,
+                             mio_format_info** info) {
+    if (info)
+        *info = nullptr;
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!path || !info)
+            throw std::invalid_argument("meshio++: path/info is NULL");
+        const std::string fmt = capi_resolve_read_format(path, format);
+        if (fmt == "mdpa") {
+            auto handle = std::make_unique<mio_format_info>();
+            handle->mFormat = fmt;
+            meshioplusplus::MdpaInfo mdpa;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::read_mdpa(path, mdpa, capi_read_options(opts))});
+            handle->mInfo = std::move(mdpa);
+            *info = handle.release();
+            return mesh.release();
+        }
+        if (!meshioplusplus::registry_readers().count(fmt) &&
+            !meshioplusplus::registry_reader_supports_options(fmt))
+            throw meshioplusplus::ReadError(unknown_format_message(fmt, /*for_write=*/false));
+        return new mio_mesh{meshioplusplus::registry_read(path, fmt, capi_read_options(opts))};
+    });
+}
+
+mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const char* format,
+                               const mio_format_info* info) {
+    return guarded([&]() -> mio_status {
+        if (!path || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        if (!info)
+            return mio_write(path, mesh, format);
+        const std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
+        if (fmt != info->mFormat)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: a '" + info->mFormat +
+                                                 "' side channel cannot be written as '" + fmt +
+                                                 "'");
+        meshioplusplus::detail::provenance_begin_write();
+        if (const auto* p_mdpa = std::get_if<meshioplusplus::MdpaInfo>(&info->mInfo)) {
+            meshioplusplus::write_mdpa(path, mesh->mMesh, *p_mdpa);
+            return MIO_OK;
+        }
+        return mio_write(path, mesh, format);
+    });
+}
+
+int64_t mio_format_info_format(const mio_format_info* info, char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        return copy_string(info->mFormat, buf, buflen);
+    });
+}
+
+void mio_format_info_free(mio_format_info* info) {
+    delete info;
+}
+
+namespace {
+
+/// The MdpaInfo behind a handle, or a throw naming what it is instead.
+const meshioplusplus::MdpaInfo& capi_mdpa(const mio_format_info* pInfo) {
+    if (!pInfo)
+        throw std::invalid_argument("meshio++: format info handle is NULL");
+    const auto* p_mdpa = std::get_if<meshioplusplus::MdpaInfo>(&pInfo->mInfo);
+    if (!p_mdpa)
+        throw std::invalid_argument("meshio++: not an mdpa side channel ('" + pInfo->mFormat +
+                                    "')");
+    return *p_mdpa;
+}
+
+std::size_t capi_mdpa_count(const meshioplusplus::MdpaInfo& rInfo, int32_t Section) {
+    switch (Section) {
+        case MIO_MDPA_PROPERTIES:
+            return rInfo.mProperties.size();
+        case MIO_MDPA_ENTITY_NAMES:
+            return rInfo.mEntityNames.size();
+        case MIO_MDPA_SKIPPED:
+            return rInfo.mSkippedConstructs.size();
+        case MIO_MDPA_MODEL_PART_DATA:
+            return 1;
+        case MIO_MDPA_TABLES:
+            return rInfo.mTables.size();
+        case MIO_MDPA_GEOMETRIES:
+            return rInfo.mGeometries.size();
+        case MIO_MDPA_MESH_BLOCKS:
+            return rInfo.mMeshBlocks.size();
+        case MIO_MDPA_SUBMODELPARTS:
+            return rInfo.mSubModelParts.size();
+        case MIO_MDPA_RAW_BLOCKS:
+            return rInfo.mRawBlocks.size();
+        default:
+            throw std::invalid_argument("meshio++: unknown mdpa section " +
+                                        std::to_string(Section));
+    }
+}
+
+std::size_t capi_mdpa_index(const meshioplusplus::MdpaInfo& rInfo, int32_t Section, int64_t Index) {
+    const std::size_t n = capi_mdpa_count(rInfo, Section);
+    if (Index < 0 || static_cast<std::size_t>(Index) >= n)
+        throw std::out_of_range("meshio++: mdpa section " + std::to_string(Section) + " index " +
+                                std::to_string(Index) + " out of range (" + std::to_string(n) +
+                                " items)");
+    return static_cast<std::size_t>(Index);
+}
+
+[[noreturn]] void capi_mdpa_bad_field(int32_t Section, int32_t Field) {
+    throw std::invalid_argument("meshio++: mdpa section " + std::to_string(Section) +
+                                " has no such field " + std::to_string(Field));
+}
+
+/// The key/value entries of item @p Index of a section that has them.
+const std::vector<meshioplusplus::PropertyValue>& capi_mdpa_data(
+    const meshioplusplus::MdpaInfo& rInfo, int32_t Section, int64_t Index) {
+    const std::size_t i = capi_mdpa_index(rInfo, Section, Index);
+    switch (Section) {
+        case MIO_MDPA_PROPERTIES:
+            return rInfo.mProperties[i].mValues;
+        case MIO_MDPA_MODEL_PART_DATA:
+            return rInfo.mModelPartData;
+        case MIO_MDPA_MESH_BLOCKS:
+            return rInfo.mMeshBlocks[i].mData;
+        case MIO_MDPA_SUBMODELPARTS:
+            return rInfo.mSubModelParts[i].mData;
+        default:
+            throw std::invalid_argument("meshio++: mdpa section " + std::to_string(Section) +
+                                        " has no data entries");
+    }
+}
+
+const meshioplusplus::PropertyValue& capi_mdpa_entry(const meshioplusplus::MdpaInfo& rInfo,
+                                                     int32_t Section, int64_t Index,
+                                                     int64_t Entry) {
+    const auto& data = capi_mdpa_data(rInfo, Section, Index);
+    if (Entry < 0 || static_cast<std::size_t>(Entry) >= data.size())
+        throw std::out_of_range("meshio++: mdpa data entry " + std::to_string(Entry) +
+                                " out of range (" + std::to_string(data.size()) + " entries)");
+    return data[static_cast<std::size_t>(Entry)];
+}
+
+/// Borrow a std::vector<int64_t> as a 1-D Int64 array.
+mio_status capi_ids_out(const std::vector<std::int64_t>& rIds, const void** ppData,
+                        mio_dtype* pDtype, int32_t* pNdim, int64_t* pShape) {
+    if (ppData)
+        *ppData = rIds.data();
+    if (pDtype)
+        *pDtype = MIO_INT64;
+    if (pNdim)
+        *pNdim = 1;
+    if (pShape)
+        pShape[0] = static_cast<int64_t>(rIds.size());
+    return MIO_OK;
+}
+
+}  // namespace
+
+int64_t mio_mdpa_info_count(const mio_format_info* info, int32_t section) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_mdpa_count(capi_mdpa(info), section));
+    });
+}
+
+int64_t mio_mdpa_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                             int32_t field, char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        const meshioplusplus::MdpaInfo& r_info = capi_mdpa(info);
+        const std::size_t i = capi_mdpa_index(r_info, section, index);
+        switch (section) {
+            case MIO_MDPA_ENTITY_NAMES:
+                if (field == 0)
+                    return copy_string(r_info.mEntityNames[i].mName, buf, buflen);
+                break;
+            case MIO_MDPA_SKIPPED:
+                if (field == 0)
+                    return copy_string(r_info.mSkippedConstructs[i], buf, buflen);
+                break;
+            case MIO_MDPA_TABLES:
+                if (field == 0)
+                    return copy_string(r_info.mTables[i].mKey, buf, buflen);
+                break;
+            case MIO_MDPA_GEOMETRIES:
+                if (field == 0)
+                    return copy_string(r_info.mGeometries[i].mName, buf, buflen);
+                if (field == 1)
+                    return copy_string(r_info.mGeometries[i].mType, buf, buflen);
+                break;
+            case MIO_MDPA_SUBMODELPARTS:
+                if (field == 0)
+                    return copy_string(r_info.mSubModelParts[i].mName, buf, buflen);
+                break;
+            case MIO_MDPA_RAW_BLOCKS:
+                if (field == 0)
+                    return copy_string(r_info.mRawBlocks[i].mHeader, buf, buflen);
+                if (field == 1)
+                    return copy_string(r_info.mRawBlocks[i].mBody, buf, buflen);
+                if (field == 2)
+                    return copy_string(r_info.mRawBlocks[i].mEnd, buf, buflen);
+                break;
+            default:
+                break;
+        }
+        capi_mdpa_bad_field(section, field);
+    });
+}
+
+mio_status mio_mdpa_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                             int32_t field, int64_t* value) {
+    return guarded([&]() -> mio_status {
+        if (!value)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: value is NULL");
+        const meshioplusplus::MdpaInfo& r_info = capi_mdpa(info);
+        const std::size_t i = capi_mdpa_index(r_info, section, index);
+        if (field == 0) {
+            switch (section) {
+                case MIO_MDPA_PROPERTIES:
+                    *value = r_info.mProperties[i].mId;
+                    return MIO_OK;
+                case MIO_MDPA_ENTITY_NAMES:
+                    *value = r_info.mEntityNames[i].mIsCondition ? 1 : 0;
+                    return MIO_OK;
+                case MIO_MDPA_MESH_BLOCKS:
+                    *value = r_info.mMeshBlocks[i].mId;
+                    return MIO_OK;
+                default:
+                    break;
+            }
+        }
+        capi_mdpa_bad_field(section, field);
+    });
+}
+
+mio_status mio_mdpa_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                               int32_t field, const void** data, mio_dtype* dtype, int32_t* ndim,
+                               int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        const meshioplusplus::MdpaInfo& r_info = capi_mdpa(info);
+        const std::size_t i = capi_mdpa_index(r_info, section, index);
+        switch (section) {
+            case MIO_MDPA_TABLES:
+                if (field == 0)
+                    return array_out(r_info.mTables[i].mValues, data, dtype, ndim, shape);
+                break;
+            case MIO_MDPA_GEOMETRIES:
+                if (field == 0)
+                    return array_out(r_info.mGeometries[i].mConn, data, dtype, ndim, shape);
+                if (field == 1)
+                    return capi_ids_out(r_info.mGeometries[i].mIds, data, dtype, ndim, shape);
+                break;
+            case MIO_MDPA_MESH_BLOCKS:
+                if (field == 0)
+                    return capi_ids_out(r_info.mMeshBlocks[i].mNodes, data, dtype, ndim, shape);
+                if (field == 1)
+                    return capi_ids_out(r_info.mMeshBlocks[i].mElementIds, data, dtype, ndim,
+                                        shape);
+                if (field == 2)
+                    return capi_ids_out(r_info.mMeshBlocks[i].mConditionIds, data, dtype, ndim,
+                                        shape);
+                break;
+            case MIO_MDPA_SUBMODELPARTS:
+                if (field == 0)
+                    return capi_ids_out(r_info.mSubModelParts[i].mTables, data, dtype, ndim, shape);
+                break;
+            default:
+                break;
+        }
+        capi_mdpa_bad_field(section, field);
+    });
+}
+
+int64_t mio_mdpa_info_data_count(const mio_format_info* info, int32_t section, int64_t index) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_mdpa_data(capi_mdpa(info), section, index).size());
+    });
+}
+
+int32_t mio_mdpa_info_data_kind(const mio_format_info* info, int32_t section, int64_t index,
+                                int64_t entry) {
+    return guarded_ptr(std::int32_t(-1), [&]() -> std::int32_t {
+        const auto& r_v = capi_mdpa_entry(capi_mdpa(info), section, index, entry);
+        if (r_v.mIsTable)
+            return MIO_MDPA_VALUE_TABLE;
+        return r_v.IsText() ? MIO_MDPA_VALUE_TEXT : MIO_MDPA_VALUE_NUMBER;
+    });
+}
+
+int64_t mio_mdpa_info_data_string(const mio_format_info* info, int32_t section, int64_t index,
+                                  int64_t entry, int32_t field, char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        const auto& r_v = capi_mdpa_entry(capi_mdpa(info), section, index, entry);
+        if (field == 0)
+            return copy_string(r_v.mKey, buf, buflen);
+        if (field == 1)
+            return copy_string(r_v.mText, buf, buflen);
+        capi_mdpa_bad_field(section, field);
+    });
+}
+
+mio_status mio_mdpa_info_data_array(const mio_format_info* info, int32_t section, int64_t index,
+                                    int64_t entry, const void** data, mio_dtype* dtype,
+                                    int32_t* ndim, int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        const auto& r_v = capi_mdpa_entry(capi_mdpa(info), section, index, entry);
+        if (r_v.mValues.Size() == 0) {
+            // Text: an empty Float64 array, so a caller can size-check first.
+            static const std::vector<std::int64_t> none;
+            capi_ids_out(none, data, dtype, ndim, shape);
+            if (dtype)
+                *dtype = MIO_FLOAT64;
+            return MIO_OK;
+        }
+        return array_out(r_v.mValues, data, dtype, ndim, shape);
     });
 }
 

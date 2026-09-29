@@ -40,8 +40,12 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/region.hpp"
 
 #include "../detail/text_cursor.hpp"
 
@@ -293,6 +297,116 @@ double xdmf_step_time(const pugi::xml_node& rStep) {
     return t ? t.attribute("Value").as_double(0.0) : 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// <Set> <-> regions (v16.27.0)
+//
+// SetType Node -> a Point region, Cell -> a Cell region, Face/Edge -> a Side
+// region: the first DataItem holds the cell indices and the second the
+// cell-local face or edge indices (the XDMF model's own layout), numbered as
+// meshio++ numbers facets (`cell_faces`/`cell_edges`, doc/regions.md). The
+// region's dim and tag ride in `<Information Name="meshio++:dim|tag">`.
+// ---------------------------------------------------------------------------
+
+std::vector<std::int64_t> xdmf_int_values(const NDArray& rArr) {
+    std::vector<std::int64_t> out(rArr.Size());
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = detail::read_int(rArr, i);
+    return out;
+}
+
+/// The `<Set>`'s region kind, or false for a SetType this reader skips.
+bool xdmf_set_kind(const std::string& rSetType, RegionKind& rKind) {
+    if (rSetType == "Node")
+        rKind = RegionKind::Point;
+    else if (rSetType == "Cell")
+        rKind = RegionKind::Cell;
+    else if (rSetType == "Face" || rSetType == "Edge")
+        rKind = RegionKind::Side;
+    else
+        return false;
+    return true;
+}
+
+void xdmf_set_dim_tag(const pugi::xml_node& rSet, int& rDim, std::int64_t& rTag) {
+    for (pugi::xml_node info : rSet.children("Information")) {
+        const std::string name = info.attribute("Name").value();
+        if (name == "meshio++:dim")
+            rDim = info.attribute("Value").as_int(-1);
+        else if (name == "meshio++:tag")
+            rTag = info.attribute("Value").as_llong(-1);
+    }
+}
+
+/// An empty `<DataItem>` (`Dimensions="0"`) has no payload to read.
+bool xdmf_empty_item(const pugi::xml_node& rDi) {
+    return std::string(rDi.attribute("Dimensions").value()) == "0";
+}
+
+/// Read one `<Set>` into @p rRegions, merging a name already met (a Side
+/// region written as a Face and an Edge set is one region).
+void xdmf_read_set(const pugi::xml_node& rSet, const fs::path& rBaseDir,
+                   std::vector<Region>& rRegions) {
+    const std::string name = rSet.attribute("Name").value();
+    const std::string set_type = rSet.attribute("SetType").value();
+    RegionKind kind{};
+    if (!xdmf_set_kind(set_type, kind)) {
+        log::warn("xdmf: skipping set '{}' of SetType '{}'", name, set_type);
+        return;
+    }
+    int dim = -1;
+    std::int64_t tag = -1;
+    xdmf_set_dim_tag(rSet, dim, tag);
+    std::vector<pugi::xml_node> items;
+    for (pugi::xml_node di : rSet.children("DataItem"))
+        items.push_back(di);
+    if (rSet.child("Attribute"))
+        log::warn("xdmf: set '{}' carries attributes, which are not read", name);
+    const std::size_t need = kind == RegionKind::Side ? 2 : 1;
+    if (items.size() < need)
+        throw ReadError("XDMF: set '" + name + "' of SetType '" + set_type + "' needs " +
+                        std::to_string(need) + " DataItem(s)");
+    std::vector<std::int64_t> flat;
+    if (!xdmf_empty_item(items[0])) {
+        const std::vector<std::int64_t> ids = xdmf_int_values(read_data_item(items[0], rBaseDir));
+        if (kind != RegionKind::Side) {
+            flat = ids;
+        } else {
+            const std::vector<std::int64_t> local =
+                xdmf_int_values(read_data_item(items[1], rBaseDir));
+            if (local.size() != ids.size())
+                throw ReadError("XDMF: set '" + name + "' has " + std::to_string(ids.size()) +
+                                " cells but " + std::to_string(local.size()) +
+                                " local face/edge indices");
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                flat.push_back(ids[i]);
+                flat.push_back(local[i]);
+            }
+        }
+    }
+    for (Region& r_region : rRegions)
+        if (r_region.mName == name && r_region.mKind == kind) {
+            std::vector<std::int64_t> merged = xdmf_int_values(r_region.mEntries);
+            merged.insert(merged.end(), flat.begin(), flat.end());
+            flat = std::move(merged);
+            r_region = Region(name, kind, r_region.mDim, r_region.mTag, NDArray());
+            break;
+        }
+    const std::size_t stride = kind == RegionKind::Side ? 2 : 1;
+    NDArray entries = stride == 1 ? NDArray(DType::Int64, {flat.size()})
+                                  : NDArray(DType::Int64, {flat.size() / 2, 2});
+    std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+    for (Region& r_region : rRegions)
+        if (r_region.mName == name && r_region.mKind == kind) {
+            r_region.mEntries = std::move(entries);
+            return;
+        }
+    rRegions.emplace_back(name, kind, dim, tag, std::move(entries));
+}
+
+void xdmf_attach_regions(Mesh& rMesh, std::vector<Region>& rRegions) {
+    for (Region& r_region : rRegions)
+        rMesh.AddRegion(std::move(r_region));
+}
 }  // namespace
 
 Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
@@ -313,6 +427,10 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
         // Temporal collection: the geometry lives once in the mesh grid and the
         // requested step's <Grid> carries that step's attributes.
         xdmf_read_geometry(parsed.mMeshGrid, base_dir, mesh);
+        std::vector<Region> regions;
+        for (pugi::xml_node set : parsed.mMeshGrid.children("Set"))
+            xdmf_read_set(set, base_dir, regions);
+        xdmf_attach_regions(mesh, regions);
         const std::size_t k = rOpts.ResolveTimeStep(parsed.mSteps.size());
         for (pugi::xml_node c : parsed.mSteps[k].children()) {
             if (std::string(c.name()) != "Attribute")
@@ -334,6 +452,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
     }
 
     pugi::xml_node grid = parsed.mMeshGrid;
+    std::vector<Region> regions;
     for (pugi::xml_node c : grid.children()) {
         std::string tag = c.name();
         if (tag == "Topology") {
@@ -365,6 +484,8 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
                 cell_data_raw.emplace_back(name, std::move(data));
             else
                 throw ReadError("XDMF: unknown attribute center " + center);
+        } else if (tag == "Set") {
+            xdmf_read_set(c, base_dir, regions);
         } else if (tag == "Information") {
             // field_data not handled by the C++ core
             throw ReadError("XDMF: Information section handled by Python fallback");
@@ -375,6 +496,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
 
     // Split raw cell data into per-block arrays (cell_data_from_raw).
     xdmf_attach_data(mesh, point_data, cell_data_raw);
+    xdmf_attach_regions(mesh, regions);
 
     return mesh;
 }
@@ -430,7 +552,7 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                 parse_dims(c.child("DataItem").attribute("Dimensions").value());
             meta.mNumPoints = dims.empty() ? 0 : dims[0];
             meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
-        } else if (!parsed.mSteps.empty()) {
+        } else if (!parsed.mSteps.empty() && tag != "Set") {
             // In a temporal file the mesh grid contributes geometry only; its
             // attributes (if it doubles as step 0) were already taken above, and
             // <Time>/xi:include are not sections this reader has to understand.
@@ -444,6 +566,27 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                 meta.mCellDataNames.push_back(name);
             else
                 throw ReadError("XDMF: unknown attribute center " + center);
+        } else if (tag == "Set") {
+            // Counted from the first DataItem's declared Dimensions; a Side
+            // region written as a Face and an Edge set is one region.
+            RegionKind kind{};
+            if (!xdmf_set_kind(c.attribute("SetType").value(), kind))
+                continue;
+            RegionSummary rs;
+            rs.mName = c.attribute("Name").value();
+            rs.mKind = kind;
+            xdmf_set_dim_tag(c, rs.mDim, rs.mTag);
+            const std::vector<std::size_t> dims =
+                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            rs.mNumEntries = dims.empty() ? 0 : dims[0];
+            bool merged = false;
+            for (RegionSummary& r_prev : meta.mRegions)
+                if (r_prev.mName == rs.mName && r_prev.mKind == rs.mKind) {
+                    r_prev.mNumEntries += rs.mNumEntries;
+                    merged = true;
+                }
+            if (!merged)
+                meta.mRegions.push_back(std::move(rs));
         } else if (tag == "Information") {
             throw ReadError("XDMF: Information section handled by Python fallback");
         } else {
@@ -474,6 +617,78 @@ void xdmf_add_data_item(pugi::xml_node parent, xdmfcommon::DataItemStore& rStore
     di.append_attribute("Format") = rStore.DataFormat().c_str();
     di.append_attribute("Precision") = prec;
     di.text().set(rStore.Store(rArr).c_str());
+}
+
+/// One Int64 `<DataItem>`, or an empty one (`Dimensions="0"`) with no payload.
+void xdmf_add_ids(pugi::xml_node parent, xdmfcommon::DataItemStore& rStore,
+                  const std::vector<std::int64_t>& rIds) {
+    if (rIds.empty()) {
+        pugi::xml_node di = parent.append_child("DataItem");
+        di.append_attribute("DataType") = "Int";
+        di.append_attribute("Dimensions") = "0";
+        di.append_attribute("Format") = "XML";
+        di.append_attribute("Precision") = "8";
+        return;
+    }
+    NDArray a(DType::Int64, {rIds.size()});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    xdmf_add_data_item(parent, rStore, a);
+}
+
+void xdmf_write_set(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Region& rRegion,
+                    const char* pSetType, const std::vector<std::int64_t>& rIds,
+                    const std::vector<std::int64_t>* pLocal) {
+    pugi::xml_node set = grid.append_child("Set");
+    set.append_attribute("Name") = rRegion.mName.c_str();
+    set.append_attribute("SetType") = pSetType;
+    if (rRegion.mDim != -1) {
+        pugi::xml_node info = set.append_child("Information");
+        info.append_attribute("Name") = "meshio++:dim";
+        info.append_attribute("Value") = std::to_string(rRegion.mDim).c_str();
+    }
+    if (rRegion.mTag != -1) {
+        pugi::xml_node info = set.append_child("Information");
+        info.append_attribute("Name") = "meshio++:tag";
+        info.append_attribute("Value") = std::to_string(rRegion.mTag).c_str();
+    }
+    xdmf_add_ids(set, rStore, rIds);
+    if (pLocal)
+        xdmf_add_ids(set, rStore, *pLocal);
+}
+
+void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_region = rMesh.Region(i);
+        const std::int64_t* e = r_region.Entries();
+        const std::size_t n = r_region.NumEntries();
+        if (r_region.mKind != RegionKind::Side) {
+            xdmf_write_set(grid, rStore, r_region,
+                           r_region.mKind == RegionKind::Point ? "Node" : "Cell",
+                           std::vector<std::int64_t>(e, e + n), nullptr);
+            continue;
+        }
+        // A facet of a 3-D cell is a face, of a 2-D one an edge: split by the
+        // owning cell's dimension, one set each (the reader merges them).
+        std::vector<std::int64_t> face_cells, face_local, edge_cells, edge_local;
+        for (std::size_t k = 0; k < n; ++k) {
+            const auto [b, row] = detail::global_to_block_row(bases, e[2 * k]);
+            (void)row;
+            int dim = 3;
+            if (b != static_cast<std::size_t>(-1)) {
+                const auto cb = rMesh.Cells(b);
+                dim = cb.IsPolyhedron()
+                          ? 3
+                          : cell_type_dimension(cell_type_from_name(std::string(cb.Type())));
+            }
+            (dim == 2 ? edge_cells : face_cells).push_back(e[2 * k]);
+            (dim == 2 ? edge_local : face_local).push_back(e[2 * k + 1]);
+        }
+        if (!face_cells.empty() || edge_cells.empty())
+            xdmf_write_set(grid, rStore, r_region, "Face", face_cells, &face_local);
+        if (!edge_cells.empty())
+            xdmf_write_set(grid, rStore, r_region, "Edge", edge_cells, &edge_local);
+    }
 }
 
 }  // namespace
@@ -551,6 +766,9 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
         att.append_attribute("Center") = "Cell";
         xdmf_add_data_item(att, store, raw);
     }
+
+    // Regions as <Set>s (see "<Set> <-> regions" above).
+    xdmf_write_sets(grid, store, rMesh);
 
     if (!doc.save_file(rPath.c_str(), "  "))
         throw WriteError("XDMF: could not write " + rPath);

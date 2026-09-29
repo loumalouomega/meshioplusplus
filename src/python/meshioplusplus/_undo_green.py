@@ -50,12 +50,11 @@ row copied from the same-named array on ``coarse`` -- if ``coarse`` lacks
 that array, or its shape/dtype does not match, the WHOLE array is dropped
 with a warning rather than guessing a value for the substituted row.
 
-Named **Side** regions do not survive at all (the ``subdivide``/
-``agglomerate`` precedent): a removed green child's local facet numbering has
-no correspondence to the substituted parent's own facets. Point and Cell
-regions do survive -- Cell regions through a genuinely non-injective remap
-(several fine cells collapsing onto one output row), deduplicated the same
-way :class:`meshioplusplus.Region` always canonicalizes its entries.
+Named regions survive. Point and Cell regions -- Cell regions through a
+genuinely non-injective remap (several fine cells collapsing onto one output
+row), deduplicated the same way :class:`meshioplusplus.Region` always
+canonicalizes its entries -- and Side regions, a green child's facet moving to
+the substituted parent's facet that contains it.
 
 Two honest limitations, not gaps: it can only undo the LAST generation
 relative to the specific ``coarse`` mesh passed in, and it needs the caller
@@ -86,6 +85,7 @@ from ._refine import (
     _read_hierarchy,
 )
 from ._regions import Region, block_bases
+from ._side_carry import carry_side_regions, direct_children
 
 __all__ = ["undo_green"]
 
@@ -377,7 +377,7 @@ def _undo_green_py(coarse, fine):
     )
 
     # --- regions: non-injective remap + dedup (Region auto-canonicalizes);
-    # named Side regions do not survive at all --------------------------------
+    # Side regions move to the parent facet containing them -------------------
     new_regions = []
     for region in fine.regions:
         if region.kind == "side":
@@ -401,6 +401,14 @@ def _undo_green_py(coarse, fine):
             )
         )
     out.regions = new_regions
+    carry_side_regions(
+        fine,
+        out,
+        direct_children(fine, out, cell_maps),
+        None,
+        "undo_green",
+        many_to_one=True,
+    )
 
     report = {
         "num_groups_undone": len(group_coarse_row),

@@ -100,4 +100,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 19
+#define MESHIOPLUSPLUS_ABI_VERSION 20

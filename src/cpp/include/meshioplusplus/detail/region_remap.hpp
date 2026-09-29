@@ -50,13 +50,32 @@
  *
  * ## Side regions
  *
- * A side entry `(global cell, local facet)` survives only if its cell survives
- * **and** the facet still exists: the output cell must have the same type as
- * the input cell, and the facet index must still be in range for that type.
- * Under `FirstChild` a parent's children are new cells of a different or
- * subdivided topology, so there is no facet correspondence to preserve at all
- * and side regions are dropped by name. `mDropSideRegions` forces that for any
- * operation that knows its facets do not survive.
+ * A side entry `(global cell, local facet)` whose cell keeps its identity --
+ * one output cell of the same type, reached by no other input cell, whose
+ * facet at that number still has the same nodes -- keeps its number. Any
+ * other entry (since v16.27.0) is found again by what the facet is made of:
+ *
+ *  - **refined** (several children): every child facet lying within it -- each
+ *    of the child facet's nodes the image of one of the facet's, or a point
+ *    the operation created that lies on it;
+ *  - **merged or retyped** (one child that others share, or of another type):
+ *    the output facet containing it -- each surviving node one of that
+ *    facet's, and a node the operation removed lying on it (a second pass
+ *    also accepts a surviving node that only lies on it, for a merged face
+ *    that dropped an interior vertex).
+ *
+ * When neither finds it under a `FirstChild` map, a facet whose corners all
+ * survive is looked up across the whole output by those corners (`FacetIndex`):
+ * a decimation collapse hands a boundary edge to a neighbouring cell. (Not
+ * under `Direct`: there the facet's own cell is gone, and handing an interface
+ * facet to the neighbour would flip its orientation.) Node identity decides wherever it
+ * can; geometry (a relative 1e-9 plane or segment test) only places the
+ * points an operation created or removed, which are averages of the facet's
+ * own corners. An entry with no counterpart is
+ * dropped, with one warning per region counting them. Polygon edges and
+ * polyhedron faces count as facets too (edge k of a polygon runs from node k
+ * to node k + 1; face k of a polyhedron is its k-th face). `mDropSideRegions`
+ * still drops every side region, by name, for an operation that asks.
  *
  * Free functions in `meshioplusplus::detail`, called once per operation rather
  * than per element, so the bodies live in `src/cpp/src/detail/region_remap.cpp`.
@@ -106,7 +125,7 @@ struct RegionRemap {
     /// `kBlockDropped` means the block has no output counterpart.
     std::vector<std::size_t> mBlockMap;
 
-    /// Force side regions to be dropped even under a `Direct` map.
+    /// Drop every side region, by name, instead of carrying it.
     bool mDropSideRegions = false;
 
     /// Operation name, used in the "regions dropped" warning.
@@ -159,9 +178,33 @@ MESHIOPLUSPLUS_API bool remap_region(const Mesh& rIn, const Mesh& rOut, const Re
 MESHIOPLUSPLUS_API void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps);
 
 /**
+ * @brief Carry regions onto a mesh of facets extracted from @p rIn
+ * (`extract_surface`, `extract_skin`).
+ *
+ * A Side region becomes a Cell region of the same name, dim and tag naming the
+ * output cells its facets became; a facet that was not extracted (an interior
+ * one) is lost, with one warning per region counting them. A Point region
+ * follows @p rPointMap. A Cell region names input cells, which are not in the
+ * output, so it is dropped with a warning.
+ *
+ * @param rIn The input mesh.
+ * @param rOut The facet mesh; regions are added to it.
+ * @param rOutParent Per output cell (global, block-major), the input global
+ *        cell it is a facet of.
+ * @param rOutFacet Per output cell, which facet of that cell it is (the Side
+ *        numbering: `cell_faces`/`cell_edges`, a polyhedron's face index).
+ * @param rPointMap Input point -> output point, -1 for a point not kept.
+ * @param rOpName The operation name, for the warnings.
+ */
+MESHIOPLUSPLUS_API void carry_regions_to_facet_mesh(const Mesh& rIn, Mesh& rOut,
+                                                    const std::vector<std::int64_t>& rOutParent,
+                                                    const std::vector<std::int64_t>& rOutFacet,
+                                                    const std::vector<std::int64_t>& rPointMap,
+                                                    const std::string& rOpName);
+
+/**
  * @brief Drop every region with one warning, for operations whose output has no
- * entity correspondence with their input at all (slice, isosurface, surface
- * extraction).
+ * entity correspondence with their input at all (slice, isosurface).
  *
  * A deliberate no-op when the input carries no regions, so the common case
  * stays silent.

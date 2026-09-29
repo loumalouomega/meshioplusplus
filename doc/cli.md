@@ -496,7 +496,7 @@ meshioplusplus regions [options] INFILE [OUTFILE]
 
 With any edit flag it [edits the regions](/regions#editing-regions) instead of listing them: the edits apply in command-line order to the mesh read from `INFILE`, the result is written to `OUTFILE`, and the resulting region list is printed. A region name may be prefixed `point:`, `cell:` or `side:` to pick one of several regions sharing a name; a name that still matches several, or none, is an error.
 
-Goes through the same cheap path `info --fast`/`read_metadata` use rather than a full read: whenever the summary already comes from an in-memory mesh (every format lacking a native metadata path, plus Exodus, which always falls back), regions cost nothing extra to report; a native metadata path (VTU/VTP/XDMF/Gmsh 4.1) reports none, since none of those currently map regions at all.
+Goes through the same cheap path `info --fast`/`read_metadata` use rather than a full read: whenever the summary already comes from an in-memory mesh (every format lacking a native metadata path, plus Exodus, which always falls back), regions cost nothing extra to report; the native metadata paths of VTU/VTP/XDMF (since v16.27.0) and Gmsh 4.1 read them from their headers and array sizes.
 
 **Example:**
 

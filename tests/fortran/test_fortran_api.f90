@@ -1324,6 +1324,7 @@ program test_fortran_api
     call check_normals()
     call check_analysis_editing()
     call check_repair_shrinkwrap_sobolev()
+    call check_mdpa_side_channel(prefix)
 
     if (fails /= 0) then
         write (error_unit, '(a,i0,a)') 'test_fortran_api: ', fails, ' check(s) FAILED'
@@ -1859,6 +1860,75 @@ contains
         moved = grid%sobolev_deform('missing', 1.0_real64, stat=ierr)
         call check(ierr /= 0, 'sobolev_deform rejects a missing array')
         call grid%free()
+    end subroutine
+
+    !> MDPA content a mesh cannot hold reaches Fortran through mio_format_info,
+    !> and survives a write_with_info round trip.
+    subroutine check_mdpa_side_channel(prefix)
+        character(*), intent(in) :: prefix
+        type(mio_mesh) :: dm, dm2
+        type(mio_format_info) :: info, info2
+        character(:), allocatable :: in_path, out_path
+        integer(int64), allocatable :: gconn(:, :), ids(:)
+        real(real64), allocatable :: table(:, :), vals(:)
+        integer :: u, ierr
+        in_path = prefix//'_side.mdpa'
+        out_path = prefix//'_side_out.mdpa'
+        open (newunit=u, file=in_path, status='replace', action='write')
+        write (u, '(a)') 'Begin ModelPartData', '    SOLVER_TYPE static', 'End ModelPartData'
+        write (u, '(a)') 'Begin Table 1 TIME VALUE', '    0.0 1.0', '    2.0 3.0', 'End Table'
+        write (u, '(a)') 'Begin Nodes', '1 0 0 0', '2 1 0 0', '3 0 1 0', '4 0 0 1', 'End Nodes'
+        write (u, '(a)') 'Begin Elements Element3D4N', '1 0 1 2 3 4', 'End Elements'
+        write (u, '(a)') 'Begin Geometries Triangle3D3', '7 2 3 4', 'End Geometries'
+        write (u, '(a)') 'Begin Mesh 5', '    Begin MeshNodes', '        4', &
+            '    End MeshNodes', 'End Mesh'
+        write (u, '(a)') 'Begin Constraints LinearMasterSlaveConstraint', &
+            '    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0', 'End Constraints'
+        close (u)
+
+        call dm%read(in_path, stat=ierr)
+        call check(ierr /= 0, 'plain read refuses the side-channel blocks')
+        call dm%read_with_info(in_path, info, stat=ierr)
+        call check(ierr == 0, 'read_with_info succeeded')
+        call check(info%is_valid(), 'read_with_info returned a side channel')
+        call check(info%format() == 'mdpa', 'the side channel is mdpa')
+        call check(info%mdpa_count(MIO_MDPA_MODEL_PART_DATA) == 1, 'one ModelPartData item')
+        call check(info%mdpa_data_kind(MIO_MDPA_MODEL_PART_DATA, 1, 1) == MIO_MDPA_VALUE_TEXT, &
+                   'SOLVER_TYPE is text')
+        call check(info%mdpa_data_text(MIO_MDPA_MODEL_PART_DATA, 1, 1) == 'static', &
+                   'SOLVER_TYPE value')
+        call check(info%mdpa_count(MIO_MDPA_TABLES) == 1, 'one table')
+        call check(info%mdpa_string(MIO_MDPA_TABLES, 1, 0) == '1 TIME VALUE', 'table header')
+        table = info%mdpa_table(1)
+        call check(size(table, 1) == 2 .and. size(table, 2) == 2, 'table is 2 x 2')
+        call check(abs(table(2, 1) - 2.0_real64) < 1.0e-12_real64, 'table(row 2, col 1)')
+        gconn = info%mdpa_geometry(1)
+        call check(size(gconn, 1) == 3 .and. size(gconn, 2) == 1, 'geometry conn is (3, 1)')
+        call check(gconn(1, 1) == 2 .and. gconn(3, 1) == 4, 'geometry conn is 1-based points')
+        ids = info%mdpa_ids(MIO_MDPA_GEOMETRIES, 1, 1)
+        call check(size(ids) == 1 .and. ids(1) == 7, 'geometry ids are the file ids')
+        call check(info%mdpa_int(MIO_MDPA_MESH_BLOCKS, 1, 0) == 5_int64, 'Mesh block id')
+        ids = info%mdpa_ids(MIO_MDPA_MESH_BLOCKS, 1, 0)
+        call check(size(ids) == 1 .and. ids(1) == 4, 'Mesh block nodes are 1-based points')
+        call check(info%mdpa_string(MIO_MDPA_RAW_BLOCKS, 1, 2) == 'End Constraints', &
+                   'raw block terminator')
+        vals = info%mdpa_data_values(MIO_MDPA_MODEL_PART_DATA, 1, 1)
+        call check(size(vals) == 0, 'a text entry has no numbers')
+
+        call dm%write_with_info(out_path, info, stat=ierr)
+        call check(ierr == 0, 'write_with_info succeeded')
+        call dm2%read_with_info(out_path, info2, stat=ierr)
+        call check(ierr == 0, 'the written deck reads back')
+        call check(info2%mdpa_count(MIO_MDPA_RAW_BLOCKS) == 1, 'the raw block survived')
+        call check(info2%mdpa_count(MIO_MDPA_GEOMETRIES) == 1, 'the geometry survived')
+        call dm%write_with_info(prefix//'_side_out.vtu', info, stat=ierr)
+        call check(ierr /= 0, 'an mdpa side channel is refused for vtu')
+
+        call info2%free()
+        call info%free()
+        call check(.not. info%is_valid(), 'side channel invalid after free')
+        call dm2%free()
+        call dm%free()
     end subroutine
 
     subroutine check(ok, what)

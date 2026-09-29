@@ -25,6 +25,7 @@
 // (see doc/polyhedra.md) load-bearing for this operation.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -37,6 +38,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -328,7 +330,7 @@ TEST(Subdivide, RecordParentIdsAttachesTheContiguousIndexArray) {
 // Regions
 // --------------------------------------------------------------------------
 
-TEST(Subdivide, PointAndCellRegionsSurviveButSideRegionsAreDropped) {
+TEST(Subdivide, PointCellAndSideRegionsSurvive) {
     Mesh m = unit_cube_mesh();
     m.AddRegion(Region("corner", RegionKind::Point, i64({0})));
     m.AddRegion(Region("all", RegionKind::Cell, i64({0})));
@@ -346,7 +348,18 @@ TEST(Subdivide, PointAndCellRegionsSurviveButSideRegionsAreDropped) {
         want_cells.push_back(i);
     EXPECT_EQ(region_entries(r.mMesh, "all", RegionKind::Cell), want_cells);
 
-    EXPECT_EQ(r.mMesh.FindRegion("bottom", RegionKind::Side), Mesh::npos);
+    // The side survives (v16.27.0) as the child facet that IS the parent's
+    // face: the same four nodes.
+    const std::vector<std::int64_t> bottom = region_entries(r.mMesh, "bottom", RegionKind::Side);
+    ASSERT_EQ(bottom.size(), 2u);
+    meshioplusplus::CellType facet_type{};
+    std::vector<std::int64_t> got_nodes, want_nodes;
+    ASSERT_TRUE(
+        meshioplusplus::detail::facet_nodes(r.mMesh, bottom[0], bottom[1], facet_type, got_nodes));
+    ASSERT_TRUE(meshioplusplus::detail::facet_nodes(m, 0, 0, facet_type, want_nodes));
+    std::sort(got_nodes.begin(), got_nodes.end());
+    std::sort(want_nodes.begin(), want_nodes.end());
+    EXPECT_EQ(got_nodes, want_nodes);
 }
 
 // --------------------------------------------------------------------------

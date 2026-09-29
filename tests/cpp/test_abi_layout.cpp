@@ -189,7 +189,16 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 // `MESHIOPLUSPLUS_ABI_VERSION` 12 -> 13 (see abi_version.hpp).
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
+// `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
+// `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
+// blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping
+// `MESHIOPLUSPLUS_ABI_VERSION` 19 -> 20. The four element types it holds are
+// pinned from the same release.
+MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MdpaGeometryBlock, 160, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MdpaMeshBlock, 104, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MdpaSubModelPart, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MdpaRawBlock, 96, 8);
 // `OpenFoamWriteOptions` (v15.5.0, roadmap §1.1) is a pure addition, pinned
 // from the release that introduces it -- the `PvdSeriesWriter` precedent
 // above. Three POD fields, no pointer/std::string member, so it is 4-aligned
@@ -440,6 +449,10 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::PatranResultFile>("PatranResultFile");
     report<meshioplusplus::GmshInfo>("GmshInfo");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
+    report<meshioplusplus::MdpaGeometryBlock>("MdpaGeometryBlock");
+    report<meshioplusplus::MdpaMeshBlock>("MdpaMeshBlock");
+    report<meshioplusplus::MdpaSubModelPart>("MdpaSubModelPart");
+    report<meshioplusplus::MdpaRawBlock>("MdpaRawBlock");
     report<meshioplusplus::PcdReadOptions>("PcdReadOptions");
     report<meshioplusplus::XyzReadOptions>("XyzReadOptions");
     report<meshioplusplus::detail::CardField>("CardField");

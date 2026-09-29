@@ -80,25 +80,27 @@
  *       when they were not already the trivial `1..n` renumbering — see
  *       #kMdpaIdName.
  *
- * ## Limitations (deliberate, and reported by throwing)
+ * ## The blocks the `Mesh` cannot hold
  *
- * The C++ `Mesh` has no place for MDPA's non-mesh metadata, so rather than
- * silently dropping it the reader **throws `ReadError` naming the construct**
- * — which lets the Python shim fall back to the pure-Python reference
- * (`meshioplusplus/mdpa/_mdpa.py`), whose `mesh.misc_data` does carry it:
+ * MDPA also carries content with no place on a `Mesh`: top-level `Begin Table`
+ * blocks, `Begin Geometries`, `Begin Mesh <id>`, a non-numeric
+ * `ModelPartData` value, `SubModelPartData`/`SubModelPartTables` bodies, and
+ * blocks such as `Begin Constraints` that no tool but Kratos interprets. The
+ * **#MdpaInfo overloads read and write every one of them**
+ * (`read_mdpa(path, info)` / `write_mdpa(path, mesh, info)`, and
+ * `mio_read_with_info` / `mio_write_with_info` on the flat ABI): tables,
+ * geometries, mesh blocks, text data and sub-model-part data are parsed into
+ * #MdpaInfo, and any other top-level block is kept verbatim as an
+ * #MdpaRawBlock, so it round-trips byte for byte.
  *
- *  - `Begin Table` (top-level), `Begin Geometries`, `Begin Mesh <id>` and
- *    `Begin Constraints` blocks;
- *  - a non-numeric `ModelPartData` value, and non-empty `SubModelPartData` /
- *    `SubModelPartTables` / `SubModelPartGeometries` / `SubModelPartConstraints`
- *    sub-blocks;
- *  - any unrecognized `Begin <Block>`.
- *
+ * Without an #MdpaInfo there is nowhere to put that content, so rather than
+ * silently dropping it the info-less overloads (and so the registry, `mio_read`
+ * and the native CLI) **throw `ReadError` naming the construct**.
  * **`ReadOptions::mLenient` downgrades every one of those to a warning plus a
- * skip**, which is what makes a production deck readable where there is no
- * Python to fall back to (the C API, Fortran, Julia, R, WASM, the native CLI).
- * What was skipped is recorded in `MdpaInfo::mSkippedConstructs`. Two things
- * are deliberately *not* on that list and still throw even under `mLenient`,
+ * skip**, and what was skipped is recorded in `MdpaInfo::mSkippedConstructs`.
+ * Two sub-model-part blocks are not parsed even with an #MdpaInfo and follow
+ * the same strict/lenient rule: non-empty `SubModelPartGeometries` and
+ * `SubModelPartConstraints`. Two things still throw even under `mLenient`,
  * because skipping them would return a mesh that is quietly wrong rather than
  * merely incomplete:
  *
@@ -110,12 +112,13 @@
  * The writer emits the mesh-level blocks (`ModelPartData` from scalar
  * `field_data`, `Properties`, `Nodes`, `Elements`/`Conditions`,
  * `NodalData`/`ElementalData`/`ConditionalData`, `SubModelPart`s from named
- * regions); it never writes `Tables`, `Geometries` or `Mesh` blocks, and
- * `RegionKind::Side` regions are dropped with a warning (MDPA has no facet-set
- * concept).
+ * regions) and, given an #MdpaInfo, its `Table`, `Geometries`, `Mesh` and raw
+ * blocks. `RegionKind::Side` regions are dropped with a warning (MDPA has no
+ * facet-set concept).
  */
 
 // System includes
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -176,11 +179,81 @@ struct MdpaEntityName {
 };
 
 /**
+ * @brief One `Begin Geometries <Name>` run: connectivity with no property id.
+ *
+ * Kratos geometries (the entities CAD/IGA applications and `CreateNewGeometry`
+ * use) are not elements, so they are kept apart from the mesh's cell blocks:
+ * an operation would otherwise treat them as cells. A new block starts
+ * wherever the name changes, so every name the file spelled survives.
+ */
+struct MdpaGeometryBlock {
+    /** @brief The Kratos geometry name as read (`Triangle3D3`); empty to derive it. */
+    std::string mName;
+    /** @brief The meshio cell type (`"triangle"`). */
+    std::string mType;
+    /** @brief Int64 `(n, k)`: 0-based point rows, in meshio node order. */
+    NDArray mConn;
+    /** @brief The file's geometry ids, one per row. */
+    std::vector<std::int64_t> mIds;
+};
+
+/**
+ * @brief One `Begin Mesh <id>` block (a Kratos multi-level mesh).
+ *
+ * Node members are point rows, like region entries; element and condition
+ * members are the file's own ids, written back verbatim -- the Python
+ * reference's rule, since a Mesh block names entities rather than rows.
+ */
+struct MdpaMeshBlock {
+    /** @brief The mesh id from the header (never 0: Kratos reserves it). */
+    std::int64_t mId = 0;
+    /** @brief The `MeshData` entries, in file order. */
+    std::vector<PropertyValue> mData;
+    /** @brief `MeshNodes`, as 0-based point rows. */
+    std::vector<std::int64_t> mNodes;
+    /** @brief `MeshElements`, as file element ids. */
+    std::vector<std::int64_t> mElementIds;
+    /** @brief `MeshConditions`, as file condition ids. */
+    std::vector<std::int64_t> mConditionIds;
+};
+
+/**
+ * @brief The non-membership content of one `Begin SubModelPart`.
+ *
+ * Membership (nodes, elements, conditions) is on the mesh as regions, which
+ * operations remap; this holds only what a region cannot: the part's
+ * `SubModelPartData` entries and `SubModelPartTables` ids.
+ */
+struct MdpaSubModelPart {
+    /** @brief The hierarchical name (`"parent/child"`), as the region is named. */
+    std::string mName;
+    /** @brief The `SubModelPartData` entries, in file order. */
+    std::vector<PropertyValue> mData;
+    /** @brief The `SubModelPartTables` ids, in file order. */
+    std::vector<std::int64_t> mTables;
+};
+
+/**
+ * @brief A top-level block kept verbatim, such as `Begin Constraints`.
+ *
+ * What only Kratos interprets -- master-slave constraints, and any block a
+ * future Kratos adds -- is carried as text so a round trip loses nothing.
+ */
+struct MdpaRawBlock {
+    /** @brief The header line with any comment removed (`"Begin Constraints ..."`). */
+    std::string mHeader;
+    /** @brief The body lines, verbatim, each ending in `'\n'`. */
+    std::string mBody;
+    /** @brief The terminating line (`"End Constraints"`). */
+    std::string mEnd;
+};
+
+/**
  * @brief MDPA content the C++ `Mesh` cannot hold, carried alongside it.
  *
  * The `MedInfo`/`ExodusInfo`/`OpenFoamInfo` pattern: a reader overload fills
- * one, a writer overload consumes one, and the registry (and therefore every
- * flat binding) passes none — a documented gap, not a silent loss.
+ * one, a writer overload consumes one, and the registry passes none. The flat
+ * bindings reach it through `mio_read_with_info` / `mio_write_with_info`.
  *
  * Round-tripping a real deck is exactly `read_mdpa(in, info)` followed by
  * `write_mdpa(out, mesh, info)`; both halves are additive, so `read_mdpa(in)`
@@ -199,6 +272,23 @@ struct MdpaInfo {
      * meaning "silently lossy".
      */
     std::vector<std::string> mSkippedConstructs;
+    /**
+     * @brief The non-numeric `ModelPartData` entries (`mText`), in file order.
+     *
+     * Numeric entries stay one-element Float64 `field_data`, as they always
+     * were; `NDArray` has no string dtype for the rest.
+     */
+    std::vector<PropertyValue> mModelPartData;
+    /** @brief Every top-level `Begin Table` (`mIsTable`; `mKey` = header arguments). */
+    std::vector<PropertyValue> mTables;
+    /** @brief Every `Begin Geometries` run, in file order. */
+    std::vector<MdpaGeometryBlock> mGeometries;
+    /** @brief Every `Begin Mesh <id>` block, in file order. */
+    std::vector<MdpaMeshBlock> mMeshBlocks;
+    /** @brief Sub-model-parts with `SubModelPartData`/`Tables` content, in file order. */
+    std::vector<MdpaSubModelPart> mSubModelParts;
+    /** @brief Every other top-level block, verbatim, in file order. */
+    std::vector<MdpaRawBlock> mRawBlocks;
 };
 
 /**
@@ -251,15 +341,20 @@ MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh);
  * @brief Write a mesh to MDPA, restoring the content `read_mdpa` set aside.
  *
  * Identical to the two-argument form except that `rInfo` supplies the
- * `Properties` bodies and the per-block Kratos entity names. A block with no
+ * `Properties` bodies, the per-block Kratos entity names, the text
+ * `ModelPartData` entries, and the `Table`, `Geometries`, `Mesh`,
+ * sub-model-part data and raw blocks, written in that file position: tables
+ * after `Properties`, geometries after the entity blocks, sub-model-part data
+ * inside its `SubModelPart`, then `Mesh` and raw blocks last. A block with no
  * entry in `MdpaInfo::mEntityNames`, or one whose `mName` is empty, falls back
  * to the derived name exactly as the two-argument form does, so a partially
  * filled #MdpaInfo is legal.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param rInfo the side-channel content (properties, entity names)
- * @throws WriteError as the two-argument form
+ * @param rInfo the side-channel content
+ * @throws WriteError as the two-argument form, and on a geometry row naming a
+ *         point the mesh does not have
  */
 MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
                                    const MdpaInfo& rInfo);
@@ -275,9 +370,9 @@ MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
  * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError on a malformed or unterminated block, on connectivity
- *         referring to a node that does not exist, and — by design — on every
- *         construct listed under "Limitations" above, so that a caller with a
- *         Python fallback can defer to the richer reference reader
+ *         referring to a node that does not exist, and on every construct
+ *         only an #MdpaInfo can hold (see "The blocks the `Mesh` cannot hold"
+ *         above), since this overload has nowhere to put it
  * @note cell_data key produced: `"gmsh:physical"`.
  */
 MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath);
@@ -300,8 +395,11 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
  * @brief Read a Kratos MDPA mesh file, keeping what the `Mesh` cannot hold.
  *
  * The overload a round trip needs: `rInfo` comes back carrying the `Properties`
- * bodies, the per-block Kratos entity names and (under `mLenient`) the list of
- * skipped constructs, all of which `write_mdpa(path, mesh, info)` puts back.
+ * bodies, the per-block Kratos entity names, every block listed under "The
+ * blocks the `Mesh` cannot hold" and (under `mLenient`) the list of skipped
+ * constructs, all of which `write_mdpa(path, mesh, info)` puts back. Only a
+ * non-empty `SubModelPartGeometries`/`SubModelPartConstraints` still throws
+ * (or, under `mLenient`, is skipped).
  *
  * @param rPath filesystem path to read
  * @param rInfo out: the side-channel content; cleared first

@@ -137,6 +137,14 @@ extern SEXP R_mio_sequence_pipeline_run_json(SEXP);
 extern SEXP R_mio_pipeline_run_json(SEXP);
 extern SEXP R_mio_pipeline_has_json(void);
 
+/* format_info.c */
+extern SEXP R_mio_read_with_info(SEXP, SEXP, SEXP);
+extern SEXP R_mio_write_with_info(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_format_info_release(SEXP);
+extern SEXP R_mio_format_info_is_open(SEXP);
+extern SEXP R_mio_format_info_format(SEXP);
+extern SEXP R_mio_mdpa_info(SEXP);
+
 /* xdmf_series.c */
 extern SEXP R_mio_xdmf_series_create(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_xdmf_series_flush(SEXP);
@@ -278,6 +286,12 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_sequence_pipeline_run_json, 1),
     CALLDEF(R_mio_pipeline_run_json, 1),
     CALLDEF(R_mio_pipeline_has_json, 0),
+    CALLDEF(R_mio_read_with_info, 3),
+    CALLDEF(R_mio_write_with_info, 4),
+    CALLDEF(R_mio_format_info_release, 1),
+    CALLDEF(R_mio_format_info_is_open, 1),
+    CALLDEF(R_mio_format_info_format, 1),
+    CALLDEF(R_mio_mdpa_info, 1),
     CALLDEF(R_mio_xdmf_series_create, 5),
     CALLDEF(R_mio_xdmf_series_flush, 1),
     CALLDEF(R_mio_xdmf_series_finalized, 1),
@@ -301,6 +315,7 @@ void attribute_visible R_init_meshioplusplus(DllInfo *dll) {
     mio_r_mesh_tag = Rf_install("mio_mesh_handle");
     mio_r_series_tag = Rf_install("mio_xdmf_series_handle");
     mio_r_sequence_tag = Rf_install("mio_sequence_handle");
+    mio_r_info_tag = Rf_install("mio_format_info_handle");
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
     R_forceSymbols(dll, TRUE);

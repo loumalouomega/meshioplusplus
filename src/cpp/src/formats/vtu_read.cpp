@@ -42,6 +42,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
+#include "../detail/region_field_data.hpp"
 #include "vtk_preflight.hpp"
 #include "../detail/vtu_decode.hpp"
 #include "../detail/open_source.hpp"
@@ -468,10 +469,13 @@ bool vtu_is_numeric_type(const std::string& rType) {
  * used to succeed by ignoring the whole section.
  */
 void vtu_read_field_data(const pugi::xml_node& rNode, const VtuContext& rCtx,
-                         const ReadOptions& rOpts, Mesh& rMesh) {
+                         const ReadOptions& rOpts, bool WantData,
+                         std::vector<std::pair<std::string, NDArray>>& rOut) {
     for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
+        // Region arrays are topology, not data: read whatever the options
+        // narrow (detail/region_field_data.hpp).
+        if (!detail::is_region_field_name(name) && (!WantData || !rOpts.WantsArray(name)))
             continue;
         if (!vtu_is_numeric_type(da.attribute("type").as_string())) {
             log::warn(
@@ -484,7 +488,7 @@ void vtu_read_field_data(const pugi::xml_node& rNode, const VtuContext& rCtx,
         NDArray arr = vtu_read_data_array(da, rCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-        rMesh.AddFieldData(name, std::move(arr));
+        rOut.emplace_back(name, std::move(arr));
     }
 }
 
@@ -501,7 +505,8 @@ std::vector<std::string> vtu_field_data_names(const vtu_header& rHeader) {
     std::vector<std::string> names;
     for (const pugi::xml_node& rNode : nodes)
         for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-            if (vtu_is_numeric_type(da.attribute("type").as_string()))
+            if (vtu_is_numeric_type(da.attribute("type").as_string()) &&
+                !detail::is_region_field_name(da.attribute("Name").as_string()))
                 names.emplace_back(da.attribute("Name").as_string());
     std::sort(names.begin(), names.end());
     names.erase(std::unique(names.begin(), names.end()), names.end());
@@ -660,15 +665,17 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         cell_data_raw.emplace(rName, std::move(rArr));
     });
 
-    if (want_data) {
-        vtu_read_field_data(h.mGrid, ctx, rOpts, mesh);
-        for (const pugi::xml_node& rPiece : h.mPieces)
-            vtu_read_field_data(rPiece, ctx, rOpts, mesh);
-    }
+    std::vector<std::pair<std::string, NDArray>> field_arrays;
+    vtu_read_field_data(h.mGrid, ctx, rOpts, want_data, field_arrays);
+    for (const pugi::xml_node& rPiece : h.mPieces)
+        vtu_read_field_data(rPiece, ctx, rOpts, want_data, field_arrays);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
+    std::vector<std::int64_t> file_to_global;
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
-                              faces.empty() ? nullptr : &faces, face_offsets, mesh);
+                              faces.empty() ? nullptr : &faces, face_offsets, mesh,
+                              &file_to_global);
+    detail::regions_from_field_arrays(mesh, field_arrays, &file_to_global, "vtu");
     return mesh;
 }
 
@@ -723,6 +730,14 @@ MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
     meta.mPointDataNames = vtu_array_names(h.mPieces, "PointData");
     meta.mCellDataNames = vtu_array_names(h.mPieces, "CellData");
     meta.mFieldDataNames = vtu_field_data_names(h);
+    {
+        std::vector<std::pair<std::string, std::size_t>> arrays;
+        for (const pugi::xml_node& rNode : {h.mGrid, h.mPieces[0]})
+            for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+                arrays.emplace_back(da.attribute("Name").as_string(),
+                                    da.attribute("NumberOfTuples").as_ullong(0));
+        meta.mRegions = detail::region_summaries_from_field_names(arrays);
+    }
 
     // No bounding box: it would require decoding the point coordinates, which
     // are usually the largest array in the file -- exactly what this path exists

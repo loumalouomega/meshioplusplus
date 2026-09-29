@@ -192,7 +192,7 @@ TEST(UndoGreen, ExactlyRestoresTheCoarseParentPerGreenGroupAndKeepsRedUnchanged)
 // Regions: the first genuinely non-injective CellMapKind::Direct use
 // --------------------------------------------------------------------------
 
-TEST(UndoGreen, RegionsSurviveTheNonInjectiveCollapseAndSideRegionsDoNotSurvive) {
+TEST(UndoGreen, RegionsSurviveTheNonInjectiveCollapse) {
     const Mesh coarse = tri_grid(3);
     RefineResult fine = refine(coarse, cells_opt({8}));
 
@@ -235,9 +235,11 @@ TEST(UndoGreen, RegionsSurviveTheNonInjectiveCollapseAndSideRegionsDoNotSurvive)
     EXPECT_EQ(meshioplusplus::detail::read_int(apex.mEntries, 0), 0)
         << "points are never renumbered";
 
-    EXPECT_EQ(undone.mMesh.FindRegion("edge", RegionKind::Side), Mesh::npos)
-        << "named Side regions do not survive undo_green at all (mDropSideRegions, since facet "
-           "identity is not preserved across a substitution)";
+    // Side regions survive too (v16.27.0): the edge moves to the output
+    // facet containing it.
+    ASSERT_NE(undone.mMesh.FindRegion("edge", RegionKind::Side), Mesh::npos);
+    EXPECT_GE(undone.mMesh.Region(undone.mMesh.FindRegion("edge", RegionKind::Side)).NumEntries(),
+              1u);
 }
 
 // --------------------------------------------------------------------------

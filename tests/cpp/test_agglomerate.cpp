@@ -38,6 +38,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -286,7 +287,7 @@ TEST(Agglomerate, NonVolumeBlocksPassThroughUnchangedWhenNoVolumeCellsExist) {
 // Regions
 // --------------------------------------------------------------------------
 
-TEST(Agglomerate, PointAndCellRegionsSurviveThroughTheGlobalMap) {
+TEST(Agglomerate, RegionsSurviveThroughTheGlobalMap) {
     Mesh m = two_hexes();
     m.AddRegion(Region("corner", RegionKind::Point, i64({0})));
     m.AddRegion(Region("both", RegionKind::Cell, i64({0, 1})));
@@ -307,13 +308,18 @@ TEST(Agglomerate, PointAndCellRegionsSurviveThroughTheGlobalMap) {
     ASSERT_EQ(both.NumEntries(), 1u) << "duplicate global-0 entries collapse via Canonicalize";
     EXPECT_EQ(meshioplusplus::detail::read_int(both.mEntries, 0), 0);
 
-    // A many-to-one collapse can never preserve facet identity -- the merged
-    // cell's type ("polyhedron") never matches the original ("hexahedron"),
-    // so `remap_region`'s Side branch drops every entry. The region is still
-    // *carried*, as a named empty group (the same "the name is information"
-    // convention `test_region_remap.cpp`'s
-    // `ARegionLeftEmptyIsStillCarriedAsAnEmptyGroup` pins) -- not removed.
+    // The side survives (v16.27.0): the merged polyhedron's face containing
+    // hexahedron 0's bottom face, found by its nodes.
     const std::size_t bottom_idx = r.mMesh.FindRegion("bottom", RegionKind::Side);
     ASSERT_NE(bottom_idx, Mesh::npos);
-    EXPECT_EQ(r.mMesh.Region(bottom_idx).NumEntries(), 0u);
+    const Region& bottom = r.mMesh.Region(bottom_idx);
+    ASSERT_EQ(bottom.NumEntries(), 1u);
+    meshioplusplus::CellType facet_type{};
+    std::vector<std::int64_t> want;
+    ASSERT_TRUE(meshioplusplus::detail::facet_nodes(m, 0, 0, facet_type, want));
+    const auto face = r.mMesh.Cells(0).Face(
+        0, static_cast<std::size_t>(meshioplusplus::detail::read_int(bottom.mEntries, 1)));
+    std::vector<std::int64_t> got_nodes(face.first, face.first + face.second);
+    for (std::int64_t v : want)
+        EXPECT_NE(std::find(got_nodes.begin(), got_nodes.end(), v), got_nodes.end()) << v;
 }

@@ -69,8 +69,8 @@ def repair(
     copies inherit their source row and centroids the mean of their loop's
     rows; the fill block's ``cell_data`` is NaN for float and 0 for integer
     arrays. Point and Cell regions (and so ``point_sets``/``cell_sets``)
-    survive -- a copy joins its source's regions; Side regions are dropped by
-    name, since a flip permutes a triangle's edge numbering. Non-manifold
+    survive -- a copy joins its source's regions -- and so do Side regions, an
+    edge a flip renumbers being found again by its nodes. Non-manifold
     *edges* (three or more triangles) are neither split nor crossed, only
     counted; nested cavities are not detected.
 

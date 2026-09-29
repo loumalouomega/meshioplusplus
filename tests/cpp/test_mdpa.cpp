@@ -812,24 +812,250 @@ TEST(Mdpa, ProductionDeckThrowsByDefaultAndNamesTheConstruct) {
     std::filesystem::remove(path, ec);
 }
 
-TEST(Mdpa, LenientSkipsUnsupportedBlocksAndRecordsThem) {
+TEST(Mdpa, LenientWithoutAnInfoSkipsWhatOnlyAnInfoCanHold) {
+    // With nowhere to put them, the info-less overload (the registry, mio_read)
+    // still refuses the side-channel blocks by name -- or, lenient, skips them.
     const std::string path = mdpa_temp_file(std::string(kMdpaProductionDeck) +
                                             "\nBegin Constraints LinearMasterSlave\n"
                                             "1 1 2\nEnd Constraints\n"
                                             "\nBegin Geometries Triangle3D3\n"
                                             "1 1 2 3\nEnd Geometries\n");
-    meshioplusplus::MdpaInfo info;
+    try {
+        meshioplusplus::read_mdpa(path);
+        FAIL() << "expected a ReadError";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("MdpaInfo"), std::string::npos) << e.what();
+    }
     meshioplusplus::ReadOptions opts;
     opts.mLenient = true;
-    const Mesh m = meshioplusplus::read_mdpa(path, info, opts);
-
+    const Mesh m = meshioplusplus::read_mdpa(path, opts);
     EXPECT_EQ(m.NumPoints(), 4u);
     EXPECT_EQ(m.NumCellBlocks(), 3u);
-    ASSERT_EQ(info.mSkippedConstructs.size(), 2u);
-    EXPECT_NE(info.mSkippedConstructs[0].find("Constraints"), std::string::npos);
-    EXPECT_NE(info.mSkippedConstructs[1].find("Geometries"), std::string::npos);
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+TEST(Mdpa, LenientSkipsSubModelPartGeometriesEvenWithAnInfo) {
+    // Not even an MdpaInfo holds a non-empty SubModelPartGeometries: strict
+    // throws, lenient records the skip.
+    std::string deck = kMdpaProductionDeck;
+    deck +=
+        "Begin SubModelPart Extra\n    Begin SubModelPartGeometries\n        1\n"
+        "    End SubModelPartGeometries\nEnd SubModelPart\n";
+    const std::string path = mdpa_temp_file(deck);
+    meshioplusplus::MdpaInfo info;
+    EXPECT_THROW(meshioplusplus::read_mdpa(path, info), meshioplusplus::ReadError);
+    meshioplusplus::ReadOptions opts;
+    opts.mLenient = true;
+    meshioplusplus::read_mdpa(path, info, opts);
+    ASSERT_EQ(info.mSkippedConstructs.size(), 1u);
+    EXPECT_NE(info.mSkippedConstructs[0].find("SubModelPartGeometries"), std::string::npos);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+namespace {
+
+/// Every block the Mesh cannot hold, around a two-tetra deck.
+const char* const kMdpaInfoDeck = R"(Begin ModelPartData
+    DOMAIN_SIZE 3
+    SOLVER_TYPE static // a comment
+End ModelPartData
+
+Begin Table 1 TIME DISPLACEMENT_X
+    0.0 0.0
+    1.0 0.25
+End Table
+
+Begin Properties 1
+End Properties
+
+Begin Nodes
+1 0.0 0.0 0.0
+2 1.0 0.0 0.0
+3 0.0 1.0 0.0
+4 0.0 0.0 1.0
+5 1.0 1.0 1.0
+End Nodes
+
+Begin Elements Element3D4N
+1 1 1 2 3 4
+2 1 2 3 4 5
+End Elements
+
+Begin Geometries Triangle3D3
+10 1 2 3
+11 2 3 5
+End Geometries
+
+Begin Geometries Line3D2
+20 1 5
+End Geometries
+
+Begin SubModelPart Inlet
+    Begin SubModelPartData
+        VELOCITY_X 2.5
+        MATERIAL water
+    End SubModelPartData
+    Begin SubModelPartTables
+        1
+    End SubModelPartTables
+    Begin SubModelPartNodes
+        1
+        2
+    End SubModelPartNodes
+End SubModelPart
+
+Begin Mesh 1
+    Begin MeshData
+        LEVEL 2
+        NAME coarse
+    End MeshData
+    Begin MeshNodes
+        1
+        5
+    End MeshNodes
+    Begin MeshElements
+        2
+    End MeshElements
+End Mesh
+
+Begin Constraints LinearMasterSlaveConstraint
+    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0 // comment kept
+End Constraints
+)";
+
+}  // namespace
+
+TEST(Mdpa, InfoKeepsEveryBlockTheMeshCannotHold) {
+    const std::string path = mdpa_temp_file(kMdpaInfoDeck);
+    meshioplusplus::MdpaInfo info;
+    const Mesh m = meshioplusplus::read_mdpa(path, info);  // strict: nothing throws
+    EXPECT_TRUE(info.mSkippedConstructs.empty());
+    EXPECT_EQ(m.NumPoints(), 5u);
+    EXPECT_EQ(m.NumCellBlocks(), 1u);
+
+    // Numeric ModelPartData stays field_data; text goes to the info.
+    EXPECT_TRUE(m.HasFieldData("DOMAIN_SIZE"));
+    EXPECT_FALSE(m.HasFieldData("SOLVER_TYPE"));
+    ASSERT_EQ(info.mModelPartData.size(), 1u);
+    EXPECT_EQ(info.mModelPartData[0].mKey, "SOLVER_TYPE");
+    EXPECT_EQ(info.mModelPartData[0].mText, "static");
+
+    ASSERT_EQ(info.mTables.size(), 1u);
+    EXPECT_TRUE(info.mTables[0].mIsTable);
+    EXPECT_EQ(info.mTables[0].mKey, "1 TIME DISPLACEMENT_X");
+    ASSERT_EQ(info.mTables[0].mValues.Shape(), (std::vector<std::size_t>{2, 2}));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(info.mTables[0].mValues, 3), 0.25);
+
+    ASSERT_EQ(info.mGeometries.size(), 2u);
+    EXPECT_EQ(info.mGeometries[0].mName, "Triangle3D3");
+    EXPECT_EQ(info.mGeometries[0].mType, "triangle");
+    EXPECT_EQ(info.mGeometries[0].mIds, (std::vector<std::int64_t>{10, 11}));
+    ASSERT_EQ(info.mGeometries[0].mConn.Shape(), (std::vector<std::size_t>{2, 3}));
+    // Node 5 is point row 4.
+    EXPECT_EQ(meshioplusplus::detail::read_int(info.mGeometries[0].mConn, 5), 4);
+    EXPECT_EQ(info.mGeometries[1].mType, "line");
+
+    ASSERT_EQ(info.mSubModelParts.size(), 1u);
+    EXPECT_EQ(info.mSubModelParts[0].mName, "Inlet");
+    ASSERT_EQ(info.mSubModelParts[0].mData.size(), 2u);
+    EXPECT_FALSE(info.mSubModelParts[0].mData[0].IsText());
+    EXPECT_EQ(info.mSubModelParts[0].mData[1].mText, "water");
+    EXPECT_EQ(info.mSubModelParts[0].mTables, (std::vector<std::int64_t>{1}));
+
+    ASSERT_EQ(info.mMeshBlocks.size(), 1u);
+    EXPECT_EQ(info.mMeshBlocks[0].mId, 1);
+    EXPECT_EQ(info.mMeshBlocks[0].mData.size(), 2u);
+    EXPECT_EQ(info.mMeshBlocks[0].mNodes, (std::vector<std::int64_t>{0, 4}));
+    EXPECT_EQ(info.mMeshBlocks[0].mElementIds, (std::vector<std::int64_t>{2}));
+    EXPECT_TRUE(info.mMeshBlocks[0].mConditionIds.empty());
+
+    ASSERT_EQ(info.mRawBlocks.size(), 1u);
+    EXPECT_EQ(info.mRawBlocks[0].mHeader, "Begin Constraints LinearMasterSlaveConstraint");
+    EXPECT_EQ(info.mRawBlocks[0].mEnd, "End Constraints");
+    EXPECT_EQ(info.mRawBlocks[0].mBody,
+              "    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0 // comment kept\n");
+
+    // Write it back and read again: the side channel must be a fixed point.
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, m, info);
+    meshioplusplus::MdpaInfo info2;
+    const Mesh m2 = meshioplusplus::read_mdpa(out, info2);
+    EXPECT_EQ(m2.NumPoints(), 5u);
+    ASSERT_EQ(info2.mModelPartData.size(), 1u);
+    EXPECT_EQ(info2.mModelPartData[0].mText, "static");
+    ASSERT_EQ(info2.mTables.size(), 1u);
+    EXPECT_EQ(info2.mTables[0].mKey, info.mTables[0].mKey);
+    ASSERT_EQ(info2.mGeometries.size(), 2u);
+    EXPECT_EQ(info2.mGeometries[0].mName, "Triangle3D3");
+    EXPECT_EQ(info2.mGeometries[0].mIds, info.mGeometries[0].mIds);
+    for (std::size_t i = 0; i < 6; ++i)
+        EXPECT_EQ(meshioplusplus::detail::read_int(info2.mGeometries[0].mConn, i),
+                  meshioplusplus::detail::read_int(info.mGeometries[0].mConn, i));
+    ASSERT_EQ(info2.mSubModelParts.size(), 1u);
+    EXPECT_EQ(info2.mSubModelParts[0].mData.size(), 2u);
+    EXPECT_EQ(info2.mSubModelParts[0].mTables, info.mSubModelParts[0].mTables);
+    ASSERT_EQ(info2.mMeshBlocks.size(), 1u);
+    EXPECT_EQ(info2.mMeshBlocks[0].mNodes, info.mMeshBlocks[0].mNodes);
+    EXPECT_EQ(info2.mMeshBlocks[0].mElementIds, info.mMeshBlocks[0].mElementIds);
+    ASSERT_EQ(info2.mRawBlocks.size(), 1u);
+    EXPECT_EQ(info2.mRawBlocks[0].mBody, info.mRawBlocks[0].mBody);
+    // And the second write is byte-identical to the first.
+    const std::string out2 = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out2, m2, info2);
+    EXPECT_EQ(mdpa_slurp(out), mdpa_slurp(out2));
+    std::error_code ec;
+    for (const std::string& p : {path, out, out2})
+        std::filesystem::remove(p, ec);
+}
+
+TEST(Mdpa, InfoGeometriesUseTheWrittenNodeNumbering) {
+    // Gapped node ids survive through mdpa:id, and a geometry row must name
+    // the same written id as the Nodes block.
+    const std::string path = mdpa_temp_file(R"(Begin Nodes
+10 0 0 0
+20 1 0 0
+30 0 1 0
+End Nodes
+Begin Geometries Triangle3D3
+7 10 20 30
+End Geometries
+)");
+    meshioplusplus::MdpaInfo info;
+    const Mesh m = meshioplusplus::read_mdpa(path, info);
+    ASSERT_EQ(info.mGeometries.size(), 1u);
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, m, info);
+    EXPECT_NE(mdpa_slurp(out).find("Begin Geometries Triangle3D3\n  7 10 20 30\n"),
+              std::string::npos)
+        << mdpa_slurp(out);
+    // A derived name when none was kept.
+    info.mGeometries[0].mName.clear();
+    meshioplusplus::write_mdpa(out, m, info);
+    EXPECT_NE(mdpa_slurp(out).find("Begin Geometries Triangle3D3\n"), std::string::npos);
+    // A row naming a point the mesh does not have is refused.
+    info.mGeometries[0].mConn.As<std::int64_t>()[0] = 99;
+    EXPECT_THROW(meshioplusplus::write_mdpa(out, m, info), meshioplusplus::WriteError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(out, ec);
+}
+
+TEST(Mdpa, InfoLessWriteIsUnchanged) {
+    // The two-argument writer never sees the side channel.
+    const std::string path = mdpa_temp_file(kMdpaInfoDeck);
+    meshioplusplus::MdpaInfo info;
+    const Mesh m = meshioplusplus::read_mdpa(path, info);
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, m);
+    const std::string text = mdpa_slurp(out);
+    for (const char* p_block :
+         {"Begin Table", "Begin Geometries", "Begin Mesh", "Constraints", "SubModelPartData"})
+        EXPECT_EQ(text.find(p_block), std::string::npos) << p_block;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(out, ec);
 }
 
 TEST(Mdpa, PropertiesBodiesRoundTripThroughMdpaInfo) {

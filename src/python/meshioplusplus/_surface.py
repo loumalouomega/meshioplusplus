@@ -102,6 +102,7 @@ def _extract_surface_py(mesh, record_parent_ids: bool = False) -> Mesh:
     conn_parts = []
     type_parts = []
     parent_parts = []
+    slot_parts = []
     any_supported = False
     global_base = 0
     for block in mesh.cells:
@@ -133,6 +134,7 @@ def _extract_surface_py(mesh, record_parent_ids: bool = False) -> Mesh:
         conn_parts.append(fconn.reshape(nc * nf, conn_w))
         type_parts.append(np.tile(tidx, nc))
         parent_parts.append(np.repeat(base + np.arange(nc, dtype=np.int64), nf))
+        slot_parts.append(np.tile(np.arange(nf, dtype=np.int64), nc))
 
     if not any_supported:
         raise ValueError(
@@ -143,6 +145,7 @@ def _extract_surface_py(mesh, record_parent_ids: bool = False) -> Mesh:
     fconn = np.concatenate(conn_parts)
     type_idx = np.concatenate(type_parts)
     parents = np.concatenate(parent_parts)
+    slots = np.concatenate(slot_parts)
 
     _, inverse, counts = np.unique(
         keys, axis=0, return_inverse=True, return_counts=True
@@ -151,12 +154,14 @@ def _extract_surface_py(mesh, record_parent_ids: bool = False) -> Mesh:
 
     out_blocks = []
     out_parents = []
+    out_slots = []
     for name in out_types:
         sel = boundary & (type_idx == out_index[name])
         if not np.any(sel):
             continue
         out_blocks.append((name, fconn[sel][:, : out_nodes[name]]))
         out_parents.append(parents[sel])
+        out_slots.append(slots[sel])
 
     used = np.unique(np.concatenate([c.reshape(-1) for _, c in out_blocks]))
     cells = [
@@ -173,7 +178,21 @@ def _extract_surface_py(mesh, record_parent_ids: bool = False) -> Mesh:
         cell_data["surface:parent_cell"] = [
             p.reshape(-1, 1).astype(np.int64) for p in out_parents
         ]
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    out = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    if getattr(mesh, "regions", None):
+        from ._side_carry import carry_regions_to_facet_mesh
+
+        point_map = np.full(len(mesh.points), -1, dtype=np.int64)
+        point_map[used] = np.arange(len(used), dtype=np.int64)
+        carry_regions_to_facet_mesh(
+            mesh,
+            out,
+            np.concatenate(out_parents),
+            np.concatenate(out_slots),
+            point_map,
+            "extract_surface",
+        )
+    return out
 
 
 def extract_surface(mesh, record_parent_ids: bool = False) -> Mesh:
@@ -185,7 +204,10 @@ def extract_surface(mesh, record_parent_ids: bool = False) -> Mesh:
     kept; points are compacted to the referenced subset. With
     ``record_parent_ids=True`` a ``cell_data`` array ``"surface:parent_cell"``
     records, for each output facet, the global index of the owning input cell.
-    Raises ``ValueError`` when the mesh has no supported 2D/3D cell block.
+    A ``side`` region becomes a ``cell`` region of the output, a ``point``
+    region follows the compaction, and a ``cell`` region is dropped with a
+    warning. Raises ``ValueError`` when the mesh has no supported 2D/3D cell
+    block.
     """
     try:
         from . import _core

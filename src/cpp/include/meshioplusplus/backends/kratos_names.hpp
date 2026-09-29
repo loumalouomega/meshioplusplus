@@ -212,4 +212,37 @@ inline const std::string& kratos_condition_name(CellType type) {
     return kratos_element_name(type);  // geometry/meshio-name fallback chain
 }
 
+/**
+ * @brief Default Kratos *geometry* name for a cell type (the Python
+ * reference's `_meshio_to_kratos_geometry_type`, whose inversion keeps the
+ * 3-D spelling), falling back to the meshio name for types with none.
+ * @param type The cell type.
+ * @return The Kratos geometry name (resolvable back via `cell_type_from_kratos_name`).
+ */
+inline const std::string& kratos_geometry_name(CellType type) {
+    static const std::unordered_map<CellType, std::string> m = {
+        {CellType::Vertex, "Point3D"},
+        {CellType::Line, "Line3D2"},
+        {CellType::Line3, "Line3D3"},
+        {CellType::Triangle, "Triangle3D3"},
+        {CellType::Triangle6, "Triangle3D6"},
+        {CellType::Quad, "Quadrilateral3D4"},
+        {CellType::Quad8, "Quadrilateral3D8"},
+        {CellType::Quad9, "Quadrilateral3D9"},
+        {CellType::Tetra, "Tetrahedra3D4"},
+        {CellType::Tetra10, "Tetrahedra3D10"},
+        {CellType::Pyramid, "Pyramid3D5"},
+        {CellType::Pyramid13, "Pyramid3D13"},
+        {CellType::Wedge, "Prism3D6"},
+        {CellType::Wedge15, "Prism3D15"},
+        {CellType::Hexahedron, "Hexahedra3D8"},
+        {CellType::Hexahedron20, "Hexahedra3D20"},
+        {CellType::Hexahedron27, "Hexahedra3D27"},
+    };
+    auto it = m.find(type);
+    if (it != m.end())
+        return it->second;
+    return cell_type_name(type);
+}
+
 }  // namespace meshioplusplus

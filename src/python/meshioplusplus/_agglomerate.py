@@ -55,8 +55,8 @@ def agglomerate(
     a group can leave an interior node unreferenced; :func:`clean` with
     ``remove_orphans=True`` is the documented follow-up for a caller who
     wants a minimal point set. Point and Cell regions (and so
-    ``point_sets``/``cell_sets``) survive; named **Side** regions do not, a
-    many-to-one collapse having no facet correspondence to preserve.
+    ``point_sets``/``cell_sets``) survive, and so do named **Side** regions: a
+    facet of a merged cell moves to the output face that contains it.
 
     :param mesh: the mesh to coarsen (never modified).
     :param target_group_size: approximate member cells per output group;

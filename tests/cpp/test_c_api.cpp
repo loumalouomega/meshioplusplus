@@ -4314,3 +4314,169 @@ TEST(CApi, AgglomerateExAndBlendAndResample) {
     mio_mesh_free(b);
     mio_mesh_free(m);
 }
+
+// ---------------------------------------------------------------------------
+// mio_format_info: the MDPA side channel on the flat ABI (v16.27.0)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const char* const kCapiMdpaDeck = R"(Begin ModelPartData
+    DOMAIN_SIZE 3
+    SOLVER_TYPE static
+End ModelPartData
+Begin Table 1 TIME VALUE
+    0.0 1.0
+    1.0 2.0
+End Table
+Begin Properties 1
+    DENSITY 7850
+    CONSTITUTIVE_LAW LinearElastic3DLaw
+End Properties
+Begin Nodes
+1 0 0 0
+2 1 0 0
+3 0 1 0
+4 0 0 1
+End Nodes
+Begin Elements Element3D4N
+1 1 1 2 3 4
+End Elements
+Begin Geometries Triangle3D3
+7 1 2 3
+End Geometries
+Begin SubModelPart Inlet
+    Begin SubModelPartData
+        VELOCITY_X 2.5
+    End SubModelPartData
+    Begin SubModelPartNodes
+        1
+    End SubModelPartNodes
+End SubModelPart
+Begin Mesh 3
+    Begin MeshNodes
+        2
+        4
+    End MeshNodes
+End Mesh
+Begin Constraints LinearMasterSlaveConstraint
+    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0
+End Constraints
+)";
+
+std::string capi_info_string(const mio_format_info* pInfo, int32_t Section, int64_t Index,
+                             int32_t Field) {
+    const int64_t n = mio_mdpa_info_string(pInfo, Section, Index, Field, nullptr, 0);
+    if (n < 0)
+        return "<error>";
+    std::string out(static_cast<std::size_t>(n) + 1, '\0');
+    mio_mdpa_info_string(pInfo, Section, Index, Field, out.data(), n + 1);
+    out.resize(static_cast<std::size_t>(n));
+    return out;
+}
+
+}  // namespace
+
+TEST(CApi, ReadWithInfoKeepsTheMdpaSideChannel) {
+    const std::string in = mt::temp_path("_capi_info.mdpa");
+    {
+        std::ofstream f(in);
+        f << kCapiMdpaDeck;
+    }
+    // mio_read refuses what only the side channel can hold, by name.
+    EXPECT_EQ(mio_read(in.c_str(), nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("mio_read_with_info"), std::string::npos)
+        << mio_last_error();
+
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(in.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    ASSERT_NE(info, nullptr);
+    char fmt[16];
+    EXPECT_EQ(mio_format_info_format(info, fmt, sizeof(fmt)), 4);
+    EXPECT_STREQ(fmt, "mdpa");
+
+    EXPECT_EQ(mio_mdpa_info_count(info, MIO_MDPA_MODEL_PART_DATA), 1);
+    ASSERT_EQ(mio_mdpa_info_data_count(info, MIO_MDPA_MODEL_PART_DATA, 0), 1);
+    EXPECT_EQ(mio_mdpa_info_data_kind(info, MIO_MDPA_MODEL_PART_DATA, 0, 0), MIO_MDPA_VALUE_TEXT);
+
+    ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_TABLES), 1);
+    EXPECT_EQ(capi_info_string(info, MIO_MDPA_TABLES, 0, 0), "1 TIME VALUE");
+    const void* data = nullptr;
+    mio_dtype dt = MIO_INT8;
+    int32_t ndim = 0;
+    int64_t shape[MIO_MAX_NDIM] = {};
+    ASSERT_EQ(mio_mdpa_info_array(info, MIO_MDPA_TABLES, 0, 0, &data, &dt, &ndim, shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 2);
+    EXPECT_DOUBLE_EQ(static_cast<const double*>(data)[3], 2.0);
+
+    ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_GEOMETRIES), 1);
+    EXPECT_EQ(capi_info_string(info, MIO_MDPA_GEOMETRIES, 0, 0), "Triangle3D3");
+    EXPECT_EQ(capi_info_string(info, MIO_MDPA_GEOMETRIES, 0, 1), "triangle");
+    ASSERT_EQ(mio_mdpa_info_array(info, MIO_MDPA_GEOMETRIES, 0, 1, &data, &dt, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(static_cast<const int64_t*>(data)[0], 7);
+
+    ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_MESH_BLOCKS), 1);
+    int64_t id = 0;
+    ASSERT_EQ(mio_mdpa_info_int(info, MIO_MDPA_MESH_BLOCKS, 0, 0, &id), MIO_OK);
+    EXPECT_EQ(id, 3);
+    ASSERT_EQ(mio_mdpa_info_array(info, MIO_MDPA_MESH_BLOCKS, 0, 0, &data, &dt, &ndim, shape),
+              MIO_OK);
+    ASSERT_EQ(shape[0], 2);
+    EXPECT_EQ(static_cast<const int64_t*>(data)[1], 3);  // node 4 -> row 3
+
+    ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_SUBMODELPARTS), 1);
+    EXPECT_EQ(capi_info_string(info, MIO_MDPA_SUBMODELPARTS, 0, 0), "Inlet");
+    EXPECT_EQ(mio_mdpa_info_data_kind(info, MIO_MDPA_SUBMODELPARTS, 0, 0), MIO_MDPA_VALUE_NUMBER);
+
+    ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_PROPERTIES), 1);
+    ASSERT_EQ(mio_mdpa_info_data_count(info, MIO_MDPA_PROPERTIES, 0), 2);
+    char key[32];
+    mio_mdpa_info_data_string(info, MIO_MDPA_PROPERTIES, 0, 1, 0, key, sizeof(key));
+    EXPECT_STREQ(key, "CONSTITUTIVE_LAW");
+
+    ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_RAW_BLOCKS), 1);
+    EXPECT_EQ(capi_info_string(info, MIO_MDPA_RAW_BLOCKS, 0, 2), "End Constraints");
+
+    // Bad section/field/index fail without crossing an exception.
+    EXPECT_EQ(mio_mdpa_info_count(info, 99), -1);
+    EXPECT_EQ(mio_mdpa_info_string(info, MIO_MDPA_TABLES, 5, 0, nullptr, 0), -1);
+    EXPECT_NE(mio_mdpa_info_int(info, MIO_MDPA_TABLES, 0, 0, &id), MIO_OK);
+
+    // Round trip: the side channel survives mio_write_with_info.
+    const std::string out = mt::temp_path("_capi_info_out.mdpa");
+    ASSERT_EQ(mio_write_with_info(out.c_str(), mesh, nullptr, info), MIO_OK) << mio_last_error();
+    // ...but not as another format.
+    const std::string vtu = mt::temp_path("_capi_info_out.vtu");
+    EXPECT_EQ(mio_write_with_info(vtu.c_str(), mesh, nullptr, info), MIO_ERR_INVALID_ARG);
+    mio_format_info* info2 = nullptr;
+    mio_mesh* mesh2 = mio_read_with_info(out.c_str(), nullptr, nullptr, &info2);
+    ASSERT_NE(mesh2, nullptr) << mio_last_error();
+    for (int32_t section : {MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES, MIO_MDPA_MESH_BLOCKS,
+                            MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS, MIO_MDPA_PROPERTIES})
+        EXPECT_EQ(mio_mdpa_info_count(info2, section), mio_mdpa_info_count(info, section))
+            << section;
+    EXPECT_EQ(capi_info_string(info2, MIO_MDPA_RAW_BLOCKS, 0, 1),
+              capi_info_string(info, MIO_MDPA_RAW_BLOCKS, 0, 1));
+
+    // A format with no side channel reads normally and hands back no handle.
+    mio_format_info* none = reinterpret_cast<mio_format_info*>(0x1);
+    ASSERT_EQ(mio_write(vtu.c_str(), mesh, nullptr), MIO_OK);
+    mio_mesh* mesh3 = mio_read_with_info(vtu.c_str(), nullptr, nullptr, &none);
+    ASSERT_NE(mesh3, nullptr) << mio_last_error();
+    EXPECT_EQ(none, nullptr);
+
+    mio_mesh_free(mesh3);
+    mio_mesh_free(mesh2);
+    mio_mesh_free(mesh);
+    mio_format_info_free(info2);
+    mio_format_info_free(info);
+    mio_format_info_free(nullptr);
+    std::error_code ec;
+    for (const std::string& p : {in, out, vtu})
+        std::filesystem::remove(p, ec);
+}

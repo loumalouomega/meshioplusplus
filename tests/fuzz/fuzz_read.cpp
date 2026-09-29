@@ -53,6 +53,7 @@
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/registry.hpp"
 
 namespace {
@@ -124,7 +125,14 @@ extern "C" int LLVMFuzzerInitialize(int* pArgc, char*** pArgv) {
     return 0;
 }
 
-/** @brief Reads one input through the registry; aborts on anything but ReadError. */
+/**
+ * @brief Reads one input through the registry; aborts on anything but ReadError.
+ *
+ * The registry drops the side channels (`MdpaInfo`), and the parsers behind
+ * them -- `Properties` bodies, verbatim blocks, lenient skipping -- are
+ * reachable only through the info overload, so `mdpa` is read through that
+ * one too, strictly and leniently.
+ */
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* pData, std::size_t size) {
     {
         std::FILE* f = std::fopen(gPath.c_str(), "wb");
@@ -136,6 +144,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* pData, std::size_t siz
     }
     try {
         (void)meshioplusplus::registry_readers().at(gFormat)(gPath.string());
+        if (gFormat == "mdpa") {
+            meshioplusplus::MdpaInfo info;
+            (void)meshioplusplus::read_mdpa(gPath.string(), info);
+            meshioplusplus::ReadOptions lenient;
+            lenient.mLenient = true;
+            (void)meshioplusplus::read_mdpa(gPath.string(), info, lenient);
+        }
     } catch (const meshioplusplus::ReadError&) {
         // The one expected way to refuse an input.
     } catch (const std::exception& e) {

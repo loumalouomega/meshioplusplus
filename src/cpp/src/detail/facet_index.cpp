@@ -121,8 +121,28 @@ bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellT
     if (block == static_cast<std::size_t>(-1) || Facet < 0)
         return false;
     const auto cb = rMesh.Cells(block);
-    if (cb.IsRagged())
-        return false;
+    const std::size_t r_row = static_cast<std::size_t>(row);
+    if (cb.IsRagged()) {
+        // A polyhedron's facet k is its face k; a polygon's is its edge k,
+        // from node k to node k + 1 (the Side numbering, doc/regions.md).
+        const std::size_t f = static_cast<std::size_t>(Facet);
+        rNodes.clear();
+        if (cb.IsPolyhedron()) {
+            if (f >= cb.NumFaces(r_row))
+                return false;
+            const auto [p_face, n] = cb.Face(r_row, f);
+            rNodes.assign(p_face, p_face + n);
+            rType = n == 3 ? CellType::Triangle : n == 4 ? CellType::Quad : CellType::Polygon;
+            return true;
+        }
+        const std::size_t n = cb.RowSize(r_row);
+        if (f >= n)
+            return false;
+        const auto nodes = cb.Row(r_row);
+        rNodes = {nodes[f], nodes[(f + 1) % n]};
+        rType = CellType::Line;
+        return true;
+    }
     const CellType type = cell_type_from_name(std::string(cb.Type()));
     const NDArray& conn = cb.Conn();
     const std::size_t k = cb.NodesPerCell();

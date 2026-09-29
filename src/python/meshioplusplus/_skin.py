@@ -184,6 +184,7 @@ def _extract_skin_py(
     conn_parts = []
     type_parts = []
     parent_parts = []
+    slot_parts = []
     for block, block_base in supported:
         conn = np.asarray(block.data, dtype=np.int64)
         nc = conn.shape[0]
@@ -201,10 +202,12 @@ def _extract_skin_py(
         conn_parts.append(fconn.reshape(nc * nf, 9))
         type_parts.append(np.tile(tidx, nc))
         parent_parts.append(np.repeat(block_base + np.arange(nc, dtype=np.int64), nf))
+        slot_parts.append(np.tile(np.arange(nf, dtype=np.int64), nc))
     keys = np.concatenate(keys_parts)
     fconn = np.concatenate(conn_parts)
     type_idx = np.concatenate(type_parts)
     parents = np.concatenate(parent_parts)
+    slots = np.concatenate(slot_parts)
 
     # Boundary faces = sorted-corner keys occurring exactly once.
     _, inverse, counts = np.unique(
@@ -216,6 +219,7 @@ def _extract_skin_py(
     # enumeration order within each type.
     out_blocks = []
     out_parents = []
+    out_slots = []
     for name in _OUT_TYPES:
         sel = boundary & (type_idx == _OUT_TYPE_INDEX[name])
         if not np.any(sel):
@@ -225,6 +229,7 @@ def _extract_skin_py(
         )
         out_blocks.append((name, fconn[sel][:, :n_nodes]))
         out_parents.append(parents[sel])
+        out_slots.append(slots[sel])
 
     # Compaction: keep only referenced points, in ascending original-id order
     # (np.unique is sorted — the C++ extractor relies on the same order).
@@ -243,7 +248,21 @@ def _extract_skin_py(
         cell_data["surface:parent_cell"] = [
             p.reshape(-1, 1).astype(np.int64) for p in out_parents
         ]
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    out = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    if getattr(mesh, "regions", None):
+        from ._side_carry import carry_regions_to_facet_mesh
+
+        point_map = np.full(len(mesh.points), -1, dtype=np.int64)
+        point_map[used] = np.arange(len(used), dtype=np.int64)
+        carry_regions_to_facet_mesh(
+            mesh,
+            out,
+            np.concatenate(out_parents),
+            np.concatenate(out_slots),
+            point_map,
+            "extract_skin",
+        )
+    return out
 
 
 def extract_skin(mesh, linearize: bool = False) -> Mesh:
@@ -252,8 +271,10 @@ def extract_skin(mesh, linearize: bool = False) -> Mesh:
     Keeps the faces of the supported 3D volume cells (tetra, hexahedron,
     wedge, pyramid, tetra10, hexahedron20/27, wedge15, pyramid13/14) whose
     sorted corner-node key occurs exactly once. Points are compacted to the
-    referenced subset (``point_data`` rows follow); ``cell_data``,
-    ``field_data``, and sets are dropped. With ``linearize=True`` only the
+    referenced subset (``point_data`` rows follow); ``cell_data`` and
+    ``field_data`` are dropped. A ``side`` region becomes a ``cell`` region of
+    the skin, a ``point`` region follows the compaction, and a ``cell`` region
+    is dropped with a warning. With ``linearize=True`` only the
     corner nodes are emitted (``triangle``/``quad`` output even for
     higher-order input). Raises ``ValueError`` when the mesh has no
     supported volume cell block.

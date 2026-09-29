@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 19
+#define MESHIOPLUSPLUS_ABI_VERSION 20
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -507,6 +507,39 @@ inline const std::string& kratos_condition_name(CellType type) {
     if (it != m.end())
         return it->second;
     return kratos_element_name(type);  // geometry/meshio-name fallback chain
+}
+
+/**
+ * @brief Default Kratos *geometry* name for a cell type (the Python
+ * reference's `_meshio_to_kratos_geometry_type`, whose inversion keeps the
+ * 3-D spelling), falling back to the meshio name for types with none.
+ * @param type The cell type.
+ * @return The Kratos geometry name (resolvable back via `cell_type_from_kratos_name`).
+ */
+inline const std::string& kratos_geometry_name(CellType type) {
+    static const std::unordered_map<CellType, std::string> m = {
+        {CellType::Vertex, "Point3D"},
+        {CellType::Line, "Line3D2"},
+        {CellType::Line3, "Line3D3"},
+        {CellType::Triangle, "Triangle3D3"},
+        {CellType::Triangle6, "Triangle3D6"},
+        {CellType::Quad, "Quadrilateral3D4"},
+        {CellType::Quad8, "Quadrilateral3D8"},
+        {CellType::Quad9, "Quadrilateral3D9"},
+        {CellType::Tetra, "Tetrahedra3D4"},
+        {CellType::Tetra10, "Tetrahedra3D10"},
+        {CellType::Pyramid, "Pyramid3D5"},
+        {CellType::Pyramid13, "Pyramid3D13"},
+        {CellType::Wedge, "Prism3D6"},
+        {CellType::Wedge15, "Prism3D15"},
+        {CellType::Hexahedron, "Hexahedra3D8"},
+        {CellType::Hexahedron20, "Hexahedra3D20"},
+        {CellType::Hexahedron27, "Hexahedra3D27"},
+    };
+    auto it = m.find(type);
+    if (it != m.end())
+        return it->second;
+    return cell_type_name(type);
 }
 
 }  // namespace meshioplusplus
@@ -5894,12 +5927,10 @@ struct MeshMetadata {
      * Populated whenever the mesh producing this summary was already fully in
      * memory (i.e. whenever `metadata_from_mesh` ran) -- regions are read
      * alongside geometry by every region-capable reader, so there is nothing
-     * left to save by skipping them once a read has happened anyway. A native
-     * metadata path that declines a full read (VTU/VTP/XDMF/Gmsh 4.1) reports
-     * no regions rather than guessing; none of those formats map regions yet
-     * regardless (see `doc/regions.md`), so this is never a wrong answer, only
-     * an incomplete one on formats already known to fall back for other
-     * reasons.
+     * left to save by skipping them once a read has happened anyway. The
+     * native metadata paths that do not read the mesh count them from headers
+     * and declared sizes: Gmsh 4.1, and XDMF, VTU and VTP since v16.27.0 (VTU
+     * and VTP report `mDim`/`mTag` as -1, since those live in the payload).
      */
     std::vector<RegionSummary> mRegions;
 
@@ -8823,6 +8854,8 @@ private:
 /**
  * @brief The nodes of one `Side` facet: its cell type and node ids, corners
  * first, then mid-side and centre nodes as `cell_faces`/`cell_edges` list them.
+ * A polyhedron's facet k is its face k (`triangle`, `quad` or `polygon`); a
+ * polygon's is its edge k, from node k to node k + 1 (since v16.27.0).
  * @param rMesh The mesh.
  * @param Cell Global (block-major) cell index.
  * @param Facet Local facet: a face of a 3-D cell, an edge of a 2-D one.
@@ -11251,7 +11284,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 26
+#define MESHIOPLUSPLUS_VERSION_MINOR 27
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11261,7 +11294,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.26.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.27.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -11956,13 +11989,32 @@ MESHIOPLUSPLUS_API const RefineMaskTemplate& refine_mask_template(CellType Type,
  *
  * ## Side regions
  *
- * A side entry `(global cell, local facet)` survives only if its cell survives
- * **and** the facet still exists: the output cell must have the same type as
- * the input cell, and the facet index must still be in range for that type.
- * Under `FirstChild` a parent's children are new cells of a different or
- * subdivided topology, so there is no facet correspondence to preserve at all
- * and side regions are dropped by name. `mDropSideRegions` forces that for any
- * operation that knows its facets do not survive.
+ * A side entry `(global cell, local facet)` whose cell keeps its identity --
+ * one output cell of the same type, reached by no other input cell, whose
+ * facet at that number still has the same nodes -- keeps its number. Any
+ * other entry (since v16.27.0) is found again by what the facet is made of:
+ *
+ *  - **refined** (several children): every child facet lying within it -- each
+ *    of the child facet's nodes the image of one of the facet's, or a point
+ *    the operation created that lies on it;
+ *  - **merged or retyped** (one child that others share, or of another type):
+ *    the output facet containing it -- each surviving node one of that
+ *    facet's, and a node the operation removed lying on it (a second pass
+ *    also accepts a surviving node that only lies on it, for a merged face
+ *    that dropped an interior vertex).
+ *
+ * When neither finds it under a `FirstChild` map, a facet whose corners all
+ * survive is looked up across the whole output by those corners (`FacetIndex`):
+ * a decimation collapse hands a boundary edge to a neighbouring cell. (Not
+ * under `Direct`: there the facet's own cell is gone, and handing an interface
+ * facet to the neighbour would flip its orientation.) Node identity decides wherever it
+ * can; geometry (a relative 1e-9 plane or segment test) only places the
+ * points an operation created or removed, which are averages of the facet's
+ * own corners. An entry with no counterpart is
+ * dropped, with one warning per region counting them. Polygon edges and
+ * polyhedron faces count as facets too (edge k of a polygon runs from node k
+ * to node k + 1; face k of a polyhedron is its k-th face). `mDropSideRegions`
+ * still drops every side region, by name, for an operation that asks.
  *
  * Free functions in `meshioplusplus::detail`, called once per operation rather
  * than per element, so the bodies live in `src/cpp/src/detail/region_remap.cpp`.
@@ -12009,7 +12061,7 @@ struct RegionRemap {
     /// `kBlockDropped` means the block has no output counterpart.
     std::vector<std::size_t> mBlockMap;
 
-    /// Force side regions to be dropped even under a `Direct` map.
+    /// Drop every side region, by name, instead of carrying it.
     bool mDropSideRegions = false;
 
     /// Operation name, used in the "regions dropped" warning.
@@ -12062,9 +12114,33 @@ MESHIOPLUSPLUS_API bool remap_region(const Mesh& rIn, const Mesh& rOut, const Re
 MESHIOPLUSPLUS_API void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps);
 
 /**
+ * @brief Carry regions onto a mesh of facets extracted from @p rIn
+ * (`extract_surface`, `extract_skin`).
+ *
+ * A Side region becomes a Cell region of the same name, dim and tag naming the
+ * output cells its facets became; a facet that was not extracted (an interior
+ * one) is lost, with one warning per region counting them. A Point region
+ * follows @p rPointMap. A Cell region names input cells, which are not in the
+ * output, so it is dropped with a warning.
+ *
+ * @param rIn The input mesh.
+ * @param rOut The facet mesh; regions are added to it.
+ * @param rOutParent Per output cell (global, block-major), the input global
+ *        cell it is a facet of.
+ * @param rOutFacet Per output cell, which facet of that cell it is (the Side
+ *        numbering: `cell_faces`/`cell_edges`, a polyhedron's face index).
+ * @param rPointMap Input point -> output point, -1 for a point not kept.
+ * @param rOpName The operation name, for the warnings.
+ */
+MESHIOPLUSPLUS_API void carry_regions_to_facet_mesh(const Mesh& rIn, Mesh& rOut,
+                                                    const std::vector<std::int64_t>& rOutParent,
+                                                    const std::vector<std::int64_t>& rOutFacet,
+                                                    const std::vector<std::int64_t>& rPointMap,
+                                                    const std::string& rOpName);
+
+/**
  * @brief Drop every region with one warning, for operations whose output has no
- * entity correspondence with their input at all (slice, isosurface, surface
- * extraction).
+ * entity correspondence with their input at all (slice, isosurface).
  *
  * A deliberate no-op when the input carries no regions, so the common case
  * stays silent.
@@ -13606,6 +13682,24 @@ MESHIOPLUSPLUS_API void reconstruct_cells(
     const std::unordered_map<std::string, NDArray>& rCellDataRaw,
     const std::vector<std::int64_t>* pFaces, const std::vector<std::int64_t>& rFaceOffsets,
     Mesh& rMesh);
+
+/**
+ * @brief As above, also reporting where each file cell landed.
+ *
+ * `(*pFileToGlobal)[i]` is the global (block-major) index of file cell `i` in
+ * @p rMesh, counted from the cells the mesh already held. It differs from `i`
+ * only where a polyhedron run is bucketed by node count. The region
+ * convention (`detail/region_field_data.hpp`) names cells in file order and
+ * needs this to translate (v16.27.0).
+ *
+ * @param pFileToGlobal out: resized to the file's cell count; may be null.
+ */
+MESHIOPLUSPLUS_API void reconstruct_cells(
+    const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+    const std::vector<std::int64_t>* pFaces, const std::vector<std::int64_t>& rFaceOffsets,
+    Mesh& rMesh, std::vector<std::int64_t>* pFileToGlobal);
 
 /**
  * @brief The `header_type` item size (4 or 8, via `vtu_header_bytes_for`) a
@@ -17406,25 +17500,27 @@ MESHIOPLUSPLUS_API MeshMetadata read_marc_t19_metadata(const std::string& rPath,
  *       when they were not already the trivial `1..n` renumbering — see
  *       #kMdpaIdName.
  *
- * ## Limitations (deliberate, and reported by throwing)
+ * ## The blocks the `Mesh` cannot hold
  *
- * The C++ `Mesh` has no place for MDPA's non-mesh metadata, so rather than
- * silently dropping it the reader **throws `ReadError` naming the construct**
- * — which lets the Python shim fall back to the pure-Python reference
- * (`meshioplusplus/mdpa/_mdpa.py`), whose `mesh.misc_data` does carry it:
+ * MDPA also carries content with no place on a `Mesh`: top-level `Begin Table`
+ * blocks, `Begin Geometries`, `Begin Mesh <id>`, a non-numeric
+ * `ModelPartData` value, `SubModelPartData`/`SubModelPartTables` bodies, and
+ * blocks such as `Begin Constraints` that no tool but Kratos interprets. The
+ * **#MdpaInfo overloads read and write every one of them**
+ * (`read_mdpa(path, info)` / `write_mdpa(path, mesh, info)`, and
+ * `mio_read_with_info` / `mio_write_with_info` on the flat ABI): tables,
+ * geometries, mesh blocks, text data and sub-model-part data are parsed into
+ * #MdpaInfo, and any other top-level block is kept verbatim as an
+ * #MdpaRawBlock, so it round-trips byte for byte.
  *
- *  - `Begin Table` (top-level), `Begin Geometries`, `Begin Mesh <id>` and
- *    `Begin Constraints` blocks;
- *  - a non-numeric `ModelPartData` value, and non-empty `SubModelPartData` /
- *    `SubModelPartTables` / `SubModelPartGeometries` / `SubModelPartConstraints`
- *    sub-blocks;
- *  - any unrecognized `Begin <Block>`.
- *
+ * Without an #MdpaInfo there is nowhere to put that content, so rather than
+ * silently dropping it the info-less overloads (and so the registry, `mio_read`
+ * and the native CLI) **throw `ReadError` naming the construct**.
  * **`ReadOptions::mLenient` downgrades every one of those to a warning plus a
- * skip**, which is what makes a production deck readable where there is no
- * Python to fall back to (the C API, Fortran, Julia, R, WASM, the native CLI).
- * What was skipped is recorded in `MdpaInfo::mSkippedConstructs`. Two things
- * are deliberately *not* on that list and still throw even under `mLenient`,
+ * skip**, and what was skipped is recorded in `MdpaInfo::mSkippedConstructs`.
+ * Two sub-model-part blocks are not parsed even with an #MdpaInfo and follow
+ * the same strict/lenient rule: non-empty `SubModelPartGeometries` and
+ * `SubModelPartConstraints`. Two things still throw even under `mLenient`,
  * because skipping them would return a mesh that is quietly wrong rather than
  * merely incomplete:
  *
@@ -17436,12 +17532,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_marc_t19_metadata(const std::string& rPath,
  * The writer emits the mesh-level blocks (`ModelPartData` from scalar
  * `field_data`, `Properties`, `Nodes`, `Elements`/`Conditions`,
  * `NodalData`/`ElementalData`/`ConditionalData`, `SubModelPart`s from named
- * regions); it never writes `Tables`, `Geometries` or `Mesh` blocks, and
- * `RegionKind::Side` regions are dropped with a warning (MDPA has no facet-set
- * concept).
+ * regions) and, given an #MdpaInfo, its `Table`, `Geometries`, `Mesh` and raw
+ * blocks. `RegionKind::Side` regions are dropped with a warning (MDPA has no
+ * facet-set concept).
  */
 
 // System includes
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -17498,11 +17595,81 @@ struct MdpaEntityName {
 };
 
 /**
+ * @brief One `Begin Geometries <Name>` run: connectivity with no property id.
+ *
+ * Kratos geometries (the entities CAD/IGA applications and `CreateNewGeometry`
+ * use) are not elements, so they are kept apart from the mesh's cell blocks:
+ * an operation would otherwise treat them as cells. A new block starts
+ * wherever the name changes, so every name the file spelled survives.
+ */
+struct MdpaGeometryBlock {
+    /** @brief The Kratos geometry name as read (`Triangle3D3`); empty to derive it. */
+    std::string mName;
+    /** @brief The meshio cell type (`"triangle"`). */
+    std::string mType;
+    /** @brief Int64 `(n, k)`: 0-based point rows, in meshio node order. */
+    NDArray mConn;
+    /** @brief The file's geometry ids, one per row. */
+    std::vector<std::int64_t> mIds;
+};
+
+/**
+ * @brief One `Begin Mesh <id>` block (a Kratos multi-level mesh).
+ *
+ * Node members are point rows, like region entries; element and condition
+ * members are the file's own ids, written back verbatim -- the Python
+ * reference's rule, since a Mesh block names entities rather than rows.
+ */
+struct MdpaMeshBlock {
+    /** @brief The mesh id from the header (never 0: Kratos reserves it). */
+    std::int64_t mId = 0;
+    /** @brief The `MeshData` entries, in file order. */
+    std::vector<PropertyValue> mData;
+    /** @brief `MeshNodes`, as 0-based point rows. */
+    std::vector<std::int64_t> mNodes;
+    /** @brief `MeshElements`, as file element ids. */
+    std::vector<std::int64_t> mElementIds;
+    /** @brief `MeshConditions`, as file condition ids. */
+    std::vector<std::int64_t> mConditionIds;
+};
+
+/**
+ * @brief The non-membership content of one `Begin SubModelPart`.
+ *
+ * Membership (nodes, elements, conditions) is on the mesh as regions, which
+ * operations remap; this holds only what a region cannot: the part's
+ * `SubModelPartData` entries and `SubModelPartTables` ids.
+ */
+struct MdpaSubModelPart {
+    /** @brief The hierarchical name (`"parent/child"`), as the region is named. */
+    std::string mName;
+    /** @brief The `SubModelPartData` entries, in file order. */
+    std::vector<PropertyValue> mData;
+    /** @brief The `SubModelPartTables` ids, in file order. */
+    std::vector<std::int64_t> mTables;
+};
+
+/**
+ * @brief A top-level block kept verbatim, such as `Begin Constraints`.
+ *
+ * What only Kratos interprets -- master-slave constraints, and any block a
+ * future Kratos adds -- is carried as text so a round trip loses nothing.
+ */
+struct MdpaRawBlock {
+    /** @brief The header line with any comment removed (`"Begin Constraints ..."`). */
+    std::string mHeader;
+    /** @brief The body lines, verbatim, each ending in `'\n'`. */
+    std::string mBody;
+    /** @brief The terminating line (`"End Constraints"`). */
+    std::string mEnd;
+};
+
+/**
  * @brief MDPA content the C++ `Mesh` cannot hold, carried alongside it.
  *
  * The `MedInfo`/`ExodusInfo`/`OpenFoamInfo` pattern: a reader overload fills
- * one, a writer overload consumes one, and the registry (and therefore every
- * flat binding) passes none — a documented gap, not a silent loss.
+ * one, a writer overload consumes one, and the registry passes none. The flat
+ * bindings reach it through `mio_read_with_info` / `mio_write_with_info`.
  *
  * Round-tripping a real deck is exactly `read_mdpa(in, info)` followed by
  * `write_mdpa(out, mesh, info)`; both halves are additive, so `read_mdpa(in)`
@@ -17521,6 +17688,23 @@ struct MdpaInfo {
      * meaning "silently lossy".
      */
     std::vector<std::string> mSkippedConstructs;
+    /**
+     * @brief The non-numeric `ModelPartData` entries (`mText`), in file order.
+     *
+     * Numeric entries stay one-element Float64 `field_data`, as they always
+     * were; `NDArray` has no string dtype for the rest.
+     */
+    std::vector<PropertyValue> mModelPartData;
+    /** @brief Every top-level `Begin Table` (`mIsTable`; `mKey` = header arguments). */
+    std::vector<PropertyValue> mTables;
+    /** @brief Every `Begin Geometries` run, in file order. */
+    std::vector<MdpaGeometryBlock> mGeometries;
+    /** @brief Every `Begin Mesh <id>` block, in file order. */
+    std::vector<MdpaMeshBlock> mMeshBlocks;
+    /** @brief Sub-model-parts with `SubModelPartData`/`Tables` content, in file order. */
+    std::vector<MdpaSubModelPart> mSubModelParts;
+    /** @brief Every other top-level block, verbatim, in file order. */
+    std::vector<MdpaRawBlock> mRawBlocks;
 };
 
 /**
@@ -17573,15 +17757,20 @@ MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh);
  * @brief Write a mesh to MDPA, restoring the content `read_mdpa` set aside.
  *
  * Identical to the two-argument form except that `rInfo` supplies the
- * `Properties` bodies and the per-block Kratos entity names. A block with no
+ * `Properties` bodies, the per-block Kratos entity names, the text
+ * `ModelPartData` entries, and the `Table`, `Geometries`, `Mesh`,
+ * sub-model-part data and raw blocks, written in that file position: tables
+ * after `Properties`, geometries after the entity blocks, sub-model-part data
+ * inside its `SubModelPart`, then `Mesh` and raw blocks last. A block with no
  * entry in `MdpaInfo::mEntityNames`, or one whose `mName` is empty, falls back
  * to the derived name exactly as the two-argument form does, so a partially
  * filled #MdpaInfo is legal.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param rInfo the side-channel content (properties, entity names)
- * @throws WriteError as the two-argument form
+ * @param rInfo the side-channel content
+ * @throws WriteError as the two-argument form, and on a geometry row naming a
+ *         point the mesh does not have
  */
 MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
                                    const MdpaInfo& rInfo);
@@ -17597,9 +17786,9 @@ MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
  * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError on a malformed or unterminated block, on connectivity
- *         referring to a node that does not exist, and — by design — on every
- *         construct listed under "Limitations" above, so that a caller with a
- *         Python fallback can defer to the richer reference reader
+ *         referring to a node that does not exist, and on every construct
+ *         only an #MdpaInfo can hold (see "The blocks the `Mesh` cannot hold"
+ *         above), since this overload has nowhere to put it
  * @note cell_data key produced: `"gmsh:physical"`.
  */
 MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath);
@@ -17622,8 +17811,11 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
  * @brief Read a Kratos MDPA mesh file, keeping what the `Mesh` cannot hold.
  *
  * The overload a round trip needs: `rInfo` comes back carrying the `Properties`
- * bodies, the per-block Kratos entity names and (under `mLenient`) the list of
- * skipped constructs, all of which `write_mdpa(path, mesh, info)` puts back.
+ * bodies, the per-block Kratos entity names, every block listed under "The
+ * blocks the `Mesh` cannot hold" and (under `mLenient`) the list of skipped
+ * constructs, all of which `write_mdpa(path, mesh, info)` puts back. Only a
+ * non-empty `SubModelPartGeometries`/`SubModelPartConstraints` still throws
+ * (or, under `mLenient`, is skipped).
  *
  * @param rPath filesystem path to read
  * @param rInfo out: the side-channel content; cleared first
@@ -28013,8 +28205,9 @@ MESHIOPLUSPLUS_API ReorderResult reorder(const Mesh& rMesh, ReorderMethod method
  * block gets NaN for float and 0 for integer arrays); `point_data` copies
  * inherit their source row and centroids the mean of their loop's rows,
  * dtype preserved. Point and Cell regions survive (a copy joins its source's
- * regions); Side regions are dropped by name, since a flip permutes a
- * triangle's edge numbering. There is deliberately no numpy twin: the
+ * regions), and so do Side regions: an edge a flip renumbers is found again
+ * by its nodes (`detail/region_remap.hpp`). There is deliberately no numpy
+ * twin: the
  * outward test is a branch on the sign of a rounded volume.
  */
 
@@ -29500,10 +29693,9 @@ MESHIOPLUSPLUS_API StatsReport compute_stats(const Mesh& rMesh);
  * Point and Cell regions survive (via `CellMapKind::FirstChild`, the same
  * shape `convert_cells` already uses for its own one-to-many splits — a
  * parent's children occupy a contiguous run in the corresponding output
- * block). Named **Side** regions do not: `FirstChild` drops them
- * unconditionally, since a child's facets have no correspondence with the
- * parent's — the same limitation `convert_cells(Simplexify)` already has and
- * documents, not a new gap this operation introduces.
+ * block). Named **Side** regions survive too (v16.27.0): a parent facet
+ * becomes the child facets lying within it (`detail/region_remap.hpp`), so a
+ * boundary condition on a face stays on the sub-faces that tile it.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is
@@ -29843,13 +30035,12 @@ MESHIOPLUSPLUS_API TensorInvariant tensor_invariant_from_name(const std::string&
  * lacks that array, or its shape doesn't match, the WHOLE array is dropped
  * with a warning rather than guessing a value for the substituted row.
  *
- * **Named Side regions do not survive** (the `subdivide`/`agglomerate`
- * precedent): a removed green child's local facet numbering has no
- * correspondence to the substituted parent's own facets, even though the
- * cell type is unchanged. Point and Cell regions do survive -- Cell regions
- * through the first genuinely non-injective `CellMapKind::Direct` use in the
- * repo (several fine cells collapsing onto one output row), relying on
- * `Region::Canonicalize`'s existing sort+dedup.
+ * **Named regions survive.** Point and Cell regions through the first
+ * genuinely non-injective `CellMapKind::Direct` use in the repo (several fine
+ * cells collapsing onto one output row), relying on `Region::Canonicalize`'s
+ * existing sort+dedup; Side regions since v16.27.0, a green child's facet
+ * moving to the substituted parent's facet that contains it (a removed
+ * hanging node must lie on it; see `detail/region_remap.hpp`).
  *
  * **Two honest limitations, not gaps**: it can only undo the LAST generation
  * relative to the specific `coarse` mesh passed in (an untouched cell's
@@ -31194,6 +31385,81 @@ inline FileSource open_source(const std::string& rPath, const std::string& rMess
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/open_source.hpp =====
+// ===== begin src/cpp/src/detail/region_field_data.hpp =====
+/**
+ * @file detail/region_field_data.hpp
+ * @brief Named regions in a VTK XML file's `<FieldData>` (`.vtu`, `.vtp`).
+ *
+ * VTK has no named-set concept, so meshio++ writes each region as one
+ * dataset-level Int64 field array (v16.27.0, doc/regions.md):
+ *
+ *  - `region:point:<name>` — point indices, one component;
+ *  - `region:cell:<name>` — cell indices, one component;
+ *  - `region:side:<name>` — `(cell, local facet)` pairs, two components;
+ *  - `region-meta:<kind>:<name>` — `[dim, tag]`, written only when either is
+ *    not -1.
+ *
+ * Cell indices are in the **file's** cell order -- what any VTK tool numbers
+ * cells by -- so a writer whose file order is not block-major (`.vtp` groups
+ * Verts, Lines, Polys) translates through a map, as does a reader whose
+ * blocks are not (`.vtu` buckets polyhedra by node count). A reader removes
+ * the arrays it understands from `field_data`; a malformed one (wrong dtype,
+ * component count or range) is warned about and left as ordinary field data.
+ *
+ * Private to the core (not installed): the two formats' readers and writers
+ * are its only users.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Whether @p rName is one of the region arrays (`region:` / `region-meta:`).
+bool is_region_field_name(const std::string& rName);
+
+/**
+ * @brief The field arrays holding @p rMesh's regions, in canonical region order.
+ * @param rMesh The mesh.
+ * @param pGlobalToFile Global (block-major) cell -> file cell, or null for
+ *        the identity.
+ * @return `(name, array)` pairs, each array Int64.
+ */
+std::vector<std::pair<std::string, NDArray>> regions_to_field_arrays(
+    const Mesh& rMesh, const std::vector<std::int64_t>* pGlobalToFile);
+
+/**
+ * @brief Turn the region arrays among @p rArrays into regions of @p rMesh.
+ *
+ * Call after the cells are built. Every array that is not a well-formed
+ * region array is added to @p rMesh as field data unchanged.
+ *
+ * @param rMesh The mesh read so far (points and cells in place).
+ * @param rArrays The file's field arrays, in file order; consumed.
+ * @param pFileToGlobal File cell -> global cell, or null for the identity.
+ * @param pFormat The format name, for the warnings.
+ */
+void regions_from_field_arrays(Mesh& rMesh, std::vector<std::pair<std::string, NDArray>>& rArrays,
+                               const std::vector<std::int64_t>* pFileToGlobal, const char* pFormat);
+
+/**
+ * @brief The region summaries a metadata read reports, from the field arrays'
+ * names and declared tuple counts alone (no payload is decoded).
+ * @param rArrays `(name, NumberOfTuples)` of every field array.
+ * @return One summary per region array, dim/tag -1 (they live in the payload).
+ */
+std::vector<RegionSummary> region_summaries_from_field_names(
+    const std::vector<std::pair<std::string, std::size_t>>& rArrays);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/region_field_data.hpp =====
 // ===== begin src/cpp/src/detail/row_writer.hpp =====
 /**
  * @file detail/row_writer.hpp
@@ -33785,6 +34051,8 @@ inline std::vector<double> interpolation_matrix(
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <tuple>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34009,6 +34277,18 @@ inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string
     if (Pieces.size() == 1)
         return std::move(Pieces.front());
 
+    // The pieces of ONE dataset share their named regions (a partitioned
+    // "wall" is one wall), so they are carried here and unioned by name
+    // rather than left to merge(), which keeps two inputs' same-named regions
+    // apart as "0:wall", "1:wall" (v16.27.0).
+    std::vector<std::vector<Region>> piece_regions(Pieces.size());
+    for (std::size_t m = 0; m < Pieces.size(); ++m) {
+        for (std::size_t i = 0; i < Pieces[m].NumRegions(); ++i)
+            piece_regions[m].push_back(Pieces[m].Region(i));
+        while (Pieces[m].NumRegions() > 0)
+            Pieces[m].RemoveRegion(Pieces[m].NumRegions() - 1);
+    }
+
     std::vector<const Mesh*> ptrs;
     ptrs.reserve(Pieces.size());
     for (const Mesh& m : Pieces)
@@ -34019,6 +34299,33 @@ inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string
     mopts.source_tag = false;
     mopts.data_policy = MergeDataPolicy::Fill;
     MergeResult result = merge_keeping_field_data(ptrs, mopts);
+
+    std::map<std::tuple<int, std::string, int, std::int64_t>, std::vector<std::int64_t>> unions;
+    for (std::size_t m = 0; m < Pieces.size(); ++m) {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMaps[m];
+        rmap.mCellMapKind = detail::CellMapKind::Global;
+        rmap.pGlobalCellMap = &result.mCellMaps[m];
+        rmap.mOpName = "merge";
+        for (const Region& r_src : piece_regions[m]) {
+            Region carried;
+            if (!detail::remap_region(Pieces[m], result.mMesh, r_src, rmap, carried))
+                continue;
+            std::vector<std::int64_t>& r_all = unions[{static_cast<int>(carried.mKind),
+                                                       carried.mName, carried.mDim, carried.mTag}];
+            const std::int64_t* e = carried.Entries();
+            r_all.insert(r_all.end(), e, e + carried.NumEntries() * carried.Stride());
+        }
+    }
+    for (auto& [key, flat] : unions) {
+        const auto kind = static_cast<RegionKind>(std::get<0>(key));
+        const std::size_t stride = kind == RegionKind::Side ? 2 : 1;
+        NDArray entries = stride == 1 ? NDArray(DType::Int64, {flat.size()})
+                                      : NDArray(DType::Int64, {flat.size() / 2, 2});
+        std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+        result.mMesh.AddRegion(
+            Region(std::get<1>(key), kind, std::get<2>(key), std::get<3>(key), std::move(entries)));
+    }
 
     for (std::size_t i = 0; i < Pieces.size(); ++i)
         result.mMesh.AddRegion(Region(rNames[i], RegionKind::Cell, std::move(result.mCellMaps[i])));
@@ -34045,6 +34352,17 @@ inline MeshMetadata aggregate_metadata(const std::vector<MeshMetadata>& rParts,
         merge_names(point_names, pm.mPointDataNames);
         merge_names(cell_names, pm.mCellDataNames);
         merge_names(field_names, pm.mFieldDataNames);
+        // The pieces' named regions are one region each (merge_pieces unions them).
+        for (const RegionSummary& rs : pm.mRegions) {
+            auto it = std::find_if(meta.mRegions.begin(), meta.mRegions.end(),
+                                   [&](const RegionSummary& rR) {
+                                       return rR.mKind == rs.mKind && rR.mName == rs.mName;
+                                   });
+            if (it == meta.mRegions.end())
+                meta.mRegions.push_back(rs);
+            else
+                it->mNumEntries += rs.mNumEntries;
+        }
         for (const CellBlockInfo& cb : pm.mCellBlocks) {
             auto it = std::find_if(blocks.begin(), blocks.end(),
                                    [&](const CellBlockInfo& rB) { return rB.mType == cb.mType; });
@@ -51567,8 +51885,28 @@ bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellT
     if (block == static_cast<std::size_t>(-1) || Facet < 0)
         return false;
     const auto cb = rMesh.Cells(block);
-    if (cb.IsRagged())
-        return false;
+    const std::size_t r_row = static_cast<std::size_t>(row);
+    if (cb.IsRagged()) {
+        // A polyhedron's facet k is its face k; a polygon's is its edge k,
+        // from node k to node k + 1 (the Side numbering, doc/regions.md).
+        const std::size_t f = static_cast<std::size_t>(Facet);
+        rNodes.clear();
+        if (cb.IsPolyhedron()) {
+            if (f >= cb.NumFaces(r_row))
+                return false;
+            const auto [p_face, n] = cb.Face(r_row, f);
+            rNodes.assign(p_face, p_face + n);
+            rType = n == 3 ? CellType::Triangle : n == 4 ? CellType::Quad : CellType::Polygon;
+            return true;
+        }
+        const std::size_t n = cb.RowSize(r_row);
+        if (f >= n)
+            return false;
+        const auto nodes = cb.Row(r_row);
+        rNodes = {nodes[f], nodes[(f + 1) % n]};
+        rType = CellType::Line;
+        return true;
+    }
     const CellType type = cell_type_from_name(std::string(cb.Type()));
     const NDArray& conn = cb.Conn();
     const std::size_t k = cb.NodesPerCell();
@@ -56319,9 +56657,208 @@ const RefineMaskTemplate& refine_mask_template(CellType Type, std::uint16_t Mask
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/refine_templates.cpp =====
+// ===== begin src/cpp/src/detail/region_field_data.cpp =====
+#include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr const char* kRfdPrefix = "region:";
+constexpr const char* kRfdMetaPrefix = "region-meta:";
+
+bool rfd_starts_with(const std::string& rS, const char* pPrefix) {
+    return rS.rfind(pPrefix, 0) == 0;
+}
+
+const char* rfd_kind_name(RegionKind Kind) {
+    switch (Kind) {
+        case RegionKind::Point:
+            return "point";
+        case RegionKind::Cell:
+            return "cell";
+        default:
+            return "side";
+    }
+}
+
+/// `<kind>:<name>` after a prefix -> kind and name; false if malformed.
+bool rfd_parse(const std::string& rRest, RegionKind& rKind, std::string& rName) {
+    const std::size_t colon = rRest.find(':');
+    if (colon == std::string::npos)
+        return false;
+    const std::string kind = rRest.substr(0, colon);
+    if (kind == "point")
+        rKind = RegionKind::Point;
+    else if (kind == "cell")
+        rKind = RegionKind::Cell;
+    else if (kind == "side")
+        rKind = RegionKind::Side;
+    else
+        return false;
+    rName = rRest.substr(colon + 1);
+    return true;
+}
+
+bool rfd_is_int(DType Dtype) {
+    return Dtype != DType::Float32 && Dtype != DType::Float64;
+}
+
+}  // namespace
+
+bool is_region_field_name(const std::string& rName) {
+    return rfd_starts_with(rName, kRfdPrefix) || rfd_starts_with(rName, kRfdMetaPrefix);
+}
+
+std::vector<std::pair<std::string, NDArray>> regions_to_field_arrays(
+    const Mesh& rMesh, const std::vector<std::int64_t>* pGlobalToFile) {
+    std::vector<std::pair<std::string, NDArray>> out;
+    auto file_cell = [&](std::int64_t Global) -> std::int64_t {
+        if (!pGlobalToFile)
+            return Global;
+        return Global >= 0 && static_cast<std::size_t>(Global) < pGlobalToFile->size()
+                   ? (*pGlobalToFile)[static_cast<std::size_t>(Global)]
+                   : -1;
+    };
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_region = rMesh.Region(i);
+        const std::size_t n = r_region.NumEntries();
+        const std::size_t stride = r_region.Stride();
+        const std::int64_t* e = r_region.Entries();
+        NDArray a = stride == 1 ? NDArray(DType::Int64, {n}) : NDArray(DType::Int64, {n, 2});
+        std::int64_t* p = a.As<std::int64_t>();
+        for (std::size_t k = 0; k < n; ++k) {
+            if (r_region.mKind == RegionKind::Point) {
+                p[k] = e[k];
+            } else if (r_region.mKind == RegionKind::Cell) {
+                p[k] = file_cell(e[k]);
+            } else {
+                p[2 * k] = file_cell(e[2 * k]);
+                p[2 * k + 1] = e[2 * k + 1];
+            }
+        }
+        const std::string key = std::string(rfd_kind_name(r_region.mKind)) + ":" + r_region.mName;
+        out.emplace_back(kRfdPrefix + key, std::move(a));
+        if (r_region.mDim != -1 || r_region.mTag != -1) {
+            NDArray meta(DType::Int64, {2});
+            meta.As<std::int64_t>()[0] = r_region.mDim;
+            meta.As<std::int64_t>()[1] = r_region.mTag;
+            out.emplace_back(kRfdMetaPrefix + key, std::move(meta));
+        }
+    }
+    return out;
+}
+
+void regions_from_field_arrays(Mesh& rMesh, std::vector<std::pair<std::string, NDArray>>& rArrays,
+                               const std::vector<std::int64_t>* pFileToGlobal,
+                               const char* pFormat) {
+    // [dim, tag] by "<kind>:<name>", read first so a region array can use it.
+    std::map<std::string, std::pair<int, std::int64_t>> metas;
+    for (const auto& [name, arr] : rArrays) {
+        if (!rfd_starts_with(name, kRfdMetaPrefix))
+            continue;
+        if (rfd_is_int(arr.Dtype()) && arr.Size() == 2)
+            metas[name.substr(std::string(kRfdMetaPrefix).size())] = {
+                static_cast<int>(read_int(arr, 0)), read_int(arr, 1)};
+    }
+    const auto n_points = static_cast<std::int64_t>(rMesh.NumPoints());
+    std::int64_t n_cells = 0;
+    for (const auto cb : rMesh.CellRange())
+        n_cells += static_cast<std::int64_t>(cb.NumCells());
+    auto global_cell = [&](std::int64_t File) -> std::int64_t {
+        if (!pFileToGlobal)
+            return File >= 0 && File < n_cells ? File : -1;
+        return File >= 0 && static_cast<std::size_t>(File) < pFileToGlobal->size()
+                   ? (*pFileToGlobal)[static_cast<std::size_t>(File)]
+                   : -1;
+    };
+
+    for (auto& [name, arr] : rArrays) {
+        if (rfd_starts_with(name, kRfdMetaPrefix)) {
+            if (metas.count(name.substr(std::string(kRfdMetaPrefix).size())))
+                continue;  // consumed
+            log::warn("{}: malformed region meta array '{}' kept as field data", pFormat, name);
+            rMesh.AddFieldData(name, std::move(arr));
+            continue;
+        }
+        RegionKind kind{};
+        std::string region_name;
+        if (!rfd_starts_with(name, kRfdPrefix) ||
+            !rfd_parse(name.substr(std::string(kRfdPrefix).size()), kind, region_name)) {
+            rMesh.AddFieldData(name, std::move(arr));
+            continue;
+        }
+        const std::size_t stride = kind == RegionKind::Side ? 2 : 1;
+        const std::vector<std::size_t>& shape = arr.Shape();
+        const std::size_t comps = shape.size() >= 2 ? shape[1] : 1;
+        bool ok = rfd_is_int(arr.Dtype()) && comps == stride && arr.Size() % stride == 0;
+        const std::size_t n = ok ? arr.Size() / stride : 0;
+        std::vector<std::int64_t> flat(arr.Size());
+        for (std::size_t k = 0; ok && k < n; ++k) {
+            if (kind == RegionKind::Point) {
+                flat[k] = read_int(arr, k);
+                ok = flat[k] >= 0 && flat[k] < n_points;
+            } else {
+                const std::int64_t g = global_cell(read_int(arr, k * stride));
+                ok = g >= 0;
+                flat[k * stride] = g;
+                if (stride == 2) {
+                    flat[k * 2 + 1] = read_int(arr, k * 2 + 1);
+                    ok = ok && flat[k * 2 + 1] >= 0;
+                }
+            }
+        }
+        if (!ok) {
+            log::warn("{}: '{}' is not a well-formed region array; kept as field data", pFormat,
+                      name);
+            rMesh.AddFieldData(name, std::move(arr));
+            continue;
+        }
+        NDArray entries = stride == 1 ? NDArray(DType::Int64, {n}) : NDArray(DType::Int64, {n, 2});
+        std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+        int dim = -1;
+        std::int64_t tag = -1;
+        const auto it = metas.find(name.substr(std::string(kRfdPrefix).size()));
+        if (it != metas.end()) {
+            dim = it->second.first;
+            tag = it->second.second;
+        }
+        rMesh.AddRegion(Region(region_name, kind, dim, tag, std::move(entries)));
+    }
+    rArrays.clear();
+}
+
+std::vector<RegionSummary> region_summaries_from_field_names(
+    const std::vector<std::pair<std::string, std::size_t>>& rArrays) {
+    std::vector<RegionSummary> out;
+    for (const auto& [name, tuples] : rArrays) {
+        RegionSummary rs;
+        if (!rfd_starts_with(name, kRfdPrefix) ||
+            !rfd_parse(name.substr(std::string(kRfdPrefix).size()), rs.mKind, rs.mName))
+            continue;
+        rs.mNumEntries = tuples;
+        out.push_back(std::move(rs));
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/region_field_data.cpp =====
 // ===== begin src/cpp/src/detail/region_remap.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56429,6 +56966,229 @@ std::string rremap_type_at(const Mesh& rMesh, const std::vector<std::int64_t>& r
     return std::string(rMesh.Cells(b).Type());
 }
 
+// ---------------------------------------------------------------------------
+// Side facets by containment (v16.27.0)
+//
+// A side entry names a facet by (cell, local number). When an operation keeps
+// the cell 1:1 the number still names the same facet; otherwise the facet is
+// found again by what it is made of: a child facet belongs to a parent facet
+// when every one of its nodes is the image of a node of that facet, or a new
+// point lying on it (refinement); a source facet belongs to the output facet
+// that contains every one of its surviving nodes, a removed node having to lie
+// on it (coarsening, and a type change). Node identity decides wherever it
+// can; geometry only places the points an operation created or removed.
+// ---------------------------------------------------------------------------
+
+/// One facet's nodes, and how many of them are corners (the leading ones).
+struct RremapFacet {
+    std::vector<std::int64_t> mNodes;
+    std::size_t mNumCorners = 0;
+};
+
+/// Facet count of one cell: its type's for a rectangular block, its edge
+/// count for a polygon, its face count for a polyhedron.
+std::size_t rremap_facet_count(const Mesh& rMesh, const std::vector<std::int64_t>& rBases,
+                               std::int64_t Global) {
+    const auto [b, row] = global_to_block_row(rBases, Global);
+    if (b == static_cast<std::size_t>(-1))
+        return 0;
+    const auto cb = rMesh.Cells(b);
+    if (!cb.IsRagged())
+        return region_num_facets(std::string(cb.Type()));
+    const auto r = static_cast<std::size_t>(row);
+    return cb.IsPolyhedron() ? cb.NumFaces(r) : cb.RowSize(r);
+}
+
+/// The nodes of facet @p Facet of global cell @p Global; false if it has none.
+bool rremap_facet(const Mesh& rMesh, const std::vector<std::int64_t>& rBases, std::int64_t Global,
+                  std::int64_t Facet, RremapFacet& rOut) {
+    rOut.mNodes.clear();
+    rOut.mNumCorners = 0;
+    const auto [b, row] = global_to_block_row(rBases, Global);
+    if (b == static_cast<std::size_t>(-1) || Facet < 0)
+        return false;
+    const auto cb = rMesh.Cells(b);
+    const auto r = static_cast<std::size_t>(row);
+    const auto f = static_cast<std::size_t>(Facet);
+    if (cb.IsRagged()) {
+        if (cb.IsPolyhedron()) {
+            if (f >= cb.NumFaces(r))
+                return false;
+            const auto [p_face, face_size] = cb.Face(r, f);
+            rOut.mNodes.assign(p_face, p_face + face_size);
+        } else {
+            // A polygon's edge k runs from its node k to node k + 1.
+            const std::size_t n = cb.RowSize(r);
+            if (f >= n)
+                return false;
+            const auto nodes = cb.Row(r);
+            rOut.mNodes = {nodes[f], nodes[(f + 1) % n]};
+        }
+        rOut.mNumCorners = rOut.mNodes.size();
+        return rOut.mNodes.size() >= 2;
+    }
+    const CellType type = cell_type_from_name(std::string(cb.Type()));
+    const NDArray& conn = cb.Conn();
+    const std::size_t k = cb.NodesPerCell();
+    const int dim = cell_type_dimension(type);
+    if (dim == 3) {
+        const auto& faces = cell_faces(type);
+        if (f >= faces.size())
+            return false;
+        for (std::size_t c = 0; c < faces[f].mNumNodes; ++c)
+            rOut.mNodes.push_back(read_int(conn, r * k + faces[f].mNodes[c]));
+        rOut.mNumCorners = faces[f].mNumCorners;
+        return true;
+    }
+    if (dim == 2) {
+        const auto& edges = cell_edges(type);
+        if (f >= edges.size())
+            return false;
+        for (std::size_t c = 0; c < edges[f].mNumNodes; ++c)
+            rOut.mNodes.push_back(read_int(conn, r * k + edges[f].mNodes[c]));
+        rOut.mNumCorners = edges[f].mNumCorners;
+        return true;
+    }
+    return false;
+}
+
+std::array<double, 3> rremap_coords(const Mesh& rMesh, std::int64_t Point) {
+    std::array<double, 3> x{0.0, 0.0, 0.0};
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = std::min<std::size_t>(rMesh.PointDim(), 3);
+    for (std::size_t d = 0; d < dim; ++d)
+        x[d] = read_double(pts, static_cast<std::size_t>(Point) * rMesh.PointDim() + d);
+    return x;
+}
+
+/**
+ * @brief Whether @p rQ lies on the facet whose corners are @p rCorners.
+ *
+ * Two corners: on the segment. More: on the plane through them (Newell's
+ * normal, so a slightly warped quad still has one). The tolerance is relative
+ * to the facet's size, since an operation's new points are averages of the
+ * corners and sit on it to round-off.
+ */
+bool rremap_on_facet(const std::array<double, 3>& rQ,
+                     const std::vector<std::array<double, 3>>& rCorners) {
+    const std::size_t n = rCorners.size();
+    if (n < 2)
+        return false;
+    double size = 0.0;
+    for (std::size_t i = 1; i < n; ++i) {
+        double d2 = 0.0;
+        for (int d = 0; d < 3; ++d)
+            d2 += (rCorners[i][d] - rCorners[0][d]) * (rCorners[i][d] - rCorners[0][d]);
+        size = std::max(size, std::sqrt(d2));
+    }
+    if (size == 0.0)
+        return false;
+    const double tol = 1e-9 * size;
+    if (n == 2) {
+        std::array<double, 3> e{}, w{};
+        double ee = 0.0, we = 0.0;
+        for (int d = 0; d < 3; ++d) {
+            e[d] = rCorners[1][d] - rCorners[0][d];
+            w[d] = rQ[d] - rCorners[0][d];
+            ee += e[d] * e[d];
+            we += w[d] * e[d];
+        }
+        const double t = we / ee;
+        if (t < -1e-9 || t > 1.0 + 1e-9)
+            return false;
+        double dist2 = 0.0;
+        for (int d = 0; d < 3; ++d)
+            dist2 += (w[d] - t * e[d]) * (w[d] - t * e[d]);
+        return std::sqrt(dist2) <= tol;
+    }
+    std::array<double, 3> normal{0.0, 0.0, 0.0}, centre{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& a = rCorners[i];
+        const auto& b = rCorners[(i + 1) % n];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        for (int d = 0; d < 3; ++d)
+            centre[d] += a[d] / static_cast<double>(n);
+    }
+    const double len =
+        std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    if (len == 0.0)
+        return false;
+    double dist = 0.0;
+    for (int d = 0; d < 3; ++d)
+        dist += (rQ[d] - centre[d]) * normal[d] / len;
+    return std::abs(dist) <= tol;
+}
+
+/// The corners of @p rFacet as coordinates of @p rMesh.
+std::vector<std::array<double, 3>> rremap_corner_coords(const Mesh& rMesh,
+                                                        const RremapFacet& rFacet) {
+    std::vector<std::array<double, 3>> out;
+    out.reserve(rFacet.mNumCorners);
+    for (std::size_t i = 0; i < rFacet.mNumCorners; ++i)
+        out.push_back(rremap_coords(rMesh, rFacet.mNodes[i]));
+    return out;
+}
+
+/**
+ * @brief Whether facet @p rSmall of @p rSmallMesh lies within facet @p rBig of
+ * @p rBigMesh.
+ *
+ * @p SmallToBig maps a node of the small facet's mesh to the big one's, -1 for
+ * a node with no counterpart there (created or removed by the operation). A
+ * node with a counterpart must be a node of @p rBig -- unless @p Geometric,
+ * the second pass for a merged face that dropped an interior vertex, where it
+ * need only lie on it; a node without one must lie on it.
+ */
+template <class TMap>
+bool rremap_facet_within(const Mesh& rSmallMesh, const RremapFacet& rSmall, const Mesh& rBigMesh,
+                         const RremapFacet& rBig, TMap&& SmallToBig, bool Geometric) {
+    std::vector<std::array<double, 3>> big_corners;
+    for (std::int64_t node : rSmall.mNodes) {
+        const std::int64_t there = SmallToBig(node);
+        if (there >= 0 &&
+            std::find(rBig.mNodes.begin(), rBig.mNodes.end(), there) != rBig.mNodes.end())
+            continue;
+        if (there >= 0 && !Geometric)
+            return false;
+        if (big_corners.empty())
+            big_corners = rremap_corner_coords(rBigMesh, rBig);
+        if (!rremap_on_facet(rremap_coords(rSmallMesh, node), big_corners))
+            return false;
+    }
+    return true;
+}
+
+/// Output point -> input point: the inverse of `pPointMap` (identity for the
+/// input's points when it is null), -1 for a point the operation created.
+std::vector<std::int64_t> rremap_inverse_points(const Mesh& rIn, const Mesh& rOut,
+                                                const RegionRemap& rMaps) {
+    const std::size_t n_out = rOut.NumPoints();
+    std::vector<std::int64_t> inv(n_out, -1);
+    const auto n_in = static_cast<std::int64_t>(rIn.NumPoints());
+    for (std::int64_t p = 0; p < n_in; ++p) {
+        const std::int64_t q = rremap_lookup(rMaps.pPointMap, p);
+        if (q >= 0 && static_cast<std::size_t>(q) < n_out && inv[static_cast<std::size_t>(q)] < 0)
+            inv[static_cast<std::size_t>(q)] = p;
+    }
+    return inv;
+}
+
+/// How many input cells map onto each output cell (a merge has more than one).
+std::vector<std::int32_t> rremap_preimage_counts(const RegionRemap& rMaps,
+                                                 const std::vector<std::int64_t>& rInBases,
+                                                 const std::vector<std::int64_t>& rOutBases) {
+    std::vector<std::int32_t> counts(static_cast<std::size_t>(total_cells(rOutBases)), 0);
+    std::vector<std::int64_t> children;
+    for (std::int64_t c = 0; c < total_cells(rInBases); ++c) {
+        rremap_children(rMaps, rInBases, rOutBases, c, children);
+        for (std::int64_t ch : children)
+            ++counts[static_cast<std::size_t>(ch)];
+    }
+    return counts;
+}
+
 }  // namespace
 
 std::size_t region_num_facets(const std::string& rType) {
@@ -56466,31 +57226,131 @@ bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
             out.insert(out.end(), children.begin(), children.end());
         }
     } else {
-        // Side: the facet must still exist, which needs a 1:1 cell map onto a
-        // cell of the same type. Anything else has no facet correspondence.
-        if (rMaps.mDropSideRegions || rMaps.mCellMapKind == CellMapKind::FirstChild) {
+        if (rMaps.mDropSideRegions) {
             log::warn(
                 "{}: side region '{}' dropped — this operation does not preserve "
                 "facet identity",
                 rMaps.mOpName.empty() ? "operation" : rMaps.mOpName, rRegion.mName);
             return false;
         }
+        // Side: see "Side facets by containment" above. The inverse point map
+        // and the preimage counts are built only when an entry needs them.
+        std::vector<std::int64_t> inv_points;
+        std::vector<std::int32_t> preimages;
+        bool have_inv = false, have_pre = false;
+        auto out_to_in = [&](std::int64_t q) -> std::int64_t {
+            return q >= 0 && static_cast<std::size_t>(q) < inv_points.size()
+                       ? inv_points[static_cast<std::size_t>(q)]
+                       : -1;
+        };
+        auto in_to_out = [&](std::int64_t p) -> std::int64_t {
+            const std::int64_t q = rremap_lookup(rMaps.pPointMap, p);
+            return q < n_out_points ? q : -1;
+        };
+        // Last resort: the facet still exists, by its (surviving) corners,
+        // on another output cell -- a decimation collapse hands a boundary
+        // edge to a neighbour. Built on first use.
+        std::unique_ptr<FacetIndex> out_facets;
+        std::vector<std::int64_t> mapped_corners;
+        RremapFacet source, target;
+        std::size_t lost = 0;
         out.reserve(n * 2);
         for (std::size_t k = 0; k < n; ++k) {
             const std::int64_t cell = entries[k * 2];
             const std::int64_t facet = entries[k * 2 + 1];
+            const std::size_t before = out.size();
             rremap_children(rMaps, in_bases, out_bases, cell, children);
-            if (children.size() != 1)
+            if (!rremap_facet(rIn, in_bases, cell, facet, source)) {
+                ++lost;
                 continue;
-            const std::string in_type = rremap_type_at(rIn, in_bases, cell);
-            const std::string out_type = rremap_type_at(rOut, out_bases, children[0]);
-            if (in_type.empty() || in_type != out_type)
-                continue;
-            if (facet < 0 || static_cast<std::size_t>(facet) >= region_num_facets(out_type))
-                continue;
-            out.push_back(children[0]);
-            out.push_back(facet);
+            }
+            if (children.empty()) {
+                // The cell is gone; only the last resort below can place it.
+            } else if (children.size() == 1) {
+                const std::int64_t child = children[0];
+                if (!have_pre && rMaps.mCellMapKind != CellMapKind::FirstChild) {
+                    preimages = rremap_preimage_counts(rMaps, in_bases, out_bases);
+                    have_pre = true;
+                }
+                const bool one_to_one =
+                    !have_pre || preimages[static_cast<std::size_t>(child)] == 1;
+                const std::string in_type = rremap_type_at(rIn, in_bases, cell);
+                // The cell kept its identity: the local number still names
+                // the facet (the only rule before v16.27.0) -- provided its
+                // nodes are still the facet's, which a flipped or collapsed
+                // cell's are not.
+                if (one_to_one && in_type == rremap_type_at(rOut, out_bases, child) &&
+                    rremap_facet(rOut, out_bases, child, facet, target) &&
+                    target.mNodes.size() == source.mNodes.size() &&
+                    rremap_facet_within(rIn, source, rOut, target, in_to_out,
+                                        /*Geometric=*/false)) {
+                    out.push_back(child);
+                    out.push_back(facet);
+                    continue;
+                }
+                // Merged or retyped: the output facet that contains it.
+                const std::size_t nf = rremap_facet_count(rOut, out_bases, child);
+                for (int pass = 0; pass < 2 && out.size() == before; ++pass)
+                    for (std::size_t j = 0; j < nf; ++j) {
+                        if (!rremap_facet(rOut, out_bases, child, static_cast<std::int64_t>(j),
+                                          target))
+                            continue;
+                        if (rremap_facet_within(rIn, source, rOut, target, in_to_out,
+                                                /*Geometric=*/pass == 1)) {
+                            out.push_back(child);
+                            out.push_back(static_cast<std::int64_t>(j));
+                        }
+                    }
+            } else {
+                // Refined: every child facet lying within it.
+                if (!have_inv) {
+                    inv_points = rremap_inverse_points(rIn, rOut, rMaps);
+                    have_inv = true;
+                }
+                for (std::int64_t child : children) {
+                    const std::size_t nf = rremap_facet_count(rOut, out_bases, child);
+                    for (std::size_t j = 0; j < nf; ++j) {
+                        if (!rremap_facet(rOut, out_bases, child, static_cast<std::int64_t>(j),
+                                          target))
+                            continue;
+                        if (rremap_facet_within(rOut, target, rIn, source, out_to_in,
+                                                /*Geometric=*/false)) {
+                            out.push_back(child);
+                            out.push_back(static_cast<std::int64_t>(j));
+                        }
+                    }
+                }
+            }
+            if (out.size() == before) {
+                mapped_corners.clear();
+                for (std::size_t c = 0; c < source.mNumCorners; ++c)
+                    mapped_corners.push_back(in_to_out(source.mNodes[c]));
+                const bool all_survive = std::none_of(mapped_corners.begin(), mapped_corners.end(),
+                                                      [](std::int64_t q) { return q < 0; });
+                // Only across a FirstChild map (decimate, repair): under a
+                // Direct one (crop, split) the facet's own cell is simply
+                // gone, and handing an interface facet to the neighbour would
+                // flip its orientation.
+                if (rMaps.mCellMapKind == CellMapKind::FirstChild && all_survive &&
+                    mapped_corners.size() <= 4) {
+                    if (!out_facets)
+                        out_facets = std::make_unique<FacetIndex>(rOut);
+                    const FacetHit* p_hit =
+                        out_facets->Find(mapped_corners.data(), mapped_corners.size());
+                    if (p_hit) {
+                        out.push_back(p_hit->mFirst.mCell);
+                        out.push_back(p_hit->mFirst.mFacet);
+                    }
+                }
+            }
+            if (out.size() == before)
+                ++lost;
         }
+        if (lost > 0)
+            log::warn(
+                "{}: side region '{}' lost {} of its {} facet(s) — they have no "
+                "counterpart in the output",
+                rMaps.mOpName.empty() ? "operation" : rMaps.mOpName, rRegion.mName, lost, n);
     }
 
     // A region that lost every entry is still carried, as an empty group. The
@@ -56509,6 +57369,70 @@ void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps) {
         Region carried;
         if (remap_region(rIn, rOut, rIn.Region(i), rMaps, carried))
             rOut.AddRegion(std::move(carried));
+    }
+}
+
+void carry_regions_to_facet_mesh(const Mesh& rIn, Mesh& rOut,
+                                 const std::vector<std::int64_t>& rOutParent,
+                                 const std::vector<std::int64_t>& rOutFacet,
+                                 const std::vector<std::int64_t>& rPointMap,
+                                 const std::string& rOpName) {
+    const std::size_t nregions = rIn.NumRegions();
+    if (nregions == 0)
+        return;
+    // (input cell, facet) -> output cell, sorted for a binary search: built
+    // once, and only when a Side region needs it.
+    std::vector<std::array<std::int64_t, 3>> facet_to_out;
+    auto lookup = [&](std::int64_t Cell, std::int64_t Facet) -> std::int64_t {
+        if (facet_to_out.empty()) {
+            facet_to_out.reserve(rOutParent.size());
+            for (std::size_t c = 0; c < rOutParent.size() && c < rOutFacet.size(); ++c)
+                facet_to_out.push_back({rOutParent[c], rOutFacet[c], static_cast<std::int64_t>(c)});
+            std::sort(facet_to_out.begin(), facet_to_out.end());
+        }
+        const std::array<std::int64_t, 3> key{Cell, Facet, -1};
+        const auto it = std::lower_bound(facet_to_out.begin(), facet_to_out.end(), key);
+        return it != facet_to_out.end() && (*it)[0] == Cell && (*it)[1] == Facet ? (*it)[2] : -1;
+    };
+    const std::string op = rOpName.empty() ? "operation" : rOpName;
+    for (std::size_t i = 0; i < nregions; ++i) {
+        const Region& r_region = rIn.Region(i);
+        const std::int64_t* entries = r_region.Entries();
+        const std::size_t n = r_region.NumEntries();
+        std::vector<std::int64_t> out;
+        if (r_region.mKind == RegionKind::Point) {
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t p = entries[k];
+                if (p >= 0 && static_cast<std::size_t>(p) < rPointMap.size() &&
+                    rPointMap[static_cast<std::size_t>(p)] >= 0)
+                    out.push_back(rPointMap[static_cast<std::size_t>(p)]);
+            }
+            rOut.AddRegion(Region(r_region.mName, RegionKind::Point, r_region.mDim, r_region.mTag,
+                                  rremap_entries(out, 1)));
+        } else if (r_region.mKind == RegionKind::Side) {
+            std::size_t lost = 0;
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t c = lookup(entries[2 * k], entries[2 * k + 1]);
+                if (c >= 0)
+                    out.push_back(c);
+                else
+                    ++lost;
+            }
+            if (lost > 0)
+                log::warn(
+                    "{}: side region '{}' lost {} of its {} facet(s) — they are not on the "
+                    "extracted boundary",
+                    op, r_region.mName, lost, n);
+            rOut.AddRegion(Region(r_region.mName, RegionKind::Cell, r_region.mDim, r_region.mTag,
+                                  rremap_entries(out, 1)));
+        } else {
+            log::warn(
+                "{}: cell region '{}' dropped — it names input cells, and the output "
+                "holds only their facets",
+                op, r_region.mName);
+            provenance_note("regions-dropped", op + ": cell region '" + r_region.mName +
+                                                   "' dropped -- the output holds only facets");
+        }
     }
 }
 
@@ -57997,8 +58921,28 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw,
                        const std::vector<std::int64_t>* pFaces,
                        const std::vector<std::int64_t>& rFaceOffsets, Mesh& rMesh) {
+    reconstruct_cells(pConn, rOffsets, rTypes, rCellDataRaw, pFaces, rFaceOffsets, rMesh, nullptr);
+}
+
+void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                       const std::vector<std::int64_t>& rTypes,
+                       const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+                       const std::vector<std::int64_t>* pFaces,
+                       const std::vector<std::int64_t>& rFaceOffsets, Mesh& rMesh,
+                       std::vector<std::int64_t>* pFileToGlobal) {
     const auto& vmap = vtk_to_meshio_type();
     const std::size_t ncells = rTypes.size();
+    // The next global cell index a file cell will take.
+    std::int64_t next_global = 0;
+    for (const auto cb : rMesh.CellRange())
+        next_global += static_cast<std::int64_t>(cb.NumCells());
+    if (pFileToGlobal)
+        pFileToGlobal->assign(ncells, -1);
+    auto place = [&](std::size_t FileCell) {
+        if (pFileToGlobal)
+            (*pFileToGlobal)[FileCell] = next_global;
+        ++next_global;
+    };
 
     auto add_cd = [&](std::size_t start, std::size_t end) {
         for (const auto& kv : rCellDataRaw)
@@ -58109,8 +59053,10 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                 // when the run mixes node counts: slicing [at_row, at_row + m) would hand
                 // each block another block's cell_data.
                 std::vector<std::size_t> file_rows(cells.size());
-                for (std::size_t k = 0; k < cells.size(); ++k)
+                for (std::size_t k = 0; k < cells.size(); ++k) {
                     file_rows[k] = start + cells[k];
+                    place(file_rows[k]);
+                }
                 rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(order[g]), std::move(flat),
                                          std::move(row_offsets), std::move(cell_face));
                 for (const auto& kv : rCellDataRaw)
@@ -58165,6 +59111,8 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
                 }
                 rMesh.AddCellBlock(meshio_type, std::move(data));
                 add_cd(start + i, start + j);
+                for (std::size_t c = start + i; c < start + j; ++c)
+                    place(c);
                 i = j;
             }
         } else {
@@ -58207,6 +59155,8 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             }
             rMesh.AddCellBlock(meshio_type, std::move(data));
             add_cd(start, end);
+            for (std::size_t c = start; c < end; ++c)
+                place(c);
         }
         start = end;
     }
@@ -92792,7 +93742,23 @@ CellType mdpa_entity_cell_type(const std::string& rName) {
     // kratos_names.hpp owns both the tables and the exact-then-longest-suffix
     // rule, so this and ModelPart::CreateNewElement cannot disagree about which
     // names a deck may use.
-    return cell_type_from_kratos_name_or_suffix(rName);
+    const CellType t = cell_type_from_kratos_name_or_suffix(rName);
+    if (t != CellType::Custom || rName.size() < 3)
+        return t;
+    // Then the Python reference's last resort: the longest Kratos name found
+    // anywhere inside it (`Triangle2D3N` -> `Triangle2D3`). Plain meshio names
+    // (`quad`, `line`) are not Kratos names and never match here; a wrong
+    // guess still fails the per-row node-count check.
+    for (std::size_t len = rName.size() - 1; len >= 2; --len)
+        for (std::size_t i = 0; i + len <= rName.size(); ++i) {
+            const std::string sub = rName.substr(i, len);
+            if (cell_type_from_name(sub) != CellType::Custom)
+                continue;
+            const CellType s = cell_type_from_kratos_name(sub);
+            if (s != CellType::Custom)
+                return s;
+        }
+    return CellType::Custom;
 }
 
 // ---------------------------------------------------------------------------
@@ -92834,6 +93800,14 @@ struct MdpaCursor {
     std::string_view Next() { return (*mpLines)[mIndex++]; }
 };
 
+/// The refusal's tail when the caller could have kept the construct in an MdpaInfo.
+constexpr const char* kMdpaNeedsInfo =
+    " needs an MdpaInfo to be kept (read_mdpa(path, info), or mio_read_with_info on the flat "
+    "ABI); set ReadOptions::mLenient to skip it instead";
+/// The refusal's tail for what not even an MdpaInfo holds.
+constexpr const char* kMdpaUnsupported =
+    " is not supported by the C++ reader (set ReadOptions::mLenient to skip it instead)";
+
 /// Consume the rest of a block, ignoring blank/comment-only lines.
 void mdpa_consume_block(MdpaCursor& rCur, const std::string& rEnd) {
     while (!rCur.Done())
@@ -92854,9 +93828,7 @@ void mdpa_consume_block(MdpaCursor& rCur, const std::string& rEnd) {
 void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
                          bool Lenient, MdpaInfo* pInfo) {
     if (!Lenient)
-        throw ReadError("MDPA: " + rWhat +
-                        " is not supported by the C++ reader (set ReadOptions::mLenient to skip "
-                        "it instead)");
+        throw ReadError("MDPA: " + rWhat + (pInfo ? kMdpaUnsupported : kMdpaNeedsInfo));
     log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
     if (pInfo)
         pInfo->mSkippedConstructs.push_back(rWhat);
@@ -92873,9 +93845,8 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
         if (line == rEnd)
             return;
         if (!Lenient)
-            throw ReadError("MDPA: " + rWhat +
-                            " is not supported by the C++ reader (offending line: '" +
-                            std::string(line) + "'; set ReadOptions::mLenient to skip it instead)");
+            throw ReadError("MDPA: " + rWhat + " (offending line: '" + std::string(line) + "')" +
+                            (pInfo ? kMdpaUnsupported : kMdpaNeedsInfo));
         log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
         if (pInfo)
             pInfo->mSkippedConstructs.push_back(rWhat);
@@ -92883,6 +93854,30 @@ void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const st
         return;
     }
     throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief One `KEY value` line: a number becomes a Float64 `{1}`, anything else text.
+ *
+ * Key plus the rest of the line, the Python reference's `split(None, 1)`, so
+ * both readers agree on where the value starts. False for a valueless line.
+ */
+bool mdpa_parse_kv_line(std::string_view Line, PropertyValue& rOut) {
+    const std::size_t sep = Line.find_first_of(" \t");
+    if (sep == std::string_view::npos)
+        return false;
+    rOut = PropertyValue{};
+    rOut.mKey = Line.substr(0, sep);
+    const std::string_view rest = mdpa_strip(Line.substr(sep + 1));
+    double scalar = 0.0;
+    if (mdpa_parse_double(rest, scalar)) {
+        NDArray a(DType::Float64, {1});
+        a.As<double>()[0] = scalar;
+        rOut.mValues = std::move(a);
+    } else {
+        rOut.mText = rest;
+    }
+    return true;
 }
 
 /**
@@ -92974,27 +93969,56 @@ PropertySet mdpa_parse_properties(MdpaCursor& rCur, std::string_view rHeader) {
             out.mValues.push_back(mdpa_parse_property_table(rCur, line));
             continue;
         }
-        // key + the rest of the line, exactly the Python reference's
-        // `split(None, 1)`, so both readers agree on where the value starts.
-        const std::size_t sep = line.find_first_of(" \t");
-        if (sep == std::string::npos) {
+        PropertyValue v;
+        if (!mdpa_parse_kv_line(line, v)) {
             log::warn("mdpa: skipping valueless Properties line: {}", line);
             continue;
-        }
-        PropertyValue v;
-        v.mKey = line.substr(0, sep);
-        const std::string_view rest = mdpa_strip(line.substr(sep + 1));
-        double scalar = 0.0;
-        if (mdpa_parse_double(rest, scalar)) {
-            NDArray a(DType::Float64, {1});
-            a.As<double>()[0] = scalar;
-            v.mValues = std::move(a);
-        } else {
-            v.mText = rest;
         }
         out.mValues.push_back(std::move(v));
     }
     return out;
+}
+
+/// A `KEY value` block body (`SubModelPartData`, `MeshData`) up to @p rEnd.
+std::vector<PropertyValue> mdpa_parse_kv_block(MdpaCursor& rCur, const std::string& rEnd) {
+    std::vector<PropertyValue> out;
+    while (!rCur.Done()) {
+        const std::string_view line = mdpa_clean(rCur.Next());
+        if (line.empty())
+            continue;
+        if (line == rEnd)
+            return out;
+        PropertyValue v;
+        if (!mdpa_parse_kv_line(line, v)) {
+            log::warn("mdpa: skipping valueless line in {} block: {}", rEnd.substr(4), line);
+            continue;
+        }
+        out.push_back(std::move(v));
+    }
+    throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief Keep a block verbatim: its header, its body lines and its terminator.
+ *
+ * The body is the file's own text (a trailing `\r` aside), so the block writes
+ * back exactly as it was read; only the terminator is matched comment-free.
+ */
+MdpaRawBlock mdpa_capture_raw_block(MdpaCursor& rCur, std::string_view Header,
+                                    const std::string& rEnd) {
+    MdpaRawBlock out;
+    out.mHeader = Header;
+    out.mEnd = rEnd;
+    while (!rCur.Done()) {
+        std::string_view raw = rCur.Next();
+        if (mdpa_clean(raw) == rEnd)
+            return out;
+        if (!raw.empty() && raw.back() == '\r')
+            raw.remove_suffix(1);
+        out.mBody.append(raw.data(), raw.size());
+        out.mBody += '\n';
+    }
+    throw ReadError("MDPA: EOF before '" + rEnd + "'");
 }
 
 /**
@@ -93200,6 +94224,28 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::map<std::string, StagedSmp> smps;
     std::vector<std::string> smp_stack;
 
+    // Side-channel content, staged only when there is an MdpaInfo to receive
+    // it. Geometry and Mesh-block node references stay raw file ids until the
+    // materialize pass, for the same reason MdpaBlock::mConn does.
+    struct StagedGeometry {
+        std::string mName;
+        CellType mType = CellType::Custom;
+        std::size_t mNodes = 0;
+        std::vector<std::int64_t> mConn;  // raw file node ids, meshio order
+        std::vector<std::int64_t> mIds;
+    };
+    std::vector<StagedGeometry> geometries;
+    std::vector<std::vector<std::int64_t>> mesh_block_nodes;      // raw ids, per MdpaMeshBlock
+    std::unordered_map<std::string, std::size_t> smp_info_index;  // name -> mSubModelParts slot
+    auto smp_info = [&](const std::string& rName) -> MdpaSubModelPart& {
+        const auto it = smp_info_index.find(rName);
+        if (it != smp_info_index.end())
+            return pInfo->mSubModelParts[it->second];
+        smp_info_index.emplace(rName, pInfo->mSubModelParts.size());
+        pInfo->mSubModelParts.push_back(MdpaSubModelPart{rName, {}, {}});
+        return pInfo->mSubModelParts.back();
+    };
+
     auto smp_name = [&]() -> std::string {
         std::string out;
         for (std::size_t i = 0; i < smp_stack.size(); ++i) {
@@ -93258,27 +94304,26 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     continue;
                 if (e == "End ModelPartData")
                     break;
-                const std::vector<std::string_view> t = mdpa_tokens(e);
-                if (t.size() < 2) {
+                PropertyValue v;
+                if (!mdpa_parse_kv_line(e, v)) {
                     log::warn("mdpa: skipping malformed ModelPartData line: {}", e);
                     continue;
                 }
-                double v = 0.0;
-                if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
+                if (v.IsText()) {
+                    // NDArray has no string dtype: the value goes to the side
+                    // channel, or -- without one -- is refused by name.
+                    if (pInfo) {
+                        pInfo->mModelPartData.push_back(std::move(v));
+                        continue;
+                    }
                     const std::string what =
-                        "a non-numeric ModelPartData value for '" + std::string(t[0]) + "'";
+                        "a non-numeric ModelPartData value for '" + v.mKey + "'";
                     if (!Lenient)
-                        throw ReadError("MDPA: " + what +
-                                        " is not supported by the C++ reader (set "
-                                        "ReadOptions::mLenient to skip it instead)");
+                        throw ReadError("MDPA: " + what + kMdpaNeedsInfo);
                     log::warn("mdpa: skipping {} (ReadOptions::mLenient)", what);
-                    if (pInfo)
-                        pInfo->mSkippedConstructs.push_back(what);
                     continue;
                 }
-                NDArray a(DType::Float64, {1});
-                a.As<double>()[0] = v;
-                field_data[std::string(t[0])] = std::move(a);
+                field_data[v.mKey] = std::move(v.mValues);
             }
         } else if (line == "Begin Nodes") {
             if (num_points)
@@ -93493,11 +94538,29 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             sd.mComponents = nc;
             cell_data.push_back(std::move(sd));
         } else if (mdpa_starts_with(line, "Begin SubModelPartData")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartData",
-                                    "a non-empty SubModelPartData block", Lenient, pInfo);
+            if (pInfo && !smp_stack.empty()) {
+                std::vector<PropertyValue> data = mdpa_parse_kv_block(cur, "End SubModelPartData");
+                if (!data.empty()) {
+                    MdpaSubModelPart& r_smp = smp_info(smp_name());
+                    for (PropertyValue& r_v : data)
+                        r_smp.mData.push_back(std::move(r_v));
+                }
+            } else {
+                mdpa_expect_empty_block(cur, "End SubModelPartData",
+                                        "a non-empty SubModelPartData block", Lenient, pInfo);
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartTables")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartTables",
-                                    "a non-empty SubModelPartTables block", Lenient, pInfo);
+            if (pInfo && !smp_stack.empty()) {
+                std::vector<std::int64_t> ids;
+                read_id_list("End SubModelPartTables", ids);
+                if (!ids.empty()) {
+                    MdpaSubModelPart& r_smp = smp_info(smp_name());
+                    r_smp.mTables.insert(r_smp.mTables.end(), ids.begin(), ids.end());
+                }
+            } else {
+                mdpa_expect_empty_block(cur, "End SubModelPartTables",
+                                        "a non-empty SubModelPartTables block", Lenient, pInfo);
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries")) {
             mdpa_expect_empty_block(cur, "End SubModelPartGeometries",
                                     "a non-empty SubModelPartGeometries block", Lenient, pInfo);
@@ -93547,21 +94610,127 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 throw ReadError("MDPA: 'End SubModelPart' without a matching 'Begin'");
             smp_stack.pop_back();
         } else if (mdpa_starts_with(line, "Begin Table")) {
-            mdpa_reject_or_skip(cur, "End Table", "a top-level Table block", Lenient, pInfo);
+            if (pInfo)
+                pInfo->mTables.push_back(mdpa_parse_property_table(cur, line));
+            else
+                mdpa_reject_or_skip(cur, "End Table", "a top-level Table block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin Geometries")) {
-            mdpa_reject_or_skip(cur, "End Geometries", "a Geometries block", Lenient, pInfo);
+            if (!pInfo) {
+                mdpa_reject_or_skip(cur, "End Geometries", "a Geometries block", Lenient, pInfo);
+                continue;
+            }
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            const std::string name = head.size() >= 3 ? std::string(head[2]) : std::string();
+            const CellType type = mdpa_entity_cell_type(name);
+            if (type == CellType::Custom)
+                throw ReadError("MDPA: unknown Kratos geometry name '" + name + "'");
+            const int nn = cell_type_num_nodes(type);
+            if (nn <= 0)
+                throw ReadError("MDPA: geometry '" + name +
+                                "' maps to a variable-node-count cell type");
+            const std::vector<int>& order = mdpa_kratos_node_order(type);
+            if (geometries.empty() || geometries.back().mName != name) {
+                StagedGeometry g;
+                g.mName = name;
+                g.mType = type;
+                g.mNodes = static_cast<std::size_t>(nn);
+                geometries.push_back(std::move(g));
+            }
+            StagedGeometry& r_geo = geometries.back();
+            bool terminated = false;
+            std::vector<std::string_view> t;
+            while (!cur.Done()) {
+                const std::string_view e = mdpa_clean(cur.Next());
+                if (e.empty())
+                    continue;
+                if (e == "End Geometries") {
+                    terminated = true;
+                    break;
+                }
+                detail::split_blanks(e, t);
+                if (static_cast<int>(t.size()) != nn + 1)
+                    throw ReadError("MDPA: " + name + " row with " +
+                                    std::to_string(t.empty() ? 0 : t.size() - 1) +
+                                    " nodes (expected " + std::to_string(nn) +
+                                    "): " + std::string(e));
+                std::int64_t id = 0;
+                if (!mdpa_parse_int(t[0], id))
+                    throw ReadError("MDPA: non-integer geometry id in: " + std::string(e));
+                const std::size_t base = r_geo.mConn.size();
+                r_geo.mConn.resize(base + static_cast<std::size_t>(nn));
+                for (int j = 0; j < nn; ++j) {
+                    std::int64_t node = 0;
+                    if (!mdpa_parse_int(t[static_cast<std::size_t>(j) + 1], node))
+                        throw ReadError("MDPA: non-integer node id in: " + std::string(e));
+                    const std::size_t slot =
+                        order.empty()
+                            ? static_cast<std::size_t>(j)
+                            : static_cast<std::size_t>(order[static_cast<std::size_t>(j)]);
+                    r_geo.mConn[base + slot] = node;
+                }
+                r_geo.mIds.push_back(id);
+            }
+            if (!terminated)
+                throw ReadError("MDPA: EOF before 'End Geometries'");
         } else if (mdpa_starts_with(line, "Begin Mesh")) {
-            mdpa_reject_or_skip(cur, "End Mesh", "a Mesh block", Lenient, pInfo);
+            if (!pInfo) {
+                mdpa_reject_or_skip(cur, "End Mesh", "a Mesh block", Lenient, pInfo);
+                continue;
+            }
+            // Kratos reserves mesh 0 for the model part itself; the Python
+            // reference warns and skips such a header, and so does this.
+            const std::vector<std::string_view> head = mdpa_tokens(line);
+            std::int64_t mesh_id = 0;
+            if (head.size() < 3 || !mdpa_parse_int(head[2], mesh_id) || mesh_id == 0) {
+                log::warn("mdpa: skipping Mesh block with a missing, non-integer or 0 id: {}",
+                          line);
+                mdpa_consume_block(cur, "End Mesh");
+                continue;
+            }
+            MdpaMeshBlock mb;
+            mb.mId = mesh_id;
+            std::vector<std::int64_t> nodes;
+            bool terminated = false;
+            while (!cur.Done()) {
+                const std::string_view e = mdpa_clean(cur.Next());
+                if (e.empty())
+                    continue;
+                if (e == "End Mesh") {
+                    terminated = true;
+                    break;
+                }
+                if (mdpa_starts_with(e, "Begin MeshData")) {
+                    std::vector<PropertyValue> data = mdpa_parse_kv_block(cur, "End MeshData");
+                    for (PropertyValue& r_v : data)
+                        mb.mData.push_back(std::move(r_v));
+                } else if (mdpa_starts_with(e, "Begin MeshNodes")) {
+                    read_id_list("End MeshNodes", nodes);
+                } else if (mdpa_starts_with(e, "Begin MeshElements")) {
+                    read_id_list("End MeshElements", mb.mElementIds);
+                } else if (mdpa_starts_with(e, "Begin MeshConditions")) {
+                    read_id_list("End MeshConditions", mb.mConditionIds);
+                } else {
+                    log::warn("mdpa: skipping unknown line in Mesh {}: {}", mesh_id, e);
+                }
+            }
+            if (!terminated)
+                throw ReadError("MDPA: EOF before 'End Mesh'");
+            pInfo->mMeshBlocks.push_back(std::move(mb));
+            mesh_block_nodes.push_back(std::move(nodes));
         } else if (mdpa_starts_with(line, "Begin ")) {
             // Everything unrecognized, which is how `Begin Constraints` and any
             // block a future Kratos adds are covered without a case each. The
             // terminator is the header's first word after `Begin`, so a nested
-            // `End <other>` cannot end the scan early.
+            // `End <other>` cannot end the scan early. A top-level one is kept
+            // verbatim when there is an MdpaInfo to hold it.
             const std::vector<std::string_view> head = mdpa_tokens(line);
             const std::string end_token =
                 "End " + (head.size() >= 2 ? std::string(head[1]) : std::string());
-            mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'", Lenient,
-                                pInfo);
+            if (pInfo && smp_stack.empty())
+                pInfo->mRawBlocks.push_back(mdpa_capture_raw_block(cur, line, end_token));
+            else
+                mdpa_reject_or_skip(cur, end_token, "the block '" + std::string(line) + "'",
+                                    Lenient, pInfo);
         } else {
             throw ReadError("MDPA: unexpected line outside a block: '" + std::string(line) + "'");
         }
@@ -93688,6 +94857,41 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    if (pInfo) {
+        for (const StagedGeometry& r_geo : geometries) {
+            MdpaGeometryBlock gb;
+            gb.mName = r_geo.mName;
+            gb.mType = cell_type_name(r_geo.mType);
+            gb.mConn = NDArray(DType::Int64, {r_geo.mIds.size(), r_geo.mNodes});
+            std::int64_t* gp = gb.mConn.As<std::int64_t>();
+            for (std::size_t i = 0; i < r_geo.mConn.size(); ++i) {
+                std::size_t row = 0;
+                if (!node_row(r_geo.mConn[i], row))
+                    throw ReadError("MDPA: geometry refers to node id " +
+                                    std::to_string(r_geo.mConn[i]) +
+                                    ", which the file's Nodes block does not define");
+                gp[i] = static_cast<std::int64_t>(row);
+            }
+            gb.mIds = r_geo.mIds;
+            pInfo->mGeometries.push_back(std::move(gb));
+        }
+        // Mesh-block nodes resolve like SubModelPart nodes: an id the file
+        // never defined is warned about and dropped (the Python reference's
+        // `_node_rows`).
+        for (std::size_t k = 0; k < mesh_block_nodes.size(); ++k) {
+            std::vector<std::int64_t>& r_rows = pInfo->mMeshBlocks[k].mNodes;
+            for (std::int64_t id : mesh_block_nodes[k]) {
+                std::size_t row = 0;
+                if (!node_row(id, row)) {
+                    log::warn("mdpa: Mesh {} references unknown node id {}",
+                              pInfo->mMeshBlocks[k].mId, id);
+                    continue;
+                }
+                r_rows.push_back(static_cast<std::int64_t>(row));
+            }
+        }
+    }
+
     // Properties last: they are keyed by id, so order relative to the cell
     // blocks and regions above does not matter.
     for (PropertySet& r_ps : property_sets)
@@ -93761,38 +94965,61 @@ bool mdpa_skip_cell_data(const std::string& rName) {
     return mdpa_starts_with(rName, "gmsh:");
 }
 
+/**
+ * @brief Emit one `Begin Table <mKey>` block at @p rIndent.
+ *
+ * `mKey` holds the header's arguments verbatim (id + variable names), so the
+ * block comes back out exactly as it went in.
+ */
+void mdpa_write_table(std::ostream& rOs, const PropertyValue& rTable, const char* pIndent) {
+    rOs << pIndent << "Begin Table " << rTable.mKey << "\n";
+    const std::size_t ncols = rTable.mValues.Shape().size() >= 2 ? rTable.mValues.Shape()[1] : 1;
+    const std::size_t nrows = ncols ? rTable.mValues.Size() / ncols : 0;
+    for (std::size_t r = 0; r < nrows; ++r) {
+        rOs << pIndent << "  ";
+        for (std::size_t c = 0; c < ncols; ++c)
+            rOs << " " << mdpa_format_value(rTable.mValues, r * ncols + c);
+        rOs << "\n";
+    }
+    rOs << pIndent << "End Table\n";
+}
+
+/// Emit one `KEY value` line of a Properties/ModelPartData/*Data body.
+void mdpa_write_kv(std::ostream& rOs, const PropertyValue& rValue, const char* pIndent) {
+    rOs << pIndent << rValue.mKey << " ";
+    if (rValue.IsText()) {
+        rOs << rValue.mText;
+    } else {
+        for (std::size_t i = 0; i < rValue.mValues.Size(); ++i) {
+            if (i)
+                rOs << " ";
+            rOs << mdpa_format_value(rValue.mValues, i);
+        }
+    }
+    rOs << "\n";
+}
+
 /// Emit one `Begin Properties <id>` block, bodies included.
 void mdpa_write_properties(std::ostream& rOs, const PropertySet& rSet) {
     rOs << "Begin Properties " << rSet.mId << "\n";
     for (const PropertyValue& v : rSet.mValues) {
-        if (v.mIsTable) {
-            // mKey holds the header's arguments verbatim (id + variable names),
-            // so the block comes back out exactly as it went in.
-            rOs << "  Begin Table " << v.mKey << "\n";
-            const std::size_t ncols = v.mValues.Shape().size() >= 2 ? v.mValues.Shape()[1] : 1;
-            const std::size_t nrows = ncols ? v.mValues.Size() / ncols : 0;
-            for (std::size_t r = 0; r < nrows; ++r) {
-                rOs << "   ";
-                for (std::size_t c = 0; c < ncols; ++c)
-                    rOs << " " << mdpa_format_value(v.mValues, r * ncols + c);
-                rOs << "\n";
-            }
-            rOs << "  End Table\n";
-            continue;
-        }
-        rOs << "  " << v.mKey << " ";
-        if (v.IsText()) {
-            rOs << v.mText;
-        } else {
-            for (std::size_t i = 0; i < v.mValues.Size(); ++i) {
-                if (i)
-                    rOs << " ";
-                rOs << mdpa_format_value(v.mValues, i);
-            }
-        }
-        rOs << "\n";
+        if (v.mIsTable)
+            mdpa_write_table(rOs, v, "  ");
+        else
+            mdpa_write_kv(rOs, v, "  ");
     }
     rOs << "End Properties\n\n";
+}
+
+/// Emit an id list sub-block (`SubModelPartNodes`, `MeshElements`, ...), if non-empty.
+void mdpa_write_id_list(std::ostream& rOs, const char* pTag,
+                        const std::vector<std::int64_t>& rIds) {
+    if (rIds.empty())
+        return;
+    rOs << "    Begin " << pTag << "\n";
+    for (std::int64_t id : rIds)
+        rOs << "        " << id << "\n";
+    rOs << "    End " << pTag << "\n";
 }
 
 }  // namespace
@@ -93890,6 +95117,16 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         }
         os << "    " << name << " " << mdpa_format_value(a, 0) << "\n";
     }
+    for (const PropertyValue& r_v : rInfo.mModelPartData) {
+        if (rMesh.HasFieldData(r_v.mKey)) {
+            log::warn(
+                "mdpa: ModelPartData '{}' is both field_data and MdpaInfo text; the "
+                "field_data value is written",
+                r_v.mKey);
+            continue;
+        }
+        mdpa_write_kv(os, r_v, "    ");
+    }
     os << "End ModelPartData\n\n";
 
     // ---- Properties -------------------------------------------------------
@@ -93933,6 +95170,12 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             referenced_ids.insert(0);
         for (std::int64_t id : referenced_ids)
             os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    }
+
+    // ---- Tables -----------------------------------------------------------
+    for (const PropertyValue& r_table : rInfo.mTables) {
+        mdpa_write_table(os, r_table, "");
+        os << "\n";
     }
 
     // ---- Nodes ------------------------------------------------------------
@@ -94000,8 +95243,41 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         os << "End " << kind << "\n\n";
     }
 
-    // ---- NodalData --------------------------------------------------------
+    // ---- Geometries -------------------------------------------------------
     const std::size_t np = rMesh.NumPoints();
+    std::int64_t next_geometry = 1;
+    for (const MdpaGeometryBlock& r_geo : rInfo.mGeometries) {
+        const CellType type = cell_type_from_name(r_geo.mType);
+        if (type == CellType::Custom)
+            throw WriteError("MDPA: geometry block of unknown cell type '" + r_geo.mType + "'");
+        const std::size_t k = r_geo.mConn.Shape().size() == 2 ? r_geo.mConn.Shape()[1] : 0;
+        if (static_cast<int>(k) != cell_type_num_nodes(type))
+            throw WriteError("MDPA: geometry block '" + r_geo.mType + "' has " + std::to_string(k) +
+                             " nodes per row");
+        const std::size_t rows = r_geo.mConn.Size() / k;
+        const bool keep_ids = r_geo.mIds.size() == rows;
+        if (!keep_ids && !r_geo.mIds.empty())
+            log::warn("mdpa: geometry block '{}' has {} ids for {} rows; renumbering", r_geo.mType,
+                      r_geo.mIds.size(), rows);
+        const std::vector<int>& order = mdpa_kratos_node_order(type);
+        os << "Begin Geometries "
+           << (r_geo.mName.empty() ? kratos_geometry_name(type) : r_geo.mName) << "\n";
+        for (std::size_t r = 0; r < rows; ++r) {
+            os << "  " << (keep_ids ? r_geo.mIds[r] : next_geometry++);
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                const std::int64_t row = detail::read_int(r_geo.mConn, r * k + slot);
+                if (row < 0 || static_cast<std::size_t>(row) >= np)
+                    throw WriteError("MDPA: geometry row names point " + std::to_string(row) +
+                                     " of a mesh with " + std::to_string(np) + " points");
+                os << " " << written_node_ids[static_cast<std::size_t>(row)];
+            }
+            os << "\n";
+        }
+        os << "End Geometries\n\n";
+    }
+
+    // ---- NodalData --------------------------------------------------------
     for (const auto& name : rMesh.PointDataNames()) {
         if (mdpa_skip_point_data(name))
             continue;
@@ -94066,6 +95342,25 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     }
 
     // ---- SubModelParts from named regions ---------------------------------
+    // The info's data/tables go inside the part of the same name; a part with
+    // data but no region left (an operation may have dropped it) is still
+    // written, so the data is not lost.
+    std::unordered_map<std::string, const MdpaSubModelPart*> smp_extras;
+    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts)
+        smp_extras.emplace(r_smp.mName, &r_smp);
+    auto write_smp_extras = [&](const std::string& rName) {
+        const auto it = smp_extras.find(rName);
+        if (it == smp_extras.end())
+            return;
+        if (!it->second->mData.empty()) {
+            os << "    Begin SubModelPartData\n";
+            for (const PropertyValue& r_v : it->second->mData)
+                mdpa_write_kv(os, r_v, "        ");
+            os << "    End SubModelPartData\n";
+        }
+        mdpa_write_id_list(os, "SubModelPartTables", it->second->mTables);
+        smp_extras.erase(it);
+    };
     for (const auto& name : rMesh.RegionNames()) {
         std::vector<std::int64_t> nodes;
         std::vector<std::int64_t> elements, conditions;
@@ -94106,19 +95401,49 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         if (!any)
             continue;
         os << "Begin SubModelPart " << name << "\n";
-        auto emit = [&](const char* pTag, const std::vector<std::int64_t>& rIds) {
-            if (rIds.empty())
-                return;
-            os << "    Begin SubModelPart" << pTag << "\n";
-            for (std::int64_t id : rIds)
-                os << "        " << id << "\n";
-            os << "    End SubModelPart" << pTag << "\n";
-        };
-        emit("Nodes", nodes);
-        emit("Elements", elements);
-        emit("Conditions", conditions);
+        write_smp_extras(name);
+        mdpa_write_id_list(os, "SubModelPartNodes", nodes);
+        mdpa_write_id_list(os, "SubModelPartElements", elements);
+        mdpa_write_id_list(os, "SubModelPartConditions", conditions);
         os << "End SubModelPart\n\n";
     }
+    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts) {
+        if (!smp_extras.count(r_smp.mName))
+            continue;
+        os << "Begin SubModelPart " << r_smp.mName << "\n";
+        write_smp_extras(r_smp.mName);
+        os << "End SubModelPart\n\n";
+    }
+
+    // ---- Mesh blocks ------------------------------------------------------
+    // Nodes go through the written numbering; element and condition members
+    // are the file's own ids, written verbatim (the Python reference's rule).
+    for (const MdpaMeshBlock& r_mb : rInfo.mMeshBlocks) {
+        os << "Begin Mesh " << r_mb.mId << "\n";
+        if (!r_mb.mData.empty()) {
+            os << "    Begin MeshData\n";
+            for (const PropertyValue& r_v : r_mb.mData)
+                mdpa_write_kv(os, r_v, "        ");
+            os << "    End MeshData\n";
+        }
+        std::vector<std::int64_t> node_ids;
+        node_ids.reserve(r_mb.mNodes.size());
+        for (std::int64_t row : r_mb.mNodes) {
+            if (row < 0 || static_cast<std::size_t>(row) >= np)
+                throw WriteError("MDPA: Mesh " + std::to_string(r_mb.mId) + " names point " +
+                                 std::to_string(row) + " of a mesh with " + std::to_string(np) +
+                                 " points");
+            node_ids.push_back(written_node_ids[static_cast<std::size_t>(row)]);
+        }
+        mdpa_write_id_list(os, "MeshNodes", node_ids);
+        mdpa_write_id_list(os, "MeshElements", r_mb.mElementIds);
+        mdpa_write_id_list(os, "MeshConditions", r_mb.mConditionIds);
+        os << "End Mesh\n\n";
+    }
+
+    // ---- Raw blocks, verbatim ---------------------------------------------
+    for (const MdpaRawBlock& r_raw : rInfo.mRawBlocks)
+        os << r_raw.mHeader << "\n" << r_raw.mBody << r_raw.mEnd << "\n\n";
 }
 
 }  // namespace meshioplusplus
@@ -127655,10 +128980,35 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<PolyData>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
-    if (rMesh.NumFieldData() != 0) {
+    // Named regions ride here too (detail/region_field_data.hpp), their cells
+    // numbered in the file's (Verts, Lines, Polys) order.
+    std::vector<std::int64_t> global_to_file;
+    if (rMesh.NumRegions() != 0) {
+        std::vector<std::int64_t> bases(nblocks + 1, 0);
+        for (std::size_t bi = 0; bi < nblocks; ++bi)
+            bases[bi + 1] = bases[bi] + static_cast<std::int64_t>(rMesh.Cells(bi).NumCells());
+        global_to_file.assign(static_cast<std::size_t>(bases[nblocks]), -1);
+        std::int64_t next_file = 0;
+        for (std::size_t bi : block_order)
+            for (std::int64_t g = bases[bi]; g < bases[bi + 1]; ++g)
+                global_to_file[static_cast<std::size_t>(g)] = next_file++;
+    }
+    const std::vector<std::pair<std::string, NDArray>> region_arrays =
+        detail::regions_to_field_arrays(rMesh, &global_to_file);
+    std::vector<std::pair<std::string, const NDArray*>> field_arrays;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        if (detail::is_region_field_name(name)) {
+            log::warn("vtp: field_data '{}' uses the region naming convention; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+    }
+    for (const auto& [name, arr] : region_arrays)
+        field_arrays.emplace_back(name, &arr);
+    if (!field_arrays.empty()) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames())
-            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
+        for (const auto& [name, p_arr] : field_arrays)
+            detail::vtu_write_field_array(os, name, *p_arr, binary,
                                           binary ? codec : detail::VtkCodec::None, hsz);
         os << "</FieldData>\n";
     }
@@ -127908,10 +129258,12 @@ bool vtp_is_numeric_type(const std::string& rType) {
  * used to succeed by ignoring the whole section.
  */
 void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
-                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+                         std::size_t HeaderSize, const ReadOptions& rOpts, bool WantData,
+                         std::vector<std::pair<std::string, NDArray>>& rOut) {
     for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
+        // Region arrays are topology, not data (detail/region_field_data.hpp).
+        if (!detail::is_region_field_name(name) && (!WantData || !rOpts.WantsArray(name)))
             continue;
         if (!vtp_is_numeric_type(da.attribute("type").as_string())) {
             log::warn(
@@ -127924,7 +129276,7 @@ void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
         NDArray arr = vtp_read_data_array(da, Codec, HeaderSize, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-        rMesh.AddFieldData(name, std::move(arr));
+        rOut.emplace_back(name, std::move(arr));
     }
 }
 
@@ -127939,7 +129291,8 @@ std::vector<std::string> vtp_field_data_names(const vtp_header& rHeader) {
     std::vector<std::string> names;
     for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
         for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-            if (vtp_is_numeric_type(da.attribute("type").as_string()))
+            if (vtp_is_numeric_type(da.attribute("type").as_string()) &&
+                !detail::is_region_field_name(da.attribute("Name").as_string()))
                 names.emplace_back(da.attribute("Name").as_string());
     std::sort(names.begin(), names.end());
     names.erase(std::unique(names.begin(), names.end()), names.end());
@@ -128036,10 +129389,9 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
-    if (want_data) {
-        vtp_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
-        vtp_read_field_data(piece, codec, hsz, rOpts, mesh);
-    }
+    std::vector<std::pair<std::string, NDArray>> field_arrays;
+    vtp_read_field_data(h.mGrid, codec, hsz, rOpts, want_data, field_arrays);
+    vtp_read_field_data(piece, codec, hsz, rOpts, want_data, field_arrays);
 
     VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
     VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
@@ -128058,7 +129410,11 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     vtp_build_types(polys, 2, conn, offsets, types);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
+    static const std::vector<std::int64_t> kNoFaceOffsets;
+    std::vector<std::int64_t> file_to_global;
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, nullptr, kNoFaceOffsets,
+                              mesh, &file_to_global);
+    detail::regions_from_field_arrays(mesh, field_arrays, &file_to_global, "vtp");
     return mesh;
 }
 
@@ -128104,6 +129460,14 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
     meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
     meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
     meta.mFieldDataNames = vtp_field_data_names(h);
+    {
+        std::vector<std::pair<std::string, std::size_t>> arrays;
+        for (const pugi::xml_node& rNode : {h.mGrid, h.mPiece})
+            for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+                arrays.emplace_back(da.attribute("Name").as_string(),
+                                    da.attribute("NumberOfTuples").as_ullong(0));
+        meta.mRegions = detail::region_summaries_from_field_names(arrays);
+    }
 
     // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
     meta.mHasBBox = false;
@@ -128955,10 +130319,24 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<UnstructuredGrid>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
-    if (rMesh.NumFieldData() != 0) {
+    // Named regions ride here too (detail/region_field_data.hpp); a VTU's file
+    // cell order is block-major, so no cell translation is needed.
+    const std::vector<std::pair<std::string, NDArray>> region_arrays =
+        detail::regions_to_field_arrays(rMesh, nullptr);
+    std::vector<std::pair<std::string, const NDArray*>> field_arrays;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        if (detail::is_region_field_name(name)) {
+            log::warn("vtu: field_data '{}' uses the region naming convention; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+    }
+    for (const auto& [name, arr] : region_arrays)
+        field_arrays.emplace_back(name, &arr);
+    if (!field_arrays.empty()) {
         os << "<FieldData>\n";
-        for (const auto& name : rMesh.FieldDataNames()) {
-            const NDArray& arr = rMesh.FieldData(name);
+        for (const auto& [name, p_arr] : field_arrays) {
+            const NDArray& arr = *p_arr;
             if (!Appended) {
                 detail::vtu_write_field_array(os, name, arr, binary,
                                               binary ? codec : detail::VtkCodec::None, hsz);
@@ -129651,10 +131029,13 @@ bool vtu_is_numeric_type(const std::string& rType) {
  * used to succeed by ignoring the whole section.
  */
 void vtu_read_field_data(const pugi::xml_node& rNode, const VtuContext& rCtx,
-                         const ReadOptions& rOpts, Mesh& rMesh) {
+                         const ReadOptions& rOpts, bool WantData,
+                         std::vector<std::pair<std::string, NDArray>>& rOut) {
     for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
+        // Region arrays are topology, not data: read whatever the options
+        // narrow (detail/region_field_data.hpp).
+        if (!detail::is_region_field_name(name) && (!WantData || !rOpts.WantsArray(name)))
             continue;
         if (!vtu_is_numeric_type(da.attribute("type").as_string())) {
             log::warn(
@@ -129667,7 +131048,7 @@ void vtu_read_field_data(const pugi::xml_node& rNode, const VtuContext& rCtx,
         NDArray arr = vtu_read_data_array(da, rCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-        rMesh.AddFieldData(name, std::move(arr));
+        rOut.emplace_back(name, std::move(arr));
     }
 }
 
@@ -129684,7 +131065,8 @@ std::vector<std::string> vtu_field_data_names(const vtu_header& rHeader) {
     std::vector<std::string> names;
     for (const pugi::xml_node& rNode : nodes)
         for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-            if (vtu_is_numeric_type(da.attribute("type").as_string()))
+            if (vtu_is_numeric_type(da.attribute("type").as_string()) &&
+                !detail::is_region_field_name(da.attribute("Name").as_string()))
                 names.emplace_back(da.attribute("Name").as_string());
     std::sort(names.begin(), names.end());
     names.erase(std::unique(names.begin(), names.end()), names.end());
@@ -129843,15 +131225,17 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         cell_data_raw.emplace(rName, std::move(rArr));
     });
 
-    if (want_data) {
-        vtu_read_field_data(h.mGrid, ctx, rOpts, mesh);
-        for (const pugi::xml_node& rPiece : h.mPieces)
-            vtu_read_field_data(rPiece, ctx, rOpts, mesh);
-    }
+    std::vector<std::pair<std::string, NDArray>> field_arrays;
+    vtu_read_field_data(h.mGrid, ctx, rOpts, want_data, field_arrays);
+    for (const pugi::xml_node& rPiece : h.mPieces)
+        vtu_read_field_data(rPiece, ctx, rOpts, want_data, field_arrays);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
+    std::vector<std::int64_t> file_to_global;
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
-                              faces.empty() ? nullptr : &faces, face_offsets, mesh);
+                              faces.empty() ? nullptr : &faces, face_offsets, mesh,
+                              &file_to_global);
+    detail::regions_from_field_arrays(mesh, field_arrays, &file_to_global, "vtu");
     return mesh;
 }
 
@@ -129906,6 +131290,14 @@ MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
     meta.mPointDataNames = vtu_array_names(h.mPieces, "PointData");
     meta.mCellDataNames = vtu_array_names(h.mPieces, "CellData");
     meta.mFieldDataNames = vtu_field_data_names(h);
+    {
+        std::vector<std::pair<std::string, std::size_t>> arrays;
+        for (const pugi::xml_node& rNode : {h.mGrid, h.mPieces[0]})
+            for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+                arrays.emplace_back(da.attribute("Name").as_string(),
+                                    da.attribute("NumberOfTuples").as_ullong(0));
+        meta.mRegions = detail::region_summaries_from_field_names(arrays);
+    }
 
     // No bounding box: it would require decoding the point coordinates, which
     // are usually the largest array in the file -- exactly what this path exists
@@ -131142,6 +132534,116 @@ double xdmf_step_time(const pugi::xml_node& rStep) {
     return t ? t.attribute("Value").as_double(0.0) : 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// <Set> <-> regions (v16.27.0)
+//
+// SetType Node -> a Point region, Cell -> a Cell region, Face/Edge -> a Side
+// region: the first DataItem holds the cell indices and the second the
+// cell-local face or edge indices (the XDMF model's own layout), numbered as
+// meshio++ numbers facets (`cell_faces`/`cell_edges`, doc/regions.md). The
+// region's dim and tag ride in `<Information Name="meshio++:dim|tag">`.
+// ---------------------------------------------------------------------------
+
+std::vector<std::int64_t> xdmf_int_values(const NDArray& rArr) {
+    std::vector<std::int64_t> out(rArr.Size());
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = detail::read_int(rArr, i);
+    return out;
+}
+
+/// The `<Set>`'s region kind, or false for a SetType this reader skips.
+bool xdmf_set_kind(const std::string& rSetType, RegionKind& rKind) {
+    if (rSetType == "Node")
+        rKind = RegionKind::Point;
+    else if (rSetType == "Cell")
+        rKind = RegionKind::Cell;
+    else if (rSetType == "Face" || rSetType == "Edge")
+        rKind = RegionKind::Side;
+    else
+        return false;
+    return true;
+}
+
+void xdmf_set_dim_tag(const pugi::xml_node& rSet, int& rDim, std::int64_t& rTag) {
+    for (pugi::xml_node info : rSet.children("Information")) {
+        const std::string name = info.attribute("Name").value();
+        if (name == "meshio++:dim")
+            rDim = info.attribute("Value").as_int(-1);
+        else if (name == "meshio++:tag")
+            rTag = info.attribute("Value").as_llong(-1);
+    }
+}
+
+/// An empty `<DataItem>` (`Dimensions="0"`) has no payload to read.
+bool xdmf_empty_item(const pugi::xml_node& rDi) {
+    return std::string(rDi.attribute("Dimensions").value()) == "0";
+}
+
+/// Read one `<Set>` into @p rRegions, merging a name already met (a Side
+/// region written as a Face and an Edge set is one region).
+void xdmf_read_set(const pugi::xml_node& rSet, const fs::path& rBaseDir,
+                   std::vector<Region>& rRegions) {
+    const std::string name = rSet.attribute("Name").value();
+    const std::string set_type = rSet.attribute("SetType").value();
+    RegionKind kind{};
+    if (!xdmf_set_kind(set_type, kind)) {
+        log::warn("xdmf: skipping set '{}' of SetType '{}'", name, set_type);
+        return;
+    }
+    int dim = -1;
+    std::int64_t tag = -1;
+    xdmf_set_dim_tag(rSet, dim, tag);
+    std::vector<pugi::xml_node> items;
+    for (pugi::xml_node di : rSet.children("DataItem"))
+        items.push_back(di);
+    if (rSet.child("Attribute"))
+        log::warn("xdmf: set '{}' carries attributes, which are not read", name);
+    const std::size_t need = kind == RegionKind::Side ? 2 : 1;
+    if (items.size() < need)
+        throw ReadError("XDMF: set '" + name + "' of SetType '" + set_type + "' needs " +
+                        std::to_string(need) + " DataItem(s)");
+    std::vector<std::int64_t> flat;
+    if (!xdmf_empty_item(items[0])) {
+        const std::vector<std::int64_t> ids = xdmf_int_values(read_data_item(items[0], rBaseDir));
+        if (kind != RegionKind::Side) {
+            flat = ids;
+        } else {
+            const std::vector<std::int64_t> local =
+                xdmf_int_values(read_data_item(items[1], rBaseDir));
+            if (local.size() != ids.size())
+                throw ReadError("XDMF: set '" + name + "' has " + std::to_string(ids.size()) +
+                                " cells but " + std::to_string(local.size()) +
+                                " local face/edge indices");
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                flat.push_back(ids[i]);
+                flat.push_back(local[i]);
+            }
+        }
+    }
+    for (Region& r_region : rRegions)
+        if (r_region.mName == name && r_region.mKind == kind) {
+            std::vector<std::int64_t> merged = xdmf_int_values(r_region.mEntries);
+            merged.insert(merged.end(), flat.begin(), flat.end());
+            flat = std::move(merged);
+            r_region = Region(name, kind, r_region.mDim, r_region.mTag, NDArray());
+            break;
+        }
+    const std::size_t stride = kind == RegionKind::Side ? 2 : 1;
+    NDArray entries = stride == 1 ? NDArray(DType::Int64, {flat.size()})
+                                  : NDArray(DType::Int64, {flat.size() / 2, 2});
+    std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+    for (Region& r_region : rRegions)
+        if (r_region.mName == name && r_region.mKind == kind) {
+            r_region.mEntries = std::move(entries);
+            return;
+        }
+    rRegions.emplace_back(name, kind, dim, tag, std::move(entries));
+}
+
+void xdmf_attach_regions(Mesh& rMesh, std::vector<Region>& rRegions) {
+    for (Region& r_region : rRegions)
+        rMesh.AddRegion(std::move(r_region));
+}
 }  // namespace
 
 Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
@@ -131162,6 +132664,10 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
         // Temporal collection: the geometry lives once in the mesh grid and the
         // requested step's <Grid> carries that step's attributes.
         xdmf_read_geometry(parsed.mMeshGrid, base_dir, mesh);
+        std::vector<Region> regions;
+        for (pugi::xml_node set : parsed.mMeshGrid.children("Set"))
+            xdmf_read_set(set, base_dir, regions);
+        xdmf_attach_regions(mesh, regions);
         const std::size_t k = rOpts.ResolveTimeStep(parsed.mSteps.size());
         for (pugi::xml_node c : parsed.mSteps[k].children()) {
             if (std::string(c.name()) != "Attribute")
@@ -131183,6 +132689,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
     }
 
     pugi::xml_node grid = parsed.mMeshGrid;
+    std::vector<Region> regions;
     for (pugi::xml_node c : grid.children()) {
         std::string tag = c.name();
         if (tag == "Topology") {
@@ -131214,6 +132721,8 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
                 cell_data_raw.emplace_back(name, std::move(data));
             else
                 throw ReadError("XDMF: unknown attribute center " + center);
+        } else if (tag == "Set") {
+            xdmf_read_set(c, base_dir, regions);
         } else if (tag == "Information") {
             // field_data not handled by the C++ core
             throw ReadError("XDMF: Information section handled by Python fallback");
@@ -131224,6 +132733,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
 
     // Split raw cell data into per-block arrays (cell_data_from_raw).
     xdmf_attach_data(mesh, point_data, cell_data_raw);
+    xdmf_attach_regions(mesh, regions);
 
     return mesh;
 }
@@ -131279,7 +132789,7 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                 parse_dims(c.child("DataItem").attribute("Dimensions").value());
             meta.mNumPoints = dims.empty() ? 0 : dims[0];
             meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
-        } else if (!parsed.mSteps.empty()) {
+        } else if (!parsed.mSteps.empty() && tag != "Set") {
             // In a temporal file the mesh grid contributes geometry only; its
             // attributes (if it doubles as step 0) were already taken above, and
             // <Time>/xi:include are not sections this reader has to understand.
@@ -131293,6 +132803,27 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                 meta.mCellDataNames.push_back(name);
             else
                 throw ReadError("XDMF: unknown attribute center " + center);
+        } else if (tag == "Set") {
+            // Counted from the first DataItem's declared Dimensions; a Side
+            // region written as a Face and an Edge set is one region.
+            RegionKind kind{};
+            if (!xdmf_set_kind(c.attribute("SetType").value(), kind))
+                continue;
+            RegionSummary rs;
+            rs.mName = c.attribute("Name").value();
+            rs.mKind = kind;
+            xdmf_set_dim_tag(c, rs.mDim, rs.mTag);
+            const std::vector<std::size_t> dims =
+                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            rs.mNumEntries = dims.empty() ? 0 : dims[0];
+            bool merged = false;
+            for (RegionSummary& r_prev : meta.mRegions)
+                if (r_prev.mName == rs.mName && r_prev.mKind == rs.mKind) {
+                    r_prev.mNumEntries += rs.mNumEntries;
+                    merged = true;
+                }
+            if (!merged)
+                meta.mRegions.push_back(std::move(rs));
         } else if (tag == "Information") {
             throw ReadError("XDMF: Information section handled by Python fallback");
         } else {
@@ -131323,6 +132854,78 @@ void xdmf_add_data_item(pugi::xml_node parent, xdmfcommon::DataItemStore& rStore
     di.append_attribute("Format") = rStore.DataFormat().c_str();
     di.append_attribute("Precision") = prec;
     di.text().set(rStore.Store(rArr).c_str());
+}
+
+/// One Int64 `<DataItem>`, or an empty one (`Dimensions="0"`) with no payload.
+void xdmf_add_ids(pugi::xml_node parent, xdmfcommon::DataItemStore& rStore,
+                  const std::vector<std::int64_t>& rIds) {
+    if (rIds.empty()) {
+        pugi::xml_node di = parent.append_child("DataItem");
+        di.append_attribute("DataType") = "Int";
+        di.append_attribute("Dimensions") = "0";
+        di.append_attribute("Format") = "XML";
+        di.append_attribute("Precision") = "8";
+        return;
+    }
+    NDArray a(DType::Int64, {rIds.size()});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    xdmf_add_data_item(parent, rStore, a);
+}
+
+void xdmf_write_set(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Region& rRegion,
+                    const char* pSetType, const std::vector<std::int64_t>& rIds,
+                    const std::vector<std::int64_t>* pLocal) {
+    pugi::xml_node set = grid.append_child("Set");
+    set.append_attribute("Name") = rRegion.mName.c_str();
+    set.append_attribute("SetType") = pSetType;
+    if (rRegion.mDim != -1) {
+        pugi::xml_node info = set.append_child("Information");
+        info.append_attribute("Name") = "meshio++:dim";
+        info.append_attribute("Value") = std::to_string(rRegion.mDim).c_str();
+    }
+    if (rRegion.mTag != -1) {
+        pugi::xml_node info = set.append_child("Information");
+        info.append_attribute("Name") = "meshio++:tag";
+        info.append_attribute("Value") = std::to_string(rRegion.mTag).c_str();
+    }
+    xdmf_add_ids(set, rStore, rIds);
+    if (pLocal)
+        xdmf_add_ids(set, rStore, *pLocal);
+}
+
+void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_region = rMesh.Region(i);
+        const std::int64_t* e = r_region.Entries();
+        const std::size_t n = r_region.NumEntries();
+        if (r_region.mKind != RegionKind::Side) {
+            xdmf_write_set(grid, rStore, r_region,
+                           r_region.mKind == RegionKind::Point ? "Node" : "Cell",
+                           std::vector<std::int64_t>(e, e + n), nullptr);
+            continue;
+        }
+        // A facet of a 3-D cell is a face, of a 2-D one an edge: split by the
+        // owning cell's dimension, one set each (the reader merges them).
+        std::vector<std::int64_t> face_cells, face_local, edge_cells, edge_local;
+        for (std::size_t k = 0; k < n; ++k) {
+            const auto [b, row] = detail::global_to_block_row(bases, e[2 * k]);
+            (void)row;
+            int dim = 3;
+            if (b != static_cast<std::size_t>(-1)) {
+                const auto cb = rMesh.Cells(b);
+                dim = cb.IsPolyhedron()
+                          ? 3
+                          : cell_type_dimension(cell_type_from_name(std::string(cb.Type())));
+            }
+            (dim == 2 ? edge_cells : face_cells).push_back(e[2 * k]);
+            (dim == 2 ? edge_local : face_local).push_back(e[2 * k + 1]);
+        }
+        if (!face_cells.empty() || edge_cells.empty())
+            xdmf_write_set(grid, rStore, r_region, "Face", face_cells, &face_local);
+        if (!edge_cells.empty())
+            xdmf_write_set(grid, rStore, r_region, "Edge", edge_cells, &edge_local);
+    }
 }
 
 }  // namespace
@@ -131400,6 +133003,9 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
         att.append_attribute("Center") = "Cell";
         xdmf_add_data_item(att, store, raw);
     }
+
+    // Regions as <Set>s (see "<Set> <-> regions" above).
+    xdmf_write_sets(grid, store, rMesh);
 
     if (!doc.save_file(rPath.c_str(), "  "))
         throw WriteError("XDMF: could not write " + rPath);
@@ -138022,9 +139628,9 @@ namespace {
 
 // Carry the input's named regions onto the output. The cell map is FirstChild:
 // a parent's children occupy a contiguous run, which is also correct for the
-// 1:1 modes (their maps are the monotone identity). Side regions are dropped —
-// a child cell is a new cell of a subdivided or different topology, so its
-// facets have no correspondence with the parent's. See detail/region_remap.hpp.
+// 1:1 modes (their maps are the monotone identity). A side facet moves to the
+// child facets lying within it, or -- linearize/elevate -- to the retyped
+// cell's facet containing it. See detail/region_remap.hpp.
 void ccells_carry_regions(const Mesh& rIn, ConvertCellsResult& rRes) {
     detail::RegionRemap rmap;
     rmap.pPointMap = &rRes.mPointMap;
@@ -141247,9 +142853,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
     // Named regions. The cell map is FirstChild — an input quad/polygon becomes
     // a contiguous run of triangles, and a fully-collapsed parent maps to -1,
-    // which the run scan steps over. Side regions are dropped: the output is
-    // all-triangle, so an input facet has no counterpart. See
-    // detail/region_remap.hpp.
+    // which the run scan steps over. A side edge moves to the triangle edge
+    // joining its surviving nodes; one a collapse removed is lost, with a
+    // warning. See detail/region_remap.hpp.
     {
         detail::RegionRemap rmap;
         rmap.pPointMap = &result.mPointMap;
@@ -152087,9 +153693,8 @@ namespace {
 
 // Carry the input's named regions onto the output. The cell map is FirstChild:
 // a parent's children occupy a contiguous run -- of length 1 for a cell the
-// selection left untouched, which is still a run and still non-negative. Side
-// regions are dropped: a child cell is a new cell of a subdivided topology, so
-// its facets have no correspondence with the parent's. See
+// selection left untouched, which is still a run and still non-negative. A
+// side facet moves to the child facets lying within it. See
 // detail/region_remap.hpp.
 void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
     detail::RegionRemap rmap;
@@ -155997,8 +157602,8 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
     }
 
     // Regions: FirstChild through the triangulation, points through the weld
-    // map; Side regions drop by name. Then a split copy joins its source's
-    // Point regions.
+    // map; a Side edge moves to the triangle edge it became. Then a split copy
+    // joins its source's Point regions.
     {
         detail::RegionRemap rmap;
         rmap.pPointMap = &result.mPointMap;
@@ -161514,6 +163119,11 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     // those go to a ragged `polygon` block emitted alongside the fixed ones.
     std::vector<std::vector<std::int64_t>> poly_rows;
     std::vector<std::int64_t> poly_parent;
+    // Each output facet's (input cell, facet slot), in output order, for the
+    // region carry -- the slot is the Side numbering (cell_faces/cell_edges
+    // order, a polyhedron's face index).
+    std::vector<std::vector<std::array<std::int64_t, 2>>> out_source(num_out);
+    std::vector<std::array<std::int64_t, 2>> poly_source;
     for (std::size_t ri = 0; ri < recs.size(); ++ri) {
         const SurfaceFacetRecord& r = recs[ri];
         if (face_count[ri] != 1)
@@ -161531,10 +163141,12 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
                     dst.push_back(face.first[k]);
                 if (recordParentIds)
                     out_parent[bucket].push_back(r.mParent);
+                out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
             } else {
                 poly_rows.emplace_back(face.first, face.first + face.second);
                 if (recordParentIds)
                     poly_parent.push_back(r.mParent);
+                poly_source.push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
             }
             continue;
         }
@@ -161551,6 +163163,7 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
             dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
         if (recordParentIds)
             out_parent[bucket].push_back(r.mParent);
+        out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
     }
 
     // --- compaction: keep only referenced points, ascending original index ---
@@ -161637,11 +163250,23 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         surface.AddPointData(name, std::move(b));
     }
 
-    // The extracted facets are newly created cells one dimension below the
-    // input's, so no named region can be carried across. Say so rather than
-    // dropping them silently; `record_parent_ids` is the escape hatch for a
-    // caller that wants to rebuild a group itself.
-    detail::warn_regions_dropped(rMesh, pOpName ? pOpName : "extract_surface");
+    // Regions: a Side region names exactly the facets extracted here, so it
+    // becomes a Cell region of the surface; Point regions follow the
+    // compaction; Cell regions name volume cells the surface does not hold.
+    if (rMesh.NumRegions() > 0) {
+        std::vector<std::int64_t> src_cell, src_facet;
+        for (std::size_t t = 0; t < num_out; ++t)
+            for (const auto& r_src : out_source[t]) {
+                src_cell.push_back(r_src[0]);
+                src_facet.push_back(r_src[1]);
+            }
+        for (const auto& r_src : poly_source) {
+            src_cell.push_back(r_src[0]);
+            src_facet.push_back(r_src[1]);
+        }
+        detail::carry_regions_to_facet_mesh(rMesh, surface, src_cell, src_facet, remap,
+                                            pOpName ? pOpName : "extract_surface");
+    }
 
     return surface;
 }
@@ -162662,7 +164287,6 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     detail::RegionRemap rmap;
     rmap.mCellMapKind = detail::CellMapKind::Direct;
     rmap.pCellMaps = &res.mCellMaps;
-    rmap.mDropSideRegions = true;
     rmap.mOpName = "undo_green";
     detail::remap_regions(rFine, res.mMesh, rmap);
 

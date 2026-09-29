@@ -22,6 +22,13 @@ from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
+from .._region_field_data import (
+    FILE_INDEX_KEY,
+    file_to_global_from,
+    is_region_field_name,
+    regions_from_field_arrays,
+    regions_to_field_arrays,
+)
 from .._vtk_common import vtk_cells_from_data
 from ..vtu._vtu import numpy_to_vtu_type, vtu_to_numpy_type
 
@@ -193,25 +200,38 @@ def read(filename):
         type_parts.append(types)
         conn_base += conn.size
 
+    file_to_global = None
     if conn_parts:
         connectivity = np.concatenate(conn_parts)
         offsets = np.concatenate(offset_parts)
         types = np.concatenate(type_parts)
+        # The hidden file index follows the cells (see _region_field_data).
+        cell_data_raw[FILE_INDEX_KEY] = np.arange(len(types), dtype=np.int64)
         cells, cell_data = vtk_cells_from_data(
             connectivity, offsets, types, cell_data_raw
         )
+        file_to_global = file_to_global_from(cell_data)
     else:
         cells, cell_data = [], {}
 
     if points is None:
         points = np.empty((0, 3))
-    return Mesh(
+    regions, field_data = regions_from_field_arrays(
+        field_data,
+        len(points),
+        file_to_global if file_to_global is not None else np.empty(0, np.int64),
+        "vtp",
+    )
+    mesh = Mesh(
         points,
         cells,
         point_data=point_data,
         cell_data=cell_data,
         field_data=field_data,
     )
+    if regions:
+        mesh.regions = regions
+    return mesh
 
 
 def _chunk_it(array, n):
@@ -335,6 +355,11 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     # is skipped with a warning; the caller's mapping is never modified.
     field_arrays = {}
     for name in sorted(mesh.field_data):
+        if is_region_field_name(name):
+            warn(
+                f"VTP: field_data '{name}' uses the region naming convention; not written"
+            )
+            continue
         try:
             arr = np.asarray(mesh.field_data[name])
             arr = arr.astype(arr.dtype.newbyteorder("="), copy=False)
@@ -344,6 +369,19 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             warn(f"VTP: field_data '{name}' is not a numeric array; not written")
             continue
         field_arrays[name] = arr.reshape(arr.shape[0], -1) if arr.ndim > 2 else arr
+    # Named regions, their cells numbered in the file's (Verts, Lines, Polys) order.
+    if getattr(mesh, "regions", None):
+        sizes = [len(cb.data) for cb in mesh.cells]
+        bases = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+        global_to_file = np.empty(int(bases[-1]), dtype=np.int64)
+        next_file = 0
+        for bi in block_order:
+            n = sizes[bi]
+            global_to_file[bases[bi] : bases[bi] + n] = np.arange(
+                next_file, next_file + n
+            )
+            next_file += n
+        field_arrays.update(regions_to_field_arrays(mesh, global_to_file))
     if field_arrays:
         out.append("<FieldData>\n")
         for name, arr in field_arrays.items():

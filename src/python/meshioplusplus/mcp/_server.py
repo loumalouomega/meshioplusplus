@@ -1397,9 +1397,9 @@ def _register_operations(server: FastMCP) -> None:
         and what remains are both visible. Non-manifold EDGES (used by three or
         more triangles) are neither split nor crossed -- they are counted;
         nested cavities are not detected, so every closed component is
-        oriented outward on its own. Point and Cell regions survive (a split
-        copy joins its source's); Side regions are dropped, since a flip
-        permutes a triangle's edge numbering."""
+        oriented outward on its own. Point, Cell and Side regions survive (a
+        split copy joins its source's; an edge a flip renumbers is found again
+        by its nodes)."""
         return _guard(
             _tools.tool_repair,
             input_path=input_path,

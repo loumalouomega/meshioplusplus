@@ -168,7 +168,7 @@ def test_cpp_matches_python_with_no_green_groups():
 
 
 @pytest.mark.parametrize("engine", ["cpp", "python"])
-def test_regions_survive_the_non_injective_collapse_and_sides_do_not(engine):
+def test_regions_survive_the_non_injective_collapse(engine):
     if engine == "cpp" and _core is None:
         pytest.skip("needs the compiled C++ core")
     coarse = _tri_grid(3)
@@ -193,9 +193,14 @@ def test_regions_survive_the_non_injective_collapse_and_sides_do_not(engine):
     apex_out = next(r for r in undone.regions if r.name == "apex")
     assert apex_out.entries.tolist() == [0], "points are never renumbered"
 
-    assert not any(
-        r.name == "edge" for r in undone.regions
-    ), "named Side regions do not survive undo_green at all"
+    # Side regions survive too (v16.27.0), identically on both engines.
+    edge_out = next(r for r in undone.regions if r.name == "edge")
+    assert len(edge_out.entries) >= 1
+    if engine == "python" and _core is not None:
+        core_edge = next(
+            r for r in mp.undo_green(coarse, fine).regions if r.name == "edge"
+        )
+        np.testing.assert_array_equal(edge_out.entries, core_edge.entries)
 
 
 # --------------------------------------------------------------------------- #

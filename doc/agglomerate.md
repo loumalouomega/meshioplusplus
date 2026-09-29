@@ -60,7 +60,7 @@ assert after == before
 
 ## Regions
 
-Point and Cell regions survive: the carry uses `CellMapKind::Global`, a single flat map (input global cell → output global cell). Named **Side** regions do not survive with real entries: a merged cell's type is always `"polyhedron"`, which never matches an original cell's type name, so every Side entry is dropped — but the region is still *carried*, as a named empty group (the same "the name is information" convention every operation in this repo follows).
+Point and Cell regions survive: the carry uses `CellMapKind::Global`, a single flat map (input global cell → output global cell). Named **Side** regions survive too (since v16.27.0): a facet of a merged cell moves to the output polyhedron's face containing it, matched by its nodes. With `merge_coplanar_faces=True` that face may be the merged polygon, and several facets then name the same face. See [how operations treat regions](/regions#how-operations-treat-regions).
 
 There is no point map to request: `agglomerate` never prunes or renumbers an original point.
 

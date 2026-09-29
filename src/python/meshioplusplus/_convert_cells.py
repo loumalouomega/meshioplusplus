@@ -29,6 +29,7 @@ import numpy as np
 
 from ._fallback import core_op_declined
 from ._mesh import Mesh
+from ._side_carry import carry_side_regions, first_child_children
 
 # --------------------------------------------------------------------------- #
 # tables (Python twins of the ones in src/cpp/src/operations/convert_cells.cpp)    #
@@ -471,4 +472,11 @@ def convert_cells(
     # here would apply the maps twice. Only the numpy fallback needs it.
     if not used_cpp:
         _remap_sets(mesh, out, point_map, cell_maps)
+        carry_side_regions(
+            mesh,
+            out,
+            first_child_children(mesh, out, cell_maps),
+            point_map,
+            "convert_cells",
+        )
     return out

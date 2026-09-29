@@ -51,6 +51,11 @@ module meshioplusplus
 
     public :: mio_mesh
     public :: mio_xdmf_series
+    public :: mio_format_info
+    public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
+    public :: MIO_MDPA_MODEL_PART_DATA, MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES
+    public :: MIO_MDPA_MESH_BLOCKS, MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS
+    public :: MIO_MDPA_VALUE_NUMBER, MIO_MDPA_VALUE_TEXT, MIO_MDPA_VALUE_TABLE
     public :: mio_stats_report
     public :: mio_surface_quality
     public :: mio_grid
@@ -463,6 +468,16 @@ module meshioplusplus
     integer(c_int), parameter :: MIO_REGION_POINT = 0, MIO_REGION_CELL = 1
     integer(c_int), parameter :: MIO_REGION_SIDE = 2
 
+    ! MDPA side-channel sections and value kinds (must match the C enums
+    ! mio_mdpa_section / mio_mdpa_value_kind; see mio_format_info).
+    integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
+    integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
+    integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
+    integer(c_int), parameter :: MIO_MDPA_MESH_BLOCKS = 6, MIO_MDPA_SUBMODELPARTS = 7
+    integer(c_int), parameter :: MIO_MDPA_RAW_BLOCKS = 8
+    integer(c_int), parameter :: MIO_MDPA_VALUE_NUMBER = 0, MIO_MDPA_VALUE_TEXT = 1
+    integer(c_int), parameter :: MIO_MDPA_VALUE_TABLE = 2
+
     ! Description of one named region (bind(c); layout must match
     ! mio_region_info in meshioplusplus.h). The entries themselves come back
     ! from the `regions` procedure as a separate allocatable array.
@@ -727,6 +742,8 @@ module meshioplusplus
         procedure :: is_valid => mesh_is_valid
         procedure :: read => mesh_read
         procedure :: write => mesh_write
+        procedure :: read_with_info => mesh_read_with_info
+        procedure :: write_with_info => mesh_write_with_info
         ! -- operations --
         procedure :: extract_surface => mesh_extract_surface
         procedure :: extract_skin => mesh_extract_skin
@@ -916,6 +933,40 @@ module meshioplusplus
         procedure :: finalized => xdmf_series_finalized
         procedure :: num_steps => xdmf_series_num_steps
     end type mio_xdmf_series
+
+    !> A format's side channel: what `m%read_with_info` kept that a mesh
+    !> cannot hold (MDPA's tables, geometries, Mesh blocks, constraints, ...),
+    !> for `m%write_with_info` to put back. Freed explicitly, like `mio_mesh`.
+    !>
+    !>     type(mio_mesh) :: m
+    !>     type(mio_format_info) :: info
+    !>     call m%read_with_info('model.mdpa', info)
+    !>     print *, info%mdpa_count(MIO_MDPA_GEOMETRIES)
+    !>     call m%write_with_info('out.mdpa', info)
+    !>     call info%free(); call m%free()
+    !>
+    !> Items are 1-based. Point references (geometry connectivity, Mesh-block
+    !> nodes) come back 1-based; file ids (geometry, element, condition and
+    !> table ids) come back as the file spelled them.
+    type :: mio_format_info
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: free => format_info_free
+        procedure :: is_valid => format_info_is_valid
+        procedure :: format => format_info_format
+        procedure :: mdpa_count => format_info_mdpa_count
+        procedure :: mdpa_string => format_info_mdpa_string
+        procedure :: mdpa_int => format_info_mdpa_int
+        procedure :: mdpa_ids => format_info_mdpa_ids
+        procedure :: mdpa_table => format_info_mdpa_table
+        procedure :: mdpa_geometry => format_info_mdpa_geometry
+        procedure :: mdpa_data_count => format_info_mdpa_data_count
+        procedure :: mdpa_data_kind => format_info_mdpa_data_kind
+        procedure :: mdpa_data_key => format_info_mdpa_data_key
+        procedure :: mdpa_data_text => format_info_mdpa_data_text
+        procedure :: mdpa_data_values => format_info_mdpa_data_values
+    end type mio_format_info
 
     ! ------------------------------------------------------------------
     ! Raw bind(c) interfaces to libmeshioplusplus (private; the OO layer
@@ -2779,6 +2830,120 @@ module meshioplusplus
             import :: c_char
             character(kind=c_char), dimension(*), intent(in) :: fmt, enc, codec, ff
         end subroutine
+        ! -- format side channels (mio_format_info) --
+        function c_mio_read_with_info(path, format, opts, info) &
+                bind(c, name="mio_read_with_info") result(h)
+            import :: c_ptr, c_char
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr), value :: opts
+            type(c_ptr), intent(out) :: info
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_write_with_info(path, mesh, format, info) &
+                bind(c, name="mio_write_with_info") result(st)
+            import :: c_ptr, c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr), value :: mesh, info
+            integer(c_int) :: st
+        end function
+
+        function c_mio_format_info_format(info, buf, buflen) &
+                bind(c, name="mio_format_info_format") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: info
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        subroutine c_mio_format_info_free(info) bind(c, name="mio_format_info_free")
+            import :: c_ptr
+            type(c_ptr), value :: info
+        end subroutine
+
+        function c_mio_mdpa_info_count(info, section) &
+                bind(c, name="mio_mdpa_info_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mdpa_info_string(info, section, index, field, buf, buflen) &
+                bind(c, name="mio_mdpa_info_string") result(n)
+            import :: c_ptr, c_char, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mdpa_info_int(info, section, index, field, value) &
+                bind(c, name="mio_mdpa_info_int") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            integer(c_int64_t), intent(out) :: value
+            integer(c_int) :: st
+        end function
+
+        function c_mio_mdpa_info_array(info, section, index, field, data, dtype, ndim, shape) &
+                bind(c, name="mio_mdpa_info_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
+        end function
+
+        function c_mio_mdpa_info_data_count(info, section, index) &
+                bind(c, name="mio_mdpa_info_data_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t), value :: index
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mdpa_info_data_kind(info, section, index, entry) &
+                bind(c, name="mio_mdpa_info_data_kind") result(k)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t), value :: index, entry
+            integer(c_int32_t) :: k
+        end function
+
+        function c_mio_mdpa_info_data_string(info, section, index, entry, field, buf, buflen) &
+                bind(c, name="mio_mdpa_info_data_string") result(n)
+            import :: c_ptr, c_char, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index, entry, buflen
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mdpa_info_data_array(info, section, index, entry, data, dtype, ndim, &
+                                            shape) bind(c, name="mio_mdpa_info_data_array") &
+                result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t), value :: index, entry
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
+        end function
     end interface
 
 contains
@@ -7826,5 +7991,285 @@ contains
         if (present(float_format)) f = float_format
         call c_mio_provenance_set_target(c_str(format), c_str(e), c_str(c), c_str(f))
     end subroutine
+
+    ! ------------------------------------------------------------------
+    ! mio_format_info: format side channels (v16.27.0)
+    ! ------------------------------------------------------------------
+
+    !> Read a mesh keeping its format's side channel in `info` (currently MDPA's
+    !> tables, geometries, Mesh blocks, sub-model-part data and raw blocks).
+    !> A format without one reads as `m%read` and leaves `info` invalid.
+    subroutine mesh_read_with_info(self, path, info, format, lenient, stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        character(*), intent(in) :: path
+        class(mio_format_info), intent(inout) :: info
+        character(*), intent(in), optional :: format
+        !> Skip (with a warning) what not even the side channel holds.
+        logical, intent(in), optional :: lenient
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: fmt
+        type(mio_read_opts_t), target :: opts
+        type(c_ptr) :: h, ih
+        fmt = ''; if (present(format)) fmt = format
+        call c_mio_read_opts_init(opts)
+        if (present(lenient)) then
+            if (lenient) opts%lenient = 1
+        end if
+        h = c_mio_read_with_info(c_str(path), c_str(fmt), c_loc(opts), ih)
+        if (.not. c_associated(h)) then
+            call handle_failure('read_with_info', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call mesh_free(self)
+        self%handle = h
+        call format_info_free(info)
+        info%handle = ih
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Write a mesh restoring the side channel `info` came back with. An
+    !> invalid (empty) `info` writes exactly as `m%write`.
+    subroutine mesh_write_with_info(self, path, info, format, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: path
+        class(mio_format_info), intent(in) :: info
+        character(*), intent(in), optional :: format
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: fmt
+        fmt = ''; if (present(format)) fmt = format
+        call handle_status(c_mio_write_with_info(c_str(path), self%handle, c_str(fmt), &
+                                                 info%handle), 'write_with_info', stat, errmsg)
+    end subroutine
+
+    !> Release the side channel. Idempotent.
+    subroutine format_info_free(self)
+        class(mio_format_info), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_format_info_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    !> .true. when a read left a side channel here.
+    logical function format_info_is_valid(self)
+        class(mio_format_info), intent(in) :: self
+        format_info_is_valid = c_associated(self%handle)
+    end function
+
+    !> The side channel's format name ('mdpa'), or '' when invalid.
+    function format_info_format(self) result(name)
+        class(mio_format_info), intent(in) :: self
+        character(:), allocatable :: name
+        character(kind=c_char) :: buf(64)
+        integer(c_int64_t) :: n
+        name = ''
+        if (.not. c_associated(self%handle)) return
+        n = c_mio_format_info_format(self%handle, buf, 64_c_int64_t)
+        if (n > 0) name = from_c_buf(buf, int(min(n, 63_c_int64_t)))
+    end function
+
+    !> Number of items in an MDPA section (a MIO_MDPA_* value); -1 on error.
+    integer function format_info_mdpa_count(self, section)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section
+        format_info_mdpa_count = int(c_mio_mdpa_info_count(self%handle, int(section, c_int32_t)))
+    end function
+
+    !> String field `field` (0-based, per section: see meshioplusplus.h) of
+    !> item `index` (1-based). '' on error.
+    function format_info_mdpa_string(self, section, index, field) result(str)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        character(:), allocatable :: str
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        str = ''
+        allocate (buf(1))
+        n = c_mio_mdpa_info_string(self%handle, int(section, c_int32_t), &
+                                   int(index - 1, c_int64_t), int(field, c_int32_t), buf, &
+                                   0_c_int64_t)
+        if (n <= 0) return
+        deallocate (buf)
+        allocate (buf(n + 1))
+        n = c_mio_mdpa_info_string(self%handle, int(section, c_int32_t), &
+                                   int(index - 1, c_int64_t), int(field, c_int32_t), buf, n + 1)
+        str = from_c_buf(buf, int(n))
+    end function
+
+    !> Integer field `field` of item `index` (1-based): a Properties or Mesh
+    !> id, or 1 for a Conditions entity-name entry.
+    function format_info_mdpa_int(self, section, index, field, stat, errmsg) result(v)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: v
+        integer(c_int64_t) :: cv
+        cv = 0
+        call handle_status(c_mio_mdpa_info_int(self%handle, int(section, c_int32_t), &
+                                               int(index - 1, c_int64_t), int(field, c_int32_t), &
+                                               cv), 'mdpa_int', stat, errmsg)
+        v = int(cv, int64)
+    end function
+
+    !> An id list of item `index` (1-based): geometry ids (GEOMETRIES field 1),
+    !> Mesh-block nodes (MESH_BLOCKS field 0, 1-based points) / element ids (1)
+    !> / condition ids (2), or table ids (SUBMODELPARTS field 0).
+    function format_info_mdpa_ids(self, section, index, field, stat, errmsg) result(ids)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: ids(:)
+        type(c_ptr) :: p
+        integer(c_int) :: dt
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        integer(c_int64_t), pointer :: vals(:)
+        integer(c_int) :: st
+        allocate (ids(0))
+        st = c_mio_mdpa_info_array(self%handle, int(section, c_int32_t), &
+                                   int(index - 1, c_int64_t), int(field, c_int32_t), p, dt, nd, shp)
+        if (st == 0_c_int .and. (nd /= 1 .or. dt /= MIO_INT64)) then
+            call handle_failure('mdpa_ids', 'not an id list (use mdpa_table/mdpa_geometry)', &
+                                stat, errmsg)
+            return
+        end if
+        call handle_status(st, 'mdpa_ids', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        ids = int(vals, int64)
+        if (section == MIO_MDPA_MESH_BLOCKS .and. field == 0) ids = ids + 1
+    end function
+
+    !> A top-level table's values, `(rows, columns)`, of item `index` (1-based).
+    function format_info_mdpa_table(self, index, stat, errmsg) result(t)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: t(:, :)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        real(c_double), pointer :: vals(:, :)
+        allocate (t(0, 0))
+        st = c_mio_mdpa_info_array(self%handle, MIO_MDPA_TABLES, int(index - 1, c_int64_t), &
+                                   0_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'mdpa_table', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (nd /= 2 .or. shp(1) * shp(2) == 0) return
+        ! C is row-major (rows, cols): the same bytes are Fortran (cols, rows).
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        t = transpose(vals)
+    end function
+
+    !> A geometry run's connectivity, `conn(nodes_per_geometry, num_geometries)`,
+    !> as 1-based points -- the same layout as a cell block's.
+    function format_info_mdpa_geometry(self, index, stat, errmsg) result(conn)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: conn(:, :)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        integer(c_int64_t), pointer :: vals(:, :)
+        allocate (conn(0, 0))
+        st = c_mio_mdpa_info_array(self%handle, MIO_MDPA_GEOMETRIES, int(index - 1, c_int64_t), &
+                                   0_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'mdpa_geometry', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (nd /= 2 .or. shp(1) * shp(2) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        conn = int(vals, int64) + 1
+    end function
+
+    !> Number of key/value entries of item `index` (1-based) of PROPERTIES,
+    !> MODEL_PART_DATA, MESH_BLOCKS or SUBMODELPARTS; -1 on error.
+    integer function format_info_mdpa_data_count(self, section, index)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index
+        format_info_mdpa_data_count = int(c_mio_mdpa_info_data_count( &
+                                          self%handle, int(section, c_int32_t), &
+                                          int(index - 1, c_int64_t)))
+    end function
+
+    !> A MIO_MDPA_VALUE_* kind for entry `entry` (1-based); -1 on error.
+    integer function format_info_mdpa_data_kind(self, section, index, entry)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, entry
+        format_info_mdpa_data_kind = int(c_mio_mdpa_info_data_kind( &
+                                         self%handle, int(section, c_int32_t), &
+                                         int(index - 1, c_int64_t), int(entry - 1, c_int64_t)))
+    end function
+
+    !> Entry `entry`'s key (a table's header arguments for a TABLE entry).
+    function format_info_mdpa_data_key(self, section, index, entry) result(str)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, entry
+        character(:), allocatable :: str
+        str = format_info_data_string(self, section, index, entry, 0)
+    end function
+
+    !> Entry `entry`'s text value ('' unless its kind is MIO_MDPA_VALUE_TEXT).
+    function format_info_mdpa_data_text(self, section, index, entry) result(str)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, entry
+        character(:), allocatable :: str
+        str = format_info_data_string(self, section, index, entry, 1)
+    end function
+
+    function format_info_data_string(self, section, index, entry, field) result(str)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, entry, field
+        character(:), allocatable :: str
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        str = ''
+        allocate (buf(1))
+        n = c_mio_mdpa_info_data_string(self%handle, int(section, c_int32_t), &
+                                        int(index - 1, c_int64_t), int(entry - 1, c_int64_t), &
+                                        int(field, c_int32_t), buf, 0_c_int64_t)
+        if (n <= 0) return
+        deallocate (buf)
+        allocate (buf(n + 1))
+        n = c_mio_mdpa_info_data_string(self%handle, int(section, c_int32_t), &
+                                        int(index - 1, c_int64_t), int(entry - 1, c_int64_t), &
+                                        int(field, c_int32_t), buf, n + 1)
+        str = from_c_buf(buf, int(n))
+    end function
+
+    !> Entry `entry`'s numbers, flattened row-major: one value for a number,
+    !> rows*columns for a table (see mdpa_data_count/kind), none for text.
+    function format_info_mdpa_data_values(self, section, index, entry, stat, errmsg) result(v)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, entry
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: v(:)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd, k
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM), total
+        real(c_double), pointer :: vals(:)
+        allocate (v(0))
+        st = c_mio_mdpa_info_data_array(self%handle, int(section, c_int32_t), &
+                                        int(index - 1, c_int64_t), int(entry - 1, c_int64_t), &
+                                        p, dt, nd, shp)
+        call handle_status(st, 'mdpa_data_values', stat, errmsg)
+        if (st /= 0_c_int) return
+        total = 1
+        do k = 1, nd
+            total = total * shp(k)
+        end do
+        if (total == 0 .or. .not. c_associated(p)) return
+        call c_f_pointer(p, vals, [total])
+        v = real(vals, real64)
+    end function
 
 end module meshioplusplus

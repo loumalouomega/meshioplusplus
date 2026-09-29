@@ -59,6 +59,7 @@ include("regions.jl")
 include("operations.jl")
 include("sequence.jl")
 include("xdmf_series.jl")
+include("format_info.jl")
 include("provenance.jl")
 
 function __init__()
@@ -69,6 +70,7 @@ end
 
 # Handles, errors, borrows
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
+export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info
 export ReadOptions, MeshMetadata, DiffReport
 
 # Introspection

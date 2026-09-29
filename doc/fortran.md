@@ -156,7 +156,11 @@ Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finaliz
 - `m%read(path, drop_ghosts=.true.)` — remove the ghost cells (halo) of a partitioned `.pvtu`, `.pvtp` or `.pvd` (every cell with a `vtkGhostType` bit set, and the points only they used); omitted keeps them, and every other reader ignores it. On a `type(mio_read_opts_t)` set `drop_ghosts = 1` (it took the fifth former `reserved` slot; size unchanged). See [`doc/selective_read.md`](selective_read.md#dropping-ghost-cells).
 - XDMF series: `s%flush()`, `s%finalized()`, and `s%create(..., mode='append', auto_flush=...)`.
 
-**Gap, deliberate:** four Python-only formats — `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) — are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them; see [formats](/formats). And there is no Fortran counterpart to the solver-array `write_data` overload. An array of derived types holding interop pointers is a poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it can `add_point_data` into before `write_data`. `MdpaInfo` is likewise absent, as for every flat binding.
+**Gap, deliberate:** four Python-only formats — `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) — are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them; see [formats](/formats). And there is no Fortran counterpart to the solver-array `write_data` overload. An array of derived types holding interop pointers is a poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it can `add_point_data` into before `write_data`. `MdpaInfo` is reached through `mio_format_info` (below).
+
+## Format side channels
+
+`call m%read_with_info(path, info [, format, lenient, stat, errmsg])` fills a `type(mio_format_info)` for a format with a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`); `call m%write_with_info(path, info)` writes it back and `call info%free()` releases it. Accessors take a `MIO_MDPA_*` section and a 1-based item index: `info%mdpa_count`, `mdpa_string`, `mdpa_int`, `mdpa_ids`, `mdpa_table(i)` (a `(rows, cols)` array), `mdpa_geometry(i)` (`conn(nodes, n)`, 1-based points) and `mdpa_data_*` for key/value entries. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 
 ## Sequences (transient / multi-file datasets)
 

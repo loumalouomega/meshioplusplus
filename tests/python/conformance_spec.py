@@ -1104,7 +1104,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": True,
-        "regions": [],
+        "regions": ["cell", "point", "side"],
     },
     "pvtp": {
         "cells": {
@@ -1117,7 +1117,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": True,
-        "regions": [],
+        "regions": ["cell", "point"],
     },
     "pvtu": {
         "cells": {
@@ -1134,7 +1134,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": True,
-        "regions": [],
+        "regions": ["cell", "point", "side"],
     },
     "radioss": {
         "cells": {
@@ -1371,7 +1371,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": True,
-        "regions": [],
+        "regions": ["cell", "point"],
     },
     "vtr": {
         "error": "no cell type round-trips",
@@ -1397,7 +1397,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": True,
-        "regions": [],
+        "regions": ["cell", "point", "side"],
     },
     "wkt": {
         "cells": {"triangle": "exact"},
@@ -1422,7 +1422,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": False,
-        "regions": [],
+        "regions": ["cell", "point", "side"],
     },
     "xyz": {
         "cells": {

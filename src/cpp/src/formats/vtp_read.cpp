@@ -30,6 +30,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
+#include "../detail/region_field_data.hpp"
 #include "vtk_preflight.hpp"
 #include "../detail/vtu_decode.hpp"
 
@@ -171,10 +172,12 @@ bool vtp_is_numeric_type(const std::string& rType) {
  * used to succeed by ignoring the whole section.
  */
 void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
-                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+                         std::size_t HeaderSize, const ReadOptions& rOpts, bool WantData,
+                         std::vector<std::pair<std::string, NDArray>>& rOut) {
     for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
+        // Region arrays are topology, not data (detail/region_field_data.hpp).
+        if (!detail::is_region_field_name(name) && (!WantData || !rOpts.WantsArray(name)))
             continue;
         if (!vtp_is_numeric_type(da.attribute("type").as_string())) {
             log::warn(
@@ -187,7 +190,7 @@ void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
         NDArray arr = vtp_read_data_array(da, Codec, HeaderSize, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-        rMesh.AddFieldData(name, std::move(arr));
+        rOut.emplace_back(name, std::move(arr));
     }
 }
 
@@ -202,7 +205,8 @@ std::vector<std::string> vtp_field_data_names(const vtp_header& rHeader) {
     std::vector<std::string> names;
     for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
         for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-            if (vtp_is_numeric_type(da.attribute("type").as_string()))
+            if (vtp_is_numeric_type(da.attribute("type").as_string()) &&
+                !detail::is_region_field_name(da.attribute("Name").as_string()))
                 names.emplace_back(da.attribute("Name").as_string());
     std::sort(names.begin(), names.end());
     names.erase(std::unique(names.begin(), names.end()), names.end());
@@ -299,10 +303,9 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
-    if (want_data) {
-        vtp_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
-        vtp_read_field_data(piece, codec, hsz, rOpts, mesh);
-    }
+    std::vector<std::pair<std::string, NDArray>> field_arrays;
+    vtp_read_field_data(h.mGrid, codec, hsz, rOpts, want_data, field_arrays);
+    vtp_read_field_data(piece, codec, hsz, rOpts, want_data, field_arrays);
 
     VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
     VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
@@ -321,7 +324,11 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     vtp_build_types(polys, 2, conn, offsets, types);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
+    static const std::vector<std::int64_t> kNoFaceOffsets;
+    std::vector<std::int64_t> file_to_global;
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, nullptr, kNoFaceOffsets,
+                              mesh, &file_to_global);
+    detail::regions_from_field_arrays(mesh, field_arrays, &file_to_global, "vtp");
     return mesh;
 }
 
@@ -367,6 +374,14 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
     meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
     meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
     meta.mFieldDataNames = vtp_field_data_names(h);
+    {
+        std::vector<std::pair<std::string, std::size_t>> arrays;
+        for (const pugi::xml_node& rNode : {h.mGrid, h.mPiece})
+            for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+                arrays.emplace_back(da.attribute("Name").as_string(),
+                                    da.attribute("NumberOfTuples").as_ullong(0));
+        meta.mRegions = detail::region_summaries_from_field_names(arrays);
+    }
 
     // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
     meta.mHasBBox = false;

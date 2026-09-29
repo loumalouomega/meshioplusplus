@@ -32,6 +32,7 @@ import numpy as np
 from ._convert_cells import _simplexify_py
 from ._fallback import core_op_declined
 from ._mesh import Mesh, topological_dimension
+from ._side_carry import carry_side_regions, first_child_children
 
 _PLACEMENTS = ("optimal", "midpoint", "endpoint")
 
@@ -336,8 +337,8 @@ def _decimate_py(
         from ._feature_edges import crease_edges, crease_nodes
 
         start = np.arange(num_faces + 1, dtype=np.int64) * 3
-        edges = crease_edges(start, corners_np.reshape(-1), normals, feature_angle)
-        pinned |= crease_nodes(edges, n)
+        creases = crease_edges(start, corners_np.reshape(-1), normals, feature_angle)
+        pinned |= crease_nodes(creases, n)
 
     # Per-vertex quadrics: np.add.at is unbuffered and processes indices in
     # order, so each vertex accumulates its faces ascending -- the same FP
@@ -792,4 +793,11 @@ def decimate(
     # here would apply the maps twice. Only the numpy fallback needs it.
     if not used_cpp:
         _remap_sets(mesh, out, point_map, cell_maps)
+        carry_side_regions(
+            mesh,
+            out,
+            first_child_children(mesh, out, cell_maps),
+            point_map,
+            "decimate",
+        )
     return (out, report) if return_report else out
