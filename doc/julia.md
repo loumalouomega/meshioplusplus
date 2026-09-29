@@ -303,7 +303,11 @@ Two spellings to note. `method` is given as an underscored symbol (`:green_gauss
 - `ReadOptions(; drop_ghosts=true)` — remove the ghost cells (halo) of a partitioned `.pvtu`, `.pvtp` or `.pvd`: every cell with a `vtkGhostType` bit set, and the points only they used. `false` (the default) keeps them; every other reader ignores it. See [`doc/selective_read.md`](selective_read.md#dropping-ghost-cells).
 - XDMF series: `flush!(s)`, `finalized(s)`, `XdmfSeries(path; mode=:append, auto_flush=false)`, and `write_data!(s, t, Dict("u" => values))` for writing a step from raw arrays with no `Mesh` in between. An `n x k` matrix is transposed on the way out, since Julia is column-major and the C ABI expects `k` components per entity row-major.
 
-`flush!` is named with a bang for the same reason `finalize!` is: `Base.flush` means "flush this IO stream". `MdpaInfo` is not exposed (as for every flat binding).
+`flush!` is named with a bang for the same reason `finalize!` is: `Base.flush` means "flush this IO stream". 
+
+## Format side channels
+
+`read_with_info(path; format="", options=nothing)` returns `(mesh, info)`, `info` a `FormatInfo` for a format that has a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`) and `nothing` otherwise; `write_with_info(mesh, info, path)` puts it back and `close(info)` releases it. `mdpa_info(info)` copies the MDPA side channel into a `NamedTuple` (`tables`, `geometries` with 1-based `(nodes, n)` connectivity, `mesh_blocks`, `submodelparts`, `raw_blocks`, …); file ids stay as the file spelled them. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 
 ## Sequences (transient / multi-file datasets)
 

@@ -298,9 +298,10 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
 
     ``regions`` lists each named region's ``name``/``kind``/``dim``/``tag``/
     ``num_entries`` (not the entries themselves) -- always present, empty for a
-    format that maps no regions or on a native metadata path that declined a
-    full read (VTU/VTP/XDMF/Gmsh 4.1 today; none of those currently map regions
-    at all, so this is never a wrong answer). Cheap whenever the summary was
+    format that maps no regions. The native metadata paths of VTU/VTP/XDMF
+    (since v16.26.0) and Gmsh 4.1 read them from headers and declared array
+    sizes (VTU/VTP report ``dim``/``tag`` as -1: those live in the payload).
+    Cheap whenever the summary was
     produced from an already-read mesh (every fallback path, and Exodus, which
     always falls back).
 

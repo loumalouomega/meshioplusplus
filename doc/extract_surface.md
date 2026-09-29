@@ -36,7 +36,8 @@ Facet matching uses the **corner nodes only**, so mixed linear/quadratic meshes 
 ## Semantics
 
 - **Output block order** is fixed: `triangle`, `triangle6`, `quad`, `quad8`, `quad9` for faces; `line`, `line3` for edges (only non-empty blocks appear), in cell-block enumeration order within each block.
-- **Points are compacted** to the referenced subset in ascending original-index order; `point_data` rows are subset the same way. `field_data`, sets, and `info` are dropped.
+- **Points are compacted** to the referenced subset in ascending original-index order; `point_data` rows are subset the same way. `field_data` and `info` are dropped.
+- **Named regions** (since v16.26.0): a `side` region becomes a `cell` region of the surface naming the facets it covered, and a facet that is not on the boundary is dropped with a warning. `point` regions follow the kept points, and `cell` regions (which name volume cells the surface does not hold) are dropped with a warning. See [how operations treat regions](/regions#how-operations-treat-regions).
 - **`record_parent_ids=True`** attaches an `int64` `cell_data` array `"surface:parent_cell"` giving, for each output facet, the global index of the unique input cell that owns it (counted block-major over every input cell of every block). Point compaction does not affect it — it is per-output-cell.
 - **Polyhedron blocks are supported** since v9.16.0: a cell's own faces are hashed like any others, so a polyhedron and a hexahedron meeting on a face cancel each other out, and a face of any arity is emitted (one with more than four corners becomes a row of a ragged `polygon` block).
 - **Unsupported same-dimension blocks** (ragged polygon blocks, Lagrange and very-high-order types) are skipped with a warning. If no supported 2D/3D block exists, `ValueError` is raised.

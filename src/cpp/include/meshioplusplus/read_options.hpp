@@ -330,12 +330,10 @@ struct MeshMetadata {
      * Populated whenever the mesh producing this summary was already fully in
      * memory (i.e. whenever `metadata_from_mesh` ran) -- regions are read
      * alongside geometry by every region-capable reader, so there is nothing
-     * left to save by skipping them once a read has happened anyway. A native
-     * metadata path that declines a full read (VTU/VTP/XDMF/Gmsh 4.1) reports
-     * no regions rather than guessing; none of those formats map regions yet
-     * regardless (see `doc/regions.md`), so this is never a wrong answer, only
-     * an incomplete one on formats already known to fall back for other
-     * reasons.
+     * left to save by skipping them once a read has happened anyway. The
+     * native metadata paths that do not read the mesh count them from headers
+     * and declared sizes: Gmsh 4.1, and XDMF, VTU and VTP since v16.26.0 (VTU
+     * and VTP report `mDim`/`mTag` as -1, since those live in the payload).
      */
     std::vector<RegionSummary> mRegions;
 

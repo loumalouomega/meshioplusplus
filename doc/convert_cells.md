@@ -57,7 +57,7 @@ Two constructs raise rather than guess:
 - **`linearize`**: corner connectivity verbatim; unreferenced points pruned and connectivity/`point_data` remapped. Cell count unchanged, so `cell_data` and `field_data` pass through.
 - **`simplexify`**: points untouched; each parent's `cell_data` row is **replicated** to its children; `point_data`/`field_data` pass through.
 - **`elevate`**: new nodes are appended after the originals, with coordinates at the edge midpoint and `point_data` set to the **mean of the edge's endpoints**. Cell count unchanged, so `cell_data`/`field_data` pass through.
-- **`point_sets` / `cell_sets`** are remapped in the Python layer. Under `simplexify` a cell-set entry **expands to the parent's children**.
+- **Named regions** (and so `point_sets` / `cell_sets`) are remapped. Under `simplexify` a cell region entry **expands to the parent's children**, and a side region's facet to the child facets lying within it; under `linearize`/`elevate` a facet keeps its number (since v16.26.0).
 - `record_parent_ids=True` attaches an Int64 `convert:parent_cell` `cell_data` array recording, per output cell, the index of the input cell it came from within its own block.
 
 Output is **deterministic**: the decomposition templates are fixed, and the `elevate` mid-edge numbering is assigned by a serial pass over a parallel-filled buffer, never a concurrent hash insert. Results are byte-identical across the MESHIO/NATIVE/KRATOS backends and any thread count.
