@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v16.27.0** — 79 core formats plus five Python-only physics-ML ones, forty-five mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 20), sanitizer and fuzzing gates, and a format conformance matrix.
+Status at time of writing: **v16.28.0** — 79 core formats plus five Python-only physics-ML ones, forty-five mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 20), sanitizer and fuzzing gates, and a format conformance matrix.
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -170,7 +170,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 - **MED multi-mesh files and profiles**, which are Python-only and not reachable even under a lenient C++ read ([MED](./formats/med.md)). **M**
 - **Netgen extras** — periodic `identifications`, `materials`/`bcnames`/`cd2names`/`cd3names`, `edgesegmentsgi2` and the `.vol.gz` container ([Netgen](./formats/netgen.md)). **S–M**
 - **An Exodus writer that carries sets and steps.** It writes element blocks but no node sets or side sets, so only element-block regions round-trip, and it writes one step per file; a multi-step writer is a stateful object of the `XdmfTimeSeriesWriter` shape ([Exodus](./formats/exodus.md)). **M**
-- **Sets → regions, phase 2, remainder.** XDMF `Sets` and VTU/VTP regions shipped in v16.27.0; what is left is XDMF time-series files (the series writer writes no sets) and Exodus's writer (below) ([Named regions](./regions.md)). **S**
+- **Sets → regions in XDMF time-series files.** The series writer writes no `Sets`; Exodus's writer is the item above ([Named regions](./regions.md)). **S**
 - **A structured pipeline report on the flat ABI.** C, Fortran, Julia and R receive status plus `mio_last_error()` only; a caller-buffer JSON accessor is recorded as a follow-up, as are the v2 multi-mesh steps (`Inputs:` for `Merge`/`Interpolate`/`UndoGreen`, an `Output.Pattern` for `Split`/partition) ([pipelines](./pipeline.md)). **S–M**
 - **PCD `binary_compressed` on the flat ABI.** The C++ API and Python write it (`write_pcd(..., PcdData::BinaryCompressed)`, `data="binary_compressed"`), but `WriteOptions`/`mio_write_opts` only carry the VTK block codecs, so C, Fortran, Julia, R and WASM can read it and cannot write it; the fix is an appended `MIO_CODEC_LZF` enumerator routed to `write_pcd` ([PCD](./formats/pcd.md)). **S**
 - **glTF write options on the flat ABI.** `mio_write("x.glb")` and `writeMesh` write the defaults; the colour field, colormap and range, split angle, up axis and unit scale are reachable from Python, C++, both CLIs and MCP only, so C, Fortran, Julia, R and WASM cannot colour a `.glb` or change its axis ([glTF](./formats/gltf.md)). The fix is a `mio_gltf_opts` struct with a reserved tail, following the `mio_curvature_opts` shape. **S**
@@ -263,6 +263,6 @@ Open work only; what shipped is in `CHANGELOG.md`.
 2. **The OSS-Fuzz submission ([§2](#_2-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
 3. **Performance ([§3](#_3-performance))** — the boundaries, and the tokenizer's remaining readers as they are touched; the operations' layout-bound leftovers with the next ABI bump.
 4. **Primitive constructors ([§5](#_5-operations))** — a few days, and a prerequisite of the conformance matrix, every demo surface and `extrude`/`revolve`.
-5. **Core parity ([§4](#_4-core-parity-across-surfaces))** — the Kratos items shipped in v16.27.0; the rest by consumer demand.
+5. **Core parity ([§4](#_4-core-parity-across-surfaces))** — the rest by consumer demand.
 6. **Registration ([§6](#_6-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else.
 7. **Long-run spikes ([§7](#_7-long-run-spike-first))** — the benchmark tier decides the scale items; the NURBS spike is scheduled independently of the rest.
