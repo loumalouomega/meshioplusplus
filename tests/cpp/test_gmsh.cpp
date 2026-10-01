@@ -305,6 +305,22 @@ TEST(Gmsh, PeriodicBeforeNodes) {
     std::remove(path.c_str());
 }
 
+TEST(Gmsh, IndentedEmptyPeriodicStillRequiresInfo) {
+    auto bytes = mt::gmsh_periodic_fixture(41, false);
+    bytes.erase(bytes.find("$Periodic"));
+    bytes += "  \t$Periodic\n0\n$EndPeriodic\n";
+    const auto path = gmsh_write_fixture(bytes);
+    EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError);
+    meshioplusplus::ReadOptions opts;
+    opts.mLenient = true;
+    EXPECT_THROW(meshioplusplus::read_gmsh(path, opts), meshioplusplus::ReadError);
+    meshioplusplus::GmshInfo info;
+    const auto mesh = meshioplusplus::read_gmsh(path, info);
+    EXPECT_TRUE(info.mPeriodic.empty());
+    EXPECT_EQ(mesh.NumPoints(), 4);
+    std::remove(path.c_str());
+}
+
 TEST(Gmsh, PeriodicRejectsMalformedRecords) {
     const std::vector<std::string> records = {"-1\n",
                                               "9999999999999999999999999\n",

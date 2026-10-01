@@ -1853,7 +1853,7 @@ val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string&
             // the registry writer directly).
             meshioplusplus::registry_write_ex(rPath, val_to_mesh(rMeshObj), fmt, opts);
         } else {
-            if (!format_supports_info(fmt))
+            if (!format_supports_info(fmt) && fmt != "gmsh22")
                 throw meshioplusplus::WriteError(
                     "meshio++ (wasm): format '" + fmt +
                     "' has no side-channel 'info' writer, but info was given for it");

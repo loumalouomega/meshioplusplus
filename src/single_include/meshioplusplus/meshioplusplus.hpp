@@ -83564,6 +83564,8 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -83572,11 +83574,13 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <limits>
 #include <map>
 #include <set>
-#include <sstream>
+#include <ostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -85061,14 +85065,17 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
 }
 /// Whether the file has a `$Periodic` section: the header on a line of its own,
 /// found by one search of the buffer before `$Nodes` and `$Elements` are
-/// parsed only to be refused (roadmap §3). `$` is rare in mesh data, so the
-/// search runs at memchr speed; a match inside binary data only declines a
-/// read the Python reader then takes, which is what a real `$Periodic` does.
+/// parsed only to be refused on info-less reads. `$` is rare in mesh data, so
+/// the search runs at memchr speed. Match the section parser's indentation
+/// tolerance too, so an indented header cannot silently lose its metadata.
 bool gmsh_has_periodic(std::string_view rBuf) {
     constexpr std::string_view kTag = "$Periodic";
     std::size_t at = 0;
     while ((at = rBuf.find(kTag, at)) != std::string_view::npos) {
-        const bool line_start = at == 0 || rBuf[at - 1] == '\n';
+        std::size_t before = at;
+        while (before > 0 && (rBuf[before - 1] == ' ' || rBuf[before - 1] == '\t'))
+            --before;
+        const bool line_start = before == 0 || rBuf[before - 1] == '\n';
         std::size_t after = at + kTag.size();
         const std::size_t next = after;
         while (after < rBuf.size() && (rBuf[after] == ' ' || rBuf[after] == '\t'))

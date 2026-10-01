@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v16.28.0 + unreleased parity work** — 79 core formats plus five Python-only physics-ML ones, forty-five mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 21), sanitizer and fuzzing gates, and a format conformance matrix.
+Status at time of writing: **v16.28.0 + unreleased parity work** — 79 core formats plus five Python-only physics-ML ones, forty-five mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 22), sanitizer and fuzzing gates, and a format conformance matrix.
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 

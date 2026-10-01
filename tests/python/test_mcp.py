@@ -618,6 +618,7 @@ def test_convert_gmsh40_through_native_reader(
 @pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
 def test_convert_gmsh_periodic_native(version, tmp_path, monkeypatch):
     from meshioplusplus import _fallback
+
     from .test_gmsh import assert_periodic, periodic_fixture
 
     source = tmp_path / "periodic.msh"
