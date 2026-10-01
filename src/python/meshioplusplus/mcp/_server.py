@@ -1253,6 +1253,114 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def region_adjacency(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        regions: Optional[list[str]] = None,
+    ) -> dict:
+        """Write conforming facets shared by Cell regions, or by cell blocks
+        when fewer than two Cell regions exist. Reports total facets/measure
+        and writes parent-cell/facet ids with per-facet length or area."""
+        return _guard(
+            _tools.tool_region_adjacency,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            regions=regions,
+        )
+
+    @server.tool()
+    def find_interface(
+        input_path: str,
+        output_path: str,
+        region_a: str,
+        region_b: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        mesh_b_path: Optional[str] = None,
+        format_b: Optional[str] = None,
+        mode: str = "conforming",
+        master: str = "a",
+        gap_tolerance: float = 0.0,
+        angle_tolerance: float = 30.0,
+        overlap_tolerance: float = 0.0,
+    ) -> dict:
+        """Write conforming or proximity-matched interface facets between
+        two Cell regions. Optionally read part B from a second mesh file. The
+        report includes side-region `(cell, facet)` pairs for each input."""
+        return _guard(
+            _tools.tool_find_interface,
+            input_path=input_path,
+            output_path=output_path,
+            region_a=region_a,
+            region_b=region_b,
+            input_format=input_format,
+            output_format=output_format,
+            mesh_b_path=mesh_b_path,
+            format_b=format_b,
+            mode=mode,
+            master=master,
+            gap_tolerance=gap_tolerance,
+            angle_tolerance=angle_tolerance,
+            overlap_tolerance=overlap_tolerance,
+        )
+
+    @server.tool()
+    def contact_pairs(
+        slave_path: str,
+        slave_region: str,
+        master_region: str,
+        master_path: Optional[str] = None,
+        slave_format: Optional[str] = None,
+        master_format: Optional[str] = None,
+        tolerance: float = 0.0,
+        require_complete: bool = False,
+    ) -> dict:
+        """Project every node of a Point region onto the closest facets of a
+        Cell region; return source ids, fan-subfacet ordinals, local coordinates,
+        signed gaps and master normals."""
+        return _guard(
+            _tools.tool_contact_pairs,
+            slave_path=slave_path,
+            slave_region=slave_region,
+            master_region=master_region,
+            master_path=master_path,
+            slave_format=slave_format,
+            master_format=master_format,
+            tolerance=tolerance,
+            require_complete=require_complete,
+        )
+
+    @server.tool()
+    def split_interface(
+        input_path: str,
+        output_path: str,
+        side_region: Optional[str] = None,
+        side_entries: Optional[list[list[int]]] = None,
+        side_name: str = "interface:side_a",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        add_cohesive: bool = False,
+    ) -> dict:
+        """Duplicate point fans along a Side region, optionally adding
+        cohesive cells. `side_entries` can be the `(cell, facet)` list returned
+        by `find_interface`; polyhedron inputs are rejected."""
+        return _guard(
+            _tools.tool_split_interface,
+            input_path=input_path,
+            output_path=output_path,
+            side_region=side_region,
+            side_entries=side_entries,
+            side_name=side_name,
+            input_format=input_format,
+            output_format=output_format,
+            add_cohesive=add_cohesive,
+        )
+
+    @server.tool()
     def hausdorff(
         path_a: str,
         path_b: str,

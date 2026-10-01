@@ -127,6 +127,8 @@ for (r in mio_regions(m)) {
 }
 ```
 
+The interface operations use the same named regions: `mio_region_adjacency()` extracts conforming shared facets, `mio_find_interface()` matches two Cell-region boundaries, `mio_contact_pairs()` projects a Point region to a master Cell region, and `mio_split_interface()` duplicates point fans along a Side region. These return copied arrays and/or an owned mesh; point and global cell ids are 1-based in R, while local facet/subfacet ordinals remain 0-based. The full signatures and examples are in [Interfaces and contact](/region_adjacency).
+
 ## Why plain `.Call`, not Rcpp
 
 `.Call` with R's own C API keeps the dependency footprint at exactly zero — the package has no `Imports` and needs no C++ toolchain during `R CMD check` — and it matches the flat C ABI the rest of meshio++'s bindings sit on. The whole surface is scalars, vectors and matrices, where `Rf_allocVector` / `Rf_allocMatrix` plus a `memcpy` is all that is required; Rcpp would buy convenience this surface does not need.
@@ -206,6 +208,7 @@ with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The 
 - `mio_compute_normals(mesh, point_normals = TRUE, cell_normals = FALSE, weight = "angle", split_angle = NULL, record_parent_ids = FALSE, region = "")` — point and cell normals of a surface, written as `normals` (an `(n, 3)` point-data matrix; a cell-data array with `cell_normals`). `split_angle = NULL` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Returns a list of `mesh`, `quality`, `num_isolated`, `num_undefined`, `num_degenerate`, `num_split_points` and `num_added_points`. Never reorients: check `quality$inconsistent_pairs`. See [normals](/normals).
 - `mio_check_quality(mesh, require = "", max_inverted = 0, max_degenerate = 0)` — the [quality gate](/mesh_quality#quality-gate); a list of `passed`, the counts and `summary`.
 - `mio_feature_edges(mesh, feature_angle = 30, feature = TRUE, boundary = TRUE, non_manifold = TRUE, inconsistent = TRUE, region = "")` — the sharp, open, non-manifold and inconsistently wound edges as a `line` mesh; returns a list of `mesh` and the per-category counts. See [feature edges](/feature_edges).
+- `mio_region_adjacency(mesh, regions = NULL)` — conforming shared facets between Cell regions; when fewer than two are selected or present, multiple cell blocks are used as groups. See [region adjacency](/region_adjacency).
 - `mio_hausdorff_distance(a, b, face_samples = 0, region_a = "", region_b = "")` — a list of `distance`, the one-sided maxima with means and RMS, the sample counts and the worst points. See [Hausdorff distance](/hausdorff).
 - `mio_edit_regions(mesh, op, inputs, output = "", kind = NULL, dim = NULL, tag = NULL, keep_inputs = TRUE)` and `mio_remove_region(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
 - `mio_match_periodic_nodes(mesh, slave, master, matrix = NULL, translate = NULL, atol = 1e-8, require_complete = TRUE)` — a list of 1-based `slave` / `master` ids, `unmatched`, `num_fixed` and `max_residual`; `matrix` is an R 4x4 (`M %*% c(p, 1)`). See [periodic node pairs](/periodic).

@@ -39,6 +39,8 @@
 #include <gtest/gtest.h>
 
 #include "meshioplusplus/version.hpp"
+#include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/vtu.hpp"
 
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
@@ -46,10 +48,8 @@
 #include "mesh_fixtures.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/formats/med.hpp"
-#include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/region.hpp"
-#include "meshioplusplus/formats/vtu.hpp"
 #endif
 
 namespace {
@@ -4181,6 +4181,99 @@ TEST(CApi, FeatureEdgesOfACube) {
     EXPECT_EQ(mio_feature_edges(m, &opts, nullptr), nullptr);
     EXPECT_EQ(mio_feature_edges(nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
+}
+
+TEST(CApi, RegionAdjacencyBetweenCellBlocks) {
+    mio_mesh* m = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1};
+    const std::int64_t upper[] = {0, 1, 2, 3};
+    const std::int64_t lower[] = {0, 2, 1, 4};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 1, 4, MIO_INT64, upper), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 1, 4, MIO_INT64, lower), MIO_OK);
+    mio_mesh* adjacency = mio_region_adjacency(m, nullptr, 0);
+    ASSERT_NE(adjacency, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_num_cell_blocks(adjacency), 1);
+    EXPECT_EQ(block_type(adjacency, 0), "triangle");
+    int64_t num_cells = 0, nodes_per_cell = 0;
+    int32_t is_ragged = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(adjacency, 0, &num_cells, &nodes_per_cell, &is_ragged),
+              MIO_OK);
+    EXPECT_EQ(num_cells, 1);
+    mio_mesh_free(adjacency);
+    EXPECT_EQ(mio_region_adjacency(m, nullptr, 1), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, FindContactAndSplitInterface) {
+    mio_mesh* mesh = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1};
+    const std::int64_t cells[] = {0, 1, 2, 3, 0, 2, 1, 4};
+    const std::int64_t cell_a[] = {0};
+    const std::int64_t cell_b[] = {1};
+    const std::int64_t slave_node[] = {0};
+    ASSERT_EQ(mio_mesh_set_points(mesh, MIO_FLOAT64, 5, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(mesh, "tetra", 2, 4, MIO_INT64, cells), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(mesh, "upper", MIO_REGION_CELL, 3, -1, cell_a, 1), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(mesh, "lower", MIO_REGION_CELL, 3, -1, cell_b, 1), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(mesh, "slave", MIO_REGION_POINT, 0, -1, slave_node, 1), MIO_OK);
+
+    mio_region_selector upper, lower, slave;
+    mio_region_selector_init(&upper, "upper");
+    mio_region_selector_init(&lower, "lower");
+    mio_region_selector_init(&slave, "slave");
+    upper.kind = lower.kind = MIO_REGION_CELL;
+    slave.kind = MIO_REGION_POINT;
+
+    mio_find_interface_opts find_opts;
+    mio_find_interface_opts_init(&find_opts);
+    EXPECT_DOUBLE_EQ(find_opts.angle_tolerance, 30.0);
+    mio_find_interface_result* found =
+        mio_find_interface(mesh, &upper, nullptr, &lower, &find_opts);
+    ASSERT_NE(found, nullptr) << mio_last_error();
+    std::int64_t pairs = 0, side_count = 0;
+    double area = 0.0;
+    ASSERT_EQ(mio_find_interface_result_report(found, &pairs, &area, nullptr, nullptr, nullptr),
+              MIO_OK);
+    EXPECT_EQ(pairs, 1);
+    EXPECT_GT(area, 0.0);
+    const std::int64_t* side_a = mio_find_interface_result_side_a(found, &side_count);
+    ASSERT_NE(side_a, nullptr);
+    ASSERT_EQ(side_count, 1);
+    const std::int64_t side_entry[] = {side_a[0], side_a[1]};
+    ASSERT_EQ(mio_mesh_add_region(mesh, "cut", MIO_REGION_SIDE, 2, -1, side_entry, 2), MIO_OK);
+
+    mio_contact_pairs_opts contact_opts;
+    mio_contact_pairs_opts_init(&contact_opts);
+    contact_opts.tolerance = 10.0;
+    mio_contact_pairs_result* projected =
+        mio_contact_pairs(mesh, &slave, nullptr, &lower, &contact_opts);
+    ASSERT_NE(projected, nullptr) << mio_last_error();
+    std::int64_t count = 0, unmatched = 0;
+    ASSERT_EQ(mio_contact_pairs_result_info(projected, &count, &unmatched), MIO_OK);
+    EXPECT_EQ(count, 1);
+    EXPECT_EQ(unmatched, 0);
+    ASSERT_NE(mio_contact_pairs_master_cell(projected), nullptr);
+    EXPECT_EQ(mio_contact_pairs_slave_point(projected)[0], 0);
+    EXPECT_NE(mio_contact_pairs_closest_point(projected), nullptr);
+    mio_contact_pairs_result_free(projected);
+
+    mio_split_interface_opts split_opts;
+    mio_split_interface_opts_init(&split_opts);
+    split_opts.add_cohesive = 1;
+    std::int64_t duplicated = 0, cohesive = 0;
+    mio_mesh* split = mio_split_interface(mesh, &upper, &split_opts, &duplicated, &cohesive);
+    EXPECT_EQ(split, nullptr);  // a Cell selector is not a Side selector
+    mio_region_selector cut;
+    mio_region_selector_init(&cut, "cut");
+    cut.kind = MIO_REGION_SIDE;
+    split = mio_split_interface(mesh, &cut, &split_opts, &duplicated, &cohesive);
+    ASSERT_NE(split, nullptr) << mio_last_error();
+    EXPECT_EQ(duplicated, 3);
+    EXPECT_EQ(cohesive, 1);
+    mio_mesh_free(split);
+    mio_find_interface_result_free(found);
+    mio_mesh_free(mesh);
 }
 
 TEST(CApi, HausdorffOfAMeshWithItselfIsZero) {

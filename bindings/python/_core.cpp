@@ -125,6 +125,7 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -201,6 +202,30 @@ provenance_scope_stack() {
 }  // namespace meshioplusplus_py
 
 namespace {
+
+meshioplusplus::RegionSelector core_region_selector(py::handle h,
+                                                    meshioplusplus::RegionKind DefaultKind) {
+    meshioplusplus::RegionSelector selector;
+    selector.mKind = static_cast<std::int32_t>(DefaultKind);
+    if (py::isinstance<py::str>(h)) {
+        selector.mName = py::cast<std::string>(h);
+        return selector;
+    }
+    if (!py::isinstance<py::dict>(h))
+        throw py::type_error("meshio++: a region selector must be a name or a selector dictionary");
+    const py::dict d = py::reinterpret_borrow<py::dict>(h);
+    if (!d.contains("name"))
+        throw py::value_error("meshio++: a region selector needs a 'name'");
+    selector.mName = d["name"].cast<std::string>();
+    if (d.contains("kind") && !d["kind"].is_none())
+        selector.mKind = static_cast<std::int32_t>(
+            meshioplusplus::region_kind_from_name(d["kind"].cast<std::string>()));
+    if (d.contains("dim") && !d["dim"].is_none())
+        selector.mDim = d["dim"].cast<std::int64_t>();
+    if (d.contains("tag") && !d["tag"].is_none())
+        selector.mTag = d["tag"].cast<std::int64_t>();
+    return selector;
+}
 
 /** @brief `ghosts=` keyword -> `GhostPolicy` (`"keep"` / `"drop"`; anything else is a ValueError).
  */
@@ -2281,6 +2306,161 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
         py::arg("boundary") = true, py::arg("non_manifold") = true,
         py::arg("inconsistent") = true, py::arg("region") = "");
+
+    // Conforming shared facets between named Cell regions. `regions` is an
+    // optional list of strings or selector dictionaries. See
+    // operations/interfaces.hpp.
+    m.def(
+        "region_adjacency",
+        [](py::object pymesh, py::object pyregions) {
+            std::vector<meshioplusplus::RegionSelector> selectors;
+            if (!pyregions.is_none()) {
+                for (py::handle h : pyregions.cast<py::iterable>()) {
+                    meshioplusplus::RegionSelector selector;
+                    if (py::isinstance<py::str>(h)) {
+                        selector.mName = py::cast<std::string>(h);
+                        selector.mKind =
+                            static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
+                    } else {
+                        py::dict d = py::reinterpret_borrow<py::dict>(h);
+                        selector.mName = d["name"].cast<std::string>();
+                        selector.mKind =
+                            static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
+                        if (d.contains("kind") && !d["kind"].is_none())
+                            selector.mKind =
+                                static_cast<std::int32_t>(meshioplusplus::region_kind_from_name(
+                                    d["kind"].cast<std::string>()));
+                        if (d.contains("dim") && !d["dim"].is_none())
+                            selector.mDim = d["dim"].cast<std::int64_t>();
+                        if (d.contains("tag") && !d["tag"].is_none())
+                            selector.mTag = d["tag"].cast<std::int64_t>();
+                    }
+                    selectors.push_back(std::move(selector));
+                }
+            }
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::region_adjacency(cpp, selectors));
+        },
+        py::arg("mesh"), py::arg("regions") = py::none());
+
+    m.def(
+        "find_interface",
+        [](py::object py_a, py::object py_region_a, py::object py_region_b, py::object py_b,
+           const std::string& mode, const std::string& master, double gap_tolerance,
+           double angle_tolerance, double overlap_tolerance) {
+            meshioplusplus_py::PyMeshRefs refs_a, refs_b;
+            meshioplusplus::Mesh a = meshioplusplus_py::py_to_mesh(
+                py_a, refs_a, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            const bool same = py_b.is_none();
+            meshioplusplus::Mesh b =
+                same ? meshioplusplus::Mesh{}
+                     : meshioplusplus_py::py_to_mesh(py_b, refs_b, /*lenient_field_data=*/false,
+                                                     /*allow_ragged=*/true);
+            if (same)
+                b = a;
+            meshioplusplus::FindInterfaceOptions options;
+            if (mode == "conforming")
+                options.mMode = meshioplusplus::InterfaceMode::Conforming;
+            else if (mode == "proximity")
+                options.mMode = meshioplusplus::InterfaceMode::Proximity;
+            else
+                throw py::value_error(
+                    "meshio++: find_interface mode must be 'conforming' or 'proximity'");
+            if (master == "a")
+                options.mMaster = meshioplusplus::InterfaceMaster::A;
+            else if (master == "b")
+                options.mMaster = meshioplusplus::InterfaceMaster::B;
+            else
+                throw py::value_error("meshio++: find_interface master must be 'a' or 'b'");
+            options.mGapTolerance = gap_tolerance;
+            options.mAngleTolerance = angle_tolerance;
+            options.mOverlapTolerance = overlap_tolerance;
+            const auto selector_a =
+                core_region_selector(py_region_a, meshioplusplus::RegionKind::Cell);
+            const auto selector_b =
+                core_region_selector(py_region_b, meshioplusplus::RegionKind::Cell);
+            auto result =
+                same ? meshioplusplus::find_interface(a, selector_a, selector_b, options)
+                     : meshioplusplus::find_interface(a, selector_a, b, selector_b, options);
+            py::dict report;
+            report["num_pairs"] = result.mReport.mNumPairs;
+            report["area"] = result.mReport.mArea;
+            report["max_gap"] = result.mReport.mMaxGap;
+            report["unmatched_a"] = result.mReport.mUnmatchedA;
+            report["unmatched_b"] = result.mReport.mUnmatchedB;
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(result.mMesh));
+            out["side_a"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mSideA.mEntries));
+            out["side_b"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mSideB.mEntries));
+            out["report"] = std::move(report);
+            return out;
+        },
+        py::arg("mesh"), py::arg("region_a"), py::arg("region_b"), py::arg("mesh_b") = py::none(),
+        py::arg("mode") = "conforming", py::arg("master") = "a", py::arg("gap_tolerance") = 0.0,
+        py::arg("angle_tolerance") = 30.0, py::arg("overlap_tolerance") = 0.0);
+
+    m.def(
+        "contact_pairs",
+        [](py::object py_slave, py::object py_slave_region, py::object py_master,
+           py::object py_master_region, double tolerance, bool require_complete) {
+            meshioplusplus_py::PyMeshRefs slave_refs, master_refs;
+            meshioplusplus::Mesh slave = meshioplusplus_py::py_to_mesh(
+                py_slave, slave_refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            const bool same = py_slave.is(py_master);
+            meshioplusplus::Mesh master =
+                same ? slave
+                     : meshioplusplus_py::py_to_mesh(py_master, master_refs,
+                                                     /*lenient_field_data=*/false,
+                                                     /*allow_ragged=*/true);
+            meshioplusplus::ContactPairsOptions options;
+            options.mTolerance = tolerance;
+            options.mRequireComplete = require_complete;
+            auto result = meshioplusplus::contact_pairs(
+                slave, core_region_selector(py_slave_region, meshioplusplus::RegionKind::Point),
+                master, core_region_selector(py_master_region, meshioplusplus::RegionKind::Cell),
+                options);
+            py::dict out;
+            out["slave_point"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mSlavePoint));
+            out["master_cell"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mMasterCell));
+            out["master_facet"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mMasterFacet));
+            out["master_subfacet"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mMasterSubfacet));
+            out["local_coordinates"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mLocalCoordinates));
+            out["closest_point"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(result.mClosestPoint));
+            out["gap"] = meshioplusplus_py::numpy_from_ndarray(std::move(result.mGap));
+            out["normal"] = meshioplusplus_py::numpy_from_ndarray(std::move(result.mNormal));
+            out["unmatched"] = meshioplusplus_py::numpy_from_ndarray(std::move(result.mUnmatched));
+            return out;
+        },
+        py::arg("slave_mesh"), py::arg("slave_points"), py::arg("master_mesh"),
+        py::arg("master_cells"), py::arg("tolerance") = 0.0, py::arg("require_complete") = false);
+
+    m.def(
+        "split_interface",
+        [](py::object pymesh, py::object py_side, bool add_cohesive) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SplitInterfaceOptions options;
+            options.mAddCohesive = add_cohesive;
+            auto result = meshioplusplus::split_interface(
+                cpp, core_region_selector(py_side, meshioplusplus::RegionKind::Side), options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(result.mMesh));
+            out["num_duplicated_points"] = result.mNumDuplicatedPoints;
+            out["num_cohesive_cells"] = result.mNumCohesiveCells;
+            return out;
+        },
+        py::arg("mesh"), py::arg("side"), py::arg("add_cohesive") = false);
 
     // Pass/fail thresholds over compute_quality's per-cell metrics. `thresholds`
     // is a list of {metric, min?, max?, max_fraction?}. See

@@ -1151,6 +1151,76 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
   )
 }
 
+#' Conforming shared facets between Cell regions
+#'
+#' Returns a mesh of facets shared by the selected Cell regions. When
+#' `regions` is NULL or empty, all Cell regions are used; if fewer than two
+#' exist, multiple cell blocks are used as groups. See `doc/region_adjacency.md`.
+#' @param mesh A mesh.
+#' @param regions Optional character vector of Cell-region names.
+#' @return A mesh carrying interface parent-cell/facet ids and measure.
+#' @export
+mio_region_adjacency <- function(mesh, regions = NULL) {
+    .Call(R_mio_region_adjacency, mesh, regions)
+}
+
+#' Find a conforming or proximity-matched interface
+#'
+#' Finds matching boundary facets for two Cell regions. `mesh_b = NULL` selects
+#' both parts from `mesh`; otherwise `region_b` is selected from the second mesh.
+#' See `doc/region_adjacency.md`.
+#' @param mesh A mesh containing region A.
+#' @param region_a,region_b Cell-region names.
+#' @param mesh_b Optional second mesh containing region B.
+#' @param mode `"conforming"` or `"proximity"`.
+#' @param master `"a"` or `"b"`; selects the returned facet mesh and signed-gap normal.
+#' @param gap_tolerance,angle_tolerance,overlap_tolerance Matching tolerances.
+#' @return A list with `mesh`, pair/measure/unmatched counts and `side_a`/`side_b`
+#'   matrices. Side matrices have 1-based cell ids and 0-based local-facet ordinals.
+#' @export
+mio_find_interface <- function(mesh, region_a, region_b, mesh_b = NULL,
+                               mode = "conforming", master = "a",
+                               gap_tolerance = 0, angle_tolerance = 30,
+                               overlap_tolerance = 0) {
+    .Call(R_mio_find_interface, mesh, as.character(region_a), as.character(region_b),
+          mesh_b, as.character(mode), as.character(master), as.numeric(gap_tolerance),
+          as.numeric(angle_tolerance), as.numeric(overlap_tolerance))
+}
+
+#' Project slave points to a master Cell-region boundary
+#'
+#' Projects every point in a Point region to the closest queryable master facet.
+#' See `doc/region_adjacency.md` for facet and local-coordinate conventions.
+#' @param slave_mesh Mesh containing the slave Point region.
+#' @param slave_points Point-region name.
+#' @param master_cells Master Cell-region name.
+#' @param master_mesh Optional second mesh; defaults to `slave_mesh`.
+#' @param tolerance Maximum accepted projection distance; zero derives a scale.
+#' @param require_complete Fail if any slave point is unmatched.
+#' @return A list of copied arrays, including 1-based point/cell ids, 0-based
+#'   facet ordinals, local coordinates, signed gaps, normals and unmatched ids.
+#' @export
+mio_contact_pairs <- function(slave_mesh, slave_points, master_cells,
+                              master_mesh = NULL, tolerance = 0,
+                              require_complete = FALSE) {
+    .Call(R_mio_contact_pairs, slave_mesh, as.character(slave_points), master_mesh,
+          as.character(master_cells), as.numeric(tolerance), isTRUE(require_complete))
+}
+
+#' Split a mesh along a named Side region
+#'
+#' Duplicate incident-cell fans along a Side region, preserving mesh data and
+#' regions. Polyhedron inputs are not supported. See `doc/region_adjacency.md`.
+#' @param mesh Input mesh.
+#' @param side Side-region name already present on `mesh`.
+#' @param add_cohesive Insert cohesive cells on selected two-owner facets.
+#' @return A list with the split `mesh`, `num_duplicated_points` and
+#'   `num_cohesive_cells`.
+#' @export
+mio_split_interface <- function(mesh, side, add_cohesive = FALSE) {
+    .Call(R_mio_split_interface, mesh, as.character(side), isTRUE(add_cohesive))
+}
+
 #' Quality gate
 #'
 #' Scores every cell with the quality metrics and tests `require`

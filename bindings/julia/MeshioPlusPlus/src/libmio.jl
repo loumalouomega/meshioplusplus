@@ -471,6 +471,31 @@ struct _CRegionSelector
     reserved::NTuple{2,Int64}
 end
 
+"""Mirror of C `mio_find_interface_opts`."""
+struct _CFindInterfaceOpts
+    mode::Int32
+    master::Int32
+    gap_tolerance::Cdouble
+    angle_tolerance::Cdouble
+    overlap_tolerance::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_contact_pairs_opts`."""
+struct _CContactPairsOpts
+    tolerance::Cdouble
+    require_complete::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_split_interface_opts`."""
+struct _CSplitInterfaceOpts
+    add_cohesive::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_periodic_opts` (v16.23.0): a row-major 4x4 matrix."""
 struct _CPeriodicOpts
     matrix::NTuple{16,Cdouble}
@@ -701,6 +726,15 @@ function _check_abi_layout()
     sizeof(_CRegionSelector) == 48 ||
         error("meshio++: mio_region_selector layout mismatch " *
               "($(sizeof(_CRegionSelector)) bytes)")
+    sizeof(_CFindInterfaceOpts) == 64 ||
+        error("meshio++: mio_find_interface_opts layout mismatch " *
+              "($(sizeof(_CFindInterfaceOpts)) bytes)")
+    sizeof(_CContactPairsOpts) == 48 ||
+        error("meshio++: mio_contact_pairs_opts layout mismatch " *
+              "($(sizeof(_CContactPairsOpts)) bytes)")
+    sizeof(_CSplitInterfaceOpts) == 40 ||
+        error("meshio++: mio_split_interface_opts layout mismatch " *
+              "($(sizeof(_CSplitInterfaceOpts)) bytes)")
     sizeof(_CPeriodicOpts) == 192 ||
         error("meshio++: mio_periodic_opts layout mismatch ($(sizeof(_CPeriodicOpts)) bytes)")
     sizeof(_CAgglomerateOpts) == 80 ||

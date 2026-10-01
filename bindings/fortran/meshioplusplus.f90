@@ -58,6 +58,7 @@ module meshioplusplus
     public :: MIO_MDPA_VALUE_NUMBER, MIO_MDPA_VALUE_TEXT, MIO_MDPA_VALUE_TABLE
     public :: mio_stats_report
     public :: mio_surface_quality
+    public :: mio_find_interface_result, mio_contact_pairs_result
     public :: mio_grid
     public :: mio_data_array_info
     public :: mio_field_integral_info
@@ -217,6 +218,31 @@ module meshioplusplus
         integer(c_int64_t) :: dim = -2
         integer(c_int64_t) :: tag = -2
         integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> C-layout mirror of mio_find_interface_opts.
+    type, bind(c) :: mio_find_interface_opts_t
+        integer(c_int32_t) :: mode = 0
+        integer(c_int32_t) :: master = 0
+        real(c_double) :: gap_tolerance = 0.0_c_double
+        real(c_double) :: angle_tolerance = 30.0_c_double
+        real(c_double) :: overlap_tolerance = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> C-layout mirror of mio_contact_pairs_opts.
+    type, bind(c) :: mio_contact_pairs_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int32_t) :: require_complete = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> C-layout mirror of mio_split_interface_opts.
+    type, bind(c) :: mio_split_interface_opts_t
+        integer(c_int32_t) :: add_cohesive = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_periodic_opts`; `mio_periodic_opts_init` sets
@@ -792,6 +818,10 @@ module meshioplusplus
         !> carries. `regions` returns one mio_region_info per group, with the
         !> names in `keys` and the flat int64 entries in `entries`.
         procedure :: regions => mesh_regions
+        procedure :: region_adjacency => mesh_region_adjacency
+        procedure :: find_interface => mesh_find_interface
+        procedure :: contact_pairs => mesh_contact_pairs
+        procedure :: split_interface => mesh_split_interface
         procedure :: add_region => mesh_add_region
         procedure :: compute_bandwidth => mesh_compute_bandwidth
         procedure :: equals => mesh_equals
@@ -847,6 +877,31 @@ module meshioplusplus
         procedure :: field_data_name => mesh_field_data_name
         procedure :: get_field_data => mesh_get_field_data_r1
     end type mio_mesh
+
+    !> Owned interface mesh, report values and per-source Side entries.
+    type :: mio_find_interface_result
+        type(mio_mesh) :: mesh
+        integer(c_int64_t) :: num_pairs = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: max_gap = 0.0_c_double
+        integer(c_int64_t) :: unmatched_a = 0
+        integer(c_int64_t) :: unmatched_b = 0
+        integer(c_int64_t), allocatable :: side_a(:, :)
+        integer(c_int64_t), allocatable :: side_b(:, :)
+    end type
+
+    !> Contact projection arrays; per-point coordinate arrays have shape (3,n).
+    type :: mio_contact_pairs_result
+        integer(c_int64_t), allocatable :: slave_point(:)
+        integer(c_int64_t), allocatable :: master_cell(:)
+        integer(c_int64_t), allocatable :: master_facet(:)
+        integer(c_int64_t), allocatable :: master_subfacet(:)
+        real(c_double), allocatable :: local_coordinates(:, :)
+        real(c_double), allocatable :: closest_point(:, :)
+        real(c_double), allocatable :: gap(:)
+        real(c_double), allocatable :: normal(:, :)
+        integer(c_int64_t), allocatable :: unmatched(:)
+    end type
 
     !> A multi-file / transient dataset: an ordered PLAN over a set of files
     !> (or the steps inside one multi-step file), read ONE STEP AT A TIME.
@@ -1589,6 +1644,176 @@ module meshioplusplus
             type(c_ptr), value :: output
             integer(c_int64_t), value :: dim, tag
             integer(c_int32_t), value :: keep_inputs
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_region_adjacency(h, regions, num_regions) &
+                bind(c, name="mio_region_adjacency") result(r)
+            import :: c_ptr, c_int64_t, mio_region_selector_t
+            type(c_ptr), value :: h
+            type(mio_region_selector_t), intent(in) :: regions(*)
+            integer(c_int64_t), value :: num_regions
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_find_interface_opts_init(opts) &
+                bind(c, name="mio_find_interface_opts_init")
+            import :: mio_find_interface_opts_t
+            type(mio_find_interface_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_find_interface(a, region_a, b, region_b, opts) &
+                bind(c, name="mio_find_interface") result(r)
+            import :: c_ptr, mio_region_selector_t, mio_find_interface_opts_t
+            type(c_ptr), value :: a, b
+            type(mio_region_selector_t), intent(in) :: region_a, region_b
+            type(mio_find_interface_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_find_interface_result_take_mesh(r) &
+                bind(c, name="mio_find_interface_result_take_mesh") result(h)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_find_interface_result_report(r, pairs, area, gap, unmatched_a, &
+                                                    unmatched_b) &
+                bind(c, name="mio_find_interface_result_report") result(status)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: r
+            integer(c_int64_t), intent(out) :: pairs, unmatched_a, unmatched_b
+            real(c_double), intent(out) :: area, gap
+            integer(c_int) :: status
+        end function
+
+        function c_mio_find_interface_result_side_a(r, count) &
+                bind(c, name="mio_find_interface_result_side_a") result(data)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_find_interface_result_side_b(r, count) &
+                bind(c, name="mio_find_interface_result_side_b") result(data)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: data
+        end function
+
+        subroutine c_mio_find_interface_result_free(r) &
+                bind(c, name="mio_find_interface_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        subroutine c_mio_contact_pairs_opts_init(opts) &
+                bind(c, name="mio_contact_pairs_opts_init")
+            import :: mio_contact_pairs_opts_t
+            type(mio_contact_pairs_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_contact_pairs(slave, slave_points, master, master_cells, opts) &
+                bind(c, name="mio_contact_pairs") result(r)
+            import :: c_ptr, mio_region_selector_t, mio_contact_pairs_opts_t
+            type(c_ptr), value :: slave, master
+            type(mio_region_selector_t), intent(in) :: slave_points, master_cells
+            type(mio_contact_pairs_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_contact_pairs_result_info(r, count, unmatched) &
+                bind(c, name="mio_contact_pairs_result_info") result(status)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), intent(out) :: count, unmatched
+            integer(c_int) :: status
+        end function
+
+        function c_mio_contact_pairs_slave_point(r) &
+                bind(c, name="mio_contact_pairs_slave_point") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_master_cell(r) &
+                bind(c, name="mio_contact_pairs_master_cell") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_master_facet(r) &
+                bind(c, name="mio_contact_pairs_master_facet") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_master_subfacet(r) &
+                bind(c, name="mio_contact_pairs_master_subfacet") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_local_coordinates(r) &
+                bind(c, name="mio_contact_pairs_local_coordinates") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_closest_point(r) &
+                bind(c, name="mio_contact_pairs_closest_point") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_gap(r) bind(c, name="mio_contact_pairs_gap") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_normal(r) &
+                bind(c, name="mio_contact_pairs_normal") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        function c_mio_contact_pairs_unmatched(r) &
+                bind(c, name="mio_contact_pairs_unmatched") result(data)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: data
+        end function
+
+        subroutine c_mio_contact_pairs_result_free(r) &
+                bind(c, name="mio_contact_pairs_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        subroutine c_mio_split_interface_opts_init(opts) &
+                bind(c, name="mio_split_interface_opts_init")
+            import :: mio_split_interface_opts_t
+            type(mio_split_interface_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_split_interface(h, side, opts, duplicated, cohesive) &
+                bind(c, name="mio_split_interface") result(r)
+            import :: c_ptr, c_int64_t, mio_region_selector_t, mio_split_interface_opts_t
+            type(c_ptr), value :: h
+            type(mio_region_selector_t), intent(in) :: side
+            type(mio_split_interface_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: duplicated, cohesive
             type(c_ptr) :: r
         end function
 
@@ -4457,6 +4682,269 @@ contains
             return
         end if
         out%handle = res
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Return the conforming facets shared by named Cell regions. With no
+    !> names, all Cell regions are used; when there are fewer than two, cell
+    !> blocks become the groups. See doc/region_adjacency.md.
+    function mesh_region_adjacency(self, regions, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: regions(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr, out_ptr
+        type(mio_region_selector_t), allocatable :: selectors(:)
+        integer(c_int64_t) :: n
+        integer :: i
+
+        n = 0_c_int64_t
+        if (present(regions)) then
+            call c_str_array(regions, storage, cptrs, arr, n)
+        else
+            allocate (selectors(1))
+        end if
+        if (.not. allocated(selectors)) allocate (selectors(max(int(n), 1)))
+        do i = 1, int(n)
+            selectors(i)%name = cptrs(i)
+            selectors(i)%kind = 1_c_int32_t
+            selectors(i)%dim = -2_c_int64_t
+            selectors(i)%tag = -2_c_int64_t
+        end do
+        out_ptr = c_mio_region_adjacency(self%handle, selectors, n)
+        if (.not. c_associated(out_ptr)) then
+            call handle_failure('region_adjacency', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = out_ptr
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Find conforming/proximity interfaces between Cell regions. `side_a` and
+    !> `side_b` are (2,n) arrays of (global cell, local facet) ids; see doc/region_adjacency.md.
+    function mesh_find_interface(self, region_a, region_b, mesh_b, mode, master, &
+                                 gap_tolerance, angle_tolerance, overlap_tolerance, &
+                                 stat, errmsg) result(result)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: region_a, region_b
+        type(mio_mesh), intent(in), optional :: mesh_b
+        character(*), intent(in), optional :: mode, master
+        real(real64), intent(in), optional :: gap_tolerance, angle_tolerance, overlap_tolerance
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_find_interface_result) :: result
+        type(mio_region_selector_t) :: selector_a, selector_b
+        type(mio_find_interface_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_a, buf_b
+        type(c_ptr) :: mesh_b_handle, result_handle, entries_ptr
+        integer(c_int64_t), pointer :: entries(:)
+        integer(c_int64_t) :: side_count
+        integer(c_int) :: status
+
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('find_interface', 'mesh is not open', stat, errmsg)
+            return
+        end if
+        buf_a = trim(region_a)//c_null_char
+        buf_b = trim(region_b)//c_null_char
+        selector_a%name = c_loc(buf_a(1:1))
+        selector_a%kind = 1_c_int32_t
+        selector_b%name = c_loc(buf_b(1:1))
+        selector_b%kind = 1_c_int32_t
+        mesh_b_handle = c_null_ptr
+        if (present(mesh_b)) mesh_b_handle = mesh_b%handle
+
+        call c_mio_find_interface_opts_init(opts)
+        if (present(mode)) then
+            select case (trim(mode))
+            case ('conforming')
+                opts%mode = 0_c_int32_t
+            case ('proximity')
+                opts%mode = 1_c_int32_t
+            case default
+                call handle_failure('find_interface', &
+                                    'mode must be "conforming" or "proximity"', stat, errmsg)
+                return
+            end select
+        end if
+        if (present(master)) then
+            select case (trim(master))
+            case ('a')
+                opts%master = 0_c_int32_t
+            case ('b')
+                opts%master = 1_c_int32_t
+            case default
+                call handle_failure('find_interface', 'master must be "a" or "b"', stat, errmsg)
+                return
+            end select
+        end if
+        if (present(gap_tolerance)) opts%gap_tolerance = real(gap_tolerance, c_double)
+        if (present(angle_tolerance)) opts%angle_tolerance = real(angle_tolerance, c_double)
+        if (present(overlap_tolerance)) &
+            opts%overlap_tolerance = real(overlap_tolerance, c_double)
+        result_handle = c_mio_find_interface(self%handle, selector_a, mesh_b_handle, &
+                                             selector_b, opts)
+        if (.not. c_associated(result_handle)) then
+            call handle_failure('find_interface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        result%mesh%handle = c_mio_find_interface_result_take_mesh(result_handle)
+        if (.not. c_associated(result%mesh%handle)) then
+            call c_mio_find_interface_result_free(result_handle)
+            call handle_failure('find_interface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        status = c_mio_find_interface_result_report(result_handle, result%num_pairs, &
+            result%area, result%max_gap, result%unmatched_a, result%unmatched_b)
+        if (status /= 0_c_int) then
+            call result%mesh%free()
+            call c_mio_find_interface_result_free(result_handle)
+            call handle_failure('find_interface', mio_error_message(), stat, errmsg)
+            return
+        end if
+
+        entries_ptr = c_mio_find_interface_result_side_a(result_handle, side_count)
+        allocate (result%side_a(2, int(side_count)))
+        if (side_count > 0_c_int64_t) then
+            call c_f_pointer(entries_ptr, entries, [2 * int(side_count)])
+            result%side_a = reshape(entries, [2, int(side_count)])
+        end if
+        entries_ptr = c_mio_find_interface_result_side_b(result_handle, side_count)
+        allocate (result%side_b(2, int(side_count)))
+        if (side_count > 0_c_int64_t) then
+            call c_f_pointer(entries_ptr, entries, [2 * int(side_count)])
+            result%side_b = reshape(entries, [2, int(side_count)])
+        end if
+        call c_mio_find_interface_result_free(result_handle)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Project a Point region to Cell-region facets; returned id arrays are
+    !> 0-based and coordinate matrices have shape (3,n).
+    function mesh_contact_pairs(self, slave_points, master_cells, master_mesh, tolerance, &
+                                require_complete, stat, errmsg) result(result)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: slave_points, master_cells
+        type(mio_mesh), intent(in), optional :: master_mesh
+        real(real64), intent(in), optional :: tolerance
+        logical, intent(in), optional :: require_complete
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_contact_pairs_result) :: result
+        type(mio_region_selector_t) :: slave_selector, master_selector
+        type(mio_contact_pairs_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: slave_buf, master_buf
+        type(c_ptr) :: master_handle, result_handle, array_ptr
+        integer(c_int64_t), pointer :: values_i(:)
+        real(c_double), pointer :: values_d(:)
+        integer(c_int64_t) :: count, unmatched_count
+        integer(c_int) :: status
+        integer :: n
+
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('contact_pairs', 'mesh is not open', stat, errmsg)
+            return
+        end if
+        slave_buf = trim(slave_points)//c_null_char
+        master_buf = trim(master_cells)//c_null_char
+        slave_selector%name = c_loc(slave_buf(1:1))
+        slave_selector%kind = 0_c_int32_t
+        master_selector%name = c_loc(master_buf(1:1))
+        master_selector%kind = 1_c_int32_t
+        master_handle = c_null_ptr
+        if (present(master_mesh)) master_handle = master_mesh%handle
+        call c_mio_contact_pairs_opts_init(opts)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(require_complete)) opts%require_complete = merge(1_c_int32_t, 0_c_int32_t, &
+                                                                      require_complete)
+        result_handle = c_mio_contact_pairs(self%handle, slave_selector, master_handle, &
+                                            master_selector, opts)
+        if (.not. c_associated(result_handle)) then
+            call handle_failure('contact_pairs', mio_error_message(), stat, errmsg)
+            return
+        end if
+        status = c_mio_contact_pairs_result_info(result_handle, count, unmatched_count)
+        if (status /= 0_c_int) then
+            call c_mio_contact_pairs_result_free(result_handle)
+            call handle_failure('contact_pairs', mio_error_message(), stat, errmsg)
+            return
+        end if
+        n = int(count)
+        allocate (result%slave_point(n), result%master_cell(n), result%master_facet(n), &
+                  result%master_subfacet(n), result%gap(n), result%local_coordinates(3, n), &
+                  result%closest_point(3, n), result%normal(3, n), &
+                  result%unmatched(int(unmatched_count)))
+
+        if (n > 0) then
+            array_ptr = c_mio_contact_pairs_slave_point(result_handle)
+            call c_f_pointer(array_ptr, values_i, [n])
+            result%slave_point = values_i
+            array_ptr = c_mio_contact_pairs_master_cell(result_handle)
+            call c_f_pointer(array_ptr, values_i, [n])
+            result%master_cell = values_i
+            array_ptr = c_mio_contact_pairs_master_facet(result_handle)
+            call c_f_pointer(array_ptr, values_i, [n])
+            result%master_facet = values_i
+            array_ptr = c_mio_contact_pairs_master_subfacet(result_handle)
+            call c_f_pointer(array_ptr, values_i, [n])
+            result%master_subfacet = values_i
+            array_ptr = c_mio_contact_pairs_gap(result_handle)
+            call c_f_pointer(array_ptr, values_d, [n])
+            result%gap = values_d
+        end if
+        if (unmatched_count > 0_c_int64_t) then
+            array_ptr = c_mio_contact_pairs_unmatched(result_handle)
+            call c_f_pointer(array_ptr, values_i, [int(unmatched_count)])
+            result%unmatched = values_i
+        end if
+        if (n > 0) then
+            array_ptr = c_mio_contact_pairs_local_coordinates(result_handle)
+            call c_f_pointer(array_ptr, values_d, [3 * n])
+            result%local_coordinates = reshape(values_d, [3, n])
+            array_ptr = c_mio_contact_pairs_closest_point(result_handle)
+            call c_f_pointer(array_ptr, values_d, [3 * n])
+            result%closest_point = reshape(values_d, [3, n])
+            array_ptr = c_mio_contact_pairs_normal(result_handle)
+            call c_f_pointer(array_ptr, values_d, [3 * n])
+            result%normal = reshape(values_d, [3, n])
+        end if
+        call c_mio_contact_pairs_result_free(result_handle)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Split point fans along a Side region. Polyhedron input is rejected.
+    function mesh_split_interface(self, side, add_cohesive, num_duplicated_points, &
+                                  num_cohesive_cells, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: side
+        logical, intent(in), optional :: add_cohesive
+        integer(int64), intent(out), optional :: num_duplicated_points, num_cohesive_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_region_selector_t) :: selector
+        type(mio_split_interface_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: side_buf
+        type(c_ptr) :: result_handle
+        integer(c_int64_t) :: duplicated, cohesive
+
+        side_buf = trim(side)//c_null_char
+        selector%name = c_loc(side_buf(1:1))
+        selector%kind = 2_c_int32_t
+        call c_mio_split_interface_opts_init(opts)
+        if (present(add_cohesive)) opts%add_cohesive = &
+            merge(1_c_int32_t, 0_c_int32_t, add_cohesive)
+        result_handle = c_mio_split_interface(self%handle, selector, opts, duplicated, cohesive)
+        if (.not. c_associated(result_handle)) then
+            call handle_failure('split_interface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = result_handle
+        if (present(num_duplicated_points)) num_duplicated_points = int(duplicated, int64)
+        if (present(num_cohesive_cells)) num_cohesive_cells = int(cohesive, int64)
         call clear_status(stat, errmsg)
     end function
 

@@ -73,6 +73,8 @@ If `stat` is **absent** and the call fails, the message is printed and the progr
 
 ## API summary
 
+`m%region_adjacency([regions(:)])` returns conforming shared facets; `m%find_interface(region_a, region_b [, mesh_b, mode, master, tolerances])` matches Cell-region boundaries and returns an owned facet mesh plus 0-based local-facet Side entries; `m%contact_pairs(slave_points, master_cells [, master_mesh, tolerance, require_complete])` projects a Point region and returns copied arrays; and `m%split_interface(side [, add_cohesive, counts])` splits point fans along a Side region. Global point/cell ids in Fortran results are 1-based, but local-facet ordinals remain 0-based. See [interfaces and contact](/region_adjacency).
+
 | | |
 | --- | --- |
 | Lifecycle | `m%create()` (implicit in `read`/setters), `m%read(path [, format])`, `m%write(path [, format])`, `m%free()`, `m%is_valid()` |

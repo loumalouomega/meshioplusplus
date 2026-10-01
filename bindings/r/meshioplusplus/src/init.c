@@ -77,6 +77,10 @@ extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, S
 extern SEXP R_mio_compute_curvature(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_normals(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_feature_edges(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_region_adjacency(SEXP, SEXP);
+extern SEXP R_mio_find_interface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_contact_pairs(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_split_interface(SEXP, SEXP, SEXP);
 extern SEXP R_mio_hausdorff_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_quality(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -229,6 +233,10 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_compute_curvature, 8),
     CALLDEF(R_mio_compute_normals, 7),
     CALLDEF(R_mio_feature_edges, 7),
+    CALLDEF(R_mio_region_adjacency, 2),
+    CALLDEF(R_mio_find_interface, 9),
+    CALLDEF(R_mio_contact_pairs, 6),
+    CALLDEF(R_mio_split_interface, 3),
     CALLDEF(R_mio_hausdorff_distance, 5),
     CALLDEF(R_mio_check_quality, 4),
     CALLDEF(R_mio_repair, 8),

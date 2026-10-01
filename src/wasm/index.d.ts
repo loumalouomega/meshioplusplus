@@ -2129,6 +2129,60 @@ export interface MeshioPlusPlusModule {
    */
   editRegions(mesh: Mesh, edits: RegionEdit | RegionEdit[]): Mesh;
 
+  /** Return conforming facets shared by Cell regions (or cell blocks when needed). */
+  regionAdjacency(mesh: Mesh, regions?: Array<string | RegionSelector>): Mesh;
+
+  /** Find conforming or proximity-matched facets; side entries are (cell, local facet). */
+  findInterface(
+    meshA: Mesh,
+    regionA: string | RegionSelector,
+    regionB: string | RegionSelector,
+    options?: {
+      meshB?: Mesh;
+      mode?: "conforming" | "proximity";
+      master?: "a" | "b";
+      gapTolerance?: number;
+      angleTolerance?: number;
+      overlapTolerance?: number;
+    },
+  ): {
+    mesh: Mesh;
+    report: {
+      numPairs: number;
+      area: number;
+      maxGap: number;
+      unmatchedA: number;
+      unmatchedB: number;
+      sideA: Array<[number, number]>;
+      sideB: Array<[number, number]>;
+    };
+  };
+
+  /** Project a Point region onto Cell-region facets. */
+  contactPairs(
+    slaveMesh: Mesh,
+    slavePoints: string | RegionSelector,
+    masterCells: string | RegionSelector,
+    options?: { masterMesh?: Mesh; tolerance?: number; requireComplete?: boolean },
+  ): {
+    slavePoint: Int32Array;
+    masterCell: Int32Array;
+    masterFacet: Int32Array;
+    masterSubfacet: Int32Array;
+    localCoordinates: Float64Array;
+    closestPoint: Float64Array;
+    gap: Float64Array;
+    normal: Float64Array;
+    unmatched: Int32Array;
+  };
+
+  /** Split a mesh along a Side region, optionally inserting cohesive cells. */
+  splitInterface(
+    mesh: Mesh,
+    side: string | RegionSelector,
+    options?: { addCohesive?: boolean },
+  ): { mesh: Mesh; report: { numDuplicatedPoints: number; numCohesiveCells: number } };
+
   /**
    * The master node each node of the `slave` region maps onto under the
    * row-major 4x4 affine `matrix` (16 numbers), within `atol`. `slave` is

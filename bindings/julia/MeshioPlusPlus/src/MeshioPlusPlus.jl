@@ -93,7 +93,8 @@ export cell_data_num_blocks
 # Building
 export set_points!, add_cell_block!, add_point_data!, append_cell_data!, add_field_data!
 export add_polygon_block!, add_polyhedron_block!
-export regions, add_region!, remove_region!, edit_regions, match_periodic_nodes
+export regions, add_region!, remove_region!, edit_regions, region_adjacency, find_interface
+export contact_pairs, split_interface, match_periodic_nodes
 
 # Operations
 export extract_surface, extract_skin, attach_quality, quality_counts

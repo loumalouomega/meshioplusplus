@@ -42,6 +42,7 @@ from ._feature_edges import feature_edges
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
 from ._hessian import hessian
+from ._interfaces import find_interface, region_adjacency, split_interface
 from ._isosurface import isosurface
 from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
@@ -146,6 +147,17 @@ _OP_TABLE = {
         "Region",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
+    "RegionAdjacency": ("Regions",),
+    "FindInterface": (
+        "RegionA",
+        "RegionB",
+        "Mode",
+        "Master",
+        "GapTolerance",
+        "AngleTolerance",
+        "OverlapTolerance",
+    ),
+    "SplitInterface": ("Region", "AddCohesive"),
     "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
     "Repair": (
         "FixOrientation",
@@ -687,6 +699,41 @@ def _apply_step(mesh, step, steps, warnings):
             edit["tag"] = int(_number(step, "Tag", -1))
         mesh = edit_regions(mesh, [edit])
         entry["NumRegions"] = len(mesh.regions)
+    elif op == "RegionAdjacency":
+        mesh = region_adjacency(mesh, _svec(step, "Regions") or None)
+        entry["NumFacets"] = _total_cells(mesh)
+        entry["Measure"] = sum(
+            float(values.sum()) for values in mesh.cell_data["interface:measure"]
+        )
+    elif op == "FindInterface":
+        mesh, report = find_interface(
+            mesh,
+            _text(step, "RegionA", ""),
+            _text(step, "RegionB", ""),
+            mode=_text(step, "Mode", "conforming"),
+            master=_text(step, "Master", "a"),
+            gap_tolerance=_number(step, "GapTolerance", 0.0),
+            angle_tolerance=_number(step, "AngleTolerance", 30.0),
+            overlap_tolerance=_number(step, "OverlapTolerance", 0.0),
+            return_report=True,
+        )
+        for key, target in (
+            ("num_pairs", "NumPairs"),
+            ("area", "Area"),
+            ("max_gap", "MaxGap"),
+            ("unmatched_a", "UnmatchedA"),
+            ("unmatched_b", "UnmatchedB"),
+        ):
+            entry[target] = report[key]
+    elif op == "SplitInterface":
+        mesh, report = split_interface(
+            mesh,
+            _text(step, "Region", ""),
+            add_cohesive=_flag(step, "AddCohesive", False),
+            return_report=True,
+        )
+        entry["NumDuplicatedPoints"] = report["num_duplicated_points"]
+        entry["NumCohesiveCells"] = report["num_cohesive_cells"]
     elif op == "Normals":
         # An absent SplitAngle means one smooth normal per point; a number is
         # the crease angle in degrees, and the split appends points.
