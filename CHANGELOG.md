@@ -8,6 +8,14 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.28.0 (2026-09-29)
+
+**Fuzz-found reader fixes, from the CI `fuzz` run 36549174052. ABI 20, unchanged.**
+
+- **Fixed (fuzz findings):** Gmsh readers trust no header count past the file (`$PhysicalNames`, `$Nodes`, `$Elements`, `$NodeData`), and a binary `$MeshFormat` data size above 8 bytes is refused instead of overrunning a stack integer; Tecplot no longer reserves a zone's announced value count up front and refuses an implausibly large `VARSHARELIST` range; VTU no longer reserves a compressed array's size from block sizes larger than the data. Minimized inputs are under `tests/fuzz/regressions/`.
+- Roadmap: status line updated and the delivered v16.27.0 wording removed from §4 and the sequencing list.
+- Version bump across the ten files (minor 27 -> 28), the `find_package` pins, `src/viewer/package-lock.json`, and the four `BASELINE_HASHES` (verified against the old hashes with the old version substituted back in: no unrelated output change). Regenerated the single header.
+
 ## v16.27.0 (2026-09-29)
 
 **Roadmap §4 "Core parity across surfaces", first part: what Kratos needs.** The MDPA blocks the C++ core refused, named Side regions that survive operations, and regions in XDMF, VTU and VTP. **ABI 19 -> 20** (Tier A: `MdpaInfo` grows). This is the first of four stacked releases; the ABI stays at 20 until the stack lands.

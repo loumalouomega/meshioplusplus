@@ -939,11 +939,6 @@ def abi_tiers():
 
 
 def roadmap_map():
-    c = Canvas(
-        960,
-        810,
-        "The roadmap at a glance: open items by section, in recommended order, shaded by effort",
-    )
     columns = [
         (
             "§1 format reach",
@@ -988,10 +983,13 @@ def roadmap_map():
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
-                ("time resampling · agglomerate", "M"),
+                ("find_interface · adjacency", "M"),
+                ("contact_pairs · split_interface", "M"),
+                ("conformity · intersections", "M"),
+                ("select · thickness · mirror", "M"),
                 ("Delaunay backend (optional)", "L"),
             ],
-            [(0, 1)],
+            [(0, 1), (2, 3)],
         ),
         (
             "§6 ecosystem reach",
@@ -1018,10 +1016,22 @@ def roadmap_map():
     col_w = 176
     col_gap = (960 - 48 - per_row * col_w) / (per_row - 1)
     box_h = 40
+    # A row is as tall as its tallest column, so a long column pushes the rows
+    # below it down rather than running into them.
+    row_tops = [40]
+    for start in range(0, len(columns), per_row):
+        tallest = max(len(items) for _, items, _ in columns[start : start + per_row])
+        row_tops.append(row_tops[-1] + 10 + tallest * (box_h + 10) + 20)
+    legend_y = row_tops[-1] + 6
+    c = Canvas(
+        960,
+        legend_y + 34,
+        "The roadmap at a glance: open items by section, in recommended order, shaded by effort",
+    )
     for k, (title, items, deps) in enumerate(columns):
         row, col = divmod(k, per_row)
         x = 24 + col * (col_w + col_gap)
-        y0 = 40 + row * 250
+        y0 = row_tops[row]
         c.text(x, y0, title, size=P.SIZE_SMALL, anchor="start", weight="700")
         centres = []
         for i, (label, effort) in enumerate(items):
@@ -1064,7 +1074,7 @@ def roadmap_map():
             c.arrow(ax, ay, ax, ay + 10, stroke=P.INK, sw=1.4)
     c.legend(
         24,
-        776,
+        legend_y,
         [
             (P.EFFORT["S"], "S: days"),
             (P.EFFORT["M"], "M: a couple of weeks"),
@@ -1074,7 +1084,7 @@ def roadmap_map():
     )
     c.label(
         24,
-        796,
+        legend_y + 20,
         "dashed border: a design pass or research spike must precede the item; an arrow means the lower box depends on the one above it",
         anchor="start",
     )
