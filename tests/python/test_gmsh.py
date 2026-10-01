@@ -120,7 +120,8 @@ def test_native_periodic_selective_and_metadata(version, tmp_path):
     path = tmp_path / "periodic.msh"
     path.write_bytes(periodic_fixture(version))
     mesh = _core.gmsh_read(str(path), points_only=True, arrays=[])
-    assert not mesh.cells
+    assert mesh.point_data == {} and mesh.cell_data == {}
+    assert mesh.cells  # points_only suppresses data, not connectivity.
     assert_periodic(mesh)
     metadata = meshioplusplus.read_metadata(path, file_format="gmsh")
     assert metadata["num_points"] == 4
@@ -137,8 +138,11 @@ def test_native_periodic_time_step(version, tmp_path, periodic_native_only):
     with path.open("a") as f:
         for step in [0, 1]:
             f.write(
-                f'$NodeData\n1\n"signal"\n1\n{step}\n3\n{step}\n1\n1\n1 {step + 10}\n$EndNodeData\n'
+                f'$NodeData\n1\n"signal"\n1\n{step}\n3\n{step}\n1\n{len(mesh.points)}\n'
             )
+            for i in range(len(mesh.points)):
+                f.write(f"{i + 1} {step + 10}\n")
+            f.write("$EndNodeData\n")
     back = meshioplusplus.read(path, file_format="gmsh", time_step=-1)
     assert back.point_data["signal"][0] == 11
     for a, b in zip(mesh.gmsh_periodic, back.gmsh_periodic):

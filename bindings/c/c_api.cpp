@@ -1129,7 +1129,7 @@ mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int
     return guarded([&]() -> mio_status {
         const auto& gmsh = capi_gmsh(info);
         if (index < 0 || static_cast<std::size_t>(index) >= capi_gmsh_count(gmsh, section))
-            throw std::invalid_argument("meshio++: gmsh side-channel index out of range");
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: gmsh side-channel index out of range");
         if (section == MIO_GMSH_BOUNDING_ENTITIES && field == 0) {
             const auto& tags = gmsh.mBoundingEntities[static_cast<std::size_t>(index)];
             return array_out(
@@ -1155,7 +1155,7 @@ mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int
             if (field == 2)
                 return array_out(link.mNodePairs, data, dtype, ndim, shape);
         }
-        throw std::invalid_argument("meshio++: unknown gmsh side-channel array field");
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: unknown gmsh side-channel array field");
     });
 }
 
