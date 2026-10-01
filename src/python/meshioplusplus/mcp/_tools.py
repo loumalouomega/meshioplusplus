@@ -772,6 +772,8 @@ def tool_convert(
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
 
+    XDMF time-series reads preserve fixed shared point/cell/side regions.
+
     MDPA-to-MDPA conversion preserves nested geometry/constraint membership
     as raw file ids; constraints remain opaque and other formats may drop it.
     Gmsh input versions 2.2/4.0/4.1, including periodic links, use the native
@@ -978,7 +980,11 @@ def tool_sequence(
     input_format=None,
     output_format=None,
 ):
-    """Run a multi-file / transient sequence: fan-in, fan-out or N->N."""
+    """Run a multi-file / transient sequence: fan-in, fan-out or N->N.
+
+    XDMF fan-in stores the first input mesh's fixed point/cell/side regions;
+    later step meshes do not change their membership.
+    """
     from .. import run_sequence_pipeline, sequence_entries
 
     resolved_in, resolved_out = _resolve_sequence_io(

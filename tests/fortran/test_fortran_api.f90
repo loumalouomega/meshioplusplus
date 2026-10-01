@@ -1275,6 +1275,9 @@ program test_fortran_api
         real(real64) :: t, values(5)
         real(real64), allocatable :: got(:)
         character(:), allocatable :: series_path
+        type(mio_region_info), allocatable :: shared_regions(:)
+        character(len=STRBUF_LEN), allocatable :: shared_keys(:)
+        integer(int64), allocatable :: shared_entries(:)
         integer :: st, k
 
         series_path = prefix//'_series.xdmf'
@@ -1339,6 +1342,15 @@ program test_fortran_api
             call check(st == 0, 'read series step')
             if (st /= 0) cycle
             call check(back%num_points() == 5_int64, 'series step has the shared grid')
+            shared_regions = back%regions(keys=shared_keys, entries=shared_entries, stat=st)
+            call check(st == 0, 'series shared regions read')
+            call check(size(shared_regions) == 2, 'series retains both shared regions')
+            if (size(shared_regions) == 2) then
+                call check(trim(shared_keys(1)) == 'fixed', 'series point region name')
+                call check(all(shared_entries(1:2) == [1_int64, 4_int64]), &
+                           'series point region entries are one-based')
+                call check(shared_regions(2)%tag == 42_int64, 'series cell region tag')
+            end if
             call back%get_point_data('temperature', got, stat=st)
             call check(st == 0, 'series step point_data')
             if (st /= 0) cycle

@@ -1,5 +1,7 @@
 # Sequences: multi-file and transient datasets
 
+XDMF fan-in preserves the first input mesh's point/cell/side regions as fixed sets on the shared topology, through both the native and Python writers. Regions on later step meshes do not change that membership. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
 Since v9.12.0 meshio++ can treat a **set of files** — or the steps inside one multi-step file — as one ordered logical dataset. That is how transient solver output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most of the 84 formats have to express time, since only a minority carry several steps natively.
 
 ```bash

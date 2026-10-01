@@ -1041,6 +1041,10 @@ end
     mktempdir() do dir
         path = joinpath(dir, "series.xdmf")
         m = fixture()
+        add_region!(m, "anchors", :point, [1, 5]; dim=0, tag=7)
+        add_region!(m, "empty", :cell, Int64[]; dim=3, tag=21)
+        add_region!(m, "wall", :side, reshape(Int64[1, 1], 2, 1); dim=2, tag=9)
+        expected_regions = Dict(r.name => r for r in regions(m))
 
         s = XdmfSeries(path; data_format="XML")
         @test isopen(s)
@@ -1076,6 +1080,13 @@ end
             back = mio.read(path; options=ReadOptions(time_step=k - 1))
             @test num_points(back) == 5
             @test point_data(back, "temperature") ≈ Float64[t + i for i in 1:5]
+            shared = regions(back)
+            @test length(shared) == 3
+            for r in shared
+                expected = expected_regions[r.name]
+                @test (r.kind, r.dim, r.tag) == (expected.kind, expected.dim, expected.tag)
+                @test r.entries == expected.entries
+            end
             close(back)
         end
 

@@ -1,5 +1,7 @@
 # R
 
+XDMF series `mio_xdmf_series_write_points_cells(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
 The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
 
 meshio++ ships an R package, `meshioplusplus`, layered on the [C API](/c_api) — the same flat C library the [Fortran](/fortran) and [Julia](/julia) bindings sit on:

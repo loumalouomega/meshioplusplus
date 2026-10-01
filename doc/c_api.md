@@ -1,5 +1,7 @@
 # C API
 
+The existing XDMF series `mio_xdmf_series_write_points_cells` call persists the mesh's fixed point/cell/side regions once with the shared topology. All steps, including raw-array and appended steps, reuse them; no ABI additions are needed. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
 Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces without welding, appended raw/base64 arrays, UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI write inline arrays; codec availability follows the configured native build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary. No new ABI options are required. See [formats](formats.md).
 
 The C++ core also ships as an installable shared library, `libmeshioplusplus`, with a stable pure-C99 header — the natural entry point for HPC codes written in C (and the foundation of the [Fortran interface](/fortran)). Like the [WebAssembly binding](/wasm), it is a flat, whole-mesh API over the same C++ core, built exclusively on the uniform mesh API, so it works identically under every [mesh backend](/cpp_backends).

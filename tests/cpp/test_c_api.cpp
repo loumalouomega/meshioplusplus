@@ -3316,6 +3316,11 @@ TEST(CApi, XdmfTimeSeries) {
 
     const std::string path = mt::temp_path(".xdmf");
 
+    const int64_t anchors[2] = {0, 4};
+    const int64_t wall[2] = {0, 1};
+    ASSERT_EQ(mio_mesh_add_region(m, "anchors", MIO_REGION_POINT, 0, 7, anchors, 2), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(m, "wall", MIO_REGION_SIDE, 2, 9, wall, 2), MIO_OK);
+
     mio_xdmf_series* s = mio_xdmf_series_create(path.c_str(), "XML", -1);
     ASSERT_NE(s, nullptr) << mio_last_error();
     ASSERT_EQ(mio_xdmf_series_write_points_cells(s, m), MIO_OK) << mio_last_error();
@@ -3348,6 +3353,20 @@ TEST(CApi, XdmfTimeSeries) {
         mio_mesh* out = mio_read_ex(path.c_str(), nullptr, &opts);
         ASSERT_NE(out, nullptr) << mio_last_error();
         EXPECT_EQ(mio_mesh_num_points(out), 5);
+        mio_regions* regions = mio_regions_create(out);
+        ASSERT_NE(regions, nullptr);
+        ASSERT_EQ(mio_regions_count(regions), 2);
+        mio_region_info region_info{};
+        ASSERT_EQ(mio_regions_info(regions, 1, &region_info), MIO_OK);
+        EXPECT_EQ(region_info.kind, MIO_REGION_SIDE);
+        EXPECT_EQ(region_info.tag, 9);
+        int64_t entry_count = 0;
+        const auto* entries = mio_regions_entries(regions, 1, &entry_count);
+        ASSERT_NE(entries, nullptr);
+        EXPECT_EQ(entry_count, 2);
+        EXPECT_EQ(entries[0], 0);
+        EXPECT_EQ(entries[1], 1);
+        mio_regions_free(regions);
         const void* data = nullptr;
         mio_dtype dt = MIO_FLOAT64;
         int32_t ndim = 0;

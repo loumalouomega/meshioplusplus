@@ -41,7 +41,7 @@ default) means no compression. Ignored by the other formats.}
 \item{series}{A \code{mio_xdmf_series} object.}
 
 \item{mesh}{A \code{mio_mesh}. \code{mio_xdmf_series_write_points_cells()}
-uses only its points and cells; \code{mio_xdmf_series_write_data()} uses only
+uses its points, cells and fixed regions; \code{mio_xdmf_series_write_data()} uses only
 its \code{point_data}/\code{cell_data}, so a solver can pass the very object
 it updates in place. Its cell blocks must match those of the static grid.}
 

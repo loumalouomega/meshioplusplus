@@ -33,6 +33,7 @@
 
 // Project includes (private, not installed)
 #include "xdmf_doc.hpp"
+#include "xdmf_sets.hpp"
 
 // Project includes
 #include "meshioplusplus/formats/xdmf.hpp"
@@ -656,6 +657,10 @@ void xdmf_write_set(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, cons
         xdmf_add_ids(set, rStore, *pLocal);
 }
 
+}  // namespace
+
+namespace xdmfdetail {
+
 void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh) {
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
@@ -691,7 +696,7 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
     }
 }
 
-}  // namespace
+}  // namespace xdmfdetail
 
 void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
                 int gzip_level) {
@@ -768,7 +773,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
 
     // Regions as <Set>s (see "<Set> <-> regions" above).
-    xdmf_write_sets(grid, store, rMesh);
+    xdmfdetail::xdmf_write_sets(grid, store, rMesh);
 
     if (!doc.save_file(rPath.c_str(), "  "))
         throw WriteError("XDMF: could not write " + rPath);

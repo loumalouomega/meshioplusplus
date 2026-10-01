@@ -924,7 +924,7 @@ export type XdmfDataFormat = 'HDF' | 'XML' | 'Binary';
  */
 export interface XdmfTimeSeriesWriter {
   /**
-   * Write the static grid -- the points and cell blocks every step shares.
+    * Write the static grid -- points, cell blocks and fixed regions shared by every step.
    * Only geometry and connectivity are used; any data on `mesh` is ignored,
    * because in a series data belongs to a step. Call exactly once, before the
    * first `writeData`.

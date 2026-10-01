@@ -911,6 +911,10 @@ class _SeriesWriter:
         if not self._wrote_grid:
             if self._cpp:
                 self._impl.write_points_cells(mesh)
+            elif not self._vtkhdf:
+                self._impl.write_points_cells(
+                    mesh.points, mesh.cells, regions=mesh.regions
+                )
             else:
                 self._impl.write_points_cells(mesh.points, mesh.cells)
             self._wrote_grid = True

@@ -148,6 +148,8 @@ A gmsh dimension-0 physical group tags `vertex` *cells*, not points, so it becom
 
 ### XDMF sets
 
+For [XDMF time series](xdmf_time_series.md#shared-named-regions), sets are stored once on the shared mesh grid and inherited by every step. Native `WritePointsCells(mesh)` persists the mesh's regions; Python's `write_points_cells(points, cells, regions=mesh.regions)` does the same and `reader.regions` exposes them after `read_points_cells()`. Membership is fixed, including empty groups; `WriteData` does not replace it with the step mesh's regions. XML, Binary and HDF use the same point/cell/side encoding as single-grid files.
+
 A region is one `<Set Name="…">` in the grid. A `point` region is a `SetType="Node"` set of point indices and a `cell` region a `SetType="Cell"` set of cell indices, in file order, which is block-major. A `side` region uses the XDMF model's own layout for a `Face` or `Edge` set: the first `<DataItem>` holds the cell indices and the second the cell-local face or edge indices. meshio++ numbers facets its own way (see the numbering above), since the XDMF model leaves that to the producer. A side region that spans 3-D and 2-D cells is written as one `Face` set and one `Edge` set with the same name, and read back as one region. `dim` and `tag` ride in `<Information Name="meshio++:dim" Value="…"/>` and `meshio++:tag` children, written only when not -1. A `Grid` set, or an attribute on a set, is skipped with a warning.
 
 ### The VTK XML convention

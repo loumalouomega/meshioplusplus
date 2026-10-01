@@ -143,7 +143,7 @@ end
     write_points_cells!(series, mesh)
 
 Write the static grid every step shares. Call once, before the first
-[`write_data!`](@ref). Only the mesh's points and cells are used.
+[`write_data!`](@ref). Uses the mesh's points, cells and fixed named regions.
 """
 function write_points_cells!(s::XdmfSeries, m::Mesh)
     _check(ccall(_sym(:mio_xdmf_series_write_points_cells), Cint,

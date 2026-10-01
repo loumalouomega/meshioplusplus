@@ -4216,7 +4216,7 @@ The C++ core's writer, reachable explicitly. It is *not* what
 reference writer and keeps its own behaviour untouched.
 
 Unlike the Python writer, both methods take a whole ``Mesh``:
-``write_points_cells`` uses its points/cells, ``write_data`` its
+``write_points_cells`` uses its points/cells/fixed regions, ``write_data`` its
 ``point_data``/``cell_data``. Usable as a context manager; ``__exit__``
 finalizes.
 

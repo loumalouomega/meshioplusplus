@@ -3877,7 +3877,7 @@ MIO_API mio_xdmf_series* mio_xdmf_series_create_ex(const char* path,
 
 /**
  * Write the static grid every step shares. Call once, before the first
- * mio_xdmf_series_write_data(). Only the mesh's points and cells are used.
+ * mio_xdmf_series_write_data(). Uses the mesh's points, cells and fixed regions.
  */
 MIO_API mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series,
                                                       const mio_mesh* mesh);

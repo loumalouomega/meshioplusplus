@@ -1929,7 +1929,7 @@ print.mio_format_info <- function(x, ...) {
 #'   means no compression. Ignored by the other formats.
 #' @param series A `mio_xdmf_series` object.
 #' @param mesh A `mio_mesh`. `mio_xdmf_series_write_points_cells()` uses only
-#'   its points and cells; `mio_xdmf_series_write_data()` uses only its
+#'   its points, cells and fixed regions; `mio_xdmf_series_write_data()` uses only its
 #'   `point_data`/`cell_data`, so a solver can pass the very object it updates
 #'   in place. Its cell blocks must match those of the static grid.
 #' @param time The step's time value.

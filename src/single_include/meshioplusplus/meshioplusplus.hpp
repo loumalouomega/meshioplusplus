@@ -22309,11 +22309,12 @@ public:
     /**
      * @brief Write the static grid: the points and cell blocks every step shares.
      *
-     * Only geometry and connectivity are consumed; any data the mesh carries is
-     * ignored here, because in a transient series data belongs to a step. Call
+     * Geometry, connectivity and named regions are consumed. Regions are fixed
+     * with the shared mesh and stored once as XDMF Sets; point/cell data belongs
+     * to a step and is ignored here. Call
      * exactly once, before the first `WriteData`.
      *
-     * @param rMesh The mesh whose points/cells define the series.
+     * @param rMesh The mesh whose points/cells/regions define the series.
      * @throws WriteError if called twice, if the points exceed dimension 3, or
      *         if a cell type has no XDMF spelling.
      */
@@ -36452,6 +36453,16 @@ inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
 }  // namespace xdmfdetail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/xdmf_doc.hpp =====
+// ===== begin src/cpp/src/formats/xdmf_sets.hpp =====
+
+namespace meshioplusplus::xdmfdetail {
+
+// Private: pugixml must not appear in installed headers. Both XDMF writers use
+// the same region encoding and heavy-data store, including empty named sets.
+void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh);
+
+}  // namespace meshioplusplus::xdmfdetail
+// ===== end src/cpp/src/formats/xdmf_sets.hpp =====
 // ===== begin src/cpp/src/operations/smooth_odt.hpp =====
 /**
  * @file operations/smooth_odt.hpp
@@ -133315,6 +133326,10 @@ void xdmf_write_set(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, cons
         xdmf_add_ids(set, rStore, *pLocal);
 }
 
+}  // namespace
+
+namespace xdmfdetail {
+
 void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh) {
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
@@ -133350,7 +133365,7 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
     }
 }
 
-}  // namespace
+}  // namespace xdmfdetail
 
 void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
                 int gzip_level) {
@@ -133427,7 +133442,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
 
     // Regions as <Set>s (see "<Set> <-> regions" above).
-    xdmf_write_sets(grid, store, rMesh);
+    xdmfdetail::xdmf_write_sets(grid, store, rMesh);
 
     if (!doc.save_file(rPath.c_str(), "  "))
         throw WriteError("XDMF: could not write " + rPath);
@@ -133553,7 +133568,7 @@ struct XdmfTimeSeriesWriter::Impl {
         // TimeSeriesReader) resolve the collection structurally and skip this.
         pugi::xml_node inc = grid.append_child("xi:include");
         const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
-                                "\"]/*[self::Topology or self::Geometry])";
+                                "\"]/*[self::Topology or self::Geometry or self::Set])";
         inc.append_attribute("xpointer") = ptr.c_str();
         pugi::xml_node time = grid.append_child("Time");
         time.append_attribute("Value") = xts_format_time(Time).c_str();
@@ -133727,6 +133742,8 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
         xts_add_data_item(topo, *mImpl->mStore, cd);
     }
 
+    // Regions belong to the shared topology, not the transient field arrays.
+    xdmfdetail::xdmf_write_sets(grid, *mImpl->mStore, rMesh);
     mImpl->mHasMesh = true;
 }
 

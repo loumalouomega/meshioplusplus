@@ -252,7 +252,8 @@ def _register_conversion(server: FastMCP) -> None:
         is 4.1, or 2.2 via gmsh22; both preserve periodic links. Serial VTK XML
         inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64 arrays natively;
         Multiple pieces concatenate without welding; VTP/VTS/VTR/VTI retain
-        inline output. Legacy VTK structured datasets also read natively."""
+        inline output. Legacy VTK structured datasets also read natively.
+        XDMF time-series reads preserve fixed shared point/cell/side regions."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -376,6 +377,8 @@ def _register_conversion(server: FastMCP) -> None:
         writes one file per step (fan-out); a plain path writes one multi-step
         file (fan-in, only for xdmf, gid, usd, vtkhdf, pvd and femap -- any
         other format fails by name rather than silently keeping step 0).
+        XDMF fan-in stores the first mesh's fixed point/cell/side regions;
+        later steps do not change their membership.
         Ordering is natural-numeric, so out_9 precedes
         out_10. mode optionally asserts 'sequence'/'fan-in'/'fan-out'.
         See doc/sequences.md."""

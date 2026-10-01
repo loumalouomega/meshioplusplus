@@ -254,6 +254,49 @@ def test_femap_series_through_the_sequence_tool(tmp_path):
     assert np.allclose(last.point_data["u"], 2.0)
 
 
+@pytest.mark.parametrize("native_writer", [False, True])
+def test_xdmf_shared_regions_through_sequence_and_convert_tools(
+    tmp_path, monkeypatch, native_writer
+):
+    from meshioplusplus import _core
+
+    if native_writer and not hasattr(_core, "XdmfTimeSeriesWriter"):
+        pytest.skip("native series writer unavailable")
+    if not native_writer:
+        monkeypatch.delattr(_core, "XdmfTimeSeriesWriter", raising=False)
+    monkeypatch.chdir(tmp_path)
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    paths = []
+    for k in range(2):
+        mesh = meshioplusplus.Mesh(
+            points,
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"u": np.full(3, float(k))},
+            regions=[
+                meshioplusplus.Region("anchors", "point", [0, 2], dim=0, tag=7),
+                meshioplusplus.Region("edge", "side", [[0, 1]], dim=1, tag=9),
+                meshioplusplus.Region("empty", "cell", [], dim=2, tag=21),
+            ],
+        )
+        path = str(tmp_path / f"step_{k}.xdmf")
+        meshioplusplus.write(path, mesh, data_format="XML")
+        paths.append(path)
+    report = _tools.tool_sequence(
+        input_paths=paths, output_path=str(tmp_path / "series.xdmf"), times=[0.0, 1.0]
+    )
+    assert len(report["steps_plan"]) == 2
+    target = str(tmp_path / "last.xdmf")
+    _tools.tool_convert(report["output_path"], target, time_step=-1)
+    restored = meshioplusplus.read(target)
+    assert np.allclose(restored.point_data["u"], 1.0)
+    assert sorted((r.name, r.kind, r.dim, r.tag) for r in restored.regions) == sorted(
+        (r.name, r.kind, r.dim, r.tag) for r in mesh.regions
+    )
+    expected = {r.name: r.entries for r in mesh.regions}
+    for actual in restored.regions:
+        np.testing.assert_array_equal(actual.entries, expected[actual.name])
+
+
 def test_mfem_grid_functions_convert_both_ways(tmp_path):
     import pathlib
 

@@ -912,6 +912,10 @@ test_that("a transient XDMF series round-trips", {
   path <- file.path(dir, "series.xdmf")
 
   m <- fixture()
+  mio_add_region(m, "anchors", "point", c(1, 5), dim = 0L, tag = 7)
+  mio_add_region(m, "empty", "cell", integer(0), dim = 3L, tag = 21)
+  mio_add_region(m, "wall", "side", matrix(c(1, 1), nrow = 2), dim = 2L, tag = 9)
+  expected_regions <- mio_regions(m)
   s <- mio_xdmf_series(path, data_format = "XML")
   expect_s3_class(s, "mio_xdmf_series")
   expect_true(mio_xdmf_series_is_open(s))
@@ -948,6 +952,7 @@ test_that("a transient XDMF series round-trips", {
     back <- mio_read(path, time_step = k - 1L)
     expect_equal(mio_num_points(back), 5)
     expect_equal(as.vector(mio_point_data(back, "temperature")), times[k] + seq_len(5))
+    expect_equal(mio_regions(back), expected_regions)
   }
 
   # An unknown data format is an error carrying the C API's own message.

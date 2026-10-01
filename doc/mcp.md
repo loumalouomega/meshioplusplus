@@ -1,5 +1,7 @@
 # MCP server
 
+XDMF series reads and conversions preserve fixed shared point/cell/side regions, and `sequence` fan-in to XDMF writes the first input mesh's regions alongside the static topology. Later step regions do not change that fixed membership. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
 Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 80+ mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
 
 ```bash

@@ -73,6 +73,8 @@ Numeric Mixed-topology type indices (a subset shared with the per-type names): `
 
 `<Set>` elements ↔ [named regions](../regions.md#xdmf-sets) (v16.27.0): `SetType` `Node` → `point`, `Cell` → `cell`, `Face`/`Edge` → `side`. A side region spanning 3-D and 2-D cells is written as one `Face` and one `Edge` set and read back as one region; `dim` and `tag` ride in `<Information>` children. Read by both engines.
 
+Time-series writers use the same encoding for regions on the shared static mesh, including empty named groups. Every time step inherits them through XInclude, and native reads retain them even with `points_only=True` or an array filter. Python's array-based series writer takes `regions=` in `write_points_cells`, and `TimeSeriesReader.regions` is populated by `read_points_cells`. Region membership is fixed for the series; step-local or time-varying sets are not implemented. See [shared named regions](../xdmf_time_series.md#shared-named-regions).
+
 ## Quirks & limitations
 
 - **XDMF2 vs XDMF3**: dispatched by the major version digit in the root `Version` attribute. **The C++ core only implements version 3** — any XDMF2 file (`Version="2.x"`) always falls back to Python.

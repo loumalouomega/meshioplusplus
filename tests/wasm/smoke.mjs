@@ -4372,7 +4372,11 @@ step('XDMF time series (HDF): 3 steps, and the .h5 companion is written too', ()
     assert.equal(typeof w.finalized, 'function');
     assert.equal(typeof w.close, 'function');
 
-    w.writePointsCells(tet);
+    w.writePointsCells({ ...tet, regions: [
+        { name: 'anchors', kind: 'point', dim: 0, tag: 7, entries: Int32Array.from([0, 3]) },
+        { name: 'wall', kind: 'side', dim: 2, tag: 9, entries: Int32Array.from([0, 1]) },
+        { name: 'empty', kind: 'cell', entries: new Int32Array(0) },
+    ] });
     assert.equal(w.numSteps(), 0);
     for (let k = 0; k < 3; ++k) w.writeData(k * 0.5, seriesStep(k));
     assert.equal(w.numSteps(), 3);
@@ -4406,6 +4410,12 @@ step('XDMF time series (HDF): reads back with the right per-step values', () => 
         assert.deepEqual(Array.from(back.points), Array.from(tet.points));
         assert.deepEqual(Array.from(back.point_data.temperature), [k, k + 1, k + 2, k + 3]);
         assert.deepEqual(Array.from(back.cell_data.material[0]), [10 * k]);
+        assert.equal(back.regions.length, 3);
+        const wall = back.regions.find(r => r.name === 'wall');
+        assert.equal(wall.tag, 9);
+        assert.deepEqual(Array.from(wall.entries), [0, 1]);
+        assert.deepEqual(Array.from(back.regions.find(r => r.name === 'anchors').entries), [0, 3]);
+        assert.equal(back.regions.find(r => r.name === 'empty').entries.length, 0);
     }
     // -1 is the last step.
     assert.deepEqual(

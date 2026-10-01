@@ -8152,7 +8152,7 @@ contains
     end function
 
     !> Write the static grid every step shares. Call once, before the first
-    !> `write_data`. Only the mesh's points and cells are used.
+    !> `write_data`. Uses the mesh's points, cells and fixed named regions.
     subroutine xdmf_series_write_points_cells(self, mesh, stat, errmsg)
         class(mio_xdmf_series), intent(in) :: self
         class(mio_mesh), intent(in) :: mesh
