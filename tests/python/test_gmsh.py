@@ -11,6 +11,14 @@ import meshioplusplus
 from . import helpers
 
 
+@pytest.fixture
+def periodic_native_only(monkeypatch):
+    from meshioplusplus import _fallback
+
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    monkeypatch.setattr(_fallback, "_strict", True)
+
+
 def gmsh_periodic():
     mesh = copy.deepcopy(helpers.quad_mesh)
     trns = [0] * 16  # just for io testing
@@ -20,6 +28,245 @@ def gmsh_periodic():
         [1, (2, 1), trns, [[5, 0], [4, 1], [4, 2]]],
     ]
     return mesh
+
+
+def periodic_fixture(version="4.1", binary=False, width=8):
+    """Independent sparse-node file, including ordered duplicate periodic pairs."""
+    if version == "4.0":
+        data = gmsh40_fixture(binary, width)
+    else:
+        data = f"$MeshFormat\n{version} {int(binary)} {width}\n".encode()
+        if binary:
+            data += struct.pack("=i", 1) + b"\n"
+        data += b"$EndMeshFormat\n$Nodes\n"
+        tags = [30, 10, 40, 20]
+        points = [[1, 0, 0], [0, 0, 0], [1, 1, 0], [0, 1, 0]]
+        size = "I" if width == 4 else "Q"
+        if version == "2.2":
+            data += b"4\n"
+            for tag, xyz in zip(tags, points):
+                data += (
+                    struct.pack("=i3d", tag, *xyz)
+                    if binary
+                    else (" ".join(map(str, [tag, *xyz])) + "\n").encode()
+                )
+        elif binary:
+            data += struct.pack("=" + size * 4, 1, 4, 10, 40)
+            data += struct.pack("=3i" + size, 2, 22, 0, 4)
+            data += struct.pack("=" + size * 4, *tags)
+            data += struct.pack("=12d", *np.ravel(points))
+        else:
+            data += b"1 4 10 40\n2 22 0 4\n30 10 40 20\n1 0 0\n0 0 0\n1 1 0\n0 1 0\n"
+        data += b"\n$EndNodes\n$Elements\n"
+        if version == "2.2":
+            data += b"1\n"
+            data += (
+                struct.pack("=10i", 3, 1, 2, 1, 7, 22, 10, 30, 40, 20)
+                if binary
+                else b"1 3 2 7 22 10 30 40 20\n"
+            )
+        elif binary:
+            data += struct.pack("=" + size * 4, 1, 1, 1, 1)
+            data += struct.pack("=3i" + size, 2, 22, 3, 1)
+            data += struct.pack("=" + size * 5, 1, 10, 30, 40, 20)
+        else:
+            data += b"1 1 1 1\n2 22 3 1\n1 10 30 40 20\n"
+        data += b"\n$EndElements\n"
+    affine = np.eye(4).ravel()
+    affine[3] = 1
+    pairs = [30, 10, 40, 20, 30, 10]
+    data += b"$Periodic\n"
+    if not binary or version == "2.2":
+        data += b"2\n1 11 33\n"
+        if version == "4.1":
+            data += b"0\n"
+        data += b"0\n1 12 33\n"
+        data += b"16\n" if version == "4.1" else b"Affine "
+        data += (" ".join(map(str, affine)) + "\n3\n30 10\n40 20\n30 10\n").encode()
+    else:
+        size = "I" if width == 4 else "Q"
+        data += struct.pack("=" + (size if version == "4.1" else "i"), 2)
+        data += struct.pack("=3i", 1, 11, 33)
+        if version == "4.1":
+            data += struct.pack("=" + size, 0)
+        data += struct.pack("=" + size, 0)
+        data += struct.pack("=3i", 1, 12, 33)
+        data += struct.pack(
+            "=" + size, 16 if version == "4.1" else 2 ** (width * 8) - 1
+        )
+        data += struct.pack("=16d", *affine)
+        data += struct.pack("=" + size, 3)
+        data += struct.pack("=" + (size if version == "4.1" else "i") * 6, *pairs)
+    return data + b"\n$EndPeriodic\n"
+
+
+def assert_periodic(mesh):
+    assert len(mesh.gmsh_periodic) == 2
+    first, link = mesh.gmsh_periodic
+    assert first[0] == 1 and first[1] == (11, 33)
+    assert first[2] is None or len(first[2]) == 0
+    assert first[3].shape == (0, 2)
+    assert link[0] == 1 and link[1] == (12, 33)
+    affine = np.eye(4).ravel()
+    affine[3] = 1
+    np.testing.assert_array_equal(link[2], affine)
+    np.testing.assert_array_equal(link[3], [[0, 1], [2, 3], [0, 1]])
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+def test_native_periodic_selective_and_metadata(version, tmp_path):
+    from meshioplusplus import _core
+
+    path = tmp_path / "periodic.msh"
+    path.write_bytes(periodic_fixture(version))
+    mesh = _core.gmsh_read(str(path), points_only=True, arrays=[])
+    assert not mesh.cells
+    assert_periodic(mesh)
+    metadata = meshioplusplus.read_metadata(path, file_format="gmsh")
+    assert metadata["num_points"] == 4
+    assert metadata["fell_back_to_full_read"]
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+def test_native_periodic_time_step(version, tmp_path, periodic_native_only):
+    from meshioplusplus.gmsh.main import write as reference_write
+
+    path = tmp_path / "transient.msh"
+    mesh = gmsh_periodic()
+    reference_write(path, mesh, fmt_version=version, binary=False)
+    with path.open("a") as f:
+        for step in [0, 1]:
+            f.write(
+                f'$NodeData\n1\n"signal"\n1\n{step}\n3\n{step}\n1\n1\n1 {step + 10}\n$EndNodeData\n'
+            )
+    back = meshioplusplus.read(path, file_format="gmsh", time_step=-1)
+    assert back.point_data["signal"][0] == 11
+    for a, b in zip(mesh.gmsh_periodic, back.gmsh_periodic):
+        np.testing.assert_array_equal(a[3], b[3])
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("width", [4, 8])
+def test_native_periodic_sparse_layouts(
+    version, binary, width, tmp_path, periodic_native_only
+):
+    from meshioplusplus import _core
+    from meshioplusplus.gmsh.main import read as reference_read
+
+    path = tmp_path / "periodic.msh"
+    path.write_bytes(periodic_fixture(version, binary, width))
+    assert_periodic(_core.gmsh_read(str(path)))
+    assert_periodic(meshioplusplus.read(path, file_format="gmsh"))
+    # The 4.0 reference uses host long; only its host-width binary is supported.
+    if version != "4.0" or not binary or width == np.dtype("L").itemsize:
+        assert_periodic(reference_read(path))
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+def test_native_periodic_cross_writers(version, binary, tmp_path, periodic_native_only):
+    from meshioplusplus import _core
+    from meshioplusplus.gmsh.main import read as reference_read
+    from meshioplusplus.gmsh.main import write as reference_write
+
+    path = tmp_path / "source.msh"
+    path.write_bytes(periodic_fixture(version))
+    mesh = _core.gmsh_read(str(path))
+    mesh.cell_data["gmsh:physical"] = [
+        np.full(len(c.data), 7, dtype=np.int32) for c in mesh.cells
+    ]
+    for writer in [reference_write, meshioplusplus.gmsh.write]:
+        output = tmp_path / "output.msh"
+        writer(output, mesh, fmt_version=version, binary=binary)
+        assert_periodic(_core.gmsh_read(str(output)))
+        assert_periodic(reference_read(output))
+    # Metadata owns its buffers independently of the source mesh lifetime.
+    link = mesh.gmsh_periodic[1]
+    del mesh
+    np.testing.assert_array_equal(link[3][-1], [0, 1])
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_native_periodic41_grouped_node_order(binary, tmp_path):
+    from meshioplusplus import _core
+    from meshioplusplus.gmsh.main import read as reference_read
+
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+        [("line", [[0, 2]]), ("line", [[1, 3]])],
+        point_data={"gmsh:dim_tags": np.array([[1, 1], [1, 2], [1, 1], [1, 2]])},
+        cell_data={
+            "gmsh:geometrical": [np.array([1]), np.array([2])],
+            "gmsh:physical": [np.array([7]), np.array([8])],
+        },
+        gmsh_periodic=[[1, (2, 1), np.eye(4).ravel(), np.array([[1, 0], [3, 2]])]],
+    )
+    path = tmp_path / "grouped.msh"
+    _core.gmsh41_write(str(path), mesh, binary, None)
+    for reader in [_core.gmsh_read, reference_read]:
+        back = reader(str(path))
+        # Writer groups nodes by entity. Rows change, but paired coordinates do not.
+        pairs = back.gmsh_periodic[0][3]
+        np.testing.assert_array_equal(
+            back.points[pairs], mesh.points[mesh.gmsh_periodic[0][3]]
+        )
+    np.testing.assert_array_equal(mesh.gmsh_periodic[0][3], [[1, 0], [3, 2]])
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+def test_reference_periodic_writer_native_read(version, binary, tmp_path):
+    from meshioplusplus import _core
+    from meshioplusplus.gmsh.main import write as reference_write
+
+    mesh = gmsh_periodic()
+    path = tmp_path / "reference.msh"
+    reference_write(path, mesh, fmt_version=version, binary=binary)
+    back = _core.gmsh_read(str(path))
+    for a, b in zip(mesh.gmsh_periodic, back.gmsh_periodic):
+        np.testing.assert_array_equal(a[3], b[3])
+
+
+@pytest.mark.parametrize("pairs", [[[99, 0]], [[-1, 0]], [[0.5, 1]], [0, 1]])
+@pytest.mark.parametrize("version", ["2.2", "4.1"])
+def test_native_periodic_writer_rejects_bad_indices(pairs, version, tmp_path):
+    from meshioplusplus import _core
+
+    mesh = gmsh_periodic()
+    mesh.gmsh_periodic[0][3] = pairs
+    path = str(tmp_path / "invalid.msh")
+    with pytest.raises((ValueError, meshioplusplus.WriteError)):
+        if version == "2.2":
+            _core.gmsh22_write(path, mesh, False)
+        else:
+            _core.gmsh41_write(path, mesh, False, None)
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+def test_periodic_missing_terminator_and_duplicates(version, tmp_path):
+    from meshioplusplus import _core
+    from meshioplusplus.gmsh.main import read as reference_read
+
+    data = periodic_fixture(version)
+    section = data[data.index(b"$Periodic") :]
+    path = tmp_path / "invalid.msh"
+    for invalid in [data.replace(b"$EndPeriodic", b"$Other"), data + section]:
+        path.write_bytes(invalid)
+        for reader in [_core.gmsh_read, reference_read]:
+            with pytest.raises(meshioplusplus.ReadError):
+                reader(str(path))
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+def test_public_periodic_writer_never_falls_back_to_invalid_metadata(version, tmp_path):
+    mesh = gmsh_periodic()
+    mesh.gmsh_periodic[0][3] = [[99, 0]]
+    path = tmp_path / "unchanged.msh"
+    path.write_text("unchanged")
+    with pytest.raises(meshioplusplus.WriteError):
+        meshioplusplus.gmsh.write(path, mesh, fmt_version=version)
+    assert path.read_text() == "unchanged"
 
 
 @pytest.mark.parametrize(

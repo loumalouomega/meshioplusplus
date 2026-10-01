@@ -98,6 +98,55 @@ end
     end
 end
 
+@testset "Gmsh periodic side channel" begin
+    mktempdir() do dir
+        path = joinpath(dir, "periodic.msh")
+        Base.write(path, """\$MeshFormat
+4.0 0 8
+\$EndMeshFormat
+\$Nodes
+1 3
+22 2 0 3
+30 1 0 0
+10 0 0 0
+20 0 1 0
+\$EndNodes
+\$Elements
+1 1
+22 2 2 1
+90 10 30 20
+\$EndElements
+\$Periodic
+1
+1 12 33
+3
+30 10
+20 10
+30 10
+\$EndPeriodic
+""")
+        @test_throws MeshioError mio.read(path; format="gmsh")
+        mesh, info = read_with_info(path; format="gmsh")
+        @test format_name(info) == "gmsh"
+        copied = gmsh_info(info)
+        @test isempty(copied.bounding_entities)
+        @test copied.periodic[1].entity == (1, 12, 33)
+        @test isempty(copied.periodic[1].affine)
+        @test copied.periodic[1].node_pairs == reshape(Int64[1, 2, 3, 2, 1, 2], 2, 3)
+        for format in ("gmsh", "gmsh22")
+            output = joinpath(dir, "output.msh")
+            write_with_info(mesh, info, output; format)
+            back, back_info = read_with_info(output; format="gmsh")
+            @test gmsh_info(back_info).periodic == copied.periodic
+            close(back); close(back_info)
+        end
+        @test_throws MeshioError mdpa_info(info)
+        close(mesh); close(info)
+        @test copied.periodic[1].node_pairs[2, 2] == 2
+        @test_throws MeshioError gmsh_info(info)
+    end
+end
+
 @testset "column-major shape identity" begin
     m = fixture()
     p = points(m)

@@ -774,8 +774,8 @@ def tool_convert(
 
     MDPA-to-MDPA conversion preserves nested geometry/constraint membership
     as raw file ids; constraints remain opaque and other formats may drop it.
-    Gmsh input versions 2.2/4.0/4.1 use the native reader; periodic input
-    still needs the Python fallback. Gmsh output is 4.1, or 2.2 via gmsh22.
+    Gmsh input versions 2.2/4.0/4.1, including periodic links, use the native
+    reader. Gmsh output is 4.1, or 2.2 via gmsh22; both preserve periodic links.
 
     ``grid_functions`` (``{name: path}``) reads MFEM ``.gf`` files onto an MFEM
     input mesh; ``patran_results`` (``{name: path}``) reads Patran 2.5 result

@@ -113,4 +113,142 @@ $EndElements
     return bytes;
 }
 
+// Two links: absent affine/empty pairs, then translation and ordered duplicate
+// pairs. File node tags (30,10,40,20) map to rows (0,1,2,3).
+inline std::string gmsh_periodic_section(int Version, bool Binary, int Width = 8) {
+    std::string bytes = "$Periodic\n";
+    const bool text = !Binary || Version == 22;
+    auto put_i = [&](std::int32_t v) {
+        if (text)
+            bytes += std::to_string(v) + " ";
+        else
+            bytes.append(reinterpret_cast<const char*>(&v), 4);
+    };
+    auto put_size = [&](std::uint64_t v) {
+        if (text)
+            bytes += std::to_string(v) + "\n";
+        else
+            bytes.append(reinterpret_cast<const char*>(&v), Width);
+    };
+    auto put_double = [&](double v) {
+        if (text)
+            bytes += std::to_string(v) + " ";
+        else
+            bytes.append(reinterpret_cast<const char*>(&v), 8);
+    };
+    if (Version == 41)
+        put_size(2);
+    else {
+        put_i(2);
+        if (text)
+            bytes += "\n";
+    }
+    for (int i = 0; i < 2; ++i) {
+        for (int tag : {1, 11 + i, 33})
+            put_i(tag);
+        if (text)
+            bytes += "\n";
+        if (Version == 41)
+            put_size(i ? 16 : 0);
+        else if (i) {
+            if (text)
+                bytes += "Affine ";
+            else
+                put_size(UINT64_MAX);
+        }
+        if (i) {
+            for (int c = 0; c < 16; ++c)
+                put_double(c % 5 == 0 || c == 3 ? 1.0 : 0.0);
+            if (text)
+                bytes += "\n";
+        }
+        put_size(i ? 3 : 0);
+        if (i)
+            for (int tag : {30, 10, 40, 20, 30, 10}) {
+                if (Version == 41)
+                    put_size(tag);
+                else
+                    put_i(tag);
+            }
+        if (text)
+            bytes += "\n";
+    }
+    bytes += "\n$EndPeriodic\n";
+    return bytes;
+}
+
+inline std::string gmsh_periodic_fixture(int Version, bool Binary, int Width = 8) {
+    if (Version == 40) {
+        auto base = gmsh40_fixture(Binary, Width);
+        // The 4.1 writer cannot synthesize one shared physical entity from
+        // multiple 4.0 curve blocks. Keep raw physical tags but no named regions
+        // here; the separate 4.0 fixture tests their membership.
+        const auto start = base.find("$PhysicalNames");
+        const auto end = base.find("$EndPhysicalNames\n") + 18;
+        base.erase(start, end - start);
+        return base + gmsh_periodic_section(40, Binary, Width);
+    }
+    std::string bytes = "$MeshFormat\n" + std::string(Version == 22 ? "2.2" : "4.1") + " " +
+                        (Binary ? "1" : "0") + " " + std::to_string(Width) + "\n";
+    auto put_i = [&](std::int32_t v) { bytes.append(reinterpret_cast<const char*>(&v), 4); };
+    auto put_size = [&](std::uint64_t v) {
+        bytes.append(reinterpret_cast<const char*>(&v), Width);
+    };
+    auto put_double = [&](double v) { bytes.append(reinterpret_cast<const char*>(&v), 8); };
+    if (Binary) {
+        put_i(1);
+        bytes += "\n";
+    }
+    bytes += "$EndMeshFormat\n$Nodes\n";
+    if (!Binary) {
+        if (Version == 22)
+            bytes += "4\n30 1 0 0\n10 0 0 0\n40 1 1 0\n20 0 1 0\n";
+        else
+            bytes += "1 4 10 40\n2 22 0 4\n30 10 40 20\n1 0 0\n0 0 0\n1 1 0\n0 1 0\n";
+    } else {
+        if (Version == 22)
+            bytes += "4\n";
+        else {
+            for (int v : {1, 4, 10, 40})
+                put_size(v);
+            for (int v : {2, 22, 0})
+                put_i(v);
+            put_size(4);
+            for (int v : {30, 10, 40, 20})
+                put_size(v);
+        }
+        const int tags[4] = {30, 10, 40, 20};
+        const double points[4][3] = {{1, 0, 0}, {0, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+        for (int i = 0; i < 4; ++i) {
+            if (Version == 22)
+                put_i(tags[i]);
+            for (double v : points[i])
+                put_double(v);
+        }
+        bytes += "\n";
+    }
+    bytes += "$EndNodes\n$Elements\n";
+    if (!Binary)
+        bytes +=
+            Version == 22 ? "1\n1 3 2 7 22 10 30 40 20\n" : "1 1 1 1\n2 22 3 1\n1 10 30 40 20\n";
+    else {
+        if (Version == 22) {
+            bytes += "1\n";
+            for (int v : {3, 1, 2, 1, 7, 22, 10, 30, 40, 20})
+                put_i(v);
+        } else {
+            for (int v : {1, 1, 1, 1})
+                put_size(v);
+            for (int v : {2, 22, 3})
+                put_i(v);
+            put_size(1);
+            for (int v : {1, 10, 30, 40, 20})
+                put_size(v);
+        }
+        bytes += "\n";
+    }
+    bytes += "$EndElements\n";
+    return bytes + gmsh_periodic_section(Version, Binary, Width);
+}
+
 }  // namespace mt

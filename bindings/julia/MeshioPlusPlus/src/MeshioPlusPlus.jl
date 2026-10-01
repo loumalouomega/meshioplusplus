@@ -70,7 +70,7 @@ end
 
 # Handles, errors, borrows
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
-export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info
+export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info
 export ReadOptions, MeshMetadata, DiffReport
 
 # Introspection

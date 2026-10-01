@@ -60,6 +60,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -262,7 +263,7 @@ struct mio_read_metadata {
 // accessors check the alternative they need, so a handle is never misread.
 struct mio_format_info {
     std::string mFormat;
-    std::variant<std::monostate, meshioplusplus::MdpaInfo> mInfo;
+    std::variant<std::monostate, meshioplusplus::MdpaInfo, meshioplusplus::GmshInfo> mInfo;
 };
 
 namespace {
@@ -1031,6 +1032,16 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
         if (!path || !info)
             throw std::invalid_argument("meshio++: path/info is NULL");
         const std::string fmt = capi_resolve_read_format(path, format);
+        if (fmt == "gmsh") {
+            auto handle = std::make_unique<mio_format_info>();
+            handle->mFormat = fmt;
+            meshioplusplus::GmshInfo gmsh;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::read_gmsh(path, gmsh, capi_read_options(opts))});
+            handle->mInfo = std::move(gmsh);
+            *info = handle.release();
+            return mesh.release();
+        }
         if (fmt == "mdpa") {
             auto handle = std::make_unique<mio_format_info>();
             handle->mFormat = fmt;
@@ -1056,11 +1067,18 @@ mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const cha
         if (!info)
             return mio_write(path, mesh, format);
         const std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
-        if (fmt != info->mFormat)
+        if (fmt != info->mFormat && !(fmt == "gmsh22" && info->mFormat == "gmsh"))
             return fail(MIO_ERR_INVALID_ARG, "meshio++: a '" + info->mFormat +
                                                  "' side channel cannot be written as '" + fmt +
                                                  "'");
         meshioplusplus::detail::provenance_begin_write();
+        if (const auto* p_gmsh = std::get_if<meshioplusplus::GmshInfo>(&info->mInfo)) {
+            if (fmt == "gmsh22")
+                meshioplusplus::write_gmsh22(path, mesh->mMesh, true, *p_gmsh);
+            else
+                meshioplusplus::write_gmsh41(path, mesh->mMesh, true, *p_gmsh);
+            return MIO_OK;
+        }
         if (const auto* p_mdpa = std::get_if<meshioplusplus::MdpaInfo>(&info->mInfo)) {
             meshioplusplus::write_mdpa(path, mesh->mMesh, *p_mdpa);
             return MIO_OK;
@@ -1079,6 +1097,66 @@ int64_t mio_format_info_format(const mio_format_info* info, char* buf, int64_t b
 
 void mio_format_info_free(mio_format_info* info) {
     delete info;
+}
+
+namespace {
+const meshioplusplus::GmshInfo& capi_gmsh(const mio_format_info* pInfo) {
+    if (!pInfo)
+        throw std::invalid_argument("meshio++: format info handle is NULL");
+    const auto* info = std::get_if<meshioplusplus::GmshInfo>(&pInfo->mInfo);
+    if (!info)
+        throw std::invalid_argument("meshio++: not a gmsh side channel");
+    return *info;
+}
+std::size_t capi_gmsh_count(const meshioplusplus::GmshInfo& rInfo, int section) {
+    if (section == MIO_GMSH_BOUNDING_ENTITIES)
+        return rInfo.mBoundingEntities.size();
+    if (section == MIO_GMSH_PERIODIC)
+        return rInfo.mPeriodic.size();
+    throw std::invalid_argument("meshio++: unknown gmsh side-channel section");
+}
+}  // namespace
+
+int64_t mio_gmsh_info_count(const mio_format_info* info, int32_t section) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_gmsh_count(capi_gmsh(info), section));
+    });
+}
+
+mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                               int32_t field, const void** data, mio_dtype* dtype, int32_t* ndim,
+                               int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        const auto& gmsh = capi_gmsh(info);
+        if (index < 0 || static_cast<std::size_t>(index) >= capi_gmsh_count(gmsh, section))
+            throw std::invalid_argument("meshio++: gmsh side-channel index out of range");
+        if (section == MIO_GMSH_BOUNDING_ENTITIES && field == 0) {
+            const auto& tags = gmsh.mBoundingEntities[static_cast<std::size_t>(index)];
+            return array_out(
+                meshioplusplus::NDArray::MakeView(
+                    meshioplusplus::DType::Int32, {tags.size()},
+                    reinterpret_cast<std::byte*>(const_cast<std::int32_t*>(tags.data()))),
+                data, dtype, ndim, shape);
+        }
+        if (section == MIO_GMSH_PERIODIC) {
+            const auto& link = gmsh.mPeriodic[static_cast<std::size_t>(index)];
+            if (field == 0)
+                return array_out(meshioplusplus::NDArray::MakeView(
+                                     meshioplusplus::DType::Int32, {3},
+                                     reinterpret_cast<std::byte*>(
+                                         const_cast<std::int32_t*>(link.mEntityTags.data()))),
+                                 data, dtype, ndim, shape);
+            if (field == 1)
+                return array_out(
+                    meshioplusplus::NDArray::MakeView(
+                        meshioplusplus::DType::Float64, {link.mAffine.size()},
+                        reinterpret_cast<std::byte*>(const_cast<double*>(link.mAffine.data()))),
+                    data, dtype, ndim, shape);
+            if (field == 2)
+                return array_out(link.mNodePairs, data, dtype, ndim, shape);
+        }
+        throw std::invalid_argument("meshio++: unknown gmsh side-channel array field");
+    });
 }
 
 namespace {
@@ -2456,8 +2534,8 @@ mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_op
         options.mTargetRatio = opts->target_ratio;
         options.mTargetFaces = opts->target_faces;
         options.mMaxError = opts->max_error;
-        options.mPlacement =
-            meshioplusplus::decimate_placement_from_name(opts->placement ? opts->placement : "optimal");
+        options.mPlacement = meshioplusplus::decimate_placement_from_name(
+            opts->placement ? opts->placement : "optimal");
         options.mPreserveBoundary = opts->preserve_boundary != 0;
         options.mPreserveFeatures = opts->preserve_features != 0;
         options.mFeatureAngleDeg = opts->feature_angle;
@@ -2568,7 +2646,8 @@ mio_decimate_volume_result* capi_decimate_volume(
     const mio_mesh* pMesh, const meshioplusplus::DecimateVolumeOptions& rOptions) {
     if (!pMesh)
         throw meshioplusplus::ReadError("meshio++: mesh is NULL");
-    meshioplusplus::DecimateVolumeResult r = meshioplusplus::decimate_volume(pMesh->mMesh, rOptions);
+    meshioplusplus::DecimateVolumeResult r =
+        meshioplusplus::decimate_volume(pMesh->mMesh, rOptions);
     auto* out = new mio_decimate_volume_result{};
     out->mMesh = mio_mesh{std::move(r.mMesh)};
     out->mPointMap = std::move(r.mPointMap);
@@ -2615,7 +2694,7 @@ void mio_decimate_volume_opts_init(mio_decimate_volume_opts* opts) {
 }
 
 mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
-                                                    const mio_decimate_volume_opts* opts) {
+                                                   const mio_decimate_volume_opts* opts) {
     return guarded_ptr(
         static_cast<mio_decimate_volume_result*>(nullptr), [&]() -> mio_decimate_volume_result* {
             if (!opts)
@@ -2638,7 +2717,7 @@ mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
 }
 
 static_assert(sizeof(mio_decimate_volume_opts) == 96,
-             "mio_decimate_volume_opts grew outside its reserved tail");
+              "mio_decimate_volume_opts grew outside its reserved tail");
 
 const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result) {
     return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
@@ -3084,8 +3163,8 @@ mio_mesh* mio_tensor_invariants(const mio_mesh* mesh, mio_data_location location
         meshioplusplus::TensorInvariantsOptions opts;
         opts.location = data_location_of(location);
         opts.names = data_name_list(names, count);
-        opts.outputs = static_cast<meshioplusplus::TensorInvariant>(outputs == 0 ? MIO_TINV_ALL
-                                                                                 : outputs);
+        opts.outputs =
+            static_cast<meshioplusplus::TensorInvariant>(outputs == 0 ? MIO_TINV_ALL : outputs);
         opts.prefix = prefix ? prefix : "";
         opts.suffix = suffix ? suffix : "";
         opts.overwrite = overwrite != 0;
@@ -3632,8 +3711,9 @@ mio_status mio_mesh_add_polygon_block(mio_mesh* mesh, const char* cell_type, int
         if (mio_status s = poly_check_nodes(nodes, num_nodes); s != MIO_OK)
             return s;
         // The C arrays are already the CSR the mesh stores: copy them in whole.
-        mesh->mMesh.AddPolygonBlock(cell_type, std::vector<std::int64_t>(nodes, nodes + num_nodes),
-                                    std::vector<std::int64_t>(row_offsets, row_offsets + num_cells + 1));
+        mesh->mMesh.AddPolygonBlock(
+            cell_type, std::vector<std::int64_t>(nodes, nodes + num_nodes),
+            std::vector<std::int64_t>(row_offsets, row_offsets + num_cells + 1));
         return MIO_OK;
     });
 }

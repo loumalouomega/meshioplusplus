@@ -18,7 +18,7 @@ mio.write(surf, "bracket_surface.vtu")
 The C API and C++ core this binding calls are unaffected and stay MIT. Calling that stable, non-GPL C ABI via `ccall`/`dlopen` at runtime is the standard "linking exception" case — it does not require the C library to also be GPL. See [`bindings/julia/LICENSE`](https://github.com/loumalouomega/meshioplusplus/blob/master/bindings/julia/LICENSE).
 :::
 
-`read(path; format="gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), and `$Periodic` is still unsupported. See [Gmsh](formats/gmsh.md).
+`read(path; format="gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `read_with_info` / `write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
 ## Building and installing
 
@@ -310,6 +310,8 @@ Two spellings to note. `method` is given as an underscored symbol (`:green_gauss
 `flush!` is named with a bang for the same reason `finalize!` is: `Base.flush` means "flush this IO stream". 
 
 ## Format side channels
+
+Gmsh `read_with_info` returns a `FormatInfo`; `gmsh_info(info)` copies `bounding_entities` (signed tags per 4.1 cell block) and `periodic` links `(entity, affine, node_pairs)`. `entity` is `(dimension, slave entity tag, master entity tag)` in raw file ids, `affine` has 0 or 16 coefficients, and `node_pairs` is `(2, N)` with **1-based point rows**, retaining ordering and duplicates. `write_with_info(mesh, info, path; format="gmsh")` or `"gmsh22"` restores the records. `close(info)` releases the handle, not the copies. Operations do not remap the channel; rebuild it after point/topology edits.
 
 MDPA's `mdpa_info(info).submodelparts` entries contain `name`, `data`, `tables`, `geometry_ids` and `constraint_ids`. The last two lists retain original file ids, ordering and duplicates without Julia's point-index shift; mesh operations do not remap them. `write_with_info` restores nested membership-only parts, with constraints themselves kept opaque in `raw_blocks`.
 

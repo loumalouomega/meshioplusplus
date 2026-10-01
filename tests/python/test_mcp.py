@@ -615,6 +615,24 @@ def test_convert_gmsh40_through_native_reader(
     ]
 
 
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+def test_convert_gmsh_periodic_native(version, tmp_path, monkeypatch):
+    from meshioplusplus import _fallback
+    from .test_gmsh import assert_periodic, periodic_fixture
+
+    source = tmp_path / "periodic.msh"
+    source.write_bytes(periodic_fixture(version, binary=True))
+    target = tmp_path / "output.msh"
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    monkeypatch.setattr(_fallback, "_strict", True)
+    _dump(
+        _tools.tool_convert(
+            str(source), str(target), input_format="gmsh", output_format="gmsh22"
+        )
+    )
+    assert_periodic(meshioplusplus.read(target, file_format="gmsh"))
+
+
 def test_convert_mdpa_preserves_nested_geometry_constraint_membership(tmp_path):
     source = tmp_path / "membership.mdpa"
     source.write_text(

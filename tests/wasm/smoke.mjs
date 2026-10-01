@@ -3135,6 +3135,48 @@ step('gmsh 4.0: ASCII and both binary producer count widths', () => {
     }
 });
 
+step('info: gmsh periodic sparse tags and duplicate pairs round trip', () => {
+    // A sparse-tag periodic file needs an info-bearing read, not a silent loss.
+    const periodic = `$MeshFormat
+4.0 0 8
+$EndMeshFormat
+$Nodes
+1 3
+22 2 0 3
+30 1 0 0
+10 0 0 0
+20 0 1 0
+$EndNodes
+$Elements
+1 1
+22 2 2 1
+90 10 30 20
+$EndElements
+$Periodic
+1
+1 12 33
+3
+30 10
+20 10
+30 10
+$EndPeriodic
+`;
+    m.FS.writeFile('/periodic.msh', periodic);
+    assert.throws(() => m.readMesh('/periodic.msh', 'gmsh'), /Periodic.*requires/);
+    const pm = m.readMeshSelective('/periodic.msh', { format: 'gmsh', info: true });
+    assert.deepEqual(pm.info.periodic[0].entity, [1, 12, 33]);
+    assert.deepEqual(pm.info.periodic[0].affine, []);
+    assert.deepEqual(Array.from(pm.info.periodic[0].nodePairs, Number), [0, 1, 2, 1, 0, 1]);
+    for (const format of ['gmsh', 'gmsh22']) {
+        m.writeMesh('/periodic_out.msh', pm, format);
+        const back = m.readMeshSelective('/periodic_out.msh', { format: 'gmsh', info: true });
+        assert.deepEqual(back.info.periodic, pm.info.periodic);
+    }
+    const invalid = structuredClone(pm.info);
+    invalid.periodic[0].nodePairs = [99, 0];
+    assert.throws(() => m.writeMesh('/periodic_invalid.msh', pm, 'gmsh', { info: invalid }), /point index/);
+});
+
 step('info: gmsh bounding entities survive a real $Entities round trip', () => {
     // A real gmsh 4.1 file: two tagged curves and a tagged surface.
     const msh = [

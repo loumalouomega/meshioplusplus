@@ -147,6 +147,7 @@ extern SEXP R_mio_write_with_info(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_format_info_release(SEXP);
 extern SEXP R_mio_format_info_is_open(SEXP);
 extern SEXP R_mio_format_info_format(SEXP);
+extern SEXP R_mio_gmsh_info(SEXP);
 extern SEXP R_mio_mdpa_info(SEXP);
 
 /* xdmf_series.c */
@@ -299,6 +300,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_format_info_release, 1),
     CALLDEF(R_mio_format_info_is_open, 1),
     CALLDEF(R_mio_format_info_format, 1),
+    CALLDEF(R_mio_gmsh_info, 1),
     CALLDEF(R_mio_mdpa_info, 1),
     CALLDEF(R_mio_xdmf_series_create, 5),
     CALLDEF(R_mio_xdmf_series_flush, 1),

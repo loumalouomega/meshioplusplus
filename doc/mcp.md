@@ -11,7 +11,7 @@ Then ask the agent things like *"convert `bracket.msh` to VTU, report its qualit
 
 Every tool is **file-path based**: input path(s) in, output path(s) out, a strict-JSON report back. That mirrors the CLI, keeps arbitrarily large meshes out of the protocol, and lets the agent work in its own filesystem workspace. The only state kept between calls is a [read cache](#read-cache). Nothing here is part of the C++ core, which stays dependency-free.
 
-`convert` reads non-periodic Gmsh 2.2/4.0/4.1 inputs through the native core, including 4.0 binary files with 4- or 8-byte producer counts. Gmsh output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`); periodic inputs still use the Python fallback. See [Gmsh](formats/gmsh.md).
+`convert` reads Gmsh 2.2/4.0/4.1 inputs, including periodic links, through the native core. The 4.0 binary path accepts 4- or 8-byte producer counts. Gmsh output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), both preserving periodic links; other formats need not carry Gmsh-specific metadata. See [Gmsh](formats/gmsh.md).
 
 ## Installation
 

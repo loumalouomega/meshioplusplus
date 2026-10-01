@@ -52,6 +52,8 @@ geometries, `Mesh` blocks, sub-model-part data and blocks such as
 `Constraints`. [mio_read()] refuses such a file by name (or, with
 `lenient = TRUE`, skips the content); `mio_read_with_info()` keeps it in a
 `mio_format_info` handle that `mio_write_with_info()` puts back.
+Gmsh periodic files also require this channel (even with `lenient = TRUE`);
+[mio_gmsh_info()] copies their links and 4.1 bounding-entity tags.
 }
 \details{
 `mio_mdpa_info()` **copies** an MDPA side channel into plain R values: a

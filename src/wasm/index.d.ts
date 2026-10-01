@@ -300,6 +300,9 @@ export interface UnvInfo extends AnsysUnvInfoShape {
 export interface GmshInfo {
   format: 'gmsh';
   boundingEntities: number[][];
+  /** Entity tags are raw ids; nodePairs is flattened (N,2), 0-based point rows.
+   * Ordering/duplicates survive I/O; mesh operations do not remap these rows. */
+  periodic?: { entity: number[]; affine: number[]; nodePairs: BigInt64Array | number[] }[];
 }
 
 /** Exodus's side channel: info/QA records. Read-only -- there is no Info-bearing Exodus writer. */

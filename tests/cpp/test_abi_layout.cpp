@@ -189,7 +189,9 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 // layout break, unlike v10.35.0's ABI 12, so this bumped
 // `MESHIOPLUSPLUS_ABI_VERSION` 12 -> 13 (see abi_version.hpp).
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
-MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
+// ABI 22: periodic links join the bounding-entity vector.
+MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::GmshPeriodicLink, 112, 8);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
 // blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping

@@ -16,7 +16,7 @@ mio_release(m)
 
 Every exported function is prefixed `mio_`, which keeps the package clear of base R names such as `points()`, `stats()`, `split()` and `merge()`.
 
-`mio_read(path, format = "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), and `$Periodic` is still unsupported. See [Gmsh](formats/gmsh.md).
+`mio_read(path, format = "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `mio_read_with_info` / `mio_write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
 The package is MIT-licensed like the rest of meshio++. (The sibling [Julia](/julia) binding is deliberately not — see its page.)
 
@@ -275,6 +275,8 @@ The two counters come back as `double`, like every other 64-bit integer in this 
 As elsewhere in this binding, remember to release a series *before* its tempdir is removed: a write failure during the implicit finalize in a GC finalizer cannot be reported. 
 
 ## Format side channels
+
+Gmsh `mio_read_with_info` returns a format-info handle; `mio_gmsh_info(info)` copies `bounding_entities` (signed tags per 4.1 cell block) and `periodic` links with `entity` (dimension, slave entity tag, master entity tag), `affine` (0 or 16 coefficients), and `node_pairs` (`(2, N)`, **1-based point rows**). Entity tags stay file ids; ordering and duplicates survive. All arrays use R `double`, like the other binding getters. `mio_write_with_info(mesh, info, path, format = "gmsh")` or `"gmsh22"` restores the records; `mio_format_info_release(info)` frees the handle, not the copies. Operations do not remap the channel; rebuild it after point/topology edits.
 
 MDPA's `mio_mdpa_info(info)$submodelparts` entries contain `name`, `data`, `tables`, `geometry_ids` and `constraint_ids`. Membership values retain raw file ids, ordering and duplicates without R's point-index shift (represented as `double`, as other file ids are); mesh operations do not remap them. `mio_write_with_info` restores nested membership-only parts; constraints stay opaque in `raw_blocks`.
 

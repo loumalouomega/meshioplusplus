@@ -93,7 +93,7 @@ Format inference is the shared registry's, the C API's: the extension picks the 
 
 The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/fortran_example.f90); format support and the remaining limitations (side-channel metadata) are identical to the [C API](/c_api#format-support), which this module wraps; ragged blocks are no longer among them (see the table above). Copy-getters deliver `real(real64)` regardless of the stored dtype (float32/int32/int64 are converted); Fortran on Windows/MSVC is untested in v1.
 
-`m%read(path, 'gmsh')` now accepts non-periodic 4.0 files as well as 2.2/4.1, in ASCII or binary (4- or 8-byte producer counts). Writes stay 4.1 (`gmsh`) or 2.2 (`gmsh22`); `$Periodic` remains unsupported. See [Gmsh](formats/gmsh.md).
+`m%read(path, 'gmsh')` accepts non-periodic 4.0 files as well as 2.2/4.1, in ASCII or binary (4- or 8-byte producer counts). For periodic files use `read_with_info` / `write_with_info`; writes stay 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
 ## Selective reads and file summaries
 
@@ -163,6 +163,8 @@ Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finaliz
 **Gap, deliberate:** four Python-only formats — `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) — are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them; see [formats](/formats). And there is no Fortran counterpart to the solver-array `write_data` overload. An array of derived types holding interop pointers is a poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it can `add_point_data` into before `write_data`. `MdpaInfo` is reached through `mio_format_info` (below).
 
 ## Format side channels
+
+Gmsh `read_with_info` keeps periodic links and 4.1 bounding-entity tags. `info%gmsh_count(MIO_GMSH_PERIODIC)` counts links; `gmsh_tags(section, i)` copies bounding tags (`MIO_GMSH_BOUNDING_ENTITIES`) or `[dimension, slave entity tag, master entity tag]` (`MIO_GMSH_PERIODIC`). `gmsh_affine(i)` copies 0 or 16 coefficients; `gmsh_pairs(i)` copies `(2, N)` slave/master **1-based point rows**, keeping ordering and duplicates. Item indices are 1-based, entity tags stay raw file ids. `write_with_info(path, info, 'gmsh')` or `'gmsh22'` restores the links; mesh operations do not remap them, so rebuild info after point/topology edits.
 
 MDPA sub-model-part membership is available through `info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, i, field)`: field 0 is tables, field 1 geometry ids and field 2 constraint ids. The item index `i` is 1-based, but these values are raw file ids (no index shift), retain ordering and duplicates and are not remapped by mesh operations. `write_with_info` restores nested membership-only parts; constraints remain opaque.
 

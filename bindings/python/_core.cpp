@@ -2282,8 +2282,8 @@ PYBIND11_MODULE(_core, m) {
     // See operations/feature_edges.hpp.
     m.def(
         "feature_edges",
-        [](py::object pymesh, double feature_angle, bool feature, bool boundary,
-           bool non_manifold, bool inconsistent, const std::string& region) {
+        [](py::object pymesh, double feature_angle, bool feature, bool boundary, bool non_manifold,
+           bool inconsistent, const std::string& region) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -2304,8 +2304,8 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
-        py::arg("boundary") = true, py::arg("non_manifold") = true,
-        py::arg("inconsistent") = true, py::arg("region") = "");
+        py::arg("boundary") = true, py::arg("non_manifold") = true, py::arg("inconsistent") = true,
+        py::arg("region") = "");
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See
@@ -2563,10 +2563,10 @@ PYBIND11_MODULE(_core, m) {
             out["rms_b_to_a"] = r.mRmsBtoA;
             out["num_samples_a"] = r.mNumSamplesA;
             out["num_samples_b"] = r.mNumSamplesB;
-            out["worst_point_a"] = py::make_tuple(r.mWorstPointA[0], r.mWorstPointA[1],
-                                                  r.mWorstPointA[2]);
-            out["worst_point_b"] = py::make_tuple(r.mWorstPointB[0], r.mWorstPointB[1],
-                                                  r.mWorstPointB[2]);
+            out["worst_point_a"] =
+                py::make_tuple(r.mWorstPointA[0], r.mWorstPointA[1], r.mWorstPointA[2]);
+            out["worst_point_b"] =
+                py::make_tuple(r.mWorstPointB[0], r.mWorstPointB[1], r.mWorstPointB[2]);
             return out;
         },
         py::arg("a"), py::arg("b"), py::arg("face_samples") = 0, py::arg("region_a") = "",
@@ -3532,21 +3532,57 @@ PYBIND11_MODULE(_core, m) {
           py::arg("path"), py::arg("columns") = std::vector<std::string>{},
           py::arg("delimiter") = "");
 
-    // Gmsh 2.2 writer / reader.
-    m.def("gmsh22_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-        meshioplusplus::write_gmsh22(path, cpp, binary);
-    });
+    auto gmsh_info_from_py = [](py::object pymesh) {
+        meshioplusplus::GmshInfo info;
+        py::object periodic = pymesh.attr("gmsh_periodic");
+        if (!periodic.is_none()) {
+            for (py::handle item : py::cast<py::sequence>(periodic)) {
+                auto row = py::cast<py::sequence>(item);
+                if (py::len(row) != 4)
+                    throw py::value_error("Gmsh periodic records must have four entries");
+                meshioplusplus::GmshPeriodicLink link;
+                auto tags = py::cast<std::array<std::int32_t, 2>>(row[1]);
+                link.mEntityTags = {py::cast<std::int32_t>(row[0]), tags[0], tags[1]};
+                if (!row[2].is_none()) {
+                    auto affine =
+                        py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(
+                            row[2]);
+                    if (!affine || affine.ndim() != 1)
+                        throw py::value_error("Gmsh periodic affine must be one-dimensional");
+                    link.mAffine.assign(affine.data(), affine.data() + affine.size());
+                }
+                auto source = py::array::ensure(row[3]);
+                if (!source || (source.dtype().kind() != 'i' && source.dtype().kind() != 'u'))
+                    throw py::value_error("Gmsh periodic pairs must contain integer indices");
+                auto pairs =
+                    py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>::ensure(
+                        source);
+                if (pairs.ndim() != 2 || pairs.shape(1) != 2)
+                    throw py::value_error("Gmsh periodic pairs must have shape (N,2)");
+                link.mNodePairs = meshioplusplus_py::view_from_numpy(pairs);
+                link.mNodePairs.MakeOwned();
+                info.mPeriodic.push_back(std::move(link));
+            }
+        }
+        return info;
+    };
+    // Gmsh writers / reader.
+    m.def("gmsh22_write",
+          [gmsh_info_from_py](const std::string& path, py::object pymesh, bool binary) {
+              meshioplusplus_py::PyMeshRefs refs;
+              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+              meshioplusplus::write_gmsh22(path, cpp, binary, gmsh_info_from_py(pymesh));
+          });
     m.def(
         "gmsh41_write",
-        [](const std::string& path, py::object pymesh, bool binary, py::object bounding_entities) {
+        [gmsh_info_from_py](const std::string& path, py::object pymesh, bool binary,
+                            py::object bounding_entities) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
             // The $Entities bounding entities cannot live on the C++ Mesh (they
             // are signed entity tags, not indices), so the shim hands them over
             // separately -- the read path's GmshInfo channel, in reverse.
-            meshioplusplus::GmshInfo info;
+            meshioplusplus::GmshInfo info = gmsh_info_from_py(pymesh);
             if (!bounding_entities.is_none()) {
                 for (py::handle blk : py::cast<py::sequence>(bounding_entities)) {
                     std::vector<std::int32_t> tags;
@@ -3563,28 +3599,46 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary"),
         py::arg("bounding_entities") = py::none());
-    m.def(
-        "gmsh_read",
-        guard_read("gmsh",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       meshioplusplus::GmshInfo info;
-                       py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
-                           path, info, core_read_options(points_only, arrays, time_step)));
-                       // The 4.1 $Entities bounding entities are signed entity tags, not
-                       // cell indices, so they ride the GmshInfo side channel and land in
-                       // cell_sets here -- where the Mesh's own predicate routes them to
-                       // the verbatim passthrough, exactly as the Python reference's do.
-                       if (!info.mBoundingEntities.empty()) {
-                           py::list blocks;
-                           for (const auto& tags : info.mBoundingEntities)
-                               blocks.append(py::array_t<std::int32_t>(
-                                   static_cast<py::ssize_t>(tags.size()), tags.data()));
-                           pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
-                       }
-                       return pymesh;
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
+    m.def("gmsh_read",
+          guard_read(
+              "gmsh",
+              [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                  meshioplusplus::GmshInfo info;
+                  py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
+                      path, info, core_read_options(points_only, arrays, time_step)));
+                  // The 4.1 $Entities bounding entities are signed entity tags, not
+                  // cell indices, so they ride the GmshInfo side channel and land in
+                  // cell_sets here -- where the Mesh's own predicate routes them to
+                  // the verbatim passthrough, exactly as the Python reference's do.
+                  if (!info.mBoundingEntities.empty()) {
+                      py::list blocks;
+                      for (const auto& tags : info.mBoundingEntities)
+                          blocks.append(py::array_t<std::int32_t>(
+                              static_cast<py::ssize_t>(tags.size()), tags.data()));
+                      pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
+                  }
+                  if (!info.mPeriodic.empty()) {
+                      py::list links;
+                      for (auto& link : info.mPeriodic) {
+                          py::list row;
+                          row.append(link.mEntityTags[0]);
+                          row.append(py::make_tuple(link.mEntityTags[1], link.mEntityTags[2]));
+                          if (link.mAffine.empty())
+                              row.append(py::none());
+                          else
+                              row.append(
+                                  py::array_t<double>(static_cast<py::ssize_t>(link.mAffine.size()),
+                                                      link.mAffine.data()));
+                          row.append(
+                              meshioplusplus_py::numpy_from_ndarray(std::move(link.mNodePairs)));
+                          links.append(std::move(row));
+                      }
+                      pymesh.attr("gmsh_periodic") = std::move(links);
+                  }
+                  return pymesh;
+              }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0);
 
     // PLY writer / reader (ascii or binary).
     m.def(

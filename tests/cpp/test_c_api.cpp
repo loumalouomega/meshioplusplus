@@ -1432,6 +1432,74 @@ TEST(CApi, DataIntegrateHandle) {
 
 }  // namespace
 
+TEST(CApi, GmshPeriodicSideChannel) {
+    for (int version : {22, 40, 41})
+        for (bool binary : {false, true}) {
+            const auto path = mt::temp_path(".msh");
+            const auto bytes = mt::gmsh_periodic_fixture(version, binary);
+            {
+                std::ofstream out(path, std::ios::binary);
+                out.write(bytes.data(), bytes.size());
+            }
+            EXPECT_EQ(mio_read(path.c_str(), "gmsh"), nullptr);
+            mio_format_info* info = nullptr;
+            mio_mesh* mesh = mio_read_with_info(path.c_str(), "gmsh", nullptr, &info);
+            ASSERT_NE(mesh, nullptr) << mio_last_error();
+            ASSERT_NE(info, nullptr);
+            EXPECT_EQ(mio_gmsh_info_count(info, MIO_GMSH_PERIODIC), 2);
+            EXPECT_EQ(mio_gmsh_info_count(info, 123), -1);
+            const void* data = nullptr;
+            mio_dtype dtype;
+            int32_t ndim;
+            int64_t shape[MIO_MAX_NDIM]{};
+            ASSERT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 1, 2, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(dtype, MIO_INT64);
+            EXPECT_EQ(ndim, 2);
+            EXPECT_EQ(shape[0], 3);
+            EXPECT_EQ(shape[1], 2);
+            EXPECT_EQ(static_cast<const int64_t*>(data)[1], 1);
+            EXPECT_EQ(static_cast<const int64_t*>(data)[3], 3);
+            EXPECT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, -1, 2, &data, &dtype, &ndim, shape),
+                MIO_ERR_INVALID_ARG);
+            EXPECT_NE(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 0, 99, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 0, 2, nullptr, &dtype, &ndim, shape),
+                MIO_OK);
+            ASSERT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 0, 1, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(shape[0], 0);
+            for (const char* target : {"gmsh", "gmsh22"}) {
+                const auto output = mt::temp_path(".msh");
+                ASSERT_EQ(mio_write_with_info(output.c_str(), mesh, target, info), MIO_OK)
+                    << mio_last_error();
+                mio_format_info* info2 = nullptr;
+                auto* back = mio_read_with_info(output.c_str(), "gmsh", nullptr, &info2);
+                ASSERT_NE(back, nullptr) << mio_last_error();
+                ASSERT_EQ(mio_gmsh_info_array(info2, MIO_GMSH_PERIODIC, 1, 2, &data, &dtype, &ndim,
+                                              shape),
+                          MIO_OK);
+                EXPECT_EQ(static_cast<const int64_t*>(data)[3], 3);
+                mio_mesh_free(back);
+                mio_format_info_free(info2);
+                std::remove(output.c_str());
+            }
+            mio_mesh_free(mesh);  // Info arrays outlive the mesh handle.
+            ASSERT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 1, 0, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(static_cast<const int32_t*>(data)[1], 12);
+            mio_format_info_free(info);
+            std::remove(path.c_str());
+        }
+    EXPECT_EQ(mio_gmsh_info_count(nullptr, MIO_GMSH_PERIODIC), -1);
+}
+
 // ---------------------------------------------------------------------------
 // Selective reads (mio_read_ex) and the opaque file summary (mio_read_metadata)
 // ---------------------------------------------------------------------------

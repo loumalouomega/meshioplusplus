@@ -76,6 +76,58 @@ program test_fortran_api
     end block
 
     ! ---- build a small tet mesh from arrays ----------------------------
+    block
+        type(mio_mesh) :: periodic_mesh, back
+        type(mio_format_info) :: info, back_info
+        integer :: unit, target
+        integer(int64), allocatable :: pairs(:, :)
+        real(real64), allocatable :: affine(:)
+        character(:), allocatable :: input_path, output_path
+
+        input_path = prefix//'_periodic.msh'
+        output_path = prefix//'_periodic_out.msh'
+        open (newunit=unit, file=input_path, status='replace')
+        write (unit, '(a)') '$MeshFormat', '4.0 0 8', '$EndMeshFormat', &
+            '$Nodes', '1 3', '22 2 0 3', '30 1 0 0', '10 0 0 0', '20 0 1 0', &
+            '$EndNodes', '$Elements', '1 1', '22 2 2 1', '90 10 30 20', '$EndElements', &
+            '$Periodic', '1', '1 12 33', '3', '30 10', '20 10', '30 10', '$EndPeriodic'
+        close (unit)
+        call periodic_mesh%read(input_path, 'gmsh', stat=ierr)
+        call check(ierr /= 0, 'periodic info-less read refuses to lose pairs')
+        call periodic_mesh%read_with_info(input_path, info, 'gmsh', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'periodic read_with_info succeeds')
+        if (ierr == 0) then
+            call check(info%format() == 'gmsh', 'periodic format name')
+            call check(info%gmsh_count(MIO_GMSH_PERIODIC) == 1, 'periodic link count')
+            call check(all(info%gmsh_tags(MIO_GMSH_PERIODIC, 1) == [1, 12, 33]), 'periodic raw tags')
+            affine = info%gmsh_affine(1)
+            call check(size(affine) == 0, 'periodic absent affine')
+            pairs = info%gmsh_pairs(1)
+            call check(all(shape(pairs) == [2, 3]), 'periodic pair shape')
+            call check(all(pairs == reshape([1_int64, 2_int64, 3_int64, 2_int64, &
+                                             1_int64, 2_int64], [2, 3])), 'periodic 1-based rows')
+            do target = 1, 2
+                if (target == 1) then
+                    call periodic_mesh%write_with_info(output_path, info, 'gmsh', stat=ierr)
+                else
+                    call periodic_mesh%write_with_info(output_path, info, 'gmsh22', stat=ierr)
+                end if
+                call check(ierr == 0, 'periodic write_with_info succeeds')
+                call back%read_with_info(output_path, back_info, 'gmsh', stat=ierr)
+                call check(ierr == 0, 'periodic reread succeeds')
+                call check(all(back_info%gmsh_pairs(1) == pairs), 'periodic pairs round trip')
+                call back%free()
+                call back_info%free()
+            end do
+            open (newunit=unit, file=output_path, status='old')
+            close (unit, status='delete')
+        end if
+        call periodic_mesh%free()
+        call info%free()
+        open (newunit=unit, file=input_path, status='old')
+        close (unit, status='delete')
+    end block
+
     points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
                       1.1_real64, 0.2_real64, 0.3_real64, &
                       0.4_real64, 1.2_real64, 0.5_real64, &

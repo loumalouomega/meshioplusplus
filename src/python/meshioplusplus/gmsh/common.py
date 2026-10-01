@@ -13,6 +13,77 @@ c_int = np.dtype("int32")
 c_double = np.dtype("float64")
 
 
+def _remap_periodic(periodic, point_tags):
+    """Resolve file node tags to point rows without a max-tag-sized allocation."""
+    if not periodic:
+        return periodic
+    rows = {int(tag): i for i, tag in enumerate(point_tags)}
+    if len(rows) != len(point_tags):
+        raise ReadError("Gmsh $Periodic: duplicate node tag")
+    for record in periodic:
+        dim, (slave, master), affine, pairs = record
+        if not 0 <= dim <= 3 or slave < 1 or master < 1:
+            raise ReadError("Gmsh $Periodic: invalid entity dimension/tag")
+        if affine is not None and (
+            len(affine) not in (0, 16) or not np.isfinite(affine).all()
+        ):
+            raise ReadError("Gmsh $Periodic: invalid affine coefficients")
+        try:
+            record[3] = np.array(
+                [rows[int(tag)] for tag in pairs.flat], dtype=np.int64
+            ).reshape(-1, 2)
+        except KeyError as exc:
+            raise ReadError("Gmsh $Periodic: node tag outside $Nodes") from exc
+    return periodic
+
+
+def _validate_periodic(periodic, num_points):
+    """Validate metadata before a reference writer opens its output file."""
+    for record in periodic or []:
+        if len(record) != 4 or len(record[1]) != 2:
+            raise WriteError("Gmsh $Periodic: invalid record shape")
+        dim, (slave, master), affine, pairs = record
+        if any(not isinstance(v, (int, np.integer)) for v in [dim, slave, master]):
+            raise WriteError("Gmsh $Periodic: entity tags must be integers")
+        if not 0 <= dim <= 3 or not all(
+            0 < v <= np.iinfo(np.int32).max for v in [slave, master]
+        ):
+            raise WriteError("Gmsh $Periodic: invalid entity dimension/tag")
+        if affine is not None:
+            affine = np.asarray(affine, dtype=float)
+            if (
+                affine.ndim != 1
+                or affine.size not in (0, 16)
+                or not np.isfinite(affine).all()
+            ):
+                raise WriteError(
+                    "Gmsh $Periodic: affine must have 0 or 16 finite coefficients"
+                )
+        pairs = np.asarray(pairs)
+        if pairs.ndim != 2 or pairs.shape[1] != 2 or pairs.dtype.kind not in "iu":
+            raise WriteError("Gmsh $Periodic: pairs must be integer (N,2)")
+        if np.any(pairs < 0) or np.any(pairs >= num_points):
+            raise WriteError("Gmsh $Periodic: point index outside mesh")
+
+
+def _periodic_count(f, value, stride=1):
+    """Refuse negative or implausible counts before NumPy allocates."""
+    value = int(value)
+    position = f.tell()
+    f.seek(0, 2)
+    remaining = f.tell() - position
+    f.seek(position)
+    if value < 0 or value > remaining // stride:
+        raise ReadError("Gmsh $Periodic: invalid count")
+    return value
+
+
+def _periodic_end(f):
+    marker, _ = _fast_forward_over_blank_lines(f)
+    if marker != "$EndPeriodic":
+        raise ReadError("Gmsh $Periodic: expected $EndPeriodic")
+
+
 def _fast_forward_to_end_block(f, block):
     """fast-forward to end of block"""
     # See also https://github.com/nschloe/pygalmesh/issues/34

@@ -496,6 +496,7 @@ module meshioplusplus
 
     ! MDPA side-channel sections and value kinds (must match the C enums
     ! mio_mdpa_section / mio_mdpa_value_kind; see mio_format_info).
+    integer(c_int32_t), parameter, public :: MIO_GMSH_BOUNDING_ENTITIES = 0, MIO_GMSH_PERIODIC = 1
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -1011,6 +1012,10 @@ module meshioplusplus
         procedure :: is_valid => format_info_is_valid
         procedure :: format => format_info_format
         procedure :: mdpa_count => format_info_mdpa_count
+        procedure :: gmsh_count => format_info_gmsh_count
+        procedure :: gmsh_tags => format_info_gmsh_tags
+        procedure :: gmsh_affine => format_info_gmsh_affine
+        procedure :: gmsh_pairs => format_info_gmsh_pairs
         procedure :: mdpa_string => format_info_mdpa_string
         procedure :: mdpa_int => format_info_mdpa_int
         procedure :: mdpa_ids => format_info_mdpa_ids
@@ -3093,6 +3098,27 @@ module meshioplusplus
             type(c_ptr), value :: info
             integer(c_int32_t), value :: section
             integer(c_int64_t) :: n
+        end function
+
+        function c_mio_gmsh_info_count(info, section) &
+                bind(c, name="mio_gmsh_info_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_gmsh_info_array(info, section, index, field, data, dtype, ndim, shape) &
+                bind(c, name="mio_gmsh_info_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
         end function
 
         function c_mio_mdpa_info_string(info, section, index, field, buf, buflen) &
@@ -8557,6 +8583,81 @@ contains
     end function
 
     !> Number of items in an MDPA section (a MIO_MDPA_* value); -1 on error.
+    !> Number of Gmsh blocks/links in a MIO_GMSH_* section; -1 on error.
+    integer function format_info_gmsh_count(self, section)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section
+        format_info_gmsh_count = int(c_mio_gmsh_info_count(self%handle, int(section, c_int32_t)))
+    end function
+
+    !> Signed bounding-entity tags, or periodic (dimension, slave tag, master tag).
+    !> Item index is 1-based; tags are raw file ids, not point indices.
+    function format_info_gmsh_tags(self, section, index, stat, errmsg) result(tags)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int32), allocatable :: tags(:)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        integer(c_int32_t), pointer :: vals(:)
+        allocate (tags(0))
+        st = c_mio_gmsh_info_array(self%handle, int(section, c_int32_t), &
+                                  int(index - 1, c_int64_t), 0_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'gmsh_tags', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        tags = int(vals, int32)
+    end function
+
+    !> A periodic link's affine coefficients (empty or 16 doubles), copied.
+    function format_info_gmsh_affine(self, index, stat, errmsg) result(affine)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: affine(:)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        real(c_double), pointer :: vals(:)
+        allocate (affine(0))
+        st = c_mio_gmsh_info_array(self%handle, MIO_GMSH_PERIODIC, &
+                                  int(index - 1, c_int64_t), 1_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'gmsh_affine', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        affine = real(vals, real64)
+    end function
+
+    !> Periodic slave/master pairs (2,N), copied as 1-based point rows.
+    !> Ordering/duplicates survive I/O; mesh operations do not remap this info.
+    function format_info_gmsh_pairs(self, index, stat, errmsg) result(pairs)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: pairs(:, :)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        integer(c_int64_t), pointer :: vals(:, :)
+        allocate (pairs(2, 0))
+        st = c_mio_gmsh_info_array(self%handle, MIO_GMSH_PERIODIC, &
+                                  int(index - 1, c_int64_t), 2_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'gmsh_pairs', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        pairs = int(vals, int64) + 1
+    end function
+
     integer function format_info_mdpa_count(self, section)
         class(mio_format_info), intent(in) :: self
         integer, intent(in) :: section

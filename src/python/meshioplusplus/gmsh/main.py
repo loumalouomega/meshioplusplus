@@ -3,7 +3,7 @@ import struct
 
 from .._exceptions import ReadError, WriteError
 from . import _gmsh22, _gmsh40, _gmsh41
-from .common import _fast_forward_to_end_block
+from .common import _fast_forward_to_end_block, _validate_periodic
 
 # Some mesh files out there have the version specified as version "2" when it really is
 # "2.2". Same with "4" vs "4.1".
@@ -86,6 +86,7 @@ def _read_header(f):
 # meshio uses same precision but exponential notation `%.16e`.
 def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
     """Writes a Gmsh msh file."""
+    _validate_periodic(getattr(mesh, "gmsh_periodic", None), len(mesh.points))
     try:
         writer = _writers[fmt_version]
     except KeyError:

@@ -194,7 +194,7 @@ Each format's `info` shape (see `doc/wasm.md`'s TypeScript-adjacent field names 
 | `med` | `{pointTags, cellTags, meshName, description, unitTime, unitCoords, pointTagGroups, cellTagGroups, skippedConstructs, fieldUnits, stepMeta, fieldTimeValues}` (`skippedConstructs`/`fieldUnits`/`stepMeta` are read-side, lenient-mode diagnostics only; `fieldTimeValues` is always filled) | yes |
 | `mdpa` | `{entityNames: [{name, isCondition}], skippedConstructs}` — properties are `mesh.propertySets`, not here | yes Since v16.27.0 it also carries `modelPartData`, `tables`, `geometries`, `meshBlocks`, `subModelParts` and `rawBlocks` (see [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0)). |
 | `ansysinp` / `unv` | `{pointSets: {name: number[]}, cellSets: {name: number[][]}}` (identical shape on both) | yes |
-| `gmsh` | `{boundingEntities: number[][]}`, one array per cell block | yes |
+| `gmsh` | `{boundingEntities: number[][], periodic: {entity: number[], affine: number[], nodePairs: BigInt64Array}[]}` | yes (4.1 or `gmsh22`) |
 | `exodus` | `{infoRecords: string[]}` | **no** (read-only; there is no Info-bearing Exodus writer) |
 
 Every shape includes a `format` discriminator matching the table's left column. `pointsOnly`/`arrays`/`timeStep` (`readMeshSelective`'s other selective-read options) reach the read only for the formats whose info-bearing reader takes them natively (`med`/`mdpa`/`gmsh`/`exodus`/`unv`); `openfoam`/`ansysinp` have no selective-read path with or without `info`, exactly as they have none without it. `info: true` for a format with no side channel is silently ignored (no `.info` on the result) rather than thrown, so a caller can always pass it and check `mesh.info` itself; writing `info` for a format with no Info-bearing writer (`exodus`, or any other format) throws naming it. There is no generic `registry_read_info`/`registry_write_info` hook in the C++ core reaching every flat binding — this is a WASM-only dispatch table calling each format's own Info-bearing reader/writer directly, the same per-format special-casing the Python bindings already do; a shared core hook is a roadmap remainder.
@@ -275,7 +275,7 @@ Ask the loaded module rather than trusting this list — it is generated from th
 const { readers, writers } = m.availableFormats();
 ```
 
-`readMesh(path, 'gmsh')` reads non-periodic Gmsh 2.2, 4.0 and 4.1. The 4.0 path supports ASCII and binary with either 4- or 8-byte producer counts, independent of WASM's own integer widths. Native output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), and `$Periodic` remains unsupported. See [Gmsh](formats/gmsh.md).
+`readMesh(path, 'gmsh')` reads non-periodic Gmsh 2.2, 4.0 and 4.1. The 4.0 path supports ASCII and binary with either 4- or 8-byte producer counts, independent of WASM's own integer widths. For `$Periodic`, use `readMeshSelective(path, {format: 'gmsh', info: true})`; info-less reads refuse the section rather than lose it. `mesh.info.periodic` contains raw `entity` tags `[dimension, slave, master]`, `affine` (0 or 16 coefficients) and flattened `(N, 2)` `nodePairs` as **0-based point rows**, keeping ordering and duplicates. `writeMesh` automatically restores Gmsh info to 4.1 (`gmsh`) or 2.2 (`gmsh22`); callers may also supply `{info}` explicitly. Operations do not remap the channel, so rebuild it after point/topology edits. See [Gmsh](formats/gmsh.md).
 
 ### What the HDF5/netCDF formats cost, and what changed
 

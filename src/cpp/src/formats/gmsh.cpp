@@ -213,6 +213,131 @@ struct EBlock {
     std::vector<std::int64_t> mTags;  // count*num_tags
 };
 
+// Periodic records use text in 2.2 even in binary files. 4.0 binary uses
+// int32 entity/node tags and a signed producer-long count (-1 announces a
+// 16-double affine). 4.1 uses size_t counts/node tags in both modes.
+std::vector<GmshPeriodicLink> gmsh_read_periodic(GmshCursor& rCur, bool is_ascii, int version,
+                                                 int width) {
+    const bool text = is_ascii || version == 22;
+    auto text_token = [&]() -> std::string_view {
+        while (!rCur.eof() && std::isspace(static_cast<unsigned char>(rCur.mBuf[rCur.mPos])))
+            ++rCur.mPos;
+        const auto start = rCur.mPos;
+        while (!rCur.eof() && !std::isspace(static_cast<unsigned char>(rCur.mBuf[rCur.mPos])))
+            ++rCur.mPos;
+        return rCur.mBuf.substr(start, rCur.mPos - start);
+    };
+    auto text_integer = [&]() -> std::int64_t {
+        std::int64_t value = 0;
+        const auto token = text_token();
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+        if (token.empty() || parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size())
+            throw ReadError("Gmsh $Periodic: invalid integer token");
+        return value;
+    };
+    auto integer = [&]() -> std::int32_t {
+        if (!text)
+            return rCur.read_i32();
+        const auto value = text_integer();
+        if (value < INT32_MIN || value > INT32_MAX)
+            throw ReadError("Gmsh $Periodic: entity/node tag exceeds Int32");
+        return static_cast<std::int32_t>(value);
+    };
+    auto size = [&]() -> std::int64_t {
+        if (text)
+            return text_integer();
+        const auto n = rCur.read_uint(width);
+        if (n > static_cast<std::uint64_t>(INT64_MAX))
+            throw ReadError("Gmsh $Periodic: count/tag exceeds Int64");
+        return static_cast<std::int64_t>(n);
+    };
+    const auto links = rCur.count(version == 41 ? size() : integer());
+    std::vector<GmshPeriodicLink> out;
+    for (std::int64_t i = 0; i < links; ++i) {
+        GmshPeriodicLink link;
+        for (auto& tag : link.mEntityTags)
+            tag = integer();
+        if (link.mEntityTags[0] < 0 || link.mEntityTags[0] > 3 || link.mEntityTags[1] < 1 ||
+            link.mEntityTags[2] < 1)
+            throw ReadError("Gmsh $Periodic: invalid entity dimension/tag");
+        std::int64_t pairs = 0, affine = 0;
+        if (version == 41) {
+            affine = size();
+            if (affine != 0 && affine != 16)
+                throw ReadError("Gmsh $Periodic: affine must have 0 or 16 coefficients");
+        } else if (text) {
+            while (!rCur.eof() && std::isspace(static_cast<unsigned char>(rCur.mBuf[rCur.mPos])))
+                ++rCur.mPos;
+            if (rCur.mBuf.substr(rCur.mPos, 6) == "Affine") {
+                rCur.mPos += 6;
+                affine = 16;
+            }
+        } else {
+            const auto n = rCur.read_uint(width);
+            if (n == (width == 4 ? UINT32_MAX : UINT64_MAX))
+                affine = 16;
+            else {
+                if (n > (width == 4 ? static_cast<std::uint64_t>(INT32_MAX)
+                                    : static_cast<std::uint64_t>(INT64_MAX)))
+                    throw ReadError("Gmsh $Periodic: invalid signed node count");
+                pairs = rCur.count(static_cast<std::int64_t>(n));
+            }
+        }
+        for (std::int64_t c = 0; c < affine; ++c) {
+            double value;
+            if (text) {
+                // Affine values are few: an owning bounded token avoids relying
+                // on a terminator beyond the end of a memory-mapped view.
+                const std::string token(text_token());
+                const char* end = nullptr;
+                value = detail::parse_double(token.c_str(), end);
+                if (token.empty() || end != token.c_str() + token.size())
+                    throw ReadError("Gmsh $Periodic: invalid affine coefficient");
+            } else
+                value = rCur.read_f64();
+            if (!std::isfinite(value))
+                throw ReadError("Gmsh $Periodic: non-finite affine coefficient");
+            link.mAffine.push_back(value);
+        }
+        if (version == 41 || text || affine)
+            pairs = rCur.count(size());
+        const std::size_t n = static_cast<std::size_t>(pairs);
+        const std::size_t stride = text ? 2 : 2 * (version == 41 ? width : 4);
+        detail::checked_count(n, (rCur.mBuf.size() - rCur.mPos) / stride, "Gmsh $Periodic", "pair");
+        link.mNodePairs = NDArray(DType::Int64, {n, 2});
+        auto* dst = link.mNodePairs.As<std::int64_t>();
+        for (std::size_t j = 0; j < n * 2; ++j) {
+            dst[j] = version == 41 ? size() : integer();
+            if (dst[j] < 1)
+                throw ReadError("Gmsh $Periodic: node tag below 1");
+        }
+        out.push_back(std::move(link));
+    }
+    if (rCur.next_nonblank() != "$EndPeriodic")
+        throw ReadError("Gmsh: expected $EndPeriodic");
+    return out;
+}
+
+void gmsh_remap_periodic(std::vector<GmshPeriodicLink>& rLinks,
+                         const std::vector<std::int64_t>& rTags, int offset) {
+    if (rLinks.empty())
+        return;
+    std::unordered_map<std::int64_t, std::int64_t> rows;
+    rows.reserve(rTags.size());
+    for (std::size_t i = 0; i < rTags.size(); ++i)
+        if (!rows.emplace(rTags[i] + offset, static_cast<std::int64_t>(i)).second)
+            throw ReadError("Gmsh $Periodic: duplicate node tag");
+    for (auto& link : rLinks) {
+        auto* dst = link.mNodePairs.As<std::int64_t>();
+        for (std::size_t i = 0; i < link.mNodePairs.Size(); ++i) {
+            const auto row = rows.find(dst[i]);
+            if (row == rows.end())
+                throw ReadError("Gmsh $Periodic: node tag outside $Nodes");
+            dst[i] = row->second;
+        }
+    }
+}
+
 void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArray>& rFieldData) {
     std::int64_t num = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     for (std::int64_t i = 0; i < num; ++i) {
@@ -1025,6 +1150,8 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
     std::vector<E41> eblocks;
     GmshEntities41 entities;
     bool have_entities = false;
+    std::vector<GmshPeriodicLink> periodic;
+    bool have_periodic = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!rCur.eof()) {
@@ -1044,9 +1171,12 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         else if (env == "Elements")
             read_elements_41(rCur, is_ascii, data_size, eblocks,
                              have_entities ? &entities : nullptr, version40);
-        else if (env == "Periodic")
-            throw ReadError("Gmsh $Periodic not supported by the C++ reader");
-        else if (env == "NodeData")
+        else if (env == "Periodic") {
+            if (have_periodic)
+                throw ReadError("Gmsh: duplicate $Periodic section");
+            have_periodic = true;
+            periodic = gmsh_read_periodic(rCur, is_ascii, version40 ? 40 : 41, data_size);
+        } else if (env == "NodeData")
             read_data(rCur, "NodeData", is_ascii, point_data, rOpts, pTargetTime);
         else if (env == "ElementData")
             read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts, pTargetTime);
@@ -1054,6 +1184,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
             rCur.skip_to_end(env);
     }
 
+    gmsh_remap_periodic(periodic, point_tags, 1);
     // When node tags are contiguous 0..N-1 (the common case) the tag->row remap
     // is the identity, so we can skip building it *and* skip the random-access
     // gather below (the connectivity is already the final mesh indexing).
@@ -1190,6 +1321,9 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
 
     // Bounding entities are signed (the sign carries orientation), so they
     // cannot be a Region -- they ride the side channel instead, like MedInfo.
+    if (pInfo)
+        for (auto& link : periodic)
+            pInfo->mPeriodic.push_back(std::move(link));
     if (pInfo && have_entities && !version40) {
         pInfo->mBoundingEntities.reserve(eblocks.size());
         for (const auto& b : eblocks)
@@ -1421,12 +1555,8 @@ bool gmsh_has_periodic(std::string_view rBuf) {
 
 }  // namespace
 
-Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
-    GmshInfo unused;
-    return read_gmsh(rPath, unused, rOpts);
-}
-
-Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts) {
+static Mesh gmsh_read_impl(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts,
+                           bool keep_periodic) {
     // Memory-mapped where that pays (see detail/file_source.hpp), copied
     // otherwise. The source is function-local: every parsed value is copied
     // into owning mesh storage below, so nothing in the returned Mesh points
@@ -1454,8 +1584,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             ++cur.mPos;
     }
     gmsh_finish_section_4(cur, "MeshFormat", version == "4.0");
-    if (gmsh_has_periodic(buf))
-        throw ReadError("Gmsh $Periodic not supported by the C++ reader");
+    if (!keep_periodic && gmsh_has_periodic(buf))
+        throw ReadError("Gmsh $Periodic requires read_gmsh(path, GmshInfo, options)");
 
     // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
     // against the sorted union of every $NodeData/$ElementData section's time
@@ -1478,7 +1608,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
         return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo, target_time_ptr);
     if (version == "4.0") {
         if (is_ascii)
-            return read_gmsh41_body(cur, true, 8, rOpts, nullptr, target_time_ptr, true);
+            return read_gmsh41_body(cur, true, 8, rOpts, &rInfo, target_time_ptr, true);
         if (data_size != 8)
             throw ReadError("Gmsh 4.0: binary coordinates must be 8-byte doubles");
         // 4.0 stores unsigned-long counts without announcing their width.
@@ -1486,10 +1616,14 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
         // checks and section terminators prevent a wrong-width parse from
         // succeeding; neither attempt mutates the caller's info channel.
         GmshCursor candidate = cur;
+        GmshInfo info;
         try {
-            return read_gmsh41_body(candidate, false, 8, rOpts, nullptr, target_time_ptr, true);
+            Mesh mesh = read_gmsh41_body(candidate, false, 8, rOpts, &info, target_time_ptr, true);
+            for (auto& link : info.mPeriodic)
+                rInfo.mPeriodic.push_back(std::move(link));
+            return mesh;
         } catch (const ReadError&) {
-            return read_gmsh41_body(cur, false, 4, rOpts, nullptr, target_time_ptr, true);
+            return read_gmsh41_body(cur, false, 4, rOpts, &rInfo, target_time_ptr, true);
         }
     }
     if (version.rfind("2", 0) != 0)
@@ -1498,6 +1632,8 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<EBlock> eblocks;
+    std::vector<GmshPeriodicLink> periodic;
+    bool have_periodic = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!cur.eof()) {
@@ -1513,9 +1649,12 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             read_nodes(cur, is_ascii, points, point_tags);
         else if (env == "Elements")
             read_elements(cur, is_ascii, eblocks);
-        else if (env == "Periodic")
-            throw ReadError("Gmsh $Periodic not supported by the C++ reader");
-        else if (env == "NodeData")
+        else if (env == "Periodic") {
+            if (have_periodic)
+                throw ReadError("Gmsh: duplicate $Periodic section");
+            have_periodic = true;
+            periodic = gmsh_read_periodic(cur, is_ascii, 22, 8);
+        } else if (env == "NodeData")
             read_data(cur, "NodeData", is_ascii, point_data, rOpts, target_time_ptr);
         else if (env == "ElementData")
             read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts, target_time_ptr);
@@ -1523,6 +1662,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             cur.skip_to_end(env);
     }
 
+    gmsh_remap_periodic(periodic, point_tags, 0);
     // Build node-tag remap (gmsh ids are 1-based, possibly non-contiguous).
     // Tags are 1-based; a tag below 1, or one so large for the node count
     // that the dense table would be gigabytes, is a corrupt $Nodes (the 4.1
@@ -1610,12 +1750,99 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
 
     gmsh_attach_regions(mesh);
 
+    for (auto& link : periodic)
+        rInfo.mPeriodic.push_back(std::move(link));
+    return mesh;
+}
+
+Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
+    GmshInfo unused;
+    return gmsh_read_impl(rPath, unused, rOpts, false);
+}
+
+Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts) {
+    GmshInfo info;
+    Mesh mesh = gmsh_read_impl(rPath, info, rOpts, true);
+    rInfo = std::move(info);
     return mesh;
 }
 
 // ---- writer ------------------------------------------------------------------
 
 namespace {
+
+void gmsh_validate_periodic(const GmshInfo& rInfo, std::size_t points, int version) {
+    for (const auto& link : rInfo.mPeriodic) {
+        if (link.mEntityTags[0] < 0 || link.mEntityTags[0] > 3 || link.mEntityTags[1] < 1 ||
+            link.mEntityTags[2] < 1)
+            throw WriteError("Gmsh $Periodic: invalid entity dimension/tag");
+        if (!link.mAffine.empty() && link.mAffine.size() != 16)
+            throw WriteError("Gmsh $Periodic: affine must have 0 or 16 coefficients");
+        for (const double value : link.mAffine)
+            if (!std::isfinite(value))
+                throw WriteError("Gmsh $Periodic: non-finite affine coefficient");
+        const auto& pairs = link.mNodePairs;
+        if (pairs.Dtype() != DType::Int64 || pairs.Shape().size() != 2 || pairs.Shape()[1] != 2)
+            throw WriteError("Gmsh $Periodic: pairs must be Int64 (N,2)");
+        for (std::size_t i = 0; i < pairs.Size(); ++i) {
+            const auto index = detail::read_int(pairs, i);
+            if (index < 0 || static_cast<std::uint64_t>(index) >= points ||
+                (version == 22 && index >= INT32_MAX))
+                throw WriteError("Gmsh $Periodic: point index outside mesh/tag range");
+        }
+    }
+}
+
+void gmsh_write_periodic(std::ostream& rOs, const GmshInfo& rInfo, bool binary, int version) {
+    if (rInfo.mPeriodic.empty())
+        return;
+    const bool text = !binary || version == 22;
+    auto size = [&](std::uint64_t value) {
+        if (text)
+            rOs << value << '\n';
+        else
+            rOs.write(reinterpret_cast<const char*>(&value), 8);
+    };
+    auto real = [&](double value) {
+        if (text) {
+            char buffer[64];
+            detail::snprintf_c(buffer, sizeof(buffer), "%.16e", value);
+            rOs << buffer << ' ';
+        } else
+            rOs.write(reinterpret_cast<const char*>(&value), 8);
+    };
+    rOs << "$Periodic\n";
+    size(rInfo.mPeriodic.size());
+    for (const auto& link : rInfo.mPeriodic) {
+        for (const auto tag : link.mEntityTags)
+            if (text)
+                rOs << tag << ' ';
+            else
+                rOs.write(reinterpret_cast<const char*>(&tag), 4);
+        if (text)
+            rOs << '\n';
+        if (version == 41)
+            size(link.mAffine.size());
+        else if (!link.mAffine.empty())
+            rOs << "Affine ";
+        for (double value : link.mAffine)
+            real(value);
+        if (text && !link.mAffine.empty())
+            rOs << '\n';
+        size(link.mNodePairs.Size() / 2);
+        const auto* pairs = link.mNodePairs.As<std::int64_t>();
+        for (std::size_t i = 0; i < link.mNodePairs.Size(); ++i) {
+            const std::uint64_t tag = static_cast<std::uint64_t>(pairs[i]) + 1;
+            if (text)
+                rOs << tag << (i % 2 ? '\n' : ' ');
+            else
+                rOs.write(reinterpret_cast<const char*>(&tag), 8);
+        }
+    }
+    if (!text)
+        rOs << '\n';
+    rOs << "$EndPeriodic\n";
+}
 
 void write_physical_names(std::ostream& rOs, const Mesh& rMesh,
                           const std::vector<GmshRegionTag>& rTags) {
@@ -1886,6 +2113,11 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    write_gmsh22(rPath, rMesh, binary, GmshInfo{});
+}
+
+void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, const GmshInfo& rInfo) {
+    gmsh_validate_periodic(rInfo, rMesh.NumPoints(), 22);
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -2006,6 +2238,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     if (binary)
         os << '\n';
     os << "$EndElements\n";
+    gmsh_write_periodic(os, rInfo, binary, 22);
 
     for (const auto& name : rMesh.PointDataNames()) {
         if (name == "gmsh:dim_tags")
@@ -2052,6 +2285,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                   const GmshInfo& rInfo) {
+    gmsh_validate_periodic(rInfo, rMeshIn.NumPoints(), 41);
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -2360,6 +2594,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     if (binary)
         os << '\n';
     os << "$EndElements\n";
+    gmsh_write_periodic(os, rInfo, binary, 41);
 
     for (const auto& name : rMesh.PointDataNames()) {
         if (name == "gmsh:dim_tags")
@@ -2399,6 +2634,18 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
 MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts) {
     const detail::FileSource source(rPath, rOpts.mMmap);
+    if (gmsh_has_periodic(source.View())) {
+        // A summary returns no mesh to lose the side channel from. Validate
+        // it through the info-bearing reader, including the node-tag remap.
+        GmshInfo info;
+        ReadOptions options;
+        options.mMmap = rOpts.mMmap;
+        const auto mesh = read_gmsh(rPath, info, options);
+        auto metadata = metadata_from_mesh(mesh);
+        metadata.mTimeValues = gmsh_scan_time_values(source.View());
+        metadata.mFellBackToFullRead = true;
+        return metadata;
+    }
     GmshCursor cur(source.View());
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")

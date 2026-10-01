@@ -1,5 +1,7 @@
 # Supported Formats
 
+Gmsh 2.2/4.0/4.1 periodic links read natively via the format metadata channel and write natively in 2.2/4.1. Python carries them automatically; flat bindings need info-bearing reads/writes, and info-less native reads refuse them instead of dropping node pairs. See [Gmsh periodic metadata](formats/gmsh.md#periodic-metadata-across-bindings).
+
 ## Format table
 
 Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour). The **Round trip** column summarises what a write followed by a read keeps (cell types, point/cell/field data, region kinds), as checked by the [format conformance matrix](./conformance.md).

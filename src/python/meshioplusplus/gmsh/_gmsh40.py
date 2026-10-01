@@ -18,8 +18,11 @@ from .common import (
     _gmsh_to_meshio_type,
     _meshio_to_gmsh_order,
     _meshio_to_gmsh_type,
+    _periodic_count,
+    _periodic_end,
     _read_data,
     _read_physical_names,
+    _remap_periodic,
     _write_data,
     _write_physical_names,
 )
@@ -60,6 +63,8 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
         elif environ == "Elements":
             cells, cell_tags = _read_elements(f, point_tags, physical_tags, is_ascii)
         elif environ == "Periodic":
+            if periodic is not None:
+                raise ReadError("Gmsh: duplicate $Periodic section")
             periodic = _read_periodic(f, is_ascii)
         elif environ == "NodeData":
             _read_data(f, "NodeData", point_data, data_size, is_ascii)
@@ -79,6 +84,7 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
     cell_data = cell_data_from_raw(cells, cell_data_raw)
     cell_data.update(cell_tags)
 
+    periodic = _remap_periodic(periodic, point_tags)
     return Mesh(
         points,
         cells,
@@ -212,7 +218,7 @@ def _read_elements(f, point_tags, physical_tags, is_ascii):
 def _read_periodic(f, is_ascii):
     fromfile = partial(np.fromfile, sep=" " if is_ascii else "")
     periodic = []
-    num_periodic = int(fromfile(f, c_int, 1)[0])
+    num_periodic = _periodic_count(f, fromfile(f, c_int, 1)[0])
     for _ in range(num_periodic):
         edim, stag, mtag = fromfile(f, c_int, 3)
         if is_ascii:
@@ -227,15 +233,17 @@ def _read_periodic(f, is_ascii):
         else:
             num_nodes = int(fromfile(f, c_long, 1)[0])
             if num_nodes < 0:
+                if num_nodes != -1:
+                    raise ReadError("Gmsh $Periodic: invalid affine sentinel")
                 affine = fromfile(f, c_double, 16)
                 num_nodes = int(fromfile(f, c_ulong, 1)[0])
             else:
                 affine = None
+        num_nodes = _periodic_count(f, num_nodes, 2 if is_ascii else 2 * c_int.itemsize)
         slave_master = fromfile(f, c_int, num_nodes * 2).reshape(-1, 2)
-        slave_master = slave_master - 1  # Subtract one, Python is 0-based
         periodic.append([edim, (stag, mtag), affine, slave_master])
 
-    _fast_forward_to_end_block(f, "Periodic")
+    _periodic_end(f)
     return periodic
 
 
@@ -391,12 +399,15 @@ def _write_periodic(fh, periodic, float_fmt, binary):
     for dim, (stag, mtag), affine, slave_master in periodic:
         tofile(fh, [dim, stag, mtag], c_int)
         if affine is not None and len(affine) > 0:
-            tofile(fh, -1, c_long)
+            if binary:
+                tofile(fh, -1, c_long)
+            else:
+                fh.write(b"Affine ")
             tofile(fh, affine, c_double, fmt=float_fmt)
         slave_master = np.array(slave_master, dtype=c_int)
         slave_master = slave_master.reshape(-1, 2)
         slave_master = slave_master + 1  # Add one, Gmsh is 1-based
-        tofile(fh, len(slave_master), c_int)
+        tofile(fh, len(slave_master), c_ulong)
         tofile(fh, slave_master, c_int)
     if binary:
         fh.write(b"\n")

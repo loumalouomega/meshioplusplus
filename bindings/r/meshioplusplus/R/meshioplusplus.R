@@ -1815,6 +1815,8 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' `Constraints`. [mio_read()] refuses such a file by name (or, with
 #' `lenient = TRUE`, skips the content); `mio_read_with_info()` keeps it in a
 #' `mio_format_info` handle that `mio_write_with_info()` puts back.
+#' Gmsh periodic files also require this channel (even with `lenient = TRUE`);
+#' [mio_gmsh_info()] copies their links and 4.1 bounding-entity tags.
 #'
 #' `mio_mdpa_info()` **copies** an MDPA side channel into plain R values: a
 #' list with `properties` (`id`, `values`), `entity_names` (`name`,
@@ -1863,6 +1865,18 @@ mio_write_with_info <- function(mesh, info, path, format = NULL) {
 #' @rdname mio_read_with_info
 #' @export
 mio_mdpa_info <- function(info) .Call(R_mio_mdpa_info, info)
+
+#' Copy a Gmsh format side channel
+#'
+#' Returns `bounding_entities` (signed entity tags per cell block) and `periodic`
+#' links with `entity` (dimension, slave tag, master tag), `affine` (0 or 16
+#' coefficients), and `node_pairs` (2,N), with 1-based point rows. Entity tags
+#' remain file ids. Ordering and duplicates survive I/O; operations do not remap
+#' these pairs. The copy remains valid after releasing the handle.
+#' @param info A format-info handle from `mio_read_with_info()`.
+#' @return A list with `bounding_entities` and `periodic`.
+#' @export
+mio_gmsh_info <- function(info) .Call(R_mio_gmsh_info, info)
 
 #' @rdname mio_read_with_info
 #' @export
