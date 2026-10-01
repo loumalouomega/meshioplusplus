@@ -47,6 +47,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/vtk_xml_read.hpp"
+#include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
@@ -57,111 +58,6 @@ using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
-// Parse a whitespace-separated run of N numbers from an XML attribute. VTK's own
-// files use plain spaces; being liberal here costs nothing and a mis-parse would
-// silently relocate the whole grid.
-template <class T>
-bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-// The framing every ImageData path needs, resolved once so the mesh reader and
-// the metadata reader cannot disagree about which files they accept.
-struct vti_header {
-    pugi::xml_node mPiece;
-    detail::VtuContext mCtx;
-    detail::LatticeSpec mSpec;
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vti_header vti_parse_header(const detail::VtuSource& rSource) {
-    const auto& rDoc = rSource.mDoc;
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "ImageData")
-        throw ReadError("Expected type ImageData");
-
-    vti_header h;
-    h.mCtx = detail::vtk_xml_read_context(rSource, "VTI");
-
-    pugi::xml_node grid = root.child("ImageData");
-    if (!grid)
-        throw ReadError("No ImageData found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vti_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("ImageData has no readable WholeExtent");
-    double origin[3] = {0.0, 0.0, 0.0};
-    double spacing[3] = {1.0, 1.0, 1.0};
-    if (grid.attribute("Origin"))
-        vti_parse_n(grid.attribute("Origin").as_string(), origin, 3);
-    if (grid.attribute("Spacing"))
-        vti_parse_n(grid.attribute("Spacing").as_string(), spacing, 3);
-    if (grid.attribute("Direction")) {
-        // A non-identity direction matrix rotates the lattice, which an
-        // axis-aligned hexahedron grid cannot express without baking the
-        // rotation into the coordinates -- a different mesh from the one the
-        // file describes. Refuse rather than silently drop the rotation.
-        double dir[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        if (vti_parse_n(grid.attribute("Direction").as_string(), dir, 9)) {
-            const double id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-            for (std::size_t i = 0; i < 9; ++i)
-                if (dir[i] != id[i])
-                    throw ReadError(
-                        "VTI with a non-identity Direction is not supported by the "
-                        "C++ reader");
-        }
-    }
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTI not supported by the C++ reader");
-    // The piece's own extent may legally be a sub-box of the whole extent; the
-    // arrays are then sized to the PIECE, and reading them against the whole
-    // extent would be silently misaligned. One piece covering everything is what
-    // every writer emits, so decline the rest by name.
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vti_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTI Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTI WholeExtent is inverted on axis " + std::to_string(k));
-        h.mSpec.mDims[k] = n;
-        // The extent may start away from zero; the point at extent index i sits
-        // at Origin + i * Spacing, so the mesh's own lo corner is offset by the
-        // extent's start. Dropping that offset would translate the whole grid.
-        h.mSpec.mOrigin[k] = origin[k] + static_cast<double>(whole[2 * k]) * spacing[k];
-        h.mSpec.mSpacing[k] = spacing[k];
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mSpec.mDims[0] + 1) * (h.mSpec.mDims[1] + 1) *
-                                            (h.mSpec.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(detail::lattice_num_cells(h.mSpec));
-    return h;
-}
-
-NDArray vti_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
-                            int& rNumComponents) {
-    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
-}
-
 // One geometry attribute value. `%.17g` rather than the stream's default six
 // significant digits, which would lose ~10 digits of a real origin -- a grid
 // placed 1e-7 off its own points, which nothing downstream would flag. 17 is the
@@ -171,16 +67,6 @@ std::string vti_num(double Value) {
     char buf[40];
     detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
     return buf;
-}
-
-std::vector<std::string> vti_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    // The uniform mesh API hands back sorted names; match it so a summary and a
-    // real read report data arrays in the same order.
-    std::sort(names.begin(), names.end());
-    return names;
 }
 
 }  // namespace
@@ -288,83 +174,12 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_default, source, "ImageData", "VTI");
-    const vti_header h = vti_parse_header(source);
-
-    // The extent is expanded into explicit points and hexahedra through the same
-    // helper `grid()` and `voxelize()` use, so a .vti read and a grid() call of
-    // the same shape produce byte-identical meshes.
-    Mesh mesh = detail::lattice_build_mesh(h.mSpec);
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTI point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTI cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;  // no cell block to attach it to
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "ImageData", "VTI");
 }
 
+
 MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
-    detail::VtuSource source;
-    // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
-    // metadata path this decodes NOTHING at all: the extent attribute alone
-    // gives both counts.
-    detail::vtu_load(rPath, pugi::parse_minimal, source, "ImageData", "VTI");
-    const vti_header h = vti_parse_header(source);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vti_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vti_array_names(h.mPiece, "CellData");
-
-    // The bounding box IS the extent here, so unlike every other native metadata
-    // path this one can report it for free rather than declining.
-    meta.mHasBBox = true;
-    for (std::size_t k = 0; k < 3; ++k) {
-        meta.mBBoxMin[k] = h.mSpec.mOrigin[k];
-        meta.mBBoxMax[k] =
-            h.mSpec.mOrigin[k] + static_cast<double>(h.mSpec.mDims[k]) * h.mSpec.mSpacing[k];
-    }
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "ImageData", "VTI");
 }
 
 }  // namespace meshioplusplus

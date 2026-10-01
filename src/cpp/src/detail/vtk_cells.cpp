@@ -55,7 +55,9 @@ void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
-    std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t nc = 1;
+    for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+        nc *= rA.Shape()[k];
     std::size_t isz = dtype_size(rA.Dtype());
     std::size_t rowbytes = nc * isz;
     std::vector<std::size_t> shape = rA.Shape();
@@ -73,7 +75,9 @@ namespace {
 /// Rows `rIdx` of `rA` (any rank >= 1), as an owning array: what a polyhedron bucket needs,
 /// because its members are not contiguous in the file.
 NDArray vtkcells_gather_rows(const NDArray& rA, const std::vector<std::size_t>& rIdx) {
-    const std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t nc = 1;
+    for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+        nc *= rA.Shape()[k];
     const std::size_t rowbytes = nc * dtype_size(rA.Dtype());
     std::vector<std::size_t> shape = rA.Shape();
     if (shape.empty())

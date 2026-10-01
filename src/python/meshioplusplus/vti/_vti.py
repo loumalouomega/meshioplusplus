@@ -28,6 +28,7 @@ from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
 from .._vtk_xml_read import load as _load_xml
+from .._vtk_xml_read import field_arrays, piece_extent, read_pieces
 from ..vtu._vtu import (
     _COMPRESSION_TO_ATTR,
     _chunk_it,
@@ -48,13 +49,11 @@ def _parse_n(text, count, dtype):
 
 def read(filename):
     root, reader = _load_xml(filename, "ImageData", "VTI")
+    return read_pieces(root, reader, "ImageData", "VTI", _read_piece)
 
-    grid = root.find("ImageData")
-    if grid is None:
-        raise ReadError("No ImageData found")
-    whole = _parse_n(grid.get("WholeExtent"), 6, int)
-    if whole is None:
-        raise ReadError("ImageData has no readable WholeExtent")
+
+def _read_piece(grid, piece, reader):
+    whole = piece_extent(grid, piece)
     origin = _parse_n(grid.get("Origin"), 3, float)
     if origin is None:
         origin = np.zeros(3)
@@ -64,19 +63,6 @@ def read(filename):
     direction = _parse_n(grid.get("Direction"), 9, float)
     if direction is not None and not np.array_equal(direction, np.eye(3).reshape(-1)):
         raise ReadError("VTI with a non-identity Direction is not supported")
-
-    pieces = grid.findall("Piece")
-    if not pieces:
-        raise ReadError("No Piece found")
-    if len(pieces) > 1:
-        raise ReadError("multi-piece VTI is not supported")
-    piece = pieces[0]
-    piece_extent = _parse_n(piece.get("Extent"), 6, int)
-    if piece_extent is not None and not np.array_equal(piece_extent, whole):
-        raise ReadError(
-            "VTI Piece Extent differs from WholeExtent; a partial piece "
-            "is not supported"
-        )
 
     dims = np.array([whole[2 * k + 1] - whole[2 * k] for k in range(3)], dtype=np.int64)
     if np.any(dims < 0):
@@ -114,7 +100,8 @@ def read(filename):
             else:
                 sink[name] = arr
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    return Mesh(points, cells, point_data=point_data, cell_data=cell_data,
+                field_data=field_arrays(piece, reader, "VTI"))
 
 
 def _encode_binary(data, compression, header_type):

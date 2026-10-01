@@ -123,8 +123,6 @@ def test_refuses_a_mesh_that_is_not_a_lattice(tmp_path):
     "text",
     [
         # a piece that is not the whole extent
-        '<VTKFile type="ImageData"><ImageData WholeExtent="0 2 0 1 0 1">'
-        '<Piece Extent="0 1 0 1 0 1"/></ImageData></VTKFile>',
         # a rotated lattice
         '<VTKFile type="ImageData"><ImageData WholeExtent="0 1 0 1 0 1" '
         'Direction="0 1 0 -1 0 0 0 0 1"><Piece Extent="0 1 0 1 0 1"/>'

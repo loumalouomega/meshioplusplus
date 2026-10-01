@@ -35,18 +35,13 @@ _SECTION_TAGS = ("Verts", "Lines", "Polys", "Strips")
 
 
 def read(filename):
-    from .._vtk_xml_read import load
+    from .._vtk_xml_read import load, read_pieces
 
     root, reader = load(filename, "PolyData", "VTP")
+    return read_pieces(root, reader, "PolyData", "VTP", _read_piece)
 
-    grid = root.find("PolyData")
-    if grid is None:
-        raise ReadError("No PolyData found")
-    pieces = grid.findall("Piece")
-    if len(pieces) != 1:
-        raise ReadError("Only single-piece PolyData is supported")
-    piece = pieces[0]
 
+def _read_piece(grid, piece, reader):
     def read_data(elem):
         data = reader.read_data(elem)
         # PolyData historically exposes scalar arrays as one-dimensional.
@@ -64,7 +59,7 @@ def read(filename):
     # <Piece>, and also accepts it inside one (the piece's overriding the grid's).
     # A non-numeric array (`type="String"`) has no numpy dtype here: skipped with
     # a warning rather than failing a file whose field data used to be ignored.
-    for holder in (grid, piece):
+    for holder in (piece,):
         for fd in holder.findall("FieldData"):
             for da in fd.findall("DataArray"):
                 if da.get("type") not in vtu_to_numpy_type:
@@ -163,6 +158,9 @@ def read(filename):
     )
     if regions:
         mesh.regions = regions
+    mesh._vtk_file_to_global = (
+        file_to_global if file_to_global is not None else np.empty(0, np.int64)
+    )
     return mesh
 
 

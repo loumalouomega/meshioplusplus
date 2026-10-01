@@ -18,7 +18,7 @@ from .._vtk_common import (
 vtk_to_numpy_dtype_name = {
     "float": "float32",
     "double": "float64",
-    "int": "int",
+    "int": "int32",
     "vtktypeint8": "int8",
     "vtktypeint16": "int16",
     "vtktypeint32": "int32",
@@ -260,6 +260,12 @@ def _check_mesh(info):
         info.connectivity, info.types = _generate_cells(dim=info.dataset["DIMENSIONS"])
     elif info.dataset["type"] == "STRUCTURED_GRID":
         info.connectivity, info.types = _generate_cells(dim=info.dataset["DIMENSIONS"])
+
+    if info.dataset["type"] != "UNSTRUCTURED_GRID":
+        # Structured generators return the counted legacy layout, not 5.1 CSR.
+        width = {3: 2, 9: 4, 12: 8}[int(info.types[0])]
+        info.connectivity = info.connectivity.reshape(-1, width + 1)[:, 1:].reshape(-1)
+        info.offsets = np.arange(1, len(info.types) + 1, dtype=np.int64) * width
 
 
 def _generate_cells(dim):
