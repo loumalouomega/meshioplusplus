@@ -318,6 +318,8 @@ meshioplusplus.gmsh.write(filename, mesh,
 
 Use `file_format="gmsh22"` to write version 2.2 via the generic `meshioplusplus.write`.
 
+Non-periodic Gmsh 2.2, 4.0 and 4.1 inputs read through the native core on every language surface. The 4.0 binary path accepts producer counts of 4 or 8 bytes; native output is still 2.2/4.1 and periodic files still need Python. See [Gmsh](./formats/gmsh.md).
+
 ### VTU (`.vtu`)
 
 ```python

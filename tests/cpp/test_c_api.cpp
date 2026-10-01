@@ -46,6 +46,7 @@
 #include "meshioplusplus/meshioplusplus.h"
 
 #include "mesh_fixtures.hpp"
+#include "gmsh_fixtures.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
@@ -85,6 +86,44 @@ TEST(CApi, VersionAndBackend) {
     EXPECT_STRNE(mio_version(), "");
     const std::string backend = mio_mesh_backend();
     EXPECT_TRUE(backend == "meshio" || backend == "native" || backend == "kratos") << backend;
+}
+
+TEST(CApi, Gmsh40ReadsBothBinaryCountWidthsAndConverts) {
+    for (int width : {0, 4, 8}) {
+        const std::string path = mt::temp_path("_gmsh40.msh");
+        const std::string bytes = mt::gmsh40_fixture(width != 0, width);
+        {
+            std::ofstream os(path, std::ios::binary);
+            os.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        mio_mesh* mesh = mio_read(path.c_str(), "gmsh");
+        ASSERT_NE(mesh, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(mesh), 4);
+        ASSERT_EQ(mio_mesh_num_cell_blocks(mesh), 3);
+        EXPECT_EQ(block_type(mesh, 1), "triangle");
+        const void* conn = nullptr;
+        mio_dtype dtype;
+        ASSERT_EQ(mio_mesh_cell_block_conn(mesh, 1, &conn, &dtype), MIO_OK);
+        ASSERT_EQ(dtype, MIO_INT64);
+        const auto* ids = static_cast<const std::int64_t*>(conn);
+        EXPECT_EQ(std::vector<std::int64_t>(ids, ids + 6),
+                  (std::vector<std::int64_t>{1, 0, 2, 1, 2, 3}));
+        mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), "gmsh");
+        ASSERT_NE(meta, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_read_metadata_fell_back(meta), 1);
+        EXPECT_EQ(mio_read_metadata_num_regions(meta), 2);
+        mio_read_metadata_free(meta);
+        const std::string out = mt::temp_path("_gmsh40.vtu");
+        ASSERT_EQ(mio_write(out.c_str(), mesh, "vtu"), MIO_OK) << mio_last_error();
+        mio_mesh* back = mio_read(out.c_str(), "vtu");
+        ASSERT_NE(back, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(back), 4);
+        EXPECT_EQ(mio_mesh_num_cell_blocks(back), 3);
+        mio_mesh_free(back);
+        mio_mesh_free(mesh);
+        std::remove(out.c_str());
+        std::remove(path.c_str());
+    }
 }
 
 // The compile-time macros describe the HEADER; mio_version() describes the
@@ -1218,16 +1257,15 @@ TEST(CApi, DataCondition) {
 TEST(CApi, TensorInvariants) {
     mio_mesh* m = build_data_mesh();
     // xx yy zz xy yz zx, repeated once per point (5 points).
-    static const std::array<double, 30> s = {1, 2, 3, 0.5, 0.6, 0.7, 1, 2, 3, 0.5, 0.6, 0.7,
-                                             1, 2, 3, 0.5, 0.6, 0.7, 1, 2, 3, 0.5, 0.6, 0.7,
-                                             1, 2, 3, 0.5, 0.6, 0.7};
+    static const std::array<double, 30> s = {1,   2,   3,   0.5, 0.6, 0.7, 1,   2,   3,   0.5,
+                                             0.6, 0.7, 1,   2,   3,   0.5, 0.6, 0.7, 1,   2,
+                                             3,   0.5, 0.6, 0.7, 1,   2,   3,   0.5, 0.6, 0.7};
     std::int64_t shape[2] = {5, 6};
     ASSERT_EQ(mio_mesh_add_point_data(m, "s", MIO_FLOAT64, 2, shape, s.data()), MIO_OK);
 
     const char* names[] = {"s"};
-    mio_mesh* out = mio_tensor_invariants(m, MIO_DATA_POINT, names, 1,
-                                          MIO_TINV_MISES | MIO_TINV_HYDROSTATIC, nullptr, nullptr,
-                                          1);
+    mio_mesh* out = mio_tensor_invariants(
+        m, MIO_DATA_POINT, names, 1, MIO_TINV_MISES | MIO_TINV_HYDROSTATIC, nullptr, nullptr, 1);
     ASSERT_NE(out, nullptr) << mio_last_error();
     const void* data = nullptr;
     mio_dtype dt;
@@ -1250,7 +1288,7 @@ TEST(CApi, TensorInvariants) {
 TEST(CApi, TensorInvariantsRejectsFieldLocation) {
     mio_mesh* m = build_data_mesh();
     EXPECT_EQ(mio_tensor_invariants(m, MIO_DATA_FIELD, nullptr, 0, 0, nullptr, nullptr, 1),
-             nullptr);
+              nullptr);
     EXPECT_STRNE(mio_last_error(), "");
     mio_mesh_free(m);
 }

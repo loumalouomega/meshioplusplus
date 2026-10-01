@@ -18,7 +18,7 @@
 
 /**
  * @file gmsh.hpp
- * @brief Gmsh mesh format (.msh, versions 2.2 and 4.1) C++ reader/writer.
+ * @brief Gmsh mesh format (.msh) C++ reader (2.2/4.0/4.1) and writer (2.2/4.1).
  *
  * `$MeshFormat` (`version filetype datasize`; `filetype` 0=ascii, 1=binary,
  * with a 4-byte endianness-detection integer `1` for binary) is read first
@@ -160,27 +160,30 @@ MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh
                                      const GmshInfo& rInfo);
 
 /**
- * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
+ * @brief Read a Gmsh .msh file (versions 2.2, 4.0 and 4.1).
  *
  * Dispatches on the `$MeshFormat` version string; parses `$PhysicalNames`,
  * `$Nodes`, `$Elements` (applying the gmsh <-> meshio++ node-order
- * permutation where needed), and, for 4.1, `$Entities`/per-entity node and
+ * permutation where needed), and, for 4.0/4.1, `$Entities`/per-entity node and
  * element blocks with node-tag->index remapping.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["gmsh:physical"]`/
  *         `cell_data["gmsh:geometrical"]` (2.2: the first two element tags;
- *         4.1: the block's entity tag and its `$Entities` physical tag, the
+ *         4.0/4.1: the block's entity tag and its `$Entities` physical tag, the
  *         latter present only when the file tags any entity at all, and 0 for
  *         the untagged blocks), `point_data["gmsh:dim_tags"]` (v4.1 only),
  *         `field_data` from `$PhysicalNames`, and one `Cell` region per named
  *         physical group
  * @throws ReadError for anything not handled by the C++ path — version not
- *         2.2/4.1 (4.0's `$Entities` layout differs), `$Periodic` records,
+ *         2.2/4.0/4.1, `$Periodic` records,
  *         a Gmsh element type outside the curated type-code subset, or
  *         parametric nodes — so the Python reader can take over
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
+ * @note 4.0 binary unsigned-long counts may be 4 or 8 bytes; their width
+ *       is inferred by validating the section structure. Byte-swapped 4.0
+ *       files are refused, matching the Python reference.
  * @note this overload discards the `$Entities` bounding-entity tags; use the
  *       @ref GmshInfo overload to keep them
  */

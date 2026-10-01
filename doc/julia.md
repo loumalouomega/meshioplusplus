@@ -18,6 +18,8 @@ mio.write(surf, "bracket_surface.vtu")
 The C API and C++ core this binding calls are unaffected and stay MIT. Calling that stable, non-GPL C ABI via `ccall`/`dlopen` at runtime is the standard "linking exception" case — it does not require the C library to also be GPL. See [`bindings/julia/LICENSE`](https://github.com/loumalouomega/meshioplusplus/blob/master/bindings/julia/LICENSE).
 :::
 
+`read(path; format="gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), and `$Periodic` is still unsupported. See [Gmsh](formats/gmsh.md).
+
 ## Building and installing
 
 The package binds the **installed** C library; no C++ is compiled by it.

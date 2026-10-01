@@ -27,8 +27,11 @@
 #include <vector>
 
 // Project includes
+#include "gmsh_fixtures.hpp"
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace {
@@ -257,6 +260,74 @@ TEST(Gmsh, V41Ascii) {
 }
 TEST(Gmsh, V41Binary) {
     rt41(mt::hex_mesh(), true);
+}
+
+TEST(Gmsh, V40AsciiAndBinaryThroughTheRegistry) {
+    for (int width : {0, 4, 8}) {
+        const std::string path = gmsh_write_fixture(mt::gmsh40_fixture(width != 0, width));
+        const auto mesh = meshioplusplus::registry_read(path, "gmsh", {});
+        ASSERT_EQ(mesh.NumPoints(), 4u);
+        ASSERT_EQ(mesh.NumCellBlocks(), 3u);
+        EXPECT_EQ(mesh.Cells(0).Type(), "line");
+        EXPECT_EQ(mesh.Cells(1).Type(), "triangle");
+        EXPECT_EQ(mesh.Cells(2).Type(), "line");
+        EXPECT_EQ(mesh.Cells(0).Conn().As<std::int64_t>()[0], 1);
+        EXPECT_EQ(mesh.Cells(0).Conn().As<std::int64_t>()[1], 0);
+        EXPECT_EQ(mesh.Cells(1).Conn().As<std::int64_t>()[5], 3);
+        EXPECT_EQ(mesh.Cells(2).Conn().As<std::int64_t>()[0], 3);
+        EXPECT_EQ(physical_per_block(mesh), (std::vector<std::int64_t>{8, 7, 8}));
+        ASSERT_EQ(mesh.NumRegions(), 2u);
+        EXPECT_EQ(
+            mesh.Region(mesh.FindRegion("edge", meshioplusplus::RegionKind::Cell)).NumEntries(),
+            2u);
+        EXPECT_FALSE(mesh.HasPointData("gmsh:dim_tags"));
+
+        // Native writes remain 2.2 / 4.1; 4.0 input converts to either.
+        const std::string out = mt::temp_path(".msh");
+        meshioplusplus::write_gmsh22(out, mesh, width != 0);
+        mt::expect_mesh_eq(mesh, meshioplusplus::read_gmsh(out));
+        std::remove(out.c_str());
+        std::remove(path.c_str());
+    }
+}
+
+TEST(Gmsh, V40MalformedSectionsAreReadErrors) {
+    const std::string original = mt::gmsh40_fixture(false);
+    const std::vector<std::pair<std::string, std::string>> replacements = {
+        {"4.0 0 8", "4.0 2 8"},
+        {"4.0 0 8", "4.0 0"},
+        {"$EndMeshFormat", "$MissingMeshFormat"},
+        {"2 4\n11 1 0 2", "2 5\n11 1 0 2"},
+        {"2 4\n11 1 0 2", "2 3\n11 1 0 2"},
+        {"3 4\n11 1 1 1", "3 5\n11 1 1 1"},
+        {"3 4\n11 1 1 1", "3 3\n11 1 1 1"},
+        {"30 1 0 0", "10 1 0 0"},
+        {"30 1 0 0", "0 1 0 0"},
+        {"30 1 0 0", "4294967326 1 0 0"},
+        {"90 10 30", "90 10 31"},
+        {"90 10 30", "90 10 -2147483648"},
+        {"11 1 0 2", "11 4 0 2"},
+        {"11 1 0 2", "11 1 1 2"},
+        {"11 1 1 1", "11 1 999 1"},
+        {"$EndNodes", "$MissingNodes"},
+        {"$EndEntities", "$MissingEntities"},
+        {"$EndElements", ""},
+    };
+    for (const auto& [from, to] : replacements) {
+        std::string text = original;
+        text.replace(text.find(from), from.size(), to);
+        const std::string path = gmsh_write_fixture(text);
+        EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError) << from;
+        std::remove(path.c_str());
+    }
+    for (int width : {4, 8}) {
+        const std::string bytes = mt::gmsh40_fixture(true, width);
+        for (const std::string marker : {"$EndEntities", "$EndNodes", "$EndElements"}) {
+            const std::string path = gmsh_write_fixture(bytes.substr(0, bytes.find(marker) - 3));
+            EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError);
+            std::remove(path.c_str());
+        }
+    }
 }
 TEST(Gmsh, SecondOrder) {
     rt22(mt::tet10_mesh(), false);

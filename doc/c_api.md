@@ -134,6 +134,8 @@ The interface/contact API adds `mio_region_adjacency`, `mio_find_interface`, `mi
 
 ## Format support
 
+`mio_read(path, "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 files natively; 4.0 supports ASCII and binary with 4- or 8-byte producer counts. Output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). `$Periodic` remains unsupported without Python, and 4.0 metadata falls back to a full read. See [Gmsh](formats/gmsh.md).
+
 MDPA side-channel membership: `mio_mdpa_info_array(info, MIO_MDPA_SUBMODELPARTS, index, field, ...)` exposes table ids at field 0, geometry ids at field 1 and constraint ids at field 2. These borrowed Int64 lists retain raw file ids, order and duplicates; `mio_write_with_info` restores them in nested parts. They are not remapped by mesh operations, and constraints remain opaque. The C ABI signatures and existing fields are unchanged; the underlying C++ layout uses ABI 21.
 
 `mio_write` writes OpenRadioss starter decks (`radioss`, `.rad`) and MSC Marc decks (`marc`, by name) since v16.17.0; `radioss`'s placeholder materials and properties (`stubs`) are Python and C++ only.

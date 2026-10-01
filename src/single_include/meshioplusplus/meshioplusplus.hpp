@@ -16641,7 +16641,7 @@ MESHIOPLUSPLUS_API void write_gltf(const std::string& rPath, const Mesh& rMesh,
 // ===== begin src/cpp/include/meshioplusplus/formats/gmsh.hpp =====
 /**
  * @file gmsh.hpp
- * @brief Gmsh mesh format (.msh, versions 2.2 and 4.1) C++ reader/writer.
+ * @brief Gmsh mesh format (.msh) C++ reader (2.2/4.0/4.1) and writer (2.2/4.1).
  *
  * `$MeshFormat` (`version filetype datasize`; `filetype` 0=ascii, 1=binary,
  * with a 4-byte endianness-detection integer `1` for binary) is read first
@@ -16780,27 +16780,30 @@ MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh
                                      const GmshInfo& rInfo);
 
 /**
- * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
+ * @brief Read a Gmsh .msh file (versions 2.2, 4.0 and 4.1).
  *
  * Dispatches on the `$MeshFormat` version string; parses `$PhysicalNames`,
  * `$Nodes`, `$Elements` (applying the gmsh <-> meshio++ node-order
- * permutation where needed), and, for 4.1, `$Entities`/per-entity node and
+ * permutation where needed), and, for 4.0/4.1, `$Entities`/per-entity node and
  * element blocks with node-tag->index remapping.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["gmsh:physical"]`/
  *         `cell_data["gmsh:geometrical"]` (2.2: the first two element tags;
- *         4.1: the block's entity tag and its `$Entities` physical tag, the
+ *         4.0/4.1: the block's entity tag and its `$Entities` physical tag, the
  *         latter present only when the file tags any entity at all, and 0 for
  *         the untagged blocks), `point_data["gmsh:dim_tags"]` (v4.1 only),
  *         `field_data` from `$PhysicalNames`, and one `Cell` region per named
  *         physical group
  * @throws ReadError for anything not handled by the C++ path — version not
- *         2.2/4.1 (4.0's `$Entities` layout differs), `$Periodic` records,
+ *         2.2/4.0/4.1, `$Periodic` records,
  *         a Gmsh element type outside the curated type-code subset, or
  *         parametric nodes — so the Python reader can take over
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
+ * @note 4.0 binary unsigned-long counts may be 4 or 8 bytes; their width
+ *       is inferred by validating the section structure. Byte-swapped 4.0
+ *       files are refused, matching the Python reference.
  * @note this overload discards the `$Entities` bounding-entity tags; use the
  *       @ref GmshInfo overload to keep them
  */
@@ -84207,7 +84210,19 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     return out;
 }
 
-// ---- version 4.1 -------------------------------------------------------------
+// ---- versions 4.0 / 4.1 -------------------------------------------------------
+
+// 4.0's binary counts are unsigned long (4 or 8 bytes on the producer),
+// while its tags are int32 and its header reports sizeof(double), not the
+// count width. 4.1 reports the size_t width and uses it for tags too.
+void gmsh_finish_section_4(GmshCursor& rCur, const std::string& rName, bool version40) {
+    if (version40) {
+        if (rCur.next_nonblank() != "$End" + rName)
+            throw ReadError("Gmsh: expected $End" + rName);
+    } else {
+        rCur.skip_to_end(rName);
+    }
+}
 
 struct E41 {
     std::string mType;
@@ -84253,12 +84268,16 @@ struct GmshEntities41 {
  * Deliberately serial -- the section is tiny next to `$Nodes`/`$Elements` and
  * the work is hash-map inserts.
  */
-GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) {
+GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size,
+                                bool version40 = false) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
     auto rd_int = [&]() -> std::int32_t {
-        return is_ascii ? static_cast<std::int32_t>(rCur.next_int()) : rCur.read_i32();
+        if (!is_ascii)
+            return rCur.read_i32();
+        return version40 ? detail::checked_integer<std::int32_t>(rCur.next_double(), "Gmsh")
+                         : static_cast<std::int32_t>(rCur.next_int());
     };
     auto skip_dbl = [&](int n) {
         if (is_ascii) {
@@ -84280,7 +84299,7 @@ GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) 
         const std::size_t dz = static_cast<std::size_t>(d);
         for (std::int64_t i = 0; i < counts[dz]; ++i) {
             const std::int32_t tag = rd_int();
-            skip_dbl(d == 0 ? 3 : 6);  // bounding box
+            skip_dbl(d == 0 && !version40 ? 3 : 6);  // 4.0 has six doubles even for points
             const std::int64_t num_phys = rCur.count(rd_size());
             if (num_phys > 0) {
                 std::vector<std::int32_t> phys(static_cast<std::size_t>(num_phys));
@@ -84298,34 +84317,47 @@ GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) 
             }
         }
     }
-    rCur.skip_to_end("Entities");
+    gmsh_finish_section_4(rCur, "Entities", version40);
     return out;
 }
 
 void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoints,
                    std::vector<std::int64_t>& rTags,
-                   std::vector<std::array<std::int64_t, 2>>& rDimTags) {
+                   std::vector<std::array<std::int64_t, 2>>& rDimTags, bool version40) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
     auto rd_int = [&]() -> int {
-        return is_ascii ? static_cast<int>(rCur.next_int()) : rCur.read_i32();
+        if (!is_ascii)
+            return rCur.read_i32();
+        return version40 ? detail::checked_integer<std::int32_t>(rCur.next_double(), "Gmsh")
+                         : static_cast<int>(rCur.next_int());
     };
     auto rd_dbl = [&]() -> double { return is_ascii ? rCur.next_double() : rCur.read_f64(); };
 
     std::int64_t num_blocks = rCur.count(rd_size());
     std::int64_t num_nodes = rCur.count(rd_size());
-    rd_size();  // min tag
-    rd_size();  // max tag
+    if (version40 && !is_ascii)
+        detail::checked_count(num_nodes, (rCur.mBuf.size() - rCur.mPos) / 28, "Gmsh", "node");
+    if (!version40) {
+        rd_size();  // min tag
+        rd_size();  // max tag
+    }
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
     rTags.resize(num_nodes);
-    rDimTags.resize(num_nodes);
+    if (!version40)
+        rDimTags.resize(num_nodes);
     double* pp = rPoints.As<double>();
 
     std::size_t idx = 0;
     for (std::int64_t b = 0; b < num_blocks; ++b) {
         int dim = rd_int();
         int entity_tag = rd_int();
+        if (version40) {
+            std::swap(dim, entity_tag);  // 4.0: tagEntity, dimEntity
+            if (dim < 0 || dim > 3)
+                throw ReadError("Gmsh: node entity dimension outside 0..3");
+        }
         int parametric = rd_int();
         if (parametric != 0)
             throw ReadError("parametric Gmsh nodes not supported");
@@ -84333,7 +84365,20 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
         const std::size_t nbz = static_cast<std::size_t>(nb);
         if (idx + nbz > static_cast<std::size_t>(num_nodes))
             throw ReadError("Gmsh: $Nodes blocks hold more nodes than declared");
-        if (!is_ascii && data_size == 8 && nbz > 0) {
+        if (version40) {
+            // 4.0 interleaves int32 tags with coordinates, rather than
+            // storing the two separate lists introduced by 4.1.
+            if (!is_ascii)
+                rCur.need(nbz * 28);
+            for (std::size_t i = 0; i < nbz; ++i) {
+                const std::int64_t tag = rd_int();
+                if (tag < 1)
+                    throw ReadError("Gmsh: a node tag below 1");
+                rTags[idx + i] = tag - 1;
+                for (std::size_t c = 0; c < 3; ++c)
+                    pp[(idx + i) * 3 + c] = rd_dbl();
+            }
+        } else if (!is_ascii && data_size == 8 && nbz > 0) {
             rCur.need(nbz * 4 * 8);
             // Native-endian, contiguous: bulk-copy tags (u64) and coords (3*f64).
             std::memcpy(&rTags[idx], rCur.mBuf.data() + rCur.mPos, nbz * 8);
@@ -84351,11 +84396,14 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
                 pp[(idx + i) * 3 + 2] = rd_dbl();
             }
         }
-        for (std::int64_t i = 0; i < nb; ++i)
-            rDimTags[idx + i] = {dim, entity_tag};
+        if (!version40)
+            for (std::int64_t i = 0; i < nb; ++i)
+                rDimTags[idx + i] = {dim, entity_tag};
         idx += static_cast<std::size_t>(nb);
     }
-    rCur.skip_to_end("Nodes");
+    if (version40 && idx != static_cast<std::size_t>(num_nodes))
+        throw ReadError("Gmsh: $Nodes blocks hold fewer nodes than declared");
+    gmsh_finish_section_4(rCur, "Nodes", version40);
 }
 
 /**
@@ -84367,26 +84415,43 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
  *        reference assumes.
  */
 void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vector<E41>& rBlocks,
-                      const GmshEntities41* pEntities) {
+                      const GmshEntities41* pEntities, bool version40) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
     auto rd_int = [&]() -> int {
-        return is_ascii ? static_cast<int>(rCur.next_int()) : rCur.read_i32();
+        if (!is_ascii)
+            return rCur.read_i32();
+        return version40 ? detail::checked_integer<std::int32_t>(rCur.next_double(), "Gmsh")
+                         : static_cast<int>(rCur.next_int());
     };
 
     std::int64_t num_blocks = rCur.count(rd_size());
-    rd_size();  // num elements
-    rd_size();  // min tag
-    rd_size();  // max tag
+    const std::int64_t total = rd_size();
+    if (version40)
+        rCur.count(total);
+    else {
+        rd_size();  // min tag
+        rd_size();  // max tag
+    }
+    std::int64_t done = 0;
     const auto& g2m = gmsh_to_meshio_type();
     const auto& nnpc = num_nodes_per_cell();
 
     for (std::int64_t b = 0; b < num_blocks; ++b) {
         int entity_dim = rd_int();
         int entity_tag = rd_int();
+        if (version40) {
+            std::swap(entity_dim, entity_tag);
+            if (entity_dim < 0 || entity_dim > 3)
+                throw ReadError("Gmsh: element entity dimension outside 0..3");
+        }
         int etype = rd_int();
         std::int64_t num_ele = rCur.count(rd_size());
+        if (version40 && num_ele > total - done)
+            throw ReadError("Gmsh: $Elements blocks hold more elements than declared");
+        if (version40)
+            done += num_ele;
         auto it = g2m.find(etype);
         if (it == g2m.end())
             throw ReadError("Gmsh element type " + std::to_string(etype) +
@@ -84413,9 +84478,12 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
             }
         }
         const std::size_t nez = static_cast<std::size_t>(num_ele);
+        if (version40 && !is_ascii)
+            detail::checked_count(nez, (rCur.mBuf.size() - rCur.mPos) / ((n + 1) * 4), "Gmsh",
+                                  "element");
         blk.mConn = NDArray(DType::Int64, {nez, n});
         std::int64_t* dst = blk.mConn.As<std::int64_t>();
-        if (!is_ascii && data_size == 8) {
+        if (!is_ascii && data_size == 8 && !version40) {
             // Each element is [tag, node0..node(n-1)] u64, native-endian and
             // contiguous. Decode the nodes straight from the slurped buffer into
             // the owning connectivity array (drop the tag), one parallel pass.
@@ -84432,20 +84500,31 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
             });
             rCur.mPos += nez * stride * 8;
         } else {
+            if (version40 && !is_ascii)
+                rCur.need(nez * (n + 1) * 4);
             std::size_t p = 0;
             for (std::int64_t e = 0; e < num_ele; ++e) {
-                rd_size();  // element tag
-                for (std::size_t j = 0; j < n; ++j)
-                    dst[p++] = rd_size() - 1;
+                if (version40)
+                    rd_int();  // element tag (int32)
+                else
+                    rd_size();
+                for (std::size_t j = 0; j < n; ++j) {
+                    const std::int64_t tag = version40 ? rd_int() : rd_size();
+                    if (version40 && tag < 1)
+                        throw ReadError("Gmsh: an element node tag below 1");
+                    dst[p++] = tag - 1;
+                }
             }
         }
         rBlocks.push_back(std::move(blk));
     }
-    rCur.skip_to_end("Elements");
+    if (version40 && done != total)
+        throw ReadError("Gmsh: $Elements blocks hold fewer elements than declared");
+    gmsh_finish_section_4(rCur, "Elements", version40);
 }
 
 Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts,
-                      GmshInfo* pInfo, const double* pTargetTime) {
+                      GmshInfo* pInfo, const double* pTargetTime, bool version40 = false) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
@@ -84464,13 +84543,13 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         if (env == "PhysicalNames")
             read_physical_names(rCur, field_data);
         else if (env == "Entities") {
-            entities = read_entities_41(rCur, is_ascii, data_size);
+            entities = read_entities_41(rCur, is_ascii, data_size, version40);
             have_entities = true;
         } else if (env == "Nodes")
-            read_nodes_41(rCur, is_ascii, data_size, points, point_tags, dim_tags);
+            read_nodes_41(rCur, is_ascii, data_size, points, point_tags, dim_tags, version40);
         else if (env == "Elements")
             read_elements_41(rCur, is_ascii, data_size, eblocks,
-                             have_entities ? &entities : nullptr);
+                             have_entities ? &entities : nullptr, version40);
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
@@ -84505,10 +84584,19 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         if (static_cast<std::uint64_t>(max_tag) >= limit)
             throw ReadError("Gmsh: node tags too sparse for the node count");
         remap.assign(static_cast<std::size_t>(max_tag) + 1, -1);
+        if (version40) {
+            for (std::size_t i = 0; i < point_tags.size(); ++i) {
+                auto& slot = remap[static_cast<std::size_t>(point_tags[i])];
+                if (slot != -1)
+                    throw ReadError("Gmsh: duplicate node tag");
+                slot = static_cast<std::int64_t>(i);
+            }
+        }
         // Scatter: node tags are unique, so writes never alias -> parallel.
-        parallel_for_bw(point_tags.size(), [&](std::size_t i) {
-            remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
-        });
+        if (!version40)
+            parallel_for_bw(point_tags.size(), [&](std::size_t i) {
+                remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
+            });
     }
 
     Mesh mesh;
@@ -84524,7 +84612,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
     // exceptions the caller has to know about. (A points_only mesh is an
     // explicitly lossy request; preserving this for round-tripping would make
     // the contract inconsistent instead of useful.)
-    if (rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:dim_tags")) {
+    if (!version40 && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:dim_tags")) {
         NDArray dt(DType::Int64, {dim_tags.size(), 2});
         parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
             dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
@@ -84608,7 +84696,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
 
     // Bounding entities are signed (the sign carries orientation), so they
     // cannot be a Region -- they ride the side channel instead, like MedInfo.
-    if (pInfo && have_entities) {
+    if (pInfo && have_entities && !version40) {
         pInfo->mBoundingEntities.reserve(eblocks.size());
         for (const auto& b : eblocks)
             pInfo->mBoundingEntities.push_back(b.mBounding);
@@ -84790,13 +84878,15 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
+    if (version == "4.0" && (!fss || (file_type != 0 && file_type != 1)))
+        throw ReadError("Gmsh 4.0: invalid $MeshFormat header");
     const bool is_ascii = (file_type == 0);
     if (!is_ascii) {
         cur.read_i32();
         if (cur.mPos < rBuf.size() && rBuf[cur.mPos] == '\n')
             ++cur.mPos;
     }
-    cur.skip_to_end("MeshFormat");
+    gmsh_finish_section_4(cur, "MeshFormat", version == "4.0");
 
     std::set<double> times;
     while (!cur.eof()) {
@@ -84859,13 +84949,17 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
     bool is_ascii = (file_type == 0);
+    if (version == "4.0" && (!fss || (file_type != 0 && file_type != 1)))
+        throw ReadError("Gmsh 4.0: invalid $MeshFormat header");
     if (!is_ascii) {
-        cur.read_i32();  // endianness marker
+        const std::int32_t marker = cur.read_i32();
+        if (version == "4.0" && marker != 1)
+            throw ReadError("Gmsh: unsupported binary endianness marker");
         // consume trailing newline before $EndMeshFormat
         if (cur.mPos < buf.size() && buf[cur.mPos] == '\n')
             ++cur.mPos;
     }
-    cur.skip_to_end("MeshFormat");
+    gmsh_finish_section_4(cur, "MeshFormat", version == "4.0");
     if (gmsh_has_periodic(buf))
         throw ReadError("Gmsh $Periodic not supported by the C++ reader");
 
@@ -84888,8 +84982,24 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
 
     if (version == "4.1" || version == "4")
         return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo, target_time_ptr);
+    if (version == "4.0") {
+        if (is_ascii)
+            return read_gmsh41_body(cur, true, 8, rOpts, nullptr, target_time_ptr, true);
+        if (data_size != 8)
+            throw ReadError("Gmsh 4.0: binary coordinates must be 8-byte doubles");
+        // 4.0 stores unsigned-long counts without announcing their width.
+        // Try the 64-bit producer layout, then the 32-bit one. Exact count
+        // checks and section terminators prevent a wrong-width parse from
+        // succeeding; neither attempt mutates the caller's info channel.
+        GmshCursor candidate = cur;
+        try {
+            return read_gmsh41_body(candidate, false, 8, rOpts, nullptr, target_time_ptr, true);
+        } catch (const ReadError&) {
+            return read_gmsh41_body(cur, false, 4, rOpts, nullptr, target_time_ptr, true);
+        }
+    }
     if (version.rfind("2", 0) != 0)
-        throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
+        throw ReadError("C++ Gmsh reader handles versions 2.2, 4.0 and 4.1 only");
 
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;

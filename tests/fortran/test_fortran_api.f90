@@ -50,6 +50,31 @@ program test_fortran_api
     call check(mio_format_writable('openfoam'), 'openfoam is writable since v9.20.0')
     call check(.not. mio_format_readable('nonexistent'), 'unknown format is not readable')
 
+    ! ---- native Gmsh 4.0 read, with sparse/out-of-order node tags --------
+    block
+        type(mio_mesh) :: legacy
+        integer :: unit
+        integer(int64), allocatable :: ids(:, :)
+        character(:), allocatable :: legacy_path
+
+        legacy_path = prefix//'_legacy40.msh'
+        open (newunit=unit, file=legacy_path, status='replace')
+        write (unit, '(a)') '$MeshFormat', '4.0 0 8', '$EndMeshFormat', &
+            '$Nodes', '1 3', '22 2 0 3', '30 1 0 0', '10 0 0 0', '20 0 1 0', &
+            '$EndNodes', '$Elements', '1 1', '22 2 2 1', '90 10 30 20', '$EndElements'
+        close (unit)
+        call legacy%read(legacy_path, 'gmsh', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'Gmsh 4.0 native read succeeds')
+        if (ierr == 0) then
+            call check(legacy%num_points() == 3_int64, 'Gmsh 4.0 node count')
+            call legacy%get_cell_block(1, ids)
+            call check(all(ids(:, 1) == [2_int64, 1_int64, 3_int64]), 'Gmsh 4.0 remap is 1-based')
+        end if
+        call legacy%free()
+        open (newunit=unit, file=legacy_path, status='old')
+        close (unit, status='delete')
+    end block
+
     ! ---- build a small tet mesh from arrays ----------------------------
     points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
                       1.1_real64, 0.2_real64, 0.3_real64, &

@@ -3073,6 +3073,68 @@ step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
     assert.deepEqual(legacy.info.subModelParts, []);
 });
 
+step('gmsh 4.0: ASCII and both binary producer count widths', () => {
+    // No host-sized long: a wasm32 reader must also read a 64-bit producer.
+    for (const width of [0, 4, 8]) {
+        const parts = [];
+        const text = (s) => parts.push(new TextEncoder().encode(s));
+        const put = (values, kind) => {
+            if (width === 0) {
+                text(values.join(' ') + '\n');
+                return;
+            }
+            const size = kind === 'double' ? 8 : kind === 'count' ? width : 4;
+            const bytes = new Uint8Array(size * values.length);
+            const view = new DataView(bytes.buffer);
+            values.forEach((v, i) => {
+                if (kind === 'double') view.setFloat64(i * size, v, true);
+                else if (kind === 'count' && width === 8) view.setBigUint64(i * size, BigInt(v), true);
+                else view.setInt32(i * size, v, true);
+            });
+            parts.push(bytes);
+        };
+        text(`$MeshFormat\n4.0 ${width === 0 ? 0 : 1} 8\n`);
+        if (width !== 0) { put([1], 'int'); text('\n'); }
+        text('$EndMeshFormat\n$PhysicalNames\n1\n2 7 "plate"\n$EndPhysicalNames\n$Entities\n');
+        put([1, 0, 1, 0], 'count');
+        put([5], 'int');
+        put([0, 0, 0, 0, 0, 0], 'double'); // 4.0 point bbox also has six doubles
+        put([0], 'count');
+        put([22], 'int');
+        put([0, 0, 0, 1, 1, 0], 'double');
+        put([1], 'count');
+        put([7], 'int');
+        put([0], 'count');
+        text('\n$EndEntities\n$Nodes\n');
+        put([1, 3], 'count');
+        put([22, 2, 0], 'int');
+        put([3], 'count');
+        for (const [tag, xyz] of [[30, [1, 0, 0]], [10, [0, 0, 0]], [20, [0, 1, 0]]]) {
+            put([tag], 'int'); put(xyz, 'double');
+        }
+        text('\n$EndNodes\n$Elements\n');
+        put([1, 1], 'count');
+        put([22, 2, 2], 'int');
+        put([1], 'count');
+        put([90, 10, 30, 20], 'int');
+        text('\n$EndElements\n');
+        const data = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+        let offset = 0;
+        for (const part of parts) { data.set(part, offset); offset += part.length; }
+        m.FS.writeFile('/gmsh40.msh', data);
+        const mesh = m.readMesh('/gmsh40.msh', 'gmsh');
+        assert.equal(mesh.points.length, 9);
+        assert.equal(mesh.cells[0].type, 'triangle');
+        assert.deepEqual(Array.from(mesh.cells[0].data), [1, 0, 2]);
+        assert.equal(mesh.point_data['gmsh:dim_tags'], undefined);
+        assert.deepEqual(Array.from(mesh.cell_data['gmsh:physical'][0], Number), [7]);
+        assert.equal(mesh.regions[0].name, 'plate');
+        assert.deepEqual(Array.from(mesh.regions[0].entries), [0]);
+        m.writeMesh('/gmsh40.vtu', mesh, 'vtu');
+        assert.deepEqual(Array.from(m.readMesh('/gmsh40.vtu', 'vtu').cells[0].data), [1, 0, 2]);
+    }
+});
+
 step('info: gmsh bounding entities survive a real $Entities round trip', () => {
     // A real gmsh 4.1 file: two tagged curves and a tagged surface.
     const msh = [

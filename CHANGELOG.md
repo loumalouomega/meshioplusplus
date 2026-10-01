@@ -14,6 +14,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - C `MIO_MDPA_SUBMODELPARTS` array fields 1/2 expose geometry/constraint ids, mirrored in Fortran, Julia, R, Python core info dictionaries and WASM (`geometryIds`/`constraintIds`). Existing fields and C signatures are unchanged.
 - **Breaking (C++ ABI):** ABI 20 → 21: `MdpaSubModelPart` gains `mGeometryIds` and `mConstraintIds` (80 → 128 bytes on the reference layout); rebuild C++ consumers. `MdpaInfo` itself remains 216 bytes. This supersedes the earlier intent to hold ABI 20 across the parity stack: the installed-layout policy requires the bump.
 - Roadmap §4.1 closed; the remaining parity items are renumbered. Added cross-engine/binding round-trip tests and an executed graphical example in `example/python/24_format_parity.ipynb`.
+- Gmsh 4.0 reads now use the C++ core in ASCII and binary, including files from producers with 4- or 8-byte unsigned-long counts. Entity physical tags, sparse node-tag remapping, higher-order node permutations, selective arrays and time-step selection reach the native CLI and flat bindings. Native output remains 2.2/4.1; `$Periodic` remains Python-only and roadmap §4.1 is narrowed to that gap. No ABI change.
 
 ## v16.28.0 (2026-09-29)
 

@@ -275,6 +275,8 @@ Ask the loaded module rather than trusting this list — it is generated from th
 const { readers, writers } = m.availableFormats();
 ```
 
+`readMesh(path, 'gmsh')` reads non-periodic Gmsh 2.2, 4.0 and 4.1. The 4.0 path supports ASCII and binary with either 4- or 8-byte producer counts, independent of WASM's own integer widths. Native output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), and `$Periodic` remains unsupported. See [Gmsh](formats/gmsh.md).
+
 ### What the HDF5/netCDF formats cost, and what changed
 
 - **The `.wasm` is ~6.3 MB sequential / ~6.7 MB threaded, up from ~2.3 MB before HDF5/netCDF** (the published npm tarball is roughly a third of that, since the binary compresses about 3:1 and browsers fetch it compressed). libhdf5, libnetcdf and libcgns are statically linked, and they are real bytes — though cgnslib itself is the cheap one, adding about **290 KB** (measured, v9.22.0), because it is a thin layer over the HDF5 already there. If you do not need these formats, build your own artifact with `./build/configure-wasm.sh --without-hdf5 --build`, or keep HDF5 and drop only the CGNS MLL with `--without-cgnslib` (see below) — the JS API is identical either way, and `availableFormats()` reports the smaller set while `hasCgnslib()` reports whether the MLL is present.

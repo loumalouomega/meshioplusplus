@@ -70,6 +70,34 @@ end
     close(m)
 end
 
+@testset "native Gmsh 4.0 read" begin
+    mktempdir() do dir
+        path = joinpath(dir, "legacy40.msh")
+        Base.write(path, """\$MeshFormat
+4.0 0 8
+\$EndMeshFormat
+\$Nodes
+1 3
+22 2 0 3
+30 1 0 0
+10 0 0 0
+20 0 1 0
+\$EndNodes
+\$Elements
+1 1
+22 2 2 1
+90 10 30 20
+\$EndElements
+""")
+        m = mio.read(path; format="gmsh")
+        @test num_points(m) == 3
+        @test cell_block_type(m, 1) == "triangle"
+        @test connectivity(m, 1) == reshape(Int64[2, 1, 3], 3, 1)
+        @test !("gmsh:dim_tags" in point_data_names(m))
+        close(m)
+    end
+end
+
 @testset "column-major shape identity" begin
     m = fixture()
     p = points(m)

@@ -32,6 +32,22 @@ test_that("a mesh can be built and inspected", {
   expect_equal(mio_cell_data_num_blocks(m, "material"), 1)
 })
 
+test_that("Gmsh 4.0 reads natively with sparse node tags", {
+  path <- tempfile(fileext = ".msh")
+  on.exit(unlink(path), add = TRUE)
+  writeLines(c(
+    "$MeshFormat", "4.0 0 8", "$EndMeshFormat",
+    "$Nodes", "1 3", "22 2 0 3", "30 1 0 0", "10 0 0 0", "20 0 1 0",
+    "$EndNodes", "$Elements", "1 1", "22 2 2 1", "90 10 30 20", "$EndElements"
+  ), path)
+  m <- mio_read(path, format = "gmsh")
+  on.exit(mio_release(m), add = TRUE)
+  expect_equal(mio_num_points(m), 3)
+  expect_equal(mio_cell_block_type(m, 1), "triangle")
+  expect_equal(as.vector(mio_connectivity(m, 1)), c(2, 1, 3))
+  expect_false("gmsh:dim_tags" %in% mio_point_data_names(m))
+})
+
 test_that("the column-major shape identity holds", {
   m <- fixture()
   on.exit(mio_release(m))

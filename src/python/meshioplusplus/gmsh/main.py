@@ -102,4 +102,5 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
 
 
 # NOTE: format registration now lives in meshioplusplus/gmsh/__init__.py, which wraps the
-# reader/writer above with the C++-backed fast paths (version 2.2).
+# reader/writer above with the C++-backed fast paths (reads 2.2/4.0/4.1,
+# writes 2.2/4.1).

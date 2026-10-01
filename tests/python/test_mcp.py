@@ -596,6 +596,25 @@ def test_convert_roundtrip(mesh_file, tmp_path):
     assert out["num_points"] == 5 and out["num_cells"] == 3
 
 
+@pytest.mark.parametrize("binary,count_bytes", [(False, 8), (True, 8), (True, 4)])
+def test_convert_gmsh40_through_native_reader(
+    binary, count_bytes, tmp_path, monkeypatch
+):
+    from .test_gmsh import gmsh40_fixture
+
+    source = tmp_path / "gmsh40.msh"
+    source.write_bytes(gmsh40_fixture(binary, count_bytes))
+    target = tmp_path / "out.vtu"
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    _dump(_tools.tool_convert(str(source), str(target), input_format="gmsh"))
+    mesh = meshioplusplus.read(target)
+    np.testing.assert_array_equal(mesh.cells[1].data, [[1, 0, 2], [1, 2, 3]])
+    assert sorted((r.name, list(r.entries)) for r in mesh.regions) == [
+        ("edge", [0, 3]),
+        ("plate", [1, 2]),
+    ]
+
+
 def test_convert_mdpa_preserves_nested_geometry_constraint_membership(tmp_path):
     source = tmp_path / "membership.mdpa"
     source.write_text(

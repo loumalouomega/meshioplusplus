@@ -11,9 +11,9 @@ from .main import write as _py_write
 def read(filename, points_only=False, arrays=None, time_step: int = 0):
     """Read a Gmsh .msh file.
 
-    Uses the C++ core for format version 2.2 (ascii or binary), falling back to
-    the reference Python reader for versions 4.0/4.1, periodic meshes, and
-    anything else the C++ reader doesn't handle.
+    Uses the C++ core for format versions 2.2, 4.0 and 4.1 (ASCII or binary),
+    falling back to the reference Python reader for periodic meshes and
+    other constructs the C++ reader doesn't handle.
 
     ``time_step`` selects one step of a `$NodeData`/`$ElementData` timeline
     (0 = first, negative counts from the end), resolved the same way the C

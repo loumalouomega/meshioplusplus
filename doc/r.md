@@ -16,6 +16,8 @@ mio_release(m)
 
 Every exported function is prefixed `mio_`, which keeps the package clear of base R names such as `points()`, `stats()`, `split()` and `merge()`.
 
+`mio_read(path, format = "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), and `$Periodic` is still unsupported. See [Gmsh](formats/gmsh.md).
+
 The package is MIT-licensed like the rest of meshio++. (The sibling [Julia](/julia) binding is deliberately not — see its page.)
 
 ## Building and installing

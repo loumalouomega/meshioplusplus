@@ -247,7 +247,9 @@ def _register_conversion(server: FastMCP) -> None:
         codecs), gzip (CGNS/H5M/VTKHDF/XDMF), lzf (PCD binary_compressed) or
         'none' to decompress. MDPA-to-MDPA preserves nested geometry/constraint
         membership as raw file ids; constraints remain opaque, and other
-        output formats may drop that side-channel content."""
+        output formats may drop that side-channel content. Gmsh input versions
+        2.2/4.0/4.1 use the native reader; periodic input still needs the Python
+        fallback. Gmsh output is 4.1, or 2.2 via gmsh22."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,

@@ -93,6 +93,8 @@ Format inference is the shared registry's, the C API's: the extension picks the 
 
 The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/fortran_example.f90); format support and the remaining limitations (side-channel metadata) are identical to the [C API](/c_api#format-support), which this module wraps; ragged blocks are no longer among them (see the table above). Copy-getters deliver `real(real64)` regardless of the stored dtype (float32/int32/int64 are converted); Fortran on Windows/MSVC is untested in v1.
 
+`m%read(path, 'gmsh')` now accepts non-periodic 4.0 files as well as 2.2/4.1, in ASCII or binary (4- or 8-byte producer counts). Writes stay 4.1 (`gmsh`) or 2.2 (`gmsh22`); `$Periodic` remains unsupported. See [Gmsh](formats/gmsh.md).
+
 ## Selective reads and file summaries
 
 `read` takes optional `points_only`, `arrays`, `time_step`, `lenient` and (last, so positional `stat`/`errmsg` callers keep working) `piece` and `drop_ghosts`, and the module-level `mio_read_metadata` returns a `type(mio_metadata)`:
