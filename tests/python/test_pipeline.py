@@ -115,7 +115,7 @@ def test_interface_operations_in_single_mesh_pipeline(tmp_path):
         ],
     )
     input_path = tmp_path / "parts.vtu"
-    meshioplusplus.write(input_path, mesh)
+    meshioplusplus.write(input_path, mesh, compression=None)
 
     cases = [
         ({"Op": "RegionAdjacency", "Regions": ["upper", "lower"]}, "NumFacets", 1),
