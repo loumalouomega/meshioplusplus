@@ -896,18 +896,26 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
         tolerance += rOptions.mOverlapTolerance;
         const double max_distance_sq = tolerance * tolerance;
         const double normal_cos = std::cos(rOptions.mAngleTolerance * (std::acos(-1.0) / 180.0));
-        for (const RaFacet& a : facets_a) {
-            const detail::Vec3 centre = if_facet_centroid(rMeshA, a);
-            const detail::Vec3 normal_a = ra_facet_normal(rMeshA, a.mNodes);
-            if (!(detail::vec3_norm_sq(normal_a) > 0.0))
+        // The search runs from the master side, so every master facet that has a partner within
+        // tolerance is reported: an A-driven search would only return the B facets A happens to
+        // pick, which is an incomplete (and duplicated) interface when B is the finer mesh.
+        const bool swapped = rOptions.mMaster == InterfaceMaster::B;
+        const Mesh& rSearchMesh = swapped ? rMeshB : rMeshA;
+        const Mesh& rTargetMesh = swapped ? rMeshA : rMeshB;
+        const std::vector<RaFacet>& search_facets = swapped ? facets_b : facets_a;
+        const std::vector<RaFacet>& target_facets = swapped ? facets_a : facets_b;
+        for (const RaFacet& s : search_facets) {
+            const detail::Vec3 centre = if_facet_centroid(rSearchMesh, s);
+            const detail::Vec3 normal_s = ra_facet_normal(rSearchMesh, s.mNodes);
+            if (!(detail::vec3_norm_sq(normal_s) > 0.0))
                 continue;
             IfProjection best;
-            for (const RaFacet& b : facets_b) {
-                const IfProjection projection = if_project_facet(rMeshB, centre, b);
+            for (const RaFacet& t : target_facets) {
+                const IfProjection projection = if_project_facet(rTargetMesh, centre, t);
                 if (!projection.mFound || projection.mDistanceSq > max_distance_sq ||
                     !(detail::vec3_norm_sq(projection.mNormal) > 0.0))
                     continue;
-                if (detail::vec3_dot(normal_a, projection.mNormal) > -normal_cos)
+                if (detail::vec3_dot(normal_s, projection.mNormal) > -normal_cos)
                     continue;
                 if (!best.mFound || projection.mDistanceSq < best.mDistanceSq ||
                     (projection.mDistanceSq == best.mDistanceSq &&
@@ -918,11 +926,13 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
             if (!best.mFound)
                 continue;
             bool all_corners_near = true;
-            for (std::int64_t node : a.mNodes) {
-                const detail::Vec3 point = ra_point(rMeshA.Points(), rMeshA.PointDim(), node);
+            for (std::int64_t node : s.mNodes) {
+                const detail::Vec3 point =
+                    ra_point(rSearchMesh.Points(), rSearchMesh.PointDim(), node);
                 double nearest = std::numeric_limits<double>::infinity();
-                for (const RaFacet& b : facets_b)
-                    nearest = std::min(nearest, if_project_facet(rMeshB, point, b).mDistanceSq);
+                for (const RaFacet& t : target_facets)
+                    nearest =
+                        std::min(nearest, if_project_facet(rTargetMesh, point, t).mDistanceSq);
                 if (nearest > max_distance_sq) {
                     all_corners_near = false;
                     break;
@@ -931,12 +941,17 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
             if (!all_corners_near)
                 continue;
             const detail::Vec3 delta = detail::vec3_sub(centre, best.mPoint);
-            const double gap_a = detail::vec3_dot(delta, normal_a);
-            const double gap_b = detail::vec3_dot(delta, best.mNormal);
-            RaFacet b{best.mNodes, best.mCell, best.mFacet};
-            matches.push_back({a, std::move(b), gap_a, gap_b});
-            matched_a.insert({a.mCell, a.mFacet});
-            matched_b.insert({best.mCell, best.mFacet});
+            const double gap_s = detail::vec3_dot(delta, normal_s);
+            const double gap_t = detail::vec3_dot(delta, best.mNormal);
+            RaFacet t{best.mNodes, best.mCell, best.mFacet};
+            if (swapped)
+                matches.push_back({std::move(t), s, gap_t, gap_s});
+            else
+                matches.push_back({s, std::move(t), gap_s, gap_t});
+            matched_a.insert(swapped ? std::make_pair(best.mCell, best.mFacet)
+                                     : std::make_pair(s.mCell, s.mFacet));
+            matched_b.insert(swapped ? std::make_pair(s.mCell, s.mFacet)
+                                     : std::make_pair(best.mCell, best.mFacet));
         }
     }
 

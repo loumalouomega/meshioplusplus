@@ -176,7 +176,39 @@ TEST(FindInterface, SignedGapFollowsTheChosenMasterSide) {
     const double gap_b = result_b.mMesh.CellData("interface:gap", 0).As<double>()[0];
     EXPECT_NEAR(std::fabs(gap_a), 0.02, 1e-12);
     EXPECT_NEAR(std::fabs(gap_b), 0.02, 1e-12);
-    EXPECT_LT(gap_a * gap_b, 0.0);
+    // Along each master's own outward normal, a separation is negative.
+    EXPECT_LT(gap_a, 0.0);
+    EXPECT_LT(gap_b, 0.0);
+}
+
+TEST(FindInterface, ProximityMasterBReportsEveryFinerFacet) {
+    // A has one coarse triangle on z = 0; B tiles the same triangle with four smaller ones.
+    Mesh a = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    Mesh b = mt::make_mesh({{0, 0, 0},
+                            {1, 0, 0},
+                            {0, 1, 0},
+                            {0.5, 0, 0},
+                            {0.5, 0.5, 0},
+                            {0, 0.5, 0},
+                            {0.3, 0.3, -1}},
+                           "tetra", {{0, 5, 3, 6}, {3, 4, 1, 6}, {5, 2, 4, 6}, {3, 5, 4, 6}});
+    a.AddRegion(cell_region("part", {0}));
+    b.AddRegion(cell_region("part", {0, 1, 2, 3}));
+    RegionSelector part;
+    part.mName = "part";
+    FindInterfaceOptions options;
+    options.mMode = InterfaceMode::Proximity;
+    options.mGapTolerance = 1e-10;
+    options.mAngleTolerance = 5.0;
+    options.mMaster = InterfaceMaster::A;
+    const auto result_a = find_interface(a, part, b, part, options);
+    EXPECT_EQ(result_a.mReport.mNumPairs, 1);
+    EXPECT_NEAR(result_a.mReport.mArea, 0.5, 1e-12);
+    options.mMaster = InterfaceMaster::B;
+    const auto result_b = find_interface(a, part, b, part, options);
+    EXPECT_EQ(result_b.mReport.mNumPairs, 4);
+    EXPECT_NEAR(result_b.mReport.mArea, 0.5, 1e-12);
+    EXPECT_EQ(result_b.mReport.mUnmatchedB, 0);
 }
 
 TEST(ContactPairs, ProjectsPointRegionToClosestMasterFacet) {

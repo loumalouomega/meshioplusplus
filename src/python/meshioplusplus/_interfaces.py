@@ -614,20 +614,25 @@ def _find_interface_py(
         tolerance += overlap_tolerance
         limit_sq = tolerance * tolerance
         normal_limit = -np.cos(np.deg2rad(angle_tolerance))
-        for a in facets_a:
-            center = _facet_center(mesh_a, a)
-            projections = [_project(mesh_b, center, b) for b in facets_b]
+        # The search runs from the master side so that every master facet with a
+        # partner within tolerance is reported (see operations/interfaces.cpp).
+        swapped = master == "b"
+        mesh_s, mesh_t = (mesh_b, mesh_a) if swapped else (mesh_a, mesh_b)
+        search, target = (facets_b, facets_a) if swapped else (facets_a, facets_b)
+        for s in search:
+            center = _facet_center(mesh_s, s)
+            projections = [_project(mesh_t, center, t) for t in target]
             projections = [
                 p for p in projections if p is not None and p["distance_sq"] <= limit_sq
             ]
-            normal_a = _normal(mesh_a, a[0])
-            if not np.linalg.norm(normal_a):
+            normal_s = _normal(mesh_s, s[0])
+            if not np.linalg.norm(normal_s):
                 continue
             projections = [
                 p
                 for p in projections
                 if np.linalg.norm(p["normal"])
-                and np.dot(normal_a, p["normal"]) <= normal_limit
+                and np.dot(normal_s, p["normal"]) <= normal_limit
             ]
             if not projections:
                 continue
@@ -638,20 +643,23 @@ def _find_interface_py(
                 min(
                     (
                         hit["distance_sq"]
-                        for b in facets_b
-                        if (hit := _project(mesh_b, _xyz(mesh_a, node), b)) is not None
+                        for t in target
+                        if (hit := _project(mesh_t, _xyz(mesh_s, node), t)) is not None
                     ),
                     default=np.inf,
                 )
                 > limit_sq
-                for node in a[0]
+                for node in s[0]
             ):
                 continue
             delta = center - best["point"]
-            gap_a = float(np.dot(delta, normal_a))
-            gap_b = float(np.dot(delta, best["normal"]))
-            b = (best["nodes"], best["cell"], best["facet"])
-            matches.append((a, b, gap_a, gap_b))
+            gap_s = float(np.dot(delta, normal_s))
+            gap_t = float(np.dot(delta, best["normal"]))
+            t = (best["nodes"], best["cell"], best["facet"])
+            a, b = (t, s) if swapped else (s, t)
+            matches.append(
+                (a, b, gap_t if swapped else gap_s, gap_s if swapped else gap_t)
+            )
             matched_a.add((a[1], a[2]))
             matched_b.add((b[1], b[2]))
     matches.sort(key=lambda item: (item[0][1], item[0][2], item[1][1], item[1][2]))

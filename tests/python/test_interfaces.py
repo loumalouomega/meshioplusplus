@@ -173,6 +173,71 @@ def test_find_interface_proximity_and_python_twin_match():
     ]
 
 
+def stacked_grids(n_lower, n_upper):
+    """Two separately meshed blocks that touch on the plane z = 1."""
+    lower = mio.grid([n_lower] * 2 + [2], spacing=(1 / n_lower, 1 / n_lower, 0.5))
+    upper = mio.grid(
+        [n_upper] * 2 + [2],
+        origin=(0.0, 0.0, 1.0),
+        spacing=(1 / n_upper, 1 / n_upper, 0.5),
+    )
+    both = mio.merge([lower, upper], source_tag=False)
+    n_lo = len(lower.cells[0].data)
+    both.regions = [
+        Region("lower", "cell", np.arange(n_lo), dim=3),
+        Region(
+            "upper", "cell", np.arange(n_lo, n_lo + len(upper.cells[0].data)), dim=3
+        ),
+    ]
+    return both
+
+
+def test_find_interface_between_separately_meshed_parts():
+    # The roadmap probe: both modes recover the shared plane, whose area is exact.
+    nonmatching = stacked_grids(4, 6)
+    conforming = mio.find_interface(nonmatching, "lower", "upper", return_report=True)[
+        1
+    ]
+    assert conforming["num_pairs"] == 0
+
+    kwargs = dict(mode="proximity", gap_tolerance=1e-9, angle_tolerance=5.0)
+    interface, report = mio.find_interface(
+        nonmatching, "lower", "upper", return_report=True, **kwargs
+    )
+    assert report["num_pairs"] == 16
+    assert report["area"] == pytest.approx(1.0)
+    assert report["max_gap"] == pytest.approx(0.0, abs=1e-9)
+    twin = interfaces._find_interface_py(nonmatching, "lower", "upper", **kwargs)
+    assert twin["report"]["num_pairs"] == 16
+    assert [b.data.tolist() for b in interface.cells] == [
+        b.data.tolist() for b in twin["mesh"].cells
+    ]
+
+    # With the finer part as master the same plane is recovered facet by facet.
+    finer = mio.find_interface(
+        nonmatching, "lower", "upper", master="b", return_report=True, **kwargs
+    )[1]
+    assert finer["num_pairs"] == 36
+    assert finer["area"] == pytest.approx(1.0)
+
+    # Meshed alike and welded, the conforming mode finds the same plane exactly.
+    welded = mio.merge(
+        [
+            mio.grid([4, 4, 2], spacing=(0.25, 0.25, 0.5)),
+            mio.grid([4, 4, 2], origin=(0, 0, 1.0), spacing=(0.25, 0.25, 0.5)),
+        ],
+        weld=True,
+        source_tag=False,
+    )
+    welded.regions = [
+        Region("lower", "cell", np.arange(32), dim=3),
+        Region("upper", "cell", np.arange(32, 64), dim=3),
+    ]
+    same = mio.find_interface(welded, "lower", "upper", return_report=True)[1]
+    assert same["num_pairs"] == 16
+    assert same["area"] == pytest.approx(1.0)
+
+
 def test_find_interface_gap_sign_follows_master_side():
     a = mio.Mesh(
         np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1.0]]),
@@ -191,7 +256,8 @@ def test_find_interface_gap_sign_follows_master_side():
     gap_b = master_b.cell_data["interface:gap"][0][0]
     assert abs(gap_a) == pytest.approx(0.02)
     assert abs(gap_b) == pytest.approx(0.02)
-    assert gap_a * gap_b < 0
+    # Measured along each master's own outward normal, a separation is negative.
+    assert gap_a < 0 and gap_b < 0
 
 
 def test_conforming_two_mesh_mode_does_not_match_equal_ids_at_different_positions():
