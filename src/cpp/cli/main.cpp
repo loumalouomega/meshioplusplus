@@ -100,6 +100,9 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
@@ -468,7 +471,11 @@ void print_usage(std::ostream& os) {
           "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
-          "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
+           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
+           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
+           "  find-interface         Match boundary facets of two Cell regions\n"
+           "  contact-pairs          Project slave Point regions onto master facets\n"
+           "  split-interface        Split point fans along a Side region\n"
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
@@ -1748,6 +1755,355 @@ int cmd_feature_edges(const std::vector<std::string>& rArgs) {
         std::cout << "  boundary:     " << r.mNumBoundary << "\n";
         std::cout << "  non-manifold: " << r.mNumNonManifold << "\n";
         std::cout << "  inconsistent: " << r.mNumInconsistent << "\n";
+    }
+    return 0;
+}
+
+int cmd_region_adjacency(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"regions", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("region-adjacency requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    std::vector<meshioplusplus::RegionSelector> selectors;
+    for (const std::string& value : opt_values(p, "regions")) {
+        std::size_t start = 0;
+        while (start <= value.size()) {
+            const std::size_t comma = value.find(',', start);
+            const std::string name = value.substr(start, comma - start);
+            if (!name.empty()) {
+                meshioplusplus::RegionSelector selector;
+                selector.mName = name;
+                selector.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
+                selectors.push_back(std::move(selector));
+            }
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+    }
+    const Mesh out = meshioplusplus::region_adjacency(mesh, selectors);
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    std::int64_t facets = 0;
+    double area = 0.0;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const NDArray& measures = out.CellData("interface:measure", b);
+        facets += static_cast<std::int64_t>(out.Cells(b).NumCells());
+        for (std::size_t i = 0; i < measures.Size(); ++i)
+            area += meshioplusplus::detail::read_double(measures, i);
+    }
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("facets", facets);
+        json.Field("measure", area);
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        char measure[64];
+        meshioplusplus::detail::snprintf_c(measure, sizeof(measure), "%g", area);
+        std::cout << "region adjacency: " << facets << " shared facets, measure " << measure
+                  << " written\n";
+    }
+    return 0;
+}
+
+void cli_json_side_entries(meshioplusplus::cli::JsonOut& rJson, const NDArray& rEntries) {
+    rJson.BeginArray();
+    const std::size_t count = rEntries.Shape().empty() ? 0 : rEntries.Shape()[0];
+    for (std::size_t i = 0; i < count; ++i) {
+        rJson.BeginArray();
+        rJson.Int(meshioplusplus::detail::read_int(rEntries, 2 * i));
+        rJson.Int(meshioplusplus::detail::read_int(rEntries, 2 * i + 1));
+        rJson.EndArray();
+    }
+    rJson.EndArray();
+}
+
+int cmd_find_interface(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"format-b", {}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"region-a", {}, true},
+                                  {"region-b", {}, true},
+                                  {"mesh-b", {}, true},
+                                  {"mode", {}, true},
+                                  {"master", {}, true},
+                                  {"gap-tolerance", {}, true},
+                                  {"angle-tolerance", {}, true},
+                                  {"overlap-tolerance", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("find-interface requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "region-a") || !has_opt(p, "region-b"))
+        throw std::runtime_error("find-interface requires --region-a and --region-b");
+    Mesh mesh_a = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const std::string mesh_b_path = opt_value(p, "mesh-b");
+    Mesh mesh_b;
+    if (!mesh_b_path.empty())
+        mesh_b = read_mesh_cli(mesh_b_path, opt_value(p, "format-b"));
+    meshioplusplus::RegionSelector region_a, region_b;
+    region_a.mName = opt_value(p, "region-a");
+    region_a.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
+    region_b.mName = opt_value(p, "region-b");
+    region_b.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
+    meshioplusplus::FindInterfaceOptions options;
+    const std::string mode = opt_value(p, "mode", "conforming");
+    if (mode == "conforming")
+        options.mMode = meshioplusplus::InterfaceMode::Conforming;
+    else if (mode == "proximity")
+        options.mMode = meshioplusplus::InterfaceMode::Proximity;
+    else
+        throw std::runtime_error("find-interface: --mode must be conforming or proximity");
+    const std::string master = opt_value(p, "master", "a");
+    if (master == "a")
+        options.mMaster = meshioplusplus::InterfaceMaster::A;
+    else if (master == "b")
+        options.mMaster = meshioplusplus::InterfaceMaster::B;
+    else
+        throw std::runtime_error("find-interface: --master must be a or b");
+    if (has_opt(p, "gap-tolerance"))
+        options.mGapTolerance = meshioplusplus::detail::stod_c(opt_value(p, "gap-tolerance"));
+    if (has_opt(p, "angle-tolerance"))
+        options.mAngleTolerance = meshioplusplus::detail::stod_c(opt_value(p, "angle-tolerance"));
+    if (has_opt(p, "overlap-tolerance"))
+        options.mOverlapTolerance = meshioplusplus::detail::stod_c(opt_value(p, "overlap-tolerance"));
+    auto result = mesh_b_path.empty()
+                      ? meshioplusplus::find_interface(mesh_a, region_a, region_b, options)
+                      : meshioplusplus::find_interface(mesh_a, region_a, mesh_b, region_b, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_pairs", result.mReport.mNumPairs);
+        json.Field("area", result.mReport.mArea);
+        json.Field("max_gap", result.mReport.mMaxGap);
+        json.Field("unmatched_a", result.mReport.mUnmatchedA);
+        json.Field("unmatched_b", result.mReport.mUnmatchedB);
+        json.Key("side_a");
+        cli_json_side_entries(json, result.mSideA.mEntries);
+        json.Key("side_b");
+        cli_json_side_entries(json, result.mSideB.mEntries);
+        json.EndObject();
+    } else {
+        char area[40], gap[40];
+        meshioplusplus::detail::snprintf_c(area, sizeof(area), "%g", result.mReport.mArea);
+        meshioplusplus::detail::snprintf_c(gap, sizeof(gap), "%g", result.mReport.mMaxGap);
+        std::cout << "find interface: " << result.mReport.mNumPairs << " facet pair(s), area "
+                  << area << ", max gap " << gap << " written\n";
+    }
+    return 0;
+}
+
+void cli_json_xyz(meshioplusplus::cli::JsonOut& rJson, const NDArray& rValues,
+                  std::size_t Row) {
+    rJson.BeginArray();
+    for (std::size_t d = 0; d < 3; ++d)
+        rJson.Number(meshioplusplus::detail::read_double(rValues, 3 * Row + d));
+    rJson.EndArray();
+}
+
+std::string cli_csv_number(double Value) {
+    char buffer[48];
+    meshioplusplus::detail::snprintf_c(buffer, sizeof(buffer), "%g", Value);
+    return buffer;
+}
+
+void cli_contact_pairs_json(meshioplusplus::cli::JsonOut& rJson,
+                            const meshioplusplus::ContactPairsResult& rResult) {
+    const std::size_t count = rResult.mSlavePoint.Shape()[0];
+    rJson.BeginObject();
+    rJson.Field("num_pairs", count);
+    rJson.Key("pairs");
+    rJson.BeginArray();
+    for (std::size_t i = 0; i < count; ++i) {
+        rJson.BeginObject();
+        rJson.Field("slave_point", meshioplusplus::detail::read_int(rResult.mSlavePoint, i));
+        rJson.Field("master_cell", meshioplusplus::detail::read_int(rResult.mMasterCell, i));
+        rJson.Field("master_facet", meshioplusplus::detail::read_int(rResult.mMasterFacet, i));
+        rJson.Field("master_subfacet", meshioplusplus::detail::read_int(rResult.mMasterSubfacet, i));
+        rJson.Key("local_coordinates");
+        cli_json_xyz(rJson, rResult.mLocalCoordinates, i);
+        rJson.Key("closest_point");
+        cli_json_xyz(rJson, rResult.mClosestPoint, i);
+        rJson.Field("gap", meshioplusplus::detail::read_double(rResult.mGap, i));
+        rJson.Key("normal");
+        cli_json_xyz(rJson, rResult.mNormal, i);
+        rJson.EndObject();
+    }
+    rJson.EndArray();
+    rJson.Key("unmatched");
+    rJson.BeginArray();
+    for (std::size_t i = 0; i < rResult.mUnmatched.Size(); ++i)
+        rJson.Int(meshioplusplus::detail::read_int(rResult.mUnmatched, i));
+    rJson.EndArray();
+    rJson.EndObject();
+}
+
+void cli_contact_pairs_csv(std::ostream& rStream,
+                           const meshioplusplus::ContactPairsResult& rResult, bool Full) {
+    if (Full)
+        rStream << "slave_point,master_cell,master_facet,master_subfacet,u,v,w,x,y,z,gap,nx,ny,nz\n";
+    else
+        rStream << "slave_point,master_cell,master_facet,master_subfacet,gap\n";
+    const std::size_t count = rResult.mSlavePoint.Shape()[0];
+    for (std::size_t i = 0; i < count; ++i) {
+        rStream << std::to_string(meshioplusplus::detail::read_int(rResult.mSlavePoint, i)) << ','
+                << std::to_string(meshioplusplus::detail::read_int(rResult.mMasterCell, i)) << ','
+                << std::to_string(meshioplusplus::detail::read_int(rResult.mMasterFacet, i)) << ','
+                << std::to_string(meshioplusplus::detail::read_int(rResult.mMasterSubfacet, i));
+        if (Full) {
+            for (const NDArray* array : {&rResult.mLocalCoordinates, &rResult.mClosestPoint})
+                for (std::size_t d = 0; d < 3; ++d)
+                    rStream << ',' << cli_csv_number(
+                        meshioplusplus::detail::read_double(*array, 3 * i + d));
+            rStream << ',' << cli_csv_number(
+                meshioplusplus::detail::read_double(rResult.mGap, i));
+            for (std::size_t d = 0; d < 3; ++d)
+                rStream << ',' << cli_csv_number(
+                    meshioplusplus::detail::read_double(rResult.mNormal, 3 * i + d));
+        } else {
+            rStream << ',' << cli_csv_number(
+                meshioplusplus::detail::read_double(rResult.mGap, i));
+        }
+        rStream << '\n';
+    }
+}
+
+int cmd_contact_pairs(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"slave-region", {}, true},
+                                  {"master-region", {}, true},
+                                  {"slave-format", {}, true},
+                                  {"master-format", {}, true},
+                                  {"output", {"-o"}, true},
+                                  {"tolerance", {}, true},
+                                  {"require-complete", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("contact-pairs requires exactly SLAVE_FILE and MASTER_FILE");
+    if (!has_opt(p, "slave-region") || !has_opt(p, "master-region"))
+        throw std::runtime_error("contact-pairs requires --slave-region and --master-region");
+    Mesh slave = read_mesh_cli(p.positionals[0], opt_value(p, "slave-format"));
+    Mesh master = read_mesh_cli(p.positionals[1], opt_value(p, "master-format"));
+    meshioplusplus::RegionSelector slave_region, master_region;
+    slave_region.mName = opt_value(p, "slave-region");
+    slave_region.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Point);
+    master_region.mName = opt_value(p, "master-region");
+    master_region.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
+    meshioplusplus::ContactPairsOptions options;
+    if (has_opt(p, "tolerance"))
+        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    options.mRequireComplete = has_flag(p, "require-complete");
+    const auto result = meshioplusplus::contact_pairs(slave, slave_region, master,
+                                                     master_region, options);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        cli_contact_pairs_json(json, result);
+        return 0;
+    }
+    const std::string output = opt_value(p, "output");
+    if (output.empty()) {
+        cli_contact_pairs_csv(std::cout, result, false);
+    } else {
+        auto file = meshioplusplus::detail::make_classic_ofstream(output);
+        if (!file)
+            throw WriteError("meshio++: contact-pairs: cannot open output '" + output + "'");
+        cli_contact_pairs_csv(file, result, true);
+    }
+    return 0;
+}
+
+int cmd_split_interface(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"side-region", {}, true},
+                                  {"side-entries", {}, true},
+                                  {"add-cohesive", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("split-interface requires exactly INFILE and OUTFILE");
+    if (has_opt(p, "side-region") == has_opt(p, "side-entries"))
+        throw std::runtime_error("split-interface requires exactly one of --side-region and --side-entries");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::RegionSelector side;
+    side.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Side);
+    if (has_opt(p, "side-entries")) {
+        const std::string& text = opt_value(p, "side-entries");
+        std::vector<std::int64_t> values;
+        std::size_t pos = 0;
+        auto skip_space = [&]() {
+            while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+        };
+        auto expect = [&](char c) {
+            skip_space();
+            if (pos >= text.size() || text[pos] != c)
+                throw std::runtime_error("split-interface: --side-entries must be a JSON list of [cell, facet] pairs");
+            ++pos;
+        };
+        auto integer = [&]() {
+            skip_space();
+            const std::size_t start = pos;
+            if (pos < text.size() && (text[pos] == '-' || text[pos] == '+')) ++pos;
+            const std::size_t digits = pos;
+            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+            if (digits == pos)
+                throw std::runtime_error("split-interface: --side-entries contains a non-integer entry");
+            return std::stoll(text.substr(start, pos - start));
+        };
+        expect('[');
+        skip_space();
+        if (pos < text.size() && text[pos] != ']') {
+            while (true) {
+                expect('[');
+                values.push_back(integer());
+                expect(',');
+                values.push_back(integer());
+                expect(']');
+                skip_space();
+                if (pos < text.size() && text[pos] == ',') {
+                    ++pos;
+                    continue;
+                }
+                break;
+            }
+        }
+        expect(']');
+        skip_space();
+        if (pos != text.size())
+            throw std::runtime_error("split-interface: trailing text in --side-entries");
+        Mesh with_side = meshioplusplus::detail::clone_mesh(mesh);
+        NDArray entries = NDArray::Uninit(DType::Int64, {values.size() / 2, 2});
+        std::copy(values.begin(), values.end(), entries.As<std::int64_t>());
+        with_side.AddRegion(meshioplusplus::Region("cli:interface",
+            meshioplusplus::RegionKind::Side, std::move(entries)));
+        mesh = std::move(with_side);
+        side.mName = "cli:interface";
+    } else {
+        side.mName = opt_value(p, "side-region");
+    }
+    meshioplusplus::SplitInterfaceOptions options;
+    options.mAddCohesive = has_flag(p, "add-cohesive");
+    const auto result = meshioplusplus::split_interface(mesh, side, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_duplicated_points", result.mNumDuplicatedPoints);
+        json.Field("num_cohesive_cells", result.mNumCohesiveCells);
+        json.EndObject();
+    } else {
+        std::cout << "split interface: duplicated " << result.mNumDuplicatedPoints
+                  << " point(s), added " << result.mNumCohesiveCells << " cohesive cell(s)\n";
     }
     return 0;
 }
@@ -4638,6 +4994,14 @@ int main(int argc, char** argv) {
             return cmd_check(rest);
         if (cmd == "feature-edges")
             return cmd_feature_edges(rest);
+        if (cmd == "region-adjacency")
+            return cmd_region_adjacency(rest);
+        if (cmd == "find-interface")
+            return cmd_find_interface(rest);
+        if (cmd == "contact-pairs")
+            return cmd_contact_pairs(rest);
+        if (cmd == "split-interface")
+            return cmd_split_interface(rest);
         if (cmd == "hausdorff")
             return cmd_hausdorff(rest);
         if (cmd == "periodic")

@@ -363,6 +363,18 @@ mesh = meshioplusplus.edit_regions(mesh, [{"op": "union", "inputs": ["a", "b"], 
 pairs = meshioplusplus.match_periodic_nodes(mesh, "inlet", "outlet", translate=(2, 0, 0))
 ```
 
+#### Interfaces and contact
+
+`meshioplusplus.region_adjacency(mesh, regions=None)` extracts conforming facets shared by Cell regions (or by cell blocks when fewer than two Cell regions exist). `find_interface` matches two parts by shared node ids or geometric proximity, `contact_pairs` projects a Point region onto master facets, and `split_interface` duplicates point fans along a Side region with optional cohesive elements. The API and tolerances are documented in [`doc/region_adjacency.md`](doc/region_adjacency.md).
+
+```python
+facets, report = meshioplusplus.find_interface(mesh, "part_a", "part_b", return_report=True)
+contacts = meshioplusplus.contact_pairs(slave_mesh, "slave_nodes", "master_boundary")
+split = meshioplusplus.split_interface(mesh, report["side_a"], add_cohesive=True)
+```
+
+The Python CLI provides `region-adjacency`, `find-interface`, `contact-pairs`, and `split-interface`; the native CLI provides `region-adjacency`.
+
 #### Merge / combine
 
 `meshioplusplus.merge` combines two or more meshes into one: it concatenates points (offsetting connectivity so indices stay valid), merges cell blocks by type, concatenates data (per a configurable `data_policy`), and tags each cell's origin. With `weld=True` it fuses coincident nodes across inputs within `atol` using a spatial hash (never O(N²)) — the standard way to stitch adjacent blocks into a watertight mesh. Overlapping set / field-data names are namespaced by source id. See `doc/merge.md`.

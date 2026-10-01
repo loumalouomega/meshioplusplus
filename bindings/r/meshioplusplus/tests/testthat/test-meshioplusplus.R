@@ -1294,6 +1294,43 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_error(mio_check_quality(m, "bogus >= 1"))
 })
 
+test_that("interface search, contact projection and interface splitting", {
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, matrix(c(
+    0, 0, 0,
+    1, 0, 0,
+    0, 1, 0,
+    0, 0, 1,
+    0, 0, -1
+  ), nrow = 3))
+  mio_add_cell_block(m, "tetra", matrix(c(
+    1, 2, 3, 4,
+    1, 3, 2, 5
+  ), nrow = 4))
+  mio_add_region(m, "upper", "cell", 1, dim = 3)
+  mio_add_region(m, "lower", "cell", 2, dim = 3)
+  mio_add_region(m, "slave", "point", 1)
+  mio_add_region(m, "cut", "side", matrix(c(1, 3), nrow = 2))
+
+  found <- mio_find_interface(m, "upper", "lower")
+  on.exit(mio_release(found$mesh), add = TRUE)
+  expect_equal(found$num_pairs, 1)
+  expect_equal(found$side_a, matrix(c(1, 3), nrow = 2))
+  expect_equal(mio_cell_block_type(found$mesh, 1), "triangle")
+
+  contacts <- mio_contact_pairs(m, "slave", "lower", tolerance = 10)
+  expect_equal(contacts$slave_point, 1)
+  expect_equal(contacts$master_cell, 2)
+  expect_equal(dim(contacts$local_coordinates), c(3, 1))
+  expect_length(contacts$unmatched, 0)
+
+  split <- mio_split_interface(m, "cut", add_cohesive = TRUE)
+  on.exit(mio_release(split$mesh), add = TRUE)
+  expect_equal(split$num_duplicated_points, 3)
+  expect_equal(split$num_cohesive_cells, 1)
+})
+
 test_that("agglomerate options, blend_steps and sequence resampling", {
   m <- fixture()
   on.exit(mio_release(m))

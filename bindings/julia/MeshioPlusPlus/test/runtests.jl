@@ -1246,6 +1246,32 @@ end
     @test !check_quality(cube; require="min_angle >= 50").passed
     @test_throws MeshioError check_quality(cube; require="bogus >= 1")
     close(cube)
+
+    interface_mesh = Mesh()
+    set_points!(interface_mesh, Float64[0 1 0 0 0; 0 0 1 0 0; 0 0 0 1 -1])
+    add_cell_block!(interface_mesh, "tetra", Int64[1 1; 2 3; 3 2; 4 5])
+    add_region!(interface_mesh, "upper", :cell, [1]; dim=3)
+    add_region!(interface_mesh, "lower", :cell, [2]; dim=3)
+    add_region!(interface_mesh, "slave", :point, [1])
+    add_region!(interface_mesh, "cut", :side, reshape(Int64[1, 3], 2, 1))
+
+    found = find_interface(interface_mesh, "upper", "lower")
+    @test found.report.num_pairs == 1
+    @test found.report.side_a == reshape(Int64[1, 3], 2, 1)
+    @test num_cell_blocks(found.mesh) == 1
+    close(found.mesh)
+
+    contacts = contact_pairs(interface_mesh, "slave", "lower"; tolerance=10)
+    @test contacts.slave_point == [1]
+    @test contacts.master_cell == [2]
+    @test size(contacts.local_coordinates) == (3, 1)
+    @test isempty(contacts.unmatched)
+
+    split = split_interface(interface_mesh, "cut"; add_cohesive=true)
+    @test split.num_duplicated_points == 3
+    @test split.num_cohesive_cells == 1
+    close(split.mesh)
+    close(interface_mesh)
 end
 
 @testset "operations: agglomerate options, blend_steps, resample" begin

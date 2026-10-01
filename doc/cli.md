@@ -94,7 +94,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the two to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -106,6 +106,10 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
 | `resample` | `method`, `num_steps` and the target `times` |
+| `region-adjacency` | `facets` and `measure` |
+| `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
+| `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
+| `split-interface` | duplicated-point and cohesive-cell counts |
 
 The exit codes are unchanged by `--json`.
 
@@ -231,6 +235,22 @@ meshioplusplus reorder part.vtu reordered.vtu
 meshioplusplus reorder part.vtu reordered.vtu --method hilbert
 meshioplusplus reorder part.vtu reordered.vtu --method rcm --report
 ```
+
+---
+
+## Interface and contact commands
+
+`region-adjacency` writes conforming shared facets for named Cell regions (or cell blocks when fewer than two Cell regions exist). `find-interface` matches boundary facets by shared node ids or geometric proximity; `contact-pairs` projects a Point region to master facets and prints a CSV table unless `--json` is requested; `split-interface` duplicates point fans along an existing Side region or explicit Side-entry pairs. See [Interfaces and contact](/region_adjacency) for matching, index and cohesive-element conventions.
+
+```sh
+meshioplusplus region-adjacency parts.vtu shared.vtu --regions upper,lower --json
+meshioplusplus find-interface parts.vtu interface.vtu --region-a upper --region-b lower --mode proximity --gap-tolerance 0.01 --json
+meshioplusplus contact-pairs slave.vtu master.vtu --slave-region nodes --master-region skin --output pairs.csv
+meshioplusplus split-interface parts.vtu split.vtu --side-region crack --add-cohesive --json
+meshioplusplus split-interface parts.vtu split.vtu --side-entries '[[4,2],[7,0]]'
+```
+
+`find-interface` and `contact-pairs` accept separate input files; their region selectors are Cell regions for facets and a Point region for slave nodes, respectively. `region-adjacency --regions` accepts comma-separated names (repeat the option to append groups; the Python CLI also accepts space-separated names). In `split-interface`, side-entry cell ids are zero-based global cell ids and local-facet ordinals are zero-based.
 
 ---
 

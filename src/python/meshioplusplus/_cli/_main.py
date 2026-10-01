@@ -8,6 +8,7 @@ from . import (
     _binary,
     _check,
     _clean,
+    _contact_pairs,
     _compress,
     _conservative_interpolate,
     _convert,
@@ -22,6 +23,7 @@ from . import (
     _diff,
     _extract_surface,
     _feature_edges,
+    _find_interface,
     _grid_transfer,
     _guard,
     _hausdorff,
@@ -39,6 +41,7 @@ from . import (
     _proximity,
     _quality,
     _refine,
+    _region_adjacency,
     _regions,
     _remesh,
     _remesh_volume,
@@ -49,6 +52,7 @@ from . import (
     _shrinkwrap,
     _slice,
     _smooth,
+    _split_interface,
     _sobolev,
     _split,
     _stats,
@@ -135,6 +139,30 @@ def main(argv=None):
     )
     _feature_edges.add_args(parser)
     parser.set_defaults(func=_feature_edges.feature_edges_cmd)
+
+    parser = subparsers.add_parser(
+        "region-adjacency", help="Write facets shared by selected regions or cell blocks"
+    )
+    _region_adjacency.add_args(parser)
+    parser.set_defaults(func=_region_adjacency.region_adjacency_cmd)
+
+    parser = subparsers.add_parser(
+        "find-interface", help="Find conforming or proximity-matched interface facets"
+    )
+    _find_interface.add_args(parser)
+    parser.set_defaults(func=_find_interface.find_interface_cmd)
+
+    parser = subparsers.add_parser(
+        "contact-pairs", help="Project slave-region nodes onto master facets"
+    )
+    _contact_pairs.add_args(parser)
+    parser.set_defaults(func=_contact_pairs.contact_pairs_cmd)
+
+    parser = subparsers.add_parser(
+        "split-interface", help="Split node fans along a Side region"
+    )
+    _split_interface.add_args(parser)
+    parser.set_defaults(func=_split_interface.split_interface_cmd)
 
     parser = subparsers.add_parser(
         "hausdorff",

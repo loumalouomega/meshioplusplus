@@ -116,10 +116,29 @@ def files(tmp_path_factory):
         Region("a", "cell", [0, 1, 2]),
         Region("b", "cell", [2, 3]),
     ]
+    parts = mio.Mesh(
+        np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]],
+            dtype=float,
+        ),
+        [
+            (
+                "tetra",
+                np.array([[0, 1, 2, 3], [0, 2, 1, 4]], dtype=np.int64),
+            )
+        ],
+        regions=[
+            Region("upper", "cell", [0], dim=3),
+            Region("lower", "cell", [1], dim=3),
+            Region("slave", "point", [0]),
+            Region("cut", "side", [[0, 3]]),
+        ],
+    )
     paths = {
         "grid": str(d / "grid.vtu"),
         "moved": str(d / "moved.vtu"),
         "tagged": str(d / "tagged.inp"),
+        "parts": str(d / "parts.vtu"),
     }
     # a 3x3x3 hexahedral block, for agglomerate
     xs, ys, zs = np.meshgrid(*(np.arange(n + 1.0),) * 3, indexing="ij")
@@ -157,6 +176,7 @@ def files(tmp_path_factory):
     mio.write(paths["grid"], grid)
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
+    mio.write(paths["parts"], parts)
     paths["dir"] = str(d)
     return paths
 
@@ -197,6 +217,21 @@ CASES = [
             "--json",
         ],
     ),
+    (
+        "contact_pairs",
+        lambda f: [
+            "contact-pairs",
+            f["parts"],
+            f["parts"],
+            "--slave-region",
+            "slave",
+            "--master-region",
+            "lower",
+            "--tolerance",
+            "10",
+            "--json",
+        ],
+    ),
 ]
 
 # Verbs that write a file: each CLI gets its own output path.
@@ -204,6 +239,35 @@ WRITING = [
     (
         "feature_edges",
         lambda f, out: ["feature-edges", f["grid"], out + ".vtu", "--json"],
+    ),
+    (
+        "region_adjacency",
+        lambda f, out: ["region-adjacency", f["tagged"], out + ".vtu", "--json"],
+    ),
+    (
+        "find_interface",
+        lambda f, out: [
+            "find-interface",
+            f["parts"],
+            out + ".vtu",
+            "--region-a",
+            "upper",
+            "--region-b",
+            "lower",
+            "--json",
+        ],
+    ),
+    (
+        "split_interface",
+        lambda f, out: [
+            "split-interface",
+            f["parts"],
+            out + ".vtu",
+            "--side-region",
+            "cut",
+            "--add-cohesive",
+            "--json",
+        ],
     ),
     ("convert", lambda f, out: ["convert", f["grid"], out + ".vtk", "--json"]),
     (

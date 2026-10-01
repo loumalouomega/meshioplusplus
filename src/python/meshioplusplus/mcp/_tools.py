@@ -74,6 +74,7 @@ from .. import (
     extract_skin,
     extract_surface,
     feature_edges,
+    find_interface,
     geometry_descriptors,
     gradient,
     grid,
@@ -88,6 +89,9 @@ from .. import (
     point_data_to_cell_data,
     power_spectrum,
     proximity_graph,
+    region_adjacency,
+    contact_pairs,
+    split_interface,
     read,
     read_metadata,
     refine,
@@ -1789,6 +1793,153 @@ def tool_feature_edges(
         out,
         num_edges=int(len(out.cells[0].data)) if out.cells else 0,
         **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_region_adjacency(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    regions=None,
+):
+    """Write conforming facets shared by selected Cell regions or cell blocks.
+
+    The output carries per-facet parent cell/facet ids and measure. With no
+    region names, every Cell region is considered; if fewer than two exist,
+    each cell block is a group.
+    """
+    out = region_adjacency(_load(input_path, input_format), regions)
+    facets = sum(len(block.data) for block in out.cells)
+    measure = sum(float(values.sum()) for values in out.cell_data["interface:measure"])
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        facets=int(facets),
+        measure=float(measure),
+    )
+
+
+def tool_find_interface(
+    input_path,
+    output_path,
+    region_a,
+    region_b,
+    input_format=None,
+    output_format=None,
+    mesh_b_path=None,
+    format_b=None,
+    mode="conforming",
+    master="a",
+    gap_tolerance=0.0,
+    angle_tolerance=30.0,
+    overlap_tolerance=0.0,
+):
+    """Write matched interface facets and report both source Side regions."""
+    mesh = _load(input_path, input_format)
+    mesh_b = _load(mesh_b_path, format_b) if mesh_b_path else None
+    out, report = find_interface(
+        mesh,
+        region_a,
+        region_b,
+        mesh_b=mesh_b,
+        mode=mode,
+        master=master,
+        gap_tolerance=gap_tolerance,
+        angle_tolerance=angle_tolerance,
+        overlap_tolerance=overlap_tolerance,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_pairs=int(report["num_pairs"]),
+        area=float(report["area"]),
+        max_gap=float(report["max_gap"]),
+        unmatched_a=int(report["unmatched_a"]),
+        unmatched_b=int(report["unmatched_b"]),
+        side_a=np.asarray(report["side_a"].entries, dtype=np.int64)
+        .reshape(-1, 2)
+        .tolist(),
+        side_b=np.asarray(report["side_b"].entries, dtype=np.int64)
+        .reshape(-1, 2)
+        .tolist(),
+    )
+
+
+def tool_contact_pairs(
+    slave_path,
+    slave_region,
+    master_region,
+    master_path=None,
+    slave_format=None,
+    master_format=None,
+    tolerance=0.0,
+    require_complete=False,
+):
+    """Return node-to-facet projections as a JSON-safe table."""
+    slave = _load(slave_path, slave_format)
+    master = _load(master_path, master_format) if master_path else slave
+    result = contact_pairs(
+        slave,
+        slave_region,
+        master_region,
+        master_mesh=master,
+        tolerance=tolerance,
+        require_complete=require_complete,
+    )
+    count = len(result["slave_point"])
+    pairs = []
+    for i in range(count):
+        pairs.append(
+            {
+                "slave_point": int(result["slave_point"][i]),
+                "master_cell": int(result["master_cell"][i]),
+                "master_facet": int(result["master_facet"][i]),
+                "master_subfacet": int(result["master_subfacet"][i]),
+                "local_coordinates": result["local_coordinates"][i].tolist(),
+                "closest_point": result["closest_point"][i].tolist(),
+                "gap": float(result["gap"][i]),
+                "normal": result["normal"][i].tolist(),
+            }
+        )
+    return _json_safe(
+        {"num_pairs": count, "pairs": pairs, "unmatched": result["unmatched"].tolist()}
+    )
+
+
+def tool_split_interface(
+    input_path,
+    output_path,
+    side_region=None,
+    side_entries=None,
+    side_name="interface:side_a",
+    input_format=None,
+    output_format=None,
+    add_cohesive=False,
+):
+    """Split point fans along a Side region and optionally add cohesive cells."""
+    from .._regions import Region
+
+    mesh = _load(input_path, input_format)
+    if side_entries is not None:
+        side = Region(
+            side_name,
+            "side",
+            np.asarray(side_entries, dtype=np.int64).reshape(-1, 2),
+        )
+    elif side_region:
+        side = side_region
+    else:
+        raise ValueError("split_interface needs side_region or side_entries")
+    out, report = split_interface(
+        mesh, side, add_cohesive=add_cohesive, return_report=True
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_duplicated_points=int(report["num_duplicated_points"]),
+        num_cohesive_cells=int(report["num_cohesive_cells"]),
     )
 
 
@@ -3826,6 +3977,38 @@ TOOL_REGISTRY = OrderedDict(
         (
             "feature_edges",
             {"fn": tool_feature_edges, "wraps": ("feature_edges",), "gated": None},
+        ),
+        (
+            "region_adjacency",
+            {
+                "fn": tool_region_adjacency,
+                "wraps": ("region_adjacency",),
+                "gated": None,
+            },
+        ),
+        (
+            "find_interface",
+            {
+                "fn": tool_find_interface,
+                "wraps": ("find_interface",),
+                "gated": None,
+            },
+        ),
+        (
+            "contact_pairs",
+            {
+                "fn": tool_contact_pairs,
+                "wraps": ("contact_pairs",),
+                "gated": None,
+            },
+        ),
+        (
+            "split_interface",
+            {
+                "fn": tool_split_interface,
+                "wraps": ("split_interface",),
+                "gated": None,
+            },
         ),
         (
             "hausdorff",

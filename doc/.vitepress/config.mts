@@ -114,6 +114,7 @@ export default defineConfig({
               { text: "Mesh comparison (diff)", link: "/diff" },
               { text: "Hausdorff distance", link: "/hausdorff" },
               { text: "Feature edges", link: "/feature_edges" },
+              { text: "Interfaces and contact", link: "/region_adjacency" },
               { text: "Periodic node pairs", link: "/periodic" },
               { text: "Surface extraction", link: "/extract_surface" },
               { text: "Skin extraction", link: "/extract_skin" },

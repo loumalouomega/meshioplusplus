@@ -107,6 +107,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -134,6 +135,17 @@ struct mio_regions {
 
 struct mio_periodic_pairs {
     meshioplusplus::PeriodicPairs mPairs;
+};
+
+struct mio_find_interface_result {
+    mio_mesh mMesh;
+    meshioplusplus::Region mSideA;
+    meshioplusplus::Region mSideB;
+    meshioplusplus::InterfaceReport mReport;
+};
+
+struct mio_contact_pairs_result {
+    meshioplusplus::ContactPairsResult mPairs;
 };
 
 struct mio_poly_conn {
@@ -5164,6 +5176,12 @@ static_assert(sizeof(mio_hausdorff_report) == 152,
 static_assert(sizeof(mio_region_selector) == 48,
               "mio_region_selector grew outside its reserved tail");
 static_assert(sizeof(mio_periodic_opts) == 192, "mio_periodic_opts grew outside its reserved tail");
+static_assert(sizeof(mio_find_interface_opts) == 64,
+              "mio_find_interface_opts grew outside its reserved tail");
+static_assert(sizeof(mio_contact_pairs_opts) == 48,
+              "mio_contact_pairs_opts grew outside its reserved tail");
+static_assert(sizeof(mio_split_interface_opts) == 40,
+              "mio_split_interface_opts grew outside its reserved tail");
 
 void mio_feature_edges_opts_init(mio_feature_edges_opts* opts) {
     if (!opts)
@@ -5272,6 +5290,223 @@ mio_mesh* mio_edit_regions(const mio_mesh* mesh, int32_t op, const mio_region_se
         e.mOutputTag = tag;
         e.mKeepInputs = keep_inputs != 0;
         return new mio_mesh{meshioplusplus::edit_regions(mesh->mMesh, {e})};
+    });
+}
+
+mio_mesh* mio_region_adjacency(const mio_mesh* mesh, const mio_region_selector* regions,
+                               int64_t num_regions) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (num_regions < 0 || (num_regions > 0 && !regions))
+            throw std::invalid_argument(
+                "meshio++: region_adjacency: invalid selectors pointer/count");
+        std::vector<meshioplusplus::RegionSelector> selectors;
+        selectors.reserve(static_cast<std::size_t>(num_regions));
+        for (int64_t i = 0; i < num_regions; ++i)
+            selectors.push_back(capi_selector(regions + i));
+        return new mio_mesh{meshioplusplus::region_adjacency(mesh->mMesh, selectors)};
+    });
+}
+
+void mio_find_interface_opts_init(mio_find_interface_opts* opts) {
+    if (opts) {
+        *opts = mio_find_interface_opts{};
+        opts->angle_tolerance = 30.0;
+    }
+}
+
+void mio_contact_pairs_opts_init(mio_contact_pairs_opts* opts) {
+    if (opts)
+        *opts = mio_contact_pairs_opts{};
+}
+
+void mio_split_interface_opts_init(mio_split_interface_opts* opts) {
+    if (opts)
+        *opts = mio_split_interface_opts{};
+}
+
+mio_find_interface_result* mio_find_interface(const mio_mesh* mesh_a,
+                                              const mio_region_selector* region_a,
+                                              const mio_mesh* mesh_b,
+                                              const mio_region_selector* region_b,
+                                              const mio_find_interface_opts* opts) {
+    return guarded_ptr(static_cast<mio_find_interface_result*>(nullptr), [&]() {
+        if (!mesh_a)
+            throw meshioplusplus::ReadError("meshio++: find_interface: mesh_a is NULL");
+        meshioplusplus::FindInterfaceOptions options;
+        if (opts) {
+            if (opts->mode != MIO_INTERFACE_CONFORMING && opts->mode != MIO_INTERFACE_PROXIMITY)
+                throw std::invalid_argument("meshio++: find_interface: invalid mode");
+            if (opts->master != MIO_INTERFACE_MASTER_A && opts->master != MIO_INTERFACE_MASTER_B)
+                throw std::invalid_argument("meshio++: find_interface: invalid master side");
+            options.mMode = static_cast<meshioplusplus::InterfaceMode>(opts->mode);
+            options.mMaster = static_cast<meshioplusplus::InterfaceMaster>(opts->master);
+            options.mGapTolerance = opts->gap_tolerance;
+            options.mAngleTolerance = opts->angle_tolerance;
+            options.mOverlapTolerance = opts->overlap_tolerance;
+        }
+        const meshioplusplus::RegionSelector selector_a = capi_selector(region_a);
+        const meshioplusplus::RegionSelector selector_b = capi_selector(region_b);
+        meshioplusplus::FindInterfaceResult result =
+            mesh_b ? meshioplusplus::find_interface(mesh_a->mMesh, selector_a, mesh_b->mMesh,
+                                                    selector_b, options)
+                   : meshioplusplus::find_interface(mesh_a->mMesh, selector_a, selector_b, options);
+        return new mio_find_interface_result{mio_mesh{std::move(result.mMesh)},
+                                             std::move(result.mSideA), std::move(result.mSideB),
+                                             result.mReport};
+    });
+}
+
+const mio_mesh* mio_find_interface_result_mesh(const mio_find_interface_result* result) {
+    return result ? &result->mMesh : nullptr;
+}
+
+mio_mesh* mio_find_interface_result_take_mesh(mio_find_interface_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: find_interface result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_find_interface_result_report(const mio_find_interface_result* result,
+                                            int64_t* num_pairs, double* area, double* max_gap,
+                                            int64_t* unmatched_a, int64_t* unmatched_b) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: find_interface result is NULL");
+        if (num_pairs)
+            *num_pairs = result->mReport.mNumPairs;
+        if (area)
+            *area = result->mReport.mArea;
+        if (max_gap)
+            *max_gap = result->mReport.mMaxGap;
+        if (unmatched_a)
+            *unmatched_a = result->mReport.mUnmatchedA;
+        if (unmatched_b)
+            *unmatched_b = result->mReport.mUnmatchedB;
+        return MIO_OK;
+    });
+}
+
+const int64_t* mio_find_interface_result_side_a(const mio_find_interface_result* result,
+                                                int64_t* count) {
+    if (count)
+        *count = result ? static_cast<int64_t>(result->mSideA.mEntries.Shape()[0]) : 0;
+    return result && result->mSideA.mEntries.Size() > 0 ? result->mSideA.mEntries.As<std::int64_t>()
+                                                        : nullptr;
+}
+
+const int64_t* mio_find_interface_result_side_b(const mio_find_interface_result* result,
+                                                int64_t* count) {
+    if (count)
+        *count = result ? static_cast<int64_t>(result->mSideB.mEntries.Shape()[0]) : 0;
+    return result && result->mSideB.mEntries.Size() > 0 ? result->mSideB.mEntries.As<std::int64_t>()
+                                                        : nullptr;
+}
+
+void mio_find_interface_result_free(mio_find_interface_result* result) {
+    delete result;
+}
+
+mio_contact_pairs_result* mio_contact_pairs(const mio_mesh* slave_mesh,
+                                            const mio_region_selector* slave_points,
+                                            const mio_mesh* master_mesh,
+                                            const mio_region_selector* master_cells,
+                                            const mio_contact_pairs_opts* opts) {
+    return guarded_ptr(static_cast<mio_contact_pairs_result*>(nullptr), [&]() {
+        if (!slave_mesh)
+            throw meshioplusplus::ReadError("meshio++: contact_pairs: slave mesh is NULL");
+        meshioplusplus::ContactPairsOptions options;
+        if (opts) {
+            options.mTolerance = opts->tolerance;
+            options.mRequireComplete = opts->require_complete != 0;
+        }
+        const meshioplusplus::RegionSelector point_selector = capi_selector(slave_points);
+        const meshioplusplus::RegionSelector cell_selector = capi_selector(master_cells);
+        const meshioplusplus::Mesh& master = master_mesh ? master_mesh->mMesh : slave_mesh->mMesh;
+        return new mio_contact_pairs_result{meshioplusplus::contact_pairs(
+            slave_mesh->mMesh, point_selector, master, cell_selector, options)};
+    });
+}
+
+mio_status mio_contact_pairs_result_info(const mio_contact_pairs_result* result, int64_t* count,
+                                         int64_t* unmatched_count) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: contact_pairs result is NULL");
+        if (count)
+            *count = static_cast<int64_t>(result->mPairs.mSlavePoint.Size());
+        if (unmatched_count)
+            *unmatched_count = static_cast<int64_t>(result->mPairs.mUnmatched.Size());
+        return MIO_OK;
+    });
+}
+
+const int64_t* mio_contact_pairs_slave_point(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mSlavePoint.Size() > 0
+               ? result->mPairs.mSlavePoint.As<std::int64_t>()
+               : nullptr;
+}
+const int64_t* mio_contact_pairs_master_cell(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mMasterCell.Size() > 0
+               ? result->mPairs.mMasterCell.As<std::int64_t>()
+               : nullptr;
+}
+const int64_t* mio_contact_pairs_master_facet(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mMasterFacet.Size() > 0
+               ? result->mPairs.mMasterFacet.As<std::int64_t>()
+               : nullptr;
+}
+const int64_t* mio_contact_pairs_master_subfacet(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mMasterSubfacet.Size() > 0
+               ? result->mPairs.mMasterSubfacet.As<std::int64_t>()
+               : nullptr;
+}
+const double* mio_contact_pairs_local_coordinates(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mLocalCoordinates.Size() > 0
+               ? result->mPairs.mLocalCoordinates.As<double>()
+               : nullptr;
+}
+const double* mio_contact_pairs_closest_point(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mClosestPoint.Size() > 0
+               ? result->mPairs.mClosestPoint.As<double>()
+               : nullptr;
+}
+const double* mio_contact_pairs_gap(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mGap.Size() > 0 ? result->mPairs.mGap.As<double>() : nullptr;
+}
+const double* mio_contact_pairs_normal(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mNormal.Size() > 0 ? result->mPairs.mNormal.As<double>()
+                                                       : nullptr;
+}
+const int64_t* mio_contact_pairs_unmatched(const mio_contact_pairs_result* result) {
+    return result && result->mPairs.mUnmatched.Size() > 0
+               ? result->mPairs.mUnmatched.As<std::int64_t>()
+               : nullptr;
+}
+
+void mio_contact_pairs_result_free(mio_contact_pairs_result* result) {
+    delete result;
+}
+
+mio_mesh* mio_split_interface(const mio_mesh* mesh, const mio_region_selector* side,
+                              const mio_split_interface_opts* opts, int64_t* num_duplicated_points,
+                              int64_t* num_cohesive_cells) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: split_interface: mesh is NULL");
+        meshioplusplus::SplitInterfaceOptions options;
+        if (opts)
+            options.mAddCohesive = opts->add_cohesive != 0;
+        meshioplusplus::SplitInterfaceResult result =
+            meshioplusplus::split_interface(mesh->mMesh, capi_selector(side), options);
+        if (num_duplicated_points)
+            *num_duplicated_points = result.mNumDuplicatedPoints;
+        if (num_cohesive_cells)
+            *num_cohesive_cells = result.mNumCohesiveCells;
+        return new mio_mesh{std::move(result.mMesh)};
     });
 }
 

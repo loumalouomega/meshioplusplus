@@ -99,6 +99,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
 
 namespace {
 
@@ -407,6 +408,16 @@ MIO_ABI_LAYOUT(meshioplusplus::NeighborOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::NeighborPairs, 144, 8);
 static_assert(sizeof(meshioplusplus::NeighborMethod) == 1,
               "meshio++ ABI: NeighborMethod's underlying type changed (Tier A, doc/abi.md)");
+
+// Interfaces/contact operations (roadmap §5.2) are additive in v16.28.0.
+MIO_ABI_LAYOUT(meshioplusplus::FindInterfaceOptions, 32, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ContactPairsOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SplitInterfaceOptions, 1, 1);
+MIO_ABI_LAYOUT(meshioplusplus::InterfaceReport, 40, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ContactPairsResult, 648, 8);
+static_assert(sizeof(meshioplusplus::InterfaceMode) == 4 &&
+                  sizeof(meshioplusplus::InterfaceMaster) == 4,
+              "meshio++ ABI: interface enum underlying width changed (Tier A, doc/abi.md)");
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;
