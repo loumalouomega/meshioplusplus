@@ -208,7 +208,9 @@ TEST(FindInterface, ProximityMasterBReportsEveryFinerFacet) {
     const auto result_b = find_interface(a, part, b, part, options);
     EXPECT_EQ(result_b.mReport.mNumPairs, 4);
     EXPECT_NEAR(result_b.mReport.mArea, 0.5, 1e-12);
-    EXPECT_EQ(result_b.mReport.mUnmatchedB, 0);
+    // B is a solid: its 6 side facets are not part of the interface.
+    EXPECT_EQ(result_b.mReport.mUnmatchedA, 3);
+    EXPECT_EQ(result_b.mReport.mUnmatchedB, 6);
 }
 
 TEST(ContactPairs, ProjectsPointRegionToClosestMasterFacet) {
