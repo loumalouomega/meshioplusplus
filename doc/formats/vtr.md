@@ -70,7 +70,7 @@ Recovering three arbitrary per-axis coordinate arrays from an unstructured point
 
 ## Quirks & limitations
 
-Identical to [`.vti`'s](./vti.md#quirks-limitations): both readers accept raw/base64 `<AppendedData>`, UInt32/UInt64 headers and either byte order, with optional zlib/LZ4/ZSTD codecs; writers remain inline. One `<Piece>` only, whose `Extent` must equal the `WholeExtent`; lzma is rejected by both readers.
+Identical to [`.vti`'s](./vti.md#quirks-limitations): both readers accept raw/base64 `<AppendedData>`, UInt32/UInt64 headers and either byte order, with optional zlib/LZ4/ZSTD codecs; writers remain inline. Multiple pieces concatenate in document order without welding; each piece's `Extent` sizes its own axis coordinates and arrays and must lie inside `WholeExtent`. Single partial pieces are also supported. Missing or incompatible data arrays are dropped with a warning. Numeric field data and piece-local named regions use the [VTP convention](./vtp.md#quirks-limitations). lzma is rejected by both readers.
 
 Coordinate arrays need not be named `x_coordinates`/`y_coordinates`/`z_coordinates`: readers retain the historical lookup by those names when present, otherwise use the three arrays' x/y/z order, as VTK's own writer does.
 

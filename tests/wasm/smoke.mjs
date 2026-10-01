@@ -105,6 +105,21 @@ step('threaded (mt) build reports the openmp parallel backend', () => {
     assert.equal(m.parallelBackend(), 'openmp');
 });
 
+step('VTK pieces and legacy structured grids read without Python', () => {
+    const xml = `<VTKFile type="ImageData"><ImageData WholeExtent="0 2 0 1 0 1">
+      <Piece Extent="0 1 0 1 0 1"/><Piece Extent="1 2 0 1 0 1"/>
+      </ImageData></VTKFile>`;
+    const legacy = '# vtk DataFile Version 5.1\nindependent\nASCII\nDATASET STRUCTURED_POINTS\nDIMENSIONS 3 2 2\nORIGIN 0 0 0\nSPACING 1 1 1\n';
+    for (const [format, text, n] of [['vti', xml, 16], ['vtk', legacy, 12]]) {
+        const path = `/pieces.${format}`;
+        m.FS.writeFile(path, text);
+        const mesh = m.readMesh(path);
+        assert.equal(mesh.points.length / 3, n);
+        assert.equal(mesh.cells[0].type, 'hexahedron');
+        assert.equal(mesh.cells[0].data.length / 8, 2);
+    }
+});
+
 step('VTK XML: appended raw/base64, UInt64 big-endian and selective reads', () => {
     for (const [format, type] of Object.entries({
         vtp: 'PolyData', vts: 'StructuredGrid', vtr: 'RectilinearGrid', vti: 'ImageData',
@@ -4530,6 +4545,16 @@ step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
     const surf = mSeq.extractSurface(cube);
     assert.equal(surf.cells[0].type, 'quad');
     assert.equal(surf.cells[0].data.length, 6 * 4);
+});
+
+step('sequential build reads VTK pieces and legacy structured grids', () => {
+    for (const [format, n] of [['vti', 16], ['vtk', 12]]) {
+        const path = `/pieces.${format}`;
+        mSeq.FS.writeFile(path, m.FS.readFile(path));
+        const mesh = mSeq.readMesh(path);
+        assert.equal(mesh.points.length / 3, n);
+        assert.equal(mesh.cells[0].data.length / 8, 2);
+    }
 });
 
 step('checkQuality gates on thresholds', () => {

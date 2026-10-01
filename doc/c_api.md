@@ -1,6 +1,6 @@
 # C API
 
-Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support appended raw/base64 arrays, UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI remain single-piece and write inline arrays; codec availability follows the configured native build. See [formats](formats.md).
+Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces without welding, appended raw/base64 arrays, UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI write inline arrays; codec availability follows the configured native build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary. No new ABI options are required. See [formats](formats.md).
 
 The C++ core also ships as an installable shared library, `libmeshioplusplus`, with a stable pure-C99 header — the natural entry point for HPC codes written in C (and the foundation of the [Fortran interface](/fortran)). Like the [WebAssembly binding](/wasm), it is a flat, whole-mesh API over the same C++ core, built exclusively on the uniform mesh API, so it works identically under every [mesh backend](/cpp_backends).
 

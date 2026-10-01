@@ -1,6 +1,6 @@
 # WebAssembly / JavaScript
 
-Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support appended raw/base64 arrays, UInt32/UInt64 headers and either byte order, including selective reads and metadata summaries. VTP/VTS/VTR/VTI remain single-piece and their writers remain inline; optional codecs follow the WASM build. See [formats](formats.md).
+Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces without welding, appended raw/base64 arrays, UInt32/UInt64 headers and either byte order, including selective reads and metadata summaries. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the WASM build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing `readMesh` API. See [formats](formats.md).
 
 The C++ core also compiles to WebAssembly and ships as an npm package, [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm), for reading and writing meshes in the browser or Node.js. (It is one of two "flat" bindings over the same core and shared format-dispatch registry — the other is the [C API](/c_api).)
 

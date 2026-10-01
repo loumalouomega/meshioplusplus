@@ -228,6 +228,8 @@ Mesh read_vtk(const std::string& rPath) try {
     VtkCursor cur(source.View());
 
     std::string header = cur.ReadLine();
+    if (header.rfind("# vtk DataFile Version", 0) != 0)
+        throw ReadError("Illegal VTK header");
     const bool is_v5 = header.find("Version 5") != std::string::npos;
     cur.ReadLine();  // title
     std::string dtype_line = vtk_upper(cur.ReadLine());
@@ -254,8 +256,10 @@ Mesh read_vtk(const std::string& rPath) try {
     std::array<NDArray, 3> axes;
     bool have_dims = false, have_origin = false, have_spacing = false;
     std::size_t active_count = 0;
+    std::size_t declared_points = 0, declared_cells = 0;
+    bool have_point_data = false, have_cell_data = false;
     auto parse_attribute = [&]<class T>(const std::vector<std::string>& rTokens,
-                                       std::array<T, 3>& rValues) {
+                                        std::array<T, 3>& rValues) {
         detail::need_tokens(rTokens, 4, "VTK");
         for (std::size_t k = 0; k < 3; ++k) {
             detail::TextStream in(rTokens[k + 1]);
@@ -304,7 +308,8 @@ Mesh read_vtk(const std::string& rPath) try {
                    section == "Z_COORDINATES") {
             detail::need_tokens(tok, 3, "VTK");
             const auto axis = section[0] == 'X' ? 0 : section[0] == 'Y' ? 1 : 2;
-            axes[axis] = cur.ReadValues(dtype_from_vtk_token(tok[2]), std::stoull(tok[1]), is_ascii);
+            axes[axis] =
+                cur.ReadValues(dtype_from_vtk_token(tok[2]), std::stoull(tok[1]), is_ascii);
         } else if (section == "POINTS") {
             detail::need_tokens(tok, 3, "VTK");
             std::size_t n = std::stoull(tok[1]);
@@ -378,16 +383,22 @@ Mesh read_vtk(const std::string& rPath) try {
         } else if (section == "POINT_DATA") {
             detail::need_tokens(tok, 2, "VTK");
             active_count = std::stoull(tok[1]);
+            declared_points = active_count;
+            have_point_data = true;
             active = "POINT_DATA";
         } else if (section == "CELL_DATA") {
             detail::need_tokens(tok, 2, "VTK");
             active_count = std::stoull(tok[1]);
+            declared_cells = active_count;
+            have_cell_data = true;
             active = "CELL_DATA";
         } else if (section == "SCALARS" || section == "VECTORS" || section == "TENSORS" ||
                    section == "NORMALS" || section == "TEXTURE_COORDINATES") {
             detail::need_tokens(tok, section == "TEXTURE_COORDINATES" ? 4 : 3, "VTK");
-            std::size_t components = section == "TENSORS" ? 9 :
-                                      section == "SCALARS" ? (tok.size() > 3 ? std::stoull(tok[3]) : 1) : 3;
+            std::size_t components = section == "TENSORS" ? 9
+                                     : section == "SCALARS"
+                                         ? (tok.size() > 3 ? std::stoull(tok[3]) : 1)
+                                         : 3;
             const DType dt = dtype_from_vtk_token(tok[section == "TEXTURE_COORDINATES" ? 3 : 2]);
             if (section == "TEXTURE_COORDINATES")
                 components = std::stoull(tok[2]);
@@ -407,7 +418,8 @@ Mesh read_vtk(const std::string& rPath) try {
             add_array(tok[1], std::move(arr));
         } else if (section == "COLOR_SCALARS" || section == "LOOKUP_TABLE") {
             detail::need_tokens(tok, 3, "VTK");
-            const std::size_t count = section == "COLOR_SCALARS" ? active_count : std::stoull(tok[2]);
+            const std::size_t count =
+                section == "COLOR_SCALARS" ? active_count : std::stoull(tok[2]);
             const std::size_t components = section == "COLOR_SCALARS" ? std::stoull(tok[2]) : 4;
             if (components == 0 || count > std::numeric_limits<std::size_t>::max() / components)
                 throw ReadError("VTK: invalid color array count");
@@ -461,6 +473,8 @@ Mesh read_vtk(const std::string& rPath) try {
     if (dataset != "UNSTRUCTURED_GRID") {
         if (!have_dims)
             throw ReadError("VTK: missing DIMENSIONS");
+        if (!conn.empty() || !offsets.empty() || !types.empty() || conn_owned)
+            throw ReadError("VTK: structured datasets must not declare CELLS/CELL_TYPES");
         std::size_t count = 1;
         for (const auto d : dims) {
             if (static_cast<std::uint64_t>(d) > std::numeric_limits<std::size_t>::max() / count)
@@ -471,30 +485,46 @@ Mesh read_vtk(const std::string& rPath) try {
             if (dataset == "STRUCTURED_POINTS" && (!have_origin || !have_spacing))
                 throw ReadError("VTK: structured points requires ORIGIN and SPACING/ASPECT_RATIO");
             for (std::size_t axis = 0; axis < 3; ++axis)
-                if (dataset == "RECTILINEAR_GRID" && axes[axis].Size() != static_cast<std::size_t>(dims[axis]))
+                if (dataset == "RECTILINEAR_GRID" &&
+                    axes[axis].Size() != static_cast<std::size_t>(dims[axis]))
                     throw ReadError("VTK: coordinate count differs from DIMENSIONS");
-            if (count > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) / (3 * sizeof(double)))
+            if (count > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) /
+                            (3 * sizeof(double)))
                 throw ReadError("VTK: structured point allocation overflows");
-            auto pts = NDArray::Uninit(dataset == "RECTILINEAR_GRID" ? axes[0].Dtype() : DType::Float64, {count, 3});
-            std::size_t row = 0;
-            for (std::int64_t k = 0; k < dims[2]; ++k)
-                for (std::int64_t j = 0; j < dims[1]; ++j)
-                    for (std::int64_t i = 0; i < dims[0]; ++i, ++row) {
-                        const std::array<std::int64_t, 3> index{{i, j, k}};
-                        for (std::size_t axis = 0; axis < 3; ++axis) {
-                            double value;
-                            if (dataset == "STRUCTURED_POINTS") {
-                                // Match the Python reference's linspace endpoints.
-                                const double last = origin[axis] + static_cast<double>(dims[axis] - 1) * spacing[axis];
-                                const double step = dims[axis] > 1 ? (last - origin[axis]) / static_cast<double>(dims[axis] - 1) : 0;
-                                value = index[axis] == dims[axis] - 1 ? last : origin[axis] + static_cast<double>(index[axis]) * step;
-                            } else {
-                                value = detail::read_double(axes[axis], index[axis]);
-                            }
-                            const auto integer = detail::is_float_dtype(pts.Dtype()) ? 0 : detail::checked_integer<std::int64_t>(value, "VTK");
-                            store(pts, row * 3 + axis, value, integer);
-                        }
+            auto pts = NDArray::Uninit(
+                dataset == "RECTILINEAR_GRID" ? axes[0].Dtype() : DType::Float64, {count, 3});
+            auto fill_point = [&](std::size_t row) {
+                const std::array<std::int64_t, 3> index{
+                    {static_cast<std::int64_t>(row % dims[0]),
+                     static_cast<std::int64_t>((row / dims[0]) % dims[1]),
+                     static_cast<std::int64_t>(row / dims[0] / dims[1])}};
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    double value;
+                    if (dataset == "STRUCTURED_POINTS") {
+                        // Match the Python reference's linspace endpoints.
+                        const double last =
+                            origin[axis] + static_cast<double>(dims[axis] - 1) * spacing[axis];
+                        const double step = dims[axis] > 1 ? (last - origin[axis]) /
+                                                                 static_cast<double>(dims[axis] - 1)
+                                                           : 0;
+                        value = index[axis] == dims[axis] - 1
+                                    ? last
+                                    : origin[axis] + static_cast<double>(index[axis]) * step;
+                    } else {
+                        value = detail::read_double(axes[axis], index[axis]);
                     }
+                    const auto integer = detail::is_float_dtype(pts.Dtype())
+                                             ? 0
+                                             : detail::checked_integer<std::int64_t>(value, "VTK");
+                    store(pts, row * 3 + axis, value, integer);
+                }
+            };
+            if (detail::is_float_dtype(pts.Dtype()))
+                parallel_for_bw(count, fill_point);
+            else
+                // Checked integer conversion may throw: keep it outside workers.
+                for (std::size_t row = 0; row < count; ++row)
+                    fill_point(row);
             mesh.AssignPoints(std::move(pts));
         }
         if (mesh.NumPoints() != count)
@@ -502,6 +532,9 @@ Mesh read_vtk(const std::string& rPath) try {
         detail::vtk_structured_cells(dims, conn, offsets, types);
         conn_ptr = conn.data();
     }
+    if ((have_point_data && declared_points != mesh.NumPoints()) ||
+        (have_cell_data && declared_cells != types.size()))
+        throw ReadError("VTK: declared data count differs from geometry");
     for (const auto& name : mesh.PointDataNames()) {
         const auto& arr = mesh.PointData(name);
         if (arr.Shape().empty() || arr.Shape()[0] != mesh.NumPoints())

@@ -24,9 +24,10 @@ from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
+from .._vtk_xml_read import field_arrays
 from .._vtk_xml_read import load as _load_xml
-from .._vtk_xml_read import field_arrays, piece_extent, read_pieces
-from ..vti._vti import _COMPRESSION_TO_ATTR, _encode_binary, _parse_n
+from .._vtk_xml_read import piece_extent, read_pieces
+from ..vti._vti import _COMPRESSION_TO_ATTR, _encode_binary
 from ..vtu._vtu import numpy_to_vtu_type
 
 
@@ -48,10 +49,12 @@ def read(filename):
 def _read_piece(grid, piece, reader):
     whole = piece_extent(grid, piece)
     dims = np.array([whole[2 * k + 1] - whole[2 * k] for k in range(3)], dtype=np.int64)
-    if np.any(dims < 0):
+    if np.any(dims < 0) and not np.all(dims == -1):
         raise ReadError("VTS WholeExtent is inverted")
     num_points = int(np.prod(dims + 1))
     num_cells = int(np.prod(dims)) if np.all(dims > 0) else 0
+    if num_points == 0:
+        return Mesh(np.empty((0, 3)), [], field_data=field_arrays(piece, reader, "VTS"))
 
     points_node = piece.find("Points")
     if points_node is None:
@@ -80,7 +83,7 @@ def _read_piece(grid, piece, reader):
         for da in node.findall("DataArray"):
             name = da.get("Name")
             arr = reader.read_data(da)
-            if arr.size and arr.shape[0] != expected:
+            if arr.shape[0] != expected:
                 raise ReadError(
                     f"VTS {what} array '{name}' has {arr.shape[0]} rows, but the "
                     f"extent has {expected} {what}s"
@@ -92,8 +95,13 @@ def _read_piece(grid, piece, reader):
             else:
                 sink[name] = arr
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data,
-                field_data=field_arrays(piece, reader, "VTS"))
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_arrays(piece, reader, "VTS"),
+    )
 
 
 def write(filename, mesh, binary=True, compression="zlib", header_type=None):

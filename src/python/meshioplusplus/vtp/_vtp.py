@@ -7,8 +7,8 @@ The same VTK-XML container as VTU with a <PolyData> grid holding
 cells are representable: ``vertex`` (Verts), ``line`` (Lines) and
 ``triangle``/``quad``/``polygon`` (Polys). Cell data follows VTK's canonical
 PolyData cell order — Verts, Lines, Polys, Strips — in both directions.
-Triangle strips, poly-vertex/poly-line rows and multiple pieces are not
-supported.
+Multiple pieces concatenate in document order without welding. Triangle
+strips and poly-vertex/poly-line rows are not supported.
 """
 
 import base64
@@ -92,7 +92,22 @@ def _read_piece(grid, piece, reader):
 
     if "Strips" in sections and sections["Strips"][1].size > 0:
         raise ReadError("triangle-strip VTP cells are not supported")
-    num_points = int(piece.get("NumberOfPoints", "0"))
+
+    def count(name):
+        text = piece.get(name, "")
+        if not text or any(ch not in "0123456789" for ch in text):
+            raise ReadError(f"VTP: invalid {name}")
+        value = int(text)
+        if value > np.iinfo(np.int64).max:
+            raise ReadError(f"VTP: invalid {name}")
+        return value
+
+    num_points = count("NumberOfPoints")
+    for tag in _SECTION_TAGS:
+        name = "NumberOf" + tag
+        actual = sections[tag][1].size if tag in sections else 0
+        if piece.get(name) is not None and count(name) != actual:
+            raise ReadError("VTP: cell count differs from section offsets")
     if points is not None and len(points) != num_points:
         raise ReadError("VTP Points length differs from NumberOfPoints")
     if any(len(arr) != num_points for arr in point_data.values()):
@@ -109,7 +124,16 @@ def _read_piece(grid, piece, reader):
         if tag not in sections:
             continue
         conn, offsets = sections[tag]
+        if offsets.size and (
+            np.any(np.diff(np.concatenate([[0], offsets])) <= 0)
+            or offsets[-1] != conn.size
+        ):
+            raise ReadError("VTP: offsets do not span connectivity")
+        if conn.size and (np.min(conn) < 0 or np.max(conn) >= num_points):
+            raise ReadError("VTP: point index out of range")
         if offsets.size == 0:
+            if conn.size:
+                raise ReadError("VTP: offsets do not span connectivity")
             continue
         sizes = np.diff(np.concatenate([[0], offsets]))
         if kind == 0:
@@ -121,11 +145,19 @@ def _read_piece(grid, piece, reader):
                 raise ReadError("poly-line VTP cells are not supported")
             types = np.full(sizes.shape, 3, dtype=np.int64)  # VTK_LINE
         else:
+            if np.any(sizes < 3):
+                raise ReadError("VTP: polygon has fewer than three points")
             types = np.where(sizes == 3, 5, np.where(sizes == 4, 9, 7))
         conn_parts.append(conn)
         offset_parts.append(offsets + conn_base)
         type_parts.append(types)
         conn_base += conn.size
+
+    num_cells = sum(len(types) for types in type_parts)
+    if any(len(arr) != num_cells for arr in cell_data_raw.values()):
+        raise ReadError("VTP CellData length differs from cell count")
+    if points is None and num_points:
+        raise ReadError("VTP Piece has no Points")
 
     file_to_global = None
     if conn_parts:

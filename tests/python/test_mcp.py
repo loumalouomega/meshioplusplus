@@ -612,6 +612,27 @@ def test_convert_appended_vtk_xml_native(fmt, encoding, tmp_path, monkeypatch):
     assert_mesh(meshioplusplus.read(target), points)
 
 
+@pytest.mark.parametrize("fmt", ["vtp", "vts", "vtr", "vti", "vtk"])
+def test_convert_vtk_pieces_and_legacy_native(fmt, tmp_path, monkeypatch):
+    from meshioplusplus import _fallback
+
+    from .test_vtk_pieces_structured import legacy_fixture, xml_fixture
+
+    blob, points = (
+        legacy_fixture("STRUCTURED_POINTS", (3, 2, 2), binary=True)
+        if fmt == "vtk"
+        else xml_fixture(fmt)
+    )
+    source = tmp_path / f"input.{fmt}"
+    source.write_bytes(blob)
+    target = tmp_path / "output.vtu"
+    monkeypatch.setattr(_fallback, "_strict", True)
+    _dump(_tools.tool_convert(str(source), str(target)))
+    mesh = meshioplusplus.read(target)
+    np.testing.assert_array_equal(mesh.points, points)
+    assert sum(len(cb.data) for cb in mesh.cells) == 2
+
+
 @pytest.mark.parametrize("binary,count_bytes", [(False, 8), (True, 8), (True, 4)])
 def test_convert_gmsh40_through_native_reader(
     binary, count_bytes, tmp_path, monkeypatch

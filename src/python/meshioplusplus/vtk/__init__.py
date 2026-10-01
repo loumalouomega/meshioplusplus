@@ -26,9 +26,9 @@ def _cpp_ok(mesh):
 def read(filename):
     """Read a VTK legacy file.
 
-    Uses the C++ core for version 5.1 UNSTRUCTURED_GRID files (ascii or
-    big-endian binary), falling back to the reference Python reader otherwise
-    (version 4.2, structured grids, SCALARS/VECTORS sections, polyhedron).
+    Uses the C++ core for unstructured and structured datasets in both legacy
+    layouts, including scalar/vector/tensor/field arrays in ASCII or big-endian
+    binary; falls back to the reference for unsupported constructs.
     """
     if not is_buffer(filename, "r"):
         try:

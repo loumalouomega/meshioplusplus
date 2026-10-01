@@ -20,30 +20,22 @@
 // concatenates every translation unit, and `vtu_`/`vti_`/`vts_` are taken.
 
 // System includes
-#include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
-#include "pugixml.hpp"
 
 // Project includes
 #include "meshioplusplus/formats/vtr.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
-#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
-#include "../detail/vtk_xml_read.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
-#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -172,7 +164,6 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
     return detail::vtk_xml_read_pieces(rPath, rOpts, "RectilinearGrid", "VTR");
 }
-
 
 MeshMetadata read_vtr_metadata(const std::string& rPath, const ReadOptions&) {
     return detail::vtk_xml_pieces_metadata(rPath, "RectilinearGrid", "VTR");

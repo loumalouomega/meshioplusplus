@@ -27,10 +27,10 @@
  * explicit `.vtu` spends the overwhelming majority of its bytes re-stating an
  * index formula. ImageData states it instead: `Origin`, `Spacing` and
  * `WholeExtent` **are** the grid header, which makes `.vti` the one format in
- * meshio++ that round-trips a generated grid's geometry exactly. (No format
- * persists arbitrary `field_data`, so the `sdf:*` keys do not survive any write
- * -- here they do not need to, because the geometry itself carries the same
- * information and `detail::lattice_from_mesh` recovers it.)
+ * meshio++ that round-trips a generated grid's geometry exactly. This writer
+ * does not persist the `sdf:*` field header: the geometry itself carries the
+ * same information and `detail::lattice_from_mesh` recovers it. Numeric field
+ * data supplied by another producer is read; VTU can also write it.
  *
  * The container is the same VTK XML this repo already reads and writes, so the
  * `<DataArray>` codec (`detail/vtk_xml.hpp`) and the base64 + block-compression
@@ -42,7 +42,7 @@
  * A `Mesh` has no implicit geometry, so:
  *
  * - **`read_vti` expands** the extent into explicit points and one `hexahedron`
- *   cell block, through `detail/grid_lattice.hpp` -- the same numbering `grid()`
+ *   cell block, with the same numbering `grid()`
  *   and `voxelize()` produce, which is what makes `read_vti(write_vti(m)) == m`
  *   an identity rather than a coincidence.
  * - **`write_vti` requires a lattice.** A mesh that is not one has no `Origin`/
@@ -51,12 +51,14 @@
  *   octree): ImageData cannot express a hole, and silently filling one in would
  *   write a different mesh than the caller handed over.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * - `<AppendedData>` -- the VTU C++ reader declines it too, for the same reason.
- * - More than one `<Piece>`, or a piece whose `Extent` is not the `WholeExtent`.
- * - `header_type="UInt64"` is supported on read (the header size is honoured);
- *   the writer always emits the default `UInt32`, as the VTU writer does.
+ * - Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order.
+ * - Multiple pieces and partial extents concatenate without welding. Each
+ *   piece's extent sizes its own geometry and arrays, within WholeExtent.
+ * - Writers remain inline, selecting UInt64 for large uncompressed arrays.
+ * - Lower-dimensional extents remain points-only; non-identity Direction
+ *   is refused rather than discarded.
  * - lzma, and any codec this build was compiled without -- by name.
  */
 

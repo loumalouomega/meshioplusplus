@@ -20885,10 +20885,10 @@ MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
  * explicit `.vtu` spends the overwhelming majority of its bytes re-stating an
  * index formula. ImageData states it instead: `Origin`, `Spacing` and
  * `WholeExtent` **are** the grid header, which makes `.vti` the one format in
- * meshio++ that round-trips a generated grid's geometry exactly. (No format
- * persists arbitrary `field_data`, so the `sdf:*` keys do not survive any write
- * -- here they do not need to, because the geometry itself carries the same
- * information and `detail::lattice_from_mesh` recovers it.)
+ * meshio++ that round-trips a generated grid's geometry exactly. This writer
+ * does not persist the `sdf:*` field header: the geometry itself carries the
+ * same information and `detail::lattice_from_mesh` recovers it. Numeric field
+ * data supplied by another producer is read; VTU can also write it.
  *
  * The container is the same VTK XML this repo already reads and writes, so the
  * `<DataArray>` codec (`detail/vtk_xml.hpp`) and the base64 + block-compression
@@ -20900,7 +20900,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
  * A `Mesh` has no implicit geometry, so:
  *
  * - **`read_vti` expands** the extent into explicit points and one `hexahedron`
- *   cell block, through `detail/grid_lattice.hpp` -- the same numbering `grid()`
+ *   cell block, with the same numbering `grid()`
  *   and `voxelize()` produce, which is what makes `read_vti(write_vti(m)) == m`
  *   an identity rather than a coincidence.
  * - **`write_vti` requires a lattice.** A mesh that is not one has no `Origin`/
@@ -20909,12 +20909,14 @@ MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
  *   octree): ImageData cannot express a hole, and silently filling one in would
  *   write a different mesh than the caller handed over.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * - `<AppendedData>` -- the VTU C++ reader declines it too, for the same reason.
- * - More than one `<Piece>`, or a piece whose `Extent` is not the `WholeExtent`.
- * - `header_type="UInt64"` is supported on read (the header size is honoured);
- *   the writer always emits the default `UInt32`, as the VTU writer does.
+ * - Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order.
+ * - Multiple pieces and partial extents concatenate without welding. Each
+ *   piece's extent sizes its own geometry and arrays, within WholeExtent.
+ * - Writers remain inline, selecting UInt64 for large uncompressed arrays.
+ * - Lower-dimensional extents remain points-only; non-identity Direction
+ *   is refused rather than discarded.
  * - lzma, and any codec this build was compiled without -- by name.
  */
 
@@ -20972,13 +20974,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vti_metadata(const std::string& rPath,
 // ===== begin src/cpp/include/meshioplusplus/formats/vtk.hpp =====
 /**
  * @file vtk.hpp
- * @brief Legacy VTK (.vtk) `UNSTRUCTURED_GRID` C++ reader/writer, versions
+ * @brief Legacy VTK (.vtk) C++ reader/writer, versions
  *        4.2 and 5.1, ascii and binary.
  *
- * Only `DATASET UNSTRUCTURED_GRID` is handled by the C++ core; any other
- * dataset type (`STRUCTURED_POINTS`, `STRUCTURED_GRID`, `RECTILINEAR_GRID`)
- * always falls back to Python, which converts those into unstructured
- * line/quad/hex cells in Fortran (column-major) order. Binary numeric data
+ * The core reads `UNSTRUCTURED_GRID`, `STRUCTURED_POINTS`, `STRUCTURED_GRID`
+ * and `RECTILINEAR_GRID`; writers emit `UNSTRUCTURED_GRID`. Structured
+ * geometry becomes vertex/line/quad/hex cells in x-fastest (Fortran) order,
+ * with scalar/vector/tensor/field arrays retained. Binary numeric data
  * is **always big-endian on disk** regardless of host platform — an
  * explicit VTK-wiki convention, not a meshio++ choice — so binary I/O
  * byte-swaps through `detail/byteswap.hpp` intrinsics whenever the host is
@@ -21039,7 +21041,8 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `SCALARS`/`VECTORS`/
  *       `TENSORS`/`FIELD` blocks; no reserved key names.
  */
-MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51);
+MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                  bool v51);
 
 /**
  * @brief Read a VTK legacy file.
@@ -21053,9 +21056,8 @@ MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, b
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if `DATASET` is anything other than
- *         `UNSTRUCTURED_GRID` (structured points/grid, rectilinear grid all
- *         fall back to Python), on a truncated binary section, an ascii
+ * @throws ReadError on an unsupported dataset, invalid structured dimensions
+ *         or mismatched point/axis/attribute counts, a truncated binary section, an ascii
  *         parse failure, an unknown VTK data-type token, or an unrecognized
  *         section keyword
  * @note point_data/cell_data map generically from `SCALARS`/`VECTORS`/
@@ -21504,7 +21506,8 @@ namespace meshioplusplus {
  *         cell type PolyData cannot hold (volume or quadratic cells,
  *         polyhedra)
  */
-MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
+MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                  bool zlib);
 
 /**
  * @brief Write a `.vtp` choosing the block-compression codec explicitly.
@@ -21521,14 +21524,16 @@ MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, b
  *         into this build.
  */
 MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
-                     detail::VtkCodec codec);
+                                        detail::VtkCodec codec);
 
 /**
  * @brief Read a VTK XML PolyData (.vtp) file.
  *
  * Verts rows become `vertex` cells, Lines rows `line` cells, and Polys rows
  * `triangle`/`quad`/`polygon` cells (grouped by row size); cell_data is
- * split per block in VTK's canonical Verts/Lines/Polys order.
+ * split per block in VTK's canonical Verts/Lines/Polys order within each piece.
+ * Multiple pieces concatenate in document order without welding; compatible
+ * arrays present in every piece survive. Piece-local region indices are shifted.
  *
  * @param rPath filesystem path of the `.vtp` file
  * @param rOpts optional narrowing of what is materialized; the default reads
@@ -21536,7 +21541,7 @@ MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rM
  *        before their payload is decoded.
  * @return the read Mesh
  * @throws ReadError on malformed XML, a non-PolyData file, triangle strips,
- *         poly-vertex/poly-line rows, multiple pieces, or lzma compression
+ *         poly-vertex/poly-line rows or lzma compression
  *         (the Python reader additionally handles lzma)
  */
 MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
@@ -21552,7 +21557,8 @@ MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rO
  * @return the summary; `mHasBBox` is false (see `read_vtu_metadata`)
  * @throws ReadError on the same unsupported constructs as `read_vtp`
  */
-MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/vtp.hpp =====
@@ -21590,12 +21596,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, cons
  * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
  * codec machinery `.vti`/`.vts`/`.vtu` already use.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
- * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
- * build lacks. `header_type="UInt64"` is honoured on read; the writer always
- * emits the default `UInt32`.
+ * Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order
+ * are supported. Multiple pieces and partial extents concatenate without
+ * welding, with each piece's extent sizing its axes and arrays. lzma and
+ * unavailable codecs are refused. Writers remain inline; degenerate extents
+ * remain points-only, as in `.vti`.
  */
 
 // System includes
@@ -21685,12 +21692,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtr_metadata(const std::string& rPath,
  * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
  * codec machinery `.vti`/`.vtu` already use.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
- * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
- * build lacks. `header_type="UInt64"` is honoured on read; the writer always
- * emits the default `UInt32`.
+ * Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order
+ * are supported. Multiple pieces and partial extents concatenate without
+ * welding, with each piece's extent sizing its geometry and arrays. lzma
+ * and unavailable codecs are refused. Writers remain inline; degenerate
+ * extents remain points-only, as in `.vti`.
  */
 
 // System includes
@@ -32783,6 +32791,27 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/typed_view.hpp =====
+// ===== begin src/cpp/src/detail/vtk_xml_pieces.hpp =====
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+// Core-private shared reader for serial PolyData and structured XML pieces.
+Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts, const char* pType,
+                         const char* pFormat);
+MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType,
+                                     const char* pFormat);
+
+// Point dimensions, x-fastest. Legacy structured datasets also use lines/quads.
+void vtk_structured_cells(const std::array<std::int64_t, 3>& rDims,
+                          std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                          std::vector<std::int64_t>& rTypes, bool VolumeOnly = false);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/vtk_xml_pieces.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
 /**
  * pugixml parser - version 1.14
@@ -59015,7 +59044,9 @@ void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
-    std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t nc = 1;
+    for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+        nc *= rA.Shape()[k];
     std::size_t isz = dtype_size(rA.Dtype());
     std::size_t rowbytes = nc * isz;
     std::vector<std::size_t> shape = rA.Shape();
@@ -59033,7 +59064,9 @@ namespace {
 /// Rows `rIdx` of `rA` (any rank >= 1), as an owning array: what a polyhedron bucket needs,
 /// because its members are not contiguous in the file.
 NDArray vtkcells_gather_rows(const NDArray& rA, const std::vector<std::size_t>& rIdx) {
-    const std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t nc = 1;
+    for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+        nc *= rA.Shape()[k];
     const std::size_t rowbytes = nc * dtype_size(rA.Dtype());
     std::vector<std::size_t> shape = rA.Shape();
     if (shape.empty())
@@ -59738,6 +59771,573 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtk_xml.cpp =====
+// ===== begin src/cpp/src/detail/vtk_xml_pieces.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <map>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+namespace {
+
+std::size_t vxp_product(std::size_t a, std::size_t b) {
+    if (b && a > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) / b)
+        throw ReadError("VTK: structured dimensions overflow");
+    return a * b;
+}
+
+std::size_t vxp_sum(std::size_t a, std::size_t b) {
+    const auto max = static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max());
+    if (a > max || b > max - a)
+        throw ReadError("VTK: piece counts overflow");
+    return a + b;
+}
+
+std::size_t vxp_count(pugi::xml_node node, const char* pName) {
+    const std::string text = node.attribute(pName).as_string();
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw ReadError(std::string("VTK: invalid ") + pName);
+    try {
+        return vxp_sum(0, std::stoull(text));
+    } catch (const std::exception&) {
+        throw ReadError(std::string("VTK: invalid ") + pName);
+    }
+}
+
+template <class T, std::size_t N>
+std::array<T, N> vxp_attribute(pugi::xml_node node, const char* name, std::array<T, N> fallback,
+                               bool required = false) {
+    const auto attr = node.attribute(name);
+    if (!attr) {
+        if (required)
+            throw ReadError(std::string("VTK: missing ") + name);
+        return fallback;
+    }
+    TextStream in(attr.as_string());
+    for (auto& value : fallback)
+        if (!(in >> value))
+            throw ReadError(std::string("VTK: malformed ") + name);
+    std::string extra;
+    if (in >> extra)
+        throw ReadError(std::string("VTK: malformed ") + name);
+    return fallback;
+}
+
+std::array<std::int64_t, 3> vxp_dimensions(const std::array<std::int64_t, 6>& rExtent) {
+    bool empty = true;
+    for (std::size_t k = 0; k < 3; ++k)
+        empty = empty && rExtent[2 * k] != std::numeric_limits<std::int64_t>::min() &&
+                rExtent[2 * k + 1] == rExtent[2 * k] - 1;
+    if (empty)
+        return {{0, 0, 0}};
+    std::array<std::int64_t, 3> dims;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const auto lo = rExtent[2 * k], hi = rExtent[2 * k + 1];
+        if (hi < lo || (lo < 0 && hi > std::numeric_limits<std::int64_t>::max() + lo - 1) ||
+            hi - lo == std::numeric_limits<std::int64_t>::max())
+            throw ReadError("VTK: inverted or overflowing extent");
+        dims[k] = hi - lo + 1;
+    }
+    return dims;
+}
+
+struct VxpPiece {
+    pugi::xml_node mNode;
+    std::array<std::int64_t, 6> mExtent{};
+    std::array<std::int64_t, 3> mDims{};
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+};
+
+struct VxpHeader {
+    pugi::xml_node mGrid;
+    VtuContext mCtx;
+    std::vector<VxpPiece> mPieces;
+    std::array<double, 3> mOrigin{};
+    std::array<double, 3> mSpacing{{1, 1, 1}};
+    bool mPoly = false;
+    bool mImage = false;
+};
+
+VxpHeader vxp_header(const VtuSource& rSource, const char* pType, const char* pFormat) {
+    const auto root = rSource.mDoc.child("VTKFile");
+    if (!root || std::string(root.attribute("type").as_string()) != pType)
+        throw ReadError(std::string("VTK: expected ") + pType);
+    VxpHeader h;
+    h.mGrid = root.child(pType);
+    if (!h.mGrid)
+        throw ReadError(std::string("VTK: missing ") + pType);
+    h.mCtx = vtk_xml_read_context(rSource, pFormat);
+    h.mPoly = std::string(pType) == "PolyData";
+    h.mImage = std::string(pType) == "ImageData";
+    std::array<std::int64_t, 6> whole{};
+    if (!h.mPoly) {
+        whole = vxp_attribute<std::int64_t, 6>(h.mGrid, "WholeExtent", {}, true);
+        vxp_dimensions(whole);
+    }
+    if (h.mImage) {
+        h.mOrigin = vxp_attribute<double, 3>(h.mGrid, "Origin", {});
+        h.mSpacing = vxp_attribute<double, 3>(h.mGrid, "Spacing", {{1, 1, 1}});
+        const std::array<double, 9> identity{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+        if (vxp_attribute<double, 9>(h.mGrid, "Direction", identity) != identity)
+            throw ReadError("VTI with a non-identity Direction is not supported");
+    }
+    const bool many = h.mGrid.child("Piece").next_sibling("Piece");
+    for (const auto node : h.mGrid.children("Piece")) {
+        VxpPiece piece;
+        piece.mNode = node;
+        if (h.mPoly) {
+            piece.mNumPoints = vxp_count(node, "NumberOfPoints");
+        } else {
+            piece.mExtent = vxp_attribute<std::int64_t, 6>(node, "Extent", whole, many);
+            piece.mDims = vxp_dimensions(piece.mExtent);
+            for (std::size_t k = 0; piece.mDims[0] != 0 && k < 3; ++k)
+                if (piece.mExtent[2 * k] < whole[2 * k] ||
+                    piece.mExtent[2 * k + 1] > whole[2 * k + 1])
+                    throw ReadError("VTK: Piece Extent is outside WholeExtent");
+            piece.mNumPoints =
+                vxp_product(vxp_product(piece.mDims[0], piece.mDims[1]), piece.mDims[2]);
+            piece.mNumCells = piece.mNumPoints == 0
+                                  ? 0
+                                  : vxp_product(vxp_product(piece.mDims[0] - 1, piece.mDims[1] - 1),
+                                                piece.mDims[2] - 1);
+        }
+        h.mPieces.push_back(piece);
+    }
+    if (h.mPieces.empty())
+        throw ReadError("No Piece found");
+    return h;
+}
+
+NDArray vxp_array(pugi::xml_node da, const VtuContext& rCtx, std::size_t rows,
+                  int default_components = 1) {
+    if (!da)
+        throw ReadError("VTK: missing DataArray");
+    int nc = 0;
+    NDArray arr = vtu_read_data_array(da, rCtx, nc);
+    if (!da.attribute("NumberOfComponents"))
+        nc = default_components;
+    if (arr.Size() != vxp_product(rows, nc))
+        throw ReadError("VTK: DataArray length differs from piece count");
+    if (nc > 1)
+        arr.Reshape({rows, static_cast<std::size_t>(nc)});
+    return arr;
+}
+
+bool vxp_same_shape(const NDArray& rA, const NDArray& rB) {
+    return rA.Dtype() == rB.Dtype() && rA.Shape().size() == rB.Shape().size() &&
+           std::equal(rA.Shape().begin() + 1, rA.Shape().end(), rB.Shape().begin() + 1);
+}
+
+NDArray vxp_concat(const std::vector<NDArray>& rParts) {
+    auto shape = rParts.front().Shape();
+    shape[0] = 0;
+    for (const auto& arr : rParts) {
+        if (!vxp_same_shape(rParts.front(), arr))
+            throw ReadError("VTK: pieces disagree on array dtype or components");
+        shape[0] = vxp_sum(shape[0], arr.Shape()[0]);
+    }
+    NDArray out = NDArray::Uninit(rParts.front().Dtype(), shape);
+    std::size_t offset = 0;
+    for (const auto& arr : rParts) {
+        if (arr.Nbytes())
+            std::memcpy(out.Data() + offset, arr.Data(), arr.Nbytes());
+        offset += arr.Nbytes();
+    }
+    return out;
+}
+
+void vxp_poly_cells(const VxpPiece& rPiece, const VtuContext& rCtx,
+                    std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                    std::vector<std::int64_t>& rTypes, bool Metadata) {
+    const std::array<const char*, 4> tags{{"Verts", "Lines", "Polys", "Strips"}};
+    const std::array<const char*, 4> counts{
+        {"NumberOfVerts", "NumberOfLines", "NumberOfPolys", "NumberOfStrips"}};
+    for (std::size_t kind = 0; kind < tags.size(); ++kind) {
+        const auto section = rPiece.mNode.child(tags[kind]);
+        if (!section) {
+            if (rPiece.mNode.attribute(counts[kind]) && vxp_count(rPiece.mNode, counts[kind]))
+                throw ReadError("VTP: missing cell section with nonzero count");
+            continue;
+        }
+        std::vector<std::int64_t> conn, offsets;
+        for (const auto da : section.children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (name != "offsets" && (Metadata || name != "connectivity"))
+                continue;
+            int nc = 0;
+            auto values = vtu_to_int64(vtu_read_data_array(da, rCtx, nc));
+            if (name == "offsets")
+                offsets = std::move(values);
+            else
+                conn = std::move(values);
+        }
+        if (rPiece.mNode.attribute(counts[kind]) &&
+            vxp_count(rPiece.mNode, counts[kind]) != offsets.size())
+            throw ReadError("VTP: cell count differs from section offsets");
+        std::int64_t prev = 0;
+        const auto base = Metadata ? (rOffsets.empty() ? 0 : rOffsets.back())
+                                   : static_cast<std::int64_t>(rConn.size());
+        for (const auto end : offsets) {
+            if (end <= prev)
+                throw ReadError("VTP: non-increasing cell offsets");
+            const auto size = end - prev;
+            if (kind == 0 && size != 1)
+                throw ReadError("poly-vertex VTP cells are not supported");
+            if (kind == 1 && size != 2)
+                throw ReadError("poly-line VTP cells are not supported");
+            if (kind == 2 && size < 3)
+                throw ReadError("VTP: polygon has fewer than three points");
+            if (kind == 3)
+                throw ReadError("triangle-strip VTP cells are not supported");
+            rTypes.push_back(kind == 0 ? 1 : kind == 1 ? 3 : size == 3 ? 5 : size == 4 ? 9 : 7);
+            rOffsets.push_back(vxp_sum(base, end));
+            prev = end;
+        }
+        if (!Metadata && static_cast<std::size_t>(prev) != conn.size())
+            throw ReadError("VTP: offsets do not span connectivity");
+        for (const auto index : conn)
+            if (index < 0 || static_cast<std::size_t>(index) >= rPiece.mNumPoints)
+                throw ReadError("VTP: point index out of range");
+        rConn.insert(rConn.end(), conn.begin(), conn.end());
+    }
+}
+
+std::vector<std::pair<std::string, NDArray>> vxp_fields(pugi::xml_node holder,
+                                                        const VtuContext& rCtx,
+                                                        const ReadOptions& rOpts) {
+    std::vector<std::pair<std::string, NDArray>> out;
+    for (const auto da : holder.child("FieldData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!is_region_field_name(name) && (!rOpts.WantsAnyData() || !rOpts.WantsArray(name)))
+            continue;
+        try {
+            dtype_from_vtu(da.attribute("type").as_string());
+        } catch (const ReadError&) {
+            log::warn("VTK: skipping non-numeric field array '{}'", name);
+            continue;
+        }
+        int nc = 0;
+        NDArray arr = vtu_read_data_array(da, rCtx, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+        out.emplace_back(name, std::move(arr));
+    }
+    return out;
+}
+
+using VxpData = std::map<std::string, std::vector<NDArray>>;
+
+void vxp_data(const VxpPiece& rPiece, const VtuContext& rCtx, const ReadOptions& rOpts,
+              const char* pSection, std::size_t count, VxpData& rOut) {
+    if (!rOpts.WantsAnyData())
+        return;
+    std::unordered_set<std::string> seen;
+    for (const auto da : rPiece.mNode.child(pSection).children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (rOpts.WantsArray(name)) {
+            if (!seen.insert(name).second)
+                throw ReadError("VTK: duplicate data array '" + name + "' in one piece");
+            rOut[name].push_back(vxp_array(da, rCtx, count));
+        }
+    }
+}
+
+std::vector<std::string> vxp_names(const VxpHeader& rHeader, const char* pSection) {
+    // Metadata follows the same cross-piece dtype/component compatibility rule.
+    std::map<std::string, std::vector<std::pair<std::string, int>>> names;
+    for (const auto& piece : rHeader.mPieces) {
+        std::unordered_set<std::string> seen;
+        for (const auto da : piece.mNode.child(pSection).children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (!seen.insert(name).second)
+                throw ReadError("VTK: duplicate data array '" + name + "' in one piece");
+            names[da.attribute("Name").as_string()].emplace_back(
+                da.attribute("type").as_string(), da.attribute("NumberOfComponents").as_int(1));
+        }
+    }
+    std::vector<std::string> out;
+    for (const auto& [name, parts] : names)
+        if (parts.size() == rHeader.mPieces.size() &&
+            std::all_of(parts.begin(), parts.end(),
+                        [&](const auto& part) { return part == parts[0]; }))
+            out.push_back(name);
+    return out;
+}
+
+}  // namespace
+
+void vtk_structured_cells(const std::array<std::int64_t, 3>& rDims,
+                          std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                          std::vector<std::int64_t>& rTypes, bool VolumeOnly) {
+    std::vector<std::size_t> axes;
+    std::array<std::int64_t, 3> cells;
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rDims[k] < 1)
+            throw ReadError("VTK: dimensions must be positive");
+        if (rDims[k] > 1)
+            axes.push_back(k);
+        cells[k] = std::max<std::int64_t>(rDims[k] - 1, 1);
+    }
+    if (VolumeOnly && axes.size() != 3)
+        return;
+    const std::array<std::int64_t, 3> stride{
+        {1, rDims[0], static_cast<std::int64_t>(vxp_product(rDims[0], rDims[1]))}};
+    const auto count = vxp_product(vxp_product(cells[0], cells[1]), cells[2]);
+    const std::size_t width = std::size_t{1} << axes.size();
+    const auto conn_base = rConn.size(), cell_base = rTypes.size();
+    rConn.resize(vxp_sum(conn_base, vxp_product(count, width)));
+    rOffsets.resize(vxp_sum(cell_base, count));
+    rTypes.resize(vxp_sum(cell_base, count));
+    parallel_for_bw(count, [&](std::size_t row) {
+        const auto i = static_cast<std::int64_t>(row % cells[0]);
+        const auto j = static_cast<std::int64_t>((row / cells[0]) % cells[1]);
+        const auto k = static_cast<std::int64_t>(row / cells[0] / cells[1]);
+        const auto base = i + j * stride[1] + k * stride[2];
+        const auto a = axes.empty() ? 0 : stride[axes[0]];
+        const auto b = axes.size() < 2 ? 0 : stride[axes[1]];
+        const auto c = axes.size() < 3 ? 0 : stride[axes[2]];
+        const std::array<std::int64_t, 8> nodes{{base, base + a, base + a + b, base + b, base + c,
+                                                 base + a + c, base + a + b + c, base + b + c}};
+        std::copy_n(nodes.begin(), width, rConn.begin() + conn_base + row * width);
+        rOffsets[cell_base + row] = conn_base + (row + 1) * width;
+        rTypes[cell_base + row] = axes.empty()       ? 1
+                                  : axes.size() == 1 ? 3
+                                  : axes.size() == 2 ? 9
+                                                     : 12;
+    });
+}
+
+Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts, const char* pType,
+                         const char* pFormat) {
+    VtuSource source;
+    vtu_load(rPath, pugi::parse_default, source, pType, pFormat);
+    auto h = vxp_header(source, pType, pFormat);
+    std::vector<NDArray> points;
+    VxpData point_data, cell_data;
+    std::vector<std::int64_t> conn, offsets, types;
+    auto fields = vxp_fields(h.mGrid, h.mCtx, rOpts);
+    std::map<std::string, NDArray> passthrough;
+    std::map<std::string, std::vector<NDArray>> piece_regions;
+    std::size_t point_base = 0, cell_base = 0;
+    for (auto& piece : h.mPieces) {
+        NDArray pts;
+        if (h.mPoly || std::string(pType) == "StructuredGrid") {
+            const auto da = piece.mNode.child("Points").child("DataArray");
+            if (!da && piece.mNumPoints == 0)
+                pts = NDArray(DType::Float64, {0, 3});
+            else
+                pts = vxp_array(da, h.mCtx, piece.mNumPoints, 3);
+            if (pts.Shape().size() != 2 || pts.Shape()[1] != 3)
+                throw ReadError("VTK: points must have three components");
+        } else if (piece.mNumPoints == 0) {
+            pts = NDArray(DType::Float64, {0, 3});
+        } else {
+            std::array<std::vector<double>, 3> coordinates;
+            if (!h.mImage) {
+                std::vector<pugi::xml_node> arrays;
+                for (const auto da : piece.mNode.child("Coordinates").children("DataArray"))
+                    arrays.push_back(da);
+                if (arrays.size() != 3)
+                    throw ReadError("VTR Coordinates must have three axis DataArrays");
+                const std::array<const char*, 3> names{
+                    {"x_coordinates", "y_coordinates", "z_coordinates"}};
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    auto selected = arrays[axis];
+                    for (const auto da : arrays)
+                        if (std::string(da.attribute("Name").as_string()) == names[axis])
+                            selected = da;
+                    const auto arr = vxp_array(selected, h.mCtx, piece.mDims[axis]);
+                    if (arr.Shape().size() != 1)
+                        throw ReadError("VTR: axis coordinates must be scalar");
+                    for (std::size_t n = 0; n < arr.Size(); ++n)
+                        coordinates[axis].push_back(read_double(arr, n));
+                }
+            }
+            pts = NDArray::Uninit(DType::Float64, {piece.mNumPoints, 3});
+            auto dst = pts.As<double>();
+            parallel_for_bw(piece.mNumPoints, [&](std::size_t row) {
+                const auto i = static_cast<std::int64_t>(row % piece.mDims[0]);
+                const auto j = static_cast<std::int64_t>((row / piece.mDims[0]) % piece.mDims[1]);
+                const auto k = static_cast<std::int64_t>(row / piece.mDims[0] / piece.mDims[1]);
+                const std::array<std::int64_t, 3> index{{i, j, k}};
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    dst[row * 3 + axis] =
+                        h.mImage ? (h.mOrigin[axis] + static_cast<double>(piece.mExtent[2 * axis]) *
+                                                          h.mSpacing[axis]) +
+                                       static_cast<double>(index[axis]) * h.mSpacing[axis]
+                                 : coordinates[axis][index[axis]];
+            });
+        }
+        std::vector<std::int64_t> pc, po, pt;
+        if (h.mPoly)
+            vxp_poly_cells(piece, h.mCtx, pc, po, pt, false);
+        else if (piece.mNumPoints)
+            vtk_structured_cells(piece.mDims, pc, po, pt, true);
+        piece.mNumCells = pt.size();
+        vxp_data(piece, h.mCtx, rOpts, "PointData", piece.mNumPoints, point_data);
+        vxp_data(piece, h.mCtx, rOpts, "CellData", pt.size(), cell_data);
+
+        // Decode piece-local regions with the shared validator before shifting.
+        // Dataset-level regions already index the assembled, piece-major file.
+        auto local_fields = vxp_fields(piece.mNode, h.mCtx, rOpts);
+        if (!local_fields.empty()) {
+            Mesh local;
+            local.AssignPoints(NDArray(pts));
+            std::unordered_map<std::string, NDArray> no_data;
+            std::vector<std::int64_t> file_map;
+            reconstruct_cells(pc.data(), po, pt, no_data, nullptr, {}, local, &file_map);
+            regions_from_field_arrays(local, local_fields, &file_map, pFormat);
+            std::vector<std::int64_t> inverse(file_map.size());
+            for (std::size_t n = 0; n < file_map.size(); ++n)
+                inverse[file_map[n]] = n;
+            auto encoded = regions_to_field_arrays(local, &inverse);
+            for (auto& [name, arr] : encoded) {
+                if (name.rfind("region-meta:", 0) == 0) {
+                    fields.emplace_back(name, std::move(arr));
+                    continue;
+                }
+                const bool point = name.rfind("region:point:", 0) == 0;
+                const std::size_t step = name.rfind("region:side:", 0) == 0 ? 2 : 1;
+                for (std::size_t n = 0; n < arr.Size(); n += step)
+                    arr.As<std::int64_t>()[n] += point ? point_base : cell_base;
+                piece_regions[name].push_back(std::move(arr));
+            }
+            for (const auto& name : local.FieldDataNames()) {
+                if (is_region_field_name(name))
+                    passthrough.insert_or_assign(name, NDArray(local.FieldData(name)));
+                else
+                    fields.emplace_back(name, NDArray(local.FieldData(name)));
+            }
+        }
+        const auto conn_base = conn.size();
+        for (const auto index : pc)
+            conn.push_back(index + point_base);
+        for (const auto end : po)
+            offsets.push_back(vxp_sum(conn_base, end));
+        types.insert(types.end(), pt.begin(), pt.end());
+        point_base = vxp_sum(point_base, piece.mNumPoints);
+        cell_base = vxp_sum(cell_base, pt.size());
+        points.push_back(std::move(pts));
+    }
+    Mesh mesh;
+    const auto first =
+        std::find_if(points.begin(), points.end(), [](const auto& arr) { return arr.Size() != 0; });
+    if (first != points.end())
+        for (std::size_t k = 0; k < points.size(); ++k)
+            if (points[k].Size() == 0 && !h.mPieces[k].mNode.child("Points").child("DataArray"))
+                points[k] = NDArray(first->Dtype(), {0, 3});
+    mesh.AssignPoints(vxp_concat(points));
+    std::unordered_map<std::string, NDArray> raw_data;
+    auto assemble = [&](VxpData& data, bool point) {
+        for (auto& [name, parts] : data) {
+            if (parts.size() != h.mPieces.size() ||
+                !std::all_of(parts.begin(), parts.end(),
+                             [&](const auto& arr) { return vxp_same_shape(parts.front(), arr); })) {
+                log::warn("{}: data '{}' is missing from, or differs between, pieces; dropped",
+                          pFormat, name);
+                continue;
+            }
+            auto arr = vxp_concat(parts);
+            if (point)
+                mesh.AddPointData(name, std::move(arr));
+            else
+                raw_data.emplace(name, std::move(arr));
+        }
+    };
+    assemble(point_data, true);
+    assemble(cell_data, false);
+    check_vtk_cell_arrays(conn.size(), offsets, types, raw_data);
+    std::vector<std::int64_t> file_map;
+    reconstruct_cells(conn.data(), offsets, types, raw_data, nullptr, {}, mesh, &file_map);
+    for (auto& [name, parts] : piece_regions)
+        fields.emplace_back(name, vxp_concat(parts));
+    regions_from_field_arrays(mesh, fields, &file_map, pFormat);
+    for (auto& [name, arr] : passthrough)
+        mesh.AddFieldData(name, std::move(arr));
+    return mesh;
+}
+
+MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType,
+                                     const char* pFormat) {
+    VtuSource source;
+    vtu_load(rPath, pugi::parse_minimal, source, pType, pFormat);
+    const auto h = vxp_header(source, pType, pFormat);
+    MeshMetadata meta;
+    meta.mPointDim = 3;
+    meta.mHasBBox = h.mImage;
+    std::vector<std::int64_t> conn, offsets, types;
+    for (const auto& piece : h.mPieces) {
+        meta.mNumPoints = vxp_sum(meta.mNumPoints, piece.mNumPoints);
+        if (h.mPoly)
+            vxp_poly_cells(piece, h.mCtx, conn, offsets, types, true);
+        else if (piece.mNumCells) {
+            // No geometry or array payload is decoded for structured metadata.
+            CellBlockInfo info;
+            info.mType = "hexahedron";
+            info.mNumCells = piece.mNumCells;
+            info.mNodesPerCell = 8;
+            if (meta.mCellBlocks.empty())
+                meta.mCellBlocks.push_back(info);
+            else
+                meta.mCellBlocks[0].mNumCells =
+                    vxp_sum(meta.mCellBlocks[0].mNumCells, piece.mNumCells);
+        }
+        if (h.mImage && piece.mNumPoints)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double a =
+                    h.mOrigin[k] + static_cast<double>(piece.mExtent[2 * k]) * h.mSpacing[k];
+                const double b = a + static_cast<double>(piece.mDims[k] - 1) * h.mSpacing[k];
+                const bool first = meta.mNumPoints == piece.mNumPoints;
+                meta.mBBoxMin[k] =
+                    first ? std::min(a, b) : std::min(meta.mBBoxMin[k], std::min(a, b));
+                meta.mBBoxMax[k] =
+                    first ? std::max(a, b) : std::max(meta.mBBoxMax[k], std::max(a, b));
+            }
+    }
+    if (h.mPoly)
+        meta.mCellBlocks = summarize_cells(offsets, types);
+    if (meta.mNumPoints == 0)
+        meta.mHasBBox = false;
+    meta.mPointDataNames = vxp_names(h, "PointData");
+    meta.mCellDataNames = vxp_names(h, "CellData");
+    std::vector<pugi::xml_node> holders{h.mGrid};
+    for (const auto& piece : h.mPieces)
+        holders.push_back(piece.mNode);
+    std::map<std::string, std::size_t> region_counts;
+    for (const auto holder : holders)
+        for (const auto da : holder.child("FieldData").children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (is_region_field_name(name)) {
+                if (name.rfind("region:", 0) == 0)
+                    region_counts[name] =
+                        vxp_sum(region_counts[name], da.attribute("NumberOfTuples").as_ullong());
+            } else {
+                try {
+                    dtype_from_vtu(da.attribute("type").as_string());
+                    meta.mFieldDataNames.push_back(name);
+                } catch (const ReadError&) {
+                }
+            }
+        }
+    std::vector<std::pair<std::string, std::size_t>> regions(region_counts.begin(),
+                                                             region_counts.end());
+    meta.mRegions = region_summaries_from_field_names(regions);
+    auto& names = meta.mFieldDataNames;
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return meta;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/vtk_xml_pieces.cpp =====
 // ===== begin src/cpp/src/detail/vtu_binary.cpp =====
 #include <algorithm>
 #include <array>
@@ -126054,17 +126654,11 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/unv.cpp =====
 // ===== begin src/cpp/src/formats/vti.cpp =====
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <algorithm>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
 
 // Project includes
 
@@ -126076,111 +126670,6 @@ using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
-// Parse a whitespace-separated run of N numbers from an XML attribute. VTK's own
-// files use plain spaces; being liberal here costs nothing and a mis-parse would
-// silently relocate the whole grid.
-template <class T>
-bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-// The framing every ImageData path needs, resolved once so the mesh reader and
-// the metadata reader cannot disagree about which files they accept.
-struct vti_header {
-    pugi::xml_node mPiece;
-    detail::VtuContext mCtx;
-    detail::LatticeSpec mSpec;
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vti_header vti_parse_header(const detail::VtuSource& rSource) {
-    const auto& rDoc = rSource.mDoc;
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "ImageData")
-        throw ReadError("Expected type ImageData");
-
-    vti_header h;
-    h.mCtx = detail::vtk_xml_read_context(rSource, "VTI");
-
-    pugi::xml_node grid = root.child("ImageData");
-    if (!grid)
-        throw ReadError("No ImageData found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vti_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("ImageData has no readable WholeExtent");
-    double origin[3] = {0.0, 0.0, 0.0};
-    double spacing[3] = {1.0, 1.0, 1.0};
-    if (grid.attribute("Origin"))
-        vti_parse_n(grid.attribute("Origin").as_string(), origin, 3);
-    if (grid.attribute("Spacing"))
-        vti_parse_n(grid.attribute("Spacing").as_string(), spacing, 3);
-    if (grid.attribute("Direction")) {
-        // A non-identity direction matrix rotates the lattice, which an
-        // axis-aligned hexahedron grid cannot express without baking the
-        // rotation into the coordinates -- a different mesh from the one the
-        // file describes. Refuse rather than silently drop the rotation.
-        double dir[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        if (vti_parse_n(grid.attribute("Direction").as_string(), dir, 9)) {
-            const double id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-            for (std::size_t i = 0; i < 9; ++i)
-                if (dir[i] != id[i])
-                    throw ReadError(
-                        "VTI with a non-identity Direction is not supported by the "
-                        "C++ reader");
-        }
-    }
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTI not supported by the C++ reader");
-    // The piece's own extent may legally be a sub-box of the whole extent; the
-    // arrays are then sized to the PIECE, and reading them against the whole
-    // extent would be silently misaligned. One piece covering everything is what
-    // every writer emits, so decline the rest by name.
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vti_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTI Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTI WholeExtent is inverted on axis " + std::to_string(k));
-        h.mSpec.mDims[k] = n;
-        // The extent may start away from zero; the point at extent index i sits
-        // at Origin + i * Spacing, so the mesh's own lo corner is offset by the
-        // extent's start. Dropping that offset would translate the whole grid.
-        h.mSpec.mOrigin[k] = origin[k] + static_cast<double>(whole[2 * k]) * spacing[k];
-        h.mSpec.mSpacing[k] = spacing[k];
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mSpec.mDims[0] + 1) * (h.mSpec.mDims[1] + 1) *
-                                            (h.mSpec.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(detail::lattice_num_cells(h.mSpec));
-    return h;
-}
-
-NDArray vti_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
-                            int& rNumComponents) {
-    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
-}
-
 // One geometry attribute value. `%.17g` rather than the stream's default six
 // significant digits, which would lose ~10 digits of a real origin -- a grid
 // placed 1e-7 off its own points, which nothing downstream would flag. 17 is the
@@ -126190,16 +126679,6 @@ std::string vti_num(double Value) {
     char buf[40];
     detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
     return buf;
-}
-
-std::vector<std::string> vti_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    // The uniform mesh API hands back sorted names; match it so a summary and a
-    // real read report data arrays in the same order.
-    std::sort(names.begin(), names.end());
-    return names;
 }
 
 }  // namespace
@@ -126307,83 +126786,11 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_default, source, "ImageData", "VTI");
-    const vti_header h = vti_parse_header(source);
-
-    // The extent is expanded into explicit points and hexahedra through the same
-    // helper `grid()` and `voxelize()` use, so a .vti read and a grid() call of
-    // the same shape produce byte-identical meshes.
-    Mesh mesh = detail::lattice_build_mesh(h.mSpec);
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTI point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTI cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;  // no cell block to attach it to
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "ImageData", "VTI");
 }
 
 MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
-    detail::VtuSource source;
-    // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
-    // metadata path this decodes NOTHING at all: the extent attribute alone
-    // gives both counts.
-    detail::vtu_load(rPath, pugi::parse_minimal, source, "ImageData", "VTI");
-    const vti_header h = vti_parse_header(source);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vti_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vti_array_names(h.mPiece, "CellData");
-
-    // The bounding box IS the extent here, so unlike every other native metadata
-    // path this one can report it for free rather than declining.
-    meta.mHasBBox = true;
-    for (std::size_t k = 0; k < 3; ++k) {
-        meta.mBBoxMin[k] = h.mSpec.mOrigin[k];
-        meta.mBBoxMax[k] =
-            h.mSpec.mOrigin[k] + static_cast<double>(h.mSpec.mDims[k]) * h.mSpec.mSpacing[k];
-    }
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "ImageData", "VTI");
 }
 
 }  // namespace meshioplusplus
@@ -126755,6 +127162,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 // ===== end src/cpp/src/formats/vtk.cpp =====
 // ===== begin src/cpp/src/formats/vtk_read.cpp =====
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -126780,21 +127188,21 @@ DType dtype_from_vtk_token(std::string t) {
         return DType::Float32;
     if (t == "double")
         return DType::Float64;
-    if (t == "int" || t == "vtktypeint64" || t == "long")
+    if (t == "vtktypeint64" || t == "long")
         return DType::Int64;
     if (t == "vtktypeint8" || t == "char")
         return DType::Int8;
     if (t == "vtktypeint16" || t == "short")
         return DType::Int16;
-    if (t == "vtktypeint32")
+    if (t == "vtktypeint32" || t == "int")
         return DType::Int32;
     if (t == "vtktypeuint8" || t == "unsigned_char")
         return DType::UInt8;
-    if (t == "vtktypeuint16")
+    if (t == "vtktypeuint16" || t == "unsigned_short")
         return DType::UInt16;
-    if (t == "vtktypeuint32")
+    if (t == "vtktypeuint32" || t == "unsigned_int")
         return DType::UInt32;
-    if (t == "vtktypeuint64")
+    if (t == "vtktypeuint64" || t == "unsigned_long")
         return DType::UInt64;
     throw ReadError("VTK data type '" + t + "' not supported by the C++ reader");
 }
@@ -126943,7 +127351,7 @@ std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
 
 }  // namespace
 
-Mesh read_vtk(const std::string& rPath) {
+Mesh read_vtk(const std::string& rPath) try {
     // Mapped where that pays, copied otherwise. Function-local: every parsed
     // value is copied into owning mesh storage, so nothing in the returned Mesh
     // points back into this buffer.
@@ -126951,6 +127359,8 @@ Mesh read_vtk(const std::string& rPath) {
     VtkCursor cur(source.View());
 
     std::string header = cur.ReadLine();
+    if (header.rfind("# vtk DataFile Version", 0) != 0)
+        throw ReadError("Illegal VTK header");
     const bool is_v5 = header.find("Version 5") != std::string::npos;
     cur.ReadLine();  // title
     std::string dtype_line = vtk_upper(cur.ReadLine());
@@ -126971,6 +127381,32 @@ Mesh read_vtk(const std::string& rPath) {
     bool conn_owned = false;  // conn_nd owns the int64 connectivity (VTK 5.1)
     std::unordered_map<std::string, NDArray> cell_data_raw;
     std::string active;  // POINT_DATA or CELL_DATA
+    std::string dataset;
+    std::array<std::int64_t, 3> dims{};
+    std::array<double, 3> origin{}, spacing{};
+    std::array<NDArray, 3> axes;
+    bool have_dims = false, have_origin = false, have_spacing = false;
+    std::size_t active_count = 0;
+    std::size_t declared_points = 0, declared_cells = 0;
+    bool have_point_data = false, have_cell_data = false;
+    auto parse_attribute = [&]<class T>(const std::vector<std::string>& rTokens,
+                                        std::array<T, 3>& rValues) {
+        detail::need_tokens(rTokens, 4, "VTK");
+        for (std::size_t k = 0; k < 3; ++k) {
+            detail::TextStream in(rTokens[k + 1]);
+            std::string extra;
+            if (!(in >> rValues[k]) || (in >> extra))
+                throw ReadError("VTK: malformed geometry attribute");
+        }
+    };
+    auto add_array = [&](const std::string& rName, NDArray&& rArr) {
+        if (active == "POINT_DATA")
+            mesh.AddPointData(rName, std::move(rArr));
+        else if (active == "CELL_DATA")
+            cell_data_raw.insert_or_assign(rName, std::move(rArr));
+        else
+            mesh.AddFieldData(rName, std::move(rArr));
+    };
 
     while (!cur.Eof()) {
         std::string line = cur.ReadLine();
@@ -126982,8 +127418,29 @@ Mesh read_vtk(const std::string& rPath) {
         std::string section = vtk_upper(tok[0]);
 
         if (section == "DATASET") {
-            if (tok.size() < 2 || vtk_upper(tok[1]) != "UNSTRUCTURED_GRID")
-                throw ReadError("C++ VTK reader only handles UNSTRUCTURED_GRID");
+            detail::need_tokens(tok, 2, "VTK");
+            dataset = vtk_upper(tok[1]);
+            if (dataset != "UNSTRUCTURED_GRID" && dataset != "STRUCTURED_POINTS" &&
+                dataset != "STRUCTURED_GRID" && dataset != "RECTILINEAR_GRID")
+                throw ReadError("VTK: unsupported DATASET '" + dataset + "'");
+        } else if (section == "DIMENSIONS") {
+            parse_attribute(tok, dims);
+            for (const auto d : dims)
+                if (d < 1)
+                    throw ReadError("VTK: DIMENSIONS must be positive");
+            have_dims = true;
+        } else if (section == "ORIGIN") {
+            parse_attribute(tok, origin);
+            have_origin = true;
+        } else if (section == "SPACING" || section == "ASPECT_RATIO") {
+            parse_attribute(tok, spacing);
+            have_spacing = true;
+        } else if (section == "X_COORDINATES" || section == "Y_COORDINATES" ||
+                   section == "Z_COORDINATES") {
+            detail::need_tokens(tok, 3, "VTK");
+            const auto axis = section[0] == 'X' ? 0 : section[0] == 'Y' ? 1 : 2;
+            axes[axis] =
+                cur.ReadValues(dtype_from_vtk_token(tok[2]), std::stoull(tok[1]), is_ascii);
         } else if (section == "POINTS") {
             detail::need_tokens(tok, 3, "VTK");
             std::size_t n = std::stoull(tok[1]);
@@ -127055,9 +127512,49 @@ Mesh read_vtk(const std::string& rPath) {
             DType dt = is_ascii ? DType::Int64 : DType::Int32;
             types = vtk_to_int64(cur.ReadValues(dt, n, is_ascii));
         } else if (section == "POINT_DATA") {
+            detail::need_tokens(tok, 2, "VTK");
+            active_count = std::stoull(tok[1]);
+            declared_points = active_count;
+            have_point_data = true;
             active = "POINT_DATA";
         } else if (section == "CELL_DATA") {
+            detail::need_tokens(tok, 2, "VTK");
+            active_count = std::stoull(tok[1]);
+            declared_cells = active_count;
+            have_cell_data = true;
             active = "CELL_DATA";
+        } else if (section == "SCALARS" || section == "VECTORS" || section == "TENSORS" ||
+                   section == "NORMALS" || section == "TEXTURE_COORDINATES") {
+            detail::need_tokens(tok, section == "TEXTURE_COORDINATES" ? 4 : 3, "VTK");
+            std::size_t components = section == "TENSORS" ? 9
+                                     : section == "SCALARS"
+                                         ? (tok.size() > 3 ? std::stoull(tok[3]) : 1)
+                                         : 3;
+            const DType dt = dtype_from_vtk_token(tok[section == "TEXTURE_COORDINATES" ? 3 : 2]);
+            if (section == "TEXTURE_COORDINATES")
+                components = std::stoull(tok[2]);
+            if (active.empty() || components == 0 ||
+                active_count > std::numeric_limits<std::size_t>::max() / components)
+                throw ReadError("VTK: invalid attribute count");
+            if (section == "SCALARS") {
+                const auto lookup = split(cur.ReadLine());
+                if (lookup.empty() || vtk_upper(lookup[0]) != "LOOKUP_TABLE")
+                    throw ReadError("VTK: SCALARS requires LOOKUP_TABLE");
+            }
+            auto arr = cur.ReadValues(dt, active_count * components, is_ascii);
+            if (section == "TENSORS")
+                arr.Reshape({active_count, 3, 3});
+            else
+                arr.Reshape({active_count, components});
+            add_array(tok[1], std::move(arr));
+        } else if (section == "COLOR_SCALARS" || section == "LOOKUP_TABLE") {
+            detail::need_tokens(tok, 3, "VTK");
+            const std::size_t count =
+                section == "COLOR_SCALARS" ? active_count : std::stoull(tok[2]);
+            const std::size_t components = section == "COLOR_SCALARS" ? std::stoull(tok[2]) : 4;
+            if (components == 0 || count > std::numeric_limits<std::size_t>::max() / components)
+                throw ReadError("VTK: invalid color array count");
+            cur.ReadValues(is_ascii ? DType::Float32 : DType::UInt8, count * components, is_ascii);
         } else if (section == "FIELD") {
             detail::need_tokens(tok, 3, "VTK");
             std::size_t k = std::stoull(tok[2]);
@@ -127085,10 +127582,7 @@ Mesh read_vtk(const std::string& rPath) {
                 NDArray arr = cur.ReadValues(dt, ncomp * ntuples, is_ascii);
                 if (ncomp != 1)
                     arr.Reshape({ntuples, ncomp});
-                if (active == "POINT_DATA")
-                    mesh.AddPointData(name, std::move(arr));
-                else
-                    cell_data_raw.emplace(name, std::move(arr));
+                add_array(name, std::move(arr));
             }
         } else if (section == "METADATA") {
             while (true) {
@@ -127104,6 +127598,82 @@ Mesh read_vtk(const std::string& rPath) {
             throw ReadError("VTK section '" + section + "' not supported by the C++ reader");
         }
     }
+
+    if (dataset.empty())
+        throw ReadError("VTK: missing DATASET");
+    if (dataset != "UNSTRUCTURED_GRID") {
+        if (!have_dims)
+            throw ReadError("VTK: missing DIMENSIONS");
+        if (!conn.empty() || !offsets.empty() || !types.empty() || conn_owned)
+            throw ReadError("VTK: structured datasets must not declare CELLS/CELL_TYPES");
+        std::size_t count = 1;
+        for (const auto d : dims) {
+            if (static_cast<std::uint64_t>(d) > std::numeric_limits<std::size_t>::max() / count)
+                throw ReadError("VTK: dimensions overflow");
+            count *= d;
+        }
+        if (dataset == "STRUCTURED_POINTS" || dataset == "RECTILINEAR_GRID") {
+            if (dataset == "STRUCTURED_POINTS" && (!have_origin || !have_spacing))
+                throw ReadError("VTK: structured points requires ORIGIN and SPACING/ASPECT_RATIO");
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                if (dataset == "RECTILINEAR_GRID" &&
+                    axes[axis].Size() != static_cast<std::size_t>(dims[axis]))
+                    throw ReadError("VTK: coordinate count differs from DIMENSIONS");
+            if (count > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) /
+                            (3 * sizeof(double)))
+                throw ReadError("VTK: structured point allocation overflows");
+            auto pts = NDArray::Uninit(
+                dataset == "RECTILINEAR_GRID" ? axes[0].Dtype() : DType::Float64, {count, 3});
+            auto fill_point = [&](std::size_t row) {
+                const std::array<std::int64_t, 3> index{
+                    {static_cast<std::int64_t>(row % dims[0]),
+                     static_cast<std::int64_t>((row / dims[0]) % dims[1]),
+                     static_cast<std::int64_t>(row / dims[0] / dims[1])}};
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    double value;
+                    if (dataset == "STRUCTURED_POINTS") {
+                        // Match the Python reference's linspace endpoints.
+                        const double last =
+                            origin[axis] + static_cast<double>(dims[axis] - 1) * spacing[axis];
+                        const double step = dims[axis] > 1 ? (last - origin[axis]) /
+                                                                 static_cast<double>(dims[axis] - 1)
+                                                           : 0;
+                        value = index[axis] == dims[axis] - 1
+                                    ? last
+                                    : origin[axis] + static_cast<double>(index[axis]) * step;
+                    } else {
+                        value = detail::read_double(axes[axis], index[axis]);
+                    }
+                    const auto integer = detail::is_float_dtype(pts.Dtype())
+                                             ? 0
+                                             : detail::checked_integer<std::int64_t>(value, "VTK");
+                    store(pts, row * 3 + axis, value, integer);
+                }
+            };
+            if (detail::is_float_dtype(pts.Dtype()))
+                parallel_for_bw(count, fill_point);
+            else
+                // Checked integer conversion may throw: keep it outside workers.
+                for (std::size_t row = 0; row < count; ++row)
+                    fill_point(row);
+            mesh.AssignPoints(std::move(pts));
+        }
+        if (mesh.NumPoints() != count)
+            throw ReadError("VTK: POINTS count differs from DIMENSIONS");
+        detail::vtk_structured_cells(dims, conn, offsets, types);
+        conn_ptr = conn.data();
+    }
+    if ((have_point_data && declared_points != mesh.NumPoints()) ||
+        (have_cell_data && declared_cells != types.size()))
+        throw ReadError("VTK: declared data count differs from geometry");
+    for (const auto& name : mesh.PointDataNames()) {
+        const auto& arr = mesh.PointData(name);
+        if (arr.Shape().empty() || arr.Shape()[0] != mesh.NumPoints())
+            throw ReadError("VTK: point data count differs from geometry");
+    }
+    for (const auto& [name, arr] : cell_data_raw)
+        if (arr.Shape().empty() || arr.Shape()[0] != types.size())
+            throw ReadError("VTK: cell data count differs from geometry");
 
     // Fast path (zero copy): a single cell type spanning all cells, non-special,
     // with an identity VTK->meshio node order and regular end-offsets
@@ -127147,6 +127717,10 @@ Mesh read_vtk(const std::string& rPath) {
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
     }
     return mesh;
+} catch (const ReadError&) {
+    throw;
+} catch (const std::exception& rError) {
+    throw ReadError(std::string("VTK: ") + rError.what());
 }
 
 }  // namespace meshioplusplus
@@ -129754,345 +130328,24 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtp.cpp =====
 // ===== begin src/cpp/src/formats/vtp_read.cpp =====
-#include <cstdint>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-// External includes
-
-// Project includes
 
 namespace meshioplusplus {
 
-namespace {
-
-using detail::vtu_to_int64;
-
-// The codec is resolved once from the root's compressor= attribute.
-NDArray vtp_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
-                            int& rNumComponents) {
-    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
-}
-
-// One PolyData section's connectivity + VTK end-offsets.
-struct VtpPiece {
-    std::vector<std::int64_t> mConn;
-    std::vector<std::int64_t> mOffsets;
-    bool mPresent = false;
-};
-
-/**
- * @param offsets_only Skip the `connectivity` array. PolyData has no `types`
- *        array -- cell types are synthesized from each section's per-cell size
- *        -- so `offsets` alone (one value per cell) is enough to summarize a
- *        section, while `connectivity` is the bulk of the section's bytes.
- */
-VtpPiece vtp_read_section(const pugi::xml_node& rSection, const detail::VtuContext& rCtx,
-                          bool offsets_only = false) {
-    VtpPiece out;
-    if (!rSection)
-        return out;
-    out.mPresent = true;
-    for (pugi::xml_node da : rSection.children("DataArray")) {
-        std::string name = da.attribute("Name").as_string();
-        if (offsets_only && name != "offsets")
-            continue;
-        int nc = 0;
-        NDArray arr = vtp_read_data_array(da, rCtx, nc);
-        if (name == "connectivity")
-            out.mConn = vtu_to_int64(arr);
-        else if (name == "offsets")
-            out.mOffsets = vtu_to_int64(arr);
-    }
-    return out;
-}
-
-/** @brief `<Piece>` plus the framing attributes; mirrors `vtu_parse_header`. */
-struct vtp_header {
-    pugi::xml_node mGrid;
-    pugi::xml_node mPiece;
-    detail::VtuContext mCtx;
-    std::size_t mNumPoints = 0;
-};
-
-vtp_header vtp_parse_header(const detail::VtuSource& rSource) {
-    const auto& rDoc = rSource.mDoc;
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "PolyData")
-        throw ReadError("Expected type PolyData");
-
-    vtp_header h;
-    pugi::xml_node grid = root.child("PolyData");
-    if (!grid)
-        throw ReadError("No PolyData found");
-
-    h.mCtx = detail::vtk_xml_read_context(rSource, "VTP");
-
-    h.mGrid = grid;
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    // A single piece is supported; multiple pieces -> Python reader.
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTP not supported by the C++ reader");
-
-    h.mNumPoints = static_cast<std::size_t>(h.mPiece.attribute("NumberOfPoints").as_ullong());
-    return h;
-}
-
-/** @brief `<DataArray>` `Name` attributes under @p pSection, sorted. */
-std::vector<std::string> vtp_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-/** @brief Whether a `<DataArray type=>` is one of the ten numeric types meshio++ holds. */
-bool vtp_is_numeric_type(const std::string& rType) {
-    return rType == "Float32" || rType == "Float64" || rType == "Int8" || rType == "Int16" ||
-           rType == "Int32" || rType == "Int64" || rType == "UInt8" || rType == "UInt16" ||
-           rType == "UInt32" || rType == "UInt64";
-}
-
-/**
- * @brief Read the `<FieldData>` arrays under @p rNode into `mesh.field_data`.
- *
- * Field data belongs to the dataset, not to a piece: VTK writes it on the
- * `<PolyData>` element, before the `<Piece>`, and also accepts it inside one, so the
- * reader looks at both (the piece's overriding the grid's, since `AddFieldData`
- * is insert-or-assign). A non-numeric array (`type="String"`, `"Bit"`) has no
- * meshio++ dtype: it is skipped with a warning rather than failing a read that
- * used to succeed by ignoring the whole section.
- */
-void vtp_read_field_data(const pugi::xml_node& rNode, const detail::VtuContext& rCtx,
-                         const ReadOptions& rOpts, bool WantData,
-                         std::vector<std::pair<std::string, NDArray>>& rOut) {
-    for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        // Region arrays are topology, not data (detail/region_field_data.hpp).
-        if (!detail::is_region_field_name(name) && (!WantData || !rOpts.WantsArray(name)))
-            continue;
-        if (!vtp_is_numeric_type(da.attribute("type").as_string())) {
-            log::warn(
-                "meshio++: VTP: skipping <FieldData> array '{}' of type '{}' (only numeric "
-                "arrays are read)",
-                name, da.attribute("type").as_string());
-            continue;
-        }
-        int nc = 0;
-        NDArray arr = vtp_read_data_array(da, rCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-        rOut.emplace_back(name, std::move(arr));
-    }
-}
-
-/**
- * @brief The field-data names a real read would return: the numeric arrays of the
- * grid's and the piece's `<FieldData>`, sorted and unique.
- *
- * Numeric only, like `vtp_read_field_data`, so a summary never names an array the
- * read skips.
- */
-std::vector<std::string> vtp_field_data_names(const vtp_header& rHeader) {
-    std::vector<std::string> names;
-    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
-        for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-            if (vtp_is_numeric_type(da.attribute("type").as_string()) &&
-                !detail::is_region_field_name(da.attribute("Name").as_string()))
-                names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
-}
-
-/**
- * @brief Synthesize `types`/`offsets` for the three PolyData sections.
- *
- * Factored out of `read_vtp` so the mesh and metadata paths derive cell types
- * from section sizes in exactly one place, and therefore cannot disagree.
- */
-void vtp_build_types(const VtpPiece& rSec, int kind, std::vector<std::int64_t>& rConn,
-                     std::vector<std::int64_t>& rOffsets, std::vector<std::int64_t>& rTypes) {
-    const std::int64_t conn_base = static_cast<std::int64_t>(rConn.size());
-    std::int64_t prev = 0;
-    for (std::int64_t end : rSec.mOffsets) {
-        const std::int64_t sz = end - prev;
-        prev = end;
-        std::int64_t vtk_type = 0;
-        if (kind == 0) {
-            if (sz != 1)
-                throw ReadError("poly-vertex VTP cells not supported by the C++ reader");
-            vtk_type = 1;  // VTK_VERTEX
-        } else if (kind == 1) {
-            if (sz != 2)
-                throw ReadError("poly-line VTP cells not supported by the C++ reader");
-            vtk_type = 3;  // VTK_LINE
-        } else {
-            vtk_type = sz == 3 ? 5 : sz == 4 ? 9 : 7;  // triangle / quad / polygon
-        }
-        rTypes.push_back(vtk_type);
-        rOffsets.push_back(conn_base + end);
-    }
-    rConn.insert(rConn.end(), rSec.mConn.begin(), rSec.mConn.end());
-}
-
-}  // namespace
-
 Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_default, source, "PolyData", "VTP");
-    const vtp_header h = vtp_parse_header(source);
-    const pugi::xml_node piece = h.mPiece;
-    const detail::VtuContext& ctx = h.mCtx;
-    const std::size_t num_points = h.mNumPoints;
-    const bool want_data = rOpts.WantsAnyData();
-
-    Mesh mesh;
-    std::unordered_map<std::string, NDArray> cell_data_raw;
-
-    for (pugi::xml_node child : piece.children()) {
-        std::string tag = child.name();
-        if (tag == "Points") {
-            pugi::xml_node da = child.child("DataArray");
-            int nc = 0;
-            NDArray pts = vtp_read_data_array(da, ctx, nc);
-            if (nc <= 0)
-                nc = 3;
-            if (pts.Size() / static_cast<std::size_t>(nc) != num_points ||
-                pts.Size() % static_cast<std::size_t>(nc) != 0)
-                throw ReadError("VTP Points length differs from NumberOfPoints");
-            pts.Reshape({num_points, static_cast<std::size_t>(nc)});
-            mesh.AssignPoints(std::move(pts));
-        } else if (tag == "PointData") {
-            if (!want_data)
-                continue;
-            for (pugi::xml_node da : child.children("DataArray")) {
-                int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                // Name is readable before the payload -- skipping is free.
-                if (!rOpts.WantsArray(name))
-                    continue;
-                NDArray arr = vtp_read_data_array(da, ctx, nc);
-                if (arr.Size() / static_cast<std::size_t>(nc > 0 ? nc : 1) != num_points)
-                    throw ReadError("VTP PointData length differs from NumberOfPoints");
-                if (nc > 1)
-                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                mesh.AddPointData(name, std::move(arr));
-            }
-        } else if (tag == "CellData") {
-            if (!want_data)
-                continue;
-            for (pugi::xml_node da : child.children("DataArray")) {
-                int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                if (!rOpts.WantsArray(name))
-                    continue;
-                NDArray arr = vtp_read_data_array(da, ctx, nc);
-                if (nc > 1)
-                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                cell_data_raw.emplace(name, std::move(arr));
-            }
-        }
-    }
-
-    std::vector<std::pair<std::string, NDArray>> field_arrays;
-    vtp_read_field_data(h.mGrid, ctx, rOpts, want_data, field_arrays);
-    vtp_read_field_data(piece, ctx, rOpts, want_data, field_arrays);
-
-    VtpPiece verts = vtp_read_section(piece.child("Verts"), ctx);
-    VtpPiece lines = vtp_read_section(piece.child("Lines"), ctx);
-    VtpPiece polys = vtp_read_section(piece.child("Polys"), ctx);
-    VtpPiece strips = vtp_read_section(piece.child("Strips"), ctx);
-    if (!strips.mOffsets.empty())
-        throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
-
-    // Concatenate sections in VTK's canonical PolyData cell order (Verts,
-    // Lines, Polys), synthesizing a VTK type id per row so the shared
-    // reconstruction (detail/vtk_cells.hpp) can build the blocks and split
-    // cell_data.
-    std::vector<std::int64_t> conn, offsets, types;
-    vtp_build_types(verts, 0, conn, offsets, types);
-    vtp_build_types(lines, 1, conn, offsets, types);
-    vtp_build_types(polys, 2, conn, offsets, types);
-
-    detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
-    static const std::vector<std::int64_t> kNoFaceOffsets;
-    std::vector<std::int64_t> file_to_global;
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, nullptr, kNoFaceOffsets,
-                              mesh, &file_to_global);
-    detail::regions_from_field_arrays(mesh, field_arrays, &file_to_global, "vtp");
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "PolyData", "VTP");
 }
 
 MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
-    detail::VtuSource source;
-    // See read_vtu_metadata: parse_minimal trims text conversions, but the
-    // saving that matters is skipping the array bodies below.
-    detail::vtu_load(rPath, pugi::parse_minimal, source, "PolyData", "VTP");
-    const vtp_header h = vtp_parse_header(source);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;  // an attribute -- free
-
-    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
-    const int point_nc = points_da ? points_da.attribute("NumberOfComponents").as_int(0) : 0;
-    meta.mPointDim = point_nc > 0 ? static_cast<std::size_t>(point_nc) : 3;
-
-    // PolyData carries no `types` array; cell types follow from each section's
-    // per-cell size, so reading `offsets` alone suffices and the connectivity --
-    // the bulk of the bytes -- is never decoded.
-    const VtpPiece verts = vtp_read_section(h.mPiece.child("Verts"), h.mCtx,
-                                            /*offsets_only=*/true);
-    const VtpPiece lines = vtp_read_section(h.mPiece.child("Lines"), h.mCtx,
-                                            /*offsets_only=*/true);
-    const VtpPiece polys = vtp_read_section(h.mPiece.child("Polys"), h.mCtx,
-                                            /*offsets_only=*/true);
-    if (h.mPiece.child("Strips") && !vtp_read_section(h.mPiece.child("Strips"), h.mCtx,
-                                                      /*offsets_only=*/true)
-                                         .mOffsets.empty())
-        throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
-
-    std::vector<std::int64_t> conn, offsets, types;
-    vtp_build_types(verts, 0, conn, offsets, types);
-    vtp_build_types(lines, 1, conn, offsets, types);
-    vtp_build_types(polys, 2, conn, offsets, types);
-    meta.mCellBlocks = detail::summarize_cells(offsets, types);
-
-    meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
-    meta.mFieldDataNames = vtp_field_data_names(h);
-    {
-        std::vector<std::pair<std::string, std::size_t>> arrays;
-        for (const pugi::xml_node& rNode : {h.mGrid, h.mPiece})
-            for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-                arrays.emplace_back(da.attribute("Name").as_string(),
-                                    da.attribute("NumberOfTuples").as_ullong(0));
-        meta.mRegions = detail::region_summaries_from_field_names(arrays);
-    }
-
-    // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
-    meta.mHasBBox = false;
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "PolyData", "VTP");
 }
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtp_read.cpp =====
 // ===== begin src/cpp/src/formats/vtr.cpp =====
-#include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
 
 // Project includes
 
@@ -130103,133 +130356,6 @@ namespace {
 using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
-
-template <class T>
-bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-struct vtr_header {
-    pugi::xml_node mPiece;
-    detail::VtuContext mCtx;
-    std::array<std::int64_t, 3> mDims{{0, 0, 0}};
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vtr_header vtr_parse_header(const detail::VtuSource& rSource) {
-    const auto& rDoc = rSource.mDoc;
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "RectilinearGrid")
-        throw ReadError("Expected type RectilinearGrid");
-
-    vtr_header h;
-    h.mCtx = detail::vtk_xml_read_context(rSource, "VTR");
-
-    pugi::xml_node grid = root.child("RectilinearGrid");
-    if (!grid)
-        throw ReadError("No RectilinearGrid found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vtr_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("RectilinearGrid has no readable WholeExtent");
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTR not supported by the C++ reader");
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vtr_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTR Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTR WholeExtent is inverted on axis " + std::to_string(k));
-        h.mDims[k] = n;
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mDims[0] + 1) * (h.mDims[1] + 1) * (h.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(h.mDims[0] * h.mDims[1] * h.mDims[2]);
-    return h;
-}
-
-NDArray vtr_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
-                            int& rNumComponents) {
-    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
-}
-
-std::vector<std::string> vtr_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-// One axis's coordinate array, read as Float64 regardless of its on-disk
-// dtype -- the tensor product below needs doubles to combine with the other
-// two axes, and VTK's own coordinate arrays are conventionally Float32/64.
-std::vector<double> vtr_read_axis(const pugi::xml_node& rCoordinates, const char* pName,
-                                  std::int64_t ExpectedCount, const detail::VtuContext& rCtx) {
-    // VTK's writers use arbitrary/generated names: the format defines x/y/z
-    // by position. Retain the historical named-array lookup when available.
-    pugi::xml_node selected;
-    for (pugi::xml_node da : rCoordinates.children("DataArray")) {
-        if (std::string(da.attribute("Name").as_string()) == pName) {
-            selected = da;
-            break;
-        }
-    }
-    if (!selected) {
-        const int axis = pName[0] == 'x' ? 0 : pName[0] == 'y' ? 1 : 2;
-        int index = 0;
-        for (pugi::xml_node da : rCoordinates.children("DataArray"))
-            if (index++ == axis)
-                selected = da;
-        if (index != 3)
-            throw ReadError("VTR Coordinates must have three axis DataArrays");
-    }
-    {
-        int nc = 0;
-        NDArray arr = vtr_read_data_array(selected, rCtx, nc);
-        if (static_cast<std::int64_t>(arr.Size()) != ExpectedCount)
-            throw ReadError(std::string("VTR ") + pName + " has " + std::to_string(arr.Size()) +
-                            " entries, but WholeExtent needs " + std::to_string(ExpectedCount));
-        std::vector<double> out(arr.Size());
-        for (std::size_t i = 0; i < arr.Size(); ++i)
-            out[i] = detail::read_double(arr, i);
-        return out;
-    }
-}
-
-void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
-                  std::int64_t* pOut) {
-    const std::int64_t base = (k * py + j) * px + i;
-    const std::int64_t top = base + px * py;
-    pOut[0] = base;
-    pOut[1] = base + 1;
-    pOut[2] = base + px + 1;
-    pOut[3] = base + px;
-    pOut[4] = top;
-    pOut[5] = top + 1;
-    pOut[6] = top + px + 1;
-    pOut[7] = top + px;
-}
 
 }  // namespace
 
@@ -130348,117 +130474,20 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_default, source, "RectilinearGrid", "VTR");
-    const vtr_header h = vtr_parse_header(source);
-
-    pugi::xml_node coords = h.mPiece.child("Coordinates");
-    if (!coords)
-        throw ReadError("VTR Piece has no Coordinates");
-    const std::vector<double> xs = vtr_read_axis(coords, "x_coordinates", h.mDims[0] + 1, h.mCtx);
-    const std::vector<double> ys = vtr_read_axis(coords, "y_coordinates", h.mDims[1] + 1, h.mCtx);
-    const std::vector<double> zs = vtr_read_axis(coords, "z_coordinates", h.mDims[2] + 1, h.mCtx);
-
-    Mesh mesh;
-    {
-        NDArray pts = NDArray::Uninit(DType::Float64, {h.mNumPoints, std::size_t{3}});
-        double* dst = pts.As<double>();
-        const std::int64_t px = h.mDims[0] + 1, py = h.mDims[1] + 1, pz = h.mDims[2] + 1;
-        std::size_t p = 0;
-        for (std::int64_t k = 0; k < pz; ++k)
-            for (std::int64_t j = 0; j < py; ++j)
-                for (std::int64_t i = 0; i < px; ++i, ++p) {
-                    dst[p * 3 + 0] = xs[static_cast<std::size_t>(i)];
-                    dst[p * 3 + 1] = ys[static_cast<std::size_t>(j)];
-                    dst[p * 3 + 2] = zs[static_cast<std::size_t>(k)];
-                }
-        mesh.AssignPoints(std::move(pts));
-    }
-
-    if (h.mNumCells != 0) {
-        const std::int64_t px = h.mDims[0] + 1;
-        const std::int64_t py = h.mDims[1] + 1;
-        NDArray conn = NDArray::Uninit(DType::Int64, {h.mNumCells, std::size_t{8}});
-        std::int64_t* dst = conn.As<std::int64_t>();
-        std::size_t c = 0;
-        for (std::int64_t k = 0; k < h.mDims[2]; ++k)
-            for (std::int64_t j = 0; j < h.mDims[1]; ++j)
-                for (std::int64_t i = 0; i < h.mDims[0]; ++i, ++c)
-                    vtr_hex_conn(i, j, k, px, py, dst + c * 8);
-        mesh.AddCellBlock("hexahedron", std::move(conn));
-    }
-
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vtr_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTR point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vtr_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTR cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "RectilinearGrid", "VTR");
 }
 
 MeshMetadata read_vtr_metadata(const std::string& rPath, const ReadOptions&) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_minimal, source, "RectilinearGrid", "VTR");
-    const vtr_header h = vtr_parse_header(source);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vtr_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vtr_array_names(h.mPiece, "CellData");
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "RectilinearGrid", "VTR");
 }
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtr.cpp =====
 // ===== begin src/cpp/src/formats/vts.cpp =====
-#include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
 
 // Project includes
 
@@ -130469,107 +130498,6 @@ namespace {
 using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
-
-// Parse a whitespace-separated run of N numbers from an XML attribute.
-template <class T>
-bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-// The framing every StructuredGrid path needs, resolved once so the mesh
-// reader and the metadata reader cannot disagree about which files they
-// accept. `mDims` are CELL counts per axis (as `LatticeSpec` uses them);
-// `mOrigin`/`mSpacing` are unused here (points are explicit) but the type is
-// shared with `.vti` for the writer's `lattice_from_mesh` call.
-struct vts_header {
-    pugi::xml_node mPiece;
-    detail::VtuContext mCtx;
-    std::array<std::int64_t, 3> mDims{{0, 0, 0}};
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vts_header vts_parse_header(const detail::VtuSource& rSource) {
-    const auto& rDoc = rSource.mDoc;
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "StructuredGrid")
-        throw ReadError("Expected type StructuredGrid");
-
-    vts_header h;
-    h.mCtx = detail::vtk_xml_read_context(rSource, "VTS");
-
-    pugi::xml_node grid = root.child("StructuredGrid");
-    if (!grid)
-        throw ReadError("No StructuredGrid found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vts_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("StructuredGrid has no readable WholeExtent");
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTS not supported by the C++ reader");
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vts_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTS Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTS WholeExtent is inverted on axis " + std::to_string(k));
-        h.mDims[k] = n;
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mDims[0] + 1) * (h.mDims[1] + 1) * (h.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(h.mDims[0] * h.mDims[1] * h.mDims[2]);
-    return h;
-}
-
-NDArray vts_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
-                            int& rNumComponents) {
-    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
-}
-
-std::vector<std::string> vts_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-// hexahedron connectivity for cell (i, j, k), the same index formula
-// `detail/grid_lattice.hpp` uses -- points come from the file, not from a
-// recomputed origin/spacing, but the CONNECTIVITY formula is identical
-// regardless of where the points came from.
-void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
-                  std::int64_t* pOut) {
-    const std::int64_t base = (k * py + j) * px + i;
-    const std::int64_t top = base + px * py;
-    pOut[0] = base;
-    pOut[1] = base + 1;
-    pOut[2] = base + px + 1;
-    pOut[3] = base + px;
-    pOut[4] = top;
-    pOut[5] = top + 1;
-    pOut[6] = top + px + 1;
-    pOut[7] = top + px;
-}
 
 }  // namespace
 
@@ -130693,94 +130621,11 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_default, source, "StructuredGrid", "VTS");
-    const vts_header h = vts_parse_header(source);
-
-    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
-    if (!points_da)
-        throw ReadError("VTS Piece has no Points/DataArray");
-    int pnc = 0;
-    NDArray pts = vts_read_data_array(points_da, h.mCtx, pnc);
-    if (pnc > 1)
-        pts.Reshape({pts.Size() / static_cast<std::size_t>(pnc), static_cast<std::size_t>(pnc)});
-    if (detail::rows(pts) != h.mNumPoints)
-        throw ReadError("VTS Points has " + std::to_string(detail::rows(pts)) +
-                        " rows, but WholeExtent has " + std::to_string(h.mNumPoints) + " points");
-
-    Mesh mesh;
-    mesh.AssignPoints(std::move(pts));
-
-    if (h.mNumCells != 0) {
-        const std::int64_t px = h.mDims[0] + 1;
-        const std::int64_t py = h.mDims[1] + 1;
-        NDArray conn = NDArray::Uninit(DType::Int64, {h.mNumCells, std::size_t{8}});
-        std::int64_t* dst = conn.As<std::int64_t>();
-        std::size_t c = 0;
-        for (std::int64_t k = 0; k < h.mDims[2]; ++k)
-            for (std::int64_t j = 0; j < h.mDims[1]; ++j)
-                for (std::int64_t i = 0; i < h.mDims[0]; ++i, ++c)
-                    vts_hex_conn(i, j, k, px, py, dst + c * 8);
-        mesh.AddCellBlock("hexahedron", std::move(conn));
-    }
-
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vts_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTS point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vts_read_data_array(da, h.mCtx, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTS cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "StructuredGrid", "VTS");
 }
 
 MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
-    detail::VtuSource source;
-    detail::vtu_load(rPath, pugi::parse_minimal, source, "StructuredGrid", "VTS");
-    const vts_header h = vts_parse_header(source);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vts_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vts_array_names(h.mPiece, "CellData");
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "StructuredGrid", "VTS");
 }
 
 }  // namespace meshioplusplus

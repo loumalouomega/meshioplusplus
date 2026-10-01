@@ -251,7 +251,8 @@ def _register_conversion(server: FastMCP) -> None:
         2.2/4.0/4.1, including periodic links, use the native reader. Gmsh output
         is 4.1, or 2.2 via gmsh22; both preserve periodic links. Serial VTK XML
         inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64 arrays natively;
-        VTP/VTS/VTR/VTI remain single-piece with inline output."""
+        Multiple pieces concatenate without welding; VTP/VTS/VTR/VTI retain
+        inline output. Legacy VTK structured datasets also read natively."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,

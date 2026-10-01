@@ -90,6 +90,30 @@ TEST(CApi, VersionAndBackend) {
     EXPECT_TRUE(backend == "meshio" || backend == "native" || backend == "kratos") << backend;
 }
 
+TEST(CApi, VtkPiecesAndLegacyStructuredWithoutPython) {
+    const std::string xml =
+        "<VTKFile type='ImageData'><ImageData WholeExtent='0 2 0 1 0 1'>"
+        "<Piece Extent='0 1 0 1 0 1'/><Piece Extent='1 2 0 1 0 1'/></ImageData></VTKFile>";
+    const std::string legacy =
+        "# vtk DataFile Version 4.2\nindependent\nASCII\n"
+        "DATASET STRUCTURED_POINTS\nDIMENSIONS 3 2 2\nORIGIN 0 0 0\nSPACING 1 1 1\n";
+    for (const std::string format : {"vti", "vtk"}) {
+        const auto path = mt::temp_path("." + format);
+        {
+            auto out = meshioplusplus::detail::make_classic_ofstream(path);
+            out << (format == "vti" ? xml : legacy);
+        }
+        mio_mesh* mesh = mio_read(path.c_str(), format.c_str());
+        ASSERT_NE(mesh, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(mesh), format == "vti" ? 16 : 12);
+        const auto target = mt::temp_path(".vtu");
+        EXPECT_EQ(mio_write(target.c_str(), mesh, "vtu"), MIO_OK) << mio_last_error();
+        mio_mesh_free(mesh);
+        std::remove(path.c_str());
+        std::remove(target.c_str());
+    }
+}
+
 TEST(CApi, AppendedVtkXmlReadsWithoutPython) {
     for (const std::string format : {"vtp", "vts", "vtr", "vti"}) {
         const bool surface = format == "vtp";

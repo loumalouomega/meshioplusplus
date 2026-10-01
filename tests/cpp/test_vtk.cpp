@@ -55,9 +55,8 @@ TEST(Vtk, Hybrid) {
     rt(mt::tri_quad_mesh(), false, true);
 }
 
-TEST(Vtk, ReadRejectsStructuredGrid) {
-    // The C++ VTK reader only handles UNSTRUCTURED_GRID; a legacy header
-    // declaring another dataset type must raise rather than mis-read.
+TEST(Vtk, ReadRejectsStructuredGridWithoutDimensions) {
+    // Recognizing DATASET alone is not enough: geometry is required.
     std::string path = mt::temp_path(".vtk");
     {
         std::ofstream f(path);

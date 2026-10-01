@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -16,6 +17,7 @@
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "region_field_data.hpp"
 #include "text_cursor.hpp"
 #include "vtk_xml_read.hpp"
@@ -30,14 +32,26 @@ std::size_t vxp_product(std::size_t a, std::size_t b) {
 }
 
 std::size_t vxp_sum(std::size_t a, std::size_t b) {
-    if (b > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) - a)
+    const auto max = static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max());
+    if (a > max || b > max - a)
         throw ReadError("VTK: piece counts overflow");
     return a + b;
 }
 
+std::size_t vxp_count(pugi::xml_node node, const char* pName) {
+    const std::string text = node.attribute(pName).as_string();
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw ReadError(std::string("VTK: invalid ") + pName);
+    try {
+        return vxp_sum(0, std::stoull(text));
+    } catch (const std::exception&) {
+        throw ReadError(std::string("VTK: invalid ") + pName);
+    }
+}
+
 template <class T, std::size_t N>
-std::array<T, N> vxp_attribute(pugi::xml_node node, const char* name,
-                               std::array<T, N> fallback, bool required = false) {
+std::array<T, N> vxp_attribute(pugi::xml_node node, const char* name, std::array<T, N> fallback,
+                               bool required = false) {
     const auto attr = node.attribute(name);
     if (!attr) {
         if (required)
@@ -55,6 +69,12 @@ std::array<T, N> vxp_attribute(pugi::xml_node node, const char* name,
 }
 
 std::array<std::int64_t, 3> vxp_dimensions(const std::array<std::int64_t, 6>& rExtent) {
+    bool empty = true;
+    for (std::size_t k = 0; k < 3; ++k)
+        empty = empty && rExtent[2 * k] != std::numeric_limits<std::int64_t>::min() &&
+                rExtent[2 * k + 1] == rExtent[2 * k] - 1;
+    if (empty)
+        return {{0, 0, 0}};
     std::array<std::int64_t, 3> dims;
     for (std::size_t k = 0; k < 3; ++k) {
         const auto lo = rExtent[2 * k], hi = rExtent[2 * k + 1];
@@ -112,25 +132,20 @@ VxpHeader vxp_header(const VtuSource& rSource, const char* pType, const char* pF
         VxpPiece piece;
         piece.mNode = node;
         if (h.mPoly) {
-            const std::string count = node.attribute("NumberOfPoints").as_string();
-            if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos)
-                throw ReadError("VTP: invalid NumberOfPoints");
-            try {
-                piece.mNumPoints = vxp_sum(0, std::stoull(count));
-            } catch (const std::exception&) {
-                throw ReadError("VTP: invalid NumberOfPoints");
-            }
+            piece.mNumPoints = vxp_count(node, "NumberOfPoints");
         } else {
             piece.mExtent = vxp_attribute<std::int64_t, 6>(node, "Extent", whole, many);
             piece.mDims = vxp_dimensions(piece.mExtent);
-            for (std::size_t k = 0; k < 3; ++k)
+            for (std::size_t k = 0; piece.mDims[0] != 0 && k < 3; ++k)
                 if (piece.mExtent[2 * k] < whole[2 * k] ||
                     piece.mExtent[2 * k + 1] > whole[2 * k + 1])
                     throw ReadError("VTK: Piece Extent is outside WholeExtent");
-            piece.mNumPoints = vxp_product(vxp_product(piece.mDims[0], piece.mDims[1]),
-                                           piece.mDims[2]);
-            piece.mNumCells = vxp_product(vxp_product(piece.mDims[0] - 1, piece.mDims[1] - 1),
-                                          piece.mDims[2] - 1);
+            piece.mNumPoints =
+                vxp_product(vxp_product(piece.mDims[0], piece.mDims[1]), piece.mDims[2]);
+            piece.mNumCells = piece.mNumPoints == 0
+                                  ? 0
+                                  : vxp_product(vxp_product(piece.mDims[0] - 1, piece.mDims[1] - 1),
+                                                piece.mDims[2] - 1);
         }
         h.mPieces.push_back(piece);
     }
@@ -178,13 +193,18 @@ NDArray vxp_concat(const std::vector<NDArray>& rParts) {
 }
 
 void vxp_poly_cells(const VxpPiece& rPiece, const VtuContext& rCtx,
-                     std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
-                     std::vector<std::int64_t>& rTypes, bool Metadata) {
+                    std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                    std::vector<std::int64_t>& rTypes, bool Metadata) {
     const std::array<const char*, 4> tags{{"Verts", "Lines", "Polys", "Strips"}};
+    const std::array<const char*, 4> counts{
+        {"NumberOfVerts", "NumberOfLines", "NumberOfPolys", "NumberOfStrips"}};
     for (std::size_t kind = 0; kind < tags.size(); ++kind) {
         const auto section = rPiece.mNode.child(tags[kind]);
-        if (!section)
+        if (!section) {
+            if (rPiece.mNode.attribute(counts[kind]) && vxp_count(rPiece.mNode, counts[kind]))
+                throw ReadError("VTP: missing cell section with nonzero count");
             continue;
+        }
         std::vector<std::int64_t> conn, offsets;
         for (const auto da : section.children("DataArray")) {
             const std::string name = da.attribute("Name").as_string();
@@ -197,6 +217,9 @@ void vxp_poly_cells(const VxpPiece& rPiece, const VtuContext& rCtx,
             else
                 conn = std::move(values);
         }
+        if (rPiece.mNode.attribute(counts[kind]) &&
+            vxp_count(rPiece.mNode, counts[kind]) != offsets.size())
+            throw ReadError("VTP: cell count differs from section offsets");
         std::int64_t prev = 0;
         const auto base = Metadata ? (rOffsets.empty() ? 0 : rOffsets.back())
                                    : static_cast<std::int64_t>(rConn.size());
@@ -226,8 +249,8 @@ void vxp_poly_cells(const VxpPiece& rPiece, const VtuContext& rCtx,
 }
 
 std::vector<std::pair<std::string, NDArray>> vxp_fields(pugi::xml_node holder,
-                                                       const VtuContext& rCtx,
-                                                       const ReadOptions& rOpts) {
+                                                        const VtuContext& rCtx,
+                                                        const ReadOptions& rOpts) {
     std::vector<std::pair<std::string, NDArray>> out;
     for (const auto da : holder.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
@@ -251,27 +274,38 @@ std::vector<std::pair<std::string, NDArray>> vxp_fields(pugi::xml_node holder,
 using VxpData = std::map<std::string, std::vector<NDArray>>;
 
 void vxp_data(const VxpPiece& rPiece, const VtuContext& rCtx, const ReadOptions& rOpts,
-               const char* pSection, std::size_t count, VxpData& rOut) {
+              const char* pSection, std::size_t count, VxpData& rOut) {
     if (!rOpts.WantsAnyData())
         return;
+    std::unordered_set<std::string> seen;
     for (const auto da : rPiece.mNode.child(pSection).children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
-        if (rOpts.WantsArray(name))
+        if (rOpts.WantsArray(name)) {
+            if (!seen.insert(name).second)
+                throw ReadError("VTK: duplicate data array '" + name + "' in one piece");
             rOut[name].push_back(vxp_array(da, rCtx, count));
+        }
     }
 }
 
 std::vector<std::string> vxp_names(const VxpHeader& rHeader, const char* pSection) {
     // Metadata follows the same cross-piece dtype/component compatibility rule.
     std::map<std::string, std::vector<std::pair<std::string, int>>> names;
-    for (const auto& piece : rHeader.mPieces)
-        for (const auto da : piece.mNode.child(pSection).children("DataArray"))
+    for (const auto& piece : rHeader.mPieces) {
+        std::unordered_set<std::string> seen;
+        for (const auto da : piece.mNode.child(pSection).children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (!seen.insert(name).second)
+                throw ReadError("VTK: duplicate data array '" + name + "' in one piece");
             names[da.attribute("Name").as_string()].emplace_back(
                 da.attribute("type").as_string(), da.attribute("NumberOfComponents").as_int(1));
+        }
+    }
     std::vector<std::string> out;
     for (const auto& [name, parts] : names)
         if (parts.size() == rHeader.mPieces.size() &&
-            std::all_of(parts.begin(), parts.end(), [&](const auto& part) { return part == parts[0]; }))
+            std::all_of(parts.begin(), parts.end(),
+                        [&](const auto& part) { return part == parts[0]; }))
             out.push_back(name);
     return out;
 }
@@ -279,9 +313,8 @@ std::vector<std::string> vxp_names(const VxpHeader& rHeader, const char* pSectio
 }  // namespace
 
 void vtk_structured_cells(const std::array<std::int64_t, 3>& rDims,
-                           std::vector<std::int64_t>& rConn,
-                           std::vector<std::int64_t>& rOffsets,
-                           std::vector<std::int64_t>& rTypes, bool VolumeOnly) {
+                          std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                          std::vector<std::int64_t>& rTypes, bool VolumeOnly) {
     std::vector<std::size_t> axes;
     std::array<std::int64_t, 3> cells;
     for (std::size_t k = 0; k < 3; ++k) {
@@ -293,28 +326,35 @@ void vtk_structured_cells(const std::array<std::int64_t, 3>& rDims,
     }
     if (VolumeOnly && axes.size() != 3)
         return;
-    const std::array<std::int64_t, 3> stride{{1, rDims[0],
-        static_cast<std::int64_t>(vxp_product(rDims[0], rDims[1]))}};
+    const std::array<std::int64_t, 3> stride{
+        {1, rDims[0], static_cast<std::int64_t>(vxp_product(rDims[0], rDims[1]))}};
     const auto count = vxp_product(vxp_product(cells[0], cells[1]), cells[2]);
     const std::size_t width = std::size_t{1} << axes.size();
-    vxp_product(count, width);
-    for (std::int64_t k = 0; k < cells[2]; ++k)
-        for (std::int64_t j = 0; j < cells[1]; ++j)
-            for (std::int64_t i = 0; i < cells[0]; ++i) {
-                const auto base = i + j * stride[1] + k * stride[2];
-                const auto a = axes.empty() ? 0 : stride[axes[0]];
-                const auto b = axes.size() < 2 ? 0 : stride[axes[1]];
-                const auto c = axes.size() < 3 ? 0 : stride[axes[2]];
-                const std::array<std::int64_t, 8> nodes{{base, base + a, base + a + b, base + b,
-                    base + c, base + a + c, base + a + b + c, base + b + c}};
-                rConn.insert(rConn.end(), nodes.begin(), nodes.begin() + width);
-                rOffsets.push_back(rConn.size());
-                rTypes.push_back(axes.empty() ? 1 : axes.size() == 1 ? 3 : axes.size() == 2 ? 9 : 12);
-            }
+    const auto conn_base = rConn.size(), cell_base = rTypes.size();
+    rConn.resize(vxp_sum(conn_base, vxp_product(count, width)));
+    rOffsets.resize(vxp_sum(cell_base, count));
+    rTypes.resize(vxp_sum(cell_base, count));
+    parallel_for_bw(count, [&](std::size_t row) {
+        const auto i = static_cast<std::int64_t>(row % cells[0]);
+        const auto j = static_cast<std::int64_t>((row / cells[0]) % cells[1]);
+        const auto k = static_cast<std::int64_t>(row / cells[0] / cells[1]);
+        const auto base = i + j * stride[1] + k * stride[2];
+        const auto a = axes.empty() ? 0 : stride[axes[0]];
+        const auto b = axes.size() < 2 ? 0 : stride[axes[1]];
+        const auto c = axes.size() < 3 ? 0 : stride[axes[2]];
+        const std::array<std::int64_t, 8> nodes{{base, base + a, base + a + b, base + b, base + c,
+                                                 base + a + c, base + a + b + c, base + b + c}};
+        std::copy_n(nodes.begin(), width, rConn.begin() + conn_base + row * width);
+        rOffsets[cell_base + row] = conn_base + (row + 1) * width;
+        rTypes[cell_base + row] = axes.empty()       ? 1
+                                  : axes.size() == 1 ? 3
+                                  : axes.size() == 2 ? 9
+                                                     : 12;
+    });
 }
 
-Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts,
-                         const char* pType, const char* pFormat) {
+Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts, const char* pType,
+                         const char* pFormat) {
     VtuSource source;
     vtu_load(rPath, pugi::parse_default, source, pType, pFormat);
     auto h = vxp_header(source, pType, pFormat);
@@ -335,6 +375,8 @@ Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts,
                 pts = vxp_array(da, h.mCtx, piece.mNumPoints, 3);
             if (pts.Shape().size() != 2 || pts.Shape()[1] != 3)
                 throw ReadError("VTK: points must have three components");
+        } else if (piece.mNumPoints == 0) {
+            pts = NDArray(DType::Float64, {0, 3});
         } else {
             std::array<std::vector<double>, 3> coordinates;
             if (!h.mImage) {
@@ -343,7 +385,8 @@ Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts,
                     arrays.push_back(da);
                 if (arrays.size() != 3)
                     throw ReadError("VTR Coordinates must have three axis DataArrays");
-                const std::array<const char*, 3> names{{"x_coordinates", "y_coordinates", "z_coordinates"}};
+                const std::array<const char*, 3> names{
+                    {"x_coordinates", "y_coordinates", "z_coordinates"}};
                 for (std::size_t axis = 0; axis < 3; ++axis) {
                     auto selected = arrays[axis];
                     for (const auto da : arrays)
@@ -358,22 +401,23 @@ Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts,
             }
             pts = NDArray::Uninit(DType::Float64, {piece.mNumPoints, 3});
             auto dst = pts.As<double>();
-            std::size_t row = 0;
-            for (std::int64_t k = 0; k < piece.mDims[2]; ++k)
-                for (std::int64_t j = 0; j < piece.mDims[1]; ++j)
-                    for (std::int64_t i = 0; i < piece.mDims[0]; ++i, ++row) {
-                        const std::array<std::int64_t, 3> index{{i, j, k}};
-                        for (std::size_t axis = 0; axis < 3; ++axis)
-                            dst[row * 3 + axis] = h.mImage
-                                ? (h.mOrigin[axis] + static_cast<double>(piece.mExtent[2 * axis]) * h.mSpacing[axis]) +
-                                    static_cast<double>(index[axis]) * h.mSpacing[axis]
-                                : coordinates[axis][index[axis]];
-                    }
+            parallel_for_bw(piece.mNumPoints, [&](std::size_t row) {
+                const auto i = static_cast<std::int64_t>(row % piece.mDims[0]);
+                const auto j = static_cast<std::int64_t>((row / piece.mDims[0]) % piece.mDims[1]);
+                const auto k = static_cast<std::int64_t>(row / piece.mDims[0] / piece.mDims[1]);
+                const std::array<std::int64_t, 3> index{{i, j, k}};
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    dst[row * 3 + axis] =
+                        h.mImage ? (h.mOrigin[axis] + static_cast<double>(piece.mExtent[2 * axis]) *
+                                                          h.mSpacing[axis]) +
+                                       static_cast<double>(index[axis]) * h.mSpacing[axis]
+                                 : coordinates[axis][index[axis]];
+            });
         }
         std::vector<std::int64_t> pc, po, pt;
         if (h.mPoly)
             vxp_poly_cells(piece, h.mCtx, pc, po, pt, false);
-        else
+        else if (piece.mNumPoints)
             vtk_structured_cells(piece.mDims, pc, po, pt, true);
         piece.mNumCells = pt.size();
         vxp_data(piece, h.mCtx, rOpts, "PointData", piece.mNumPoints, point_data);
@@ -422,15 +466,21 @@ Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts,
         points.push_back(std::move(pts));
     }
     Mesh mesh;
+    const auto first =
+        std::find_if(points.begin(), points.end(), [](const auto& arr) { return arr.Size() != 0; });
+    if (first != points.end())
+        for (std::size_t k = 0; k < points.size(); ++k)
+            if (points[k].Size() == 0 && !h.mPieces[k].mNode.child("Points").child("DataArray"))
+                points[k] = NDArray(first->Dtype(), {0, 3});
     mesh.AssignPoints(vxp_concat(points));
     std::unordered_map<std::string, NDArray> raw_data;
     auto assemble = [&](VxpData& data, bool point) {
         for (auto& [name, parts] : data) {
             if (parts.size() != h.mPieces.size() ||
-                !std::all_of(parts.begin(), parts.end(), [&](const auto& arr) {
-                    return vxp_same_shape(parts.front(), arr);
-                })) {
-                log::warn("{}: data '{}' is missing from, or differs between, pieces; dropped", pFormat, name);
+                !std::all_of(parts.begin(), parts.end(),
+                             [&](const auto& arr) { return vxp_same_shape(parts.front(), arr); })) {
+                log::warn("{}: data '{}' is missing from, or differs between, pieces; dropped",
+                          pFormat, name);
                 continue;
             }
             auto arr = vxp_concat(parts);
@@ -475,19 +525,25 @@ MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType
             if (meta.mCellBlocks.empty())
                 meta.mCellBlocks.push_back(info);
             else
-                meta.mCellBlocks[0].mNumCells = vxp_sum(meta.mCellBlocks[0].mNumCells, piece.mNumCells);
+                meta.mCellBlocks[0].mNumCells =
+                    vxp_sum(meta.mCellBlocks[0].mNumCells, piece.mNumCells);
         }
-        if (h.mImage)
+        if (h.mImage && piece.mNumPoints)
             for (std::size_t k = 0; k < 3; ++k) {
-                const double a = h.mOrigin[k] + static_cast<double>(piece.mExtent[2 * k]) * h.mSpacing[k];
+                const double a =
+                    h.mOrigin[k] + static_cast<double>(piece.mExtent[2 * k]) * h.mSpacing[k];
                 const double b = a + static_cast<double>(piece.mDims[k] - 1) * h.mSpacing[k];
-                const bool first = &piece == &h.mPieces.front();
-                meta.mBBoxMin[k] = first ? std::min(a, b) : std::min(meta.mBBoxMin[k], std::min(a, b));
-                meta.mBBoxMax[k] = first ? std::max(a, b) : std::max(meta.mBBoxMax[k], std::max(a, b));
+                const bool first = meta.mNumPoints == piece.mNumPoints;
+                meta.mBBoxMin[k] =
+                    first ? std::min(a, b) : std::min(meta.mBBoxMin[k], std::min(a, b));
+                meta.mBBoxMax[k] =
+                    first ? std::max(a, b) : std::max(meta.mBBoxMax[k], std::max(a, b));
             }
     }
     if (h.mPoly)
         meta.mCellBlocks = summarize_cells(offsets, types);
+    if (meta.mNumPoints == 0)
+        meta.mHasBBox = false;
     meta.mPointDataNames = vxp_names(h, "PointData");
     meta.mCellDataNames = vxp_names(h, "CellData");
     std::vector<pugi::xml_node> holders{h.mGrid};
@@ -499,7 +555,8 @@ MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType
             const std::string name = da.attribute("Name").as_string();
             if (is_region_field_name(name)) {
                 if (name.rfind("region:", 0) == 0)
-                    region_counts[name] = vxp_sum(region_counts[name], da.attribute("NumberOfTuples").as_ullong());
+                    region_counts[name] =
+                        vxp_sum(region_counts[name], da.attribute("NumberOfTuples").as_ullong());
             } else {
                 try {
                     dtype_from_vtu(da.attribute("type").as_string());
@@ -508,7 +565,8 @@ MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType
                 }
             }
         }
-    std::vector<std::pair<std::string, std::size_t>> regions(region_counts.begin(), region_counts.end());
+    std::vector<std::pair<std::string, std::size_t>> regions(region_counts.begin(),
+                                                             region_counts.end());
     meta.mRegions = region_summaries_from_field_names(regions);
     auto& names = meta.mFieldDataNames;
     std::sort(names.begin(), names.end());

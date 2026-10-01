@@ -335,7 +335,7 @@ meshioplusplus.vtu.write(filename, mesh,
 
 ### VTI (`.vti`)
 
-Serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support appended raw/base64 arrays in the native core and Python reference, including UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI still require a single piece and write inline arrays; only VTU exposes appended output. See the individual format pages for codec and structured-grid restrictions.
+Serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces and appended raw/base64 arrays in the native core and Python reference, including UInt32/UInt64 headers and either byte order. Pieces concatenate in document order without welding, preserving ghost arrays; compatible point/cell arrays present in every piece survive, otherwise they are dropped with a warning. VTP/VTS/VTR/VTI write inline arrays; only VTU exposes appended output. Native legacy `vtk` reads support structured points, structured grids and rectilinear grids, including lower-dimensional line/quad grids, in ASCII and big-endian binary. See the individual format pages for codec and structured-grid restrictions.
 
 ```python
 meshioplusplus.vti.write(filename, mesh,   # mesh must be a dense lattice

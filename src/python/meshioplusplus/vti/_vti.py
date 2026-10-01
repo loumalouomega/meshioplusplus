@@ -27,8 +27,9 @@ from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
+from .._vtk_xml_read import field_arrays
 from .._vtk_xml_read import load as _load_xml
-from .._vtk_xml_read import field_arrays, piece_extent, read_pieces
+from .._vtk_xml_read import piece_extent, read_pieces
 from ..vtu._vtu import (
     _COMPRESSION_TO_ATTR,
     _chunk_it,
@@ -42,9 +43,12 @@ def _parse_n(text, count, dtype):
     if text is None:
         return None
     parts = text.replace(",", " ").split()
-    if len(parts) < count:
-        return None
-    return np.array([dtype(x) for x in parts[:count]])
+    if len(parts) != count:
+        raise ReadError("VTK: malformed geometry attribute")
+    try:
+        return np.array([dtype(x) for x in parts])
+    except ValueError as exc:
+        raise ReadError("VTK: malformed geometry attribute") from exc
 
 
 def read(filename):
@@ -65,13 +69,17 @@ def _read_piece(grid, piece, reader):
         raise ReadError("VTI with a non-identity Direction is not supported")
 
     dims = np.array([whole[2 * k + 1] - whole[2 * k] for k in range(3)], dtype=np.int64)
-    if np.any(dims < 0):
+    if np.any(dims < 0) and not np.all(dims == -1):
         raise ReadError("VTI WholeExtent is inverted")
     # A point at extent index i sits at Origin + i * Spacing, so an extent that
     # does not start at zero translates the mesh's own lo corner.
     lo = np.array([origin[k] + whole[2 * k] * spacing[k] for k in range(3)])
 
     points, conn = _lattice_py(dims, lo, spacing)
+    if conn is None:
+        axes = [lo[k] + np.arange(int(dims[k]) + 1) * spacing[k] for k in range(3)]
+        gz, gy, gx = np.meshgrid(axes[2], axes[1], axes[0], indexing="ij")
+        points = np.stack([gx.reshape(-1), gy.reshape(-1), gz.reshape(-1)], axis=1)
     cells = [] if conn is None else [("hexahedron", conn)]
     num_points = points.shape[0]
     num_cells = 0 if conn is None else conn.shape[0]
@@ -88,7 +96,7 @@ def _read_piece(grid, piece, reader):
         for da in node.findall("DataArray"):
             name = da.get("Name")
             arr = reader.read_data(da)
-            if arr.size and arr.shape[0] != expected:
+            if arr.shape[0] != expected:
                 raise ReadError(
                     f"VTI {what} array '{name}' has {arr.shape[0]} rows, but the "
                     f"extent has {expected} {what}s"
@@ -100,8 +108,13 @@ def _read_piece(grid, piece, reader):
             else:
                 sink[name] = arr
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data,
-                field_data=field_arrays(piece, reader, "VTI"))
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_arrays(piece, reader, "VTI"),
+    )
 
 
 def _encode_binary(data, compression, header_type):

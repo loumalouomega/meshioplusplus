@@ -48,12 +48,13 @@
  * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
  * codec machinery `.vti`/`.vtu` already use.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
- * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
- * build lacks. `header_type="UInt64"` is honoured on read; the writer always
- * emits the default `UInt32`.
+ * Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order
+ * are supported. Multiple pieces and partial extents concatenate without
+ * welding, with each piece's extent sizing its geometry and arrays. lzma
+ * and unavailable codecs are refused. Writers remain inline; degenerate
+ * extents remain points-only, as in `.vti`.
  */
 
 // System includes
