@@ -8,9 +8,9 @@ from . import (
     _binary,
     _check,
     _clean,
-    _contact_pairs,
     _compress,
     _conservative_interpolate,
+    _contact_pairs,
     _convert,
     _convert_cells,
     _crop,
@@ -52,9 +52,9 @@ from . import (
     _shrinkwrap,
     _slice,
     _smooth,
-    _split_interface,
     _sobolev,
     _split,
+    _split_interface,
     _stats,
     _subdivide,
     _tessellate,
@@ -141,7 +141,8 @@ def main(argv=None):
     parser.set_defaults(func=_feature_edges.feature_edges_cmd)
 
     parser = subparsers.add_parser(
-        "region-adjacency", help="Write facets shared by selected regions or cell blocks"
+        "region-adjacency",
+        help="Write facets shared by selected regions or cell blocks",
     )
     _region_adjacency.add_args(parser)
     parser.set_defaults(func=_region_adjacency.region_adjacency_cmd)

@@ -119,7 +119,11 @@ def test_interface_operations_in_single_mesh_pipeline(tmp_path):
 
     cases = [
         ({"Op": "RegionAdjacency", "Regions": ["upper", "lower"]}, "NumFacets", 1),
-        ({"Op": "FindInterface", "RegionA": "upper", "RegionB": "lower"}, "NumPairs", 1),
+        (
+            {"Op": "FindInterface", "RegionA": "upper", "RegionB": "lower"},
+            "NumPairs",
+            1,
+        ),
         (
             {"Op": "SplitInterface", "Region": "cut", "AddCohesive": True},
             "NumCohesiveCells",

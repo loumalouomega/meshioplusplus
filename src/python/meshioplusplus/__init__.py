@@ -144,7 +144,12 @@ from ._helpers import (
     write_points_cells,
 )
 from ._hessian import hessian
-from ._interfaces import contact_pairs, find_interface, region_adjacency, split_interface
+from ._interfaces import (
+    contact_pairs,
+    find_interface,
+    region_adjacency,
+    split_interface,
+)
 from ._interop import (
     from_arrow,
     from_pyvista,

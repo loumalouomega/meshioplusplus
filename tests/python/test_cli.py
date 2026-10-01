@@ -107,10 +107,14 @@ def test_interface_python_cli_commands(tmp_path):
 def test_native_interface_cli_commands_when_available(tmp_path):
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     configured = os.environ.get("MESHIOPLUSPLUS_NATIVE_CLI")
-    candidates = [configured] if configured else glob.glob(
-        os.path.join(root, "build", "*", "meshioplusplus")
+    candidates = (
+        [configured]
+        if configured
+        else glob.glob(os.path.join(root, "build", "*", "meshioplusplus"))
     )
-    candidates = [p for p in candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)]
+    candidates = [
+        p for p in candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)
+    ]
     if not candidates:
         pytest.skip("native CLI is not built")
     native = max(candidates, key=os.path.getmtime)
