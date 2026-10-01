@@ -36,6 +36,7 @@
 // Project includes
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -44,6 +45,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -266,6 +268,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FeatureEdges",
          {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
+        {"RegionAdjacency", {"Regions"}},
+        {"FindInterface",
+         {"RegionA", "RegionB", "Mode", "Master", "GapTolerance", "AngleTolerance",
+          "OverlapTolerance"}},
+        {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
@@ -796,6 +803,73 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         Mesh out = edit_regions(mesh, {edit});
         pipe_push_step(rReport, rStep, {{"NumRegions", static_cast<double>(out.NumRegions())}});
         return out;
+    }
+    if (op == "RegionAdjacency") {
+        std::vector<RegionSelector> selectors;
+        for (const std::string& name : pipe_svec(rStep, "Regions")) {
+            RegionSelector selector;
+            selector.mName = name;
+            selector.mKind = static_cast<std::int32_t>(RegionKind::Cell);
+            selectors.push_back(std::move(selector));
+        }
+        Mesh out = region_adjacency(mesh, selectors);
+        std::int64_t facets = 0;
+        double measure = 0.0;
+        for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+            facets += static_cast<std::int64_t>(out.Cells(b).NumCells());
+            const NDArray& values = out.CellData("interface:measure", b);
+            for (std::size_t i = 0; i < values.Size(); ++i)
+                measure += detail::read_double(values, i);
+        }
+        pipe_push_step(rReport, rStep,
+                       {{"NumFacets", static_cast<double>(facets)}, {"Measure", measure}});
+        return out;
+    }
+    if (op == "FindInterface") {
+        RegionSelector region_a, region_b;
+        region_a.mName = pipe_text(rStep, "RegionA", "");
+        region_a.mKind = static_cast<std::int32_t>(RegionKind::Cell);
+        region_b.mName = pipe_text(rStep, "RegionB", "");
+        region_b.mKind = static_cast<std::int32_t>(RegionKind::Cell);
+        FindInterfaceOptions options;
+        const std::string mode = pipe_text(rStep, "Mode", "conforming");
+        if (mode == "conforming")
+            options.mMode = InterfaceMode::Conforming;
+        else if (mode == "proximity")
+            options.mMode = InterfaceMode::Proximity;
+        else
+            throw std::invalid_argument(
+                "meshio++: pipeline: FindInterface Mode must be conforming or proximity");
+        const std::string master = pipe_text(rStep, "Master", "a");
+        if (master == "a")
+            options.mMaster = InterfaceMaster::A;
+        else if (master == "b")
+            options.mMaster = InterfaceMaster::B;
+        else
+            throw std::invalid_argument("meshio++: pipeline: FindInterface Master must be a or b");
+        options.mGapTolerance = pipe_number(rStep, "GapTolerance", 0.0);
+        options.mAngleTolerance = pipe_number(rStep, "AngleTolerance", 30.0);
+        options.mOverlapTolerance = pipe_number(rStep, "OverlapTolerance", 0.0);
+        FindInterfaceResult result = find_interface(mesh, region_a, region_b, options);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPairs", static_cast<double>(result.mReport.mNumPairs)},
+                        {"Area", result.mReport.mArea},
+                        {"MaxGap", result.mReport.mMaxGap},
+                        {"UnmatchedA", static_cast<double>(result.mReport.mUnmatchedA)},
+                        {"UnmatchedB", static_cast<double>(result.mReport.mUnmatchedB)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "SplitInterface") {
+        RegionSelector side;
+        side.mName = pipe_text(rStep, "Region", "");
+        side.mKind = static_cast<std::int32_t>(RegionKind::Side);
+        SplitInterfaceOptions options;
+        options.mAddCohesive = pipe_flag(rStep, "AddCohesive", false);
+        SplitInterfaceResult result = split_interface(mesh, side, options);
+        pipe_push_step(rReport, rStep,
+                       {{"NumDuplicatedPoints", static_cast<double>(result.mNumDuplicatedPoints)},
+                        {"NumCohesiveCells", static_cast<double>(result.mNumCohesiveCells)}});
+        return std::move(result.mMesh);
     }
     if (op == "Normals") {
         // An absent SplitAngle means one smooth normal per point; a number is

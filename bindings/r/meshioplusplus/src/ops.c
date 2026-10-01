@@ -11,6 +11,7 @@
 
 static SEXP quality_list(const mio_surface_quality *q); /* defined below; used earlier */
 
+#include <limits.h>
 #include <string.h>
 
 /* --- surface / skin / quality ------------------------------------------- */
@@ -446,6 +447,180 @@ SEXP R_mio_feature_edges(SEXP mesh, SEXP feature_angle, SEXP feature, SEXP bound
     SEXP res = PROTECT(mio_r_named_list(5, names, values));
     UNPROTECT(6);
     return res;
+}
+
+SEXP R_mio_region_adjacency(SEXP mesh, SEXP regions) {
+    R_xlen_t n = 0;
+    mio_region_selector *selectors = NULL;
+    if (regions != R_NilValue) {
+        if (TYPEOF(regions) != STRSXP)
+            Rf_error("`regions` must be NULL or a character vector");
+        n = Rf_xlength(regions);
+        if (n > 0) selectors = (mio_region_selector *)R_alloc((size_t)n, sizeof(*selectors));
+        for (R_xlen_t i = 0; i < n; ++i) {
+            const char *name = CHAR(STRING_ELT(regions, i));
+            mio_region_selector_init(&selectors[i], name);
+            selectors[i].kind = MIO_REGION_CELL;
+        }
+    }
+    mio_mesh *out = mio_region_adjacency(mio_r_mesh(mesh), selectors, (int64_t)n);
+    if (out == NULL) mio_r_fail("region_adjacency");
+    return mio_r_wrap_mesh(out);
+}
+
+/* These ids cross the flat C ABI in 0-based `(cell, local_facet)` pairs.
+ * R's region convention shifts only the cell column; facet ordinals stay 0-based. */
+static SEXP mio_r_side_matrix(const int64_t *entries, int64_t count) {
+    if (count < 0 || count > INT_MAX / 2) Rf_error("interface result is too large for an R matrix");
+    SEXP out = PROTECT(Rf_allocMatrix(REALSXP, 2, (int)count));
+    double *dst = REAL(out);
+    for (int64_t i = 0; i < 2 * count; ++i)
+        dst[i] = (i % 2 == 0) ? (double)(entries[i] + 1) : (double)entries[i];
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_find_interface(SEXP mesh_a, SEXP region_a, SEXP region_b, SEXP mesh_b,
+                          SEXP mode, SEXP master, SEXP gap_tolerance,
+                          SEXP angle_tolerance, SEXP overlap_tolerance) {
+    mio_find_interface_opts opts;
+    mio_find_interface_opts_init(&opts);
+    const char *mode_name = mio_r_opt_string(mode);
+    if (mode_name != NULL && mode_name[0] != '\0') {
+        if (strcmp(mode_name, "conforming") == 0) opts.mode = MIO_INTERFACE_CONFORMING;
+        else if (strcmp(mode_name, "proximity") == 0) opts.mode = MIO_INTERFACE_PROXIMITY;
+        else Rf_error("`mode` must be 'conforming' or 'proximity'");
+    }
+    const char *master_name = mio_r_opt_string(master);
+    if (master_name != NULL && master_name[0] != '\0') {
+        if (strcmp(master_name, "a") == 0) opts.master = MIO_INTERFACE_MASTER_A;
+        else if (strcmp(master_name, "b") == 0) opts.master = MIO_INTERFACE_MASTER_B;
+        else Rf_error("`master` must be 'a' or 'b'");
+    }
+    opts.gap_tolerance = mio_r_double(gap_tolerance, "gap_tolerance");
+    opts.angle_tolerance = mio_r_double(angle_tolerance, "angle_tolerance");
+    opts.overlap_tolerance = mio_r_double(overlap_tolerance, "overlap_tolerance");
+
+    mio_region_selector selector_a, selector_b;
+    mio_region_selector_init(&selector_a, mio_r_string(region_a, "region_a"));
+    mio_region_selector_init(&selector_b, mio_r_string(region_b, "region_b"));
+    selector_a.kind = selector_b.kind = MIO_REGION_CELL;
+    const mio_mesh *b = mesh_b == R_NilValue ? NULL : mio_r_mesh(mesh_b);
+    mio_find_interface_result *result = mio_find_interface(
+        mio_r_mesh(mesh_a), &selector_a, b, &selector_b, &opts);
+    if (result == NULL) mio_r_fail("find_interface");
+
+    int64_t pairs = 0, unmatched_a = 0, unmatched_b = 0, count_a = 0, count_b = 0;
+    double area = 0.0, max_gap = 0.0;
+    if (mio_find_interface_result_report(result, &pairs, &area, &max_gap,
+                                         &unmatched_a, &unmatched_b) != MIO_OK) {
+        mio_find_interface_result_free(result);
+        mio_r_fail("find_interface");
+    }
+    const int64_t *side_a = mio_find_interface_result_side_a(result, &count_a);
+    const int64_t *side_b = mio_find_interface_result_side_b(result, &count_b);
+    mio_mesh *out_mesh = mio_find_interface_result_take_mesh(result);
+    if (out_mesh == NULL) {
+        mio_find_interface_result_free(result);
+        mio_r_fail("find_interface");
+    }
+
+    SEXP mesh_value = PROTECT(mio_r_wrap_mesh(out_mesh));
+    SEXP pairs_value = PROTECT(Rf_ScalarReal((double)pairs));
+    SEXP area_value = PROTECT(Rf_ScalarReal(area));
+    SEXP gap_value = PROTECT(Rf_ScalarReal(max_gap));
+    SEXP unmatched_a_value = PROTECT(Rf_ScalarReal((double)unmatched_a));
+    SEXP unmatched_b_value = PROTECT(Rf_ScalarReal((double)unmatched_b));
+    SEXP side_a_value = PROTECT(mio_r_side_matrix(side_a, count_a));
+    SEXP side_b_value = PROTECT(mio_r_side_matrix(side_b, count_b));
+    mio_find_interface_result_free(result);
+    const char *names[] = {"mesh", "num_pairs", "area", "max_gap", "unmatched_a",
+                           "unmatched_b", "side_a", "side_b"};
+    SEXP values[] = {mesh_value, pairs_value, area_value, gap_value, unmatched_a_value,
+                      unmatched_b_value, side_a_value, side_b_value};
+    SEXP out = PROTECT(mio_r_named_list(8, names, values));
+    UNPROTECT(9);
+    return out;
+}
+
+static SEXP mio_r_copy_i64(const int64_t *data, int64_t count) {
+    if (count == 0) return Rf_allocVector(REALSXP, 0);
+    return mio_r_copy_as_real(data, MIO_INT64, (R_xlen_t)count);
+}
+
+static SEXP mio_r_copy_f64(const double *data, int64_t count) {
+    if (count == 0) return Rf_allocVector(REALSXP, 0);
+    return mio_r_copy_as_real(data, MIO_FLOAT64, (R_xlen_t)count);
+}
+
+static SEXP mio_r_copy_xyz(const double *data, int64_t count) {
+    if (count < 0 || count > INT_MAX / 3) Rf_error("contact result is too large for an R matrix");
+    SEXP out = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)count));
+    if (count > 0) memcpy(REAL(out), data, (size_t)(3 * count) * sizeof(double));
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_contact_pairs(SEXP slave_mesh, SEXP slave_points, SEXP master_mesh,
+                         SEXP master_cells, SEXP tolerance, SEXP require_complete) {
+    mio_contact_pairs_opts opts;
+    mio_contact_pairs_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.require_complete = mio_r_bool(require_complete, "require_complete") ? 1 : 0;
+    mio_region_selector point_selector, cell_selector;
+    mio_region_selector_init(&point_selector, mio_r_string(slave_points, "slave_points"));
+    mio_region_selector_init(&cell_selector, mio_r_string(master_cells, "master_cells"));
+    point_selector.kind = MIO_REGION_POINT;
+    cell_selector.kind = MIO_REGION_CELL;
+    const mio_mesh *master = master_mesh == R_NilValue ? NULL : mio_r_mesh(master_mesh);
+    mio_contact_pairs_result *result = mio_contact_pairs(
+        mio_r_mesh(slave_mesh), &point_selector, master, &cell_selector, &opts);
+    if (result == NULL) mio_r_fail("contact_pairs");
+    int64_t count = 0, unmatched_count = 0;
+    if (mio_contact_pairs_result_info(result, &count, &unmatched_count) != MIO_OK) {
+        mio_contact_pairs_result_free(result);
+        mio_r_fail("contact_pairs");
+    }
+
+    SEXP slave = PROTECT(mio_r_shift_map(mio_contact_pairs_slave_point(result), count));
+    SEXP master_cell = PROTECT(mio_r_shift_map(mio_contact_pairs_master_cell(result), count));
+    SEXP master_facet = PROTECT(mio_r_copy_i64(mio_contact_pairs_master_facet(result), count));
+    SEXP master_subfacet = PROTECT(mio_r_copy_i64(mio_contact_pairs_master_subfacet(result), count));
+    SEXP local_coordinates = PROTECT(mio_r_copy_xyz(
+        mio_contact_pairs_local_coordinates(result), count));
+    SEXP closest_point = PROTECT(mio_r_copy_xyz(mio_contact_pairs_closest_point(result), count));
+    SEXP gap = PROTECT(mio_r_copy_f64(mio_contact_pairs_gap(result), count));
+    SEXP normal = PROTECT(mio_r_copy_xyz(mio_contact_pairs_normal(result), count));
+    SEXP unmatched = PROTECT(mio_r_shift_map(mio_contact_pairs_unmatched(result), unmatched_count));
+    mio_contact_pairs_result_free(result);
+    const char *names[] = {"slave_point", "master_cell", "master_facet", "master_subfacet",
+                           "local_coordinates", "closest_point", "gap", "normal", "unmatched"};
+    SEXP values[] = {slave, master_cell, master_facet, master_subfacet, local_coordinates,
+                     closest_point, gap, normal, unmatched};
+    SEXP out = PROTECT(mio_r_named_list(9, names, values));
+    UNPROTECT(10);
+    return out;
+}
+
+SEXP R_mio_split_interface(SEXP mesh, SEXP side, SEXP add_cohesive) {
+    mio_split_interface_opts opts;
+    mio_split_interface_opts_init(&opts);
+    opts.add_cohesive = mio_r_bool(add_cohesive, "add_cohesive") ? 1 : 0;
+    mio_region_selector selector;
+    mio_region_selector_init(&selector, mio_r_string(side, "side"));
+    selector.kind = MIO_REGION_SIDE;
+    int64_t duplicated = 0, cohesive = 0;
+    mio_mesh *out_mesh = mio_split_interface(mio_r_mesh(mesh), &selector, &opts,
+                                             &duplicated, &cohesive);
+    if (out_mesh == NULL) mio_r_fail("split_interface");
+    SEXP mesh_value = PROTECT(mio_r_wrap_mesh(out_mesh));
+    SEXP duplicated_value = PROTECT(Rf_ScalarReal((double)duplicated));
+    SEXP cohesive_value = PROTECT(Rf_ScalarReal((double)cohesive));
+    const char *names[] = {"mesh", "num_duplicated_points", "num_cohesive_cells"};
+    SEXP values[] = {mesh_value, duplicated_value, cohesive_value};
+    SEXP out = PROTECT(mio_r_named_list(3, names, values));
+    UNPROTECT(4);
+    return out;
 }
 
 SEXP R_mio_check_quality(SEXP mesh, SEXP require, SEXP max_inverted, SEXP max_degenerate) {

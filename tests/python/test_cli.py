@@ -1,11 +1,180 @@
+import contextlib
+import glob
+import io
 import json
+import os
+import subprocess
 
 import numpy as np
 import pytest
 
 import meshioplusplus
+from meshioplusplus._regions import Region
 
 from . import helpers
+
+
+def _interface_mesh():
+    return meshioplusplus.Mesh(
+        np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]],
+            dtype=float,
+        ),
+        [
+            (
+                "tetra",
+                np.array([[0, 1, 2, 3], [0, 2, 1, 4]], dtype=np.int64),
+            )
+        ],
+        regions=[
+            Region("upper", "cell", [0], dim=3),
+            Region("lower", "cell", [1], dim=3),
+            Region("slave", "point", [0]),
+        ],
+    )
+
+
+def _cli_json(args):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = meshioplusplus._cli.main(args)
+    assert code == 0
+    return json.loads(output.getvalue())
+
+
+def test_interface_python_cli_commands(tmp_path):
+    input_path = tmp_path / "parts.vtu"
+    meshioplusplus.write(input_path, _interface_mesh())
+
+    adjacent = _cli_json(
+        [
+            "region-adjacency",
+            str(input_path),
+            str(tmp_path / "adjacent.vtu"),
+            "--regions",
+            "upper,lower",
+            "--json",
+        ]
+    )
+    assert adjacent == {"facets": 1, "measure": 0.5}
+
+    found = _cli_json(
+        [
+            "find-interface",
+            str(input_path),
+            str(tmp_path / "interface.vtu"),
+            "--region-a",
+            "upper",
+            "--region-b",
+            "lower",
+            "--json",
+        ]
+    )
+    assert found["num_pairs"] == 1
+    assert found["side_a"] == [[0, 3]]
+
+    contacts = _cli_json(
+        [
+            "contact-pairs",
+            str(input_path),
+            str(input_path),
+            "--slave-region",
+            "slave",
+            "--master-region",
+            "lower",
+            "--tolerance",
+            "10",
+            "--json",
+        ]
+    )
+    assert contacts["num_pairs"] == 1
+    assert contacts["pairs"][0]["master_cell"] == 1
+
+    split = _cli_json(
+        [
+            "split-interface",
+            str(input_path),
+            str(tmp_path / "split.vtu"),
+            "--side-entries",
+            "[[0,3]]",
+            "--add-cohesive",
+            "--json",
+        ]
+    )
+    assert split == {"num_duplicated_points": 3, "num_cohesive_cells": 1}
+
+
+def test_native_interface_cli_commands_when_available(tmp_path):
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    configured = os.environ.get("MESHIOPLUSPLUS_NATIVE_CLI")
+    candidates = (
+        [configured]
+        if configured
+        else glob.glob(os.path.join(root, "build", "*", "meshioplusplus"))
+    )
+    candidates = [
+        p for p in candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)
+    ]
+    if not candidates:
+        pytest.skip("native CLI is not built")
+    native = max(candidates, key=os.path.getmtime)
+    input_path = tmp_path / "parts.vtu"
+    meshioplusplus.write(input_path, _interface_mesh())
+
+    commands = [
+        [
+            native,
+            "region-adjacency",
+            str(input_path),
+            str(tmp_path / "adjacent.vtu"),
+            "--regions",
+            "upper,lower",
+            "--json",
+        ],
+        [
+            native,
+            "find-interface",
+            str(input_path),
+            str(tmp_path / "interface.vtu"),
+            "--region-a",
+            "upper",
+            "--region-b",
+            "lower",
+            "--json",
+        ],
+        [
+            native,
+            "contact-pairs",
+            str(input_path),
+            str(input_path),
+            "--slave-region",
+            "slave",
+            "--master-region",
+            "lower",
+            "--tolerance",
+            "10",
+            "--json",
+        ],
+        [
+            native,
+            "split-interface",
+            str(input_path),
+            str(tmp_path / "split.vtu"),
+            "--side-entries",
+            "[[0,3]]",
+            "--add-cohesive",
+            "--json",
+        ],
+    ]
+    outputs = []
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        outputs.append(json.loads(result.stdout))
+    assert outputs[0] == {"facets": 1, "measure": 0.5}
+    assert outputs[1]["num_pairs"] == 1
+    assert outputs[2]["pairs"][0]["master_cell"] == 1
+    assert outputs[3] == {"num_duplicated_points": 3, "num_cohesive_cells": 1}
 
 
 def is_same_mesh(mesh0, mesh1, atol):

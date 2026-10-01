@@ -85,6 +85,59 @@ program test_fortran_api
     call check(q%num_cell_data() >= 1_int64, 'attach_quality adds cell_data')
     call q%free()
 
+    ! ---- interfaces, contact projection and splitting --------------------
+    block
+        type(mio_mesh) :: interface_mesh, split_mesh
+        type(mio_find_interface_result) :: found
+        type(mio_contact_pairs_result) :: contacts
+        real(real64) :: interface_points(3, 5)
+        integer(int64) :: interface_cells(4, 2), duplicated, cohesive
+
+        interface_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                                    1.0_real64, 0.0_real64, 0.0_real64, &
+                                    0.0_real64, 1.0_real64, 0.0_real64, &
+                                    0.0_real64, 0.0_real64, 1.0_real64, &
+                                    0.0_real64, 0.0_real64, -1.0_real64], [3, 5])
+        interface_cells = reshape([1_int64, 2_int64, 3_int64, 4_int64, &
+                                   1_int64, 3_int64, 2_int64, 5_int64], [4, 2])
+        call interface_mesh%set_points(interface_points)
+        call interface_mesh%add_cell_block('tetra', interface_cells)
+        call interface_mesh%add_region('upper', MIO_REGION_CELL, [1_int64], dim=3)
+        call interface_mesh%add_region('lower', MIO_REGION_CELL, [2_int64], dim=3)
+        call interface_mesh%add_region('slave', MIO_REGION_POINT, [1_int64])
+        ! Side entries are (1-based global cell, zero-based local facet).
+        call interface_mesh%add_region('cut', MIO_REGION_SIDE, [1_int64, 3_int64])
+
+        found = interface_mesh%find_interface('upper', 'lower', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'find_interface succeeds')
+        call check(found%num_pairs == 1_int64, 'find_interface reports one pair')
+        call check(size(found%side_a, 1) == 2 .and. size(found%side_a, 2) == 1, &
+                   'find_interface Side entries have shape (2, n)')
+        call check(all(found%side_a(:, 1) == [0_int64, 3_int64]), &
+                   'find_interface Side entries remain 0-based')
+        call check(found%mesh%cell_block_type(1) == 'triangle', &
+                   'find_interface returns the master facet mesh')
+        call found%mesh%free()
+
+        contacts = interface_mesh%contact_pairs('slave', 'lower', tolerance=10.0_real64, &
+                                                 stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'contact_pairs succeeds')
+        call check(size(contacts%slave_point) == 1, 'contact_pairs projects one point')
+        call check(contacts%slave_point(1) == 0_int64, 'contact point id remains 0-based')
+        call check(contacts%master_cell(1) == 1_int64, 'contact master cell id is 0-based')
+        call check(size(contacts%local_coordinates, 1) == 3 .and. &
+                   size(contacts%local_coordinates, 2) == 1, &
+                   'contact coordinates have shape (3, n)')
+
+        split_mesh = interface_mesh%split_interface('cut', add_cohesive=.true., &
+            num_duplicated_points=duplicated, num_cohesive_cells=cohesive, stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'split_interface succeeds')
+        call check(duplicated == 3_int64, 'split_interface reports three duplicated points')
+        call check(cohesive == 1_int64, 'split_interface reports one cohesive cell')
+        call split_mesh%free()
+        call interface_mesh%free()
+    end block
+
     call m%quality_counts(num_cells=qcells, num_inverted=qinv, num_degenerate=qdeg)
     call check(qcells == 2_int64, 'quality_counts reports two cells')
 

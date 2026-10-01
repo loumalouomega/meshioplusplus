@@ -117,6 +117,14 @@ typedef struct mio_decimate_result mio_decimate_result;
  *  mode on decimate. Destroy with mio_decimate_volume_result_free(). */
 typedef struct mio_decimate_volume_result mio_decimate_volume_result;
 
+/** Opaque result of mio_find_interface(): owns the master-facet mesh and both
+ * source Side-region entry arrays. Destroy with mio_find_interface_result_free(). */
+typedef struct mio_find_interface_result mio_find_interface_result;
+
+/** Opaque result of mio_contact_pairs(): owns projection arrays. Destroy with
+ * mio_contact_pairs_result_free(). */
+typedef struct mio_contact_pairs_result mio_contact_pairs_result;
+
 /** Opaque result of mio_partition(): the pieces plus their point/cell index
  *  maps. Destroy with mio_partition_result_free(). */
 typedef struct mio_partition_result mio_partition_result;
@@ -4212,6 +4220,45 @@ typedef struct mio_region_selector {
     int64_t reserved[2];  /**< must be zero; room for additive growth */
 } mio_region_selector;
 
+typedef enum mio_interface_mode {
+    MIO_INTERFACE_CONFORMING = 0,
+    MIO_INTERFACE_PROXIMITY = 1
+} mio_interface_mode;
+
+typedef enum mio_interface_master {
+    MIO_INTERFACE_MASTER_A = 0,
+    MIO_INTERFACE_MASTER_B = 1
+} mio_interface_master;
+
+/** Options for mio_find_interface. Initialize with mio_find_interface_opts_init. */
+typedef struct mio_find_interface_opts {
+    int32_t mode;             /**< mio_interface_mode; conforming by default */
+    int32_t master;           /**< mio_interface_master; A by default */
+    double gap_tolerance;     /**< zero derives 1% of mean boundary edge length */
+    double angle_tolerance;   /**< opposing-normal tolerance in degrees */
+    double overlap_tolerance; /**< additional accepted gap/penetration allowance */
+    int64_t reserved[4];      /**< initialize to zero; reserved for ABI-compatible growth */
+} mio_find_interface_opts;
+
+/** Options for mio_contact_pairs. Initialize with mio_contact_pairs_opts_init. */
+typedef struct mio_contact_pairs_opts {
+    double tolerance;         /**< zero derives 1% of the master mean edge length */
+    int32_t require_complete;  /**< nonzero fails if any slave point is unmatched */
+    int32_t reserved_pad;
+    int64_t reserved[4];      /**< initialize to zero; reserved for ABI-compatible growth */
+} mio_contact_pairs_opts;
+
+/** Options for mio_split_interface. Initialize with mio_split_interface_opts_init. */
+typedef struct mio_split_interface_opts {
+    int32_t add_cohesive; /**< insert cohesive line/wedge/hexahedron cells */
+    int32_t reserved_pad;
+    int64_t reserved[4];  /**< initialize to zero; reserved for ABI-compatible growth */
+} mio_split_interface_opts;
+
+MIO_API void mio_find_interface_opts_init(mio_find_interface_opts* opts);
+MIO_API void mio_contact_pairs_opts_init(mio_contact_pairs_opts* opts);
+MIO_API void mio_split_interface_opts_init(mio_split_interface_opts* opts);
+
 /** Initialize a selector for `name` (borrowed) with any kind, dim and tag. */
 MIO_API void mio_region_selector_init(mio_region_selector* sel, const char* name);
 
@@ -4241,6 +4288,64 @@ MIO_API mio_mesh* mio_edit_regions(const mio_mesh* mesh, int32_t op,
                                    const mio_region_selector* inputs, int64_t num_inputs,
                                    const char* output, int64_t dim, int64_t tag,
                                    int32_t keep_inputs);
+
+/**
+ * Build a mesh of conforming facets shared by selected Cell regions. An empty
+ * selector list selects all Cell regions; if fewer than two exist, distinct
+ * cell blocks are used as groups when available. Facets carry parent-cell,
+ * local-facet, group-index and measure cell data. See doc/region_adjacency.md.
+ * @return the adjacency mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_region_adjacency(const mio_mesh* mesh,
+                                      const mio_region_selector* regions,
+                                      int64_t num_regions);
+
+/** Find an interface between Cell regions. A NULL mesh_b selects both sides
+ * from mesh_a. Result mesh and Side-entry accessors are borrowed until the
+ * result is freed. See doc/region_adjacency.md. */
+MIO_API mio_find_interface_result* mio_find_interface(
+    const mio_mesh* mesh_a, const mio_region_selector* region_a,
+    const mio_mesh* mesh_b, const mio_region_selector* region_b,
+    const mio_find_interface_opts* opts);
+MIO_API const mio_mesh* mio_find_interface_result_mesh(const mio_find_interface_result* result);
+MIO_API mio_mesh* mio_find_interface_result_take_mesh(mio_find_interface_result* result);
+MIO_API mio_status mio_find_interface_result_report(const mio_find_interface_result* result,
+    int64_t* num_pairs, double* area, double* max_gap,
+    int64_t* unmatched_a, int64_t* unmatched_b);
+/** Borrow flattened `(cell, local_facet)` Int64 Side entries; count is rows. */
+MIO_API const int64_t* mio_find_interface_result_side_a(
+    const mio_find_interface_result* result, int64_t* count);
+/** Borrow flattened `(cell, local_facet)` Int64 Side entries; count is rows. */
+MIO_API const int64_t* mio_find_interface_result_side_b(
+    const mio_find_interface_result* result, int64_t* count);
+MIO_API void mio_find_interface_result_free(mio_find_interface_result* result);
+
+/** Project Point-region entries to the closest facets in a Cell region.
+ * Set master_mesh to NULL to use slave_mesh as both inputs. All result arrays
+ * are borrowed until mio_contact_pairs_result_free(); geometric arrays are
+ * Float64 and ids are Int64. */
+MIO_API mio_contact_pairs_result* mio_contact_pairs(
+    const mio_mesh* slave_mesh, const mio_region_selector* slave_points,
+    const mio_mesh* master_mesh, const mio_region_selector* master_cells,
+    const mio_contact_pairs_opts* opts);
+MIO_API mio_status mio_contact_pairs_result_info(const mio_contact_pairs_result* result,
+    int64_t* count, int64_t* unmatched_count);
+MIO_API const int64_t* mio_contact_pairs_slave_point(const mio_contact_pairs_result* result);
+MIO_API const int64_t* mio_contact_pairs_master_cell(const mio_contact_pairs_result* result);
+MIO_API const int64_t* mio_contact_pairs_master_facet(const mio_contact_pairs_result* result);
+MIO_API const int64_t* mio_contact_pairs_master_subfacet(const mio_contact_pairs_result* result);
+MIO_API const double* mio_contact_pairs_local_coordinates(const mio_contact_pairs_result* result);
+MIO_API const double* mio_contact_pairs_closest_point(const mio_contact_pairs_result* result);
+MIO_API const double* mio_contact_pairs_gap(const mio_contact_pairs_result* result);
+MIO_API const double* mio_contact_pairs_normal(const mio_contact_pairs_result* result);
+MIO_API const int64_t* mio_contact_pairs_unmatched(const mio_contact_pairs_result* result);
+MIO_API void mio_contact_pairs_result_free(mio_contact_pairs_result* result);
+
+/** Duplicate point fans along a Side region. Polyhedron inputs are refused.
+ * Optional count outputs may be NULL. */
+MIO_API mio_mesh* mio_split_interface(const mio_mesh* mesh,
+    const mio_region_selector* side, const mio_split_interface_opts* opts,
+    int64_t* num_duplicated_points, int64_t* num_cohesive_cells);
 
 /** Remove the `index`-th region (mio_regions_create order) from `mesh`. */
 MIO_API mio_status mio_mesh_remove_region(mio_mesh* mesh, int64_t index);

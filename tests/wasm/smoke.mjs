@@ -4417,6 +4417,40 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('findInterface, contactPairs and splitInterface', () => {
+    const parts = {
+        points: new Float64Array([
+            0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1,
+        ]),
+        dim: 3,
+        cells: [{
+            type: 'tetra',
+            data: new Int32Array([0, 1, 2, 3, 0, 2, 1, 4]),
+            nodesPerCell: 4,
+        }],
+        regions: [
+            { name: 'upper', kind: 'cell', dim: 3, tag: -1, entries: new Int32Array([0]) },
+            { name: 'lower', kind: 'cell', dim: 3, tag: -1, entries: new Int32Array([1]) },
+            { name: 'slave', kind: 'point', dim: -1, tag: -1, entries: new Int32Array([0]) },
+            { name: 'cut', kind: 'side', dim: -1, tag: -1, entries: new Int32Array([0, 3]) },
+        ],
+    };
+    const found = m.findInterface(parts, 'upper', 'lower');
+    assert.equal(found.report.numPairs, 1);
+    assert.equal(found.report.sideA.length, 1);
+    assert.equal(found.mesh.cells[0].type, 'triangle');
+
+    const pairs = m.contactPairs(parts, 'slave', 'lower', { tolerance: 10 });
+    assert.equal(pairs.slavePoint.length, 1);
+    assert.equal(pairs.masterCell[0], 1);
+    assert.equal(pairs.unmatched.length, 0);
+
+    const split = m.splitInterface(parts, 'cut', { addCohesive: true });
+    assert.equal(split.report.numDuplicatedPoints, 3);
+    assert.equal(split.report.numCohesiveCells, 1);
+    assert.equal(split.mesh.cells[1].type, 'wedge');
+});
+
 if (failed) {
     console.error('\nSMOKE TEST FAILED');
     process.exit(1);

@@ -32,6 +32,16 @@ meshio.writeMesh("/example.msh", mesh, "gmsh");
 const { readers, writers } = meshio.availableFormats();
 ```
 
+`regionAdjacency(mesh, regions?)` returns the conforming facets shared by named Cell regions. When the selector list is omitted or empty, the module uses all Cell regions, or multiple cell blocks when fewer than two Cell regions exist. The result carries parent-cell/facet ids and per-facet length or area; see [region adjacency](/region_adjacency).
+
+`findInterface(mesh, regionA, regionB, options?)` returns `{mesh, report}` for conforming or proximity matching; `contactPairs(slaveMesh, slavePoints, masterCells, options?)` returns typed projection arrays; and `splitInterface(mesh, side, options?)` returns `{mesh, report}` after duplicating point fans. Cell, point, facet and subfacet ids are 0-based, matching the JS mesh representation. The `options` shapes are documented in [`index.d.ts`](https://github.com/loumalouomega/meshioplusplus/blob/main/src/wasm/index.d.ts); see also [interfaces and contact](/region_adjacency).
+
+```js
+const found = meshio.findInterface(mesh, 'part_a', 'part_b', { mode: 'proximity' });
+const pairs = meshio.contactPairs(mesh, 'slave_nodes', 'master_cells', { tolerance: 0.01 });
+const split = meshio.splitInterface(mesh, 'crack_sides', { addCohesive: true });
+```
+
 ### Rendering a mesh
 
 `convertSurface` produces something a surface renderer can draw: a mesh with 3D cells becomes its boundary, anything else passes through, and the result is linearized (a triangle renderer has no mid-side nodes, so `triangle6` connectivity drawn verbatim is visible garbage). Boundary facets inherit their owning cell's data, so a per-cell material or tag still colours correctly.

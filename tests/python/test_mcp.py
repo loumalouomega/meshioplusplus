@@ -26,6 +26,7 @@ import pytest
 
 import meshioplusplus
 from meshioplusplus import _core
+from meshioplusplus._regions import Region
 from meshioplusplus.mcp import TOOL_REGISTRY, _tools
 
 from . import helpers
@@ -1058,6 +1059,58 @@ def test_feature_edges_and_hausdorff(tmp_path):
     assert h["distance"] == pytest.approx(0.25)
     assert h["passed"] is False
     assert _dump(_tools.tool_hausdorff(src, src))["distance"] == 0.0
+
+
+def test_region_adjacency_tool(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1.0]]),
+        [
+            ("tetra", np.array([[0, 1, 2, 3]], dtype=np.int64)),
+            ("tetra", np.array([[0, 2, 1, 4]], dtype=np.int64)),
+        ],
+        regions=[Region("upper", "cell", [0]), Region("lower", "cell", [1])],
+    )
+    src = str(tmp_path / "parts.vtu")
+    meshioplusplus.write(src, mesh)
+    out = _dump(_tools.tool_region_adjacency(src, str(tmp_path / "interfaces.vtu")))
+    assert out["facets"] == 1
+    assert out["measure"] == pytest.approx(0.5)
+    assert "interface:parent_facet_a" in out["cell_data"]
+
+
+def test_interface_contact_and_split_tools(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1.0]]),
+        [("tetra", np.array([[0, 1, 2, 3], [0, 2, 1, 4]], dtype=np.int64))],
+        regions=[
+            Region("upper", "cell", [0]),
+            Region("lower", "cell", [1]),
+            Region("slave", "point", [0, 1]),
+        ],
+    )
+    src = str(tmp_path / "parts.vtu")
+    meshioplusplus.write(src, mesh)
+    found = _dump(
+        _tools.tool_find_interface(
+            src, str(tmp_path / "interface.vtu"), "upper", "lower"
+        )
+    )
+    assert found["num_pairs"] == 1
+    assert found["area"] == pytest.approx(0.5)
+    assert found["side_a"] == [[0, 3]]
+    contacts = _dump(_tools.tool_contact_pairs(src, "slave", "lower"))
+    assert len(contacts["pairs"]) == 2
+    assert contacts["unmatched"] == []
+    split = _dump(
+        _tools.tool_split_interface(
+            src,
+            str(tmp_path / "split.vtu"),
+            side_entries=found["side_a"],
+            add_cohesive=True,
+        )
+    )
+    assert split["num_duplicated_points"] == 3
+    assert split["num_cohesive_cells"] == 1
 
 
 def test_check_quality(tmp_path):

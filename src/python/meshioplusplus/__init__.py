@@ -144,6 +144,12 @@ from ._helpers import (
     write_points_cells,
 )
 from ._hessian import hessian
+from ._interfaces import (
+    contact_pairs,
+    find_interface,
+    region_adjacency,
+    split_interface,
+)
 from ._interop import (
     from_arrow,
     from_pyvista,
@@ -336,6 +342,10 @@ __all__ = [
     "conservative_interpolate",
     "gradient",
     "hessian",
+    "region_adjacency",
+    "find_interface",
+    "contact_pairs",
+    "split_interface",
     "data_integrate",
     "estimate_error",
     "slice",

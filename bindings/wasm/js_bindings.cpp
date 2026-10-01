@@ -109,6 +109,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
@@ -3551,6 +3552,141 @@ val edit_regions_js(const val& rMeshObj, const val& rEdits) {
     });
 }
 
+/** @brief Conforming shared facets between selected regions or cell blocks. */
+val region_adjacency_js(const val& rMeshObj, const val& rRegions) {
+    return with_js_errors([&]() -> val {
+        std::vector<meshioplusplus::RegionSelector> selectors;
+        if (!rRegions.isUndefined() && !rRegions.isNull()) {
+            const std::size_t n = rRegions["length"].as<std::size_t>();
+            selectors.reserve(n);
+            for (std::size_t i = 0; i < n; ++i)
+                selectors.push_back(js_region_selector(rRegions[i]));
+        }
+        return mesh_to_val(meshioplusplus::region_adjacency(val_to_mesh(rMeshObj), selectors));
+    });
+}
+
+val find_interface_js(const val& rMeshA, const val& rRegionA, const val& rRegionB,
+                      const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const val mesh_b_obj = rOptions["meshB"];
+        meshioplusplus::FindInterfaceOptions options;
+        const val mode = rOptions["mode"];
+        if (!mode.isUndefined() && !mode.isNull()) {
+            const std::string name = mode.as<std::string>();
+            if (name == "conforming")
+                options.mMode = meshioplusplus::InterfaceMode::Conforming;
+            else if (name == "proximity")
+                options.mMode = meshioplusplus::InterfaceMode::Proximity;
+            else
+                throw std::invalid_argument(
+                    "meshio++: find_interface: mode must be conforming or proximity");
+        }
+        const val master = rOptions["master"];
+        if (!master.isUndefined() && !master.isNull()) {
+            const std::string name = master.as<std::string>();
+            if (name == "a")
+                options.mMaster = meshioplusplus::InterfaceMaster::A;
+            else if (name == "b")
+                options.mMaster = meshioplusplus::InterfaceMaster::B;
+            else
+                throw std::invalid_argument("meshio++: find_interface: master must be a or b");
+        }
+        const val gap = rOptions["gapTolerance"];
+        const val angle = rOptions["angleTolerance"];
+        const val overlap = rOptions["overlapTolerance"];
+        if (!gap.isUndefined() && !gap.isNull())
+            options.mGapTolerance = gap.as<double>();
+        if (!angle.isUndefined() && !angle.isNull())
+            options.mAngleTolerance = angle.as<double>();
+        if (!overlap.isUndefined() && !overlap.isNull())
+            options.mOverlapTolerance = overlap.as<double>();
+        const meshioplusplus::Mesh mesh_a = val_to_mesh(rMeshA);
+        const meshioplusplus::RegionSelector selector_a = js_region_selector(rRegionA);
+        const meshioplusplus::RegionSelector selector_b = js_region_selector(rRegionB);
+        meshioplusplus::FindInterfaceResult result =
+            mesh_b_obj.isUndefined() || mesh_b_obj.isNull()
+                ? meshioplusplus::find_interface(mesh_a, selector_a, selector_b, options)
+                : meshioplusplus::find_interface(mesh_a, selector_a, val_to_mesh(mesh_b_obj),
+                                                 selector_b, options);
+        auto side_to_val = [](const meshioplusplus::Region& rSide) {
+            val entries = val::array();
+            for (std::size_t i = 0; i < rSide.mEntries.Shape()[0]; ++i) {
+                val entry = val::array();
+                entry.call<void>("push",
+                                 static_cast<double>(rSide.mEntries.As<std::int64_t>()[2 * i]));
+                entry.call<void>("push",
+                                 static_cast<double>(rSide.mEntries.As<std::int64_t>()[2 * i + 1]));
+                entries.call<void>("push", entry);
+            }
+            return entries;
+        };
+        val report = val::object();
+        report.set("numPairs", static_cast<double>(result.mReport.mNumPairs));
+        report.set("area", result.mReport.mArea);
+        report.set("maxGap", result.mReport.mMaxGap);
+        report.set("unmatchedA", static_cast<double>(result.mReport.mUnmatchedA));
+        report.set("unmatchedB", static_cast<double>(result.mReport.mUnmatchedB));
+        report.set("sideA", side_to_val(result.mSideA));
+        report.set("sideB", side_to_val(result.mSideB));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(result.mMesh));
+        out.set("report", report);
+        return out;
+    });
+}
+
+val contact_pairs_js(const val& rSlaveObj, const val& rSlavePoints, const val& rMasterCells,
+                     const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const val master_mesh_obj = rOptions["masterMesh"];
+        meshioplusplus::ContactPairsOptions options;
+        const val tolerance = rOptions["tolerance"];
+        const val complete = rOptions["requireComplete"];
+        if (!tolerance.isUndefined() && !tolerance.isNull())
+            options.mTolerance = tolerance.as<double>();
+        if (!complete.isUndefined() && !complete.isNull())
+            options.mRequireComplete = complete.as<bool>();
+        const meshioplusplus::Mesh slave = val_to_mesh(rSlaveObj);
+        const meshioplusplus::Mesh master =
+            master_mesh_obj.isUndefined() || master_mesh_obj.isNull()
+                ? slave
+                : val_to_mesh(master_mesh_obj);
+        const meshioplusplus::ContactPairsResult result =
+            meshioplusplus::contact_pairs(slave, js_region_selector(rSlavePoints), master,
+                                          js_region_selector(rMasterCells), options);
+        val out = val::object();
+        out.set("slavePoint", ndarray_to_int32_array(result.mSlavePoint));
+        out.set("masterCell", ndarray_to_int32_array(result.mMasterCell));
+        out.set("masterFacet", ndarray_to_int32_array(result.mMasterFacet));
+        out.set("masterSubfacet", ndarray_to_int32_array(result.mMasterSubfacet));
+        out.set("localCoordinates", ndarray_to_float64_array(result.mLocalCoordinates));
+        out.set("closestPoint", ndarray_to_float64_array(result.mClosestPoint));
+        out.set("gap", ndarray_to_float64_array(result.mGap));
+        out.set("normal", ndarray_to_float64_array(result.mNormal));
+        out.set("unmatched", ndarray_to_int32_array(result.mUnmatched));
+        return out;
+    });
+}
+
+val split_interface_js(const val& rMeshObj, const val& rSide, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SplitInterfaceOptions options;
+        const val add_cohesive = rOptions["addCohesive"];
+        if (!add_cohesive.isUndefined() && !add_cohesive.isNull())
+            options.mAddCohesive = add_cohesive.as<bool>();
+        const meshioplusplus::SplitInterfaceResult result = meshioplusplus::split_interface(
+            val_to_mesh(rMeshObj), js_region_selector(rSide), options);
+        val report = val::object();
+        report.set("numDuplicatedPoints", static_cast<double>(result.mNumDuplicatedPoints));
+        report.set("numCohesiveCells", static_cast<double>(result.mNumCohesiveCells));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(result.mMesh));
+        out.set("report", report);
+        return out;
+    });
+}
+
 /**
  * @brief Periodic node pairs between two regions under a row-major 4x4
  * affine `matrix` (16 numbers). See operations/periodic.hpp.
@@ -4881,6 +5017,10 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("checkQuality", &check_quality_js);
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
     emscripten::function("editRegions", &edit_regions_js);
+    emscripten::function("regionAdjacency", &region_adjacency_js);
+    emscripten::function("findInterface", &find_interface_js);
+    emscripten::function("contactPairs", &contact_pairs_js);
+    emscripten::function("splitInterface", &split_interface_js);
     emscripten::function("matchPeriodicNodes", &match_periodic_nodes_js);
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
