@@ -43,5 +43,6 @@ Anything else — volume cells, quadratic cells, polyhedra — cannot be held by
 ## Quirks & limitations
 
 - **PolyData has no cell-type array**, so the triangle/quad vs 3-/4-noded-polygon distinction cannot survive a round-trip: a `polygon` cell with 3 or 4 nodes reads back as `triangle`/`quad`. (Genuine ≥5-noded polygons are unaffected.)
-- Triangle strips, poly-vertex/poly-line rows, multiple `<Piece>`s, `<AppendedData>`, and lzma compression are not handled by the C++ reader (the Python fallback additionally covers lzma).
+- Both readers accept inline ASCII/base64 binary and appended raw/base64 arrays, with UInt32/UInt64 headers and either byte order. The native reader supports optional zlib/LZ4/ZSTD codecs; missing build codecs fail explicitly. Python needs the corresponding optional module for LZ4/ZSTD. Appended offsets address bytes for raw encoding and encoded characters for base64 encoding. Writers remain inline; no appended-output option is added.
+- Triangle strips, poly-vertex/poly-line rows, multiple `<Piece>`s, and lzma compression are not handled by the C++ reader (the Python fallback additionally covers lzma).
 - The C++ writer's output layout mirrors the VTU writer (same `<DataArray>` encoding, `%.11e` ASCII floats, 32 KiB zlib blocks).

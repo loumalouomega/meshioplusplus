@@ -26,7 +26,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -45,8 +44,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
-#include "vtk_preflight.hpp"
-#include "../detail/vtu_decode.hpp"
+#include "../detail/vtk_xml_read.hpp"
 #include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
@@ -76,14 +74,14 @@ bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
 // shared with `.vti` for the writer's `lattice_from_mesh` call.
 struct vts_header {
     pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
+    detail::VtuContext mCtx;
     std::array<std::int64_t, 3> mDims{{0, 0, 0}};
     std::size_t mNumPoints = 0;
     std::size_t mNumCells = 0;
 };
 
-vts_header vts_parse_header(const pugi::xml_document& rDoc) {
+vts_header vts_parse_header(const detail::VtuSource& rSource) {
+    const auto& rDoc = rSource.mDoc;
     pugi::xml_node root = rDoc.child("VTKFile");
     if (!root)
         throw ReadError("Expected tag 'VTKFile'");
@@ -91,26 +89,7 @@ vts_header vts_parse_header(const pugi::xml_document& rDoc) {
         throw ReadError("Expected type StructuredGrid");
 
     vts_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTS not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTS compressor '" + compressor + "'");
-    detail::vtk_codec_require_read(h.mCodec);
-
-    const std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
-    if (root.child("AppendedData"))
-        throw ReadError("appended VTS data not supported by the C++ reader");
+    h.mCtx = detail::vtk_xml_read_context(rSource, "VTS");
 
     pugi::xml_node grid = root.child("StructuredGrid");
     if (!grid)
@@ -146,17 +125,9 @@ vts_header vts_parse_header(const pugi::xml_document& rDoc) {
     return h;
 }
 
-NDArray vts_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+NDArray vts_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
                             int& rNumComponents) {
-    const std::string fmt = rDa.attribute("format").as_string("ascii");
-    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTS '" + fmt + "' data is not supported by the C++ reader");
+    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
 }
 
 std::vector<std::string> vts_array_names(const pugi::xml_node& rPiece, const char* pSection) {
@@ -307,20 +278,15 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "StructuredGrid",
-                          "lzma-compressed VTS not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTS XML parse failed: ") + res.description());
-
-    const vts_header h = vts_parse_header(doc);
+    detail::VtuSource source;
+    detail::vtu_load(rPath, pugi::parse_default, source, "StructuredGrid", "VTS");
+    const vts_header h = vts_parse_header(source);
 
     pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
     if (!points_da)
         throw ReadError("VTS Piece has no Points/DataArray");
     int pnc = 0;
-    NDArray pts = vts_read_data_array(points_da, h.mCodec, h.mHeaderSize, pnc);
+    NDArray pts = vts_read_data_array(points_da, h.mCtx, pnc);
     if (pnc > 1)
         pts.Reshape({pts.Size() / static_cast<std::size_t>(pnc), static_cast<std::size_t>(pnc)});
     if (detail::rows(pts) != h.mNumPoints)
@@ -351,7 +317,7 @@ Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
         if (!rOpts.WantsArray(name))
             continue;
         int nc = 0;
-        NDArray arr = vts_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        NDArray arr = vts_read_data_array(da, h.mCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
         if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
@@ -365,7 +331,7 @@ Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
         if (!rOpts.WantsArray(name))
             continue;
         int nc = 0;
-        NDArray arr = vts_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        NDArray arr = vts_read_data_array(da, h.mCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
         if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
@@ -382,14 +348,9 @@ Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "StructuredGrid",
-                          "lzma-compressed VTS not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTS XML parse failed: ") + res.description());
-
-    const vts_header h = vts_parse_header(doc);
+    detail::VtuSource source;
+    detail::vtu_load(rPath, pugi::parse_minimal, source, "StructuredGrid", "VTS");
+    const vts_header h = vts_parse_header(source);
 
     MeshMetadata meta;
     meta.mNumPoints = h.mNumPoints;

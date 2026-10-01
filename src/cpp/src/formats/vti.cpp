@@ -27,7 +27,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <algorithm>
 #include <sstream>
 #include <string>
@@ -45,11 +44,9 @@
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
-#include "vtk_preflight.hpp"
-#include "../detail/vtu_decode.hpp"
+#include "../detail/vtk_xml_read.hpp"
 #include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
@@ -78,14 +75,14 @@ bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
 // the metadata reader cannot disagree about which files they accept.
 struct vti_header {
     pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
+    detail::VtuContext mCtx;
     detail::LatticeSpec mSpec;
     std::size_t mNumPoints = 0;
     std::size_t mNumCells = 0;
 };
 
-vti_header vti_parse_header(const pugi::xml_document& rDoc) {
+vti_header vti_parse_header(const detail::VtuSource& rSource) {
+    const auto& rDoc = rSource.mDoc;
     pugi::xml_node root = rDoc.child("VTKFile");
     if (!root)
         throw ReadError("Expected tag 'VTKFile'");
@@ -93,27 +90,7 @@ vti_header vti_parse_header(const pugi::xml_document& rDoc) {
         throw ReadError("Expected type ImageData");
 
     vti_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTI not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTI compressor '" + compressor + "'");
-    // Fail early and actionably when the file needs a codec this build lacks.
-    detail::vtk_codec_require_read(h.mCodec);
-
-    const std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
-    if (root.child("AppendedData"))
-        throw ReadError("appended VTI data not supported by the C++ reader");
+    h.mCtx = detail::vtk_xml_read_context(rSource, "VTI");
 
     pugi::xml_node grid = root.child("ImageData");
     if (!grid)
@@ -180,17 +157,9 @@ vti_header vti_parse_header(const pugi::xml_document& rDoc) {
     return h;
 }
 
-NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+NDArray vti_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
                             int& rNumComponents) {
-    const std::string fmt = rDa.attribute("format").as_string("ascii");
-    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTI '" + fmt + "' data is not supported by the C++ reader");
+    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
 }
 
 // One geometry attribute value. `%.17g` rather than the stream's default six
@@ -319,14 +288,9 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "ImageData",
-                          "lzma-compressed VTI not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
-
-    const vti_header h = vti_parse_header(doc);
+    detail::VtuSource source;
+    detail::vtu_load(rPath, pugi::parse_default, source, "ImageData", "VTI");
+    const vti_header h = vti_parse_header(source);
 
     // The extent is expanded into explicit points and hexahedra through the same
     // helper `grid()` and `voxelize()` use, so a .vti read and a grid() call of
@@ -340,7 +304,7 @@ Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
         if (!rOpts.WantsArray(name))
             continue;
         int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        NDArray arr = vti_read_data_array(da, h.mCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
         if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
@@ -354,7 +318,7 @@ Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
         if (!rOpts.WantsArray(name))
             continue;
         int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        NDArray arr = vti_read_data_array(da, h.mCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
         if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
@@ -371,17 +335,12 @@ Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
+    detail::VtuSource source;
     // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
     // metadata path this decodes NOTHING at all: the extent attribute alone
     // gives both counts.
-    detail::vtk_preflight(rPath, "ImageData",
-                          "lzma-compressed VTI not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
-
-    const vti_header h = vti_parse_header(doc);
+    detail::vtu_load(rPath, pugi::parse_minimal, source, "ImageData", "VTI");
+    const vti_header h = vti_parse_header(source);
 
     MeshMetadata meta;
     meta.mNumPoints = h.mNumPoints;

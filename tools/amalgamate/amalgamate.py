@@ -116,7 +116,10 @@ class Amalgamator:
                     continue
             if _PRAGMA_ONCE.match(line):
                 continue
-            self.out.append(line)
+            # Source order can move a vendored whitespace-only line into a
+            # newly added diff hunk. Keep generated output whitespace-clean
+            # without editing (or formatting) the vendored source itself.
+            self.out.append(line.rstrip() + "\n")
 
     def inline_at_site(self, path):
         path = path.resolve()

@@ -28,7 +28,9 @@
  * `triangle`/`quad`/`polygon` (Polys). Cell data follows VTK's canonical
  * PolyData cell order — Verts, then Lines, then Polys, then Strips — in
  * both directions. Triangle strips, poly-vertex/poly-line rows, multiple
- * pieces, appended data, and lzma compression raise (Python fallback).
+ * pieces, and lzma compression raise (Python additionally handles lzma).
+ * Appended raw/base64 arrays share VTU's framing decoder, with UInt32/UInt64
+ * headers and either byte order; writing remains inline.
  */
 
 // System includes
@@ -92,8 +94,8 @@ MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rM
  *        before their payload is decoded.
  * @return the read Mesh
  * @throws ReadError on malformed XML, a non-PolyData file, triangle strips,
- *         poly-vertex/poly-line rows, multiple pieces, appended data, or
- *         lzma compression (all deferred to the Python reader)
+ *         poly-vertex/poly-line rows, multiple pieces, or lzma compression
+ *         (the Python reader additionally handles lzma)
  */
 MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
 

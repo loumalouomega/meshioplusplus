@@ -18,15 +18,14 @@ unchanged -- there is nothing to recompute, unlike ``vti``'s Origin/Spacing.
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
-
 import numpy as np
 
 from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
-from ..vti._vti import _COMPRESSION_TO_ATTR, _ArrayReader, _encode_binary, _parse_n
+from .._vtk_xml_read import load as _load_xml
+from ..vti._vti import _COMPRESSION_TO_ATTR, _encode_binary, _parse_n
 from ..vtu._vtu import numpy_to_vtu_type
 
 
@@ -41,27 +40,7 @@ def _hex_conn(dims):
 
 
 def read(filename):
-    tree = ET.parse(str(filename))
-    root = tree.getroot()
-    if root.tag != "VTKFile":
-        raise ReadError("Expected tag 'VTKFile'")
-    if root.get("type") != "StructuredGrid":
-        raise ReadError("Expected type StructuredGrid")
-
-    compression = root.get("compressor")
-    if compression == "vtkLZMADataCompressor":
-        raise ReadError("lzma-compressed VTS is not supported")
-    header_type = root.get("header_type", "UInt32")
-    byte_order = root.get("byte_order")
-
-    appended = root.find("AppendedData")
-    appended_data = None
-    if appended is not None:
-        encoding = appended.get("encoding", "base64")
-        if encoding != "base64":
-            raise ReadError(f"VTS appended data encoding '{encoding}' is not supported")
-        text = appended.text or ""
-        appended_data = text.strip().lstrip("_")
+    root, reader = _load_xml(filename, "StructuredGrid", "VTS")
 
     grid = root.find("StructuredGrid")
     if grid is None:
@@ -89,7 +68,6 @@ def read(filename):
     num_points = int(np.prod(dims + 1))
     num_cells = int(np.prod(dims)) if np.all(dims > 0) else 0
 
-    reader = _ArrayReader(header_type, byte_order, compression, appended_data)
     points_node = piece.find("Points")
     if points_node is None:
         raise ReadError("VTS Piece has no Points")

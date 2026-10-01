@@ -443,6 +443,8 @@ class _RawSource:
     """Sequential reader over a raw ``<AppendedData>`` payload."""
 
     def __init__(self, buf, pos):
+        if pos < 0 or pos > len(buf):
+            raise ReadError("VTU: appended offset past the end of the data")
         self.buf = buf
         self.pos = pos
 
@@ -460,6 +462,8 @@ class _Base64Source:
     both read the same: decoding stops at every padded group."""
 
     def __init__(self, text, pos):
+        if pos < 0 or pos > len(text):
+            raise ReadError("VTU: appended offset past the end of the data")
         self.text = text  # whitespace already removed (get_grid)
         self.pos = pos
         self.pending = b""
@@ -504,7 +508,12 @@ def _load_root(filename):
             return ET.fromstring(raw), None
         # The payload starts after the underscore that opens it and runs to
         # the closing tag; arrays are addressed by offset into it.
-        start = raw.index(b"_", tag.end()) + 1
+        start = tag.end()
+        while start < len(raw) and raw[start : start + 1] in b" \t\r\n":
+            start += 1
+        if raw[start : start + 1] != b"_":
+            raise ReadError("VTU: AppendedData does not start with '_'")
+        start += 1
         stop = raw.rfind(b"</AppendedData>")
         if stop < start:
             raise ReadError("VTU: AppendedData is not closed")
@@ -848,7 +857,7 @@ class VtuReader:
 
         if fmt == "ascii":
             # ascii
-            if c.text.strip() == "":
+            if not (c.text or "").strip():
                 # https://github.com/numpy/numpy/issues/18435
                 data = np.empty((0,), dtype=dtype)
             else:
@@ -864,7 +873,13 @@ class VtuReader:
             if self.raw_appended is None and self.appended_data is None:
                 raise ReadError("VTU: appended DataArray but no <AppendedData>")
             # int() skips the padding some writers put around the offset.
-            data = self.read_appended(int(c.attrib["offset"]), dtype)
+            offset = c.get("offset", "").strip()
+            if not offset or not offset.isascii() or not offset.isdecimal():
+                raise ReadError("VTK XML: invalid appended offset")
+            try:
+                data = self.read_appended(int(offset), dtype)
+            except ValueError as exc:
+                raise ReadError(f"VTK XML: invalid appended array: {exc}") from exc
         else:
             raise ReadError(f"Unknown data format '{fmt}'.")
 
@@ -874,10 +889,12 @@ class VtuReader:
 
         if "NumberOfComponents" in c.attrib:
             nc = int(c.attrib["NumberOfComponents"])
+            if nc <= 0:
+                raise ReadError("VTK XML: NumberOfComponents must be positive")
             try:
                 data = data.reshape(-1, nc)
             except ValueError:
-                name = c.attrib["Name"]
+                name = c.get("Name", "unnamed")
                 raise CorruptionError(
                     "VTU file corrupt. "
                     + f"The size of the data array '{name}' is {data.size} "

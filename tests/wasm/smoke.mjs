@@ -105,6 +105,47 @@ step('threaded (mt) build reports the openmp parallel backend', () => {
     assert.equal(m.parallelBackend(), 'openmp');
 });
 
+step('VTK XML: appended raw/base64, UInt64 big-endian and selective reads', () => {
+    for (const [format, type] of Object.entries({
+        vtp: 'PolyData', vts: 'StructuredGrid', vtr: 'RectilinearGrid', vti: 'ImageData',
+    })) {
+        const surface = format === 'vtp';
+        const n = surface ? 4 : 8;
+        const points = Array.from({ length: n }, (_, i) => `${i % 2} ${Math.floor(i / 2) % 2} ${Math.floor(i / 4)}`).join(' ');
+        for (const encoding of ['raw', 'base64']) {
+            let xml = `<VTKFile type="${type}" byte_order="BigEndian" header_type="UInt64"><${type}${surface ? '' : ' WholeExtent="0 1 0 1 0 1"'}><Piece ${surface ? 'NumberOfPoints="4"' : 'Extent="0 1 0 1 0 1"'}><PointData><DataArray type="Int32" Name="tag" format="appended" offset="0"/></PointData>`;
+            if (surface || format === 'vts')
+                xml += `<Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">${points}</DataArray></Points>`;
+            if (surface)
+                xml += '<Polys><DataArray type="Int32" Name="connectivity" format="ascii">0 1 3 2</DataArray><DataArray type="Int32" Name="offsets" format="ascii">4</DataArray></Polys>';
+            if (format === 'vtr')
+                xml += '<Coordinates>' + '<DataArray type="Float64" format="ascii">0 1</DataArray>'.repeat(3) + '</Coordinates>';
+            xml += `</Piece></${type}><AppendedData encoding="${encoding}">_`;
+            const payload = new Uint8Array(8 + n * 4);
+            const view = new DataView(payload.buffer);
+            view.setBigUint64(0, BigInt(n * 4));
+            for (let i = 0; i < n; i++) view.setInt32(8 + i * 4, i - 3);
+            const bytes = Buffer.concat([
+                Buffer.from(xml),
+                encoding === 'raw' ? payload : Buffer.from(Buffer.from(payload).toString('base64')),
+                Buffer.from('</AppendedData></VTKFile>'),
+            ]);
+            const path = `/appended_${encoding}.${format}`;
+            m.FS.writeFile(path, bytes);
+            const mesh = m.readMesh(path, format);
+            assert.equal(mesh.points.length / 3, n);
+            assert.equal(mesh.cells.length, 1);
+            assert.deepEqual(Array.from(mesh.point_data.tag, Number), Array.from({ length: n }, (_, i) => i - 3));
+            const meta = m.readMetadata(path, format);
+            assert.equal(meta.numPoints, n);
+            assert.equal(meta.fellBackToFullRead, false);
+            const geometry = m.readMeshSelective(path, { format, pointsOnly: true });
+            assert.equal(geometry.cells.length, 1);
+            assert.deepEqual(Object.keys(geometry.point_data), []);
+        }
+    }
+});
+
 // A small synthetic tetrahedron + a point/cell data field, built directly as
 // a JS mesh object (bypassing file I/O) to test the writeMesh(object) path.
 const tet = {

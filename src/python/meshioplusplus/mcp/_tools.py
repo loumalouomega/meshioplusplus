@@ -776,6 +776,8 @@ def tool_convert(
     as raw file ids; constraints remain opaque and other formats may drop it.
     Gmsh input versions 2.2/4.0/4.1, including periodic links, use the native
     reader. Gmsh output is 4.1, or 2.2 via gmsh22; both preserve periodic links.
+    Serial VTK XML inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64
+    arrays natively; VTP/VTS/VTR/VTI remain single-piece with inline output.
 
     ``grid_functions`` (``{name: path}``) reads MFEM ``.gf`` files onto an MFEM
     input mesh; ``patran_results`` (``{name: path}``) reads Patran 2.5 result

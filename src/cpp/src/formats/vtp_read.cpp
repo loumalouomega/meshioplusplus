@@ -31,8 +31,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "../detail/region_field_data.hpp"
-#include "vtk_preflight.hpp"
-#include "../detail/vtu_decode.hpp"
+#include "../detail/vtk_xml_read.hpp"
 
 namespace meshioplusplus {
 
@@ -41,18 +40,9 @@ namespace {
 using detail::vtu_to_int64;
 
 // The codec is resolved once from the root's compressor= attribute.
-NDArray vtp_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+NDArray vtp_read_data_array(const pugi::xml_node& rDa, const detail::VtuContext& rCtx,
                             int& rNumComponents) {
-    std::string fmt = rDa.attribute("format").as_string("ascii");
-    DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
+    return detail::vtu_read_data_array(rDa, rCtx, rNumComponents);
 }
 
 // One PolyData section's connectivity + VTK end-offsets.
@@ -68,7 +58,7 @@ struct VtpPiece {
  *        -- so `offsets` alone (one value per cell) is enough to summarize a
  *        section, while `connectivity` is the bulk of the section's bytes.
  */
-VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec, std::size_t hsz,
+VtpPiece vtp_read_section(const pugi::xml_node& rSection, const detail::VtuContext& rCtx,
                           bool offsets_only = false) {
     VtpPiece out;
     if (!rSection)
@@ -79,7 +69,7 @@ VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec
         if (offsets_only && name != "offsets")
             continue;
         int nc = 0;
-        NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
+        NDArray arr = vtp_read_data_array(da, rCtx, nc);
         if (name == "connectivity")
             out.mConn = vtu_to_int64(arr);
         else if (name == "offsets")
@@ -92,12 +82,12 @@ VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec
 struct vtp_header {
     pugi::xml_node mGrid;
     pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
+    detail::VtuContext mCtx;
     std::size_t mNumPoints = 0;
 };
 
-vtp_header vtp_parse_header(const pugi::xml_document& rDoc) {
+vtp_header vtp_parse_header(const detail::VtuSource& rSource) {
+    const auto& rDoc = rSource.mDoc;
     pugi::xml_node root = rDoc.child("VTKFile");
     if (!root)
         throw ReadError("Expected tag 'VTKFile'");
@@ -105,33 +95,11 @@ vtp_header vtp_parse_header(const pugi::xml_document& rDoc) {
         throw ReadError("Expected type PolyData");
 
     vtp_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTP not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTP compressor '" + compressor + "'");
-    // Fail early and actionably when the file needs a codec this build lacks,
-    // rather than at the first array body.
-    detail::vtk_codec_require_read(h.mCodec);
-
-    std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
     pugi::xml_node grid = root.child("PolyData");
     if (!grid)
         throw ReadError("No PolyData found");
 
-    // Appended data is not handled here -> let the Python reader take over.
-    if (grid.parent().child("AppendedData") || root.child("AppendedData"))
-        throw ReadError("appended VTP data not supported by the C++ reader");
+    h.mCtx = detail::vtk_xml_read_context(rSource, "VTP");
 
     h.mGrid = grid;
     h.mPiece = grid.child("Piece");
@@ -171,8 +139,8 @@ bool vtp_is_numeric_type(const std::string& rType) {
  * meshio++ dtype: it is skipped with a warning rather than failing a read that
  * used to succeed by ignoring the whole section.
  */
-void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
-                         std::size_t HeaderSize, const ReadOptions& rOpts, bool WantData,
+void vtp_read_field_data(const pugi::xml_node& rNode, const detail::VtuContext& rCtx,
+                         const ReadOptions& rOpts, bool WantData,
                          std::vector<std::pair<std::string, NDArray>>& rOut) {
     for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
@@ -187,7 +155,7 @@ void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
             continue;
         }
         int nc = 0;
-        NDArray arr = vtp_read_data_array(da, Codec, HeaderSize, nc);
+        NDArray arr = vtp_read_data_array(da, rCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
         rOut.emplace_back(name, std::move(arr));
@@ -247,16 +215,11 @@ void vtp_build_types(const VtpPiece& rSec, int kind, std::vector<std::int64_t>& 
 }  // namespace
 
 Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
-
-    const vtp_header h = vtp_parse_header(doc);
+    detail::VtuSource source;
+    detail::vtu_load(rPath, pugi::parse_default, source, "PolyData", "VTP");
+    const vtp_header h = vtp_parse_header(source);
     const pugi::xml_node piece = h.mPiece;
-    const detail::VtkCodec codec = h.mCodec;
-    const std::size_t hsz = h.mHeaderSize;
+    const detail::VtuContext& ctx = h.mCtx;
     const std::size_t num_points = h.mNumPoints;
     const bool want_data = rOpts.WantsAnyData();
 
@@ -268,9 +231,12 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
         if (tag == "Points") {
             pugi::xml_node da = child.child("DataArray");
             int nc = 0;
-            NDArray pts = vtp_read_data_array(da, codec, hsz, nc);
+            NDArray pts = vtp_read_data_array(da, ctx, nc);
             if (nc <= 0)
                 nc = 3;
+            if (pts.Size() / static_cast<std::size_t>(nc) != num_points ||
+                pts.Size() % static_cast<std::size_t>(nc) != 0)
+                throw ReadError("VTP Points length differs from NumberOfPoints");
             pts.Reshape({num_points, static_cast<std::size_t>(nc)});
             mesh.AssignPoints(std::move(pts));
         } else if (tag == "PointData") {
@@ -282,7 +248,9 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
                 // Name is readable before the payload -- skipping is free.
                 if (!rOpts.WantsArray(name))
                     continue;
-                NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
+                NDArray arr = vtp_read_data_array(da, ctx, nc);
+                if (arr.Size() / static_cast<std::size_t>(nc > 0 ? nc : 1) != num_points)
+                    throw ReadError("VTP PointData length differs from NumberOfPoints");
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 mesh.AddPointData(name, std::move(arr));
@@ -295,7 +263,7 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
                 std::string name = da.attribute("Name").as_string();
                 if (!rOpts.WantsArray(name))
                     continue;
-                NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
+                NDArray arr = vtp_read_data_array(da, ctx, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 cell_data_raw.emplace(name, std::move(arr));
@@ -304,13 +272,13 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
     }
 
     std::vector<std::pair<std::string, NDArray>> field_arrays;
-    vtp_read_field_data(h.mGrid, codec, hsz, rOpts, want_data, field_arrays);
-    vtp_read_field_data(piece, codec, hsz, rOpts, want_data, field_arrays);
+    vtp_read_field_data(h.mGrid, ctx, rOpts, want_data, field_arrays);
+    vtp_read_field_data(piece, ctx, rOpts, want_data, field_arrays);
 
-    VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
-    VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
-    VtpPiece polys = vtp_read_section(piece.child("Polys"), codec, hsz);
-    VtpPiece strips = vtp_read_section(piece.child("Strips"), codec, hsz);
+    VtpPiece verts = vtp_read_section(piece.child("Verts"), ctx);
+    VtpPiece lines = vtp_read_section(piece.child("Lines"), ctx);
+    VtpPiece polys = vtp_read_section(piece.child("Polys"), ctx);
+    VtpPiece strips = vtp_read_section(piece.child("Strips"), ctx);
     if (!strips.mOffsets.empty())
         throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
 
@@ -333,15 +301,11 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
+    detail::VtuSource source;
     // See read_vtu_metadata: parse_minimal trims text conversions, but the
     // saving that matters is skipping the array bodies below.
-    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
-
-    const vtp_header h = vtp_parse_header(doc);
+    detail::vtu_load(rPath, pugi::parse_minimal, source, "PolyData", "VTP");
+    const vtp_header h = vtp_parse_header(source);
 
     MeshMetadata meta;
     meta.mNumPoints = h.mNumPoints;  // an attribute -- free
@@ -353,16 +317,15 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
     // PolyData carries no `types` array; cell types follow from each section's
     // per-cell size, so reading `offsets` alone suffices and the connectivity --
     // the bulk of the bytes -- is never decoded.
-    const VtpPiece verts = vtp_read_section(h.mPiece.child("Verts"), h.mCodec, h.mHeaderSize,
+    const VtpPiece verts = vtp_read_section(h.mPiece.child("Verts"), h.mCtx,
                                             /*offsets_only=*/true);
-    const VtpPiece lines = vtp_read_section(h.mPiece.child("Lines"), h.mCodec, h.mHeaderSize,
+    const VtpPiece lines = vtp_read_section(h.mPiece.child("Lines"), h.mCtx,
                                             /*offsets_only=*/true);
-    const VtpPiece polys = vtp_read_section(h.mPiece.child("Polys"), h.mCodec, h.mHeaderSize,
+    const VtpPiece polys = vtp_read_section(h.mPiece.child("Polys"), h.mCtx,
                                             /*offsets_only=*/true);
-    if (h.mPiece.child("Strips") &&
-        !vtp_read_section(h.mPiece.child("Strips"), h.mCodec, h.mHeaderSize,
-                          /*offsets_only=*/true)
-             .mOffsets.empty())
+    if (h.mPiece.child("Strips") && !vtp_read_section(h.mPiece.child("Strips"), h.mCtx,
+                                                      /*offsets_only=*/true)
+                                         .mOffsets.empty())
         throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
 
     std::vector<std::int64_t> conn, offsets, types;

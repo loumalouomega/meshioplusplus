@@ -596,6 +596,22 @@ def test_convert_roundtrip(mesh_file, tmp_path):
     assert out["num_points"] == 5 and out["num_cells"] == 3
 
 
+@pytest.mark.parametrize("fmt", ["vtp", "vts", "vtr", "vti"])
+@pytest.mark.parametrize("encoding", ["raw", "base64"])
+def test_convert_appended_vtk_xml_native(fmt, encoding, tmp_path, monkeypatch):
+    from meshioplusplus import _fallback
+
+    from .test_vtk_xml_appended import appended_fixture, assert_mesh
+
+    blob, points = appended_fixture(fmt, encoding, "UInt64", "BigEndian", "zlib")
+    source = tmp_path / f"input.{fmt}"
+    source.write_bytes(blob)
+    target = tmp_path / "output.vtu"
+    monkeypatch.setattr(_fallback, "_strict", True)
+    _dump(_tools.tool_convert(str(source), str(target)))
+    assert_mesh(meshioplusplus.read(target), points)
+
+
 @pytest.mark.parametrize("binary,count_bytes", [(False, 8), (True, 8), (True, 4)])
 def test_convert_gmsh40_through_native_reader(
     binary, count_bytes, tmp_path, monkeypatch

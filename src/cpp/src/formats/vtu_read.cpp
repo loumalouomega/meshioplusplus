@@ -18,6 +18,7 @@
 // System includes
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -34,8 +35,6 @@
 
 // Project includes
 #include "meshioplusplus/detail/byteswap.hpp"
-#include "meshioplusplus/detail/classic_stream.hpp"
-#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
@@ -46,9 +45,11 @@
 #include "vtk_preflight.hpp"
 #include "../detail/vtu_decode.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/vtk_xml_read.hpp"
 
 namespace meshioplusplus {
 
+namespace detail {
 namespace {
 
 using detail::vtu_to_int64;
@@ -198,13 +199,17 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
             static_cast<std::size_t>(k + 1 == sizes.size() ? last_block : max_block);
         std::vector<unsigned char> dec =
             detail::vtk_codec_decompress_block(Codec, comp.data(), comp.size(), expected);
-        out.insert(out.end(), dec.begin(), dec.begin() + std::min(dec.size(), expected));
+        if (dec.size() != expected)
+            throw ReadError("VTK XML: decompressed block size differs from its header");
+        out.insert(out.end(), dec.begin(), dec.end());
     }
     return out;
 }
 
 NDArray vtu_array_from_bytes(const std::vector<unsigned char>& rBytes, DType Dt, bool BigEndian) {
     const std::size_t isz = dtype_size(Dt);
+    if (!isz || rBytes.size() % isz != 0)
+        throw ReadError("VTK XML: array byte count is not a multiple of its element size");
     const std::size_t n = isz ? rBytes.size() / isz : 0;
     NDArray a(Dt, {n});
     if (n)
@@ -217,60 +222,69 @@ NDArray vtu_array_from_bytes(const std::vector<unsigned char>& rBytes, DType Dt,
     return a;
 }
 
-/** @brief How the arrays of one file are framed: codec, header width, byte
- * order and, when present, the `<AppendedData>` payload. */
-struct VtuContext {
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
-    bool mBigEndian = false;
-    // Raw appended payload (bytes after the opening '_'), or base64 text.
-    const unsigned char* mRaw = nullptr;
-    std::size_t mRawLen = 0;
-    const char* mBase64 = nullptr;
-    std::size_t mBase64Len = 0;
-};
+}  // namespace
 
 NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
                             int& rNumComponents) {
     std::string fmt = rDa.attribute("format").as_string("ascii");
     DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
     rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+    if (rDa.attribute("NumberOfComponents") && rNumComponents <= 0)
+        throw ReadError("VTK XML: NumberOfComponents must be positive");
 
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary") {
-        if (!rCtx.mBigEndian)
-            return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt,
-                                               rCtx.mCodec, rCtx.mHeaderSize);
-        const char* text = rDa.text().get();
-        VtuByteSource src;
-        src.mText = text;
-        src.mTextLen = std::strlen(text);
-        return vtu_array_from_bytes(vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true),
-                                    dt, true);
-    }
-    if (fmt == "appended") {
-        // strtoull skips the padding some writers put around the offset.
-        const std::uint64_t offset =
-            std::strtoull(rDa.attribute("offset").as_string("0"), nullptr, 10);
-        VtuByteSource src;
-        if (rCtx.mRaw) {
-            src.mRaw = rCtx.mRaw;
-            src.mRawLen = rCtx.mRawLen;
-        } else if (rCtx.mBase64) {
-            src.mText = rCtx.mBase64;
-            src.mTextLen = rCtx.mBase64Len;
-        } else {
-            throw ReadError("VTU: appended DataArray but no <AppendedData>");
+    auto decode = [&]() -> NDArray {
+        if (fmt == "ascii")
+            return detail::vtu_parse_ascii(rDa.text().get(), dt);
+        if (fmt == "binary") {
+            if (!rCtx.mBigEndian)
+                return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt,
+                                                   rCtx.mCodec, rCtx.mHeaderSize);
+            const char* text = rDa.text().get();
+            VtuByteSource src;
+            src.mText = text;
+            src.mTextLen = std::strlen(text);
+            return vtu_array_from_bytes(
+                vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true), dt, true);
         }
-        if (offset > (src.mRaw ? src.mRawLen : src.mTextLen))
-            throw ReadError("VTU: appended offset past the end of the data");
-        src.mPos = static_cast<std::size_t>(offset);
-        return vtu_array_from_bytes(
-            vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, rCtx.mBigEndian), dt,
-            rCtx.mBigEndian);
-    }
-    throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
+        if (fmt == "appended") {
+            // Accept padding, but not missing, negative, overflowing or junk offsets.
+            const char* text = rDa.attribute("offset").as_string("");
+            while (*text && std::isspace(static_cast<unsigned char>(*text)))
+                ++text;
+            if (*text < '0' || *text > '9')
+                throw ReadError("VTK XML: invalid appended offset");
+            char* end = nullptr;
+            errno = 0;
+            const std::uint64_t offset = std::strtoull(text, &end, 10);
+            if (errno == ERANGE)
+                throw ReadError("VTK XML: appended offset overflows UInt64");
+            while (*end && std::isspace(static_cast<unsigned char>(*end)))
+                ++end;
+            if (*end)
+                throw ReadError("VTK XML: invalid appended offset");
+            VtuByteSource src;
+            if (rCtx.mRaw) {
+                src.mRaw = rCtx.mRaw;
+                src.mRawLen = rCtx.mRawLen;
+            } else if (rCtx.mBase64) {
+                src.mText = rCtx.mBase64;
+                src.mTextLen = rCtx.mBase64Len;
+            } else {
+                throw ReadError("VTU: appended DataArray but no <AppendedData>");
+            }
+            if (offset > (src.mRaw ? src.mRawLen : src.mTextLen))
+                throw ReadError("VTU: appended offset past the end of the data");
+            src.mPos = static_cast<std::size_t>(offset);
+            return vtu_array_from_bytes(
+                vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, rCtx.mBigEndian), dt,
+                rCtx.mBigEndian);
+        }
+        throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
+    };
+    NDArray out = decode();
+    if (rNumComponents > 0 && out.Size() % static_cast<std::size_t>(rNumComponents) != 0)
+        throw ReadError("VTK XML: array size does not fit NumberOfComponents");
+    return out;
 }
 
 /**
@@ -280,18 +294,11 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  * included): the file is read as bytes, the payload cut out, and only the text
  * around it parsed. Every other file parses as before.
  */
-struct VtuSource {
-    pugi::xml_document mDoc;
-    std::optional<detail::FileSource> mFile;  // the file, read once
-    std::string_view mBytes;                  // its bytes: a raw payload is a view into them
-    std::size_t mRawStart = 0;
-    std::size_t mRawStop = 0;
-    bool mIsRaw = false;
-};
-
-void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
-    detail::vtk_preflight(rPath, "UnstructuredGrid",
-                          "lzma-compressed VTU not supported by the C++ reader");
+void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource,
+              const char* pType, const char* pFormat) {
+    const std::string format(pFormat);
+    const std::string decline = "lzma-compressed " + format + " not supported by the C++ reader";
+    detail::vtk_preflight(rPath, pType, decline.c_str());
     // The file is read once: a raw <AppendedData> payload is not XML, so only
     // the text around it is parsed, and the payload is a view into the same
     // bytes (it read the file twice and parsed it twice before v16.21.0).
@@ -300,29 +307,90 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
     const std::size_t tag_end = tag == std::string_view::npos ? tag : b.find('>', tag);
-    const bool raw = tag_end != std::string_view::npos &&
-                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string_view::npos;
+    const bool raw =
+        tag_end != std::string_view::npos &&
+        detail::vtk_preflight_attribute(b.substr(tag, tag_end - tag), "encoding") == "raw";
     pugi::xml_parse_result res;
     if (!raw) {
         res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
         if (!res)
-            throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+            throw ReadError(format + " XML parse failed: " + res.description());
         return;
     }
-    const std::size_t underscore = b.find('_', tag_end);
+    std::size_t underscore = tag_end + 1;
+    while (underscore < b.size() && std::isspace(static_cast<unsigned char>(b[underscore])))
+        ++underscore;
     const std::size_t stop = b.rfind("</AppendedData>");
-    if (underscore == std::string::npos || stop == std::string::npos || stop <= underscore)
-        throw ReadError("VTU: AppendedData is not closed");
+    if (underscore >= b.size() || b[underscore] != '_' || stop == std::string::npos ||
+        stop <= underscore)
+        throw ReadError(format + ": AppendedData must start with '_' and be closed");
     std::string xml(b.substr(0, tag_end + 1));
     xml += b.substr(stop);
     rSource.mDoc.reset();
     res = rSource.mDoc.load_buffer(xml.data(), xml.size(), ParseOptions);
     if (!res)
-        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+        throw ReadError(format + " XML parse failed: " + res.description());
     rSource.mIsRaw = true;
     rSource.mRawStart = underscore + 1;
     rSource.mRawStop = stop;
 }
+
+VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
+    VtuContext ctx;
+    const std::string format(pFormat);
+    const auto root = rSource.mDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (!compressor.empty()) {
+        bool found = false;
+        for (const auto codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD})
+            if (compressor == vtk_codec_compressor(codec)) {
+                ctx.mCodec = codec;
+                found = true;
+            }
+        if (!found) {
+            if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
+                throw ReadError("lzma-compressed " + format + " not supported by the C++ reader");
+            throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
+        }
+    }
+    vtk_codec_require_read(ctx.mCodec);
+    const std::string header = root.attribute("header_type").as_string("UInt32");
+    if (header != "UInt32" && header != "UInt64")
+        throw ReadError("Unknown " + format + " header type '" + header + "'");
+    ctx.mHeaderSize = header == "UInt64" ? 8 : 4;
+    const std::string order = root.attribute("byte_order").as_string("LittleEndian");
+    if (order != "LittleEndian" && order != "BigEndian")
+        throw ReadError("Unknown " + format + " byte order '" + order + "'");
+    ctx.mBigEndian = order == "BigEndian";
+    if (rSource.mIsRaw) {
+        ctx.mRaw =
+            reinterpret_cast<const unsigned char*>(rSource.mBytes.data()) + rSource.mRawStart;
+        ctx.mRawLen = rSource.mRawStop - rSource.mRawStart;
+    } else if (const auto app = root.child("AppendedData")) {
+        const std::string encoding = app.attribute("encoding").as_string("base64");
+        if (encoding != "base64")
+            throw ReadError("Unknown " + format + " AppendedData encoding '" + encoding + "'");
+        const char* text = app.text().get();
+        while (*text && std::isspace(static_cast<unsigned char>(*text)))
+            ++text;
+        if (*text != '_')
+            throw ReadError(format + ": AppendedData does not start with '_'");
+        ctx.mBase64 = text + 1;
+        ctx.mBase64Len = std::strlen(text + 1);
+    }
+    return ctx;
+}
+
+}  // namespace detail
+
+namespace {
+using detail::vtu_load;
+using detail::vtu_read_data_array;
+using detail::vtu_to_int64;
+using detail::VtuContext;
+using detail::VtuSource;
 
 /**
  * @brief The `<Piece>` nodes plus the framing attributes every path needs.
@@ -346,50 +414,11 @@ vtu_header vtu_parse_header(const VtuSource& rSource) {
         throw ReadError("Expected type UnstructuredGrid");
 
     vtu_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCtx.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCtx.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCtx.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCtx.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTU not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTU compressor '" + compressor + "'");
-    // Fail early and actionably when the file needs a codec this build lacks,
-    // rather than at the first array body.
-    detail::vtk_codec_require_read(h.mCtx.mCodec);
-
-    std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mCtx.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-    const std::string byte_order = root.attribute("byte_order").as_string("LittleEndian");
-    if (byte_order != "LittleEndian" && byte_order != "BigEndian")
-        throw ReadError("Unknown VTU byte order '" + byte_order + "'");
-    h.mCtx.mBigEndian = byte_order == "BigEndian";
+    h.mCtx = detail::vtk_xml_read_context(rSource, "VTU");
 
     pugi::xml_node grid = root.child("UnstructuredGrid");
     if (!grid)
         throw ReadError("No UnstructuredGrid found");
-
-    if (rSource.mIsRaw) {
-        h.mCtx.mRaw =
-            reinterpret_cast<const unsigned char*>(rSource.mBytes.data()) + rSource.mRawStart;
-        h.mCtx.mRawLen = rSource.mRawStop - rSource.mRawStart;
-    } else if (pugi::xml_node app = root.child("AppendedData")) {
-        const std::string encoding = app.attribute("encoding").as_string("base64");
-        if (encoding != "base64")
-            throw ReadError("Unknown VTU AppendedData encoding '" + encoding + "'");
-        const char* text = app.text().get();
-        while (*text && std::isspace(static_cast<unsigned char>(*text)))
-            ++text;
-        if (*text != '_')
-            throw ReadError("VTU: AppendedData does not start with '_'");
-        h.mCtx.mBase64 = text + 1;
-        h.mCtx.mBase64Len = std::strlen(text + 1);
-    }
 
     h.mGrid = grid;
     for (pugi::xml_node piece : grid.children("Piece")) {

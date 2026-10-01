@@ -1,5 +1,7 @@
 # Julia
 
+The shared native reader supports appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI remain single-piece and their writers remain inline; optional codecs follow the C library build. See [formats](formats.md).
+
 meshio++ ships a Julia package, `MeshioPlusPlus`, layered on the [C API](/c_api) via `ccall` — the same way the [Fortran](/fortran) module is, and aimed at the same HPC audience:
 
 ```julia

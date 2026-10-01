@@ -70,7 +70,9 @@ Recovering three arbitrary per-axis coordinate arrays from an unstructured point
 
 ## Quirks & limitations
 
-Identical to [`.vti`'s](./vti.md#quirks-limitations): `<AppendedData>` is declined by both readers; one `<Piece>` only, whose `Extent` must equal the `WholeExtent`; lzma is rejected by both readers; `header_type="UInt64"` is honoured on read, the writer always emits the default `UInt32`.
+Identical to [`.vti`'s](./vti.md#quirks-limitations): both readers accept raw/base64 `<AppendedData>`, UInt32/UInt64 headers and either byte order, with optional zlib/LZ4/ZSTD codecs; writers remain inline. One `<Piece>` only, whose `Extent` must equal the `WholeExtent`; lzma is rejected by both readers.
+
+Coordinate arrays need not be named `x_coordinates`/`y_coordinates`/`z_coordinates`: readers retain the historical lookup by those names when present, otherwise use the three arrays' x/y/z order, as VTK's own writer does.
 
 **Degenerate (2-D/1-D) extents are not expanded to quad/line/vertex cells**, the same remainder `.vts` has — this reader, like `.vti`'s and `.vts`'s, only ever emits `hexahedron` connectivity.
 

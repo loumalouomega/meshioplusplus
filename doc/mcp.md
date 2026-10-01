@@ -13,6 +13,8 @@ Every tool is **file-path based**: input path(s) in, output path(s) out, a stric
 
 `convert` reads Gmsh 2.2/4.0/4.1 inputs, including periodic links, through the native core. The 4.0 binary path accepts 4- or 8-byte producer counts. Gmsh output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), both preserving periodic links; other formats need not carry Gmsh-specific metadata. See [Gmsh](formats/gmsh.md).
 
+Serial VTK XML input (`vtu`, `vtp`, `vts`, `vtr`, `vti`) accepts appended raw/base64 arrays through the native core, including UInt32/UInt64 headers and either byte order. `points_only` and `arrays` still narrow data loading. VTP/VTS/VTR/VTI remain single-piece and write inline output; `mode="raw_appended"` remains VTU-only. See [formats](formats.md).
+
 ## Installation
 
 | Extra | Brings | For |

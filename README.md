@@ -18,6 +18,8 @@
 
 There are various mesh formats available for representing unstructured meshes. meshio++ can read and write all of the following and smoothly converts between them:
 
+Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept appended raw/base64 arrays in both the native core and Python reference, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI remain single-piece and their writers remain inline; see the [format documentation](doc/formats.md).
+
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary, read-only; every increment is a step, nodal and element results by output location),
 > [ANSYS Fluent](https://www.ansys.com/products/fluids/ansys-fluent) mesh (`.msh`; cells rebuilt from faces, written face-based as Fluent reads it, zones as named regions),

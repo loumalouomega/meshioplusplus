@@ -335,6 +335,8 @@ meshioplusplus.vtu.write(filename, mesh,
 
 ### VTI (`.vti`)
 
+Serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support appended raw/base64 arrays in the native core and Python reference, including UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI still require a single piece and write inline arrays; only VTU exposes appended output. See the individual format pages for codec and structured-grid restrictions.
+
 ```python
 meshioplusplus.vti.write(filename, mesh,   # mesh must be a dense lattice
     binary=True,

@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased (2026-10-01)
 
+- VTP/VTS/VTR/VTI now read appended raw and base64 arrays through VTU's shared native decoder and the Python reference, including UInt32/UInt64 headers, both byte orders and optional zlib/LZ4/ZSTD compression. Selective reads and native metadata summaries use the same framing. Malformed offsets and truncated payloads raise; VTR accepts VTK-generated axis-array names. Writers and the installed ABI are unchanged; multi-piece assembly and legacy structured VTK remain on roadmap §4.2.
+
 - MDPA `SubModelPartGeometries` and `SubModelPartConstraints` membership now round-trips through `MdpaInfo` and Python's reference reader/writer, including nested membership-only parts. Raw geometry/constraint ids retain ordering and duplicates; constraints stay opaque and mesh operations do not remap these lists. Info-less reads still reject non-empty blocks, or skip them with a warning under `lenient`; malformed membership lists still fail.
 - C `MIO_MDPA_SUBMODELPARTS` array fields 1/2 expose geometry/constraint ids, mirrored in Fortran, Julia, R, Python core info dictionaries and WASM (`geometryIds`/`constraintIds`). Existing fields and C signatures are unchanged.
 - **Breaking (C++ ABI):** ABI 20 → 21: `MdpaSubModelPart` gains `mGeometryIds` and `mConstraintIds` (80 → 128 bytes on the reference layout); rebuild C++ consumers. `MdpaInfo` itself remains 216 bytes. This supersedes the earlier intent to hold ABI 20 across the parity stack: the installed-layout policy requires the bump.

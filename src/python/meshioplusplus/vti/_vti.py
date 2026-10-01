@@ -20,7 +20,6 @@ literally reuses ``VtuReader``'s methods rather than transcribing them.
 from __future__ import annotations
 
 import base64
-import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -28,34 +27,14 @@ from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
+from .._vtk_xml_read import load as _load_xml
 from ..vtu._vtu import (
     _COMPRESSION_TO_ATTR,
-    VtuReader,
     _chunk_it,
     _compressor_for,
     numpy_to_vtu_type,
     vtu_to_numpy_type,
 )
-
-
-class _ArrayReader:
-    """Just enough of a ``VtuReader`` to decode a ``<DataArray>``.
-
-    The three decode methods are *bound from* ``VtuReader`` rather than copied:
-    the base64 header framing, the per-block sizes and the byte-order handling
-    are subtle enough that a second implementation would drift, and the two
-    formats share the container exactly.
-    """
-
-    read_uncompressed_binary = VtuReader.read_uncompressed_binary
-    read_compressed_binary = VtuReader.read_compressed_binary
-    read_data = VtuReader.read_data
-
-    def __init__(self, header_type, byte_order, compression, appended_data=None):
-        self.header_type = header_type
-        self.byte_order = byte_order
-        self.compression = compression
-        self.appended_data = appended_data
 
 
 def _parse_n(text, count, dtype):
@@ -68,30 +47,7 @@ def _parse_n(text, count, dtype):
 
 
 def read(filename):
-    tree = ET.parse(str(filename))
-    root = tree.getroot()
-    if root.tag != "VTKFile":
-        raise ReadError("Expected tag 'VTKFile'")
-    if root.get("type") != "ImageData":
-        raise ReadError("Expected type ImageData")
-
-    compression = root.get("compressor")
-    if compression == "vtkLZMADataCompressor":
-        # The C++ reader declines lzma too; Python has the module, so this is a
-        # deliberate parity choice rather than a capability gap. Removing it
-        # would make the two readers accept different files.
-        raise ReadError("lzma-compressed VTI is not supported")
-    header_type = root.get("header_type", "UInt32")
-    byte_order = root.get("byte_order")
-
-    appended = root.find("AppendedData")
-    appended_data = None
-    if appended is not None:
-        encoding = appended.get("encoding", "base64")
-        if encoding != "base64":
-            raise ReadError(f"VTI appended data encoding '{encoding}' is not supported")
-        text = appended.text or ""
-        appended_data = text.strip().lstrip("_")
+    root, reader = _load_xml(filename, "ImageData", "VTI")
 
     grid = root.find("ImageData")
     if grid is None:
@@ -134,7 +90,6 @@ def read(filename):
     num_points = points.shape[0]
     num_cells = 0 if conn is None else conn.shape[0]
 
-    reader = _ArrayReader(header_type, byte_order, compression, appended_data)
     point_data = {}
     cell_data = {}
     for section, sink, expected, what in (

@@ -41,6 +41,8 @@
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
 
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
@@ -86,6 +88,71 @@ TEST(CApi, VersionAndBackend) {
     EXPECT_STRNE(mio_version(), "");
     const std::string backend = mio_mesh_backend();
     EXPECT_TRUE(backend == "meshio" || backend == "native" || backend == "kratos") << backend;
+}
+
+TEST(CApi, AppendedVtkXmlReadsWithoutPython) {
+    for (const std::string format : {"vtp", "vts", "vtr", "vti"}) {
+        const bool surface = format == "vtp";
+        const std::size_t n = surface ? 4 : 8;
+        const std::string type = surface           ? "PolyData"
+                                 : format == "vts" ? "StructuredGrid"
+                                 : format == "vtr" ? "RectilinearGrid"
+                                                   : "ImageData";
+        for (bool base64 : {false, true}) {
+            std::string xml =
+                "<VTKFile type='" + type + "' byte_order='LittleEndian'><" + type +
+                (surface ? "" : " WholeExtent='0 1 0 1 0 1'") + "><Piece " +
+                (surface ? "NumberOfPoints='4'" : "Extent='0 1 0 1 0 1'") +
+                "><PointData><DataArray type='Int32' Name='tag' format='appended' offset='0'/>"
+                "</PointData>";
+            if (surface || format == "vts") {
+                xml +=
+                    "<Points><DataArray type='Float64' NumberOfComponents='3' format='ascii'>"
+                    "0 0 0 1 0 0 0 1 0 1 1 0 ";
+                if (!surface)
+                    xml += "0 0 1 1 0 1 0 1 1 1 1 1 ";
+                xml += "</DataArray></Points>";
+            }
+            if (surface)
+                xml +=
+                    "<Polys><DataArray type='Int32' Name='connectivity' format='ascii'>0 1 3 "
+                    "2</DataArray>"
+                    "<DataArray type='Int32' Name='offsets' format='ascii'>4</DataArray></Polys>";
+            if (format == "vtr")
+                xml +=
+                    "<Coordinates><DataArray type='Float64' format='ascii'>0 1</DataArray>"
+                    "<DataArray type='Float64' format='ascii'>0 1</DataArray>"
+                    "<DataArray type='Float64' format='ascii'>0 1</DataArray></Coordinates>";
+            xml += "</Piece></" + type + "><AppendedData encoding='" + (base64 ? "base64" : "raw") +
+                   "'>_";
+            std::vector<unsigned char> bytes{static_cast<unsigned char>(n * 4), 0, 0, 0};
+            for (std::size_t i = 0; i < n; ++i)
+                bytes.insert(bytes.end(), {static_cast<unsigned char>(i + 7), 0, 0, 0});
+            if (base64)
+                xml += meshioplusplus::detail::b64encode(bytes.data(), bytes.size());
+            else
+                xml.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            xml += "</AppendedData></VTKFile>";
+            const auto path = mt::temp_path("_appended." + format);
+            {
+                auto out = meshioplusplus::detail::make_classic_ofstream(path, std::ios::binary);
+                out.write(xml.data(), static_cast<std::streamsize>(xml.size()));
+            }
+            mio_mesh* mesh = mio_read(path.c_str(), format.c_str());
+            ASSERT_NE(mesh, nullptr) << mio_last_error();
+            EXPECT_EQ(mio_mesh_num_points(mesh), static_cast<std::int64_t>(n));
+            EXPECT_EQ(mio_mesh_num_cell_blocks(mesh), 1);
+            mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), format.c_str());
+            ASSERT_NE(meta, nullptr) << mio_last_error();
+            EXPECT_EQ(mio_read_metadata_fell_back(meta), 0);
+            mio_read_metadata_free(meta);
+            const auto converted = mt::temp_path("_appended_converted.vtu");
+            EXPECT_EQ(mio_write(converted.c_str(), mesh, "vtu"), MIO_OK) << mio_last_error();
+            mio_mesh_free(mesh);
+            std::remove(path.c_str());
+            std::remove(converted.c_str());
+        }
+    }
 }
 
 TEST(CApi, Gmsh40ReadsBothBinaryCountWidthsAndConverts) {

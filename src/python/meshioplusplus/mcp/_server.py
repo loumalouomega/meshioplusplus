@@ -249,7 +249,9 @@ def _register_conversion(server: FastMCP) -> None:
         membership as raw file ids; constraints remain opaque, and other
         output formats may drop that side-channel content. Gmsh input versions
         2.2/4.0/4.1, including periodic links, use the native reader. Gmsh output
-        is 4.1, or 2.2 via gmsh22; both preserve periodic links."""
+        is 4.1, or 2.2 via gmsh22; both preserve periodic links. Serial VTK XML
+        inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64 arrays natively;
+        VTP/VTS/VTR/VTI remain single-piece with inline output."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,

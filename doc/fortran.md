@@ -1,5 +1,7 @@
 # Fortran
 
+The shared native reader supports appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI remain single-piece and their writers remain inline; optional codecs follow the C library build. See [formats](formats.md).
+
 meshio++ ships a modern object-oriented Fortran 2008 module, `meshioplusplus`, layered on the [C API](/c_api) via `ISO_C_BINDING` — in the HDF5/PETSc style, aimed at Fortran HPC codes:
 
 ```fortran
