@@ -197,7 +197,8 @@ MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaGeometryBlock, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaMeshBlock, 104, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MdpaSubModelPart, 80, 8);
+// ABI 21: geometry and constraint membership ids (two vectors).
+MIO_ABI_LAYOUT(meshioplusplus::MdpaSubModelPart, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaRawBlock, 96, 8);
 // `OpenFoamWriteOptions` (v15.5.0, roadmap §1.1) is a pure addition, pinned
 // from the release that introduces it -- the `PvdSeriesWriter` precedent

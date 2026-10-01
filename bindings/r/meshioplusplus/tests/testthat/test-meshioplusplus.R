@@ -1341,6 +1341,10 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
     "Begin Nodes", "1 0 0 0", "2 1 0 0", "3 0 1 0", "4 0 0 1", "End Nodes",
     "Begin Elements Element3D4N", "1 0 1 2 3 4", "End Elements",
     "Begin Geometries Triangle3D3", "7 2 3 4", "End Geometries",
+    "Begin SubModelPart Part", "    Begin SubModelPart Inner",
+    "        Begin SubModelPartGeometries", "            7", "        End SubModelPartGeometries",
+    "        Begin SubModelPartConstraints", "            1", "        End SubModelPartConstraints",
+    "    End SubModelPart", "End SubModelPart",
     "Begin Mesh 5", "    Begin MeshNodes", "        4", "    End MeshNodes", "End Mesh",
     "Begin Constraints LinearMasterSlaveConstraint",
     "    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0", "End Constraints"
@@ -1357,6 +1361,9 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
   expect_equal(d$tables[[1]]$values, matrix(c(0, 2, 1, 3), nrow = 2))
   expect_equal(d$geometries[[1]]$connectivity, matrix(c(2, 3, 4), nrow = 3))
   expect_equal(d$geometries[[1]]$ids, 7)
+  expect_equal(d$submodelparts[[1]]$name, "Part/Inner")
+  expect_equal(d$submodelparts[[1]]$geometry_ids, 7)
+  expect_equal(d$submodelparts[[1]]$constraint_ids, 1)
   expect_equal(d$mesh_blocks[[1]]$id, 5)
   expect_equal(d$mesh_blocks[[1]]$nodes, 4)
   expect_equal(d$raw_blocks[[1]]$terminator, "End Constraints")
@@ -1365,6 +1372,7 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
   mio_write_with_info(r$mesh, r$info, out)
   r2 <- mio_read_with_info(out)
   expect_equal(mio_mdpa_info(r2$info)$raw_blocks, d$raw_blocks)
+  expect_equal(mio_mdpa_info(r2$info)$submodelparts, d$submodelparts)
   expect_error(mio_write_with_info(r$mesh, r$info, file.path(dir, "out.vtu")))
   mio_release(r2$mesh)
   mio_format_info_release(r2$info)

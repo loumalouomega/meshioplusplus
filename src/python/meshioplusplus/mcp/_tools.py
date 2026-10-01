@@ -102,7 +102,9 @@ from .. import (
     scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
-from .. import shrinkwrap
+from .. import (
+    shrinkwrap,
+)
 from .. import slice as _slice_op
 from .. import (
     smooth,
@@ -765,6 +767,9 @@ def tool_convert(
     patran_results=None,
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
+
+    MDPA-to-MDPA conversion preserves nested geometry/constraint membership
+    as raw file ids; constraints remain opaque and other formats may drop it.
 
     ``grid_functions`` (``{name: path}``) reads MFEM ``.gf`` files onto an MFEM
     input mesh; ``patran_results`` (``{name: path}``) reads Patran 2.5 result

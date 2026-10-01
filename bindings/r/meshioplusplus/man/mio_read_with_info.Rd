@@ -61,7 +61,7 @@ non-numeric entries), `tables` (`header`, `values` as a `(rows, columns)`
 matrix), `geometries` (`name`, `type`, 1-based `connectivity` as a
 `(nodes_per_geometry, num_geometries)` matrix, `ids`), `mesh_blocks` (`id`,
 `data`, 1-based `nodes`, `element_ids`, `condition_ids`), `submodelparts`
-(`name`, `data`, `tables`) and `raw_blocks` (`header`, `body`,
+(`name`, `data`, `tables`, `geometry_ids`, `constraint_ids`) and `raw_blocks` (`header`, `body`,
 `terminator`). File ids stay as the file spelled them; they arrive as
 `double`, since R has no native 64-bit integer.
 

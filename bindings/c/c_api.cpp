@@ -1272,6 +1272,12 @@ mio_status mio_mdpa_info_array(const mio_format_info* info, int32_t section, int
             case MIO_MDPA_SUBMODELPARTS:
                 if (field == 0)
                     return capi_ids_out(r_info.mSubModelParts[i].mTables, data, dtype, ndim, shape);
+                if (field == 1)
+                    return capi_ids_out(r_info.mSubModelParts[i].mGeometryIds, data, dtype, ndim,
+                                        shape);
+                if (field == 2)
+                    return capi_ids_out(r_info.mSubModelParts[i].mConstraintIds, data, dtype, ndim,
+                                        shape);
                 break;
             default:
                 break;

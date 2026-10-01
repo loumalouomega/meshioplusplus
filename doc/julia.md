@@ -307,6 +307,8 @@ Two spellings to note. `method` is given as an underscored symbol (`:green_gauss
 
 ## Format side channels
 
+MDPA's `mdpa_info(info).submodelparts` entries contain `name`, `data`, `tables`, `geometry_ids` and `constraint_ids`. The last two lists retain original file ids, ordering and duplicates without Julia's point-index shift; mesh operations do not remap them. `write_with_info` restores nested membership-only parts, with constraints themselves kept opaque in `raw_blocks`.
+
 `read_with_info(path; format="", options=nothing)` returns `(mesh, info)`, `info` a `FormatInfo` for a format that has a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`) and `nothing` otherwise; `write_with_info(mesh, info, path)` puts it back and `close(info)` releases it. `mdpa_info(info)` copies the MDPA side channel into a `NamedTuple` (`tables`, `geometries` with 1-based `(nodes, n)` connectivity, `mesh_blocks`, `submodelparts`, `raw_blocks`, …); file ids stay as the file spelled them. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 
 ## Sequences (transient / multi-file datasets)

@@ -4352,6 +4352,12 @@ Begin SubModelPart Inlet
     Begin SubModelPartNodes
         1
     End SubModelPartNodes
+    Begin SubModelPartGeometries
+        7
+    End SubModelPartGeometries
+    Begin SubModelPartConstraints
+        1
+    End SubModelPartConstraints
 End SubModelPart
 Begin Mesh 3
     Begin MeshNodes
@@ -4432,6 +4438,15 @@ TEST(CApi, ReadWithInfoKeepsTheMdpaSideChannel) {
     ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_SUBMODELPARTS), 1);
     EXPECT_EQ(capi_info_string(info, MIO_MDPA_SUBMODELPARTS, 0, 0), "Inlet");
     EXPECT_EQ(mio_mdpa_info_data_kind(info, MIO_MDPA_SUBMODELPARTS, 0, 0), MIO_MDPA_VALUE_NUMBER);
+    for (int32_t field : {1, 2}) {
+        ASSERT_EQ(
+            mio_mdpa_info_array(info, MIO_MDPA_SUBMODELPARTS, 0, field, &data, &dt, &ndim, shape),
+            MIO_OK);
+        EXPECT_EQ(dt, MIO_INT64);
+        EXPECT_EQ(ndim, 1);
+        ASSERT_EQ(shape[0], 1);
+        EXPECT_EQ(static_cast<const int64_t*>(data)[0], field == 1 ? 7 : 1);
+    }
 
     ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_PROPERTIES), 1);
     ASSERT_EQ(mio_mdpa_info_data_count(info, MIO_MDPA_PROPERTIES, 0), 2);
@@ -4456,6 +4471,13 @@ TEST(CApi, ReadWithInfoKeepsTheMdpaSideChannel) {
     mio_format_info* info2 = nullptr;
     mio_mesh* mesh2 = mio_read_with_info(out.c_str(), nullptr, nullptr, &info2);
     ASSERT_NE(mesh2, nullptr) << mio_last_error();
+    for (int32_t field : {1, 2}) {
+        ASSERT_EQ(
+            mio_mdpa_info_array(info2, MIO_MDPA_SUBMODELPARTS, 0, field, &data, &dt, &ndim, shape),
+            MIO_OK);
+        ASSERT_EQ(shape[0], 1);
+        EXPECT_EQ(static_cast<const int64_t*>(data)[0], field == 1 ? 7 : 1);
+    }
     for (int32_t section : {MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES, MIO_MDPA_MESH_BLOCKS,
                             MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS, MIO_MDPA_PROPERTIES})
         EXPECT_EQ(mio_mdpa_info_count(info2, section), mio_mdpa_info_count(info, section))

@@ -80,6 +80,8 @@ Formats whose reader follows other files are never cached, because the entry fil
 
 ## Tools
 
+MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint memberships as raw file ids, through the Python format side channel. Constraints remain opaque; the lists are not mesh-cell indices and operations do not remap them. Other output formats need not preserve MDPA-specific content. See [MDPA](formats/mdpa.md).
+
 89 tools; the six marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
 
 ### Inspection (read-only)

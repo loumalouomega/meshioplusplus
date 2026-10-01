@@ -271,6 +271,8 @@ As elsewhere in this binding, remember to release a series *before* its tempdir 
 
 ## Format side channels
 
+MDPA's `mio_mdpa_info(info)$submodelparts` entries contain `name`, `data`, `tables`, `geometry_ids` and `constraint_ids`. Membership values retain raw file ids, ordering and duplicates without R's point-index shift (represented as `double`, as other file ids are); mesh operations do not remap them. `mio_write_with_info` restores nested membership-only parts; constraints stay opaque in `raw_blocks`.
+
 `mio_read_with_info(path, format = NULL, lenient = FALSE)` returns `list(mesh = , info = )`, `info` a `mio_format_info` external pointer for a format with a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`) and `NULL` otherwise. `mio_write_with_info(mesh, info, path)` puts it back, `mio_format_info_release(info)` frees it, and `mio_mdpa_info(info)` copies the MDPA side channel into a list (`tables`, `geometries` with 1-based connectivity, `mesh_blocks`, `submodelparts`, `raw_blocks`, …); ids arrive as `double`. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 
 ## Sequences (transient / multi-file datasets)

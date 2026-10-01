@@ -1403,6 +1403,16 @@ end
         Begin Geometries Triangle3D3
         7 2 3 4
         End Geometries
+        Begin SubModelPart Part
+            Begin SubModelPart Inner
+                Begin SubModelPartGeometries
+                    7
+                End SubModelPartGeometries
+                Begin SubModelPartConstraints
+                    1
+                End SubModelPartConstraints
+            End SubModelPart
+        End SubModelPart
         Begin Constraints LinearMasterSlaveConstraint
             1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0
         End Constraints
@@ -1418,11 +1428,15 @@ end
         @test d.geometries[1].name == "Triangle3D3"
         @test d.geometries[1].connectivity == reshape([2, 3, 4], 3, 1)
         @test d.geometries[1].ids == [7]
+        @test d.submodelparts[1].name == "Part/Inner"
+        @test d.submodelparts[1].geometry_ids == [7]
+        @test d.submodelparts[1].constraint_ids == [1]
         @test d.raw_blocks[1].terminator == "End Constraints"
         out = joinpath(dir, "out.mdpa")
         write_with_info(m, info, out)
         m2, info2 = read_with_info(out)
         @test mdpa_info(info2).raw_blocks == d.raw_blocks
+        @test mdpa_info(info2).submodelparts == d.submodelparts
         @test_throws MeshioError write_with_info(m, info, joinpath(dir, "out.vtu"))
         # A format with no side channel: nothing, and a plain read.
         vtu = joinpath(dir, "plain.vtu")

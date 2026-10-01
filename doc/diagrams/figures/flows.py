@@ -971,10 +971,10 @@ def roadmap_map():
         (
             "§4 core parity across surfaces",
             [
-                ("MDPA tables · geometries", "M"),
                 ("gmsh periodic · VTK pieces", "M"),
+                ("XDMF references · MED profiles", "M"),
                 ("Exodus sets · sets → regions", "M"),
-                ("side regions · ABI report", "M"),
+                ("pipeline report · flat write options", "M"),
             ],
             [],
         ),

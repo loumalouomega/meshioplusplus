@@ -245,7 +245,9 @@ def _register_conversion(server: FastMCP) -> None:
         supports it, or raw_appended (VTU: raw binary in one <AppendedData>
         section, no base64); compression selects zlib|lz4|zstd|lzma (VTU/VTP block
         codecs), gzip (CGNS/H5M/VTKHDF/XDMF), lzf (PCD binary_compressed) or
-        'none' to decompress."""
+        'none' to decompress. MDPA-to-MDPA preserves nested geometry/constraint
+        membership as raw file ids; constraints remain opaque, and other
+        output formats may drop that side-channel content."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,

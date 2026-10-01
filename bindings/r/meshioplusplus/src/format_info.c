@@ -287,13 +287,15 @@ static SEXP make_mesh_block(const mio_format_info *info, int64_t i) {
 }
 
 static SEXP make_submodelpart(const mio_format_info *info, int64_t i) {
-    SEXP v[3];
+    SEXP v[5];
     v[0] = PROTECT(item_string(info, MIO_MDPA_SUBMODELPARTS, i, 0));
     v[1] = PROTECT(item_data(info, MIO_MDPA_SUBMODELPARTS, i));
     v[2] = PROTECT(item_array(info, MIO_MDPA_SUBMODELPARTS, i, 0, 0, 0.0));
-    const char *names[3] = {"name", "data", "tables"};
-    SEXP out = mio_r_named_list(3, names, v);
-    UNPROTECT(3);
+    v[3] = PROTECT(item_array(info, MIO_MDPA_SUBMODELPARTS, i, 1, 0, 0.0));
+    v[4] = PROTECT(item_array(info, MIO_MDPA_SUBMODELPARTS, i, 2, 0, 0.0));
+    const char *names[5] = {"name", "data", "tables", "geometry_ids", "constraint_ids"};
+    SEXP out = mio_r_named_list(5, names, v);
+    UNPROTECT(5);
     return out;
 }
 

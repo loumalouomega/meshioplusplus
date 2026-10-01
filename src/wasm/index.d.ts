@@ -265,8 +265,14 @@ export interface MdpaInfo {
     elementIds: number[];
     conditionIds: number[];
   }>;
-  /** `SubModelPartData`/`SubModelPartTables` content, by hierarchical part name. */
-  subModelParts?: Array<{ name: string; data: PropertyValue[]; tables: number[] }>;
+  /** Data and membership, by hierarchical part name; ids stay raw and are not remapped by operations. */
+  subModelParts?: Array<{
+    name: string;
+    data: PropertyValue[];
+    tables: number[];
+    geometryIds?: number[];
+    constraintIds?: number[];
+  }>;
   /** Every other top-level block (`Constraints`, ...), kept verbatim. */
   rawBlocks?: Array<{ header: string; body: string; end: string }>;
 }

@@ -453,6 +453,8 @@ py::dict core_mdpa_info_to_py(const meshioplusplus::MdpaInfo& rInfo) {
         d["name"] = smp.mName;
         d["data"] = core_mdpa_values_to_py(smp.mData);
         d["tables"] = core_mdpa_ids_to_py(smp.mTables);
+        d["geometry_ids"] = core_mdpa_ids_to_py(smp.mGeometryIds);
+        d["constraint_ids"] = core_mdpa_ids_to_py(smp.mConstraintIds);
         smps.append(d);
     }
     out["submodelparts"] = smps;
@@ -529,7 +531,9 @@ meshioplusplus::MdpaInfo core_mdpa_info_from_py(const py::dict& rInfo) {
             info.mSubModelParts.push_back(meshioplusplus::MdpaSubModelPart{
                 py::cast<std::string>(d["name"]),
                 core_mdpa_values_from_py(core_dict_get(d, "data")),
-                core_mdpa_ids_from_py(core_dict_get(d, "tables"))});
+                core_mdpa_ids_from_py(core_dict_get(d, "tables")),
+                core_mdpa_ids_from_py(core_dict_get(d, "geometry_ids")),
+                core_mdpa_ids_from_py(core_dict_get(d, "constraint_ids"))});
         }
     const py::object raws = core_dict_get(rInfo, "raw_blocks");
     if (!raws.is_none())

@@ -116,7 +116,7 @@ See [mesh backends](/cpp_backends) for `KratosMesh` and the `ModelPart` material
 
 `BUILD_SHARED_LIBS` picks the library kind, as usual. The C++ libraries are built `-fvisibility=hidden` (`VISIBILITY_INLINES_HIDDEN` too) and the public surface is annotated with `MESHIOPLUSPLUS_API` (`export.hpp`), which also drives `__declspec(dllexport/dllimport)` on Windows — so a shared build exports its documented API and nothing else, on every platform.
 
-`SOVERSION` tracks [`MESHIOPLUSPLUS_ABI_VERSION`](/abi) (20), so the SONAME becomes `libmeshioplusplus_core_<backend>.so.20` and the dynamic linker refuses an incompatible library on its own. This is unlike the C API, whose `libmeshioplusplus` keeps a flat `SOVERSION 0` — its contract is append-only option structs and pin-the-major instead, since no C consumer compiles a header that defines a layout. Pin the ABI version (or the exact release) for `COMPONENTS CXX` as below.
+`SOVERSION` tracks [`MESHIOPLUSPLUS_ABI_VERSION`](/abi) (21), so the SONAME becomes `libmeshioplusplus_core_<backend>.so.21` and the dynamic linker refuses an incompatible library on its own. This is unlike the C API, whose `libmeshioplusplus` keeps a flat `SOVERSION 0` — its contract is append-only option structs and pin-the-major instead, since no C consumer compiles a header that defines a layout. Pin the ABI version (or the exact release) for `COMPONENTS CXX` as below.
 
 ## Dependencies
 
@@ -217,9 +217,9 @@ Nothing in the rest of this section applies to it: a C consumer compiles no mesh
 
 ```cmake
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 20)
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 21)
   message(FATAL_ERROR
-    "this project needs meshio++ ABI 20, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+    "this project needs meshio++ ABI 21, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 

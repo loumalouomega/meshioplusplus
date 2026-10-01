@@ -1880,6 +1880,10 @@ contains
         write (u, '(a)') 'Begin Nodes', '1 0 0 0', '2 1 0 0', '3 0 1 0', '4 0 0 1', 'End Nodes'
         write (u, '(a)') 'Begin Elements Element3D4N', '1 0 1 2 3 4', 'End Elements'
         write (u, '(a)') 'Begin Geometries Triangle3D3', '7 2 3 4', 'End Geometries'
+        write (u, '(a)') 'Begin SubModelPart Part', '    Begin SubModelPart Inner', &
+            '        Begin SubModelPartGeometries', '            7', '        End SubModelPartGeometries', &
+            '        Begin SubModelPartConstraints', '            1', '        End SubModelPartConstraints', &
+            '    End SubModelPart', 'End SubModelPart'
         write (u, '(a)') 'Begin Mesh 5', '    Begin MeshNodes', '        4', &
             '    End MeshNodes', 'End Mesh'
         write (u, '(a)') 'Begin Constraints LinearMasterSlaveConstraint', &
@@ -1907,6 +1911,11 @@ contains
         call check(gconn(1, 1) == 2 .and. gconn(3, 1) == 4, 'geometry conn is 1-based points')
         ids = info%mdpa_ids(MIO_MDPA_GEOMETRIES, 1, 1)
         call check(size(ids) == 1 .and. ids(1) == 7, 'geometry ids are the file ids')
+        call check(info%mdpa_string(MIO_MDPA_SUBMODELPARTS, 1, 0) == 'Part/Inner', 'nested part name')
+        ids = info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 1)
+        call check(size(ids) == 1 .and. ids(1) == 7, 'geometry membership is raw ids, not 1-based rows')
+        ids = info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 2)
+        call check(size(ids) == 1 .and. ids(1) == 1, 'constraint membership is raw ids')
         call check(info%mdpa_int(MIO_MDPA_MESH_BLOCKS, 1, 0) == 5_int64, 'Mesh block id')
         ids = info%mdpa_ids(MIO_MDPA_MESH_BLOCKS, 1, 0)
         call check(size(ids) == 1 .and. ids(1) == 4, 'Mesh block nodes are 1-based points')
@@ -1921,6 +1930,10 @@ contains
         call check(ierr == 0, 'the written deck reads back')
         call check(info2%mdpa_count(MIO_MDPA_RAW_BLOCKS) == 1, 'the raw block survived')
         call check(info2%mdpa_count(MIO_MDPA_GEOMETRIES) == 1, 'the geometry survived')
+        ids = info2%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 1)
+        call check(size(ids) == 1 .and. ids(1) == 7, 'geometry membership survived')
+        ids = info2%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 2)
+        call check(size(ids) == 1 .and. ids(1) == 1, 'constraint membership survived')
         call dm%write_with_info(prefix//'_side_out.vtu', info, stat=ierr)
         call check(ierr /= 0, 'an mdpa side channel is refused for vtu')
 

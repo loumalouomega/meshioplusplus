@@ -167,7 +167,7 @@ end
   `(nodes_per_geometry, num_geometries)` like [`connectivity`](@ref);
 * `mesh_blocks` — `(id, data, nodes, element_ids, condition_ids)`, `nodes`
   1-based points, the ids as the file spelled them;
-* `submodelparts` — `(name, data, tables)`;
+* `submodelparts` — `(name, data, tables, geometry_ids, constraint_ids)`;
 * `raw_blocks` — `(header, body, terminator)`, kept verbatim (`Constraints`, ...).
 
 `data`/`values` entries are `key => value` pairs: a number, a string, or a
@@ -203,7 +203,9 @@ function mdpa_info(info::FormatInfo)
                      for i in 0:n(MIO_MDPA_MESH_BLOCKS)-1],
         submodelparts=[(name=_mdpa_string(h, MIO_MDPA_SUBMODELPARTS, i, 0),
                         data=_mdpa_data(h, MIO_MDPA_SUBMODELPARTS, i),
-                        tables=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 0))
+                         tables=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 0),
+                         geometry_ids=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 1),
+                         constraint_ids=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 2))
                        for i in 0:n(MIO_MDPA_SUBMODELPARTS)-1],
         raw_blocks=[(header=_mdpa_string(h, MIO_MDPA_RAW_BLOCKS, i, 0),
                      body=_mdpa_string(h, MIO_MDPA_RAW_BLOCKS, i, 1),

@@ -3041,6 +3041,10 @@ step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
         'Begin Nodes', '1 0 0 0', '2 1 0 0', '3 0 1 0', '4 0 0 1', 'End Nodes',
         'Begin Elements Element3D4N', '1 0 1 2 3 4', 'End Elements',
         'Begin Geometries Triangle3D3', '7 2 3 4', 'End Geometries',
+        'Begin SubModelPart Part', '    Begin SubModelPart Inner',
+        '        Begin SubModelPartGeometries', '            7', '        End SubModelPartGeometries',
+        '        Begin SubModelPartConstraints', '            1', '        End SubModelPartConstraints',
+        '    End SubModelPart', 'End SubModelPart',
         'Begin Mesh 5', '    Begin MeshNodes', '        4', '    End MeshNodes', 'End Mesh',
         'Begin Constraints LinearMasterSlaveConstraint',
         '    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0', 'End Constraints', '',
@@ -3050,12 +3054,23 @@ step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
     assert.equal(r.info.tables[0].key, '1 TIME VALUE');
     assert.deepEqual(Array.from(r.info.geometries[0].conn), [1, 2, 3]);
     assert.deepEqual(r.info.geometries[0].ids, [7]);
+    assert.equal(r.info.subModelParts[0].name, 'Part/Inner');
+    assert.deepEqual(r.info.subModelParts[0].geometryIds, [7]);
+    assert.deepEqual(r.info.subModelParts[0].constraintIds, [1]);
     assert.deepEqual(r.info.meshBlocks[0].nodes, [3]);
     assert.equal(r.info.rawBlocks[0].end, 'End Constraints');
     m.writeMesh('/side_out.mdpa', r, 'mdpa', { info: r.info });
     const back = m.readMeshSelective('/side_out.mdpa', { format: 'mdpa', info: true });
     assert.deepEqual(back.info.rawBlocks, r.info.rawBlocks);
     assert.equal(back.info.geometries[0].name, 'Triangle3D3');
+    assert.deepEqual(back.info.subModelParts, r.info.subModelParts);
+    // Info dictionaries made by older callers need not have the new fields.
+    const legacyInfo = structuredClone(r.info);
+    delete legacyInfo.subModelParts[0].geometryIds;
+    delete legacyInfo.subModelParts[0].constraintIds;
+    m.writeMesh('/side_legacy.mdpa', r, 'mdpa', { info: legacyInfo });
+    const legacy = m.readMeshSelective('/side_legacy.mdpa', { format: 'mdpa', info: true });
+    assert.deepEqual(legacy.info.subModelParts, []);
 });
 
 step('info: gmsh bounding entities survive a real $Entities round trip', () => {

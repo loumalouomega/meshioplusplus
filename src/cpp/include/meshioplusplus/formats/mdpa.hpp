@@ -98,9 +98,8 @@
  * and the native CLI) **throw `ReadError` naming the construct**.
  * **`ReadOptions::mLenient` downgrades every one of those to a warning plus a
  * skip**, and what was skipped is recorded in `MdpaInfo::mSkippedConstructs`.
- * Two sub-model-part blocks are not parsed even with an #MdpaInfo and follow
- * the same strict/lenient rule: non-empty `SubModelPartGeometries` and
- * `SubModelPartConstraints`. Two things still throw even under `mLenient`,
+ * Geometry and constraint membership is carried in #MdpaSubModelPart as raw
+ * file ids, not mesh regions. Two things still throw even under `mLenient`,
  * because skipping them would return a mesh that is quietly wrong rather than
  * merely incomplete:
  *
@@ -222,7 +221,9 @@ struct MdpaMeshBlock {
  *
  * Membership (nodes, elements, conditions) is on the mesh as regions, which
  * operations remap; this holds only what a region cannot: the part's
- * `SubModelPartData` entries and `SubModelPartTables` ids.
+ * `SubModelPartData` entries and table, geometry and constraint ids. These ids
+ * stay in file order and are not remapped by mesh operations; constraints
+ * themselves remain opaque #MdpaRawBlock content.
  */
 struct MdpaSubModelPart {
     /** @brief The hierarchical name (`"parent/child"`), as the region is named. */
@@ -231,6 +232,10 @@ struct MdpaSubModelPart {
     std::vector<PropertyValue> mData;
     /** @brief The `SubModelPartTables` ids, in file order. */
     std::vector<std::int64_t> mTables;
+    /** @brief The `SubModelPartGeometries` file ids, in file order. */
+    std::vector<std::int64_t> mGeometryIds;
+    /** @brief The `SubModelPartConstraints` file ids, in file order. */
+    std::vector<std::int64_t> mConstraintIds;
 };
 
 /**
@@ -285,7 +290,7 @@ struct MdpaInfo {
     std::vector<MdpaGeometryBlock> mGeometries;
     /** @brief Every `Begin Mesh <id>` block, in file order. */
     std::vector<MdpaMeshBlock> mMeshBlocks;
-    /** @brief Sub-model-parts with `SubModelPartData`/`Tables` content, in file order. */
+    /** @brief Sub-model-parts with data or table/geometry/constraint ids, in file order. */
     std::vector<MdpaSubModelPart> mSubModelParts;
     /** @brief Every other top-level block, verbatim, in file order. */
     std::vector<MdpaRawBlock> mRawBlocks;
@@ -397,9 +402,8 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
  * The overload a round trip needs: `rInfo` comes back carrying the `Properties`
  * bodies, the per-block Kratos entity names, every block listed under "The
  * blocks the `Mesh` cannot hold" and (under `mLenient`) the list of skipped
- * constructs, all of which `write_mdpa(path, mesh, info)` puts back. Only a
- * non-empty `SubModelPartGeometries`/`SubModelPartConstraints` still throws
- * (or, under `mLenient`, is skipped).
+ * constructs, all of which `write_mdpa(path, mesh, info)` puts back, including
+ * geometry and constraint membership of nested sub-model-parts.
  *
  * @param rPath filesystem path to read
  * @param rInfo out: the side-channel content; cleared first

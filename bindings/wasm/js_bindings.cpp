@@ -1048,6 +1048,8 @@ val mdpa_info_to_val(const meshioplusplus::MdpaInfo& rInfo) {
         js.set("name", smp.mName);
         js.set("data", property_values_to_val(smp.mData));
         js.set("tables", int64_ids_to_val(smp.mTables));
+        js.set("geometryIds", int64_ids_to_val(smp.mGeometryIds));
+        js.set("constraintIds", int64_ids_to_val(smp.mConstraintIds));
         smps.call<void>("push", js);
     }
     out.set("subModelParts", smps);
@@ -1129,7 +1131,8 @@ meshioplusplus::MdpaInfo val_to_mdpa_info(const val& rInfo) {
             val js = smps[i];
             info.mSubModelParts.push_back(meshioplusplus::MdpaSubModelPart{
                 js["name"].as<std::string>(), val_to_property_values(js["data"]),
-                val_to_int64_ids(js["tables"])});
+                val_to_int64_ids(js["tables"]), val_to_int64_ids(js["geometryIds"]),
+                val_to_int64_ids(js["constraintIds"])});
         }
     }
     val raws = rInfo["rawBlocks"];

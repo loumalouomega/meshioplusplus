@@ -8115,6 +8115,7 @@ contains
     !> An id list of item `index` (1-based): geometry ids (GEOMETRIES field 1),
     !> Mesh-block nodes (MESH_BLOCKS field 0, 1-based points) / element ids (1)
     !> / condition ids (2), or table ids (SUBMODELPARTS field 0).
+    !> SUBMODELPARTS fields: 0 tables, 1 geometry ids, 2 constraint ids (raw file ids).
     function format_info_mdpa_ids(self, section, index, field, stat, errmsg) result(ids)
         class(mio_format_info), intent(in) :: self
         integer, intent(in) :: section, index, field

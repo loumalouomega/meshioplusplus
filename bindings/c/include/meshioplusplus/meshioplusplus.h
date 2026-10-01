@@ -621,8 +621,9 @@ MIO_API void mio_format_info_free(mio_format_info* info);
  *  - MESH_BLOCKS: `Begin Mesh <id>`. int field 0 = id; array field 0 =
  *    Int64 0-based point rows, 1 = element ids, 2 = condition ids (file ids);
  *    data entries (MeshData).
- *  - SUBMODELPARTS: parts with SubModelPartData/Tables. string field 0 =
- *    hierarchical name; array field 0 = Int64 table ids; data entries.
+ *  - SUBMODELPARTS: parts with data or table/geometry/constraint membership.
+ *    string field 0 = hierarchical name; array field 0 = Int64 table ids,
+ *    1 = geometry ids, 2 = constraint ids (raw file ids); data entries.
  *  - RAW_BLOCKS: blocks kept verbatim (Constraints, ...). string field 0 =
  *    header line, 1 = body (lines ending in '\n'), 2 = terminator.
  */

@@ -595,6 +595,29 @@ def test_convert_roundtrip(mesh_file, tmp_path):
     assert out["num_points"] == 5 and out["num_cells"] == 3
 
 
+def test_convert_mdpa_preserves_nested_geometry_constraint_membership(tmp_path):
+    source = tmp_path / "membership.mdpa"
+    source.write_text(
+        "Begin Nodes\n10 0 0 0\n20 1 0 0\n30 0 1 0\nEnd Nodes\n"
+        "Begin Geometries Triangle3D3\n17 10 20 30\nEnd Geometries\n"
+        "Begin Constraints LinearMasterSlaveConstraint\n"
+        "91 10 DISPLACEMENT_X 20 DISPLACEMENT_X 1.0 0.0\nEnd Constraints\n"
+        "Begin SubModelPart Outer\nBegin SubModelPart Inner\n"
+        "Begin SubModelPartGeometries\n17\nEnd SubModelPartGeometries\n"
+        "Begin SubModelPartConstraints\n91\nEnd SubModelPartConstraints\n"
+        "End SubModelPart\nEnd SubModelPart\n"
+    )
+    target = tmp_path / "out.mdpa"
+    report = _dump(_tools.tool_convert(str(source), str(target)))
+    assert report["num_points"] == 3
+    assert report["num_cells"] == 0  # geometry membership is not mesh cells
+    part = meshioplusplus.mdpa.read(target).misc_data["submodelpart_info"][
+        "Outer/Inner"
+    ]
+    assert part["geometry_ids"] == [17]
+    assert part["constraint_ids"] == [91]
+
+
 def test_convert_ascii_variant(mesh_file, tmp_path):
     out = _dump(_tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="ascii"))
     with open(out["output_path"], "rb") as f:

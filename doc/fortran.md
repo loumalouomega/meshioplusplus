@@ -160,6 +160,8 @@ Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finaliz
 
 ## Format side channels
 
+MDPA sub-model-part membership is available through `info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, i, field)`: field 0 is tables, field 1 geometry ids and field 2 constraint ids. The item index `i` is 1-based, but these values are raw file ids (no index shift), retain ordering and duplicates and are not remapped by mesh operations. `write_with_info` restores nested membership-only parts; constraints remain opaque.
+
 `call m%read_with_info(path, info [, format, lenient, stat, errmsg])` fills a `type(mio_format_info)` for a format with a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`); `call m%write_with_info(path, info)` writes it back and `call info%free()` releases it. Accessors take a `MIO_MDPA_*` section and a 1-based item index: `info%mdpa_count`, `mdpa_string`, `mdpa_int`, `mdpa_ids`, `mdpa_table(i)` (a `(rows, cols)` array), `mdpa_geometry(i)` (`conn(nodes, n)`, 1-based points) and `mdpa_data_*` for key/value entries. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 
 ## Sequences (transient / multi-file datasets)
