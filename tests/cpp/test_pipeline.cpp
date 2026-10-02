@@ -68,6 +68,40 @@ TEST(Pipeline, QualityAttachesMetrics) {
     EXPECT_TRUE(report.mSteps[0].mCounters.empty());
 }
 
+TEST(Pipeline, VersionTwoTypedMergeAndFanoutWorkWithoutJson) {
+    using namespace meshioplusplus;
+    const auto input = mt::temp_path("_v2_in.vtu");
+    const auto extra = mt::temp_path("_v2_extra.vtu");
+    const auto pattern = mt::temp_path("_piece_{part}.vtu");
+    WriteOptions options;
+    options.mCodecSet = true;
+    options.mCodec = detail::VtkCodec::None;
+    registry_write_ex(input, mt::tet_mesh(), "vtu", options);
+    registry_write_ex(extra, mt::tet_mesh(), "vtu", options);
+    Pipeline pipeline;
+    pipeline.mVersion = 2;
+    pipeline.mInput.mPath = input;
+    pipeline.mOutput.mPath = pattern;
+    pipeline.mOutput.mOptions = options;
+    pipeline.mSteps = {
+        step("Merge", {{"Inputs", std::vector<std::string>{extra}}}),
+        step("Partition", {{"Nparts", std::int64_t(2)}, {"Method", std::string("sfc")}})};
+    const auto report = run_pipeline(pipeline);
+    ASSERT_EQ(report.mSteps.size(), 2u);
+    EXPECT_EQ(report.mSteps[0].mCounters[0].second, 2.0);
+    std::size_t cells = 0;
+    for (const auto part : {"0", "1"}) {
+        auto path = pattern;
+        path.replace(path.find("{part}"), 6, part);
+        auto piece = registry_read(path, "vtu", ReadOptions{});
+        cells += total_cells(piece);
+        std::filesystem::remove(path);
+    }
+    EXPECT_EQ(cells, 2 * total_cells(mt::tet_mesh()));
+    std::filesystem::remove(input);
+    std::filesystem::remove(extra);
+}
+
 TEST(Pipeline, TransformRotatesAboutZ) {
     PipelineReport report;
     Mesh out = meshioplusplus::apply_pipeline_step(

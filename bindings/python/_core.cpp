@@ -4216,22 +4216,29 @@ PYBIND11_MODULE(_core, m) {
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
     py::class_<meshioplusplus::ExodusTimeSeriesWriter>(m, "ExodusTimeSeriesWriter")
         .def(py::init<const std::string&>(), py::arg("path"))
-        .def("write_points_cells", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
-            meshioplusplus_py::PyMeshRefs refs;
-            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
-            rSelf.WritePointsCells(cpp);
-        }, py::arg("mesh"))
-        .def("write_data", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
-            meshioplusplus_py::PyMeshRefs refs;
-            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
-            rSelf.WriteData(time, cpp);
-        }, py::arg("time"), py::arg("mesh"))
+        .def(
+            "write_points_cells",
+            [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+                rSelf.WritePointsCells(cpp);
+            },
+            py::arg("mesh"))
+        .def(
+            "write_data",
+            [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+                rSelf.WriteData(time, cpp);
+            },
+            py::arg("time"), py::arg("mesh"))
         .def("flush", &meshioplusplus::ExodusTimeSeriesWriter::Flush)
         .def("finalize", &meshioplusplus::ExodusTimeSeriesWriter::Finalize)
         .def_property_readonly("num_steps", &meshioplusplus::ExodusTimeSeriesWriter::NumSteps)
         .def_property_readonly("finalized", &meshioplusplus::ExodusTimeSeriesWriter::Finalized)
         .def("__enter__", [](py::object self) { return self; })
-        .def("__exit__", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, const py::object&, const py::object&, const py::object&) {
+        .def("__exit__", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, const py::object&,
+                            const py::object&, const py::object&) {
             rSelf.Finalize();
             return false;
         });

@@ -1141,7 +1141,9 @@ def tool_pipeline(settings_path, input_path=None, output_path=None):
     # would. Overrides take precedence exactly like the CLI's --input/--output.
     raw_in = input_path if input_path is not None else doc.get("Input", {}).get("Path")
     raw_out = (
-        output_path if output_path is not None else doc.get("Output", {}).get("Pattern", doc.get("Output", {}).get("Path"))
+        output_path
+        if output_path is not None
+        else doc.get("Output", {}).get("Pattern", doc.get("Output", {}).get("Path"))
     )
     if not raw_in:
         raise ValueError("meshio++: pipeline: Input.Path is required")
@@ -1151,9 +1153,15 @@ def tool_pipeline(settings_path, input_path=None, output_path=None):
     fanout = any(token in str(raw_out) for token in ("{key}", "{part}"))
     resolved_out = _resolve(raw_out, for_write=not fanout)
     for step in doc.get("Operations", []):
-        if isinstance(step, dict) and step.get("Op") in ("Merge", "Interpolate", "UndoGreen"):
+        if isinstance(step, dict) and step.get("Op") in (
+            "Merge",
+            "Interpolate",
+            "UndoGreen",
+        ):
             paths = step.get("Inputs", [])
-            if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
+            if not isinstance(paths, list) or any(
+                not isinstance(p, str) for p in paths
+            ):
                 raise ValueError("meshio++: pipeline: Inputs must be an array of paths")
             step["Inputs"] = [_resolve(path, must_exist=True) for path in paths]
     from .._pipeline import _OUTPUT_PATH_GUARD

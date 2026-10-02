@@ -31,7 +31,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 
 - **Vocabulary is PascalCase** for op names and parameter keys (`"Op": "ConvertCells"`, `"RemoveOrphans": true`). Enum *values* keep the exact lowercase spellings the rest of meshio++ uses (`"simplexify"`, `"redgreen"`, `"cell"`, `"rcm"`). Refine's comparison key is `Compare`, never `Op` — `Op` is the step discriminant.
 - **Parsing is strict.** An unknown op, an unknown key on a step, an unknown top-level key, or a mis-typed value is an error naming the offender — never silently ignored (the same rule `registry_write_ex` applies to `Output` options a format cannot honour).
-- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split`, `Diff` and `UndoGreen` need extra inputs or produce extra outputs, and a step naming one errors pointing at the matching CLI verb (`undo-green` for `UndoGreen`, which needs a second coarse mesh exactly as `Interpolate` needs a second source mesh). `Partition` as a step attaches the `partition:part` labels (colour-by-part) rather than splitting into pieces.
+- **Version 1 runs over one mesh at a time.** Multi-input/output operations are rejected, and `Partition` attaches labels. [Version 2](#version-2-spatial-multi-mesh-steps) adds file-backed inputs and terminal spatial fan-out without changing v1 semantics. `Diff`, `Shrinkwrap` and `ConservativeInterpolate` remain CLI/API-only multi-mesh operations.
 - Steps are validated **before** the input is read — a typo in step 7 never costs reading a 10 GB mesh first.
 - The run returns a **report**: `{"steps": [{"op", ...counters}], "warnings": [...]}` with PascalCase counter keys (`PointsWelded`, `SectionFaces`, `NumSkipped`, ...).
 
@@ -39,7 +39,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `Version` | no (default 1) | schema version; this build knows `1` |
+| `Version` | no (default 1) | schema version; `1` or `2` |
 | `Input` | yes | `{Path, Format?, Options?}` — `Format` defaults from the extension, with the `sniff_format` read fallback |
 | `Operations` | no (default `[]`) | the step array; empty = a plain convert |
 | `Output` | yes | `{Path, Format?, Encoding?, Codec?, FloatFormat?}` |
@@ -149,9 +149,35 @@ The existing status-only entry points remain unchanged. C adds `mio_pipeline_run
 
 Fortran adds `call mio_pipeline_run_file_report(path, report, stat, errmsg)` / `mio_pipeline_run_json_report(text, report, ...)`, with an allocatable JSON string, and the analogous sequence subroutines. Julia adds `run_pipeline_file_report(path)` / `run_pipeline_json_report(text)` and `run_sequence_file_report` / `run_sequence_json_report`, returning JSON strings. R adds `mio_pipeline_run_file_report(path)` / `mio_pipeline_run_json_report(text)` and analogous `mio_sequence_pipeline_run_*_report`, returning JSON character scalars (parse with `jsonlite::fromJSON` if desired). These wrappers copy the report and release its native owner automatically, without requiring a JSON parser dependency in the binding package.
 
-## Follow-ups (recorded, not implemented)
+## Version 2 spatial multi-mesh steps
 
-- **Multi-mesh steps**: `Merge`/`Interpolate`/`UndoGreen` would need per-step `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these. (v9.12.0's [sequences](sequences.md) added the *input*-list and `{step}`-output halves of this for the transient case, but a step that consumes or produces several meshes at once is still out of scope.)
+Set `"Version": 2` to extend the v1 vocabulary. Per-step `Inputs` is a non-empty array of file paths; paths are resolved relative to the process working directory, like `Input.Path`. Each auxiliary file is read with inferred/sniffed format and default reader options. For transient auxiliary files, this selects the default first step; select a frame beforehand if another is needed. Downstream ordinary steps operate on the one mesh returned by a multi-input step.
+
+| Step | Role of current mesh / `Inputs` | Additional parameters |
+| --- | --- | --- |
+| `Merge` | current mesh first, followed by all `Inputs` in declared order | `Weld` (false), `Atol` (1e-8), `SourceTag` (true), `DataPolicy` ("intersection" or "fill"), `DropDuplicateCells` (false); counter `NumInputs` includes the current mesh |
+| `Interpolate` | current mesh is target; exactly one `Inputs` source | `Method` ("nearest"), `Arrays` (all source point data), `Extrapolate` (false), `DefaultValue` (0), `OnConflict` ("error") |
+| `UndoGreen` | current mesh is fine; exactly one `Inputs` coarse mesh | counters `NumGroupsUndone`, `NumCellsRemoved` |
+| terminal `Split` | splits the current mesh; no extra inputs | `By` ("type", "component", "region"/"tag", "regions"), `Tag`; requires `Output.Pattern` with `{key}` |
+| terminal `Partition` with a pattern | decomposes the current mesh into pieces | v1 partition parameters plus `RecordIds` (false), `GhostLayers` (0); requires `{part}` |
+
+`Split` and partition-to-pieces must be the last step: no implicit downstream branch processing. Without a pattern, v2 `Partition` still attaches labels as in v1; `RecordIds`/`GhostLayers` are valid only for fan-out. `Output.Pattern` and `Output.Path` are mutually exclusive. Patterns replace all occurrences of `{key}` for Split or `{part}` for Partition (zero-based part ids); unknown/mixed tokens are errors. Split keys retain ASCII letters, digits, `.`, `_` and `-`; every other UTF-8 byte becomes `_`, and empty/`.`/`..` keys become `_`. Before writing any piece, both engines reject canonical-path collisions between outputs or with any input, including collisions caused by sanitization or existing symlinks. Existing non-input destinations are overwritten; writes are not an all-or-nothing filesystem transaction. Zero pieces write no files and report `NumPieces: 0`.
+
+```json
+{
+  "Version": 2,
+  "Input": {"Path": "left.vtu"},
+  "Operations": [
+    {"Op": "Merge", "Inputs": ["right.vtu"], "Weld": true},
+    {"Op": "Partition", "Nparts": 2, "Method": "sfc", "RecordIds": true}
+  ],
+  "Output": {"Pattern": "part_{part}.vtu", "Codec": "none"}
+}
+```
+
+Python, native C++, both CLIs, C/Fortran/Julia/R status/report entry points and WASM `runPipeline` accept the same document. Native typed callers use `Pipeline.mVersion = 2` and place the pattern in `PipelineOutput.mPath`; installed layouts are unchanged. `pipeline_v2_op_table()` / `_core.pipeline_v2_op_table()` expose the extended vocabulary; the existing per-mesh `apply_pipeline_step` and `pipeline_op_table` remain v1. MCP checks all auxiliary inputs and each expanded output against its configured sandbox, including output symlinks.
+
+Spatial Version 2 is deliberately separate from transient sequence documents (`Mode`, `Input.Paths`/`Pattern`, `{step}` outputs, resampling): combining that vocabulary is rejected, never an implicit cross-product of branches. A multi-step `Input.Path` materializes one state, by default the first; use `Input.Options.TimeStep` to select another, including `-1` for the last. Use a v1 sequence pipeline and standalone v2 pipelines for the spatial stages.
 - conan/vcpkg packages shipping the parser via a registry `nlohmann_json/3.12.0` dependency instead of the submodule.
 
 ## `Voxelize`

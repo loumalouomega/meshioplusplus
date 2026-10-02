@@ -745,19 +745,6 @@ def _check_series_target(path, file_format):
     """Refuse a multi-step write to a format that cannot hold one, by name."""
     fmt = _series_target_format(path, file_format)
 
-    if fmt == "exodus":
-        from .exodus import TimeSeriesWriter
-
-        if write_kwargs:
-            raise ValueError("Exodus series writer does not accept write options")
-        with TimeSeriesWriter(path) as writer:
-            wrote_grid = False
-            for time, mesh in steps:
-                if not wrote_grid:
-                    writer.write_points_cells(mesh)
-                    wrote_grid = True
-                writer.write_data(time, mesh)
-        return [str(path)]
     if fmt not in _SERIES_WRITERS:
         raise WriteError(
             f"meshio++: sequence: format '{fmt}' cannot hold a multi-step "
@@ -807,6 +794,20 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "exodus":
+        from .exodus import TimeSeriesWriter
+
+        if write_kwargs:
+            raise ValueError("Exodus series writer does not accept write options")
+        with TimeSeriesWriter(path) as writer:
+            wrote_grid = False
+            for time, mesh in steps:
+                if not wrote_grid:
+                    writer.write_points_cells(mesh)
+                    wrote_grid = True
+                writer.write_data(time, mesh)
         return [str(path)]
 
     if fmt == "femap":
@@ -973,6 +974,11 @@ def _is_sequence_document(doc, input_path=None, output_path=None):
         path = out.get("Path")
     if bool(path) and pattern_has_token(path):
         return True
+    # Spatial v2 deliberately materializes one state (default first step),
+    # matching the native typed runner and auxiliary Inputs. Only explicit
+    # transient vocabulary above routes it to the sequence-schema rejection.
+    if doc.get("Version") == 2:
+        return False
     # A multi-step input aimed at a single-step output must not quietly become
     # step 0 -- route it here so the driver refuses by name. An explicit
     # Input.Options.TimeStep IS a deliberate single-step selection, so it opts
@@ -1128,8 +1134,14 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
     resample = _resample_spec(doc.get("Resample"))
     version = doc.get("Version", 1)
     if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+        # Version 2 is a SPATIAL schema (see doc/pipeline.md): auxiliary file
+        # inputs and terminal fan-out over one mesh. It is parsed and run by
+        # `run_pipeline`, and the transient sequence vocabulary it does not use
+        # is not its to validate.
         raise ValueError(
-            f"meshio++: pipeline: unsupported Version {version!r} (this build knows 1)"
+            f"meshio++: pipeline: unsupported Version {version!r} in a sequence "
+            "document (Version 1 handles transient runs; spatial Version 2 is "
+            "run by run_pipeline)"
         )
 
     inp = doc.get("Input")

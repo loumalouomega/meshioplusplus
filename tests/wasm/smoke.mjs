@@ -412,6 +412,53 @@ step('an ASCII read still works after netCDF/HDF5 has run (stack-size guard)', (
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2]);
 });
 
+step('Exodus series lifecycle preserves fixed sets and multiple times', () => {
+    const mesh = { ...tet, regions: [
+        { name: 'anchors', kind: 'point', dim: 0, tag: 41, entries: Int32Array.from([0, 2]) },
+        { name: 'wall', kind: 'side', dim: 2, tag: 91, entries: Int32Array.from([0, 1]) },
+    ] };
+    const writer = m.createExodusTimeSeriesWriter('/run.e');
+    assert.throws(() => writer.writeData(0, mesh), /write_points_cells/);
+    writer.writePointsCells(mesh);
+    writer.writeData(0.123456789012345, mesh);
+    writer.writeData(1.5, mesh);
+    assert.equal(writer.numSteps(), 2);
+    writer.flush();
+    writer.finalize();
+    writer.finalize();
+    assert.equal(writer.finalized(), true);
+    assert.throws(() => writer.writeData(2, mesh), /open series/);
+    writer.close();
+    writer.close();
+    assert.throws(() => writer.numSteps(), /closed|invalid/);
+    assert.deepEqual(m.readMetadata('/run.e', 'exodus').timeValues, [0.123456789012345, 1.5]);
+    const back = m.readMeshSelective('/run.e', { format: 'exodus', timeStep: -1 });
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+    assert.ok(back.regions.some(r => r.name === 'anchors' && r.tag === 41));
+    assert.ok(back.regions.some(r => r.name === 'wall' && r.tag === 91));
+});
+
+step('pipeline Version 2 ordered multi-input and partition fan-out', () => {
+    m.writeMesh('/v2_left.vtu', tet, 'vtu');
+    m.writeMesh('/v2_right.vtu', tet, 'vtu');
+    const report = m.runPipeline({
+        Version: 2, Input: { Path: '/v2_left.vtu' },
+        Operations: [ { Op: 'Merge', Inputs: ['/v2_right.vtu'] },
+                      { Op: 'Partition', Nparts: 2, Method: 'sfc', RecordIds: true } ],
+        Output: { Pattern: '/v2_part_{part}.vtu', Codec: 'none' },
+    });
+    assert.deepEqual(report.steps, [{ op: 'Merge', NumInputs: 2 }, { op: 'Partition', NumPieces: 2 }]);
+    for (const part of [0, 1]) {
+        const piece = m.readMesh(`/v2_part_${part}.vtu`, 'vtu');
+        assert.ok(piece.point_data['partition:original_point_id']);
+    }
+    assert.throws(() => m.runPipeline({
+        Version: 2, Input: { Path: '/v2_left.vtu' },
+        Operations: [{ Op: 'Split' }, { Op: 'Quality' }],
+        Output: { Pattern: '/v2_{key}.vtu' },
+    }), /terminal/);
+});
+
 step('MED writes plain point_data/cell_data directly (the single-timestep common case)', () => {
     // Previously this threw unconditionally ("fields handled by Python
     // fallback") on ANY data-carrying mesh -- fatal here, since there is no

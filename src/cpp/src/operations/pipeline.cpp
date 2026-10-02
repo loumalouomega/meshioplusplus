@@ -1504,6 +1504,9 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
     // step 7 must not cost reading a 10 GB mesh first.
     const bool fanout = rPipeline.mOutput.mPath.find("{key}") != std::string::npos ||
                         rPipeline.mOutput.mPath.find("{part}") != std::string::npos;
+    if (rPipeline.mVersion == 2 && !fanout &&
+        (rPipeline.mOutput.mPath.find('{') != std::string::npos || rPipeline.mOutput.mPath.find('}') != std::string::npos))
+        throw std::invalid_argument("meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1");
     for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
         const auto& step = rPipeline.mSteps[i];
         if (rPipeline.mVersion == 1)

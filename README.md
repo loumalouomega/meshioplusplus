@@ -24,6 +24,8 @@ Region-backed point/cell sets now convert to and from scalar integer data in the
 
 Native C/Fortran/Julia/R pipelines also expose owning structured JSON reports (`steps` and `warnings`), without replacing their existing status-only entry points; see [pipeline reports](doc/pipeline.md#structured-reports-on-the-flat-abi).
 
+Exodus writers now preserve node/side sets and expose fixed-grid time-series writers across Python, C++, C, Fortran, Julia, R and WASM; sequence fan-in can write one Exodus file. Pipeline schema Version 2 adds file-backed `Merge`/`Interpolate`/`UndoGreen` and terminal `Split`/`Partition` with `Output.Pattern`. Version 1 remains unchanged. See [Exodus](doc/formats/exodus.md#stateful-series-writing) and [pipeline v2](doc/pipeline.md#version-2-spatial-multi-mesh-steps).
+
 XDMF time-series writers preserve fixed point, cell and side regions alongside the shared topology. Python's array-based writer accepts `regions=` and its series reader exposes `reader.regions`; native writers use the regions already on the mesh. See [XDMF time series](doc/xdmf_time_series.md).
 
 Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple pieces and appended raw/base64 arrays in both the native core and Python reference, with UInt32/UInt64 headers and either byte order. Pieces concatenate without welding; VTP/VTS/VTR/VTI writers remain inline. Native legacy `.vtk` reads also support structured points, structured grids and rectilinear grids in ASCII and big-endian binary; see the [format documentation](doc/formats.md).

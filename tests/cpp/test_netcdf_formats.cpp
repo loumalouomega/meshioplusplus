@@ -25,11 +25,13 @@
 #include <netcdf.h>
 
 #include <cstddef>
+#include <algorithm>
 #include <filesystem>
 #include <set>
 #include <string>
 
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/registry.hpp"
 
@@ -82,7 +84,8 @@ TEST(Exodus, SetsAndStatefulSeriesPreserveEmptyGroupsAndFacetNumbers) {
             EXPECT_EQ(region.Entries()[1], 0);
             EXPECT_EQ(region.mTag, 91);
         }
-        if (region.mName == "empty") EXPECT_EQ(region.NumEntries(), 0u);
+        if (region.mName == "empty")
+            EXPECT_EQ(region.NumEntries(), 0u);
     }
     auto metadata = read_exodus_metadata(path);
     ASSERT_EQ(metadata.mTimeValues.size(), 2u);

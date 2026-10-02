@@ -943,7 +943,7 @@ export type XdmfDataFormat = 'HDF' | 'XML' | 'Binary';
  * writes the `.xdmf` plus one `<path minus extension><n>.bin` per array.
  */
 /** Fixed Exodus geometry, sets and attributes; step fields have a stable schema.
- * Available only in netCDF-enabled builds (not the shipped WASM artifacts). */
+ * Available in netCDF-enabled builds, including the shipped WASM artifacts. */
 export interface ExodusTimeSeriesWriter {
   writePointsCells(mesh: Mesh): void;
   writeData(time: number, mesh: Mesh): void;
@@ -2714,7 +2714,7 @@ export interface MeshioPlusPlusModule {
       autoFlush?: boolean;
     },
   ): XdmfTimeSeriesWriter;
-  /** Requires netCDF; shipped WASM builds throw naming the missing dependency. */
+  /** Requires netCDF; custom builds without it throw naming the dependency. */
   createExodusTimeSeriesWriter(path: string): ExodusTimeSeriesWriter;
 }
 

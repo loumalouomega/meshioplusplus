@@ -2483,8 +2483,25 @@ SettingsDocument val_to_settings(const val& rSettings) {
     val output = rSettings["Output"];
     if (output.isUndefined() || output.isNull())
         throw meshioplusplus::ReadError("meshio++ (wasm): the settings object needs 'Output'");
-    check_settings_keys(output, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
-    pipeline.mOutput.mPath = settings_string(output, "Path", "Output", /*required=*/true);
+    // Version 2's spatial fan-out names its template `Pattern` (mutually
+    // exclusive with `Path`), exactly as the JSON front-end and Python do.
+    const bool v2 = pipeline.mVersion == 2;
+    const val out_pattern = output["Pattern"];
+    const bool has_pattern = v2 && !out_pattern.isUndefined() && !out_pattern.isNull();
+    if (v2)
+        check_settings_keys(output, "Output",
+                            {"Path", "Pattern", "Format", "Encoding", "Codec", "FloatFormat"});
+    else
+        check_settings_keys(output, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+    const val out_path = output["Path"];
+    if (has_pattern && !out_path.isUndefined() && !out_path.isNull())
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): Output.Path and Output.Pattern are mutually exclusive");
+    pipeline.mOutput.mPath = settings_string(output, has_pattern ? "Pattern" : "Path", "Output",
+                                             /*required=*/true);
+    if (has_pattern && pipeline.mOutput.mPath.find("{key}") == std::string::npos &&
+        pipeline.mOutput.mPath.find("{part}") == std::string::npos)
+        throw meshioplusplus::ReadError("meshio++ (wasm): Output.Pattern requires {key} or {part}");
     pipeline.mOutput.mFormat = settings_string(output, "Format", "Output");
     pipeline.mOutput.mOptions.mEncoding =
         meshioplusplus::pipeline_encoding_from_name(settings_string(output, "Encoding", "Output"));
@@ -2517,7 +2534,11 @@ SettingsDocument val_to_settings(const val& rSettings) {
                     continue;
                 step.mParams.emplace(key, val_to_pipeline_value(v, key));
             }
-            meshioplusplus::validate_pipeline_step(step);
+            // Version 2's own vocabulary (`Inputs`-backed multi-mesh steps and
+            // terminal fan-out) is validated by `run_pipeline`; validating it
+            // as v1 here would reject `Merge` before it could run.
+            if (pipeline.mVersion != 2)
+                meshioplusplus::validate_pipeline_step(step);
             pipeline.mSteps.push_back(std::move(step));
         }
     }
@@ -2579,6 +2600,11 @@ val run_pipeline_js(const val& rSettings) {
         // single-mesh run and takes the unchanged path; anything else is
         // routed to the sequence driver, so nobody has to know which kind of
         // document they hold (the same rule both CLIs and Python follow).
+        // Version 2 is spatial: it materializes ONE state (default first step,
+        // like an auxiliary `Inputs` path), never an implicit time/branch
+        // cross-product -- so it never reaches the sequence driver.
+        if (parsed.mSeq.mVersion == 2)
+            return report_to_val(meshioplusplus::run_pipeline(settings_to_pipeline(parsed)));
         if (!parsed.mSequenceKeys &&
             !meshioplusplus::sequence_input_needs_driver(parsed.mSeq.mInput, parsed.mSeq.mOutput))
             return report_to_val(meshioplusplus::run_pipeline(settings_to_pipeline(parsed)));
@@ -4859,7 +4885,8 @@ xdmf_series_table() {
 }
 
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-std::unordered_map<int, std::unique_ptr<meshioplusplus::ExodusTimeSeriesWriter>>& exodus_series_table() {
+std::unordered_map<int, std::unique_ptr<meshioplusplus::ExodusTimeSeriesWriter>>&
+exodus_series_table() {
     static std::unordered_map<int, std::unique_ptr<meshioplusplus::ExodusTimeSeriesWriter>> table;
     return table;
 }
@@ -4875,7 +4902,7 @@ int exodus_series_create_js(const std::string& rPath) {
         return handle;
 #else
         (void)rPath;
-        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON; the shipped WASM builds have no netCDF");
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
 #endif
     });
 }
@@ -4887,17 +4914,28 @@ val exodus_series_action_js(int handle, const std::string& rAction, double time,
         if (it == exodus_series_table().end())
             throw meshioplusplus::WriteError("invalid or closed Exodus series handle");
         auto& writer = *it->second;
-        if (rAction == "grid") writer.WritePointsCells(val_to_mesh(rMesh));
-        else if (rAction == "data") writer.WriteData(time, val_to_mesh(rMesh));
-        else if (rAction == "flush") writer.Flush();
-        else if (rAction == "finalize") writer.Finalize();
-        else if (rAction == "steps") return val(static_cast<double>(writer.NumSteps()));
-        else if (rAction == "finalized") return val(writer.Finalized());
-        else if (rAction == "free") exodus_series_table().erase(it);
-        else throw meshioplusplus::WriteError("unknown Exodus series action");
+        if (rAction == "grid")
+            writer.WritePointsCells(val_to_mesh(rMesh));
+        else if (rAction == "data")
+            writer.WriteData(time, val_to_mesh(rMesh));
+        else if (rAction == "flush")
+            writer.Flush();
+        else if (rAction == "finalize")
+            writer.Finalize();
+        else if (rAction == "steps")
+            return val(static_cast<double>(writer.NumSteps()));
+        else if (rAction == "finalized")
+            return val(writer.Finalized());
+        else if (rAction == "free")
+            exodus_series_table().erase(it);
+        else
+            throw meshioplusplus::WriteError("unknown Exodus series action");
         return val::undefined();
 #else
-        (void)handle; (void)rAction; (void)time; (void)rMesh;
+        (void)handle;
+        (void)rAction;
+        (void)time;
+        (void)rMesh;
         throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
 #endif
     });

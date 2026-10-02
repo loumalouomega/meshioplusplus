@@ -3874,8 +3874,10 @@ typedef struct mio_xdmf_series mio_xdmf_series;
  * by name through mio_last_error. Free is NULL-safe; finalize/flush are idempotent. */
 typedef struct mio_exodus_series mio_exodus_series;
 MIO_API mio_exodus_series* mio_exodus_series_create(const char* path);
-MIO_API mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const mio_mesh* mesh);
-MIO_API mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time, const mio_mesh* mesh);
+MIO_API mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series,
+                                                        const mio_mesh* mesh);
+MIO_API mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time,
+                                                const mio_mesh* mesh);
 MIO_API mio_status mio_exodus_series_flush(mio_exodus_series* series);
 MIO_API mio_status mio_exodus_series_finalize(mio_exodus_series* series);
 MIO_API int64_t mio_exodus_series_num_steps(const mio_exodus_series* series);

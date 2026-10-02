@@ -358,6 +358,32 @@ program test_fortran_api
     call check(len(msg) > 0, 'unknown explicit format sets errmsg')
 
     ! ---- data operations -----------------------------------------------
+    block
+        type(mio_exodus_series) :: exodus
+        call exodus%create(prefix//'_series.e', stat=ierr, errmsg=msg)
+        if (mio_format_writable('exodus')) then
+            call check(ierr == 0, 'Exodus series create')
+            call exodus%write_points_cells(m, stat=ierr)
+            call check(ierr == 0, 'Exodus series fixed grid')
+            call exodus%write_data(0.25_real64, m, stat=ierr)
+            call check(ierr == 0, 'Exodus series first step')
+            call exodus%write_data(1.25_real64, m, stat=ierr)
+            call check(ierr == 0, 'Exodus series second step')
+            call check(exodus%num_steps() == 2_int64, 'Exodus series step count')
+            call exodus%flush(stat=ierr)
+            call check(ierr == 0, 'Exodus series flush')
+            call exodus%finalize(stat=ierr)
+            call check(ierr == 0 .and. exodus%finalized(), 'Exodus series finalize')
+            call exodus%finalize(stat=ierr)
+            call check(ierr == 0, 'Exodus series finalize idempotent')
+        else
+            call check(ierr /= 0, 'Exodus series missing dependency errors')
+            call check(index(msg, 'MESHIOPLUSPLUS_WITH_NETCDF') > 0, 'Exodus series dependency name')
+        end if
+        call exodus%free()
+        call exodus%free()
+        call check(.not. exodus%is_valid(), 'Exodus series released')
+    end block
     if (mio_format_writable('med')) then
         block
             type(mio_mesh) :: named

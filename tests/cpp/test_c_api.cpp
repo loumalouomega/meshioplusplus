@@ -1787,6 +1787,15 @@ TEST(CApi, ExodusSeriesLifecycleOrExplicitMissingDependency) {
 #endif
 }
 
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+TEST(CApi, MedNamedFunctionsFailByNameWithoutHdf5) {
+    EXPECT_EQ(mio_med_mesh_count("missing.med"), -1);
+    EXPECT_NE(std::string(mio_last_error()).find("HDF5"), std::string::npos);
+    EXPECT_EQ(mio_med_read_named("missing.med", "mesh", nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("HDF5"), std::string::npos);
+}
+#endif
+
 TEST(CApi, WriteExRejectsAnOptionTheFormatCannotHonour) {
     mio_mesh* m = build_tet_mesh();
     ASSERT_NE(m, nullptr);

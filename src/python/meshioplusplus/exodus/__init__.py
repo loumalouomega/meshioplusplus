@@ -2,9 +2,9 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from ._exodus import TimeSeriesWriter as _PyTimeSeriesWriter
 from ._exodus import read as _py_read
 from ._exodus import write as _py_write
-from ._exodus import TimeSeriesWriter as _PyTimeSeriesWriter
 
 _HAS_NETCDF = getattr(_core, "__has_netcdf__", False)
 

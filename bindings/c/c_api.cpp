@@ -4337,7 +4337,8 @@ mio_exodus_series* mio_exodus_series_create(const char* path) {
 
 mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
-        if (!series || !mesh) return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        if (!series || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.WritePointsCells(mesh->mMesh);
         return MIO_OK;
@@ -4347,9 +4348,11 @@ mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const
     });
 }
 
-mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time, const mio_mesh* mesh) {
+mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time,
+                                        const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
-        if (!series || !mesh) return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        if (!series || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.WriteData(time, mesh->mMesh);
         return MIO_OK;
@@ -4362,7 +4365,8 @@ mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time, 
 
 mio_status mio_exodus_series_flush(mio_exodus_series* series) {
     return guarded([&]() -> mio_status {
-        if (!series) return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.Flush();
         return MIO_OK;
@@ -4374,7 +4378,8 @@ mio_status mio_exodus_series_flush(mio_exodus_series* series) {
 
 mio_status mio_exodus_series_finalize(mio_exodus_series* series) {
     return guarded([&]() -> mio_status {
-        if (!series) return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.Finalize();
         return MIO_OK;
@@ -4386,7 +4391,8 @@ mio_status mio_exodus_series_finalize(mio_exodus_series* series) {
 
 int64_t mio_exodus_series_num_steps(const mio_exodus_series* series) {
     return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
-        if (!series) throw std::invalid_argument("meshio++: series is NULL");
+        if (!series)
+            throw std::invalid_argument("meshio++: series is NULL");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         return static_cast<std::int64_t>(series->mWriter.NumSteps());
 #else
@@ -4397,7 +4403,8 @@ int64_t mio_exodus_series_num_steps(const mio_exodus_series* series) {
 
 int32_t mio_exodus_series_finalized(const mio_exodus_series* series) {
     return guarded_ptr(std::int32_t(-1), [&]() -> std::int32_t {
-        if (!series) throw std::invalid_argument("meshio++: series is NULL");
+        if (!series)
+            throw std::invalid_argument("meshio++: series is NULL");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         return series->mWriter.Finalized();
 #else
@@ -4406,7 +4413,9 @@ int32_t mio_exodus_series_finalized(const mio_exodus_series* series) {
     });
 }
 
-void mio_exodus_series_free(mio_exodus_series* series) { delete series; }
+void mio_exodus_series_free(mio_exodus_series* series) {
+    delete series;
+}
 //
 // The one writer that is a handle rather than a (path, mesh) call: the mesh is
 // written once and each step appended, so there is no single call for mio_write

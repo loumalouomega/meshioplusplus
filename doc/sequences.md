@@ -29,6 +29,8 @@ mp.write_sequence("series.xdmf", mp.read_sequence("out_*.vtu"))
 
 ## It is a driver, not an operation
 
+Exodus is now a native/reference fan-in target, alongside the other stateful writers. Its [fixed-grid series writer](./formats/exodus.md#stateful-series-writing) preserves the first mesh's node/side sets and attributes and appends a stable point/cell field schema. Both CLIs, bindings, and pipeline fan-in reach it through existing sequence entry points. [Pipeline Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) is a separate spatial multi-input/fan-out schema; it is not combined implicitly with transient sequence documents.
+
 Everything here reads and writes through the existing format registry and runs operation chains through the existing **typed pipeline layer**. `run_pipeline_steps` remains the single owner of the step dispatch — there is deliberately no second `if (op == ...)` chain — so a sequence document and the browser viewer's `convertSurfaceOps` still cannot drift apart. Nothing here adds a mesh operation, a file format, or a dependency.
 
 ## The three shapes

@@ -1,5 +1,11 @@
 # R
 
+## Exodus series and pipeline Version 2
+
+`mio_exodus_series(path)` returns an owning external pointer with a distinct tag and GC finalizer. `mio_exodus_series_write_points_cells(series, mesh)` fixes geometry, sets and attributes; `mio_exodus_series_write_data(series, time, mesh)` appends fields. `_flush`, `_finalize`, `_num_steps`, `_finalized`, `_is_open` and idempotent `_release` expose the lifecycle. Released/foreign pointers are R errors, never dereferenced; without netCDF construction fails naming the dependency. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+The existing status/report pipeline functions accept [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) documents with auxiliary `Inputs` and terminal `Output.Pattern`; the binding requires no JSON parser package. Transient sequence documents remain Version 1.
+
 ## Pipeline reports
 
 `mio_pipeline_run_file_report(path)`, `mio_pipeline_run_json_report(text)` and `mio_sequence_pipeline_run_*_report` return a JSON character scalar with `steps` and `warnings`, automatically releasing its native owner. Parsing with `jsonlite::fromJSON` is optional; no new binding dependency is required. Existing status-only APIs are unchanged. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).

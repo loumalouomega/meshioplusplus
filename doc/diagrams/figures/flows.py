@@ -969,16 +969,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§4 core parity across surfaces",
-            [
-                ("Exodus sets · series writer", "M"),
-                ("pipeline v2 multi-mesh steps", "M"),
-                ("backend · binding validation", "S"),
-            ],
-            [],
-        ),
-        (
-            "§5 operations",
+            "§4 operations",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
@@ -989,7 +980,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§6 ecosystem reach",
+            "§5 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -999,7 +990,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§7 long run (spike first)",
+            "§6 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),

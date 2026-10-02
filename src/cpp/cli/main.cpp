@@ -4587,7 +4587,16 @@ int cmd_pipeline(const std::vector<std::string>& rArgs) {
     }
     if (has_opt(p, "output"))
         pipeline.mOutput.mPath = opt_value(p, "output");
-    const meshioplusplus::PipelineReport report = meshioplusplus::run_sequence_pipeline(pipeline);
+    meshioplusplus::PipelineReport report;
+    if (pipeline.mVersion == 2) {
+        // Spatial v2 has one current mesh, not an implicit time/branch cross-product.
+        auto spatial = meshioplusplus::parse_pipeline_file(p.positionals[0]);
+        if (has_opt(p, "input")) spatial.mInput.mPath = opt_value(p, "input");
+        if (has_opt(p, "output")) spatial.mOutput.mPath = opt_value(p, "output");
+        report = meshioplusplus::run_pipeline(spatial);
+    } else {
+        report = meshioplusplus::run_sequence_pipeline(pipeline);
+    }
 
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);

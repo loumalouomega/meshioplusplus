@@ -56,6 +56,12 @@
 
 // Project includes
 #include "meshioplusplus/abi_version.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
+
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+static_assert(sizeof(meshioplusplus::ExodusTimeSeriesWriter) == sizeof(void*));
+static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*));
+#endif
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/mesh.hpp"

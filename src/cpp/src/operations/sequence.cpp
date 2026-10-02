@@ -568,6 +568,10 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
 /// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
+    if (rFormat == "exodus" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
+            "select");
     const char* who = rFormat == "exodus"   ? "Exodus"
                       : rFormat == "vtkhdf" ? "VTKHDF"
                       : rFormat == "pvd"    ? "PVD"

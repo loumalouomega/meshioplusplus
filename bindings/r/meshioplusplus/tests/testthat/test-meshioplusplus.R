@@ -1509,3 +1509,32 @@ test_that("glTF options colour the exported surface", {
   expect_error(mio_write_gltf(m, path, scale = -1))
   expect_error(mio_write_gltf(m, path, component = 0, color_by = "temperature"))
 })
+
+test_that("Exodus series own their grid and expose an idempotent lifecycle", {
+  path <- tempfile(fileext = ".e")
+  if (!mio_format_writable("exodus")) {
+    expect_error(mio_exodus_series(path), "MESHIOPLUSPLUS_WITH_NETCDF")
+  } else {
+    m <- fixture()
+    s <- mio_exodus_series(path)
+    on.exit({ mio_exodus_series_release(s); mio_release(m); unlink(path) })
+    expect_equal(mio_exodus_series_num_steps(s), 0)
+    expect_error(mio_exodus_series_write_data(s, 0, m), "write_points_cells")
+    mio_exodus_series_write_points_cells(s, m)
+    mio_exodus_series_write_data(s, 0.123456789012345, m)
+    mio_exodus_series_write_data(s, 1.5, m)
+    expect_equal(mio_exodus_series_num_steps(s), 2)
+    mio_exodus_series_flush(s)
+    mio_exodus_series_finalize(s)
+    mio_exodus_series_finalize(s)
+    expect_true(mio_exodus_series_finalized(s))
+    expect_error(mio_exodus_series_write_data(s, 2, m), "open series")
+    back <- mio_read(path, time_step = -1L)
+    on.exit(mio_release(back), add = TRUE)
+    expect_equal(as.vector(mio_point_data(back, "temperature")), TEMPERATURE)
+    mio_exodus_series_release(s)
+    mio_exodus_series_release(s)
+    expect_false(mio_exodus_series_is_open(s))
+    expect_error(mio_exodus_series_num_steps(s), "released")
+  }
+})

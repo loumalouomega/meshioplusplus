@@ -1,5 +1,7 @@
 """Native/reference sets and stateful Exodus output, including lifecycle errors."""
 
+import json
+
 import numpy as np
 import pytest
 
@@ -27,7 +29,11 @@ def _mesh():
 
 
 def _region_key(mesh):
-    return sorted((r.kind, r.name, r.tag, r.entries.tolist()) for r in mesh.regions if r.kind != "cell")
+    return sorted(
+        (r.kind, r.name, r.tag, r.entries.tolist())
+        for r in mesh.regions
+        if r.kind != "cell"
+    )
 
 
 @pytest.fixture(params=["reference", "native"])
@@ -51,11 +57,14 @@ def test_sets_preserve_ids_names_empty_groups_and_side_numbers(tmp_path, writer)
         assert sorted(file.variables["side_ss2"][:]) == [2, 4]
 
 
-@pytest.mark.parametrize("kind,entries,error", [
-    ("point", [99], "invalid point"),
-    ("side", [[99, 0]], "invalid cell"),
-    ("side", [[0, 99]], "unsupported facet"),
-])
+@pytest.mark.parametrize(
+    "kind,entries,error",
+    [
+        ("point", [99], "invalid point"),
+        ("side", [[99, 0]], "invalid cell"),
+        ("side", [[0, 99]], "unsupported facet"),
+    ],
+)
 def test_invalid_sets_do_not_truncate_target(tmp_path, writer, kind, entries, error):
     mesh = _mesh()
     mesh.regions = [mp.Region("bad", kind, entries)]
@@ -105,9 +114,49 @@ def test_series_steps_static_attributes_and_lifecycle(tmp_path, series_cls):
     with pytest.raises(Exception, match="open series"):
         series.write_data(10, mesh)
     with netCDF4.Dataset(path) as file:
-        np.testing.assert_array_equal(file.variables["time_whole"][:], [0.123456789012345, 2.5, 9.0])
+        np.testing.assert_array_equal(
+            file.variables["time_whole"][:], [0.123456789012345, 2.5, 9.0]
+        )
     for reader in [reference.read, mp.exodus.read]:
         back = reader(path, time_step=-1)
-        np.testing.assert_array_equal(back.point_data["temperature"], mesh.point_data["temperature"] + 2)
-        np.testing.assert_array_equal(back.cell_data["exodus:attr:RADIUS"][0], mesh.cell_data["exodus:attr:RADIUS"][0])
+        np.testing.assert_array_equal(
+            back.point_data["temperature"], mesh.point_data["temperature"] + 2
+        )
+        np.testing.assert_array_equal(
+            back.cell_data["exodus:attr:RADIUS"][0],
+            mesh.cell_data["exodus:attr:RADIUS"][0],
+        )
         assert _region_key(back) == _region_key(mesh)
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_sequence_pipeline_fan_in_uses_exodus_writer(tmp_path, native):
+    if native and not getattr(_core, "__has_json__", False):
+        pytest.skip("native pipeline requires JSON")
+    if native and not hasattr(_core, "ExodusTimeSeriesWriter"):
+        pytest.skip("requires rebuilt Exodus writer")
+    paths = []
+    mesh = _mesh()
+    for k in range(3):
+        state = mesh.copy()
+        state.point_data["temperature"] += k
+        path = tmp_path / f"step{k}.vtu"
+        mp.write(path, state, compression=None)
+        paths.append(str(path))
+    output = tmp_path / "fan_in.e"
+    settings = {
+        "Version": 1,
+        "Input": {"Paths": paths, "Times": [0.0, 0.5, 1.0]},
+        "Operations": [],
+        "Output": {"Path": str(output)},
+    }
+    if native:
+        _core.run_sequence_json(json.dumps(settings))
+    else:
+        mp.run_pipeline(settings)
+    back = mp.read(output, time_step=-1)
+    np.testing.assert_array_equal(
+        back.point_data["temperature"], mesh.point_data["temperature"] + 2
+    )
+    assert _region_key(back) == _region_key(mesh)
+    assert mp.read_metadata(output)["time_values"] == [0.0, 0.5, 1.0]

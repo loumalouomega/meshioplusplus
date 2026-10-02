@@ -8,6 +8,8 @@ Gmsh 2.2/4.0/4.1 periodic links read natively via the format metadata channel an
 
 ## Format table
 
+Exodus native/reference output now preserves Point/Side regions as node/side sets (including explicit ids and empty groups) and supports stateful fixed-grid series writing and sequence fan-in; see [Exodus](formats/exodus.md#stateful-series-writing).
+
 Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour). The **Round trip** column summarises what a write followed by a read keeps (cell types, point/cell/field data, region kinds), as checked by the [format conformance matrix](./conformance.md).
 
 | Format name | Extensions | Read | Write | Extra dependencies | Round trip |
@@ -26,7 +28,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — | [1/8 cells · data PC](./conformance.md#dolfin-xml) |
 | [`elmer`](./formats/elmer.md) | a directory (`mesh.header`, …) | ✓ | ✓ | — | [7/8 cells · no data · regions C](./conformance.md#elmer) |
 | [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#ensight) |
-| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` | [8/8 cells · data PC · regions CP](./conformance.md#exodus) |
+| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` | [8/8 cells · data PC · regions CPS](./conformance.md#exodus) |
 | [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — | [7/8 cells · data PC · regions CPS](./conformance.md#febio) |
 | [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ | — | [8/8 cells · data PC · regions CP](./conformance.md#femap) |
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#flac3d) |
@@ -56,7 +58,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#nastran) |
 | [`nastran_h5`](./formats/nastran_h5.md) | `.h5` | ✓ | — | `h5py` | [read-only](./conformance.md#nastran-h5) |
 | [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | — | — | [read-only](./conformance.md#nastran-op2) |
-| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#netgen) |
+| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · data F](./conformance.md#netgen) |
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#neuroglancer) |
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#obj) |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#off) |

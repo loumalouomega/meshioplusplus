@@ -1,5 +1,11 @@
 # WebAssembly / JavaScript
 
+## Exodus series and pipeline Version 2
+
+`createExodusTimeSeriesWriter(path)` returns a handle wrapper with `writePointsCells(mesh)`, `writeData(time, mesh)`, `flush`, `finalize`, `numSteps`, `finalized` and idempotent `close`. It uses MEMFS, fixes geometry/sets/attributes once and retains no step history. Shipped netCDF-enabled artifacts support it; custom builds without netCDF throw a named dependency error. Invalid/stale native handles fail rather than accessing freed memory. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+`runPipeline` accepts [Version 2 spatial documents](./pipeline.md#version-2-spatial-multi-mesh-steps) with per-step file `Inputs` and terminal Split/Partition `Output.Pattern` (`{key}`/`{part}`), all in MEMFS. Version 1, `convertSurfaceOps` and the browser viewer's per-mesh chip pipeline are unchanged; spatial branches and transient sequence schemas are separate.
+
 ## Pipeline reports
 
 `runPipeline` already returns the shared structured report object (`steps`, `warnings`). The new C/Fortran/Julia/R caller-buffer report APIs use the same names and PascalCase counters; non-finite counters serialize as JSON `null`. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).

@@ -177,6 +177,38 @@ TEST(Netgen, Basic) {
     mt::roundtrip(w, r, mt::hex_mesh(), ".vol");
 }
 
+TEST(Netgen, NativeExtrasAndOptionalGzip) {
+    using namespace meshioplusplus;
+    Mesh mesh = mt::tri_mesh();
+    auto names = mt::int_data_array({2, 2});
+    mesh.AddFieldData("wall", std::move(names));
+    NDArray pairs(DType::Int64, {1, 3});
+    pairs.As<std::int64_t>()[0] = 1;
+    pairs.As<std::int64_t>()[1] = 2;
+    pairs.As<std::int64_t>()[2] = 1;
+    mesh.AddFieldData("netgen:identifications", std::move(pairs));
+    NDArray types(DType::Int64, {1, 1});
+    types.As<std::int64_t>()[0] = 2;
+    mesh.AddFieldData("netgen:identificationtypes", std::move(types));
+    for (const auto suffix : {".vol", ".vol.gz"}) {
+        const auto path = mt::temp_path(suffix);
+#ifndef MESHIOPLUSPLUS_HAS_ZLIB
+        if (std::string(suffix) == ".vol.gz") {
+            EXPECT_THROW(write_netgen(path, mesh, ".16e"), WriteError);
+            continue;
+        }
+#endif
+        write_netgen(path, mesh, ".16e");
+        auto back = read_netgen(path);
+        ASSERT_TRUE(back.HasFieldData("netgen:identifications"));
+        EXPECT_EQ(detail::read_int(back.FieldData("netgen:identifications"), 1), 2);
+        EXPECT_EQ(detail::read_int(back.FieldData("netgen:identificationtypes"), 0), 2);
+        ASSERT_TRUE(back.HasFieldData("wall"));
+        EXPECT_EQ(detail::read_int(back.FieldData("wall"), 0), 2);
+        std::filesystem::remove(path);
+    }
+}
+
 // --- Malformed-input reject paths ---
 // These drive the readers' explicit `throw ReadError` branches that self
 // round-trips never reach (medit.cpp:230, tecplot.cpp:185, nastran.cpp:265,

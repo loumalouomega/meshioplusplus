@@ -15421,6 +15421,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_ensight_metadata(const std::string& rPath,
 
 // System includes
 #include <string>
+#include <memory>
 #include <vector>
 
 // Project includes
@@ -15488,10 +15489,35 @@ inline constexpr const char* kExodusAttributePrefix = "exodus:attr:";
  * @param rMesh the mesh to write
  * @throws WriteError if a cell block's type has no entry in the meshio++ ->
  *         Exodus type table, or if the connectivity dtype is unsupported
- * @note the shim only attempts this C++ path when `mesh.point_sets` is
- *       empty — the C++ writer has no support for Exodus node sets at all
+ * Point and Side regions are written as node and side sets, preserving names,
+ * explicit ids and empty groups. Invalid memberships and duplicate ids throw.
  */
 MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh);
+
+/** Stateful, bounded-memory Exodus writer. Write the fixed geometry, sets and
+ * exodus:attr:* arrays once, then append point/cell fields with WriteData.
+ * The first step fixes field names, dtypes and shapes; later steps must match.
+ * Geometry, regions and attributes on step meshes are ignored. Flush publishes
+ * completed steps, Finalize closes the file, and both are idempotent. */
+class MESHIOPLUSPLUS_API ExodusTimeSeriesWriter {
+public:
+    explicit ExodusTimeSeriesWriter(const std::string& rPath);
+    ~ExodusTimeSeriesWriter();
+    ExodusTimeSeriesWriter(const ExodusTimeSeriesWriter&) = delete;
+    ExodusTimeSeriesWriter& operator=(const ExodusTimeSeriesWriter&) = delete;
+    ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept;
+    ExodusTimeSeriesWriter& operator=(ExodusTimeSeriesWriter&&) noexcept;
+    void WritePointsCells(const Mesh& rMesh);
+    void WriteData(double Time, const Mesh& rMesh);
+    void Flush();
+    void Finalize();
+    std::size_t NumSteps() const;
+    bool Finalized() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
+};
 
 /**
  * @brief Read an Exodus II (netCDF classic) file.
@@ -15539,7 +15565,8 @@ MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh
  * @note point_data keys ending X/Y/Z or _R/_Z may be recombined into vector
  *       arrays; cell_data is split per cell block by node count
  */
-MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo,
+                                    const ReadOptions& rOptions = {});
 
 /**
  * @brief Read an Exodus II file, discarding the provenance side channel.
@@ -15558,7 +15585,8 @@ MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, const ReadOptions&
  * @param rOptions per-call reader options
  * @return the summary
  */
-MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath,
+                                                     const ReadOptions& rOptions = {});
 
 /**
  * @brief Map an Exodus 1-based side number to a meshio++ local facet index.
@@ -18810,15 +18838,12 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_op2_metadata(const std::string& rPa
  * `[0,3,2,1,4,7,6,5,10,9,11,8,16,19,18,17,14,13,15,12]`
  * (`line`/`triangle`/`quad`/`vertex` use natural order).
  *
- * **Deferred to Python** (the reader throws when it meets any of these
- * tokens, and the writer is gated off by the shim when the mesh carries
- * the corresponding data): the `identifications`/`identificationtypes`
- * periodic node-pair tables (stored in `mesh.info`, which has no C++-core
- * representation), `materials`/`bcnames`/`cd2names`/`cd3names` codimension
- * name tables (-> non-empty `field_data`), the two-physical-line
- * `edgesegmentsgi2` variant, `face_colours`/`singular_*` sections, and the
- * gzip `.vol.gz` container (the C++ reader/writer explicitly refuse the
- * `.gz` suffix; Python handles it via `gzip.open`).
+ * Periodic tables use numeric `field_data` under `netgen:identifications`
+ * and `netgen:identificationtypes`; the Python binding moves these to its
+ * historical `mesh.info` representation. Codimension name tables map to
+ * `[id, dimension]` field data. Two-line `edgesegmentsgi2` is supported;
+ * auxiliary face-colour/singular sections are skipped. `.vol.gz` reads and
+ * writes require zlib, with a named error when it is compiled out.
  */
 
 // System includes
@@ -18830,7 +18855,7 @@ namespace meshioplusplus {
 
 /**
  * @brief Write a Mesh to a Netgen neutral mesh (.vol) file, ascii,
- *        common-path only.
+ *        including name/periodic tables and optional gzip storage.
  *
  * Emits `mesh3d`, `dimension`, `points`, and per-dimension element blocks
  * (`pointelements`/edge/`surfaceelements`/`volumeelements` as applicable)
@@ -18838,21 +18863,21 @@ namespace meshioplusplus {
  * permutation. The single per-cell region/material marker is taken from
  * `cell_data["netgen:index"]` if present, else the first integer-dtype
  * cell_data array found (Netgen has no way to store the array's name).
- * Refuses (via the shim) meshes carrying `mesh.info` entries or non-empty
- * `field_data`, and never handles the `.vol.gz` suffix.
+ * Name and periodic tables use field data; the Python binding supplies its
+ * periodic side channel explicitly. Gzip storage requires zlib.
  *
  * @param rPath filesystem path to the .vol file to create/overwrite
  * @param rMesh the mesh to write
  * @param rFloatFmt coordinate format string (e.g. `".16e"`)
  * @throws WriteError on an unsupported cell type, mixed content this path
- *         doesn't implement, or a `.gz` path
+ *         doesn't implement, or gzip storage without zlib
  * @note reads `cell_data["netgen:index"]` if present
  */
 MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read a Netgen neutral mesh (.vol) file into a Mesh, ascii,
- *        common-path only.
+ *        including name/periodic tables and optional gzip storage.
  *
  * Parses `dimension`, `geomtype` (unexpected values only warn),
  * `points`, and the point/edge/surface/volume element blocks, inferring
@@ -18863,11 +18888,8 @@ MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh
  *
  * @param rPath filesystem path to the .vol file to read
  * @return the read Mesh, with `cell_data["netgen:index"]` populated
- * @throws ReadError on `identifications`/`identificationtypes`,
- *         `materials`/`bcnames`/`cd2names`/`cd3names`, the two-line
- *         `edgesegmentsgi2` variant, `face_colours`/`singular_*` sections,
- *         a `.gz` path, or a malformed file — all of which route to the
- *         Python fallback
+ * @throws ReadError on malformed files, unsupported sections or gzip storage
+ *         in a build without zlib.
  */
 MESHIOPLUSPLUS_API Mesh read_netgen(const std::string& rPath);
 
@@ -27403,6 +27425,13 @@ MESHIOPLUSPLUS_API std::string pipeline_report_json(const PipelineReport& rRepor
  */
 MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
 pipeline_op_table();
+
+/** Version 2 vocabulary: v1 plus file-backed Merge/Interpolate/UndoGreen,
+ * terminal Split and partition-to-pieces. PipelineOutput::mPath may contain
+ * {key}/{part}; JSON Output.Pattern maps to it without changing installed layouts.
+ * Version 2 spatial fan-out is separate from transient sequence fan-out. */
+MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
+pipeline_v2_op_table();
 
 /**
  * @brief Checks @p rStep against the step vocabulary.
@@ -74104,6 +74133,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Project includes
@@ -75023,7 +75053,123 @@ MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& r
     return meta;
 }
 
-void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+namespace {
+
+struct ExoWriteSet {
+    std::string mName;
+    std::int64_t mId;
+    std::vector<long long> mEntities;
+    std::vector<long long> mSides;
+};
+
+std::vector<ExoWriteSet> exo_write_sets(const Mesh& rMesh, RegionKind Kind) {
+    std::vector<const Region*> regions;
+    std::unordered_set<std::int64_t> ids;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& region = rMesh.Region(i);
+        if (region.mKind != Kind)
+            continue;
+        if (region.mName.find('\0') != std::string::npos)
+            throw WriteError("Exodus: set names cannot contain NUL characters");
+        if (region.mTag >= 0 && !ids.insert(region.mTag).second)
+            throw WriteError("Exodus: duplicate set id " + std::to_string(region.mTag));
+        regions.push_back(&region);
+    }
+    std::sort(regions.begin(), regions.end(),
+              [](const Region* a, const Region* b) { return a->Key() < b->Key(); });
+    const auto bases = detail::block_bases(rMesh);
+    std::int64_t next_id = 1;
+    std::vector<ExoWriteSet> sets;
+    for (const Region* region : regions) {
+        while (ids.count(next_id))
+            ++next_id;
+        const auto id = region->mTag >= 0 ? region->mTag : next_id;
+        ids.insert(id);
+        ExoWriteSet set{region->mName, id, {}, {}};
+        const auto* entries = region->Entries();
+        for (std::size_t i = 0; i < region->NumEntries(); ++i) {
+            const auto entity = entries[i * region->Stride()];
+            if (Kind == RegionKind::Point) {
+                if (entity < 0 || static_cast<std::size_t>(entity) >= rMesh.NumPoints())
+                    throw WriteError("Exodus: node set '" + region->mName +
+                                     "' has an invalid point");
+            } else {
+                const auto [block, row] = detail::global_to_block_row(bases, entity);
+                (void)row;
+                if (block == static_cast<std::size_t>(-1))
+                    throw WriteError("Exodus: side set '" + region->mName +
+                                     "' has an invalid cell");
+                const auto facet = entries[2 * i + 1];
+                int side = 1;
+                while (exo_face_index(rMesh.Cells(block).Type(), side) >= 0 &&
+                       exo_face_index(rMesh.Cells(block).Type(), side) != facet)
+                    ++side;
+                if (exo_face_index(rMesh.Cells(block).Type(), side) < 0)
+                    throw WriteError("Exodus: side set '" + region->mName +
+                                     "' has an unsupported facet");
+                set.mSides.push_back(side);
+            }
+            set.mEntities.push_back(entity + 1);
+        }
+        sets.push_back(std::move(set));
+    }
+    return sets;
+}
+
+void exo_put_sets(int Ncid, int StringDim, const std::vector<ExoWriteSet>& rSets, bool Sides) {
+    if (rSets.empty())
+        return;
+    const std::string prefix = Sides ? "ss" : "ns";
+    int dim, prop, names, status;
+    check(nc_def_dim(Ncid, Sides ? "num_side_sets" : "num_node_sets", rSets.size(), &dim),
+          "set count", true);
+    check(nc_def_var(Ncid, (prefix + "_prop1").c_str(), NC_INT64, 1, &dim, &prop), "set ids", true);
+    check(nc_put_att_text(Ncid, prop, "name", 2, "ID"), "set id property", true);
+    check(nc_def_var(Ncid, (prefix + "_status").c_str(), NC_INT, 1, &dim, &status), "set status",
+          true);
+    const int dims[] = {dim, StringDim};
+    check(nc_def_var(Ncid, (prefix + "_names").c_str(), NC_CHAR, 2, dims, &names), "set names",
+          true);
+    for (std::size_t i = 0; i < rSets.size(); ++i) {
+        const auto& set = rSets[i];
+        const long long id = set.mId;
+        const int active = !set.mEntities.empty();
+        check(nc_put_var1_longlong(Ncid, prop, &i, &id), "set id", true);
+        check(nc_put_var1_int(Ncid, status, &i, &active), "set status", true);
+        const std::size_t start[] = {i, 0}, count[] = {1, set.mName.size()};
+        if (!set.mName.empty())
+            check(nc_put_vara_text(Ncid, names, start, count, set.mName.data()), "set name", true);
+        const auto suffix = std::to_string(i + 1);
+        int entry_dim, var;
+        const std::string entry_name = (Sides ? "num_side_ss" : "num_nod_ns") + suffix;
+        check(nc_def_dim(Ncid, entry_name.c_str(), set.mEntities.size(), &entry_dim), "set size",
+              true);
+        const std::string entity_name = (Sides ? "elem_ss" : "node_ns") + suffix;
+        check(nc_def_var(Ncid, entity_name.c_str(), NC_INT64, 1, &entry_dim, &var), "set entries",
+              true);
+        if (!set.mEntities.empty())
+            check(nc_put_var_longlong(Ncid, var, set.mEntities.data()), "set entries", true);
+        if (Sides) {
+            check(nc_def_var(Ncid, ("side_ss" + suffix).c_str(), NC_INT64, 1, &entry_dim, &var),
+                  "set sides", true);
+            if (!set.mSides.empty())
+                check(nc_put_var_longlong(Ncid, var, set.mSides.data()), "set sides", true);
+        }
+    }
+}
+
+}  // namespace
+
+namespace {
+
+void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, bool DoubleTime) {
+    // Validate memberships and ids before creating or truncating the destination.
+    const auto node_sets = exo_write_sets(rMesh, RegionKind::Point);
+    const auto side_sets = exo_write_sets(rMesh, RegionKind::Side);
+    std::size_t string_size = 33;
+    for (const auto* sets : {&node_sets, &side_sets})
+        for (const auto& set : *sets)
+            string_size = std::max(string_size, set.mName.size() + 1);
     int ncid;
     check(nc_create(rPath.c_str(), NC_CLOBBER | NC_NETCDF4, &ncid), "create", true);
     struct Closer {
@@ -75058,13 +75204,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         total_elems += cb.NumCells();
 
-    int d_nodes, d_dim, d_elem, d_blk, d_ns, d_str, d_line, d_four, d_time;
+    int d_nodes, d_dim, d_elem, d_blk, d_str, d_line, d_four, d_time;
     check(nc_def_dim(ncid, "num_nodes", npts, &d_nodes), "def num_nodes", true);
     check(nc_def_dim(ncid, "num_dim", pdim, &d_dim), "def num_dim", true);
     check(nc_def_dim(ncid, "num_elem", total_elems, &d_elem), "def num_elem", true);
     check(nc_def_dim(ncid, "num_el_blk", rMesh.NumCellBlocks(), &d_blk), "def num_el_blk", true);
-    check(nc_def_dim(ncid, "num_node_sets", 0, &d_ns), "def num_node_sets", true);
-    check(nc_def_dim(ncid, "len_string", 33, &d_str), "def len_string", true);
+    check(nc_def_dim(ncid, "len_string", string_size, &d_str), "def len_string", true);
     check(nc_def_dim(ncid, "len_line", 81, &d_line), "def len_line", true);
     check(nc_def_dim(ncid, "four", 4, &d_four), "def four", true);
     check(nc_def_dim(ncid, "time_step", NC_UNLIMITED, &d_time), "def time_step", true);
@@ -75078,7 +75223,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     // the shape `XdmfTimeSeriesWriter` already has; that remains a follow-up.
     {
         int var;
-        check(nc_def_var(ncid, "time_whole", NC_FLOAT, 1, &d_time, &var), "def time_whole", true);
+        check(nc_def_var(ncid, "time_whole", DoubleTime ? NC_DOUBLE : NC_FLOAT, 1, &d_time, &var),
+              "def time_whole", true);
         std::size_t start = 0, count = 1;
         float t = 0.0f;
         if (rMesh.HasFieldData("exodus:time")) {
@@ -75091,7 +75237,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
                     "single time step; using the first.",
                     tv.Size());
         }
-        check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
+        if (EmitStep)
+            check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
     }
 
     // coor_names
@@ -75303,7 +75450,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         const std::string prefix(kExodusAttributePrefix);
         std::vector<std::string> var_names;
         for (const auto& name : rMesh.CellDataNames())
-            if (name.rfind(prefix, 0) != 0)
+            if (EmitStep && name.rfind(prefix, 0) != 0)
                 var_names.push_back(name);
 
         if (!var_names.empty()) {
@@ -75383,7 +75530,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // point data
-    if (rMesh.NumPointData() > 0) {
+    if (EmitStep && rMesh.NumPointData() > 0) {
         int d_nnv;
         check(nc_def_dim(ncid, "num_nod_var", rMesh.NumPointData(), &d_nnv), "num_nod_var", true);
         int name_var;
@@ -75427,8 +75574,176 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    // Node sets (point_sets) are not representable in the conversion layer;
-    // the shim routes meshes with point_sets to the Python writer.
+    exo_put_sets(ncid, d_str, node_sets, false);
+    exo_put_sets(ncid, d_str, side_sets, true);
+}
+
+struct ExoSeriesField {
+    std::string mName;
+    std::string mVariable;
+    DType mDtype;
+    std::vector<std::size_t> mShape;
+    std::size_t mBlock;
+    bool mPoint;
+};
+
+std::vector<ExoSeriesField> exo_series_fields(const Mesh& rMesh) {
+    std::vector<ExoSeriesField> fields;
+    std::size_t j = 0;
+    const auto add = [&](const std::string& name, const std::string& variable, const NDArray& data,
+                         std::size_t rows, std::size_t block, bool point) {
+        if (name.empty() || name.size() > 33 || name.find('\0') != std::string::npos)
+            throw WriteError("Exodus: series field names must contain 1 to 33 non-NUL bytes");
+        if (data.Shape().empty() || data.Shape()[0] != rows ||
+            std::find(data.Shape().begin() + 1, data.Shape().end(), 0) != data.Shape().end())
+            throw WriteError("Exodus: series field '" + name + "' has an invalid shape");
+        fields.push_back({name, variable, data.Dtype(), data.Shape(), block, point});
+    };
+    for (const auto& name : rMesh.PointDataNames()) {
+        add(name, "vals_nod_var" + std::to_string(++j), rMesh.PointData(name), rMesh.NumPoints(), 0,
+            true);
+    }
+    j = 0;
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (name.rfind(kExodusAttributePrefix, 0) == 0)
+            continue;
+        ++j;
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())
+            throw WriteError("Exodus: series field '" + name + "' must cover every cell block");
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            add(name, "vals_elem_var" + std::to_string(j) + "eb" + std::to_string(b + 1),
+                rMesh.CellData(name, b), rMesh.Cells(b).NumCells(), b, false);
+    }
+    return fields;
+}
+
+}  // namespace
+
+void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+    exo_write_file(rPath, rMesh, true, false);
+}
+
+struct ExodusTimeSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<Mesh> mGeometry;
+    std::size_t mNumPoints = 0;
+    std::vector<std::size_t> mBlockSizes;
+    std::vector<std::string> mBlockTypes;
+    std::vector<ExoSeriesField> mFields;
+    int mNcid = -1;
+    std::size_t mNumSteps = 0;
+    bool mGrid = false;
+    bool mFinalized = false;
+    explicit Impl(std::string path) : mPath(std::move(path)) {}
+    ~Impl() {
+        if (mNcid >= 0)
+            nc_close(mNcid);
+    }
+};
+
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath)
+    : mImpl(std::make_unique<Impl>(rPath)) {
+    if (rPath.empty())
+        throw WriteError("Exodus: series path is empty");
+}
+ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() = default;
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept = default;
+ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(ExodusTimeSeriesWriter&&) noexcept =
+    default;
+
+void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    if (!mImpl || mImpl->mFinalized || mImpl->mGrid)
+        throw WriteError("Exodus: write_points_cells requires a new, open series");
+    auto geometry =
+        detail::clone_mesh(rMesh, [](DataLocation location, const std::string& name, std::string&) {
+            return location == DataLocation::Cell && name.rfind(kExodusAttributePrefix, 0) == 0;
+        });
+    exo_write_file(mImpl->mPath, geometry, false, true);
+    mImpl->mNumPoints = rMesh.NumPoints();
+    for (const auto block : rMesh.CellRange()) {
+        mImpl->mBlockSizes.push_back(block.NumCells());
+        mImpl->mBlockTypes.push_back(block.Type());
+    }
+    mImpl->mGeometry = std::make_unique<Mesh>(std::move(geometry));
+    mImpl->mGrid = true;
+}
+
+void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    if (!mImpl || mImpl->mFinalized || !mImpl->mGrid)
+        throw WriteError("Exodus: write_data requires write_points_cells and an open series");
+    if (!std::isfinite(Time))
+        throw WriteError("Exodus: series time must be finite");
+    if (rMesh.NumPoints() != mImpl->mNumPoints ||
+        rMesh.NumCellBlocks() != mImpl->mBlockSizes.size())
+        throw WriteError("Exodus: series mesh counts do not match the fixed grid");
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        if (rMesh.Cells(b).NumCells() != mImpl->mBlockSizes[b] ||
+            rMesh.Cells(b).Type() != mImpl->mBlockTypes[b])
+            throw WriteError("Exodus: series cell blocks do not match the fixed grid");
+    auto fields = exo_series_fields(rMesh);
+    if (mImpl->mNumSteps) {
+        if (fields.size() != mImpl->mFields.size())
+            throw WriteError("Exodus: series field schema changed");
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            const auto& a = fields[i];
+            const auto& b = mImpl->mFields[i];
+            if (a.mName != b.mName || a.mDtype != b.mDtype || a.mShape != b.mShape ||
+                a.mBlock != b.mBlock || a.mPoint != b.mPoint)
+                throw WriteError("Exodus: series field schema changed for '" + a.mName + "'");
+        }
+    } else {
+        auto first = detail::clone_mesh(*mImpl->mGeometry);
+        for (const auto& field : fields) {
+            if (field.mPoint)
+                first.AddPointData(field.mName,
+                                   detail::data_owned_copy(rMesh.PointData(field.mName)));
+            else
+                first.AppendCellData(field.mName, detail::data_owned_copy(
+                                                      rMesh.CellData(field.mName, field.mBlock)));
+        }
+        exo_write_file(mImpl->mPath, first, true, true);
+        check(nc_open(mImpl->mPath.c_str(), NC_WRITE, &mImpl->mNcid), "open series", true);
+        mImpl->mFields = std::move(fields);
+        mImpl->mGeometry.reset();
+    }
+    const auto step = mImpl->mNumSteps;
+    for (const auto& field : mImpl->mFields) {
+        const auto& data =
+            field.mPoint ? rMesh.PointData(field.mName) : rMesh.CellData(field.mName, field.mBlock);
+        int var;
+        check(nc_inq_varid(mImpl->mNcid, field.mVariable.c_str(), &var), "series field", true);
+        std::vector<std::size_t> start(data.Shape().size() + 1, 0), count{1};
+        start[0] = step;
+        count.insert(count.end(), data.Shape().begin(), data.Shape().end());
+        if (data.Size())
+            check(nc_put_vara(mImpl->mNcid, var, start.data(), count.data(), data.Data()),
+                  "series field", true);
+    }
+    int time_var;
+    check(nc_inq_varid(mImpl->mNcid, "time_whole", &time_var), "series time", true);
+    check(nc_put_var1_double(mImpl->mNcid, time_var, &step, &Time), "series time", true);
+    ++mImpl->mNumSteps;
+}
+
+void ExodusTimeSeriesWriter::Flush() {
+    if (mImpl && mImpl->mNcid >= 0)
+        check(nc_sync(mImpl->mNcid), "flush series", true);
+}
+void ExodusTimeSeriesWriter::Finalize() {
+    if (!mImpl || mImpl->mFinalized)
+        return;
+    if (mImpl->mNcid >= 0) {
+        check(nc_close(mImpl->mNcid), "close series", true);
+        mImpl->mNcid = -1;
+    }
+    mImpl->mFinalized = true;
+    mImpl->mGeometry.reset();
+}
+std::size_t ExodusTimeSeriesWriter::NumSteps() const {
+    return mImpl ? mImpl->mNumSteps : 0;
+}
+bool ExodusTimeSeriesWriter::Finalized() const {
+    return !mImpl || mImpl->mFinalized;
 }
 
 }  // namespace meshioplusplus
@@ -152359,6 +152674,7 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -152367,6 +152683,7 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
 #include <utility>
 #include <variant>
 #include <vector>
+#include <unordered_set>
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_JSON
@@ -153620,10 +153937,168 @@ Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
     return mesh;
 }
 
+std::vector<std::pair<std::string, std::vector<std::string>>> pipeline_v2_op_table() {
+    auto table = pipeline_op_table();
+    table.push_back(
+        {"Merge", {"Inputs", "Weld", "Atol", "SourceTag", "DataPolicy", "DropDuplicateCells"}});
+    table.push_back({"Interpolate",
+                     {"Inputs", "Method", "Arrays", "Extrapolate", "DefaultValue", "OnConflict"}});
+    table.push_back({"UndoGreen", {"Inputs"}});
+    table.push_back({"Split", {"By", "Tag"}});
+    for (auto& [op, keys] : table)
+        if (op == "Partition") {
+            keys.push_back("RecordIds");
+            keys.push_back("GhostLayers");
+        }
+    return table;
+}
+
+namespace {
+
+void pipe_validate_v2(const PipelineStep& rStep) {
+    const auto table = pipeline_v2_op_table();
+    const auto found = std::find_if(table.begin(), table.end(),
+                                    [&](const auto& entry) { return entry.first == rStep.mOp; });
+    if (found == table.end()) {
+        validate_pipeline_step(rStep);
+        return;
+    }
+    for (const auto& [key, value] : rStep.mParams) {
+        (void)value;
+        if (std::find(found->second.begin(), found->second.end(), key) == found->second.end())
+            throw std::invalid_argument(pipe_err(rStep, "unknown key '" + key + "'"));
+    }
+    if (rStep.mOp == "Merge" || rStep.mOp == "Interpolate" || rStep.mOp == "UndoGreen") {
+        const auto inputs = pipe_svec(rStep, "Inputs");
+        if (inputs.empty() || (rStep.mOp != "Merge" && inputs.size() != 1))
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "Inputs requires " +
+                    std::string(rStep.mOp == "Merge" ? "at least one path" : "exactly one path")));
+        for (const auto& path : inputs)
+            if (path.empty())
+                throw std::invalid_argument(pipe_err(rStep, "Inputs paths must not be empty"));
+    }
+}
+
+Mesh pipe_read_extra(const std::string& rPath) {
+    std::string fmt;
+    try {
+        fmt = resolve_format(rPath, "");
+    } catch (const ReadError&) {
+        fmt = sniff_format(rPath);
+        if (fmt.empty())
+            throw;
+    }
+    return registry_read(rPath, fmt, ReadOptions{});
+}
+
+Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    const auto& op = rStep.mOp;
+    if (op == "Merge") {
+        std::vector<Mesh> owned;
+        for (const auto& path : pipe_svec(rStep, "Inputs"))
+            owned.push_back(pipe_read_extra(path));
+        std::vector<const Mesh*> inputs{&mesh};
+        for (const auto& extra : owned)
+            inputs.push_back(&extra);
+        MergeOptions options;
+        options.weld = pipe_flag(rStep, "Weld", false);
+        options.atol = pipe_number(rStep, "Atol", 1e-8);
+        options.source_tag = pipe_flag(rStep, "SourceTag", true);
+        options.drop_duplicate_cells = pipe_flag(rStep, "DropDuplicateCells", false);
+        const auto policy = pipe_text(rStep, "DataPolicy", "intersection");
+        if (policy != "intersection" && policy != "fill")
+            throw std::invalid_argument(
+                pipe_err(rStep, "DataPolicy must be 'intersection' or 'fill'"));
+        options.data_policy =
+            policy == "fill" ? MergeDataPolicy::Fill : MergeDataPolicy::Intersection;
+        auto result = merge(inputs, options);
+        pipe_push_step(rReport, rStep, {{"NumInputs", static_cast<double>(inputs.size())}});
+        return std::move(result.mMesh);
+    }
+    if (op == "Interpolate" || op == "UndoGreen") {
+        Mesh extra = pipe_read_extra(pipe_svec(rStep, "Inputs")[0]);
+        if (op == "UndoGreen") {
+            auto result = undo_green(extra, mesh);
+            pipe_push_step(rReport, rStep,
+                           {{"NumGroupsUndone", static_cast<double>(result.mNumGroupsUndone)},
+                            {"NumCellsRemoved", static_cast<double>(result.mNumCellsRemoved)}});
+            return std::move(result.mMesh);
+        }
+        InterpolateOptions options;
+        options.mMethod = interpolate_method_from_name(pipe_text(rStep, "Method", "nearest"));
+        options.mArrays = pipe_svec(rStep, "Arrays");
+        options.mExtrapolate = pipe_flag(rStep, "Extrapolate", false);
+        options.mDefaultValue = pipe_number(rStep, "DefaultValue", 0.0);
+        options.mOnConflict =
+            interpolate_conflict_from_name(pipe_text(rStep, "OnConflict", "error"));
+        auto result = interpolate(extra, mesh, options);
+        pipe_push_step(rReport, rStep);
+        return result;
+    }
+    return apply_pipeline_step(std::move(mesh), rStep, rReport);
+}
+
+std::string pipe_piece_path(const std::string& rPattern, const std::string& rKey, bool Part) {
+    std::string key;
+    for (const unsigned char c : rKey)
+        key += ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.')
+                   ? static_cast<char>(c)
+                   : '_';
+    if (key.empty() || key == "." || key == "..")
+        key = "_";
+    const std::string token = Part ? "{part}" : "{key}";
+    std::string path = rPattern;
+    std::size_t pos = 0;
+    while ((pos = path.find(token, pos)) != std::string::npos) {
+        path.replace(pos, token.size(), key);
+        pos += key.size();
+    }
+    if (path.find('{') != std::string::npos || path.find('}') != std::string::npos)
+        throw std::invalid_argument("meshio++: pipeline: unsupported Output.Pattern token");
+    return path;
+}
+
+std::string pipe_normal_path(const std::string& rPath) {
+    return std::filesystem::weakly_canonical(std::filesystem::absolute(rPath)).string();
+}
+
+void pipe_write_pieces(const Pipeline& rPipeline,
+                       std::vector<std::pair<std::string, Mesh>>& rPieces, bool Part) {
+    std::vector<std::string> paths;
+    std::unordered_set<std::string> unique, inputs{pipe_normal_path(rPipeline.mInput.mPath)};
+    for (const auto& step : rPipeline.mSteps)
+        if (step.mOp == "Merge" || step.mOp == "Interpolate" || step.mOp == "UndoGreen")
+            for (const auto& path : pipe_svec(step, "Inputs"))
+                inputs.insert(pipe_normal_path(path));
+    for (const auto& [key, mesh] : rPieces) {
+        (void)mesh;
+        const auto path = pipe_piece_path(rPipeline.mOutput.mPath, key, Part);
+        const auto canonical = pipe_normal_path(path);
+        if (!unique.insert(canonical).second || inputs.count(canonical))
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern collides with another output or an input: " +
+                path);
+        std::string why;
+        const auto fmt = resolve_write_format(path, rPipeline.mOutput.mFormat);
+        if (!registry_write_supports(fmt, rPipeline.mOutput.mOptions, why))
+            throw WriteError(why);
+        paths.push_back(path);
+    }
+    for (std::size_t i = 0; i < paths.size(); ++i)
+        registry_write_ex(paths[i], rPieces[i].second, rPipeline.mOutput.mFormat,
+                          rPipeline.mOutput.mOptions);
+}
+
+}  // namespace
+
 PipelineReport run_pipeline(const Pipeline& rPipeline) {
-    if (rPipeline.mVersion != 1)
+    if (rPipeline.mVersion != 1 && rPipeline.mVersion != 2)
         throw std::invalid_argument("meshio++: pipeline: unsupported Version " +
-                                    std::to_string(rPipeline.mVersion) + " (this build knows 1)");
+                                    std::to_string(rPipeline.mVersion) +
+                                    " (this build knows 1 and 2)");
     if (rPipeline.mInput.mPath.empty())
         throw std::invalid_argument("meshio++: pipeline: Input.Path is required");
     if (rPipeline.mOutput.mPath.empty())
@@ -153631,8 +154106,39 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     // Validate the whole chain before the (possibly expensive) read: a typo in
     // step 7 must not cost reading a 10 GB mesh first.
-    for (const PipelineStep& step : rPipeline.mSteps)
-        validate_pipeline_step(step);
+    const bool fanout = rPipeline.mOutput.mPath.find("{key}") != std::string::npos ||
+                        rPipeline.mOutput.mPath.find("{part}") != std::string::npos;
+    if (rPipeline.mVersion == 2 && !fanout &&
+        (rPipeline.mOutput.mPath.find('{') != std::string::npos || rPipeline.mOutput.mPath.find('}') != std::string::npos))
+        throw std::invalid_argument("meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1");
+    for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
+        const auto& step = rPipeline.mSteps[i];
+        if (rPipeline.mVersion == 1)
+            validate_pipeline_step(step);
+        else
+            pipe_validate_v2(step);
+        if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
+            throw std::invalid_argument(
+                "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
+                "{key}");
+        if (step.mOp == "Partition" && !fanout &&
+            (pipe_find(step, "RecordIds") || pipe_find(step, "GhostLayers")))
+            throw std::invalid_argument(
+                "meshio++: pipeline: RecordIds/GhostLayers require partition fan-out");
+    }
+    if (fanout) {
+        if (rPipeline.mVersion != 2 || rPipeline.mSteps.empty())
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern requires Version 2 and a terminal "
+                "Split/Partition");
+        const auto& last = rPipeline.mSteps.back();
+        const auto token = last.mOp == "Split" ? "{key}" : "{part}";
+        if ((last.mOp != "Split" && last.mOp != "Partition") ||
+            rPipeline.mOutput.mPath.find(token) == std::string::npos)
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern needs {key} for Split or {part} for Partition");
+        pipe_piece_path(rPipeline.mOutput.mPath, "probe", last.mOp == "Partition");
+    }
 
     // Read: resolve_format with the sniff_format fallback, the read-path rule
     // everywhere (the CLI, mio_read, the wasm read_mesh).
@@ -153659,7 +154165,36 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     PipelineReport report;
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
-    mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+    for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
+        const auto& step = rPipeline.mSteps[i];
+        if (fanout && i + 1 == rPipeline.mSteps.size()) {
+            std::vector<std::pair<std::string, Mesh>> pieces;
+            if (step.mOp == "Split") {
+                auto result = split(mesh, split_by_from_name(pipe_text(step, "By", "type")),
+                                    pipe_text(step, "Tag", ""));
+                for (auto& piece : result.mPieces)
+                    pieces.emplace_back(piece.mKey, std::move(piece.mMesh));
+            } else {
+                PartitionOptions options;
+                options.mNParts = static_cast<int>(pipe_number(step, "Nparts", 2));
+                options.mMethod = partition_method_from_name(pipe_text(step, "Method", "auto"));
+                options.mMode = partition_mode_from_name(pipe_text(step, "Mode", "eco"));
+                options.mImbalance = pipe_number(step, "Imbalance", 0.03);
+                options.mSeed = static_cast<int>(pipe_number(step, "Seed", 0));
+                options.mWeightsKey = pipe_text(step, "WeightsKey", "");
+                options.mRecordIds = pipe_flag(step, "RecordIds", false);
+                options.mGhostLayers = static_cast<int>(pipe_number(step, "GhostLayers", 0));
+                auto result = partition(mesh, options);
+                for (auto& piece : result.mPieces)
+                    pieces.emplace_back(std::to_string(piece.mPartId), std::move(piece.mMesh));
+            }
+            pipe_push_step(report, step, {{"NumPieces", static_cast<double>(pieces.size())}});
+            pipe_write_pieces(rPipeline, pieces, step.mOp == "Partition");
+            return report;
+        }
+        mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report)
+                                       : apply_pipeline_step(std::move(mesh), step, report);
+    }
 
     const std::string out_fmt =
         resolve_write_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
@@ -153979,12 +154514,23 @@ SequenceInput pipe_sequence_input_from_json(const pipe_json& rInput, bool& rSequ
     return input;
 }
 
-SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput) {
+SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput, int Version) {
     if (!rOutput.is_object())
         pipe_schema_error("Output must be an object");
-    pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+    if (Version == 2)
+        pipe_check_keys(rOutput, "Output",
+                        {"Path", "Pattern", "Format", "Encoding", "Codec", "FloatFormat"});
+    else
+        pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
     SequenceOutput output;
-    output.mPath = pipe_get_string(rOutput, "Path", "Output", /*required=*/true);
+    const bool pattern = pipe_get(rOutput, "Pattern") != nullptr;
+    if (pattern && pipe_get(rOutput, "Path"))
+        pipe_schema_error("Output.Path and Output.Pattern are mutually exclusive");
+    output.mPath =
+        pipe_get_string(rOutput, pattern ? "Pattern" : "Path", "Output", /*required=*/true);
+    if (pattern && output.mPath.find("{key}") == std::string::npos &&
+        output.mPath.find("{part}") == std::string::npos)
+        pipe_schema_error("Output.Pattern requires {key} or {part}");
     output.mFormat = pipe_get_string(rOutput, "Format", "Output");
     output.mOptions.mEncoding =
         pipeline_encoding_from_name(pipe_get_string(rOutput, "Encoding", "Output"));
@@ -154016,9 +154562,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
         if (!v->is_number_integer() && !v->is_number_unsigned())
             pipe_schema_error("Version must be an integer");
         pipeline.mVersion = v->get<int>();
-        if (pipeline.mVersion != 1)
+        if (pipeline.mVersion != 1 && pipeline.mVersion != 2)
             pipe_schema_error("unsupported Version " + std::to_string(pipeline.mVersion) +
-                              " (this build knows 1)");
+                              " (this build knows 1 and 2)");
     }
 
     if (pipe_get(doc, "Mode")) {
@@ -154090,7 +154636,7 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     const pipe_json* output = pipe_get(doc, "Output");
     if (!output)
         pipe_schema_error("Output is required");
-    pipeline.mOutput = pipe_sequence_output_from_json(*output);
+    pipeline.mOutput = pipe_sequence_output_from_json(*output, pipeline.mVersion);
 
     if (const pipe_json* ops = pipe_get(doc, "Operations")) {
         if (!ops->is_array())
@@ -154108,7 +154654,10 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
                 step.mParams.emplace(item.key(),
                                      pipe_value_from_json(item.value(), where + "." + item.key()));
             }
-            validate_pipeline_step(step);
+            if (pipeline.mVersion == 2)
+                pipe_validate_v2(step);
+            else
+                validate_pipeline_step(step);
             pipeline.mSteps.push_back(std::move(step));
         }
     }
@@ -154183,6 +154732,10 @@ PipelineReport run_sequence_json(const std::string& rText) {
     if (!parsed.mSequenceKeys &&
         !sequence_input_needs_driver(parsed.mSeq.mInput, parsed.mSeq.mOutput))
         return run_pipeline(pipe_project_single(parsed));
+    if (parsed.mSeq.mVersion == 2)
+        throw std::invalid_argument(
+            "meshio++: pipeline: Version 2 spatial steps cannot be combined with transient "
+            "sequence input/output");
     return run_sequence_pipeline(parsed.mSeq);
 }
 
@@ -161084,6 +161637,12 @@ std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFor
 }
 
 bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy) {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    if (rFormat == "exodus") {
+        rWhy.clear();
+        return true;
+    }
+#endif
     // The one multi-step writer in the repo. Unlike sequence_num_steps there is
     // no file to probe, so this is a predicate in registry_write_supports'
     // style. It is kept honest by a gtest that cross-checks it against what
@@ -161096,8 +161655,7 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd' and 'femap' "
-           "can); "
+           "' cannot hold a multi-step series in this build; "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -161382,10 +161940,15 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
 /// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    const char* who = rFormat == "vtkhdf"  ? "VTKHDF"
-                      : rFormat == "pvd"   ? "PVD"
-                      : rFormat == "femap" ? "Femap"
-                                           : "XDMF";
+    if (rFormat == "exodus" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
+            "select");
+    const char* who = rFormat == "exodus"   ? "Exodus"
+                      : rFormat == "vtkhdf" ? "VTKHDF"
+                      : rFormat == "pvd"    ? "PVD"
+                      : rFormat == "femap"  ? "Femap"
+                                            : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -161418,7 +161981,8 @@ public:
 
 class SeqXdmfSink final : public SeqSeriesSink {
 public:
-    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat) : mWriter(rPath, rDataFormat) {}
+    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat)
+        : mWriter(rPath, rDataFormat) {}
     void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
     void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
     void Finalize() override { mWriter.Finalize(); }
@@ -161426,6 +161990,19 @@ public:
 private:
     XdmfTimeSeriesWriter mWriter;
 };
+
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+class SeqExodusSink final : public SeqSeriesSink {
+public:
+    explicit SeqExodusSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    ExodusTimeSeriesWriter mWriter;
+};
+#endif
 
 /// A `.pvd` stores geometry per step (each step is its own `.vtu`), so there is no
 /// static grid to write and `WritePointsCells` has nothing to do.
@@ -161470,6 +162047,13 @@ private:
 std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
                                                     const std::string& rPath,
                                                     const WriteOptions& rOptions) {
+    if (rFormat == "exodus") {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return std::make_unique<SeqExodusSink>(rPath);
+#else
+        throw WriteError("meshio++: sequence: Exodus requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    }
     if (rFormat == "pvd") {
         // The zlib codec follows the build, as the registry's own writers do.
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB

@@ -1177,6 +1177,38 @@ end
     end
 end
 
+@testset "transient Exodus series" begin
+    mktempdir() do dir
+        path = joinpath(dir, "series.e")
+        if !format_writable("exodus")
+            @test_throws MeshioError ExodusSeries(path)
+        else
+            m = fixture()
+            s = ExodusSeries(path)
+            @test num_steps(s) == 0
+            @test_throws MeshioError write_data!(s, 0, m)
+            write_points_cells!(s, m)
+            write_data!(s, 0.123456789012345, m)
+            write_data!(s, 1.5, m)
+            @test num_steps(s) == 2
+            flush!(s)
+            finalize!(s)
+            finalize!(s)
+            @test finalized(s)
+            @test_throws MeshioError write_data!(s, 2, m)
+            close(s)
+            close(s)
+            @test !isopen(s)
+            @test_throws MeshioError num_steps(s)
+            @test read_metadata(path).time_values == [0.123456789012345, 1.5]
+            back = mio.read(path; options=ReadOptions(time_step=-1))
+            @test point_data(back, "temperature") == point_data(m, "temperature")
+            close(back)
+            close(m)
+        end
+    end
+end
+
 @testset "settings pipeline" begin
     # Behaviour follows the build: with the JSON parser a bad document fails
     # naming the offending op; without it every entry point fails naming

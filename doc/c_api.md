@@ -1,5 +1,11 @@
 # C API
 
+## Exodus series and pipeline Version 2
+
+`mio_exodus_series_create(path)` returns an owning handle or NULL; `mio_exodus_series_write_points_cells(series, mesh)` fixes geometry, node/side sets and attributes, then `mio_exodus_series_write_data(series, time, mesh)` appends a stable point/cell field schema. Flush/finalize return status and are idempotent; `num_steps` returns -1 on error, `finalized` returns 0/1 or -1, and `free` is NULL-safe. No option layout changed. Without netCDF the constructor names the missing dependency through `mio_last_error`. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+The existing `mio_pipeline_run_*` and report counterparts accept [Version 2 spatial documents](./pipeline.md#version-2-spatial-multi-mesh-steps): per-step `Inputs` and terminal `Output.Pattern`. Their signatures and ownership rules are unchanged. Sequence entry points still require transient Version 1 documents; spatial branches and time fan-out are not implicitly combined.
+
 ## Pipeline reports
 
 Pipeline reports are available through new owning `mio_pipeline_run_*_report` and `mio_sequence_pipeline_run_*_report` handles. Read JSON with caller-buffer `mio_pipeline_report_json` (length excludes NUL; -1 on error), then free with `mio_pipeline_report_free`. Size queries and repeated reads do not rerun the pipeline. Existing status-only functions remain unchanged. See [structured pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).

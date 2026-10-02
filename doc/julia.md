@@ -1,5 +1,11 @@
 # Julia
 
+## Exodus series and pipeline Version 2
+
+`ExodusSeries(path)` (or its do-block form) owns the fixed-grid Exodus writer. Call `write_points_cells!(series, mesh)` once and `write_data!(series, time, mesh)` for each step; `flush!`, `finalize!`, `finalized`, `num_steps` and idempotent `close` follow the XDMF lifecycle. netCDF is required; named `MeshioError`s report missing support. Geometry, sets and attributes are static; field schema is fixed by the first step. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+Existing `run_pipeline_*` and report routines accept [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) without new parser dependencies: auxiliary path `Inputs` and terminal `Output.Pattern` with `{key}`/`{part}`. Transient sequence schemas remain Version 1.
+
 ## Pipeline reports
 
 `run_pipeline_file_report(path)`, `run_pipeline_json_report(text)` and `run_sequence_file_report` / `run_sequence_json_report` return structured report JSON (`steps` and `warnings`) without adding package dependencies. The native owner is always released in `finally`; existing status-only APIs are unchanged. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).

@@ -46,8 +46,8 @@ from ._gradient import gradient
 from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
 from ._hessian import hessian
 from ._interfaces import find_interface, region_adjacency, split_interface
-from ._isosurface import isosurface
 from ._interpolate import interpolate
+from ._isosurface import isosurface
 from ._merge import merge
 from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
@@ -67,8 +67,8 @@ from ._sdf import compute_sdf
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
-from ._split import split
 from ._sobolev_deform import sobolev_deform
+from ._split import split
 from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._tensor_invariants import tensor_invariants
@@ -1401,9 +1401,9 @@ def _fanout(mesh, step, pattern, out, inp, steps_spec):
         unique.add(canonical)
         paths.append(path)
         kwargs.append(_write_kwargs_from(out, path))
+    _prov_add_operation(_render_op(step))
     for path, (_, piece), options in zip(paths, pieces, kwargs):
         write(path, piece, file_format=out.get("Format") or None, **options)
-    _prov_add_operation(_render_op(step))
     return {"op": step["Op"], "NumPieces": float(len(pieces))}
 
 
@@ -1487,6 +1487,10 @@ def run_pipeline(settings, input_path=None, output_path=None):
     if not isinstance(steps_spec, list):
         raise ValueError("meshio++: pipeline: Operations must be an array of steps")
     fanout = any(t in str(out_path) for t in ("{key}", "{part}"))
+    if version == 2 and not fanout and any(t in str(out_path) for t in ("{", "}")):
+        raise ValueError(
+            "meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1"
+        )
     for i, step in enumerate(steps_spec):
         _validate_step(step, version)
         if step["Op"] == "Split" and (not fanout or i + 1 != len(steps_spec)):

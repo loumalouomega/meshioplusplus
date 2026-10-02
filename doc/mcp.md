@@ -1,5 +1,9 @@
 # MCP server
 
+## Spatial pipeline Version 2
+
+The existing `pipeline` tool accepts [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps): Merge/Interpolate/UndoGreen with auxiliary path `Inputs`, followed optionally by terminal Split/Partition with `Output.Pattern`. Input/output overrides remain available; `output_path` in the response is the resolved template for fan-out. The sandbox checks the settings file, main input, every auxiliary input and every expanded output (including existing symlinks) before any output writer runs. No implicit spatial/transient cross-product is performed; transient sequence pipelines remain Version 1. Exodus series fan-in is reachable through the existing sequence tool in netCDF-enabled builds.
+
 ## Pipeline reports
 
 The `pipeline` tool's existing `steps`/`warnings` report matches the additive native C/Fortran/Julia/R report JSON APIs; MCP signatures and sandbox behavior are unchanged by the flat-ABI report addition. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).

@@ -1,5 +1,11 @@
 # Fortran
 
+## Exodus series and pipeline Version 2
+
+`type(mio_exodus_series)` owns a netCDF-enabled series. Call `%create(path)`, `%write_points_cells(mesh)`, then `%write_data(time, mesh)` per step; `%flush()`, `%finalize()`, `%finalized()` and `%num_steps()` expose the lifecycle. `%free()` is explicit and idempotent, like mesh handles. Mutators accept optional `stat`/`errmsg`; missing netCDF is a named failure. Point/side sets and attributes belong to the fixed grid, not a step. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+Existing pipeline status/report routines accept [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) JSON with per-step `Inputs` and terminal `{key}`/`{part}` outputs. No bind(C) layout changed; transient sequence documents remain Version 1.
+
 ## Pipeline reports
 
 Structured pipeline reports use `call mio_pipeline_run_file_report(path, report, stat, errmsg)` or `mio_pipeline_run_json_report(text, report, ...)`, plus the corresponding `mio_sequence_pipeline_run_*_report` routines. The allocatable `report` string is JSON with `steps` and `warnings`; the native handle is released automatically. Failure returns an empty string and follows the existing `stat`/`errmsg` convention. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
