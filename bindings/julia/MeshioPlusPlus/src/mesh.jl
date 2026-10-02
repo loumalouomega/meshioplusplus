@@ -311,6 +311,37 @@ function read(path::AbstractString; format::AbstractString="",
     Mesh(_check_ptr(ptr))
 end
 
+"""Enumerate MED mesh names in file link order, without reading geometry."""
+function med_mesh_names(path::AbstractString)
+    n = _check_count(ccall(_sym(:mio_med_mesh_count), Int64, (Cstring,), path), "MED mesh count")
+    [_getstring((buf, len) -> ccall(_sym(:mio_med_mesh_name), Int64,
+         (Cstring, Int64, Ptr{UInt8}, Int64), path, i, buf, len)) for i in 0:n-1]
+end
+
+"""Read one named MED mesh. Named nodal/element profiles expand with NaN fill."""
+function read_med_named(path::AbstractString, name::AbstractString; options::ReadOptions=ReadOptions())
+    ptr = _with_read_opts(options) do ref
+        ccall(_sym(:mio_med_read_named), Ptr{Cvoid},
+              (Cstring, Cstring, Ptr{_CReadOpts}), path, name, ref)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""Write one MED file containing named meshes. Inputs are not mutated."""
+function write_med_multi(path::AbstractString, meshes::AbstractVector{Mesh},
+                         names::AbstractVector{<:AbstractString}; version::AbstractString="4.1.0")
+    length(meshes) == length(names) || throw(ArgumentError("MED: one name per mesh required"))
+    handles = Ptr{Cvoid}[_handle(m) for m in meshes]
+    roots = [Base.cconvert(Cstring, String(n)) for n in names]
+    ptrs = Cstring[Base.unsafe_convert(Cstring, r) for r in roots]
+    GC.@preserve meshes handles roots ptrs begin
+        _check(ccall(_sym(:mio_med_write_multi), Cint,
+          (Cstring, Ptr{Ptr{Cvoid}}, Ptr{Cstring}, Int64, Cstring),
+          path, handles, ptrs, length(meshes), version))
+    end
+    nothing
+end
+
 # Shared C write-option layout for ordinary writes and transient sequences.
 struct _WriteOpts
     encoding::Cint

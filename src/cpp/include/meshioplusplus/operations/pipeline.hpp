@@ -140,6 +140,10 @@ struct PipelineReport {
     std::vector<std::string> mWarnings;
 };
 
+/** Serialize the shared {steps: [{op, ...counters}], warnings: [...]} report.
+ * Non-finite counters become JSON null. Requires the optional JSON support. */
+MESHIOPLUSPLUS_API std::string pipeline_report_json(const PipelineReport& rReport);
+
 /**
  * @brief The step vocabulary itself: op name -> its parameter keys, in table
  * order (aliases like `Section` included).

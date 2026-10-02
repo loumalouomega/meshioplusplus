@@ -1250,7 +1250,10 @@ TEST(CApi, SetsDataConversionsAndErrorGuards) {
     const char* order[] = {"b", "a"};
     mio_mesh* out = mio_sets_to_data(mesh, MIO_DATA_POINT, nullptr, "-", order, 2);
     ASSERT_NE(out, nullptr) << mio_last_error();
-    EXPECT_EQ(mio_mesh_num_regions(out), 0);
+    auto* regions = mio_regions_create(out);
+    ASSERT_NE(regions, nullptr);
+    EXPECT_EQ(mio_regions_count(regions), 0);
+    mio_regions_free(regions);
     const void* data = nullptr;
     mio_dtype dtype{};
     ASSERT_EQ(mio_mesh_get_point_data(out, "b-a", &data, &dtype, nullptr, nullptr), MIO_OK);
@@ -1262,7 +1265,10 @@ TEST(CApi, SetsDataConversionsAndErrorGuards) {
     EXPECT_EQ(labels[4], -1);
     mio_mesh* back = mio_data_to_sets(out, MIO_DATA_POINT, "b-a");
     ASSERT_NE(back, nullptr) << mio_last_error();
-    EXPECT_EQ(mio_mesh_num_regions(back), 3);  // -1 is a tag, not discarded.
+    regions = mio_regions_create(back);
+    ASSERT_NE(regions, nullptr);
+    EXPECT_EQ(mio_regions_count(regions), 3);  // -1 is a tag, not discarded.
+    mio_regions_free(regions);
     mio_mesh_free(back);
     mio_mesh_free(out);
     EXPECT_EQ(mio_sets_to_data(nullptr, MIO_DATA_POINT, nullptr, nullptr, nullptr, 0), nullptr);

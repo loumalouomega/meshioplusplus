@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -116,7 +117,13 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             log::warn("vtu: field_data '{}' uses the region naming convention; not written", name);
             continue;
         }
-        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+        const auto& array = rMesh.FieldData(name);
+        const auto& shape = array.Shape();
+        if (shape.size() > 1 && std::find(shape.begin() + 1, shape.end(), 0) != shape.end()) {
+            log::warn("vtu: field_data '{}' has zero components; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &array);
     }
     for (const auto& [name, arr] : region_arrays)
         field_arrays.emplace_back(name, &arr);

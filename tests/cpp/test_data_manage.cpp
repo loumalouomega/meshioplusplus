@@ -305,7 +305,8 @@ TEST(DataManage, SetsDataKeepsEmptyAndRaggedCellBlocks) {
     Mesh in = mt::quad_mesh();
     in.AddCellBlock("triangle", meshioplusplus::NDArray(meshioplusplus::DType::Int64, {0, 3}));
     in.AddPolygonBlock("polygon", std::vector<std::vector<std::int64_t>>{{0, 1, 2}, {0, 1, 2, 3}});
-    in.AddRegion(Region("set", RegionKind::Cell, mt::int_data_array({0, 2})));
+    const auto last = static_cast<int>(in.Cells(0).NumCells() + in.Cells(2).NumCells()) - 1;
+    in.AddRegion(Region("set", RegionKind::Cell, mt::int_data_array({0, last})));
     auto out = meshioplusplus::sets_to_data(in, DataLocation::Cell);
     ASSERT_EQ(out.CellDataNumBlocks("set"), 3u);
     EXPECT_EQ(out.CellData("set", 1).Size(), 0u);

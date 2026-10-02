@@ -175,25 +175,21 @@ typedef enum mio_dtype {
     X(Line)                                                                                        \
     X(Line3)                                                                                       \
     X(Line4)                                                                                       \
-    X(Line5) X(Line6) X(Line7) X(Line8) X(Line9) X(Line10) X(Line11) X(Triangle) X(Triangle6)      \
-        X(Triangle10) X(Triangle15) X(Triangle21) X(Triangle28) X(Triangle36) X(Triangle45)        \
-            X(Triangle55) X(Triangle66) X(Quad) X(Quad8) X(Quad9) X(Quad16) X(Quad25) X(Quad36)    \
-                X(Quad49) X(Quad64) X(Quad81) X(Quad100) X(Quad121) X(Tetra) X(Tetra10) X(Tetra20) \
-                    X(Tetra35) X(Tetra56) X(Tetra84) X(Tetra120) X(Tetra165) X(Tetra220)           \
-                        X(Tetra286) X(Hexahedron) X(Hexahedron20) X(Hexahedron24) X(Hexahedron27)  \
-                            X(Hexahedron64) X(Hexahedron125) X(Hexahedron216) X(Hexahedron343)     \
-                                X(Hexahedron512) X(Hexahedron729) X(Hexahedron1000)                \
-                                    X(Hexahedron1331) X(Wedge) X(Wedge15) X(Wedge18) X(Wedge40)    \
-                                        X(Wedge75) X(Wedge126) X(Wedge196) X(Wedge288) X(Wedge405) \
-                                            X(Wedge550) X(Pyramid) X(Pyramid13) X(Pyramid14)       \
-                                                X(Polygon) X(Polyhedron) X(VtkLagrangeCurve)       \
-                                                    X(VtkLagrangeTriangle)                         \
-                                                        X(VtkLagrangeQuadrilateral)                \
-                                                            X(VtkLagrangeTetrahedron)              \
-                                                                X(VtkLagrangeHexahedron)           \
-                                                                    X(VtkLagrangeWedge)            \
-                                                                        X(VtkLagrangePyramid)      \
-                                                                            X(Triangle7)
+    X(Line5)                                                                                       \
+    X(Line6) X(Line7) X(Line8) X(Line9) X(Line10) X(Line11) X(Triangle) X(Triangle6) X(Triangle10) \
+        X(Triangle15) X(Triangle21) X(Triangle28) X(Triangle36) X(Triangle45) X(Triangle55) X(     \
+            Triangle66) X(Quad) X(Quad8) X(Quad9) X(Quad16) X(Quad25) X(Quad36) X(Quad49)          \
+            X(Quad64) X(Quad81) X(Quad100) X(Quad121) X(Tetra) X(Tetra10) X(Tetra20) X(Tetra35) X( \
+                Tetra56) X(Tetra84) X(Tetra120) X(Tetra165) X(Tetra220) X(Tetra286) X(Hexahedron)  \
+                X(Hexahedron20) X(Hexahedron24) X(Hexahedron27) X(Hexahedron64) X(Hexahedron125)   \
+                    X(Hexahedron216) X(Hexahedron343) X(Hexahedron512) X(Hexahedron729)            \
+                        X(Hexahedron1000) X(Hexahedron1331) X(Wedge) X(Wedge15) X(Wedge18)         \
+                            X(Wedge40) X(Wedge75) X(Wedge126) X(Wedge196) X(Wedge288) X(Wedge405)  \
+                                X(Wedge550) X(Pyramid) X(Pyramid13) X(Pyramid14) X(Polygon)        \
+                                    X(Polyhedron) X(VtkLagrangeCurve) X(VtkLagrangeTriangle)       \
+                                        X(VtkLagrangeQuadrilateral) X(VtkLagrangeTetrahedron)      \
+                                            X(VtkLagrangeHexahedron) X(VtkLagrangeWedge)           \
+                                                X(VtkLagrangePyramid) X(Triangle7)
 
 /** Integer mirror of the meshio++ cell-type table. The string names (e.g.
  *  "tetra10") are the primary representation everywhere in this API; the
@@ -4008,6 +4004,32 @@ MIO_API mio_status mio_pipeline_run_json(const char* json_text);
 
 /** @return 1 when this build carries the JSON pipeline parser, else 0. */
 MIO_API int32_t mio_pipeline_has_json(void);
+
+/** Owned report of a successful pipeline run. NULL on error; use last_error.
+ * Running happens once, not during the caller-buffer accessor. Existing
+ * status-only entry points remain unchanged. */
+typedef struct mio_pipeline_report mio_pipeline_report;
+MIO_API mio_pipeline_report* mio_pipeline_run_file_report(const char* settings_path);
+MIO_API mio_pipeline_report* mio_pipeline_run_json_report(const char* json_text);
+MIO_API mio_pipeline_report* mio_sequence_pipeline_run_file_report(const char* settings_path);
+MIO_API mio_pipeline_report* mio_sequence_pipeline_run_json_report(const char* json_text);
+/** String rule 5: required byte length excluding NUL, -1 on error.
+ * JSON is {"steps":[{"op":"Clean",...counters}],"warnings":[...]}; non-finite
+ * counters are null. Buffer may be NULL/zero to query length. */
+MIO_API int64_t mio_pipeline_report_json(const mio_pipeline_report* report, char* buf, int64_t buflen);
+/** NULL is allowed. Accessors expire when their owning report is freed. */
+MIO_API void mio_pipeline_report_free(mio_pipeline_report* report);
+
+/** MED named-mesh APIs. Count/name return -1 on error; names follow string
+ * rule 5. Mesh reads return owning handles. Profiles expand with NaN fill. */
+MIO_API int64_t mio_med_mesh_count(const char* path);
+MIO_API int64_t mio_med_mesh_name(const char* path, int64_t index, char* buf, int64_t buflen);
+MIO_API mio_mesh* mio_med_read_named(const char* path, const char* name, const mio_read_opts* opts);
+/** Write one MED file from count named meshes. Names must be unique/nonempty.
+ * NULL version selects 4.1.0. Inputs are borrowed only for this call. */
+MIO_API mio_status mio_med_write_multi(const char* path, const mio_mesh* const* meshes,
+                                       const char* const* names, int64_t count,
+                                       const char* version);
 
 /* ---------------------------------------------------------------------------
  * Sequences: multi-file / transient datasets (doc/sequences.md).

@@ -1468,6 +1468,10 @@ PipelineReport run_pipeline_file(const std::string&) {
     pipe_no_json();
 }
 
+std::string pipeline_report_json(const PipelineReport&) {
+    pipe_no_json();
+}
+
 // The sequence document shares this parser, and therefore this guard: the
 // typed sequence driver in operations/sequence.cpp compiles either way, but a
 // settings document cannot be read without a JSON parser.
@@ -1485,6 +1489,17 @@ PipelineReport run_sequence_file(const std::string&) {
 }
 
 #else  // MESHIOPLUSPLUS_HAS_JSON
+
+std::string pipeline_report_json(const PipelineReport& rReport) {
+    auto steps = nlohmann::json::array();
+    for (const auto& entry : rReport.mSteps) {
+        nlohmann::json step = {{"op", entry.mOp}};
+        for (const auto& [name, value] : entry.mCounters)
+            step[name] = std::isfinite(value) ? nlohmann::json(value) : nlohmann::json(nullptr);
+        steps.push_back(std::move(step));
+    }
+    return nlohmann::json{{"steps", std::move(steps)}, {"warnings", rReport.mWarnings}}.dump();
+}
 
 namespace {
 

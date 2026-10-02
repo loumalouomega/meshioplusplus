@@ -1,5 +1,13 @@
 # Fortran
 
+## Pipeline reports
+
+Structured pipeline reports use `call mio_pipeline_run_file_report(path, report, stat, errmsg)` or `mio_pipeline_run_json_report(text, report, ...)`, plus the corresponding `mio_sequence_pipeline_run_*_report` routines. The allocatable `report` string is JSON with `steps` and `warnings`; the native handle is released automatically. Failure returns an empty string and follows the existing `stat`/`errmsg` convention. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+`call mio_med_mesh_names(path, names, stat, errmsg)` returns an allocatable character array in file link order. `call mio_med_read_named(path, name, mesh, time_step=0, lenient=.false., stat=stat, errmsg=errmsg)` replaces the output mesh only after success; free it with `call mesh%free()`. `call mio_med_write_multi(path, meshes, names, version='4.1.0', stat=stat, errmsg=errmsg)` writes an array of borrowed meshes with one unique name per mesh. These APIs require HDF5 and expand ordinary nodal/element profiles with NaN fill. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
 `call m%write('cloud.pcd', codec='lzf')` selects PCD compressed binary without an optional codec library; explicit ASCII or non-PCD combinations fail. `encoding`, `codec` and `float_format` are optional keyword arguments appended after the existing status arguments. Parameterized glTF uses `type(mio_gltf_options) :: opts` and `call m%write_gltf('colored.glb', options=opts)`; set `opts%color_by`, `%cmap`, `%up_axis` (0 auto, 1 Z, 2 Y, 3 X) and `%scale` as needed. `%component` is 1-based and only used with `%component_set=.true.`; `%vmin_set`/`%vmax_set` control optional bounds. Native reads also support XDMF2/3 DataItem references and Netgen names/periodic arrays; Netgen periodic arrays are numeric field data with 1-based file node ids, and `.vol.gz` requires zlib.
 
 XDMF series `write_points_cells(mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).

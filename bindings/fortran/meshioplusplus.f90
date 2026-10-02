@@ -65,6 +65,9 @@ module meshioplusplus
     public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
+    public :: mio_pipeline_run_file_report, mio_pipeline_run_json_report
+    public :: mio_sequence_pipeline_run_file_report, mio_sequence_pipeline_run_json_report
+    public :: mio_med_mesh_names, mio_med_read_named, mio_med_write_multi
     ! `mio_sequence`'s fan-in is the type-bound `%to_timeseries`; only the
     ! fan-out (which starts from a path, not a handle) is module-level.
     public :: mio_sequence, mio_timeseries_to_sequence
@@ -1277,12 +1280,81 @@ module meshioplusplus
             integer(c_int) :: s
         end function
 
+        function c_mio_med_mesh_count(path) bind(c, name="mio_med_mesh_count") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(in) :: path(*)
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_med_mesh_name(path, index, buf, buflen) bind(c, name="mio_med_mesh_name") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(in) :: path(*)
+            integer(c_int64_t), value :: index, buflen
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_med_read_named(path, name, opts) bind(c, name="mio_med_read_named") result(h)
+            import :: c_char, c_ptr, mio_read_opts_t
+            character(c_char), intent(in) :: path(*), name(*)
+            type(mio_read_opts_t), intent(in) :: opts
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_med_write_multi(path, meshes, names, count, version) &
+                bind(c, name="mio_med_write_multi") result(s)
+            import :: c_char, c_ptr, c_int64_t, c_int
+            character(c_char), intent(in) :: path(*), version(*)
+            type(c_ptr), intent(in) :: meshes(*), names(*)
+            integer(c_int64_t), value :: count
+            integer(c_int) :: s
+        end function
+
         function c_mio_pipeline_run_file(settings_path) &
                 bind(c, name="mio_pipeline_run_file") result(s)
             import :: c_char, c_int
             character(kind=c_char), dimension(*), intent(in) :: settings_path
             integer(c_int) :: s
         end function
+
+        function c_mio_pipeline_run_file_report(path) bind(c, name="mio_pipeline_run_file_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_pipeline_run_json_report(text) bind(c, name="mio_pipeline_run_json_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: text(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_sequence_pipeline_run_file_report(path) &
+                bind(c, name="mio_sequence_pipeline_run_file_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_sequence_pipeline_run_json_report(text) &
+                bind(c, name="mio_sequence_pipeline_run_json_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: text(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_pipeline_report_json(h, buf, buflen) bind(c, name="mio_pipeline_report_json") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: h
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        subroutine c_mio_pipeline_report_free(h) bind(c, name="mio_pipeline_report_free")
+            import :: c_ptr
+            type(c_ptr), value :: h
+        end subroutine
 
         function c_mio_pipeline_run_json(json_text) &
                 bind(c, name="mio_pipeline_run_json") result(s)
@@ -3430,6 +3502,95 @@ contains
                                          c_str(ofmt)), 'convert', stat, errmsg)
     end subroutine
 
+    !> Enumerate MED mesh names without geometry. Names are dynamically sized.
+    subroutine mio_med_mesh_names(path, names, stat, errmsg)
+        character(*), intent(in) :: path
+        character(:), allocatable, intent(out) :: names(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n, len_name, longest, i
+        n = c_mio_med_mesh_count(c_str(path))
+        if (n < 0) then
+            call handle_failure('med_mesh_names', mio_error_message(), stat, errmsg)
+            return
+        end if
+        longest = 0
+        allocate(buf(1))
+        do i = 0, n - 1
+            len_name = c_mio_med_mesh_name(c_str(path), i, buf, 0_c_int64_t)
+            if (len_name < 0) then
+                call handle_failure('med_mesh_names', mio_error_message(), stat, errmsg)
+                return
+            end if
+            longest = max(longest, len_name)
+        end do
+        deallocate(buf)
+        allocate(character(len=int(longest)) :: names(int(n)))
+        allocate(buf(int(longest) + 1))
+        do i = 0, n - 1
+            len_name = c_mio_med_mesh_name(c_str(path), i, buf, longest + 1)
+            if (len_name < 0) then
+                call handle_failure('med_mesh_names', mio_error_message(), stat, errmsg)
+                return
+            end if
+            names(int(i) + 1) = from_c_buf(buf, int(len_name))
+        end do
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Read a named MED mesh, replacing output only after a successful read.
+    subroutine mio_med_read_named(path, name, mesh, time_step, lenient, stat, errmsg)
+        character(*), intent(in) :: path, name
+        type(mio_mesh), intent(inout) :: mesh
+        integer, intent(in), optional :: time_step
+        logical, intent(in), optional :: lenient
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_read_opts_t) :: opts
+        type(c_ptr) :: h
+        call c_mio_read_opts_init(opts)
+        if (present(time_step)) opts%time_step = int(time_step, c_int64_t)
+        if (present(lenient)) then
+            if (lenient) opts%lenient = 1
+        end if
+        h = c_mio_med_read_named(c_str(path), c_str(name), opts)
+        if (.not. c_associated(h)) then
+            call handle_failure('med_read_named', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call mesh%free()
+        mesh%handle = h
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Write several named meshes to one MED file; no input handle is modified.
+    subroutine mio_med_write_multi(path, meshes, names, version, stat, errmsg)
+        character(*), intent(in) :: path, names(:)
+        type(mio_mesh), intent(in) :: meshes(:)
+        character(*), intent(in), optional :: version
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: ver
+        character(kind=c_char, len=:), allocatable, target :: bufs(:)
+        type(c_ptr), allocatable :: ptrs(:), handles(:)
+        integer :: i
+        if (size(meshes) /= size(names) .or. size(meshes) == 0) then
+            call handle_failure('med_write_multi', 'provide one name per mesh', stat, errmsg)
+            return
+        end if
+        ver = '4.1.0'; if (present(version)) ver = version
+        allocate(character(kind=c_char, len=len(names) + 1) :: bufs(size(names)))
+        allocate(ptrs(size(names)), handles(size(names)))
+        do i = 1, size(names)
+            bufs(i) = trim(names(i))//c_null_char
+            ptrs(i) = c_loc(bufs(i)(1:1))
+            handles(i) = meshes(i)%handle
+        end do
+        call handle_status(c_mio_med_write_multi(c_str(path), handles, ptrs, &
+            int(size(meshes), c_int64_t), c_str(ver)), 'med_write_multi', stat, errmsg)
+    end subroutine
+
     !> Run a whole settings.json pipeline (read -> operation chain -> write;
     !> PascalCase vocabulary, see doc/pipeline.md). Needs a build with the
     !> JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON); otherwise the error names
@@ -3449,6 +3610,71 @@ contains
         character(:), allocatable, intent(out), optional :: errmsg
         call handle_status(c_mio_pipeline_run_json(c_str(json_text)), &
                            'pipeline_run_json', stat, errmsg)
+    end subroutine
+
+    !> Copy an owning report's JSON into an allocatable string, then release it.
+    subroutine pipeline_copy_report(h, report, stat, errmsg)
+        type(c_ptr), value :: h
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        report = ''
+        if (.not. c_associated(h)) then
+            call handle_failure('pipeline_report', mio_error_message(), stat, errmsg)
+            return
+        end if
+        allocate(buf(1))
+        n = c_mio_pipeline_report_json(h, buf, 0_c_int64_t)
+        if (n < 0 .or. n >= int(huge(0) - 1, c_int64_t)) then
+            call c_mio_pipeline_report_free(h)
+            call handle_failure('pipeline_report', 'invalid report length', stat, errmsg)
+            return
+        end if
+        deallocate(buf)
+        allocate(buf(int(n) + 1))
+        n = c_mio_pipeline_report_json(h, buf, n + 1)
+        if (n < 0) then
+            call c_mio_pipeline_report_free(h)
+            call handle_failure('pipeline_report', mio_error_message(), stat, errmsg)
+            return
+        end if
+        report = from_c_buf(buf, int(n))
+        call c_mio_pipeline_report_free(h)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    subroutine mio_pipeline_run_file_report(path, report, stat, errmsg)
+        character(*), intent(in) :: path
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_pipeline_run_file_report(c_str(path)), report, stat, errmsg)
+    end subroutine
+
+    subroutine mio_pipeline_run_json_report(text, report, stat, errmsg)
+        character(*), intent(in) :: text
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_pipeline_run_json_report(c_str(text)), report, stat, errmsg)
+    end subroutine
+
+    subroutine mio_sequence_pipeline_run_file_report(path, report, stat, errmsg)
+        character(*), intent(in) :: path
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_sequence_pipeline_run_file_report(c_str(path)), report, stat, errmsg)
+    end subroutine
+
+    subroutine mio_sequence_pipeline_run_json_report(text, report, stat, errmsg)
+        character(*), intent(in) :: text
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_sequence_pipeline_run_json_report(c_str(text)), report, stat, errmsg)
     end subroutine
 
     !> Whether this build carries the JSON pipeline parser.

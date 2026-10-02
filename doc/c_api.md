@@ -1,5 +1,13 @@
 # C API
 
+## Pipeline reports
+
+Pipeline reports are available through new owning `mio_pipeline_run_*_report` and `mio_sequence_pipeline_run_*_report` handles. Read JSON with caller-buffer `mio_pipeline_report_json` (length excludes NUL; -1 on error), then free with `mio_pipeline_report_free`. Size queries and repeated reads do not rerun the pipeline. Existing status-only functions remain unchanged. See [structured pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+With HDF5 enabled, `mio_med_mesh_count(path)` and `mio_med_mesh_name(path, index, buf, buflen)` enumerate meshes in file link order without materializing geometry (zero-based index; string accessor rule 5). `mio_med_read_named(path, name, opts)` returns an owning `mio_mesh*`, freed with `mio_mesh_free`. `mio_med_write_multi(path, meshes, names, count, version)` borrows mesh/name arrays for the call; names must be unique/nonempty with no `/` or `@`, and NULL version selects `4.1.0`. Named nodal/element profiles expand with NaN fill. Count/name return -1, reads return NULL and writes return an error status on failure; `mio_last_error()` explains it, including builds without HDF5. Existing option structs are unchanged. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
 The existing XDMF series `mio_xdmf_series_write_points_cells` call persists the mesh's fixed point/cell/side regions once with the shared topology. All steps, including raw-array and appended steps, reuse them; no ABI additions are needed. See [shared named regions](xdmf_time_series.md#shared-named-regions).
 
 Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces without welding, appended raw/base64 arrays, UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI write inline arrays; codec availability follows the configured native build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary. No new ABI options are required. See [formats](formats.md).

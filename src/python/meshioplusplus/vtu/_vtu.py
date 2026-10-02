@@ -1034,6 +1034,9 @@ def write(
         if arr is None or arr.dtype not in numpy_to_vtu_type:
             warn(f"VTU: field_data '{key}' is not a numeric array; not written")
             continue
+        if 0 in arr.shape[1:]:
+            warn(f"VTU: field_data '{key}' has zero components; not written")
+            continue
         if arr.ndim > 2:
             arr = arr.reshape(arr.shape[0], -1)
         field_data[key] = arr

@@ -86,6 +86,28 @@ end
     end
 end
 
+@testset "MED named meshes" begin
+    if format_writable("med")
+        mktempdir() do dir
+            first = fixture()
+            second = fixture()
+            add_point_data!(second, "temperature", Float64[6, 7, 8, 9, 10])
+            path = joinpath(dir, "multi.med")
+            write_med_multi(path, [first, second], ["z_mesh", "a_mesh"])
+            @test med_mesh_names(path) == ["z_mesh", "a_mesh"]
+            selected = read_med_named(path, "a_mesh")
+            @test points(selected) == points(second)
+            @test point_data(selected, "temperature") == point_data(second, "temperature")
+            @test_throws Exception read_med_named(path, "missing")
+            @test_throws Exception write_med_multi(path, [first, second], ["same", "same"])
+            @test med_mesh_names(path) == ["z_mesh", "a_mesh"]
+            close(selected)
+            close(first)
+            close(second)
+        end
+    end
+end
+
 @testset "glTF options" begin
     mktempdir() do dir
         m = fixture()
@@ -1184,12 +1206,17 @@ end
                               "Output": {"Path": "$(out)"}}""")
             end
             run_pipeline_file(settings)
+            report = run_pipeline_file_report(settings)
+            @test occursin("\"op\":\"Quality\"", report)
+            @test occursin("\"warnings\":[]", report)
+            @test_throws MeshioError run_pipeline_json_report(bad)
             back = MeshioPlusPlus.read(out)
             @test "quality:scaled_jacobian" in cell_data_names(back)
             close(back)
         end
     else
         @test occursin("MESHIOPLUSPLUS_WITH_JSON", err.msg)
+        @test_throws MeshioError run_pipeline_json_report(bad)
     end
 end
 

@@ -1784,6 +1784,38 @@ SEXP R_mio_pipeline_run_file(SEXP settings_path) {
     return R_NilValue;
 }
 
+static void r_pipeline_report_finalizer(SEXP handle) {
+    mio_pipeline_report_free((mio_pipeline_report *)R_ExternalPtrAddr(handle));
+    R_ClearExternalPtr(handle);
+}
+
+static SEXP r_pipeline_report(mio_pipeline_report *report) {
+    if (report == NULL) mio_r_fail("pipeline_report");
+    SEXP owner = PROTECT(R_MakeExternalPtr(report, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(owner, r_pipeline_report_finalizer, TRUE);
+    int64_t n = mio_pipeline_report_json(report, NULL, 0);
+    if (n < 0) mio_r_fail("pipeline_report");
+    char *buf = (char *)R_alloc((size_t)n + 1, 1);
+    if (mio_pipeline_report_json(report, buf, n + 1) < 0) mio_r_fail("pipeline_report");
+    SEXP out = PROTECT(Rf_ScalarString(Rf_mkCharCE(buf, CE_UTF8)));
+    r_pipeline_report_finalizer(owner);
+    UNPROTECT(2);
+    return out;
+}
+
+SEXP R_mio_pipeline_run_file_report(SEXP path) {
+    return r_pipeline_report(mio_pipeline_run_file_report(mio_r_string(path, "path")));
+}
+SEXP R_mio_pipeline_run_json_report(SEXP text) {
+    return r_pipeline_report(mio_pipeline_run_json_report(mio_r_string(text, "text")));
+}
+SEXP R_mio_sequence_pipeline_run_file_report(SEXP path) {
+    return r_pipeline_report(mio_sequence_pipeline_run_file_report(mio_r_string(path, "path")));
+}
+SEXP R_mio_sequence_pipeline_run_json_report(SEXP text) {
+    return r_pipeline_report(mio_sequence_pipeline_run_json_report(mio_r_string(text, "text")));
+}
+
 SEXP R_mio_pipeline_run_json(SEXP json_text) {
     mio_r_check(mio_pipeline_run_json(mio_r_string(json_text, "json_text")),
                 "pipeline_run_json");

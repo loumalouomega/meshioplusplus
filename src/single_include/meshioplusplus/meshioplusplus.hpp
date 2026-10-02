@@ -17914,20 +17914,11 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
  * blocks are iterated in HDF5 **creation order** (matching h5py's
  * `track_order`) since block order must align with `cell_data`/`cell_sets`.
  *
- * **What always falls back to Python** (the C++ functions `throw` and the
- * `meshioplusplus.med` shim catches and retries with the pure-Python/h5py
- * implementation): a `CHA` **field** past the single-timestep, no-profile,
- * no-units common case (MED-4.1 bitmask attributes,
- * `field_data["med:field_units"]`/`["med:step_meta"]`, and multi-timestep
- * field-name grouping are Python-only — see `read_cha_fields`/
- * `write_cha_nodal_field`/`write_cha_cell_field`), the `gmsh:physical`→family
- * **bridging** performed on write, non-default **profiles** / `ELGA`
- * support, and **multi-mesh** files (`read_med_multi`/`write_med_multi`,
- * which have no C++ equivalent at all). Quadratic 3D types (`tetra10`,
- * `hexahedron20`, `pyramid13`, `wedge15`) share the linear types' orientation
- * convention but have no implemented corners+midpoints permutation yet —
- * they round-trip unconverted (a warning is logged the first time one is
- * seen); see doc/formats/med.md for the planned fix.
+ * Enhanced field units/component names, multi-step metadata/name grouping
+ * and ELNO/ELGA retain the Python reference path. Ordinary named nodal/element
+ * profiles expand natively with NaN fill. Named meshes are enumerated/read/
+ * written through additive APIs below. Gmsh physical-group family bridging,
+ * MED-4.1 bitmask output and quadratic 3D node permutations are native too.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -18007,7 +17998,7 @@ struct MedInfo {
      * Mirrors `MdpaInfo::mSkippedConstructs`. Empty after a strict read, since
      * a strict read either represents everything or throws. Each entry names
      * the field and the construct, e.g.
-     * `"field 'v' on a named profile"`.
+     * `"field 'v' support 'NOE.TR3' (ELNO/ELGA data)"`.
      */
     std::vector<std::string> mSkippedConstructs;
     /**
@@ -18062,13 +18053,26 @@ struct MedInfo {
  *         cell_data["cell_tags"], named regions, arbitrary named point/cell
  *         data from `CHA` fields except those excluded below)
  * @throws ReadError — on a file written by MED major version > 4; on a `CHA`
- *         field past the single-timestep/no-profile/no-units common case
- *         (units, multi-timestep metadata, a named profile, or ELNO/ELGA
+ *         field past the single-timestep/no-units common case
+ *         (units, multi-timestep metadata, or ELNO/ELGA
  *         support); on multi-mesh files; on malformed/unsupported HDF5
  *         layout. Callers (the Python shim) catch this and retry with the
  *         pure-Python/h5py reader.
  */
 MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
+
+/** Enumerate meshes in ENS_MAA link order without materializing geometry. */
+MESHIOPLUSPLUS_API std::vector<std::string> med_mesh_names(const std::string& rPath);
+/** Read one explicitly selected mesh, filtering CHA fields by their owner.
+ * Ordinary named nodal/element profiles expand with NaN on uncovered rows. */
+MESHIOPLUSPLUS_API Mesh read_med_named(const std::string& rPath, const std::string& rName,
+                                       MedInfo& rInfo, const ReadOptions& rOptions = {});
+/** Write several named meshes into one file. Names must be unique/nonempty;
+ * colliding field names use @mesh suffixes and are restored on named reads. */
+MESHIOPLUSPLUS_API void write_med_multi(const std::string& rPath,
+                                        const std::vector<const Mesh*>& rMeshes,
+                                        const std::vector<MedInfo>& rInfos,
+                                        const std::string& rMedVersion = "4.1.0");
 
 /**
  * @brief `read_med` with read options — the overload that makes a MED file
@@ -18083,8 +18087,8 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * `MedInfo::mSkippedConstructs`, so the mesh, its tags/families/regions and
  * every *representable* field still come back. Units and non-default step
  * metadata are not skipped but **read into** `MedInfo::mFieldUnits` /
- * `mStepMeta`; only a construct with no representation at all (a named
- * profile, an ELNO/ELGA support, a field mixing nodal and cell support) causes
+ * `mStepMeta`; only a construct with no supported representation (an
+ * ELNO/ELGA support, a field mixing nodal and cell support) causes
  * that one field to be dropped. This is the same mechanism, and the same
  * rationale, as `ReadOptions::mLenient` for MDPA: strict is what the Python
  * shim uses (so it still falls back and the Python surface is unchanged),
@@ -27384,6 +27388,10 @@ struct PipelineReport {
     std::vector<PipelineStepReport> mSteps;
     std::vector<std::string> mWarnings;
 };
+
+/** Serialize the shared {steps: [{op, ...counters}], warnings: [...]} report.
+ * Non-finite counters become JSON null. Requires the optional JSON support. */
+MESHIOPLUSPLUS_API std::string pipeline_report_json(const PipelineReport& rReport);
 
 /**
  * @brief The step vocabulary itself: op name -> its parameter keys, in table
@@ -96779,6 +96787,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -97160,7 +97169,7 @@ void write_cha_bitmask(hid_t field, hid_t ts, int entity_bit, const std::string&
 h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const std::string& rName,
                                DType dt, std::size_t ncomponents, bool IsNodal,
                                const std::vector<std::string>& rMedCellTypes) {
-    h5::Hid field = h5::create_group(cha, rName);
+    h5::Hid field = h5::create_group_crt(cha, rName);
     write_attr_bytes(field, "MAI", rMeshName);
     h5::write_attr_int(field, "TYP", med_field_type_code(dt));
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
@@ -97177,7 +97186,7 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
 
     char step_name[64];
     std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
-    h5::Hid ts = h5::create_group(field, step_name);
+    h5::Hid ts = h5::create_group_crt(field, step_name);
     h5::write_attr_int(ts, "NDT", 1);
     h5::write_attr_int(ts, "NOR", -1);
     write_attr_double(ts, "PDT", 0.0);
@@ -97208,10 +97217,10 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
 // One "support" subgroup (NOE for nodal, MAI.<type> for a cell block):
 // GAU/PFL attrs, the default-profile subgroup with NBR/NGA/GAU/CO.
 void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData) {
-    h5::Hid typ = h5::create_group(ts, rSupportName);
+    h5::Hid typ = h5::create_group_crt(ts, rSupportName);
     write_attr_bytes(typ, "GAU", "");
     write_attr_bytes(typ, "PFL", kProfile);
-    h5::Hid profile = h5::create_group(typ, kProfile);
+    h5::Hid profile = h5::create_group_crt(typ, kProfile);
     h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(detail::rows(rData)));
     h5::write_attr_int(profile, "NGA", 1);
     write_attr_bytes(profile, "GAU", "");
@@ -97228,7 +97237,7 @@ void write_cha_nodal_field(hid_t cha, const std::string& rMeshName, const std::s
 }
 
 void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
-                          const Mesh& rMesh) {
+                          const Mesh& rMesh, const std::string& rDiskName) {
     // The type/component count come from the first block that actually has
     // rows -- an empty mesh's block still has a dtype/shape, so this never
     // has nothing to report.
@@ -97270,7 +97279,7 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             contributing.push_back(med_type);
     }
 
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents,
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, ncomponents,
                                         /*IsNodal=*/false, contributing);
 
     for (const std::string& med_type : contributing)
@@ -97344,12 +97353,12 @@ void write_families(hid_t fm_group, const std::map<std::int64_t, std::vector<std
         if (gname.size() > 64)
             gname = "FAM_" + std::to_string(set_id);
 
-        h5::Hid family = h5::create_group(fm_group, gname);
+        h5::Hid family = h5::create_group_crt(fm_group, gname);
         h5::write_attr_int(family, "NUM", set_id);
         if (names.empty())
             continue;
 
-        h5::Hid gro = h5::create_group(family, "GRO");
+        h5::Hid gro = h5::create_group_crt(family, "GRO");
         h5::write_attr_int(gro, "NBR", static_cast<std::int64_t>(names.size()));
         hsize_t n = names.size(), eighty = 80;
         h5::Hid at(H5Tarray_create2(H5T_STD_I8LE, 1, &eighty), H5Tclose);
@@ -97643,14 +97652,14 @@ void med_warn_side_regions_dropped(const Mesh& rMesh) {
 // --- CHA (field) reading: the mirror image of write_cha_*, same scope -----
 //
 // Accepts only the exact shape write_med's CHA writer produces: one timestep
-// group (the fixed ndt=1/nor=-1 key), the default profile, and either a
+// group (the fixed ndt=1/nor=-1 key), ordinary profiles, and either a
 // single "NOE" (nodal) support or one-or-more "MAI.<type>" (cell) supports --
 // never a mix of the two, since the writer never produces one. Anything else
-// (multi-timestep, a named profile, an ELNO/ELGA support name) declines by
+// (multi-timestep metadata, an ELNO/ELGA support name) declines by
 // throwing, exactly like the pre-existing unconditional CHA guard did, so a
 // file the enhanced Python reader is needed for still gets it.
 
-// Read one support subgroup's data ("CO" under its default-profile child),
+// Read one support subgroup's data ("CO" under its selected profile child),
 // reshaped to `(rows,)` for a scalar field or `(rows, ncomponents)` otherwise
 // -- the "1-D scalars stay 1-D" convention the rest of the core keeps.
 /**
@@ -97671,18 +97680,46 @@ void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) 
         pInfo->mSkippedConstructs.push_back(rWhat);
 }
 
-/// Whether a support subgroup names a real (non-default) profile, i.e. its
-/// `CO` covers a subset of the entities indexed by a separate list this reader
-/// does not resolve. The caller decides whether that is fatal or a skip.
-bool med_support_has_named_profile(hid_t support) {
-    const std::string pfl = read_attr_bytes(support, "PFL");
-    return !pfl.empty() && pfl != kProfile;
-}
-
-NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
-    h5::Hid profile = h5::open_group(support, kProfile);
+/// Named profiles use one-based entity indices and NaN on uncovered rows.
+NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents,
+                              std::size_t rows) {
+    std::string profile_name = read_attr_bytes(support, "PFL");
+    if (profile_name.empty())
+        profile_name = kProfile;
+    h5::Hid profile = h5::open_group(support, profile_name);
     NDArray flat = h5::read_dataset(profile, "CO");
-    const std::size_t k = ncomponents > 0 ? static_cast<std::size_t>(ncomponents) : 1;
+    if (ncomponents <= 0 || (rows && static_cast<std::uint64_t>(ncomponents) >
+                                         std::numeric_limits<std::size_t>::max() / rows))
+        throw ReadError("MED: invalid field component count");
+    const auto k = static_cast<std::size_t>(ncomponents);
+    if (h5::has_attr(profile, "NGA") && h5::read_attr_int(profile, "NGA") != 1)
+        throw ReadError("MED: Gauss-point data requires the Python reference reader");
+    if (profile_name != kProfile) {
+        h5::Hid profiles = h5::open_group(file, "PROFILS");
+        h5::Hid definition = h5::open_group(profiles, profile_name);
+        NDArray indices = h5::read_dataset(definition, "PFL");
+        if (indices.Ndim() != 1 || indices.Dtype() == DType::Float32 ||
+            indices.Dtype() == DType::Float64 ||
+            indices.Size() > std::numeric_limits<std::size_t>::max() / k ||
+            flat.Size() != indices.Size() * k)
+            throw ReadError("MED: profile values/indices have inconsistent shapes");
+        if (h5::has_attr(definition, "NBR") &&
+            h5::read_attr_int(definition, "NBR") != static_cast<std::int64_t>(indices.Size()))
+            throw ReadError("MED: profile index count disagrees with NBR");
+        NDArray values = unflatten_f(flat, indices.Size(), k, 0);
+        NDArray out(DType::Float64,
+                    k == 1 ? std::vector<std::size_t>{rows} : std::vector<std::size_t>{rows, k});
+        std::fill_n(out.As<double>(), out.Size(), std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t i = 0; i < indices.Size(); ++i) {
+            const auto index = detail::read_int(indices, i);
+            if (index <= 0 || static_cast<std::uint64_t>(index) > rows)
+                throw ReadError("MED: profile index is out of range");
+            for (std::size_t c = 0; c < k; ++c)
+                out.As<double>()[(static_cast<std::size_t>(index) - 1) * k + c] =
+                    detail::read_double(values, i * k + c);
+        }
+        return out;
+    }
     if (flat.Size() != rows * k)
         throw ReadError("MED: field data size does not match its declared shape");
     NDArray out = unflatten_f(flat, rows, k, 0);
@@ -97691,8 +97728,8 @@ NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size
     return out;
 }
 
-void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rOptions,
-                     MedInfo* pInfo) {
+void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& rMesh, bool Lenient,
+                     const ReadOptions& rOptions, MedInfo* pInfo, bool DecodeMeshSuffix) {
     std::unordered_map<std::string, std::size_t> med_to_block;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         auto it = meshio_to_med().find(rMesh.Cells(b).Type());
@@ -97700,10 +97737,29 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
             med_to_block.emplace(it->second, b);
     }
 
-    for (const std::string& field_name : h5::group_links(cha)) {
-        h5::Hid field = h5::open_group(cha, field_name);
+    for (const std::string& disk_name :
+         (DecodeMeshSuffix ? h5::group_links_crt(cha) : h5::group_links(cha))) {
+        h5::Hid field = h5::open_group(cha, disk_name);
+        std::string field_name = disk_name;
+        const auto owner = read_attr_bytes(field, "MAI");
+        if (!owner.empty() && owner != rMeshName)
+            continue;
+        const auto suffix = disk_name.rfind('@');
+        if (DecodeMeshSuffix && suffix != std::string::npos) {
+            if (owner.empty() && disk_name.substr(suffix + 1) != rMeshName)
+                continue;
+            if (disk_name.substr(suffix + 1) == rMeshName)
+                field_name = disk_name.substr(0, suffix);
+        }
         const std::int64_t ncomponents =
             h5::has_attr(field, "NCO") ? h5::read_attr_int(field, "NCO") : 1;
+        if (DecodeMeshSuffix && pInfo && h5::has_attr(field, "NOM")) {
+            auto tokens = detail::make_classic_istringstream(read_attr_bytes(field, "NOM"));
+            std::vector<std::string> components;
+            for (std::string name; tokens >> name;)
+                components.push_back(std::move(name));
+            pInfo->mMedNom.push_back(std::move(components));
+        }
 
         // Units are a real piece of information the C++ Mesh cannot carry
         // (they are strings; `med:field_units` is a Python-only dict-valued
@@ -97712,6 +97768,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
         // nothing is lost even though nothing lands on the Mesh.
         const std::string uni = read_attr_bytes(field, "UNI");
         const std::string unt = read_attr_bytes(field, "UNT");
+        if (DecodeMeshSuffix && pInfo)
+            pInfo->mFieldUnits.emplace(field_name, std::make_pair(uni, unt));
         if (!uni.empty() || !unt.empty()) {
             if (!Lenient)
                 throw ReadError("MED: field '" + field_name +
@@ -97779,6 +97837,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
         const std::int64_t ndt = h5::read_attr_int(ts, "NDT");
         const std::int64_t nor = h5::read_attr_int(ts, "NOR");
         const double pdt = read_attr_double(ts, "PDT");
+        if (DecodeMeshSuffix && pInfo)
+            pInfo->mStepMeta.emplace(field_name, std::make_tuple(ndt, nor, pdt));
         if (ndt != 1 || nor != -1 || pdt != 0.0) {
             if (!Lenient && rOptions.mTimeStep == 0)
                 throw ReadError("MED: field '" + field_name +
@@ -97799,12 +97859,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
                 continue;
             }
             h5::Hid noe = h5::open_group(ts, "NOE");
-            if (med_support_has_named_profile(noe)) {
-                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
-                continue;
-            }
             rMesh.AddPointData(field_name,
-                               read_cha_support_data(noe, ncomponents, rMesh.NumPoints()));
+                               read_cha_support_data(file, noe, ncomponents, rMesh.NumPoints()));
             continue;
         }
 
@@ -97837,12 +97893,7 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
             }
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
-            if (med_support_has_named_profile(grp)) {
-                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
-                skip_field = true;
-                break;
-            }
-            per_block[b] = read_cha_support_data(grp, ncomponents, rMesh.Cells(b).NumCells());
+            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells());
             filled[b] = true;
         }
         if (skip_field)
@@ -97872,7 +97923,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
 // default-constructed reproduces the historical strict behaviour exactly,
 // which is what let the options overload land without touching any caller.
 namespace {
-Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
+Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions,
+                   const std::string* pName = nullptr) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -97898,10 +97950,13 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
 
     h5::Hid ens = h5::open_group(f, "ENS_MAA");
     std::vector<std::string> meshes = h5::group_links(ens);
-    if (meshes.size() != 1)
+    if (!pName && meshes.size() != 1)
         throw ReadError(
             detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
-    const std::string mesh_name = meshes[0];
+    const std::string mesh_name = pName ? *pName : meshes[0];
+    if (std::find(meshes.begin(), meshes.end(), mesh_name) == meshes.end())
+        throw ReadError("MED: no mesh named '" + mesh_name + "'");
+    rInfo = MedInfo{};
     h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
 
     std::int64_t dim = h5::read_attr_int(mesh_grp, "ESP");
@@ -98175,7 +98230,8 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
     // caller with no Python fallback read it anyway.
     if (h5::exists(f, "CHA")) {
         h5::Hid cha = h5::open_group(f, "CHA");
-        read_cha_fields(cha, mesh, rOptions.mLenient, rOptions, &rInfo);
+        read_cha_fields(f, cha, mesh_name, mesh, rOptions.mLenient, rOptions, &rInfo,
+                        pName != nullptr);
     }
 
     return mesh;
@@ -98189,6 +98245,18 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
 
 Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
     return med_read_impl(rPath, rInfo, rOptions);
+}
+
+std::vector<std::string> med_mesh_names(const std::string& rPath) {
+    h5::SilenceErrors silence;
+    auto file = h5::open_file_read(rPath);
+    auto meshes = h5::open_group(file, "ENS_MAA");
+    return h5::group_links_crt(meshes);
+}
+
+Mesh read_med_named(const std::string& rPath, const std::string& rName, MedInfo& rInfo,
+                    const ReadOptions& rOptions) {
+    return med_read_impl(rPath, rInfo, rOptions, &rName);
 }
 
 MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
@@ -98297,8 +98365,23 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
     return meta;
 }
 
-void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
-               const std::string& rMedVersion) {
+namespace {
+h5::Hid med_create_file(const std::string& rPath) {
+    h5::Hid props(H5Pcreate(H5P_FILE_CREATE), H5Pclose);
+    if (!props.Valid() ||
+        H5Pset_link_creation_order(props, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED) < 0)
+        throw WriteError("MED: cannot enable root link creation order");
+    h5::Hid file(H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, props, H5P_DEFAULT), H5Fclose);
+    if (!file.Valid()) throw WriteError("MED: cannot create file '" + rPath + "'");
+    return file;
+}
+
+h5::Hid med_open_or_create_group(hid_t file, const char* pName) {
+    return h5::exists(file, pName) ? h5::open_group(file, pName) : h5::create_group_crt(file, pName);
+}
+
+void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
+                    const std::string& rMedVersion, const std::set<std::string>& rCollisions) {
     // No provenance slot in this format: drop the notes this write raises on
     // the way out rather than let them reach the next file written.
     const detail::ProvenanceSlotlessWrite slotless;
@@ -98382,18 +98465,18 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         }
     }
 
-    h5::Hid f = h5::create_file(rPath);
-
-    h5::Hid infos = h5::create_group(f, "INFOS_GENERALES");
-    h5::write_attr_int(infos, "MAJ", maj);
-    h5::write_attr_int(infos, "MIN", min);
-    h5::write_attr_int(infos, "REL", rel);
+    if (!h5::exists(f, "INFOS_GENERALES")) {
+        h5::Hid infos = h5::create_group_crt(f, "INFOS_GENERALES");
+        h5::write_attr_int(infos, "MAJ", maj);
+        h5::write_attr_int(infos, "MIN", min);
+        h5::write_attr_int(infos, "REL", rel);
+    }
 
     const std::string mesh_name = rInfo.mMeshName.empty() ? "mesh" : rInfo.mMeshName;
     const std::size_t dim = rMesh.PointDim();
 
-    h5::Hid ens = h5::create_group(f, "ENS_MAA");
-    h5::Hid med_mesh = h5::create_group(ens, mesh_name);
+    h5::Hid ens = med_open_or_create_group(f, "ENS_MAA");
+    h5::Hid med_mesh = h5::create_group_crt(ens, mesh_name);
     h5::write_attr_int(med_mesh, "DIM", static_cast<std::int64_t>(dim));
     h5::write_attr_int(med_mesh, "ESP", static_cast<std::int64_t>(dim));
     h5::write_attr_int(med_mesh, "REP", 0);
@@ -98415,14 +98498,14 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         rInfo.mDescription.empty() ? "Mesh created with meshio++" : rInfo.mDescription);
     h5::write_attr_int(med_mesh, "TYP", 0);
 
-    h5::Hid time_step = h5::create_group(med_mesh, "-0000000000000000001-0000000000000000001");
+    h5::Hid time_step = h5::create_group_crt(med_mesh, "-0000000000000000001-0000000000000000001");
     h5::write_attr_int(time_step, "CGT", 1);
     h5::write_attr_int(time_step, "NDT", -1);
     h5::write_attr_int(time_step, "NOR", -1);
     write_attr_double(time_step, "PDT", -1.0);
 
     // Points
-    h5::Hid noe = h5::create_group(time_step, "NOE");
+    h5::Hid noe = h5::create_group_crt(time_step, "NOE");
     h5::write_attr_int(noe, "CGT", 1);
     h5::write_attr_int(noe, "CGS", 1);
     write_attr_bytes(noe, "PFL", kProfile);
@@ -98454,7 +98537,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     // the contributing blocks' connectivity/FAM/NUM. Mirrors the Python
     // reference's write-time merge (_med.py:811-869), which is why this
     // never rejects a mesh the pre-v9.8.0 pairwise-type check used to.
-    h5::Hid mai = h5::create_group(time_step, "MAI");
+    h5::Hid mai = h5::create_group_crt(time_step, "MAI");
     h5::write_attr_int(mai, "CGT", 1);
     const bool has_cell_num = rMesh.HasCellData("med:num");
     const bool has_native_cell_tags = rMesh.HasCellData("cell_tags");
@@ -98500,7 +98583,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                         ctype, npc, rMesh.Cells(bi).NodesPerCell()));
         }
 
-        h5::Hid g = h5::create_group(mai, meshio_to_med().at(ctype));
+        h5::Hid g = h5::create_group_crt(mai, meshio_to_med().at(ctype));
         h5::write_attr_int(g, "CGT", 1);
         h5::write_attr_int(g, "CGS", 1);
         write_attr_bytes(g, "PFL", kProfile);
@@ -98642,16 +98725,16 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     }
 
     // Families
-    h5::Hid fas = h5::create_group(f, "FAS");
-    h5::Hid families = h5::create_group(fas, mesh_name);
-    h5::Hid family_zero = h5::create_group(families, "FAMILLE_ZERO");
+    h5::Hid fas = med_open_or_create_group(f, "FAS");
+    h5::Hid families = h5::create_group_crt(fas, mesh_name);
+    h5::Hid family_zero = h5::create_group_crt(families, "FAMILLE_ZERO");
     h5::write_attr_int(family_zero, "NUM", 0);
     if (!point_tags.empty()) {
-        h5::Hid node = h5::create_group(families, "NOEUD");
+        h5::Hid node = h5::create_group_crt(families, "NOEUD");
         write_families(node, point_tags, point_tag_groups);
     }
     if (!cell_tags.empty()) {
-        h5::Hid element = h5::create_group(families, "ELEME");
+        h5::Hid element = h5::create_group_crt(families, "ELEME");
         write_families(element, cell_tags, cell_tag_groups);
     }
 
@@ -98703,14 +98786,67 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             }
         }
 
-        h5::Hid cha = h5::create_group(f, "CHA");
+        h5::Hid cha = med_open_or_create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
             if (name != "point_tags" && name != "med:num")
-                write_cha_nodal_field(cha, mesh_name, name, rMesh.PointData(name));
+                write_cha_nodal_field(cha, mesh_name,
+                                      rCollisions.count(name) ? name + "@" + mesh_name : name,
+                                      rMesh.PointData(name));
         for (const auto& name : rMesh.CellDataNames())
             if (name != "cell_tags" && name != "med:num")
-                write_cha_cell_field(cha, mesh_name, name, rMesh);
+                write_cha_cell_field(cha, mesh_name, name, rMesh,
+                                     rCollisions.count(name) ? name + "@" + mesh_name : name);
     }
+}
+
+}  // namespace
+
+void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
+               const std::string& rMedVersion) {
+    h5::SilenceErrors silence;
+    auto file = med_create_file(rPath);
+    med_write_mesh(file, rMesh, rInfo, rMedVersion, {});
+}
+
+void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& rMeshes,
+                     const std::vector<MedInfo>& rInfos, const std::string& rMedVersion) {
+    if (rMeshes.empty() || rMeshes.size() != rInfos.size())
+        throw WriteError("MED: provide one name/info per mesh and at least one mesh");
+    std::set<std::string> names, collisions, disk_names;
+    std::map<std::string, std::size_t> counts;
+    for (std::size_t i = 0; i < rMeshes.size(); ++i) {
+        const auto& name = rInfos[i].mMeshName;
+        if (!rMeshes[i] || name.empty() || name.find('/') != std::string::npos ||
+            name.find('@') != std::string::npos || !names.insert(name).second)
+            throw WriteError("MED: mesh names must be unique, nonempty and contain no '/' or '@'");
+        std::set<std::string> fields;
+        for (const auto& field : rMeshes[i]->PointDataNames())
+            if (field != "point_tags" && field != "med:num")
+                fields.insert(field);
+        for (const auto& field : rMeshes[i]->CellDataNames())
+            if (field != "cell_tags" && field != "med:num" && field != "gmsh:physical")
+                fields.insert(field);
+        for (const auto& field : fields)
+            ++counts[field];
+    }
+    for (const auto& [field, count] : counts)
+        if (count > 1)
+            collisions.insert(field);
+    for (std::size_t i = 0; i < rMeshes.size(); ++i)
+        for (auto location : {DataLocation::Point, DataLocation::Cell})
+            for (const auto& field : data_names(*rMeshes[i], location)) {
+                if (field == "point_tags" || field == "cell_tags" || field == "med:num" ||
+                    field == "gmsh:physical")
+                    continue;
+                const auto disk =
+                    collisions.count(field) ? field + "@" + rInfos[i].mMeshName : field;
+                if (!disk_names.insert(disk).second)
+                    throw WriteError("MED: colliding field storage name: " + disk);
+            }
+    h5::SilenceErrors silence;
+    auto file = med_create_file(rPath);
+    for (std::size_t i = 0; i < rMeshes.size(); ++i)
+        med_write_mesh(file, *rMeshes[i], rInfos[i], rMedVersion, collisions);
 }
 
 }  // namespace meshioplusplus
@@ -130838,6 +130974,7 @@ MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vts.cpp =====
 // ===== begin src/cpp/src/formats/vtu.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -130923,7 +131060,13 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             log::warn("vtu: field_data '{}' uses the region naming convention; not written", name);
             continue;
         }
-        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+        const auto& array = rMesh.FieldData(name);
+        const auto& shape = array.Shape();
+        if (shape.size() > 1 && std::find(shape.begin() + 1, shape.end(), 0) != shape.end()) {
+            log::warn("vtu: field_data '{}' has zero components; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &array);
     }
     for (const auto& [name, arr] : region_arrays)
         field_arrays.emplace_back(name, &arr);
@@ -153618,6 +153761,10 @@ PipelineReport run_pipeline_file(const std::string&) {
     pipe_no_json();
 }
 
+std::string pipeline_report_json(const PipelineReport&) {
+    pipe_no_json();
+}
+
 // The sequence document shares this parser, and therefore this guard: the
 // typed sequence driver in operations/sequence.cpp compiles either way, but a
 // settings document cannot be read without a JSON parser.
@@ -153635,6 +153782,17 @@ PipelineReport run_sequence_file(const std::string&) {
 }
 
 #else  // MESHIOPLUSPLUS_HAS_JSON
+
+std::string pipeline_report_json(const PipelineReport& rReport) {
+    auto steps = nlohmann::json::array();
+    for (const auto& entry : rReport.mSteps) {
+        nlohmann::json step = {{"op", entry.mOp}};
+        for (const auto& [name, value] : entry.mCounters)
+            step[name] = std::isfinite(value) ? nlohmann::json(value) : nlohmann::json(nullptr);
+        steps.push_back(std::move(step));
+    }
+    return nlohmann::json{{"steps", std::move(steps)}, {"warnings", rReport.mWarnings}}.dump();
+}
 
 namespace {
 

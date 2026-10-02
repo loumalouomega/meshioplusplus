@@ -26,6 +26,9 @@ extern SEXP R_mio_read(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEX
 extern SEXP R_mio_write(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write_gltf(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_med_mesh_names(SEXP);
+extern SEXP R_mio_med_read_named(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_med_write_multi(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_read_metadata(SEXP, SEXP);
 extern SEXP R_mio_num_points(SEXP);
 extern SEXP R_mio_point_dim(SEXP);
@@ -127,6 +130,10 @@ extern SEXP R_mio_data_info(SEXP);
 extern SEXP R_mio_tensor_invariants(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_integrate(SEXP, SEXP);
 extern SEXP R_mio_pipeline_run_file(SEXP);
+extern SEXP R_mio_pipeline_run_file_report(SEXP);
+extern SEXP R_mio_pipeline_run_json_report(SEXP);
+extern SEXP R_mio_sequence_pipeline_run_file_report(SEXP);
+extern SEXP R_mio_sequence_pipeline_run_json_report(SEXP);
 extern SEXP R_mio_sequence_open(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sequence_open_list(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sequence_count(SEXP);
@@ -187,6 +194,9 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_write, 6),
                                               CALLDEF(R_mio_write_gltf, 3),
                                               CALLDEF(R_mio_convert, 4),
+                                              CALLDEF(R_mio_med_mesh_names, 1),
+                                              CALLDEF(R_mio_med_read_named, 4),
+                                              CALLDEF(R_mio_med_write_multi, 4),
                                               CALLDEF(R_mio_read_metadata, 2),
                                               CALLDEF(R_mio_num_points, 1),
                                               CALLDEF(R_mio_point_dim, 1),
@@ -284,6 +294,10 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_tensor_invariants, 7),
                                               CALLDEF(R_mio_data_integrate, 2),
                                               CALLDEF(R_mio_pipeline_run_file, 1),
+                                              CALLDEF(R_mio_pipeline_run_file_report, 1),
+                                              CALLDEF(R_mio_pipeline_run_json_report, 1),
+                                              CALLDEF(R_mio_sequence_pipeline_run_file_report, 1),
+                                              CALLDEF(R_mio_sequence_pipeline_run_json_report, 1),
                                               CALLDEF(R_mio_sequence_open, 5),
                                               CALLDEF(R_mio_sequence_open_list, 5),
                                               CALLDEF(R_mio_sequence_count, 1),

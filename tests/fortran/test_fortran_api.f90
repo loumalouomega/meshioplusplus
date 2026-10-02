@@ -358,6 +358,28 @@ program test_fortran_api
     call check(len(msg) > 0, 'unknown explicit format sets errmsg')
 
     ! ---- data operations -----------------------------------------------
+    if (mio_format_writable('med')) then
+        block
+            type(mio_mesh) :: named
+            character(:), allocatable :: names(:)
+            call mio_med_write_multi(prefix//'_multi.med', [m, m], ['z_mesh', 'a_mesh'], stat=ierr)
+            call check(ierr == 0, 'MED multi-mesh write')
+            call mio_med_mesh_names(prefix//'_multi.med', names, stat=ierr)
+            call check(ierr == 0, 'MED enumerate names')
+            if (ierr == 0) then
+                call check(size(names) == 2, 'MED mesh count')
+                call check(names(1) == 'z_mesh' .and. names(2) == 'a_mesh', 'MED link order')
+            end if
+            call mio_med_read_named(prefix//'_multi.med', 'a_mesh', named, stat=ierr)
+            call check(ierr == 0, 'MED named read')
+            if (ierr == 0) call check(named%num_points() == m%num_points(), 'MED named geometry')
+            call mio_med_read_named(prefix//'_multi.med', 'missing', named, stat=ierr)
+            call check(ierr /= 0, 'MED missing name error')
+            call check(named%is_valid(), 'MED failed named read preserves previous mesh')
+            call named%free()
+        end block
+    end if
+
     block
         type(mio_mesh) :: source, labels, restored
         source = m%data_keep(MIO_DATA_POINT, ['temperature'], stat=ierr)
@@ -365,7 +387,7 @@ program test_fortran_api
         call source%add_region('b', MIO_REGION_POINT, [2_int64, 3_int64])
         labels = source%sets_to_data(MIO_DATA_POINT, order=['b', 'a'], stat=ierr)
         call check(ierr == 0, 'sets_to_data succeeds with explicit order')
-        call check(labels%num_regions() == source%num_regions() - 2_int64, 'sets_to_data removes point sets')
+        call check(size(labels%regions()) == size(source%regions()) - 2, 'sets_to_data removes point sets')
         restored = labels%data_to_sets(MIO_DATA_POINT, 'b-a', stat=ierr)
         call check(ierr == 0, 'data_to_sets succeeds')
         call check(restored%num_points() == source%num_points(), 'sets/data preserves geometry')
@@ -1420,6 +1442,7 @@ program test_fortran_api
     ! ------------------------------------------------------------------
     block
         character(:), allocatable :: msg
+        character(:), allocatable :: report, text
         integer :: st
         call mio_pipeline_run_json('{"Input": {"Path": "a"}, "Output": {"Path": "b"}, '// &
                                    '"Operations": [{"Op": "Nope"}]}', stat=st, errmsg=msg)
@@ -1429,6 +1452,18 @@ program test_fortran_api
         else
             call check(index(msg, 'MESHIOPLUSPLUS_WITH_JSON') > 0, &
                        'compiled-out pipeline names the flag')
+        end if
+        text = '{"Input":{"Path":"'//vtu_path// &
+            '"},"Output":{"Path":"'//prefix//'_report.vtu"},"Operations":[{"Op":"Quality"}]}'
+        call mio_pipeline_run_json_report(text, report, stat=st, errmsg=msg)
+        if (mio_pipeline_has_json()) then
+            call check(st == 0, 'pipeline report succeeds')
+            call check(index(report, '"steps"') > 0, 'pipeline report has steps')
+            call check(index(report, '"op":"Quality"') > 0, 'pipeline report names step')
+            call check(index(report, '"warnings":[]') > 0, 'pipeline report has warnings')
+        else
+            call check(st /= 0, 'compiled-out pipeline report fails')
+            call check(len(report) == 0, 'failed pipeline report is empty')
         end if
     end block
 

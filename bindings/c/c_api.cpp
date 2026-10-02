@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
@@ -173,6 +174,10 @@ struct mio_reorder_result {
 
 struct mio_diff_result {
     meshioplusplus::DiffReport mReport;
+};
+
+struct mio_pipeline_report {
+    std::string mJson;
 };
 
 struct mio_xdmf_series {
@@ -4456,6 +4461,70 @@ mio_status mio_pipeline_run_file(const char* settings_path) {
     });
 }
 
+int64_t mio_med_mesh_count(const char* path) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (!path)
+            throw std::invalid_argument("MED: path is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        return static_cast<int64_t>(meshioplusplus::med_mesh_names(path).size());
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
+int64_t mio_med_mesh_name(const char* path, int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (!path)
+            throw std::invalid_argument("MED: path is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        auto names = meshioplusplus::med_mesh_names(path);
+        if (index < 0 || static_cast<std::size_t>(index) >= names.size())
+            throw std::invalid_argument("MED: mesh index out of range");
+        return copy_string(names[static_cast<std::size_t>(index)], buf, buflen);
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
+mio_mesh* mio_med_read_named(const char* path, const char* name, const mio_read_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!path || !name)
+            throw std::invalid_argument("MED: path/name is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        meshioplusplus::MedInfo info;
+        return new mio_mesh{
+            meshioplusplus::read_med_named(path, name, info, capi_read_options(opts))};
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
+mio_status mio_med_write_multi(const char* path, const mio_mesh* const* meshes,
+                               const char* const* names, int64_t count, const char* version) {
+    return guarded([&]() -> mio_status {
+        if (!path || !meshes || !names || count <= 0)
+            return fail(MIO_ERR_INVALID_ARG, "MED: provide path, meshes, names and positive count");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        std::vector<const meshioplusplus::Mesh*> inputs;
+        std::vector<meshioplusplus::MedInfo> infos;
+        for (int64_t i = 0; i < count; ++i) {
+            if (!meshes[i] || !names[i])
+                throw std::invalid_argument("MED: NULL mesh/name");
+            inputs.push_back(&meshes[i]->mMesh);
+            infos.emplace_back();
+            infos.back().mMeshName = names[i];
+        }
+        meshioplusplus::write_med_multi(path, inputs, infos, version ? version : "4.1.0");
+        return MIO_OK;
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
 mio_status mio_pipeline_run_json(const char* json_text) {
     return guarded([&]() -> mio_status {
         if (!json_text)
@@ -4464,6 +4533,48 @@ mio_status mio_pipeline_run_json(const char* json_text) {
         return MIO_OK;
     });
 }
+
+mio_pipeline_report* mio_pipeline_run_file_report(const char* settings_path) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!settings_path) throw std::invalid_argument("meshio++: settings_path is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_pipeline_file(settings_path))};
+    });
+}
+
+mio_pipeline_report* mio_pipeline_run_json_report(const char* json_text) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!json_text) throw std::invalid_argument("meshio++: json_text is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_pipeline_json(json_text))};
+    });
+}
+
+mio_pipeline_report* mio_sequence_pipeline_run_file_report(const char* settings_path) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!settings_path) throw std::invalid_argument("meshio++: settings_path is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_sequence_file(settings_path))};
+    });
+}
+
+mio_pipeline_report* mio_sequence_pipeline_run_json_report(const char* json_text) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!json_text) throw std::invalid_argument("meshio++: json_text is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_sequence_json(json_text))};
+    });
+}
+
+int64_t mio_pipeline_report_json(const mio_pipeline_report* report, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (!report) throw std::invalid_argument("meshio++: pipeline report is NULL");
+        if (buflen < 0) throw std::invalid_argument("meshio++: negative report buffer length");
+        return copy_string(report->mJson, buf, buflen);
+    });
+}
+
+void mio_pipeline_report_free(mio_pipeline_report* report) { delete report; }
 
 namespace {
 

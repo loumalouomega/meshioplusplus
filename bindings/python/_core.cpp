@@ -4548,6 +4548,92 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               info.mCellTagGroups = std::move(cell_tag_groups);
               meshioplusplus::write_med(path, cpp, info, med_version);
           });
+    m.def("med_mesh_names", &meshioplusplus::med_mesh_names);
+    m.def(
+        "med_read_named",
+        [](const std::string& path, const std::string& name, int time_step) {
+            meshioplusplus::ReadOptions options;
+            options.mTimeStep = time_step;
+            meshioplusplus::MedInfo info;
+            auto out = meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_med_named(path, name, info, options));
+            out.attr("mesh_name") = info.mMeshName;
+            out.attr("description") = info.mDescription;
+            out.attr("unit_time") = info.mUnitTime;
+            out.attr("unit_coords") = info.mUnitCoords;
+            out.attr("point_tags") = py::cast(info.mPointTags);
+            out.attr("cell_tags") = py::cast(info.mCellTags);
+            out.attr("point_tag_groups") = py::cast(info.mPointTagGroups);
+            out.attr("cell_tag_groups") = py::cast(info.mCellTagGroups);
+            if (!info.mMedNom.empty())
+                out.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
+            py::dict units, steps;
+            for (const auto& [field, pair] : info.mFieldUnits)
+                units[py::str(field)] =
+                    py::make_tuple(py::bytes(pair.first), py::bytes(pair.second));
+            for (const auto& [field, meta] : info.mStepMeta) {
+                const auto [ndt, nor, pdt] = meta;
+                py::dict step;
+                step["ndt"] = ndt;
+                step["nor"] = nor;
+                step["pdt"] = pdt;
+                auto padded = [](std::int64_t value) {
+                    auto text = std::to_string(value);
+                    return py::str(text).attr("zfill")(20).cast<std::string>();
+                };
+                step["key"] = padded(ndt) + padded(nor);
+                py::list values;
+                values.append(step);
+                steps[py::str(field)] = values;
+            }
+            if (!info.mFieldUnits.empty())
+                out.attr("field_data")[py::str("med:field_units")] = units;
+            if (!info.mStepMeta.empty())
+                out.attr("field_data")[py::str("med:step_meta")] = steps;
+            return out;
+        },
+        py::arg("path"), py::arg("name"), py::arg("time_step") = 0);
+    m.def("med_write_multi", [](const std::string& path, py::list meshes,
+                                const std::vector<std::string>& names, const std::string& version) {
+        if (meshes.size() != names.size())
+            throw py::value_error("MED: one name per mesh required");
+        std::vector<meshioplusplus_py::PyMeshRefs> refs(meshes.size());
+        std::vector<meshioplusplus::Mesh> converted;
+        converted.reserve(meshes.size());
+        std::vector<meshioplusplus::MedInfo> infos;
+        for (std::size_t i = 0; i < meshes.size(); ++i) {
+            auto mesh = meshes[i];
+            converted.push_back(meshioplusplus_py::py_to_mesh(mesh, refs[i], true, true));
+            infos.emplace_back();
+            auto& info = infos.back();
+            info.mMeshName = names[i];
+            for (auto key : {"description", "unit_time", "unit_coords"}) {
+                if (!py::hasattr(mesh, key))
+                    continue;
+                const auto value = py::cast<std::string>(mesh.attr(key));
+                if (std::string(key) == "description")
+                    info.mDescription = value;
+                else if (std::string(key) == "unit_time")
+                    info.mUnitTime = value;
+                else
+                    info.mUnitCoords = value;
+            }
+            if (py::hasattr(mesh, "point_tags"))
+                info.mPointTags = py::cast<decltype(info.mPointTags)>(mesh.attr("point_tags"));
+            if (py::hasattr(mesh, "cell_tags"))
+                info.mCellTags = py::cast<decltype(info.mCellTags)>(mesh.attr("cell_tags"));
+            if (py::hasattr(mesh, "point_tag_groups"))
+                info.mPointTagGroups =
+                    py::cast<decltype(info.mPointTagGroups)>(mesh.attr("point_tag_groups"));
+            if (py::hasattr(mesh, "cell_tag_groups"))
+                info.mCellTagGroups =
+                    py::cast<decltype(info.mCellTagGroups)>(mesh.attr("cell_tag_groups"));
+        }
+        std::vector<const meshioplusplus::Mesh*> inputs;
+        for (const auto& mesh : converted)
+            inputs.push_back(&mesh);
+        meshioplusplus::write_med_multi(path, inputs, infos, version);
+    });
     m.def("med_read",
           guard_read("med",
                      [](const std::string& path, int time_step, bool lenient) {

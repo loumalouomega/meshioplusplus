@@ -214,6 +214,32 @@ def _register_inspection(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_conversion(server: FastMCP) -> None:
     @server.tool()
+    def med_multi(
+        input_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        mesh_name: Optional[str] = None,
+        mesh_names: Optional[List[str]] = None,
+        output_format: Optional[str] = None,
+        med_version: str = "4.1.0",
+    ) -> dict:
+        """List named meshes in input_path, or extract mesh_name to output_path.
+        Alternatively combine nonempty input_paths into a MED output_path with
+        optional mesh_names and med_version (default 4.1.0). Input paths and
+        output paths obey the server's root sandbox. Ordinary MED nodal/element
+        profiles expand with NaN fill; enhanced fields may use Python/h5py."""
+        return _guard(
+            _tools.tool_med_multi,
+            input_path=input_path,
+            output_path=output_path,
+            input_paths=input_paths,
+            mesh_name=mesh_name,
+            mesh_names=mesh_names,
+            output_format=output_format,
+            med_version=med_version,
+        )
+
+    @server.tool()
     def convert(
         input_path: str,
         output_path: str,

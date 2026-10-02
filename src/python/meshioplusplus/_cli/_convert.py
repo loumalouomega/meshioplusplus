@@ -83,6 +83,7 @@ def add_args(parser):
             "file are ignored."
         ),
     )
+    parser.add_argument("--mesh-name", help="Select one named MED mesh.")
     parser.add_argument(
         "--time-step",
         type=int,
@@ -374,7 +375,7 @@ def _wants_sequence(args):
     # which is what keeps it free for almost every convert.
     from .._sequence import num_steps
 
-    if not args.time_step:
+    if not args.time_step and not getattr(args, "mesh_name", None):
         return num_steps(args.infile, args.input_format) > 1
     return False
 
@@ -443,6 +444,8 @@ def convert(args):
         arrays = [name for name in args.arrays.split(",") if name]
 
     if _wants_sequence(args):
+        if getattr(args, "mesh_name", None) is not None:
+            raise ValueError("--mesh-name cannot be combined with sequences")
         if args.sets_to_int_data or args.int_data_to_sets:
             raise ValueError(
                 "-s/-d are not available for a sequence; convert one step at a "
@@ -455,15 +458,26 @@ def convert(args):
         return _convert_sequence(args, arrays, write_kwargs)
 
     # read mesh data
-    mesh = read(
-        args.infile,
-        file_format=args.input_format,
-        points_only=args.points_only,
-        arrays=arrays,
-        time_step=args.time_step,
-        piece=args.piece,
-        ghosts="drop" if args.drop_ghosts else "keep",
-    )
+    if getattr(args, "mesh_name", None) is not None:
+        from .. import med
+
+        if args.input_format not in (None, "med"):
+            raise ValueError("--mesh-name is only supported for MED inputs")
+        if args.points_only or arrays is not None or args.piece is not None:
+            raise ValueError(
+                "--mesh-name cannot be combined with selective arrays or pieces"
+            )
+        mesh = med.read(args.infile, time_step=args.time_step, mesh_name=args.mesh_name)
+    else:
+        mesh = read(
+            args.infile,
+            file_format=args.input_format,
+            points_only=args.points_only,
+            arrays=arrays,
+            time_step=args.time_step,
+            piece=args.piece,
+            ghosts="drop" if args.drop_ghosts else "keep",
+        )
 
     # Some converters (like VTK) require `points` to be contiguous.
     mesh.points = np.ascontiguousarray(mesh.points)

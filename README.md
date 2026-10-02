@@ -22,6 +22,8 @@ Native parity additions: XDMF2/3 and absolute DataItem references; Netgen name/p
 
 Region-backed point/cell sets now convert to and from scalar integer data in the native core, C/Fortran/Julia/R/WASM bindings and native CLI `convert -s/-d`. Python's mutating `Mesh` methods preserve their ordering and metadata contract; pipelines expose `SetsToData` / `DataToSets`, and MCP exposes `sets_data`. See [sets/data conversions](doc/data_manage.md#sets--integer-data).
 
+Native C/Fortran/Julia/R pipelines also expose owning structured JSON reports (`steps` and `warnings`), without replacing their existing status-only entry points; see [pipeline reports](doc/pipeline.md#structured-reports-on-the-flat-abi).
+
 XDMF time-series writers preserve fixed point, cell and side regions alongside the shared topology. Python's array-based writer accepts `regions=` and its series reader exposes `reader.regions`; native writers use the regions already on the mesh. See [XDMF time series](doc/xdmf_time_series.md).
 
 Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple pieces and appended raw/base64 arrays in both the native core and Python reference, with UInt32/UInt64 headers and either byte order. Pieces concatenate without welding; VTP/VTS/VTR/VTI writers remain inline. Native legacy `.vtk` reads also support structured points, structured grids and rectilinear grids in ASCII and big-endian binary; see the [format documentation](doc/formats.md).
@@ -58,7 +60,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output, read-only; `nodout` outputs are steps, the other databases field data),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
-> [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`),
+> [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),
 > [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),

@@ -279,6 +279,37 @@ mio_convert <- function(in_path, out_path, in_format = NULL, out_format = NULL) 
   ))
 }
 
+#' Named MED meshes
+#'
+#' Enumerate or read named MED meshes, or write several meshes to one file.
+#' Ordinary named nodal and element profiles expand with NaN fill.
+#' @param path MED file path.
+#' @param name A mesh name.
+#' @param time_step Zero-based step index; negative counts from the end.
+#' @param lenient Skip unsupported field constructs.
+#' @param meshes Nonempty list of mesh handles.
+#' @param names Unique, nonempty names, one per mesh.
+#' @param version MED version string, default "4.1.0".
+#' @return Names, an owning mesh handle, or invisibly NULL for writes.
+#' @export
+mio_med_mesh_names <- function(path) {
+  .Call(R_mio_med_mesh_names, as.character(path))
+}
+
+#' @rdname mio_med_mesh_names
+#' @export
+mio_med_read_named <- function(path, name, time_step = 0L, lenient = FALSE) {
+  .Call(R_mio_med_read_named, as.character(path), as.character(name),
+        as.integer(time_step), as.logical(lenient))
+}
+
+#' @rdname mio_med_mesh_names
+#' @export
+mio_med_write_multi <- function(path, meshes, names, version = "4.1.0") {
+  invisible(.Call(R_mio_med_write_multi, as.character(path), meshes,
+                  as.character(names), as.character(version)))
+}
+
 #' Run a settings.json operation pipeline
 #'
 #' Runs a whole settings pipeline -- read `Input.Path`, apply `Operations` in
@@ -2281,6 +2312,34 @@ mio_sequence_pipeline_run_file <- function(settings_path) {
 #' @export
 mio_sequence_pipeline_run_json <- function(json_text) {
   invisible(.Call(R_mio_sequence_pipeline_run_json, as.character(json_text)))
+}
+
+#' Pipeline structured reports as JSON
+#'
+#' Execute once and return JSON with steps (op plus PascalCase counters) and
+#' warnings. Non-finite counters are null. No JSON package is required; callers
+#' can parse the string with jsonlite if desired. Existing status-only APIs remain.
+#' @param path Settings file path.
+#' @param text Settings JSON text.
+#' @return A JSON character scalar. Requires a JSON-enabled native build.
+#' @export
+mio_pipeline_run_file_report <- function(path) {
+  .Call(R_mio_pipeline_run_file_report, as.character(path))
+}
+#' @rdname mio_pipeline_run_file_report
+#' @export
+mio_pipeline_run_json_report <- function(text) {
+  .Call(R_mio_pipeline_run_json_report, as.character(text))
+}
+#' @rdname mio_pipeline_run_file_report
+#' @export
+mio_sequence_pipeline_run_file_report <- function(path) {
+  .Call(R_mio_sequence_pipeline_run_file_report, as.character(path))
+}
+#' @rdname mio_pipeline_run_file_report
+#' @export
+mio_sequence_pipeline_run_json_report <- function(text) {
+  .Call(R_mio_sequence_pipeline_run_json_report, as.character(text))
 }
 
 #' @rdname mio_extract_surface

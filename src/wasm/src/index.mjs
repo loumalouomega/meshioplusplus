@@ -367,6 +367,11 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
     return {
         FS: Module.FS,
         readMesh: (path, format = '') => Module.readMesh(path, format),
+        medMeshNames: (path) => Module.medMeshNames(path),
+        readMedNamed: (path, name, { timeStep = 0, lenient = false } = {}) =>
+            Module.readMedNamed(path, name, timeStep, lenient),
+        writeMedMulti: (path, meshes, names, { version = '4.1.0' } = {}) =>
+            Module.writeMedMulti(path, meshes, names, version),
         // Selective reads (see doc/selective_read.md). `arrays: null` reads
         // every data array, `arrays: []` reads none -- the distinction is
         // deliberate. Formats without a native selective path are read whole

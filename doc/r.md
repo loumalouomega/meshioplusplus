@@ -1,5 +1,13 @@
 # R
 
+## Pipeline reports
+
+`mio_pipeline_run_file_report(path)`, `mio_pipeline_run_json_report(text)` and `mio_sequence_pipeline_run_*_report` return a JSON character scalar with `steps` and `warnings`, automatically releasing its native owner. Parsing with `jsonlite::fromJSON` is optional; no new binding dependency is required. Existing status-only APIs are unchanged. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+`mio_med_mesh_names(path)` enumerates file link order; `mio_med_read_named(path, name, time_step=0L, lenient=FALSE)` returns an owning mesh handle; `mio_med_write_multi(path, meshes, names, version="4.1.0")` writes a nonempty list of meshes with one unique name per mesh. HDF5 is required; ordinary nodal/element profiles expand with NaN fill. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
 `mio_write(mesh, 'cloud.pcd', codec='lzf')` selects PCD compressed binary without an optional codec library; explicit ASCII or non-PCD combinations fail. Generic writes also accept `encoding` and `float_format`. `mio_write_gltf(mesh, 'colored.glb', color_by='temperature', cmap='turbo', up_axis='z', scale=0.001)` exposes all native glTF options; `component` is 1-based or `NULL` for magnitude, and unset `vmin`/`vmax` select automatic bounds. Native reads also support XDMF2/3 with absolute DataItem references and Netgen names/periodic arrays; Netgen periodic arrays live in `field_data` and keep file node ids 1-based, while `.vol.gz` requires zlib.
 
 XDMF series `mio_xdmf_series_write_points_cells(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).

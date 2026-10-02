@@ -1,5 +1,15 @@
 # WebAssembly / JavaScript
 
+## Pipeline reports
+
+`runPipeline` already returns the shared structured report object (`steps`, `warnings`). The new C/Fortran/Julia/R caller-buffer report APIs use the same names and PascalCase counters; non-finite counters serialize as JSON `null`. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+For a sequential-only local artifact, run the complete WASM smoke suite with `MESHIOPLUSPLUS_WASM_VARIANT=seq node tests/wasm/smoke.mjs`; the default still exercises the threaded artifact and checks its OpenMP backend.
+
+## MED named meshes
+
+HDF5-enabled artifacts expose `medMeshNames(path)`, `readMedNamed(path, name, {timeStep: 0, lenient: false})` and `writeMedMulti(path, meshes, names, {version: '4.1.0'})`; paths refer to MEMFS. Named reads include the MED side channel as `mesh.info`. Names must be unique/nonempty, without `/` or `@`; ordinary nodal/element profiles expand with NaN fill. Artifacts without HDF5 throw a capability error. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
 XDMF series `writePointsCells(mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments; `readMeshSelective` returns the regions at every selected step. See [shared named regions](xdmf_time_series.md#shared-named-regions).
 
 Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces without welding, appended raw/base64 arrays, UInt32/UInt64 headers and either byte order, including selective reads and metadata summaries. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the WASM build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing `readMesh` API. See [formats](formats.md).

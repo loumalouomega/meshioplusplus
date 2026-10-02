@@ -1615,6 +1615,25 @@ Whether the loaded library carries the JSON pipeline parser.
 """
 pipeline_has_json() = ccall(_sym(:mio_pipeline_has_json), Cint, ()) != 0
 
+function _pipeline_report(run::Symbol, text::AbstractString)
+    h = _check_ptr(ccall(_sym(run), Ptr{Cvoid}, (Cstring,), text))
+    try
+        _getstring((buf, len) -> ccall(_sym(:mio_pipeline_report_json), Int64,
+                   (Ptr{Cvoid}, Ptr{UInt8}, Int64), h, buf, len))
+    finally
+        ccall(_sym(:mio_pipeline_report_free), Cvoid, (Ptr{Cvoid},), h)
+    end
+end
+
+"""Run once and return the shared steps/warnings report as JSON text."""
+run_pipeline_file_report(path::AbstractString) = _pipeline_report(:mio_pipeline_run_file_report, path)
+"""Run JSON settings once and return steps/warnings as JSON text."""
+run_pipeline_json_report(text::AbstractString) = _pipeline_report(:mio_pipeline_run_json_report, text)
+"""Run a sequence settings file once and return steps/warnings as JSON text."""
+run_sequence_file_report(path::AbstractString) = _pipeline_report(:mio_sequence_pipeline_run_file_report, path)
+"""Run sequence JSON settings once and return steps/warnings as JSON text."""
+run_sequence_json_report(text::AbstractString) = _pipeline_report(:mio_sequence_pipeline_run_json_report, text)
+
 # --- regular grids and signed distance ---------------------------------------
 
 const _SDF_SIGNS = Dict("unsigned" => Int32(0), "pseudonormal" => Int32(1),

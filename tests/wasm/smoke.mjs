@@ -15,6 +15,7 @@
 //
 // Usage: node tests/wasm/smoke.mjs   (after `build/configure-wasm.sh --build`
 // has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
+// MESHIOPLUSPLUS_WASM_VARIANT=seq runs the same suite on a sequential-only build.
 
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -96,13 +97,14 @@ await asyncStep(
     },
 );
 
-const m = await loadMeshioPlusPlus({}, { variant: 'mt' });
-step('threaded (mt) build reports the openmp parallel backend', () => {
+const variant = process.env.MESHIOPLUSPLUS_WASM_VARIANT ?? 'mt';
+const m = await loadMeshioPlusPlus({}, { variant });
+step(`${variant} build reports its expected parallel backend`, () => {
     // The whole point of the mt artifact: it must actually be the OpenMP build,
     // not a mislabelled sequential one. parallelBackend() is exposed by the
     // embind binding; a build configured with SEQ would report "seq" here.
     assert.equal(typeof m.parallelBackend, 'function');
-    assert.equal(m.parallelBackend(), 'openmp');
+    assert.equal(m.parallelBackend(), variant === 'mt' ? 'openmp' : 'seq');
 });
 
 step('VTK pieces and legacy structured grids read without Python', () => {
@@ -313,13 +315,23 @@ step('GMSH ascii round-trip (tetra, volume format)', () => {
 // generate itself.
 // --------------------------------------------------------------------------
 
-// MED is the one exception to writing `tet` as-is: the C++ MED writer defers a
-// mesh carrying named fields to the Python reference writer (CHA fields with
-// MED-4.1 bitmask/units/step metadata), and there is no Python anywhere in a
-// wasm build -- so here that documented fallback is simply an unsupported
-// case, and the geometry-only mesh is what this build can write. See
-// doc/wasm.md and doc/formats/med.md.
+// Enhanced field units/step metadata still need Python, but ordinary MED
+// fields, named meshes and nodal/element profiles are native.
 const tetNoData = { points: tet.points, dim: 3, cells: tet.cells };
+
+step('MED named meshes enumerate, select and disambiguate fields', () => {
+    const first = { ...tetNoData, point_data: { pressure: new Float64Array(tet.points.length / 3).fill(2) } };
+    const second = { ...tetNoData, point_data: { pressure: new Float64Array(tet.points.length / 3).fill(7) } };
+    m.writeMedMulti('/multi.med', [first, second], ['z_mesh', 'a_mesh']);
+    assert.deepEqual(m.medMeshNames('/multi.med'), ['z_mesh', 'a_mesh']);
+    const back = m.readMedNamed('/multi.med', 'a_mesh');
+    assert.deepEqual(Array.from(back.point_data.pressure), Array.from(second.point_data.pressure));
+    assert.deepEqual(Array.from(back.points), Array.from(tet.points));
+    assert.equal(back.info.meshName, 'a_mesh');
+    assert.throws(() => m.readMedNamed('/multi.med', 'missing'), /no mesh named/);
+    assert.throws(() => m.writeMedMulti('/multi.med', [first, second], ['same', 'same']));
+    assert.deepEqual(m.medMeshNames('/multi.med'), ['z_mesh', 'a_mesh']);
+});
 
 for (const [format, path, mesh] of [
     ['med', '/tet.med', tetNoData],
@@ -2579,7 +2591,7 @@ step('.vtm writes an index plus one .vtu piece per cell block, and reads two blo
 });
 
 step('.pcd LZF write options select binary_compressed', () => {
-    const cloud = {points: new Float64Array([1, 2, 3, 4, 5, 6]), cells: []};
+    const cloud = {points: new Float64Array([1, 2, 3, 4, 5, 6]), dim: 3, cells: []};
     m.writeMesh('/lzf.pcd', cloud, 'pcd', {codec: 'lzf'});
     const bytes = m.FS.readFile('/lzf.pcd');
     assert.ok(new TextDecoder().decode(bytes).includes('DATA binary_compressed\n'));
@@ -2589,8 +2601,8 @@ step('.pcd LZF write options select binary_compressed', () => {
 });
 
 step('parameterized glTF writes colour and preserves the written-paths contract', () => {
-    const mesh = {points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        cells: [{type: 'triangle', data: new Int32Array([0, 1, 2])}],
+    const mesh = {points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), dim: 3,
+        cells: [{type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3}],
         point_data: {temperature: new Float64Array([0, 1, 2])}};
     const paths = m.writeGltf('/colored.gltf', mesh,
         {colorBy: 'temperature', cmap: 'turbo', vmin: 0, vmax: 2, upAxis: 'x', scale: 0.001});

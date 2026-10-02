@@ -74,6 +74,32 @@ def _mixed_mesh():
     )
 
 
+def test_med_multi_tool_combine_list_extract_and_sandbox(tmp_path):
+    pytest.importorskip("h5py")
+    _tools.set_root(tmp_path)
+    for name in ("a", "b"):
+        meshioplusplus.write(tmp_path / f"{name}.vtu", _mixed_mesh())
+    result = _tools.tool_med_multi(
+        input_paths=["a.vtu", "b.vtu"],
+        output_path="multi.med",
+        mesh_names=["fluid", "solid"],
+    )
+    assert result["mesh_names"] == ["fluid", "solid"]
+    assert _tools.tool_med_multi(input_path="multi.med")["mesh_names"] == [
+        "fluid",
+        "solid",
+    ]
+    extracted = _tools.tool_med_multi(
+        input_path="multi.med", mesh_name="solid", output_path="solid.vtu"
+    )
+    assert pathlib.Path(extracted["output_path"]).is_file()
+    json.dumps(extracted, allow_nan=False)
+    with pytest.raises(ValueError, match="outside|escape"):
+        _tools.tool_med_multi(
+            input_path="multi.med", mesh_name="fluid", output_path="../outside.vtu"
+        )
+
+
 @pytest.fixture()
 def mesh_file(tmp_path):
     path = str(tmp_path / "in.vtu")

@@ -564,5 +564,11 @@ class Mesh:
                             f"{count} cells are not part of any cell set. Using default value -1."
                         )
                         break
-        self.regions[:] = result.regions
+        if operation == "sets_to_data":
+            # Core meshes canonicalize region order. Removing cell sets must
+            # not reorder the point sets used by a subsequent conversion (or
+            # replace unrelated side-region objects and their metadata).
+            self.regions[:] = [r for r in self.regions if r.kind != location]
+        else:
+            self.regions[:] = result.regions
         return True

@@ -1068,6 +1068,10 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on an unknown/unsupported format or a malformed file.
    */
   readMesh(path: string, format?: string): Mesh;
+  /** MED named meshes require an HDF5-enabled build. Profiles expand with NaN fill. */
+  medMeshNames(path: string): string[];
+  readMedNamed(path: string, name: string, options?: { timeStep?: number; lenient?: boolean }): Mesh;
+  writeMedMulti(path: string, meshes: Mesh[], names: string[], options?: { version?: string }): void;
 
   /**
    * Read only part of a file: geometry alone, or a named subset of data arrays.

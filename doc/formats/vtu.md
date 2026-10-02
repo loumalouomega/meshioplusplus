@@ -1,5 +1,7 @@
 # VTU — VTK XML UnstructuredGrid (`.vtu`)
 
+Field arrays with zero components are not representable by VTK XML and are skipped with a warning, rather than emitting an unreadable `NumberOfComponents="0"`. Empty scalar arrays (zero tuples, one component) remain supported. This also prevents empty MED component-name metadata from corrupting a MED-to-VTU conversion.
+
 The [serial VTK XML](https://vtk.org/Wiki/VTK_XML_Formats) UnstructuredGrid format: an XML container whose `DataArray` payloads can be inline ASCII, inline base64 binary, or appended raw/base64 binary, optionally block-compressed.
 
 | | |

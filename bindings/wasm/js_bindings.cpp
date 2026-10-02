@@ -1539,6 +1539,62 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
     });
 }
 
+val med_mesh_names_js(const std::string& rPath) {
+    return with_js_errors([&]() -> val {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        return js_array_of(meshioplusplus::med_mesh_names(rPath));
+#else
+        throw meshioplusplus::ReadError("MED requires HDF5");
+#endif
+    });
+}
+
+val med_read_named_js(const std::string& rPath, const std::string& rName, int time_step,
+                      bool lenient) {
+    return with_js_errors([&]() -> val {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        meshioplusplus::ReadOptions opts;
+        opts.mTimeStep = time_step;
+        opts.mLenient = lenient;
+        meshioplusplus::MedInfo info;
+        val out = mesh_to_val(meshioplusplus::read_med_named(rPath, rName, info, opts));
+        out.set("info", med_info_to_val(info));
+        return out;
+#else
+        throw meshioplusplus::ReadError("MED requires HDF5");
+#endif
+    });
+}
+
+void med_write_multi_js(const std::string& rPath, const val& rMeshes, const val& rNames,
+                        const std::string& rVersion) {
+    with_js_errors([&]() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        const auto names = emscripten::vecFromJSArray<std::string>(rNames);
+        const auto count = rMeshes["length"].as<std::size_t>();
+        if (count != names.size())
+            throw std::invalid_argument("MED: one name per mesh required");
+        std::vector<Mesh> meshes;
+        std::vector<meshioplusplus::MedInfo> infos;
+        meshes.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            val input = rMeshes[i];
+            meshes.push_back(val_to_mesh(input));
+            val side = input["info"];
+            infos.push_back(side.isNull() || side.isUndefined() ? meshioplusplus::MedInfo{}
+                                                                : val_to_med_info(side));
+            infos.back().mMeshName = names[i];
+        }
+        std::vector<const Mesh*> inputs;
+        for (const auto& mesh : meshes)
+            inputs.push_back(&mesh);
+        meshioplusplus::write_med_multi(rPath, inputs, infos, rVersion);
+#else
+        throw meshioplusplus::WriteError("MED requires HDF5");
+#endif
+    });
+}
+
 /**
  * @brief Selective read: geometry only, or only the named data arrays.
  * @param rPath virtual FS path to read.
@@ -5116,6 +5172,9 @@ val read_provenance_js(std::string path) {
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("readMesh", &read_mesh);
+    emscripten::function("medMeshNames", &med_mesh_names_js);
+    emscripten::function("readMedNamed", &med_read_named_js);
+    emscripten::function("writeMedMulti", &med_write_multi_js);
     emscripten::function("readMeshSelective", &read_mesh_selective);
     emscripten::function("readMetadata", &read_metadata_js);
     emscripten::function("readerSupportsOptions", &reader_supports_options_js);

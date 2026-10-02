@@ -143,12 +143,15 @@ The engine is `operations/pipeline.{hpp,cpp}` in the C++ core, split in two laye
 | WASM | `runPipeline(settings)` — object \| JSON text \| MEMFS `.json` path (no nlohmann in the wasm build; `JSON.parse` does the text forms) |
 | MCP | tool `pipeline(settings_path, input_path?, output_path?)` — the sandbox covers the paths *inside* the document too |
 
-The flat ABI (C/Fortran/Julia/R) carries **JSON text only** and reports status + `mio_last_error()`; the structured report is a recorded follow-up.
+### Structured reports on the flat ABI
+
+The existing status-only entry points remain unchanged. C adds `mio_pipeline_run_file_report` / `mio_pipeline_run_json_report` (and `mio_sequence_pipeline_run_*_report` for sequence documents), returning an owned `mio_pipeline_report*` or NULL on failure with `mio_last_error()`. Query `mio_pipeline_report_json(report, NULL, 0)` for the byte length excluding NUL, allocate that length plus one, then call it again to copy JSON; free the handle with `mio_pipeline_report_free`. Accessors never rerun the pipeline, including a size query or truncated copy. JSON-enabled builds serialize the same `{"steps": [{"op": "Clean", ...PascalCase counters}], "warnings": [...]}` shape as Python/WASM, with non-finite counters as `null`. JSON-disabled builds fail by name, not missing symbol.
+
+Fortran adds `call mio_pipeline_run_file_report(path, report, stat, errmsg)` / `mio_pipeline_run_json_report(text, report, ...)`, with an allocatable JSON string, and the analogous sequence subroutines. Julia adds `run_pipeline_file_report(path)` / `run_pipeline_json_report(text)` and `run_sequence_file_report` / `run_sequence_json_report`, returning JSON strings. R adds `mio_pipeline_run_file_report(path)` / `mio_pipeline_run_json_report(text)` and analogous `mio_sequence_pipeline_run_*_report`, returning JSON character scalars (parse with `jsonlite::fromJSON` if desired). These wrappers copy the report and release its native owner automatically, without requiring a JSON parser dependency in the binding package.
 
 ## Follow-ups (recorded, not implemented)
 
 - **Multi-mesh steps**: `Merge`/`Interpolate`/`UndoGreen` would need per-step `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these. (v9.12.0's [sequences](sequences.md) added the *input*-list and `{step}`-output halves of this for the transient case, but a step that consumes or produces several meshes at once is still out of scope.)
-- A **C ABI report accessor** (caller-buffer JSON string of the run report).
 - conan/vcpkg packages shipping the parser via a registry `nlohmann_json/3.12.0` dependency instead of the submodule.
 
 ## `Voxelize`

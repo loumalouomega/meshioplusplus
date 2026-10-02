@@ -162,6 +162,49 @@ SEXP R_mio_write_gltf(SEXP mesh, SEXP path, SEXP options) {
     return R_NilValue;
 }
 
+SEXP R_mio_med_mesh_names(SEXP path) {
+    const char *p = mio_r_string(path, "path");
+    int64_t n = mio_med_mesh_count(p);
+    if (n < 0) mio_r_fail("med_mesh_names");
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        int64_t len = mio_med_mesh_name(p, i, NULL, 0);
+        if (len < 0) mio_r_fail("med_mesh_name");
+        char *buf = (char *)R_alloc((size_t)len + 1, 1);
+        if (mio_med_mesh_name(p, i, buf, len + 1) < 0) mio_r_fail("med_mesh_name");
+        SET_STRING_ELT(out, i, Rf_mkCharCE(buf, CE_UTF8));
+    }
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_med_read_named(SEXP path, SEXP name, SEXP time_step, SEXP lenient) {
+    mio_read_opts opts;
+    mio_read_opts_init(&opts);
+    opts.time_step = mio_r_int64(time_step, "time_step");
+    opts.lenient = mio_r_bool(lenient, "lenient");
+    mio_mesh *mesh = mio_med_read_named(mio_r_string(path, "path"),
+                                      mio_r_string(name, "name"), &opts);
+    if (mesh == NULL) mio_r_fail("med_read_named");
+    return mio_r_wrap_mesh(mesh);
+}
+
+SEXP R_mio_med_write_multi(SEXP path, SEXP meshes, SEXP names, SEXP version) {
+    if (TYPEOF(meshes) != VECSXP || TYPEOF(names) != STRSXP ||
+        XLENGTH(meshes) != XLENGTH(names) || XLENGTH(meshes) == 0)
+        Rf_error("MED: provide a nonempty mesh list and one name per mesh");
+    int64_t count;
+    SEXP shelter;
+    const char *const *ptrs = mio_r_names(names, &count, &shelter);
+    const mio_mesh **handles = (const mio_mesh **)R_alloc((size_t)count, sizeof(mio_mesh *));
+    for (int64_t i = 0; i < count; ++i) handles[i] = mio_r_mesh(VECTOR_ELT(meshes, i));
+    mio_status status = mio_med_write_multi(mio_r_string(path, "path"), handles, ptrs,
+                                           count, mio_r_string(version, "version"));
+    UNPROTECT(1);
+    mio_r_check(status, "med_write_multi");
+    return R_NilValue;
+}
+
 /* --- file metadata ------------------------------------------------------ */
 
 typedef struct {

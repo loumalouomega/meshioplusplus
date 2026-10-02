@@ -751,6 +751,48 @@ def _variant_kwargs(out_fmt, mode, compression):
     return kwargs
 
 
+def tool_med_multi(
+    input_path=None,
+    output_path=None,
+    input_paths=None,
+    mesh_name=None,
+    mesh_names=None,
+    output_format=None,
+    med_version="4.1.0",
+):
+    """List/extract a MED named mesh, or combine single-mesh files into MED.
+
+    All input/output paths are sandbox-resolved before reading or writing.
+    """
+    from .. import med
+
+    if input_paths is not None:
+        if input_path is not None or mesh_name is not None or not input_paths:
+            raise ValueError("MED: use nonempty input_paths alone to combine meshes")
+        if output_path is None or output_format not in (None, "med"):
+            raise ValueError("MED: combining requires a MED output_path")
+        sources = [_resolve(path, must_exist=True) for path in input_paths]
+        target = _resolve(output_path)
+        meshes = [_load(path) for path in sources]
+        med.write_med_multi(target, meshes, mesh_names, med_version)
+        _cache_invalidate(target)
+        return {"output_path": str(target), "mesh_names": med.read_med_multi(target)[1]}
+    if input_path is None or mesh_names is not None:
+        raise ValueError("MED: provide input_path to list or extract a mesh")
+    source = _resolve(input_path, must_exist=True)
+    target = _resolve(output_path) if output_path is not None else None
+    if mesh_name is None:
+        if target is not None:
+            raise ValueError("MED: mesh_name is required to extract to output_path")
+        _, names = med.read_med_multi(source)
+        return {"input_path": str(source), "mesh_names": names}
+    if target is None:
+        raise ValueError("MED: extraction requires output_path")
+    mesh = med.read(source, mesh_name=mesh_name)
+    _store(mesh, target, output_format)
+    return {"output_path": str(target), "mesh_name": mesh_name}
+
+
 def tool_convert(
     input_path,
     output_path,
@@ -4219,6 +4261,7 @@ TOOL_REGISTRY = OrderedDict(
             },
         ),
         ("sets_data", {"fn": tool_sets_data, "wraps": (), "gated": None}),
+        ("med_multi", {"fn": tool_med_multi, "wraps": (), "gated": None}),
         ("data_calc", {"fn": tool_data_calc, "wraps": ("data_calc",), "gated": None}),
         (
             "data_condition",

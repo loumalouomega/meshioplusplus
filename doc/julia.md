@@ -1,5 +1,13 @@
 # Julia
 
+## Pipeline reports
+
+`run_pipeline_file_report(path)`, `run_pipeline_json_report(text)` and `run_sequence_file_report` / `run_sequence_json_report` return structured report JSON (`steps` and `warnings`) without adding package dependencies. The native owner is always released in `finally`; existing status-only APIs are unchanged. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+`med_mesh_names(path)` enumerates file link order; `read_med_named(path, name; options=ReadOptions())` returns an owning `Mesh` (close it normally); `write_med_multi(path, meshes, names; version="4.1.0")` borrows input meshes only for the call. Names must be unique/nonempty, without `/` or `@`. HDF5 is required; ordinary nodal/element profiles expand with NaN fill. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
 Parameterized writes support `mio.write(mesh, path; encoding="binary", codec="lzf")` for PCD compressed binary (no optional dependency; ASCII/non-PCD combinations fail). `write_gltf(mesh, path; color_by="temperature", cmap="turbo", up_axis="z", scale=0.001)` exposes all native glTF options; `component` is 1-based or `nothing` for magnitude, and unset `vmin`/`vmax` selects automatic bounds. Native reads accept XDMF2/3 and absolute DataItem references and carry Netgen names/periodic arrays; Netgen periodic arrays use `field_data` and keep file node ids 1-based, while `.vol.gz` requires native zlib.
 
 XDMF series `write_points_cells!(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).

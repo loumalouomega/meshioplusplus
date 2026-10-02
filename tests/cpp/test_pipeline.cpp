@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -340,7 +341,7 @@ TEST(Pipeline, RemeshStepProducesANewMeshWithTheRequestedClusterCount) {
     std::vector<std::vector<double>> pts = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                             {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
     std::vector<std::vector<std::int64_t>> conn = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
-                                                    {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+                                                   {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
     const Mesh octa = mt::make_mesh(pts, "triangle", conn);
 
     const std::string in_path = mt::temp_path("_pipe_remesh_in.vtk");
@@ -368,7 +369,7 @@ TEST(Pipeline, RemeshVolumeStepProducesATetraMesh) {
     std::vector<std::vector<double>> pts = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                             {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
     std::vector<std::vector<std::int64_t>> conn = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
-                                                    {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+                                                   {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
     const Mesh octa = mt::make_mesh(pts, "triangle", conn);
 
     const std::string in_path = mt::temp_path("_pipe_remesh_volume_in.vtk");
@@ -377,8 +378,8 @@ TEST(Pipeline, RemeshVolumeStepProducesATetraMesh) {
 
     Pipeline pipeline;
     pipeline.mInput.mPath = in_path;
-    pipeline.mSteps = {step("RemeshVolume", {{"CellSize", 0.4},
-                                             {"WatertightCheck", std::string("off")}})};
+    pipeline.mSteps = {
+        step("RemeshVolume", {{"CellSize", 0.4}, {"WatertightCheck", std::string("off")}})};
     pipeline.mOutput.mPath = out_path;
     PipelineReport report = meshioplusplus::run_pipeline(pipeline);
     ASSERT_EQ(report.mSteps.size(), 1u);
@@ -530,6 +531,18 @@ TEST(PipelineJson, RunPipelineFileEndToEnd) {
     std::filesystem::remove(settings_path);
 }
 
+TEST(PipelineJson, ReportSerializationEscapesStringsAndNullsNonFiniteCounters) {
+    PipelineReport report;
+    report.mSteps.push_back(
+        {"quoted\"op", {{"count", 3.0}, {"invalid", std::numeric_limits<double>::quiet_NaN()}}});
+    report.mWarnings = {"line\nwith\tcontrols\\and quotes\""};
+    const auto text = meshioplusplus::pipeline_report_json(report);
+    EXPECT_NE(text.find("quoted\\\"op"), std::string::npos);
+    EXPECT_NE(text.find("\"invalid\":null"), std::string::npos);
+    EXPECT_NE(text.find("line\\nwith\\tcontrols\\\\and quotes\\\""), std::string::npos);
+    EXPECT_EQ(meshioplusplus::pipeline_report_json({}), "{\"steps\":[],\"warnings\":[]}");
+}
+
 TEST(PipelineJson, MissingSettingsFileFailsByPath) {
     try {
         meshioplusplus::parse_pipeline_file("/no/such/settings.json");
@@ -552,7 +565,8 @@ TEST(PipelineJson, EntryPointsThrowNamingTheFlag) {
     for (auto fn : {+[] { meshioplusplus::parse_pipeline_json("{}"); },
                     +[] { meshioplusplus::parse_pipeline_file("x.json"); },
                     +[] { meshioplusplus::run_pipeline_json("{}"); },
-                    +[] { meshioplusplus::run_pipeline_file("x.json"); }}) {
+                    +[] { meshioplusplus::run_pipeline_file("x.json"); },
+                    +[] { meshioplusplus::pipeline_report_json({}); }}) {
         try {
             fn();
             FAIL() << "expected runtime_error";

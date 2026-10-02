@@ -115,6 +115,9 @@ export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export sets_to_data, data_to_sets
 export data_calc, data_condition, data_info, data_integrate, tensor_invariants
 export run_pipeline_file, run_pipeline_json, pipeline_has_json
+export run_pipeline_file_report, run_pipeline_json_report
+export run_sequence_file_report, run_sequence_json_report
+export med_mesh_names, read_med_named, write_med_multi
 # Sequences (multi-file / transient datasets). `read`/`step`/`time`/`path` and
 # friends would shadow Base, so only the non-colliding names are exported;
 # reach the rest as MeshioPlusPlus.step(seq, i) etc.

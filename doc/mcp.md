@@ -1,5 +1,13 @@
 # MCP server
 
+## Pipeline reports
+
+The `pipeline` tool's existing `steps`/`warnings` report matches the additive native C/Fortran/Julia/R report JSON APIs; MCP signatures and sandbox behavior are unchanged by the flat-ABI report addition. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED multi-mesh files
+
+The `med_multi` tool lists meshes with `input_path`, extracts one with `input_path`, `mesh_name` and `output_path` (optional `output_format`), or combines nonempty `input_paths` into a MED `output_path` with optional `mesh_names` and `med_version` (default `4.1.0`). Its JSON report contains `mesh_names` for list/combine or `mesh_name` for extraction, plus the resolved input/output path. Every input and output is sandbox-resolved before any I/O. Named nodal/element profiles expand with NaN fill; enhanced field metadata may use the Python/h5py reader. See [MED](./formats/med.md).
+
 The `pipeline` tool accepts `Output.Codec: "lzf"` for PCD compressed binary, matching `convert`'s existing `compression: "lzf"`. LZF is rejected for non-PCD formats and explicit ASCII encoding. Native XDMF2/reference and Netgen extras support is also available through the existing path-based tools; tool signatures and report fields are unchanged.
 
 XDMF series reads and conversions preserve fixed shared point/cell/side regions, and `sequence` fan-in to XDMF writes the first input mesh's regions alongside the static topology. Later step regions do not change that fixed membership. See [shared named regions](xdmf_time_series.md#shared-named-regions).

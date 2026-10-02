@@ -472,7 +472,7 @@ meshioplusplus.med.write(filename, mesh,
 )
 ```
 
-MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_med_multi` read/write files containing several meshes — see [`med.md`](./formats/med.md). Since v9.6.0 MED is also a Phase-1 [named region](./regions.md) format (`FAS`/`GRO` group names ↔ `Point`/`Cell` regions, no side regions), carries the optional `NUM` global numbering as `point_data`/`cell_data["med:num"]`, and rejects a file written by a newer MED major version with a named error.
+MED does not support compression. Native named-mesh enumeration/selection and multi-mesh writes are exposed on all language surfaces; Python `meshioplusplus.med.read_med_multi`/`write_med_multi` keep their existing tuple contract, and `med.read(..., mesh_name="solid")` selects a mesh. Ordinary named nodal/element profiles expand with NaN fill; enhanced field metadata and ELNO/ELGA retain the Python reference path. See [`med.md`](./formats/med.md). MED also carries point/cell named regions, optional global numbering and a major-version check.
 
 ### AnsysInp (`.cdb`, `.inp`)
 

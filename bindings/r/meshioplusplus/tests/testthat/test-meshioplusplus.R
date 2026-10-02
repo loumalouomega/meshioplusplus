@@ -32,6 +32,23 @@ test_that("a mesh can be built and inspected", {
   expect_equal(mio_cell_data_num_blocks(m, "material"), 1)
 })
 
+test_that("MED named meshes preserve file order and owning handles", {
+  skip_if_not(mio_format_writable("med"))
+  first <- fixture()
+  second <- fixture()
+  path <- tempfile(fileext = ".med")
+  on.exit({ mio_release(first); mio_release(second); unlink(path) })
+  mio_med_write_multi(path, list(first, second), c("z_mesh", "a_mesh"))
+  expect_equal(mio_med_mesh_names(path), c("z_mesh", "a_mesh"))
+  selected <- mio_med_read_named(path, "a_mesh")
+  on.exit(mio_release(selected), add = TRUE)
+  expect_equal(mio_points(selected), mio_points(second))
+  expect_equal(mio_point_data(selected, "temperature"), mio_point_data(second, "temperature"))
+  expect_error(mio_med_read_named(path, "missing"), "no mesh named")
+  expect_error(mio_med_write_multi(path, list(first, second), c("same", "same")))
+  expect_equal(mio_med_mesh_names(path), c("z_mesh", "a_mesh"))
+})
+
 test_that("Gmsh 4.0 reads natively with sparse node tags", {
   path <- tempfile(fileext = ".msh")
   on.exit(unlink(path), add = TRUE)
@@ -887,12 +904,17 @@ test_that("the settings pipeline runs (or fails naming the flag)", {
       inp, out
     ), settings)
     mio_pipeline_run_file(settings)
+    report <- mio_pipeline_run_file_report(settings)
+    expect_true(grepl('"op":"Quality"', report, fixed = TRUE))
+    expect_true(grepl('"warnings":[]', report, fixed = TRUE))
+    expect_error(mio_pipeline_run_json_report(bad), "Nope")
     back <- mio_read(out)
     expect_true("quality:scaled_jacobian" %in% mio_cell_data_names(back))
     mio_release(back)
     unlink(dir, recursive = TRUE)
   } else {
     expect_error(mio_pipeline_run_json(bad), "MESHIOPLUSPLUS_WITH_JSON")
+    expect_error(mio_pipeline_run_json_report(bad), "MESHIOPLUSPLUS_WITH_JSON")
   }
 })
 

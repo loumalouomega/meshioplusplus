@@ -4,7 +4,9 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._med import read as _py_read
 from ._med import write as _py_write
-from ._medmulti import read_med_multi, write_med_multi
+from ._medmulti import _resolve_mesh_names
+from ._medmulti import read_med_multi as _py_read_multi
+from ._medmulti import write_med_multi as _py_write_multi
 
 _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 
@@ -15,12 +17,11 @@ _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 # metadata, node orientation, and POG/POG2 ragged polygons). It deliberately
 # DEFERS to the Python implementation (by raising, caught below) for anything
 # the Python reference does that the C++ path does not replicate
-# byte-for-byte: fields (CHA) with the MED-4.1 bitmask / units / step
-# metadata, gmsh:physical family bridging, non-default profiles, and
-# multi-mesh files. `read_med_multi` / `write_med_multi` stay on Python.
+# byte-for-byte: enhanced field units, step metadata and ELNO/ELGA data.
+# Named meshes and ordinary nodal/element profiles are handled natively.
 
 
-def read(filename, time_step: int = 0):
+def read(filename, time_step: int = 0, *, mesh_name=None):
     """Read a MED file (C++ core when built with HDF5, Python/h5py fallback).
 
     ``time_step`` selects one step of a multi-step ``CHA`` field (0 = first,
@@ -29,6 +30,7 @@ def read(filename, time_step: int = 0):
     C++ counterpart, ``read_med``. A non-default value forces the C++ path
     (it has no Python-fallback equivalent) and an out-of-range step raises
     :class:`~meshioplusplus.ReadError` naming the field and its step count.
+    ``mesh_name`` selects a named mesh from a multi-mesh file.
     """
     if _HAS_HDF5 and not is_buffer(filename, "r"):
         try:
@@ -41,13 +43,69 @@ def read(filename, time_step: int = 0):
             # since the property setters *replace* all regions of their kind,
             # would silently discard the dim/tag `mesh_to_py` already
             # attached to each one.
+            if mesh_name is not None:
+                return _core.med_read_named(str(filename), mesh_name, time_step)
             return _core.med_read(str(filename), time_step)
         except Exception as exc:
             if time_step:
                 raise
             if not core_declined(exc, "med", "read", filename):
                 raise
+    if mesh_name is not None:
+        meshes, names = _py_read_multi(filename)
+        if mesh_name not in names:
+            from .._exceptions import ReadError
+
+            raise ReadError(f"MED: no mesh named '{mesh_name}'")
+        return meshes[names.index(mesh_name)]
     return _py_read(filename)
+
+
+def read_med_multi(filename, **kwargs):
+    """Read all MED meshes, returning the historical (meshes, mesh_names) pair."""
+    if (
+        _HAS_HDF5
+        and hasattr(_core, "med_read_named")
+        and not kwargs
+        and not is_buffer(filename, "r")
+    ):
+        try:
+            names = _core.med_mesh_names(str(filename))
+            return [_core.med_read_named(str(filename), name) for name in names], names
+        except Exception as exc:
+            if not core_declined(exc, "med", "read", filename):
+                raise
+    return _py_read_multi(filename, **kwargs)
+
+
+def write_med_multi(filename, meshes, mesh_names=None, med_version="4.1.0", **kwargs):
+    """Write several named meshes to one MED file, using native HDF5 when supported."""
+    enhanced = any(
+        "med:field_units" in mesh.field_data
+        or "med:step_meta" in mesh.field_data
+        or mesh.field_data.get("med:nom")
+        or _names_encode_a_timestep(mesh)
+        for mesh in meshes
+    )
+    if (
+        _HAS_HDF5
+        and hasattr(_core, "med_write_multi")
+        and not kwargs
+        and not enhanced
+        and not is_buffer(filename, "w")
+    ):
+        try:
+            _core.med_write_multi(
+                str(filename),
+                meshes,
+                _resolve_mesh_names(meshes, mesh_names),
+                str(med_version),
+            )
+            return
+        except Exception as exc:
+            if not core_declined(exc, "med", "write", filename):
+                raise
+    return _py_write_multi(filename, meshes, mesh_names, med_version, **kwargs)
 
 
 def _names_encode_a_timestep(mesh):
