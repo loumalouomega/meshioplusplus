@@ -118,6 +118,8 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 - **3.2.1 Polyhedral readers still building nested vectors.** The CSR `AddPolygonBlock`/`AddPolyhedronBlock` overloads take a ragged block whole, on every backend; `ensight` (`nsided`/`nfaced`), `cgns_mll`, `tecplot`, `vtkhdf` and `ansys` still build one vector per cell and per face and let the nested overload convert, and `reorder` rebuilds ragged blocks the same way when it rewrites them. Move each onto the CSR overloads. **S each**
   - **3.2.1.1 Watch.** WASM's `Int32Array` offsets overflow past 2³¹ entries.
+- **3.2.2 Avoid push_back and other expensive operations**: Use reserve when possible and avoid push_back direcyly. **S-M**
+- **3.2.3 Use bounded size arrays when possible instead of dynamically allocated ones**: It is far more efficient. **S-M**
 
 **3.3 Serial phases inside parallel operations.**
 
