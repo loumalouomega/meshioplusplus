@@ -721,6 +721,12 @@ def _build_cells(hdr, geo):
     blocks = []  # [type, rows, family, elems, parts]
     where = [None] * 7
 
+    def zero_based(value):
+        value = int(value)
+        if value == -(1 << 63):
+            _fail("a one-based index is out of range")
+        return value - 1
+
     def add(family, elements, part_word, make):
         index = {}
         pos = np.empty((len(elements), 2), dtype=np.int64)
@@ -734,15 +740,15 @@ def _build_cells(hdr, geo):
             pos[e] = (index[key], len(b[1]))
             b[1].append(nodes)
             b[3].append(e)
-            b[4].append(int(row[part_word]) - 1)
+            b[4].append(zero_based(row[part_word]))
         where[family] = pos
 
     # 20- and 27-node hexahedra: the corners, then nodes 9.. in VTK's order
-    solid20 = {int(r[0]) - 1: [int(v) - 1 for v in r[1:]] for r in geo.solid20}
-    solid27 = {int(r[0]) - 1: [int(v) - 1 for v in r[1:]] for r in geo.solid27}
+    solid20 = {zero_based(r[0]): [zero_based(v) for v in r[1:]] for r in geo.solid20}
+    solid27 = {zero_based(r[0]): [zero_based(v) for v in r[1:]] for r in geo.solid27}
 
     def solid(e, row):
-        nodes = [int(v) - 1 for v in row[:8]]
+        nodes = [zero_based(v) for v in row[:8]]
         if e in solid20:
             return "hexahedron20", nodes + solid20[e]
         if e in solid27:
@@ -753,20 +759,20 @@ def _build_cells(hdr, geo):
             and geo.tet_extra[e, 0] > 0
             and geo.tet_extra[e, 1] > 0
         ):
-            return "tetra10", nodes + [int(v) - 1 for v in geo.tet_extra[e]]
+            return "tetra10", nodes + [zero_based(v) for v in geo.tet_extra[e]]
         cell_type, kept = _collapse_solid(nodes)
         return cell_type, kept
 
     def beam(e, row):
-        return "line", [int(row[0]) - 1, int(row[1]) - 1]
+        return "line", [zero_based(row[0]), zero_based(row[1])]
 
     shell8 = {}
     if geo.shell8 is not None:
         for row in geo.shell8:
-            shell8[int(row[0]) - 1] = [int(v) - 1 for v in row[1:5]]
+            shell8[zero_based(row[0])] = [zero_based(v) for v in row[1:5]]
 
     def shell(e, row):
-        nodes = [int(v) - 1 for v in row[:4]]
+        nodes = [zero_based(v) for v in row[:4]]
         if e in shell8:
             return "quad8", nodes + shell8[e]
         if nodes[3] == nodes[2] or nodes[3] < 0:
@@ -778,12 +784,16 @@ def _build_cells(hdr, geo):
     add(_BEAM, geo.beams, 5, beam)
     add(_SHELL, geo.shells, 4, shell)
     # SPH particles: vertices on their nodes, the material as the part.
-    add(_SPH, geo.sph, 1, lambda e, row: ("vertex", [int(row[0]) - 1]))
+    add(_SPH, geo.sph, 1, lambda e, row: ("vertex", [zero_based(row[0])]))
     # Airbag particles and rigid road nodes are points after the nodes.
     nparticles = geo.airbag[2] if geo.airbag is not None else 0
     if nparticles:
         owner = np.zeros(nparticles, dtype=np.int64)
         for k, (first, count) in enumerate(geo.airbag_geom[:, :2].tolist()):
+            if count == 0:
+                continue
+            if first < 1 or count < 0 or first - 1 + count > nparticles:
+                _fail("an airbag references particles outside the particle table")
             owner[first - 1 : first - 1 + count] = k + 1
         rows = [(hdr.nnodes + i, owner[i]) for i in range(nparticles)]
         add(_AIRBAG, rows, 1, lambda e, row: ("vertex", [row[0]]))
@@ -835,6 +845,8 @@ def _build_mesh(f):
     nid = np.full(len(points), -1, dtype=np.int64)
     nid[:nnodes] = geo.node_ids
     mesh.point_data["lsdyna:nid"] = nid
+    if len(geo.sph) and (np.any(geo.sph[:, 0] < 1) or np.any(geo.sph[:, 0] > nnodes)):
+        _fail("an SPH particle references a node outside the node table")
     family_ids = {
         _SOLID: geo.solid_ids,
         _TSHELL: geo.tshell_ids,

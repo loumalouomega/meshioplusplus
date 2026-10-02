@@ -1,5 +1,7 @@
 # Supported Formats
 
+LS-DYNA d3plot reads reject corrupt one-based indices without integer overflow and validate airbag particle ranges; see [d3plot](formats/lsdyna_d3plot.md#reading).
+
 The shared native readers now accept XDMF2/3 with absolute DataItem references and Netgen name tables, periodic arrays and two-line edges (`.vol.gz` requires zlib). Flat writers expose PCD `binary_compressed` through LZF write options and all glTF colour/axis/scale options. See [XDMF](formats/xdmf.md), [Netgen](formats/netgen.md), [PCD](formats/pcd.md) and [glTF](formats/gltf.md).
 
 XDMF time-series writers preserve fixed point/cell/side regions as `<Set>` elements in the shared mesh grid, in XML, Binary and HDF storage. Native reads return those regions at every step; Python's `TimeSeriesReader` exposes them as `reader.regions`. See [XDMF time series](xdmf_time_series.md#shared-named-regions).

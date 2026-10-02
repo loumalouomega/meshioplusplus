@@ -38,6 +38,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
@@ -1230,7 +1231,18 @@ def write_json_atomic(path, obj) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(obj, fh, indent=2)
             fh.write("\n")
-        os.replace(tmp, path)
+        # Windows readers hold a handle without delete sharing. The manager
+        # polling progress.json can briefly prevent its atomic replacement.
+        # Retry that sharing violation only; a permanent permission error
+        # still fails, and the old JSON remains intact until replacement.
+        for attempt in range(11):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if sys.platform != "win32" or attempt == 10:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
     except BaseException:
         try:
             os.remove(tmp)

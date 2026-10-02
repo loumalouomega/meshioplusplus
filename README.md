@@ -119,6 +119,8 @@ Files only their vendor's software can read — Abaqus `.odb`, MSC Marc `.t16`, 
 
 One C++ core, six language surfaces, and the tools built on them; the [architecture page](https://loumalouomega.github.io/meshioplusplus/architecture) is the map, with every box linked to the page that owns it.
 
+Release v16.29.0 also hardens [d3plot reads](doc/formats/lsdyna_d3plot.md) against corrupt 64-bit indices and keeps [training progress updates](doc/physicsnemo.md) reliable under concurrent Windows polling.
+
 meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP, then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`, including a bring-your-own [Kokkos](https://kokkos.org) host backend). Every format has a pure-Python fallback, so behaviour and file compatibility are identical whether or not the native libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs (install, data model, per-format options, CLI) live at [the documentation site](https://loumalouomega.github.io/meshioplusplus/) (sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/master/doc)).
 
 Install with
@@ -1110,7 +1112,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.28.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.29.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

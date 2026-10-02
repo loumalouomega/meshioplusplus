@@ -166,7 +166,8 @@ def test_orphan_after_a_restart_is_derived_from_the_files(manager, tmp_path):
 
 def test_mark_best_and_resolve_checkpoint(manager, tmp_path):
     job_id = manager.start(_spec(tmp_path))["job_id"]
-    _wait(manager, job_id)
+    state = _wait(manager, job_id)
+    assert state["status"] == "finished", manager.log(job_id)["text"]
     ckpts = manager.mark_best(job_id, "Fake.0.1.mdlus")
     best = [c for c in ckpts["checkpoints"] if c["is_best"]]
     assert len(best) == 1 and best[0]["name"] == "best.mdlus" and best[0]["epoch"] == 1

@@ -25,6 +25,53 @@ def _id(path):
     return f"{path.parent.parent.name}/{path.parent.name}"
 
 
+@pytest.mark.parametrize("reader", [_core.lsdyna_d3plot_read, py_d3plot.read])
+@pytest.mark.parametrize(
+    "family_word,width", [(23, 9), (40, 9), (28, 6), (31, 5), (37, 2)]
+)
+@pytest.mark.parametrize("part", [False, True])
+@pytest.mark.parametrize("endian", ["<", ">"])
+def test_int64_min_connectivity_and_parts_are_read_errors(
+    tmp_path, reader, family_word, width, part, endian
+):
+    header = [0] * 64
+    header[11], header[15], header[16], header[51] = 1, 4, 1, 1
+    header[family_word] = 1
+    row = [1] * width
+    row[-1 if part else 0] = -(1 << 63)
+    path = tmp_path / "d3plot"
+    flags = struct.pack(endian + "11q", 11, *([0] * 10)) if family_word == 37 else b""
+    path.write_bytes(
+        struct.pack(endian + "64q", *header)
+        + flags
+        + struct.pack(endian + "3d", 0, 0, 0)
+        + struct.pack(endian + f"{width}q", *row)
+    )
+    with pytest.raises(meshioplusplus.ReadError, match="one-based index"):
+        reader(str(path))  # native entry point, no fallback to hide an overflow
+
+
+@pytest.mark.parametrize("reader", [_core.lsdyna_d3plot_read, py_d3plot.read])
+@pytest.mark.parametrize(
+    "first,count", [(-(1 << 63), 1), (1, (1 << 63) - 1), (1, -1), (3, 1), (0, 1)]
+)
+def test_airbag_particle_range_is_checked_before_iteration(
+    tmp_path, reader, first, count
+):
+    header = [0] * 64
+    header[11], header[15], header[54] = 1, 4, 1
+    path = tmp_path / "d3plot"
+    path.write_bytes(
+        struct.pack("<64q", *header)
+        + struct.pack("<4q", 4, 0, 2, 0)  # geometry, variables, particles, state
+        + struct.pack("<4q", 1, 1, 1, 1)  # variable types
+        + bytes(4 * 8 * 8)  # four eight-character names, one character per word
+        + struct.pack("<4q", first, count, 77, 1)
+    )
+    with pytest.raises(meshioplusplus.ReadError, match="outside the particle table"):
+        reader(str(path))
+
+
 @pytest.fixture(params=["core", "python"])
 def engine(request):
     if request.param == "core":

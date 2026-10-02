@@ -8,7 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased (2026-10-01)
+## v16.29.0 (2026-10-02)
+
+- **Fixed (CI runs 37036493738 and 37017115520):** training progress updates retry transient Windows sharing violations during atomic JSON replacement, so concurrent manager polling does not abort the trainer before it writes its final checkpoint. Permanent errors remain bounded and propagate. Native and reference d3plot readers reject `INT64_MIN` one-based node/element/part indices before conversion, avoiding signed overflow or Python integer conversion errors; airbag particle ranges are bounded before iteration. A minimized d3plot regression and direct native/reference tests cover the failure.
+- Released the core-parity work below with C++ ABI 22 (already bumped by its MDPA and Gmsh layout changes). These CI fixes introduce no further ABI change. Synchronized all release versions, C++ package pins, viewer lockfile, single header and version-dependent byte baselines; verified the old hashes with the old version substituted back in.
 
 - Core parity (2026-10-02): Exodus native/reference writers preserve node and side sets, explicit ids, long names and empty groups, with inverse side-number remapping and membership validation before truncation. Added bounded-memory fixed-grid series writers in C++/Python/C/Fortran/Julia/R/WASM and Exodus sequence fan-in. Field schema is fixed by the first step; sets and attributes are fixed by the grid. Existing C option layouts and C++ ABI remain unchanged.
 - Pipeline Version 2 adds ordered file-backed `Merge`, source-to-current `Interpolate`, coarse-to-current `UndoGreen`, and terminal `Split`/partition-to-pieces with `Output.Pattern` (`{key}`/`{part}`). Both engines validate expanded output collisions before writing; MCP sandboxes auxiliary inputs and every generated path, including symlinks. Spatial v2 and transient v1 sequences remain separate; v1 labels-only Partition and status/report entry points are unchanged.

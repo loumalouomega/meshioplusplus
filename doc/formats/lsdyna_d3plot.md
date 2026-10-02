@@ -33,6 +33,8 @@ meshioplusplus convert run/d3plot run.pvd               # or a ParaView collecti
 
 Both engines read the whole format: the C++ core, and a Python reference reader the core falls back to. `d3plot` is read-only.
 
+Malformed one-based indices, including the minimum signed 64-bit value, raise `ReadError` before conversion; airbag particle ranges must fit the particle table. These checks apply to the native reader and Python reference alike.
+
 ## Which files
 
 - **The family.** Open the base file, `d3plot`. The files named after it with a number (`d3plot01`, `d3plot02`... `d3plot100`) are found beside it and taken in numeric order. Together they are one stream of states: a state never straddles two files, and zero padding at the end of a file is skipped. As in lasso-python, a file holds as many whole states as fit before its last non-zero word (lasso-python counts bytes, which loses a state of a big-endian file), and that word is the end mark (-999999) LS-DYNA writes after the last state. A numbered member opened on its own is refused with a message naming the base file, and a sequence glob such as `run/d3plot*` keeps the base file only.

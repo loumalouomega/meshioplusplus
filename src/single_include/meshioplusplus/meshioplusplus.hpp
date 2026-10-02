@@ -11291,7 +11291,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 28
+#define MESHIOPLUSPLUS_VERSION_MINOR 29
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11301,7 +11301,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.28.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.29.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -91703,6 +91703,14 @@ constexpr std::size_t kD3Npos = std::numeric_limits<std::size_t>::max();
     throw ReadError("LS-DYNA d3plot: " + rMessage);
 }
 
+std::int64_t d3_zero_based(std::int64_t Id) {
+    // Parts are converted back to user ids later, so reject INT64_MIN
+    // rather than letting its wrapped index overflow that inverse conversion.
+    if (Id == std::numeric_limits<std::int64_t>::min())
+        d3_fail("a one-based index is out of range");
+    return detail::zero_based(Id);
+}
+
 std::int64_t d3_digit(std::int64_t Value, int I) {
     // Unsigned magnitude: negating INT64_MIN is undefined.
     std::uint64_t v =
@@ -92593,26 +92601,26 @@ D3Cells d3_cells(const D3Header& rH, const D3Geometry& rG) {
             where[e] = {it->second, b.mElems.size()};
             b.mConn.insert(b.mConn.end(), nodes.begin(), nodes.end());
             b.mElems.push_back(e);
-            b.mParts.push_back(row[PartWord] - 1);
+            b.mParts.push_back(d3_zero_based(row[PartWord]));
         }
     };
     // 20- and 27-node hexahedra: the corners, then nodes 9.. in VTK's order.
     std::unordered_map<std::int64_t, std::vector<std::int64_t>> solid20, solid27;
     for (std::size_t i = 0; i + 13 <= rG.mSolid20.size(); i += 13) {
-        auto& v = solid20[rG.mSolid20[i] - 1];
+        auto& v = solid20[d3_zero_based(rG.mSolid20[i])];
         for (std::size_t k = 1; k < 13; ++k)
-            v.push_back(rG.mSolid20[i + k] - 1);
+            v.push_back(d3_zero_based(rG.mSolid20[i + k]));
     }
     const std::size_t w27 = rG.mSolid27Width;
     for (std::size_t i = 0; i + w27 <= rG.mSolid27.size(); i += w27) {
-        auto& v = solid27[rG.mSolid27[i] - 1];
+        auto& v = solid27[d3_zero_based(rG.mSolid27[i])];
         for (std::size_t k = 1; k < w27; ++k)
-            v.push_back(rG.mSolid27[i + k] - 1);
+            v.push_back(d3_zero_based(rG.mSolid27[i + k]));
     }
     const auto solid = [&](std::size_t E, const std::int64_t* pRow) {
         std::array<std::int64_t, 8> nodes;
         for (std::size_t k = 0; k < 8; ++k)
-            nodes[k] = pRow[k] - 1;
+            nodes[k] = d3_zero_based(pRow[k]);
         const auto e = static_cast<std::int64_t>(E);
         if (const auto it = solid20.find(e); it != solid20.end()) {
             std::vector<std::int64_t> v(nodes.begin(), nodes.end());
@@ -92628,8 +92636,8 @@ D3Cells d3_cells(const D3Header& rH, const D3Geometry& rG) {
         }
         if (!rG.mSolidExtra.empty() && rG.mSolidExtra[2 * E] > 0 && rG.mSolidExtra[2 * E + 1] > 0) {
             std::vector<std::int64_t> v(nodes.begin(), nodes.end());
-            v.push_back(rG.mSolidExtra[2 * E] - 1);
-            v.push_back(rG.mSolidExtra[2 * E + 1] - 1);
+            v.push_back(d3_zero_based(rG.mSolidExtra[2 * E]));
+            v.push_back(d3_zero_based(rG.mSolidExtra[2 * E + 1]));
             return std::make_pair(std::string("tetra10"), v);
         }
         const detail::CollapsedBrick c = detail::collapse_brick(nodes);
@@ -92638,20 +92646,23 @@ D3Cells d3_cells(const D3Header& rH, const D3Geometry& rG) {
     const auto tshell = [&](std::size_t /*E*/, const std::int64_t* pRow) {
         std::array<std::int64_t, 8> nodes;
         for (std::size_t k = 0; k < 8; ++k)
-            nodes[k] = pRow[k] - 1;
+            nodes[k] = d3_zero_based(pRow[k]);
         const detail::CollapsedBrick c = detail::collapse_brick(nodes);
         return std::make_pair(std::string(c.mType), c.mNodes);
     };
     const auto beam = [](std::size_t /*E*/, const std::int64_t* pRow) {
-        return std::make_pair(std::string("line"),
-                              std::vector<std::int64_t>{pRow[0] - 1, pRow[1] - 1});
+        return std::make_pair(
+            std::string("line"),
+            std::vector<std::int64_t>{d3_zero_based(pRow[0]), d3_zero_based(pRow[1])});
     };
     std::unordered_map<std::int64_t, std::array<std::int64_t, 4>> shell8;
     for (std::size_t i = 0; i + 5 <= rG.mShell8.size(); i += 5)
-        shell8[rG.mShell8[i] - 1] = {rG.mShell8[i + 1] - 1, rG.mShell8[i + 2] - 1,
-                                     rG.mShell8[i + 3] - 1, rG.mShell8[i + 4] - 1};
+        shell8[d3_zero_based(rG.mShell8[i])] = {
+            d3_zero_based(rG.mShell8[i + 1]), d3_zero_based(rG.mShell8[i + 2]),
+            d3_zero_based(rG.mShell8[i + 3]), d3_zero_based(rG.mShell8[i + 4])};
     const auto shell = [&](std::size_t E, const std::int64_t* pRow) {
-        std::vector<std::int64_t> nodes{pRow[0] - 1, pRow[1] - 1, pRow[2] - 1, pRow[3] - 1};
+        std::vector<std::int64_t> nodes{d3_zero_based(pRow[0]), d3_zero_based(pRow[1]),
+                                        d3_zero_based(pRow[2]), d3_zero_based(pRow[3])};
         const auto it = shell8.find(static_cast<std::int64_t>(E));
         if (it != shell8.end()) {
             nodes.insert(nodes.end(), it->second.begin(), it->second.end());
@@ -92669,7 +92680,8 @@ D3Cells d3_cells(const D3Header& rH, const D3Geometry& rG) {
     add(kD3Shell, rG.mShells, 5, 4, shell);
     // SPH particles: vertices on their nodes, the material as the part.
     add(kD3Sph, rG.mSph, 2, 1, [](std::size_t /*E*/, const std::int64_t* pRow) {
-        return std::make_pair(std::string("vertex"), std::vector<std::int64_t>{pRow[0] - 1});
+        return std::make_pair(std::string("vertex"),
+                              std::vector<std::int64_t>{d3_zero_based(pRow[0])});
     });
     // Airbag particles and rigid road nodes are points after the nodes.
     const auto nparticles = static_cast<std::size_t>(
@@ -92680,9 +92692,15 @@ D3Cells d3_cells(const D3Header& rH, const D3Geometry& rG) {
         for (std::size_t b = 0; b * ngeom + 1 < rG.mAirbagGeomData.size(); ++b) {
             const std::int64_t first = rG.mAirbagGeomData[b * ngeom];
             const std::int64_t count = rG.mAirbagGeomData[b * ngeom + 1];
-            for (std::int64_t i = first - 1; i < first - 1 + count; ++i)
-                if (i >= 0 && static_cast<std::size_t>(i) < nparticles)
-                    owner[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(b) + 1;
+            if (count == 0)
+                continue;
+            if (first < 1 || static_cast<std::uint64_t>(first - 1) > nparticles || count < 0 ||
+                static_cast<std::uint64_t>(count) >
+                    nparticles - static_cast<std::size_t>(first - 1))
+                d3_fail("an airbag references particles outside the particle table");
+            const auto start = static_cast<std::size_t>(first - 1);
+            for (std::size_t i = start; i < start + static_cast<std::size_t>(count); ++i)
+                owner[i] = static_cast<std::int64_t>(b) + 1;
         }
         std::vector<std::int64_t> rows;
         for (std::size_t i = 0; i < nparticles; ++i) {
@@ -92786,8 +92804,12 @@ Mesh d3_build_mesh(const D3File& rF, D3Cells& rCells) {
     // an SPH particle is named by its node, an airbag particle and a road
     // segment by their number
     std::vector<std::int64_t> sph_ids;
-    for (std::size_t i = 0; i + 1 < g.mSph.size(); i += 2)
-        sph_ids.push_back(g.mNodeIds[static_cast<std::size_t>(g.mSph[i] - 1)]);
+    for (std::size_t i = 0; i + 1 < g.mSph.size(); i += 2) {
+        const std::int64_t node = d3_zero_based(g.mSph[i]);
+        if (node < 0 || static_cast<std::size_t>(node) >= g.mNodeIds.size())
+            d3_fail("an SPH particle references a node outside the node table");
+        sph_ids.push_back(g.mNodeIds[static_cast<std::size_t>(node)]);
+    }
     const std::vector<std::int64_t> particle_ids = d3_iota(static_cast<std::int64_t>(nparticles));
     const std::vector<std::int64_t> segment_ids =
         d3_iota(static_cast<std::int64_t>(g.mRoadSegmentRoad.size()));
@@ -93147,7 +93169,7 @@ void d3_read_state(const D3File& rF, Mesh& rMesh, const D3Cells& rCells, std::si
             full.assign(n * nv, kD3Nan);
             std::size_t r = 0;
             for (std::size_t e = 0; e < n; ++e) {
-                const std::int64_t part = g.mShells[5 * e + 4] - 1;
+                const std::int64_t part = d3_zero_based(g.mShells[5 * e + 4]);
                 const bool rigid = part >= 0 &&
                                    static_cast<std::size_t>(part) < g.mPartMattype.size() &&
                                    g.mPartMattype[static_cast<std::size_t>(part)] == 20;

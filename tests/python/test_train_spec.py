@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 
 import numpy as np
 import pytest
@@ -25,6 +26,79 @@ DOC = {
     "Graph": {"Regions": True, "TargetOffset": 1, "TargetDelta": True},
     "Tags": ["smoke"],
 }
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows delete-sharing semantics")
+def test_atomic_json_with_open_windows_reader(tmp_path, monkeypatch):
+    path = tmp_path / "progress.json"
+    t.write_json_atomic(path, {"completed": False})
+    replace = t.os.replace
+    failures = []
+
+    with path.open(encoding="utf-8") as reader:
+
+        def replace_while_reading(source, target):
+            try:
+                replace(source, target)
+            except PermissionError as exc:
+                failures.append(exc)
+                reader.close()  # polling finishes; the next attempt can replace
+                raise
+
+        monkeypatch.setattr(t.os, "replace", replace_while_reading)
+        t.write_json_atomic(path, {"completed": True})
+
+    assert len(failures) == 1
+    assert t.read_json(path) == {"completed": True}
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("failures", [1, 3])
+def test_atomic_json_retries_windows_sharing_violation(tmp_path, monkeypatch, failures):
+    path = tmp_path / "progress.json"
+    t.write_json_atomic(path, {"completed": False})
+    replace = t.os.replace
+    calls = []
+    sleeps = []
+
+    def sharing_violation(source, target):
+        calls.append(source)
+        assert t.read_json(target) == {"completed": False}
+        if len(calls) <= failures:
+            raise PermissionError("sharing violation")
+        replace(source, target)
+
+    monkeypatch.setattr(t.sys, "platform", "win32")
+    monkeypatch.setattr(t.os, "replace", sharing_violation)
+    monkeypatch.setattr(t.time, "sleep", sleeps.append)
+    t.write_json_atomic(path, {"completed": True})
+    assert len(calls) == failures + 1
+    assert len(set(calls)) == 1  # retry the same fully written temporary file
+    assert len(sleeps) == failures
+    assert t.read_json(path) == {"completed": True}
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("platform, attempts", [("win32", 11), ("linux", 1)])
+def test_atomic_json_permanent_permission_error_is_bounded(
+    tmp_path, monkeypatch, platform, attempts
+):
+    path = tmp_path / "progress.json"
+    t.write_json_atomic(path, {"completed": False})
+    calls = []
+
+    def denied(source, target):
+        calls.append(source)
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(t.sys, "platform", platform)
+    monkeypatch.setattr(t.os, "replace", denied)
+    monkeypatch.setattr(t.time, "sleep", lambda _: None)
+    with pytest.raises(PermissionError, match="access denied"):
+        t.write_json_atomic(path, {"completed": True})
+    assert len(calls) == attempts
+    assert t.read_json(path) == {"completed": False}
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_spec_round_trips_and_fills_defaults():
