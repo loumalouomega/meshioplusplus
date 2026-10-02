@@ -164,14 +164,12 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 *Admission: something the Python layer can do that the C++ core cannot, or that the core can do and a binding cannot reach.* A construct that forces the Python fallback is not "slower from C" — it is **unreadable** from C, Fortran, Julia, R, WASM and the native CLI, none of which has a fallback. Ordered by this project's own consumers, Kratos first.
 
-- **4.1 XDMF 2 and XPath references — remaining validation.** Complete the optional-library-disabled and KRATOS mesh-backend checks ([XDMF](./formats/xdmf.md)). **S**
-- **4.2 MED multi-mesh files and profiles — remaining validation.** Complete KRATOS, HDF5-disabled and R runtime checks for named enumeration/selection/writes and ordinary nodal/element profile expansion ([MED](./formats/med.md)). **S**
-- **4.3 Netgen extras — remaining validation.** Complete the zlib-disabled and KRATOS mesh-backend checks ([Netgen](./formats/netgen.md)). **S**
-- **4.4 An Exodus writer that carries sets and steps.** It writes element blocks but no node sets or side sets, so only element-block regions round-trip, and it writes one step per file; a multi-step writer is a stateful object of the `XdmfTimeSeriesWriter` shape ([Exodus](./formats/exodus.md)). **M**
-- **4.5 Pipeline v2 multi-mesh steps and remaining report validation.** Add per-step `Inputs:` for `Merge`/`Interpolate`/`UndoGreen` and `Output.Pattern` for `Split`/partition, with Python/WASM parity and MCP sandbox handling. Finish JSON-disabled and R runtime checks for the additive caller-buffer report APIs ([pipelines](./pipeline.md)). **S–M**
-- **4.6 PCD `binary_compressed` — remaining binding validation.** Finish R runtime checks ([PCD](./formats/pcd.md)). **S**
-- **4.7 glTF write options — remaining binding validation.** Finish R runtime checks ([glTF](./formats/gltf.md)). **S**
-- **4.8 Sets↔data — remaining validation.** Complete KRATOS and R runtime checks ([sets/data semantics](./data_manage.md#sets--integer-data)). **S**
+- **4.1 An Exodus writer that carries sets and steps.** It writes element blocks but no node sets or side sets, so only element-block regions round-trip, and it writes one step per file; a multi-step writer is a stateful object of the `XdmfTimeSeriesWriter` shape ([Exodus](./formats/exodus.md)). **M**
+- **4.2 Pipeline v2 multi-mesh steps.** Add per-step `Inputs:` for `Merge`/`Interpolate`/`UndoGreen` and `Output.Pattern` for `Split`/partition, with Python/WASM parity and MCP sandbox handling ([pipelines](./pipeline.md)). **S–M**
+- **4.3 Remaining backend and binding validation.** Implementation is in place; close these checks before considering parity complete. **S per group**
+  - **4.3.1 KRATOS mesh backend.** Validate [XDMF 2/references](./formats/xdmf.md), [MED named multi-mesh files and profiles](./formats/med.md), [Netgen extras](./formats/netgen.md) and [sets↔data](./data_manage.md#sets--integer-data).
+  - **4.3.2 Optional libraries disabled.** Validate XDMF without its optional libraries, MED without HDF5, Netgen without zlib and caller-buffer pipeline reports without JSON support.
+  - **4.3.3 R runtime.** Validate MED named multi-mesh files/profiles, pipeline reports, [PCD `binary_compressed`](./formats/pcd.md), [glTF write options](./formats/gltf.md) and sets↔data.
 
 ---
 

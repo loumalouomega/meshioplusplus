@@ -971,10 +971,9 @@ def roadmap_map():
         (
             "§4 core parity across surfaces",
             [
-                ("gmsh periodic · VTK pieces", "M"),
-                ("XDMF references · MED profiles", "M"),
-                ("Exodus sets · sets → regions", "M"),
-                ("pipeline report · flat write options", "M"),
+                ("Exodus sets · series writer", "M"),
+                ("pipeline v2 multi-mesh steps", "M"),
+                ("backend · binding validation", "S"),
             ],
             [],
         ),
@@ -983,13 +982,11 @@ def roadmap_map():
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
-                ("find_interface · adjacency", "M"),
-                ("contact_pairs · split_interface", "M"),
                 ("conformity · intersections", "M"),
                 ("select · thickness · mirror", "M"),
                 ("Delaunay backend (optional)", "L"),
             ],
-            [(0, 1), (2, 3)],
+            [(0, 1)],
         ),
         (
             "§6 ecosystem reach",
