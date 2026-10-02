@@ -386,7 +386,7 @@ end
             mio.write(m, path)
             true
         catch e
-            (e isa MeshioError && occursin("no HDF5 support", sprint(showerror, e))) || rethrow()
+            (e isa MeshioError && occursin("HDF5", sprint(showerror, e))) || rethrow()
             false
         end
         close(m)

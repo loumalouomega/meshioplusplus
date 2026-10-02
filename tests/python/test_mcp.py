@@ -284,6 +284,9 @@ def test_femap_series_through_the_sequence_tool(tmp_path):
 def test_xdmf_shared_regions_through_sequence_and_convert_tools(
     tmp_path, monkeypatch, native_writer
 ):
+    # The sequence fan-in defaults to HDF XDMF data, which needs h5py on the
+    # Python reference path (and HDF5 in the core on the native one).
+    pytest.importorskip("h5py")
     from meshioplusplus import _core
 
     if native_writer and not hasattr(_core, "XdmfTimeSeriesWriter"):
@@ -668,6 +671,9 @@ def test_convert_roundtrip(mesh_file, tmp_path):
 @pytest.mark.parametrize("fmt", ["vtp", "vts", "vtr", "vti"])
 @pytest.mark.parametrize("encoding", ["raw", "base64"])
 def test_convert_appended_vtk_xml_native(fmt, encoding, tmp_path, monkeypatch):
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_zlib__", False):
+        pytest.skip("native build lacks zlib")
     from meshioplusplus import _fallback
 
     from .test_vtk_xml_appended import appended_fixture, assert_mesh
@@ -683,6 +689,9 @@ def test_convert_appended_vtk_xml_native(fmt, encoding, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("fmt", ["vtp", "vts", "vtr", "vti", "vtk"])
 def test_convert_vtk_pieces_and_legacy_native(fmt, tmp_path, monkeypatch):
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_zlib__", False):
+        pytest.skip("native build lacks zlib")
     from meshioplusplus import _fallback
 
     from .test_vtk_pieces_structured import legacy_fixture, xml_fixture

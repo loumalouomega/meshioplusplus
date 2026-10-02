@@ -251,10 +251,12 @@ def encode_xml(data, encoding, header, order, compressed):
 )
 @pytest.mark.parametrize("compressed", [False, True])
 def test_xml_piece_framing(tmp_path, fmt, encoding, header, order, compressed):
+    core = pytest.importorskip("meshioplusplus._core")
+    if compressed and not getattr(core, "__has_zlib__", False):
+        pytest.skip("native build lacks zlib")
     data, points = xml_fixture(fmt)
     path = tmp_path / f"framed.{fmt}"
     path.write_bytes(encode_xml(data, encoding, header, order, compressed))
-    core = pytest.importorskip("meshioplusplus._core")
     for read in (
         getattr(core, fmt + "_read"),
         importlib.import_module(f"meshioplusplus.{fmt}._{fmt}").read,
