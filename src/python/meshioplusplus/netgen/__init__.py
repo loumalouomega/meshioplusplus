@@ -7,8 +7,8 @@ from ._netgen import write as _py_write
 
 
 def read(filename):
-    """Read a Netgen .vol file (C++ core for the common path, Python fallback)."""
-    if not is_buffer(filename, "r") and not str(filename).endswith(".vol.gz"):
+    """Read a Netgen .vol/.vol.gz file, including names and periodic tables."""
+    if not is_buffer(filename, "r"):
         try:
             return _core.netgen_read(str(filename))
         except Exception as exc:
@@ -18,20 +18,8 @@ def read(filename):
 
 
 def write(filename, mesh, float_fmt=".16e"):
-    """Write a Netgen .vol file (C++ core for the common path, Python fallback)."""
-    # The C++ writer covers points + cells + the single integer cell index.
-    # Identifications (stored in mesh.info) and field_data (codim material/bc
-    # names) and the gzip container are left to the reference Python writer.
-    info = getattr(mesh, "info", None)
-    has_ident = isinstance(info, dict) and (
-        info.get("netgen:identifications") is not None
-    )
-    if (
-        not is_buffer(filename, "w")
-        and not str(filename).endswith(".vol.gz")
-        and not mesh.field_data
-        and not has_ident
-    ):
+    """Write Netgen names and periodic tables; gzip requires native zlib."""
+    if not is_buffer(filename, "w"):
         try:
             _core.netgen_write(str(filename), mesh, float_fmt)
             return

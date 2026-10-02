@@ -2582,6 +2582,105 @@ def test_write_shim_falls_back_for_misc_data(tmp_path):
 
 
 # --- The MdpaInfo side channel (v16.27.0) ------------------------------------
+# Geometry/constraint membership stays in original-id space, including parts
+# with no point/cell regions and nested parts.
+_MDPA_MEMBERSHIP_DECK = """Begin Nodes
+10 0 0 0
+20 1 0 0
+30 0 1 0
+End Nodes
+Begin Geometries Triangle3D3
+17 10 20 30
+End Geometries
+Begin Constraints LinearMasterSlaveConstraint
+91 10 DISPLACEMENT_X 20 DISPLACEMENT_X 1.0 0.0
+End Constraints
+Begin SubModelPart Outer
+    Begin SubModelPart Inner
+        Begin SubModelPartGeometries
+            17 // geometry id, not a cell index
+        End SubModelPartGeometries
+        Begin SubModelPartGeometries
+            17
+        End SubModelPartGeometries
+        Begin SubModelPartConstraints
+            91
+        End SubModelPartConstraints
+    End SubModelPart
+    Begin SubModelPart Empty
+        Begin SubModelPartGeometries
+        End SubModelPartGeometries
+        Begin SubModelPartConstraints
+        End SubModelPartConstraints
+    End SubModelPart
+End SubModelPart
+"""
+
+
+@pytest.mark.parametrize("writer", ["python", "core"])
+def test_geometry_constraint_membership_cross_roundtrip(tmp_path, writer):
+    source = tmp_path / "membership.mdpa"
+    source.write_text(_MDPA_MEMBERSHIP_DECK)
+    py_mesh = _mdpa_py_read(source)
+    core_mesh, info = _core.mdpa_read_info(str(source))
+    _assert_side_channel_matches_reference(py_mesh, info)
+    assert info["skipped"] == []
+    part = info["submodelparts"][0]
+    assert part["name"] == "Outer/Inner"
+    np.testing.assert_array_equal(part["geometry_ids"], [17, 17])
+    np.testing.assert_array_equal(part["constraint_ids"], [91])
+    assert part["data"] == []
+    assert len(core_mesh.cells) == 0  # geometries are not mesh cells
+    output = tmp_path / "out.mdpa"
+    if writer == "python":
+        _mdpa_py_write(output, py_mesh)
+    else:
+        _core.mdpa_write_info(str(output), core_mesh, info)
+    mesh2, info2 = _core.mdpa_read_info(str(output))
+    _assert_side_channel_matches_reference(_mdpa_py_read(output), info2)
+    part2 = info2["submodelparts"][0]
+    assert part2["name"] == part["name"]
+    for key in ("geometry_ids", "constraint_ids"):
+        np.testing.assert_array_equal(part2[key], part[key])
+    assert "Begin SubModelPart Outer/Inner" not in output.read_text()
+    if writer == "core":
+        output2 = tmp_path / "out2.mdpa"
+        _core.mdpa_write_info(str(output2), mesh2, info2)
+        assert output2.read_bytes() == output.read_bytes()
+
+
+@pytest.mark.parametrize("tag", ["SubModelPartGeometries", "SubModelPartConstraints"])
+@pytest.mark.parametrize("body", ["bad", "17 18", "1_7", "9223372036854775808", "17\n"])
+def test_membership_malformed_rows_and_eof_fail(tmp_path, tag, body):
+    from meshioplusplus._exceptions import ReadError
+
+    source = tmp_path / "bad.mdpa"
+    end = "" if body.endswith("\n") else f"\nEnd {tag}\nEnd SubModelPart\n"
+    source.write_text(
+        f"Begin Nodes\n1 0 0 0\nEnd Nodes\nBegin SubModelPart Part\nBegin {tag}\n"
+        + body
+        + end
+    )
+    with pytest.raises(ReadError):
+        _mdpa_py_read(source)
+    for lenient in (False, True):
+        with pytest.raises(Exception, match="non-integer id|EOF"):
+            _core.mdpa_read_info(str(source), lenient=lenient)
+
+
+@pytest.mark.parametrize("tag", ["SubModelPartGeometries", "SubModelPartConstraints"])
+def test_membership_without_info_is_explicitly_lossy(tmp_path, tag):
+    source = tmp_path / "membership.mdpa"
+    source.write_text(
+        f"Begin Nodes\n1 0 0 0\nEnd Nodes\nBegin SubModelPart Part\nBegin {tag}\n"
+        f"17\nEnd {tag}\nEnd SubModelPart\n"
+    )
+    with pytest.raises(Exception, match="MdpaInfo"):
+        _core.mdpa_read(str(source))
+    _, info = _core.mdpa_read_info(str(source), lenient=True)
+    assert info["skipped"] == []
+
+
 #
 # `_core.mdpa_read_info` / `mdpa_write_info` carry what the C++ `Mesh` cannot
 # hold -- the same content the reference reader keeps in `misc_data` and
@@ -2672,12 +2771,14 @@ def _assert_side_channel_matches_reference(py_mesh, info):
     py_smps = {
         name: smp
         for name, smp in misc.get("submodelpart_info", {}).items()
-        if smp["data"] or smp["tables"]
+        if smp["data"] or smp["tables"] or smp["geometry_ids"] or smp["constraint_ids"]
     }
     assert {s["name"] for s in info["submodelparts"]} == set(py_smps)
     for smp in info["submodelparts"]:
         ref = py_smps[smp["name"]]
         assert list(smp["tables"]) == list(ref["tables"])
+        assert list(smp["geometry_ids"]) == list(ref["geometry_ids"])
+        assert list(smp["constraint_ids"]) == list(ref["constraint_ids"])
         assert {e["key"]: _py_scalar(_info_value(e)) for e in smp["data"]} == ref[
             "data"
         ]

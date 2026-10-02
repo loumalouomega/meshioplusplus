@@ -969,30 +969,18 @@ def roadmap_map():
             [],
         ),
         (
-            "§4 core parity across surfaces",
-            [
-                ("MDPA tables · geometries", "M"),
-                ("gmsh periodic · VTK pieces", "M"),
-                ("Exodus sets · sets → regions", "M"),
-                ("side regions · ABI report", "M"),
-            ],
-            [],
-        ),
-        (
-            "§5 operations",
+            "§4 operations",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
-                ("find_interface · adjacency", "M"),
-                ("contact_pairs · split_interface", "M"),
                 ("conformity · intersections", "M"),
                 ("select · thickness · mirror", "M"),
                 ("Delaunay backend (optional)", "L"),
             ],
-            [(0, 1), (2, 3)],
+            [(0, 1)],
         ),
         (
-            "§6 ecosystem reach",
+            "§5 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -1002,7 +990,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§7 long run (spike first)",
+            "§6 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),

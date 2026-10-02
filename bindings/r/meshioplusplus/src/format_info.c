@@ -287,13 +287,15 @@ static SEXP make_mesh_block(const mio_format_info *info, int64_t i) {
 }
 
 static SEXP make_submodelpart(const mio_format_info *info, int64_t i) {
-    SEXP v[3];
+    SEXP v[5];
     v[0] = PROTECT(item_string(info, MIO_MDPA_SUBMODELPARTS, i, 0));
     v[1] = PROTECT(item_data(info, MIO_MDPA_SUBMODELPARTS, i));
     v[2] = PROTECT(item_array(info, MIO_MDPA_SUBMODELPARTS, i, 0, 0, 0.0));
-    const char *names[3] = {"name", "data", "tables"};
-    SEXP out = mio_r_named_list(3, names, v);
-    UNPROTECT(3);
+    v[3] = PROTECT(item_array(info, MIO_MDPA_SUBMODELPARTS, i, 1, 0, 0.0));
+    v[4] = PROTECT(item_array(info, MIO_MDPA_SUBMODELPARTS, i, 2, 0, 0.0));
+    const char *names[5] = {"name", "data", "tables", "geometry_ids", "constraint_ids"};
+    SEXP out = mio_r_named_list(5, names, v);
+    UNPROTECT(5);
     return out;
 }
 
@@ -325,5 +327,39 @@ SEXP R_mio_mdpa_info(SEXP x) {
                             "mesh_blocks",   "submodelparts", "raw_blocks"};
     SEXP out = mio_r_named_list(9, names, v);
     UNPROTECT(9);
+    return out;
+}
+
+static SEXP gmsh_array(const mio_format_info *info, int32_t section, int64_t i, int32_t field) {
+    const void *data = NULL;
+    mio_dtype dtype = MIO_FLOAT64;
+    int32_t ndim = 0;
+    int64_t shape[MIO_MAX_NDIM] = {0};
+    mio_r_check(mio_gmsh_info_array(info, section, i, field, &data, &dtype, &ndim, shape),
+                "gmsh_info");
+    return array_to_r(data, dtype, ndim, shape, 0, field == 2 ? 1.0 : 0.0);
+}
+
+SEXP R_mio_gmsh_info(SEXP x) {
+    const mio_format_info *info = info_of(x, 0);
+    int64_t nb = mio_gmsh_info_count(info, MIO_GMSH_BOUNDING_ENTITIES);
+    int64_t np = mio_gmsh_info_count(info, MIO_GMSH_PERIODIC);
+    if (nb < 0 || np < 0) mio_r_fail("gmsh_info");
+    SEXP v[2];
+    v[0] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nb));
+    v[1] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)np));
+    for (int64_t i = 0; i < nb; ++i)
+        SET_VECTOR_ELT(v[0], i, gmsh_array(info, MIO_GMSH_BOUNDING_ENTITIES, i, 0));
+    for (int64_t i = 0; i < np; ++i) {
+        SEXP fields[3];
+        for (int32_t f = 0; f < 3; ++f)
+            fields[f] = PROTECT(gmsh_array(info, MIO_GMSH_PERIODIC, i, f));
+        const char *names[3] = {"entity", "affine", "node_pairs"};
+        SET_VECTOR_ELT(v[1], i, mio_r_named_list(3, names, fields));
+        UNPROTECT(3);
+    }
+    const char *names[2] = {"bounding_entities", "periodic"};
+    SEXP out = mio_r_named_list(2, names, v);
+    UNPROTECT(2);
     return out;
 }

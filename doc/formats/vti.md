@@ -73,12 +73,12 @@ Both `Origin` and `Spacing` are written with `%.17g` — the round-trip width fo
 
 ## Why this format exists for `compute_sdf`
 
-A generated grid carries an `sdf:*` `field_data` header describing itself. **No file format persists arbitrary `field_data`** — not gmsh, not MED, not VTU — so a grid written anywhere and read back has lost it. `.vti` does not need to persist it: its three attributes are the same information, and reading them back reconstructs the identical mesh.
+A generated grid carries an `sdf:*` `field_data` header describing itself. The `.vti` writer does not persist that header: its geometry attributes carry the same lattice information, and reading them reconstructs the mesh. Numeric `<FieldData>` arrays supplied by another producer are read; use `.vtu` if field data and named regions must also be written.
 
 ## Quirks & limitations
 
-- **`<AppendedData>` is not supported** in either implementation, and raises. The VTU reader reads it (since v16.6.0, in one pass since v16.21.0; see [VTU](./vtu.md)) — VTI's own restriction is narrower, not a shared one.
-- **One `<Piece>` only**, and its `Extent` must equal the `WholeExtent`. A partial piece's arrays are sized to the *piece*, so reading them against the whole extent would be silently misaligned.
+- Both readers support **`<AppendedData encoding="raw"|"base64">`**, sharing VTU's framing decoder: UInt32/UInt64 headers, either byte order, and optional zlib/LZ4/ZSTD compression. Raw offsets address bytes; base64 offsets address encoded characters. Missing native codecs fail explicitly; Python needs the corresponding optional module for LZ4/ZSTD. The writer still emits inline arrays, not appended output.
+- **Multiple pieces and partial extents** are read by both engines. Each piece's `Extent` sizes its own geometry and arrays and must lie inside `WholeExtent`; a multi-piece file must specify each piece's extent. Points and cells concatenate in document order, without welding shared boundaries or discarding ghost cells. Compatible data arrays present in every piece survive; otherwise they are dropped with a warning. Numeric field data and piece-local named regions use the [VTP convention](./vtp.md#quirks-limitations). Metadata counts sum the pieces, and its bounding box encloses the actual pieces (not an unfilled part of `WholeExtent`).
 - **A non-identity `Direction`** (a rotated lattice) raises: an axis-aligned hexahedron grid cannot express it without baking the rotation into the coordinates, which is a different mesh from the one the file describes.
 - **lzma is rejected** by both readers. Python has the module; declining it is a deliberate parity choice, so that the two readers accept the same files.
 - `header_type="UInt64"` is honoured on read; the writer always emits the default `UInt32`, as the VTU writer does.

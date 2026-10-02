@@ -478,6 +478,8 @@ py::dict core_mdpa_info_to_py(const meshioplusplus::MdpaInfo& rInfo) {
         d["name"] = smp.mName;
         d["data"] = core_mdpa_values_to_py(smp.mData);
         d["tables"] = core_mdpa_ids_to_py(smp.mTables);
+        d["geometry_ids"] = core_mdpa_ids_to_py(smp.mGeometryIds);
+        d["constraint_ids"] = core_mdpa_ids_to_py(smp.mConstraintIds);
         smps.append(d);
     }
     out["submodelparts"] = smps;
@@ -554,7 +556,9 @@ meshioplusplus::MdpaInfo core_mdpa_info_from_py(const py::dict& rInfo) {
             info.mSubModelParts.push_back(meshioplusplus::MdpaSubModelPart{
                 py::cast<std::string>(d["name"]),
                 core_mdpa_values_from_py(core_dict_get(d, "data")),
-                core_mdpa_ids_from_py(core_dict_get(d, "tables"))});
+                core_mdpa_ids_from_py(core_dict_get(d, "tables")),
+                core_mdpa_ids_from_py(core_dict_get(d, "geometry_ids")),
+                core_mdpa_ids_from_py(core_dict_get(d, "constraint_ids"))});
         }
     const py::object raws = core_dict_get(rInfo, "raw_blocks");
     if (!raws.is_none())
@@ -2278,8 +2282,8 @@ PYBIND11_MODULE(_core, m) {
     // See operations/feature_edges.hpp.
     m.def(
         "feature_edges",
-        [](py::object pymesh, double feature_angle, bool feature, bool boundary,
-           bool non_manifold, bool inconsistent, const std::string& region) {
+        [](py::object pymesh, double feature_angle, bool feature, bool boundary, bool non_manifold,
+           bool inconsistent, const std::string& region) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -2300,8 +2304,8 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
-        py::arg("boundary") = true, py::arg("non_manifold") = true,
-        py::arg("inconsistent") = true, py::arg("region") = "");
+        py::arg("boundary") = true, py::arg("non_manifold") = true, py::arg("inconsistent") = true,
+        py::arg("region") = "");
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See
@@ -2559,10 +2563,10 @@ PYBIND11_MODULE(_core, m) {
             out["rms_b_to_a"] = r.mRmsBtoA;
             out["num_samples_a"] = r.mNumSamplesA;
             out["num_samples_b"] = r.mNumSamplesB;
-            out["worst_point_a"] = py::make_tuple(r.mWorstPointA[0], r.mWorstPointA[1],
-                                                  r.mWorstPointA[2]);
-            out["worst_point_b"] = py::make_tuple(r.mWorstPointB[0], r.mWorstPointB[1],
-                                                  r.mWorstPointB[2]);
+            out["worst_point_a"] =
+                py::make_tuple(r.mWorstPointA[0], r.mWorstPointA[1], r.mWorstPointA[2]);
+            out["worst_point_b"] =
+                py::make_tuple(r.mWorstPointB[0], r.mWorstPointB[1], r.mWorstPointB[2]);
             return out;
         },
         py::arg("a"), py::arg("b"), py::arg("face_samples") = 0, py::arg("region_a") = "",
@@ -2949,6 +2953,12 @@ PYBIND11_MODULE(_core, m) {
                     keys.append(key);
                 out[py::str(entry.first)] = keys;
             }
+            return out;
+        });
+        m.def("pipeline_v2_op_table", []() {
+            py::dict out;
+            for (const auto& entry : meshioplusplus::pipeline_v2_op_table())
+                out[py::str(entry.first)] = py::cast(entry.second);
             return out;
         });
 
@@ -3528,21 +3538,57 @@ PYBIND11_MODULE(_core, m) {
           py::arg("path"), py::arg("columns") = std::vector<std::string>{},
           py::arg("delimiter") = "");
 
-    // Gmsh 2.2 writer / reader.
-    m.def("gmsh22_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-        meshioplusplus::write_gmsh22(path, cpp, binary);
-    });
+    auto gmsh_info_from_py = [](py::object pymesh) {
+        meshioplusplus::GmshInfo info;
+        py::object periodic = pymesh.attr("gmsh_periodic");
+        if (!periodic.is_none()) {
+            for (py::handle item : py::cast<py::sequence>(periodic)) {
+                auto row = py::cast<py::sequence>(item);
+                if (py::len(row) != 4)
+                    throw py::value_error("Gmsh periodic records must have four entries");
+                meshioplusplus::GmshPeriodicLink link;
+                auto tags = py::cast<std::array<std::int32_t, 2>>(row[1]);
+                link.mEntityTags = {py::cast<std::int32_t>(row[0]), tags[0], tags[1]};
+                if (!row[2].is_none()) {
+                    auto affine =
+                        py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(
+                            row[2]);
+                    if (!affine || affine.ndim() != 1)
+                        throw py::value_error("Gmsh periodic affine must be one-dimensional");
+                    link.mAffine.assign(affine.data(), affine.data() + affine.size());
+                }
+                auto source = py::array::ensure(row[3]);
+                if (!source || (source.dtype().kind() != 'i' && source.dtype().kind() != 'u'))
+                    throw py::value_error("Gmsh periodic pairs must contain integer indices");
+                auto pairs =
+                    py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>::ensure(
+                        source);
+                if (pairs.ndim() != 2 || pairs.shape(1) != 2)
+                    throw py::value_error("Gmsh periodic pairs must have shape (N,2)");
+                link.mNodePairs = meshioplusplus_py::view_from_numpy(pairs);
+                link.mNodePairs.MakeOwned();
+                info.mPeriodic.push_back(std::move(link));
+            }
+        }
+        return info;
+    };
+    // Gmsh writers / reader.
+    m.def("gmsh22_write",
+          [gmsh_info_from_py](const std::string& path, py::object pymesh, bool binary) {
+              meshioplusplus_py::PyMeshRefs refs;
+              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+              meshioplusplus::write_gmsh22(path, cpp, binary, gmsh_info_from_py(pymesh));
+          });
     m.def(
         "gmsh41_write",
-        [](const std::string& path, py::object pymesh, bool binary, py::object bounding_entities) {
+        [gmsh_info_from_py](const std::string& path, py::object pymesh, bool binary,
+                            py::object bounding_entities) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
             // The $Entities bounding entities cannot live on the C++ Mesh (they
             // are signed entity tags, not indices), so the shim hands them over
             // separately -- the read path's GmshInfo channel, in reverse.
-            meshioplusplus::GmshInfo info;
+            meshioplusplus::GmshInfo info = gmsh_info_from_py(pymesh);
             if (!bounding_entities.is_none()) {
                 for (py::handle blk : py::cast<py::sequence>(bounding_entities)) {
                     std::vector<std::int32_t> tags;
@@ -3559,28 +3605,46 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary"),
         py::arg("bounding_entities") = py::none());
-    m.def(
-        "gmsh_read",
-        guard_read("gmsh",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       meshioplusplus::GmshInfo info;
-                       py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
-                           path, info, core_read_options(points_only, arrays, time_step)));
-                       // The 4.1 $Entities bounding entities are signed entity tags, not
-                       // cell indices, so they ride the GmshInfo side channel and land in
-                       // cell_sets here -- where the Mesh's own predicate routes them to
-                       // the verbatim passthrough, exactly as the Python reference's do.
-                       if (!info.mBoundingEntities.empty()) {
-                           py::list blocks;
-                           for (const auto& tags : info.mBoundingEntities)
-                               blocks.append(py::array_t<std::int32_t>(
-                                   static_cast<py::ssize_t>(tags.size()), tags.data()));
-                           pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
-                       }
-                       return pymesh;
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
+    m.def("gmsh_read",
+          guard_read(
+              "gmsh",
+              [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+                  meshioplusplus::GmshInfo info;
+                  py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
+                      path, info, core_read_options(points_only, arrays, time_step)));
+                  // The 4.1 $Entities bounding entities are signed entity tags, not
+                  // cell indices, so they ride the GmshInfo side channel and land in
+                  // cell_sets here -- where the Mesh's own predicate routes them to
+                  // the verbatim passthrough, exactly as the Python reference's do.
+                  if (!info.mBoundingEntities.empty()) {
+                      py::list blocks;
+                      for (const auto& tags : info.mBoundingEntities)
+                          blocks.append(py::array_t<std::int32_t>(
+                              static_cast<py::ssize_t>(tags.size()), tags.data()));
+                      pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
+                  }
+                  if (!info.mPeriodic.empty()) {
+                      py::list links;
+                      for (auto& link : info.mPeriodic) {
+                          py::list row;
+                          row.append(link.mEntityTags[0]);
+                          row.append(py::make_tuple(link.mEntityTags[1], link.mEntityTags[2]));
+                          if (link.mAffine.empty())
+                              row.append(py::none());
+                          else
+                              row.append(
+                                  py::array_t<double>(static_cast<py::ssize_t>(link.mAffine.size()),
+                                                      link.mAffine.data()));
+                          row.append(
+                              meshioplusplus_py::numpy_from_ndarray(std::move(link.mNodePairs)));
+                          links.append(std::move(row));
+                      }
+                      pymesh.attr("gmsh_periodic") = std::move(links);
+                  }
+                  return pymesh;
+              }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("time_step") = 0);
 
     // PLY writer / reader (ascii or binary).
     m.def(
@@ -4149,6 +4213,36 @@ PYBIND11_MODULE(_core, m) {
     // and `"HDF"` on a build without HDF5 throws `WriteError` from the
     // constructor, which the translator above turns into a clean
     // `meshioplusplus.WriteError` rather than a missing symbol or a crash.
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    py::class_<meshioplusplus::ExodusTimeSeriesWriter>(m, "ExodusTimeSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write_points_cells",
+            [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+                rSelf.WritePointsCells(cpp);
+            },
+            py::arg("mesh"))
+        .def(
+            "write_data",
+            [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+                rSelf.WriteData(time, cpp);
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("flush", &meshioplusplus::ExodusTimeSeriesWriter::Flush)
+        .def("finalize", &meshioplusplus::ExodusTimeSeriesWriter::Finalize)
+        .def_property_readonly("num_steps", &meshioplusplus::ExodusTimeSeriesWriter::NumSteps)
+        .def_property_readonly("finalized", &meshioplusplus::ExodusTimeSeriesWriter::Finalized)
+        .def("__enter__", [](py::object self) { return self; })
+        .def("__exit__", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, const py::object&,
+                            const py::object&, const py::object&) {
+            rSelf.Finalize();
+            return false;
+        });
+#endif
     py::class_<meshioplusplus::XdmfTimeSeriesWriter>(m, "XdmfTimeSeriesWriter",
                                                      R"doc(
 Transient XDMF3 writer: one static grid plus one <Grid> per time step.
@@ -4158,7 +4252,7 @@ The C++ core's writer, reachable explicitly. It is *not* what
 reference writer and keeps its own behaviour untouched.
 
 Unlike the Python writer, both methods take a whole ``Mesh``:
-``write_points_cells`` uses its points/cells, ``write_data`` its
+``write_points_cells`` uses its points/cells/fixed regions, ``write_data`` its
 ``point_data``/``cell_data``. Usable as a context manager; ``__exit__``
 finalizes.
 
@@ -4490,6 +4584,92 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               info.mCellTagGroups = std::move(cell_tag_groups);
               meshioplusplus::write_med(path, cpp, info, med_version);
           });
+    m.def("med_mesh_names", &meshioplusplus::med_mesh_names);
+    m.def(
+        "med_read_named",
+        [](const std::string& path, const std::string& name, int time_step) {
+            meshioplusplus::ReadOptions options;
+            options.mTimeStep = time_step;
+            meshioplusplus::MedInfo info;
+            auto out = meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_med_named(path, name, info, options));
+            out.attr("mesh_name") = info.mMeshName;
+            out.attr("description") = info.mDescription;
+            out.attr("unit_time") = info.mUnitTime;
+            out.attr("unit_coords") = info.mUnitCoords;
+            out.attr("point_tags") = py::cast(info.mPointTags);
+            out.attr("cell_tags") = py::cast(info.mCellTags);
+            out.attr("point_tag_groups") = py::cast(info.mPointTagGroups);
+            out.attr("cell_tag_groups") = py::cast(info.mCellTagGroups);
+            if (!info.mMedNom.empty())
+                out.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
+            py::dict units, steps;
+            for (const auto& [field, pair] : info.mFieldUnits)
+                units[py::str(field)] =
+                    py::make_tuple(py::bytes(pair.first), py::bytes(pair.second));
+            for (const auto& [field, meta] : info.mStepMeta) {
+                const auto [ndt, nor, pdt] = meta;
+                py::dict step;
+                step["ndt"] = ndt;
+                step["nor"] = nor;
+                step["pdt"] = pdt;
+                auto padded = [](std::int64_t value) {
+                    auto text = std::to_string(value);
+                    return py::str(text).attr("zfill")(20).cast<std::string>();
+                };
+                step["key"] = padded(ndt) + padded(nor);
+                py::list values;
+                values.append(step);
+                steps[py::str(field)] = values;
+            }
+            if (!info.mFieldUnits.empty())
+                out.attr("field_data")[py::str("med:field_units")] = units;
+            if (!info.mStepMeta.empty())
+                out.attr("field_data")[py::str("med:step_meta")] = steps;
+            return out;
+        },
+        py::arg("path"), py::arg("name"), py::arg("time_step") = 0);
+    m.def("med_write_multi", [](const std::string& path, py::list meshes,
+                                const std::vector<std::string>& names, const std::string& version) {
+        if (meshes.size() != names.size())
+            throw py::value_error("MED: one name per mesh required");
+        std::vector<meshioplusplus_py::PyMeshRefs> refs(meshes.size());
+        std::vector<meshioplusplus::Mesh> converted;
+        converted.reserve(meshes.size());
+        std::vector<meshioplusplus::MedInfo> infos;
+        for (std::size_t i = 0; i < meshes.size(); ++i) {
+            auto mesh = meshes[i];
+            converted.push_back(meshioplusplus_py::py_to_mesh(mesh, refs[i], true, true));
+            infos.emplace_back();
+            auto& info = infos.back();
+            info.mMeshName = names[i];
+            for (auto key : {"description", "unit_time", "unit_coords"}) {
+                if (!py::hasattr(mesh, key))
+                    continue;
+                const auto value = py::cast<std::string>(mesh.attr(key));
+                if (std::string(key) == "description")
+                    info.mDescription = value;
+                else if (std::string(key) == "unit_time")
+                    info.mUnitTime = value;
+                else
+                    info.mUnitCoords = value;
+            }
+            if (py::hasattr(mesh, "point_tags"))
+                info.mPointTags = py::cast<decltype(info.mPointTags)>(mesh.attr("point_tags"));
+            if (py::hasattr(mesh, "cell_tags"))
+                info.mCellTags = py::cast<decltype(info.mCellTags)>(mesh.attr("cell_tags"));
+            if (py::hasattr(mesh, "point_tag_groups"))
+                info.mPointTagGroups =
+                    py::cast<decltype(info.mPointTagGroups)>(mesh.attr("point_tag_groups"));
+            if (py::hasattr(mesh, "cell_tag_groups"))
+                info.mCellTagGroups =
+                    py::cast<decltype(info.mCellTagGroups)>(mesh.attr("cell_tag_groups"));
+        }
+        std::vector<const meshioplusplus::Mesh*> inputs;
+        for (const auto& mesh : converted)
+            inputs.push_back(&mesh);
+        meshioplusplus::write_med_multi(path, inputs, infos, version);
+    });
     m.def("med_read",
           guard_read("med",
                      [](const std::string& path, int time_step, bool lenient) {
@@ -4937,15 +5117,56 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfm(path));
           }));
 
-    // Netgen writer / reader (.vol, common path).
+    // Region-backed sets/data conversions accept ragged geometry unchanged.
+    m.def(
+        "sets_to_data",
+        [](py::object mesh, const std::string& location, const std::optional<std::string>& name,
+           const std::string& join, const std::vector<std::string>& order) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs, true, true);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::sets_to_data(
+                cpp, meshioplusplus::data_location_from_name(location), name, join, order));
+        },
+        py::arg("mesh"), py::arg("location"), py::arg("name") = py::none(), py::arg("join") = "-",
+        py::arg("order") = std::vector<std::string>{});
+    m.def(
+        "data_to_sets",
+        [](py::object mesh, const std::string& location, const std::string& key) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs, true, true);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::data_to_sets(
+                cpp, meshioplusplus::data_location_from_name(location), key));
+        },
+        py::arg("mesh"), py::arg("location"), py::arg("key"));
+    // Netgen's periodic arrays are numeric field data in the native Mesh. The
+    // Python API keeps its historical mesh.info representation at this boundary.
     m.def("netgen_write",
           [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
               meshioplusplus_py::PyMeshRefs refs;
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+              const py::object info_obj = pymesh.attr("info");
+              if (py::isinstance<py::dict>(info_obj)) {
+                  const py::dict info = info_obj.cast<py::dict>();
+                  for (const char* key : {"netgen:identifications", "netgen:identificationtypes"})
+                      if (info.contains(key) && !info[key].is_none())
+                          cpp.AddFieldData(
+                              key, meshioplusplus_py::view_from_numpy(
+                                       meshioplusplus_py::ensure_contiguous(info[key], refs)));
+              }
               meshioplusplus::write_netgen(path, cpp, float_fmt);
           });
     m.def("netgen_read", guard_read("netgen", [](const std::string& path) {
-              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
+              py::object mesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
+              py::dict fields = mesh.attr("field_data").cast<py::dict>();
+              py::dict info;
+              for (const char* key : {"netgen:identifications", "netgen:identificationtypes"})
+                  if (fields.contains(key)) {
+                      info[key] = fields[key];
+                      fields.attr("pop")(key);
+                  }
+              if (!info.empty())
+                  mesh.attr("info") = info;
+              return mesh;
           }));
 
     // Provenance bridge (v10.16.0): keeps Python's `_provenance.scope` and the

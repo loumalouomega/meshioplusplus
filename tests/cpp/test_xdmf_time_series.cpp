@@ -38,6 +38,8 @@
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/read_options.hpp"
+#include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace {
 
@@ -134,6 +136,67 @@ TEST(XdmfTimeSeries, XmlRoundTrip) {
     const std::string path = xts_write_series(base, 3, "XML");
     xts_check_series(path, base, 3);
     xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, SharedRegionsPersistAcrossStepsAndAppend) {
+    using namespace meshioplusplus;
+    for (const std::string format : {"XML", "Binary", "HDF"}) {
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+        if (format == "HDF")
+            continue;
+#endif
+        Mesh base = mt::tet_mesh();
+        NDArray point_ids(DType::Int64, {2});
+        point_ids.As<std::int64_t>()[0] = 0;
+        point_ids.As<std::int64_t>()[1] = 2;
+        base.AddRegion(Region("anchors", RegionKind::Point, 0, 7, std::move(point_ids)));
+        NDArray side_ids(DType::Int64, {1, 2});
+        side_ids.As<std::int64_t>()[0] = 0;
+        side_ids.As<std::int64_t>()[1] = 1;
+        base.AddRegion(Region("wall", RegionKind::Side, 2, 9, std::move(side_ids)));
+        base.AddRegion(Region("empty", RegionKind::Cell, 3, 21, NDArray(DType::Int64, {0})));
+        const auto path = mt::temp_path(".xdmf");
+        {
+            XdmfTimeSeriesWriter writer(path, format);
+            writer.WritePointsCells(base);
+            writer.WriteData(0., xts_step_mesh(base, 0));
+            writer.Flush();
+            const auto back = read_xdmf(path);
+            ASSERT_EQ(back.NumRegions(), 3);
+            writer.WriteData(0.5, xts_step_mesh(base, 1));
+            writer.Finalize();
+        }
+        {
+            XdmfTimeSeriesWriter writer(path, format, -1, XdmfSeriesMode::Append);
+            writer.WriteData(1., xts_step_mesh(base, 2));
+            writer.Finalize();
+        }
+        for (int k = 0; k < 3; ++k) {
+            ReadOptions opts;
+            opts.mTimeStep = k;
+            opts.mPointsOnly = true;
+            const auto back = read_xdmf(path, opts);
+            ASSERT_EQ(back.NumRegions(), base.NumRegions());
+            for (std::size_t i = 0; i < base.NumRegions(); ++i) {
+                const auto& a = base.Region(i);
+                const auto& b = back.Region(i);
+                EXPECT_EQ(a.mName, b.mName);
+                EXPECT_EQ(a.mKind, b.mKind);
+                EXPECT_EQ(a.mDim, b.mDim);
+                EXPECT_EQ(a.mTag, b.mTag);
+                ASSERT_EQ(a.NumEntries(), b.NumEntries());
+                for (std::size_t n = 0; n < a.mEntries.Size(); ++n)
+                    EXPECT_EQ(detail::read_int(a.mEntries, n), detail::read_int(b.mEntries, n));
+            }
+        }
+        const auto meta = read_xdmf_metadata(path);
+        ASSERT_EQ(meta.mRegions.size(), 3);
+        EXPECT_EQ(meta.mTimeValues.size(), 3);
+        auto in = detail::make_classic_ifstream(path);
+        const std::string xml((std::istreambuf_iterator<char>(in)), {});
+        EXPECT_NE(xml.find("self::Set"), std::string::npos);
+        xts_cleanup(path);
+    }
 }
 
 TEST(XdmfTimeSeries, BinaryRoundTrip) {
@@ -315,6 +378,10 @@ TEST(XdmfTimeSeries, HdfThrowsWithoutHdf5) {
 
 TEST(XdmfTimeSeries, FlushMakesAPartialSeriesReadable) {
     for (const char* p_format : {"XML", "Binary", "HDF"}) {
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+        if (std::string(p_format) == "HDF")
+            continue;
+#endif
         const std::string path = mt::temp_path(".xdmf");
         {
             meshioplusplus::XdmfTimeSeriesWriter w(path, p_format);
@@ -357,6 +424,10 @@ TEST(XdmfTimeSeries, KilledRunLeavesAReadableSeriesAndAppendContinuesIt) {
     // openable .xdmf, and a restart must continue that same collection rather
     // than overwrite it.
     for (const char* p_format : {"XML", "Binary", "HDF"}) {
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+        if (std::string(p_format) == "HDF")
+            continue;
+#endif
         const std::string path = mt::temp_path(".xdmf");
         const pid_t pid = fork();
         ASSERT_NE(pid, -1) << "fork failed";

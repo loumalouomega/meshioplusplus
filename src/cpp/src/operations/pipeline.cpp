@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -27,6 +28,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include <unordered_set>
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_JSON
@@ -67,6 +69,10 @@
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/interpolate.hpp"
+#include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -311,6 +317,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataDrop", {"Point", "Cell", "Field", "IgnoreMissing"}},
         {"DataKeep", {"Point", "Cell", "Field"}},
         {"DataRename", {"Point", "Cell", "Field"}},
+        {"SetsToData", {"Location", "Name", "Join", "Order"}},
+        {"DataToSets", {"Location", "Key"}},
         {"DataCalc", {"Expr", "Location", "Overwrite"}},
         {"DataCondition",
          {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
@@ -1231,6 +1239,23 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
     }
     if (op == "DataDrop" || op == "DataKeep" || op == "DataRename")
         return pipe_apply_data_manage(std::move(mesh), rStep, rReport);
+    if (op == "SetsToData" || op == "DataToSets") {
+        const auto location = data_location_from_name(pipe_text(rStep, "Location", "cell"));
+        Mesh out;
+        if (op == "SetsToData") {
+            std::optional<std::string> name;
+            if (pipe_find(rStep, "Name"))
+                name = pipe_text(rStep, "Name", "");
+            out = sets_to_data(mesh, location, name, pipe_text(rStep, "Join", "-"),
+                               pipe_svec(rStep, "Order"));
+        } else {
+            if (!pipe_find(rStep, "Key"))
+                throw std::invalid_argument(pipe_err(rStep, "'DataToSets' requires 'Key'"));
+            out = data_to_sets(mesh, location, pipe_text(rStep, "Key", ""));
+        }
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
     if (op == "DataCalc") {
         const std::string spec = pipe_text(rStep, "Expr", "");
         // "NAME = EXPR" splits on the FIRST '=' (the CLI's documented rule):
@@ -1269,7 +1294,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
         opts.names = pipe_svec(rStep, "Names");
         const std::string outputs_str = pipe_text(rStep, "Outputs", "");
-        opts.outputs = outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
+        opts.outputs =
+            outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
         opts.prefix = pipe_text(rStep, "Prefix", "");
         opts.suffix = pipe_text(rStep, "Suffix", "");
         opts.overwrite = pipe_flag(rStep, "Overwrite", true);
@@ -1307,10 +1333,168 @@ Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
     return mesh;
 }
 
+std::vector<std::pair<std::string, std::vector<std::string>>> pipeline_v2_op_table() {
+    auto table = pipeline_op_table();
+    table.push_back(
+        {"Merge", {"Inputs", "Weld", "Atol", "SourceTag", "DataPolicy", "DropDuplicateCells"}});
+    table.push_back({"Interpolate",
+                     {"Inputs", "Method", "Arrays", "Extrapolate", "DefaultValue", "OnConflict"}});
+    table.push_back({"UndoGreen", {"Inputs"}});
+    table.push_back({"Split", {"By", "Tag"}});
+    for (auto& [op, keys] : table)
+        if (op == "Partition") {
+            keys.push_back("RecordIds");
+            keys.push_back("GhostLayers");
+        }
+    return table;
+}
+
+namespace {
+
+void pipe_validate_v2(const PipelineStep& rStep) {
+    const auto table = pipeline_v2_op_table();
+    const auto found = std::find_if(table.begin(), table.end(),
+                                    [&](const auto& entry) { return entry.first == rStep.mOp; });
+    if (found == table.end()) {
+        validate_pipeline_step(rStep);
+        return;
+    }
+    for (const auto& [key, value] : rStep.mParams) {
+        (void)value;
+        if (std::find(found->second.begin(), found->second.end(), key) == found->second.end())
+            throw std::invalid_argument(pipe_err(rStep, "unknown key '" + key + "'"));
+    }
+    if (rStep.mOp == "Merge" || rStep.mOp == "Interpolate" || rStep.mOp == "UndoGreen") {
+        const auto inputs = pipe_svec(rStep, "Inputs");
+        if (inputs.empty() || (rStep.mOp != "Merge" && inputs.size() != 1))
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "Inputs requires " +
+                    std::string(rStep.mOp == "Merge" ? "at least one path" : "exactly one path")));
+        for (const auto& path : inputs)
+            if (path.empty())
+                throw std::invalid_argument(pipe_err(rStep, "Inputs paths must not be empty"));
+    }
+}
+
+Mesh pipe_read_extra(const std::string& rPath) {
+    std::string fmt;
+    try {
+        fmt = resolve_format(rPath, "");
+    } catch (const ReadError&) {
+        fmt = sniff_format(rPath);
+        if (fmt.empty())
+            throw;
+    }
+    return registry_read(rPath, fmt, ReadOptions{});
+}
+
+Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    const auto& op = rStep.mOp;
+    if (op == "Merge") {
+        std::vector<Mesh> owned;
+        for (const auto& path : pipe_svec(rStep, "Inputs"))
+            owned.push_back(pipe_read_extra(path));
+        std::vector<const Mesh*> inputs{&mesh};
+        for (const auto& extra : owned)
+            inputs.push_back(&extra);
+        MergeOptions options;
+        options.weld = pipe_flag(rStep, "Weld", false);
+        options.atol = pipe_number(rStep, "Atol", 1e-8);
+        options.source_tag = pipe_flag(rStep, "SourceTag", true);
+        options.drop_duplicate_cells = pipe_flag(rStep, "DropDuplicateCells", false);
+        const auto policy = pipe_text(rStep, "DataPolicy", "intersection");
+        if (policy != "intersection" && policy != "fill")
+            throw std::invalid_argument(
+                pipe_err(rStep, "DataPolicy must be 'intersection' or 'fill'"));
+        options.data_policy =
+            policy == "fill" ? MergeDataPolicy::Fill : MergeDataPolicy::Intersection;
+        auto result = merge(inputs, options);
+        pipe_push_step(rReport, rStep, {{"NumInputs", static_cast<double>(inputs.size())}});
+        return std::move(result.mMesh);
+    }
+    if (op == "Interpolate" || op == "UndoGreen") {
+        Mesh extra = pipe_read_extra(pipe_svec(rStep, "Inputs")[0]);
+        if (op == "UndoGreen") {
+            auto result = undo_green(extra, mesh);
+            pipe_push_step(rReport, rStep,
+                           {{"NumGroupsUndone", static_cast<double>(result.mNumGroupsUndone)},
+                            {"NumCellsRemoved", static_cast<double>(result.mNumCellsRemoved)}});
+            return std::move(result.mMesh);
+        }
+        InterpolateOptions options;
+        options.mMethod = interpolate_method_from_name(pipe_text(rStep, "Method", "nearest"));
+        options.mArrays = pipe_svec(rStep, "Arrays");
+        options.mExtrapolate = pipe_flag(rStep, "Extrapolate", false);
+        options.mDefaultValue = pipe_number(rStep, "DefaultValue", 0.0);
+        options.mOnConflict =
+            interpolate_conflict_from_name(pipe_text(rStep, "OnConflict", "error"));
+        auto result = interpolate(extra, mesh, options);
+        pipe_push_step(rReport, rStep);
+        return result;
+    }
+    return apply_pipeline_step(std::move(mesh), rStep, rReport);
+}
+
+std::string pipe_piece_path(const std::string& rPattern, const std::string& rKey, bool Part) {
+    std::string key;
+    for (const unsigned char c : rKey)
+        key += ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.')
+                   ? static_cast<char>(c)
+                   : '_';
+    if (key.empty() || key == "." || key == "..")
+        key = "_";
+    const std::string token = Part ? "{part}" : "{key}";
+    std::string path = rPattern;
+    std::size_t pos = 0;
+    while ((pos = path.find(token, pos)) != std::string::npos) {
+        path.replace(pos, token.size(), key);
+        pos += key.size();
+    }
+    if (path.find('{') != std::string::npos || path.find('}') != std::string::npos)
+        throw std::invalid_argument("meshio++: pipeline: unsupported Output.Pattern token");
+    return path;
+}
+
+std::string pipe_normal_path(const std::string& rPath) {
+    return std::filesystem::weakly_canonical(std::filesystem::absolute(rPath)).string();
+}
+
+void pipe_write_pieces(const Pipeline& rPipeline,
+                       std::vector<std::pair<std::string, Mesh>>& rPieces, bool Part) {
+    std::vector<std::string> paths;
+    std::unordered_set<std::string> unique, inputs{pipe_normal_path(rPipeline.mInput.mPath)};
+    for (const auto& step : rPipeline.mSteps)
+        if (step.mOp == "Merge" || step.mOp == "Interpolate" || step.mOp == "UndoGreen")
+            for (const auto& path : pipe_svec(step, "Inputs"))
+                inputs.insert(pipe_normal_path(path));
+    for (const auto& [key, mesh] : rPieces) {
+        (void)mesh;
+        const auto path = pipe_piece_path(rPipeline.mOutput.mPath, key, Part);
+        const auto canonical = pipe_normal_path(path);
+        if (!unique.insert(canonical).second || inputs.count(canonical))
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern collides with another output or an input: " +
+                path);
+        std::string why;
+        const auto fmt = resolve_write_format(path, rPipeline.mOutput.mFormat);
+        if (!registry_write_supports(fmt, rPipeline.mOutput.mOptions, why))
+            throw WriteError(why);
+        paths.push_back(path);
+    }
+    for (std::size_t i = 0; i < paths.size(); ++i)
+        registry_write_ex(paths[i], rPieces[i].second, rPipeline.mOutput.mFormat,
+                          rPipeline.mOutput.mOptions);
+}
+
+}  // namespace
+
 PipelineReport run_pipeline(const Pipeline& rPipeline) {
-    if (rPipeline.mVersion != 1)
+    if (rPipeline.mVersion != 1 && rPipeline.mVersion != 2)
         throw std::invalid_argument("meshio++: pipeline: unsupported Version " +
-                                    std::to_string(rPipeline.mVersion) + " (this build knows 1)");
+                                    std::to_string(rPipeline.mVersion) +
+                                    " (this build knows 1 and 2)");
     if (rPipeline.mInput.mPath.empty())
         throw std::invalid_argument("meshio++: pipeline: Input.Path is required");
     if (rPipeline.mOutput.mPath.empty())
@@ -1318,8 +1502,39 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     // Validate the whole chain before the (possibly expensive) read: a typo in
     // step 7 must not cost reading a 10 GB mesh first.
-    for (const PipelineStep& step : rPipeline.mSteps)
-        validate_pipeline_step(step);
+    const bool fanout = rPipeline.mOutput.mPath.find("{key}") != std::string::npos ||
+                        rPipeline.mOutput.mPath.find("{part}") != std::string::npos;
+    if (rPipeline.mVersion == 2 && !fanout &&
+        (rPipeline.mOutput.mPath.find('{') != std::string::npos || rPipeline.mOutput.mPath.find('}') != std::string::npos))
+        throw std::invalid_argument("meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1");
+    for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
+        const auto& step = rPipeline.mSteps[i];
+        if (rPipeline.mVersion == 1)
+            validate_pipeline_step(step);
+        else
+            pipe_validate_v2(step);
+        if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
+            throw std::invalid_argument(
+                "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
+                "{key}");
+        if (step.mOp == "Partition" && !fanout &&
+            (pipe_find(step, "RecordIds") || pipe_find(step, "GhostLayers")))
+            throw std::invalid_argument(
+                "meshio++: pipeline: RecordIds/GhostLayers require partition fan-out");
+    }
+    if (fanout) {
+        if (rPipeline.mVersion != 2 || rPipeline.mSteps.empty())
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern requires Version 2 and a terminal "
+                "Split/Partition");
+        const auto& last = rPipeline.mSteps.back();
+        const auto token = last.mOp == "Split" ? "{key}" : "{part}";
+        if ((last.mOp != "Split" && last.mOp != "Partition") ||
+            rPipeline.mOutput.mPath.find(token) == std::string::npos)
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern needs {key} for Split or {part} for Partition");
+        pipe_piece_path(rPipeline.mOutput.mPath, "probe", last.mOp == "Partition");
+    }
 
     // Read: resolve_format with the sniff_format fallback, the read-path rule
     // everywhere (the CLI, mio_read, the wasm read_mesh).
@@ -1346,7 +1561,36 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     PipelineReport report;
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
-    mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+    for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
+        const auto& step = rPipeline.mSteps[i];
+        if (fanout && i + 1 == rPipeline.mSteps.size()) {
+            std::vector<std::pair<std::string, Mesh>> pieces;
+            if (step.mOp == "Split") {
+                auto result = split(mesh, split_by_from_name(pipe_text(step, "By", "type")),
+                                    pipe_text(step, "Tag", ""));
+                for (auto& piece : result.mPieces)
+                    pieces.emplace_back(piece.mKey, std::move(piece.mMesh));
+            } else {
+                PartitionOptions options;
+                options.mNParts = static_cast<int>(pipe_number(step, "Nparts", 2));
+                options.mMethod = partition_method_from_name(pipe_text(step, "Method", "auto"));
+                options.mMode = partition_mode_from_name(pipe_text(step, "Mode", "eco"));
+                options.mImbalance = pipe_number(step, "Imbalance", 0.03);
+                options.mSeed = static_cast<int>(pipe_number(step, "Seed", 0));
+                options.mWeightsKey = pipe_text(step, "WeightsKey", "");
+                options.mRecordIds = pipe_flag(step, "RecordIds", false);
+                options.mGhostLayers = static_cast<int>(pipe_number(step, "GhostLayers", 0));
+                auto result = partition(mesh, options);
+                for (auto& piece : result.mPieces)
+                    pieces.emplace_back(std::to_string(piece.mPartId), std::move(piece.mMesh));
+            }
+            pipe_push_step(report, step, {{"NumPieces", static_cast<double>(pieces.size())}});
+            pipe_write_pieces(rPipeline, pieces, step.mOp == "Partition");
+            return report;
+        }
+        mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report)
+                                       : apply_pipeline_step(std::move(mesh), step, report);
+    }
 
     const std::string out_fmt =
         resolve_write_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
@@ -1389,9 +1633,11 @@ detail::VtkCodec pipeline_codec_from_name(const std::string& rName) {
         return detail::VtkCodec::LZ4;
     if (rName == "zstd")
         return detail::VtkCodec::ZSTD;
+    if (rName == "lzf")
+        return detail::VtkCodec::LZF;
     throw std::invalid_argument(
         "meshio++: pipeline: Output.Codec must be 'none', 'zlib', "
-        "'lz4' or 'zstd', not '" +
+        "'lz4', 'zstd' or 'lzf', not '" +
         rName + "'");
 }
 
@@ -1446,6 +1692,10 @@ PipelineReport run_pipeline_file(const std::string&) {
     pipe_no_json();
 }
 
+std::string pipeline_report_json(const PipelineReport&) {
+    pipe_no_json();
+}
+
 // The sequence document shares this parser, and therefore this guard: the
 // typed sequence driver in operations/sequence.cpp compiles either way, but a
 // settings document cannot be read without a JSON parser.
@@ -1463,6 +1713,17 @@ PipelineReport run_sequence_file(const std::string&) {
 }
 
 #else  // MESHIOPLUSPLUS_HAS_JSON
+
+std::string pipeline_report_json(const PipelineReport& rReport) {
+    auto steps = nlohmann::json::array();
+    for (const auto& entry : rReport.mSteps) {
+        nlohmann::json step = {{"op", entry.mOp}};
+        for (const auto& [name, value] : entry.mCounters)
+            step[name] = std::isfinite(value) ? nlohmann::json(value) : nlohmann::json(nullptr);
+        steps.push_back(std::move(step));
+    }
+    return nlohmann::json{{"steps", std::move(steps)}, {"warnings", rReport.mWarnings}}.dump();
+}
 
 namespace {
 
@@ -1649,12 +1910,23 @@ SequenceInput pipe_sequence_input_from_json(const pipe_json& rInput, bool& rSequ
     return input;
 }
 
-SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput) {
+SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput, int Version) {
     if (!rOutput.is_object())
         pipe_schema_error("Output must be an object");
-    pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+    if (Version == 2)
+        pipe_check_keys(rOutput, "Output",
+                        {"Path", "Pattern", "Format", "Encoding", "Codec", "FloatFormat"});
+    else
+        pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
     SequenceOutput output;
-    output.mPath = pipe_get_string(rOutput, "Path", "Output", /*required=*/true);
+    const bool pattern = pipe_get(rOutput, "Pattern") != nullptr;
+    if (pattern && pipe_get(rOutput, "Path"))
+        pipe_schema_error("Output.Path and Output.Pattern are mutually exclusive");
+    output.mPath =
+        pipe_get_string(rOutput, pattern ? "Pattern" : "Path", "Output", /*required=*/true);
+    if (pattern && output.mPath.find("{key}") == std::string::npos &&
+        output.mPath.find("{part}") == std::string::npos)
+        pipe_schema_error("Output.Pattern requires {key} or {part}");
     output.mFormat = pipe_get_string(rOutput, "Format", "Output");
     output.mOptions.mEncoding =
         pipeline_encoding_from_name(pipe_get_string(rOutput, "Encoding", "Output"));
@@ -1686,9 +1958,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
         if (!v->is_number_integer() && !v->is_number_unsigned())
             pipe_schema_error("Version must be an integer");
         pipeline.mVersion = v->get<int>();
-        if (pipeline.mVersion != 1)
+        if (pipeline.mVersion != 1 && pipeline.mVersion != 2)
             pipe_schema_error("unsupported Version " + std::to_string(pipeline.mVersion) +
-                              " (this build knows 1)");
+                              " (this build knows 1 and 2)");
     }
 
     if (pipe_get(doc, "Mode")) {
@@ -1760,7 +2032,7 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     const pipe_json* output = pipe_get(doc, "Output");
     if (!output)
         pipe_schema_error("Output is required");
-    pipeline.mOutput = pipe_sequence_output_from_json(*output);
+    pipeline.mOutput = pipe_sequence_output_from_json(*output, pipeline.mVersion);
 
     if (const pipe_json* ops = pipe_get(doc, "Operations")) {
         if (!ops->is_array())
@@ -1778,7 +2050,10 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
                 step.mParams.emplace(item.key(),
                                      pipe_value_from_json(item.value(), where + "." + item.key()));
             }
-            validate_pipeline_step(step);
+            if (pipeline.mVersion == 2)
+                pipe_validate_v2(step);
+            else
+                validate_pipeline_step(step);
             pipeline.mSteps.push_back(std::move(step));
         }
     }
@@ -1853,6 +2128,10 @@ PipelineReport run_sequence_json(const std::string& rText) {
     if (!parsed.mSequenceKeys &&
         !sequence_input_needs_driver(parsed.mSeq.mInput, parsed.mSeq.mOutput))
         return run_pipeline(pipe_project_single(parsed));
+    if (parsed.mSeq.mVersion == 2)
+        throw std::invalid_argument(
+            "meshio++: pipeline: Version 2 spatial steps cannot be combined with transient "
+            "sequence input/output");
     return run_sequence_pipeline(parsed.mSeq);
 }
 

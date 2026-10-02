@@ -18,7 +18,14 @@ from .._vtk_common import (
 vtk_to_numpy_dtype_name = {
     "float": "float32",
     "double": "float64",
-    "int": "int",
+    "int": "int32",
+    "char": "int8",
+    "short": "int16",
+    "long": "int64",
+    "unsigned_char": "uint8",
+    "unsigned_short": "uint16",
+    "unsigned_int": "uint32",
+    "unsigned_long": "uint64",
     "vtktypeint8": "int8",
     "vtktypeint16": "int16",
     "vtktypeint32": "int32",
@@ -261,6 +268,12 @@ def _check_mesh(info):
     elif info.dataset["type"] == "STRUCTURED_GRID":
         info.connectivity, info.types = _generate_cells(dim=info.dataset["DIMENSIONS"])
 
+    if info.dataset["type"] != "UNSTRUCTURED_GRID":
+        # Structured generators return the counted legacy layout, not 5.1 CSR.
+        width = {1: 1, 3: 2, 9: 4, 12: 8}[int(info.types[0])]
+        info.connectivity = info.connectivity.reshape(-1, width + 1)[:, 1:].reshape(-1)
+        info.offsets = np.arange(1, len(info.types) + 1, dtype=np.int64) * width
+
 
 def _generate_cells(dim):
     ele_dim = [d - 1 for d in dim if d > 1]
@@ -269,6 +282,8 @@ def _generate_cells(dim):
     ele_no = int(np.prod(ele_dim))
     spatial_dim = len(ele_dim)
 
+    if spatial_dim == 0:
+        return np.array([1, 0], dtype=np.int64), np.array([1], dtype=np.int64)
     if spatial_dim == 1:
         # cells are lines in 1D
         cells = np.empty((ele_no, 3), dtype=int)

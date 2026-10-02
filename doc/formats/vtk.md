@@ -1,6 +1,6 @@
 # VTK legacy (`.vtk`)
 
-The [VTK legacy](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) file format (`UNSTRUCTURED_GRID`), versions **4.2** and **5.1**, in ASCII and big-endian binary. Two independently-implemented sub-readers handle the two versions.
+The [VTK legacy](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) file format, versions **4.2** and **5.1**, in ASCII and big-endian binary. Both engines read `UNSTRUCTURED_GRID`, `STRUCTURED_POINTS`, `STRUCTURED_GRID` and `RECTILINEAR_GRID`; writers emit `UNSTRUCTURED_GRID`. Two Python sub-readers handle the two versions; the native reader shares its structured geometry and attribute paths across them.
 
 | | |
 |---|---|
@@ -53,7 +53,7 @@ Generic `SCALARS`/`VECTORS`/`TENSORS`/`FIELD` blocks map 1:1 to `point_data`/`ce
 
 ## Quirks & limitations
 
-- **The C++ reader only supports `UNSTRUCTURED_GRID`** — any other `DATASET` type (structured points/grid, rectilinear grid) always falls back to Python.
+- Native structured reads require positive `DIMENSIONS`, matching explicit point/axis counts, and correctly sized point/cell attributes. `STRUCTURED_POINTS` accepts `SPACING` or the historical `ASPECT_RATIO`. Active axes determine line/quad/hexahedron connectivity, including grids in any coordinate plane; native scalar/vector/tensor/field arrays preserve their shapes and big-endian binary `int` is 32-bit. Python's 5.1 reference now converts its generated structured cells into offset-based connectivity too.
 - The 4.2 and 5.1 sub-readers use two genuinely different cell-reconstruction algorithms (4.2: list-based per-block append; 5.1: shared offset-diff/ vectorized helper also used by VTU) — this is historical rather than deliberate, but means bugs in one don't necessarily affect the other.
 - `_cpp_ok(mesh)` gate: the C++ path is skipped for meshes with polyhedron cells, or with any 2-component vector data — because the Python writer pads 2-component vectors to 3 components (**mutating the input mesh in place**), which the C++ writer deliberately does not replicate.
 - `COLOR_SCALARS` sections are read and discarded (only to advance the file cursor correctly).
@@ -62,4 +62,4 @@ Generic `SCALARS`/`VECTORS`/`TENSORS`/`FIELD` blocks map 1:1 to `point_data`/`ce
 ## Notes
 
 - `tests/python/meshes/vtk/00_image.vtk`/`01_image.vtk` (`STRUCTURED_POINTS`, generating 81/100 and 72/147 points/cells), `02_structured.vtk` (`STRUCTURED_GRID`), `03-05_rectilinear.vtk` (`RECTILINEAR_GRID` variants), `06_unstructured.vtk` (hexahedron, 12/42), `06_color_scalars.vtk` (5 points/2 cells, exercises `COLOR_SCALARS`), `gh-935.vtk` (triangle regression test), `rbc_001.vtk` (996 cells, a red-blood-cell mesh).
-- The C++ core handles both versions in ASCII and big-endian binary for `UNSTRUCTURED_GRID` only.
+- The C++ core handles both versions in ASCII and big-endian binary for all four dataset types above; no Python fallback is needed for structured input on the native CLI or flat bindings.

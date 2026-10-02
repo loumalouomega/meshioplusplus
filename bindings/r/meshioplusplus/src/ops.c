@@ -1430,6 +1430,28 @@ SEXP R_mio_partition_labels(SEXP mesh, SEXP nparts, SEXP method, SEXP imbalance,
 
 /* --- data operations ---------------------------------------------------- */
 
+SEXP R_mio_sets_to_data(SEXP mesh, SEXP location, SEXP data_name, SEXP join_char, SEXP order) {
+    SEXP shelter;
+    int64_t count = 0;
+    const char* const* nm = mio_r_names(order, &count, &shelter);
+    mio_mesh* out =
+        mio_sets_to_data(mio_r_mesh(mesh), (mio_data_location)mio_r_int(location, "location"),
+                         mio_r_opt_string(data_name), mio_r_opt_string(join_char), nm, count);
+    UNPROTECT(1);
+    if (out == NULL)
+        mio_r_fail("sets_to_data");
+    return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_data_to_sets(SEXP mesh, SEXP location, SEXP key) {
+    mio_mesh* out =
+        mio_data_to_sets(mio_r_mesh(mesh), (mio_data_location)mio_r_int(location, "location"),
+                         mio_r_string(key, "key"));
+    if (out == NULL)
+        mio_r_fail("data_to_sets");
+    return mio_r_wrap_mesh(out);
+}
+
 SEXP R_mio_data_drop(SEXP mesh, SEXP location, SEXP names, SEXP ignore_missing) {
     SEXP shelter;
     int64_t count = 0;
@@ -1760,6 +1782,38 @@ SEXP R_mio_pipeline_run_file(SEXP settings_path) {
     mio_r_check(mio_pipeline_run_file(mio_r_string(settings_path, "settings_path")),
                 "pipeline_run_file");
     return R_NilValue;
+}
+
+static void r_pipeline_report_finalizer(SEXP handle) {
+    mio_pipeline_report_free((mio_pipeline_report *)R_ExternalPtrAddr(handle));
+    R_ClearExternalPtr(handle);
+}
+
+static SEXP r_pipeline_report(mio_pipeline_report *report) {
+    if (report == NULL) mio_r_fail("pipeline_report");
+    SEXP owner = PROTECT(R_MakeExternalPtr(report, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(owner, r_pipeline_report_finalizer, TRUE);
+    int64_t n = mio_pipeline_report_json(report, NULL, 0);
+    if (n < 0) mio_r_fail("pipeline_report");
+    char *buf = (char *)R_alloc((size_t)n + 1, 1);
+    if (mio_pipeline_report_json(report, buf, n + 1) < 0) mio_r_fail("pipeline_report");
+    SEXP out = PROTECT(Rf_ScalarString(Rf_mkCharCE(buf, CE_UTF8)));
+    r_pipeline_report_finalizer(owner);
+    UNPROTECT(2);
+    return out;
+}
+
+SEXP R_mio_pipeline_run_file_report(SEXP path) {
+    return r_pipeline_report(mio_pipeline_run_file_report(mio_r_string(path, "path")));
+}
+SEXP R_mio_pipeline_run_json_report(SEXP text) {
+    return r_pipeline_report(mio_pipeline_run_json_report(mio_r_string(text, "text")));
+}
+SEXP R_mio_sequence_pipeline_run_file_report(SEXP path) {
+    return r_pipeline_report(mio_sequence_pipeline_run_file_report(mio_r_string(path, "path")));
+}
+SEXP R_mio_sequence_pipeline_run_json_report(SEXP text) {
+    return r_pipeline_report(mio_sequence_pipeline_run_json_report(mio_r_string(text, "text")));
 }
 
 SEXP R_mio_pipeline_run_json(SEXP json_text) {

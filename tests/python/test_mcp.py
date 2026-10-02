@@ -74,6 +74,32 @@ def _mixed_mesh():
     )
 
 
+def test_med_multi_tool_combine_list_extract_and_sandbox(tmp_path):
+    pytest.importorskip("h5py")
+    _tools.set_root(tmp_path)
+    for name in ("a", "b"):
+        meshioplusplus.write(tmp_path / f"{name}.vtu", _mixed_mesh())
+    result = _tools.tool_med_multi(
+        input_paths=["a.vtu", "b.vtu"],
+        output_path="multi.med",
+        mesh_names=["fluid", "solid"],
+    )
+    assert result["mesh_names"] == ["fluid", "solid"]
+    assert _tools.tool_med_multi(input_path="multi.med")["mesh_names"] == [
+        "fluid",
+        "solid",
+    ]
+    extracted = _tools.tool_med_multi(
+        input_path="multi.med", mesh_name="solid", output_path="solid.vtu"
+    )
+    assert pathlib.Path(extracted["output_path"]).is_file()
+    json.dumps(extracted, allow_nan=False)
+    with pytest.raises(ValueError, match="outside|escape"):
+        _tools.tool_med_multi(
+            input_path="multi.med", mesh_name="fluid", output_path="../outside.vtu"
+        )
+
+
 @pytest.fixture()
 def mesh_file(tmp_path):
     path = str(tmp_path / "in.vtu")
@@ -252,6 +278,52 @@ def test_femap_series_through_the_sequence_tool(tmp_path):
     assert list(meta["time_values"]) == [0.0, 1.0, 2.0]
     last = meshioplusplus.read(report["output_path"], time_step=2)
     assert np.allclose(last.point_data["u"], 2.0)
+
+
+@pytest.mark.parametrize("native_writer", [False, True])
+def test_xdmf_shared_regions_through_sequence_and_convert_tools(
+    tmp_path, monkeypatch, native_writer
+):
+    # The sequence fan-in defaults to HDF XDMF data, which needs h5py on the
+    # Python reference path (and HDF5 in the core on the native one).
+    pytest.importorskip("h5py")
+    from meshioplusplus import _core
+
+    if native_writer and not hasattr(_core, "XdmfTimeSeriesWriter"):
+        pytest.skip("native series writer unavailable")
+    if not native_writer:
+        monkeypatch.delattr(_core, "XdmfTimeSeriesWriter", raising=False)
+    monkeypatch.chdir(tmp_path)
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    paths = []
+    for k in range(2):
+        mesh = meshioplusplus.Mesh(
+            points,
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"u": np.full(3, float(k))},
+            regions=[
+                meshioplusplus.Region("anchors", "point", [0, 2], dim=0, tag=7),
+                meshioplusplus.Region("edge", "side", [[0, 1]], dim=1, tag=9),
+                meshioplusplus.Region("empty", "cell", [], dim=2, tag=21),
+            ],
+        )
+        path = str(tmp_path / f"step_{k}.xdmf")
+        meshioplusplus.write(path, mesh, data_format="XML")
+        paths.append(path)
+    report = _tools.tool_sequence(
+        input_paths=paths, output_path=str(tmp_path / "series.xdmf"), times=[0.0, 1.0]
+    )
+    assert len(report["steps_plan"]) == 2
+    target = str(tmp_path / "last.xdmf")
+    _tools.tool_convert(report["output_path"], target, time_step=-1)
+    restored = meshioplusplus.read(target)
+    assert np.allclose(restored.point_data["u"], 1.0)
+    assert sorted((r.name, r.kind, r.dim, r.tag) for r in restored.regions) == sorted(
+        (r.name, r.kind, r.dim, r.tag) for r in mesh.regions
+    )
+    expected = {r.name: r.entries for r in mesh.regions}
+    for actual in restored.regions:
+        np.testing.assert_array_equal(actual.entries, expected[actual.name])
 
 
 def test_mfem_grid_functions_convert_both_ways(tmp_path):
@@ -596,6 +668,110 @@ def test_convert_roundtrip(mesh_file, tmp_path):
     assert out["num_points"] == 5 and out["num_cells"] == 3
 
 
+@pytest.mark.parametrize("fmt", ["vtp", "vts", "vtr", "vti"])
+@pytest.mark.parametrize("encoding", ["raw", "base64"])
+def test_convert_appended_vtk_xml_native(fmt, encoding, tmp_path, monkeypatch):
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_zlib__", False):
+        pytest.skip("native build lacks zlib")
+    from meshioplusplus import _fallback
+
+    from .test_vtk_xml_appended import appended_fixture, assert_mesh
+
+    blob, points = appended_fixture(fmt, encoding, "UInt64", "BigEndian", "zlib")
+    source = tmp_path / f"input.{fmt}"
+    source.write_bytes(blob)
+    target = tmp_path / "output.vtu"
+    monkeypatch.setattr(_fallback, "_strict", True)
+    _dump(_tools.tool_convert(str(source), str(target)))
+    assert_mesh(meshioplusplus.read(target), points)
+
+
+@pytest.mark.parametrize("fmt", ["vtp", "vts", "vtr", "vti", "vtk"])
+def test_convert_vtk_pieces_and_legacy_native(fmt, tmp_path, monkeypatch):
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_zlib__", False):
+        pytest.skip("native build lacks zlib")
+    from meshioplusplus import _fallback
+
+    from .test_vtk_pieces_structured import legacy_fixture, xml_fixture
+
+    blob, points = (
+        legacy_fixture("STRUCTURED_POINTS", (3, 2, 2), binary=True)
+        if fmt == "vtk"
+        else xml_fixture(fmt)
+    )
+    source = tmp_path / f"input.{fmt}"
+    source.write_bytes(blob)
+    target = tmp_path / "output.vtu"
+    monkeypatch.setattr(_fallback, "_strict", True)
+    _dump(_tools.tool_convert(str(source), str(target)))
+    mesh = meshioplusplus.read(target)
+    np.testing.assert_array_equal(mesh.points, points)
+    assert sum(len(cb.data) for cb in mesh.cells) == 2
+
+
+@pytest.mark.parametrize("binary,count_bytes", [(False, 8), (True, 8), (True, 4)])
+def test_convert_gmsh40_through_native_reader(
+    binary, count_bytes, tmp_path, monkeypatch
+):
+    from .test_gmsh import gmsh40_fixture
+
+    source = tmp_path / "gmsh40.msh"
+    source.write_bytes(gmsh40_fixture(binary, count_bytes))
+    target = tmp_path / "out.vtu"
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    _dump(_tools.tool_convert(str(source), str(target), input_format="gmsh"))
+    mesh = meshioplusplus.read(target)
+    np.testing.assert_array_equal(mesh.cells[1].data, [[1, 0, 2], [1, 2, 3]])
+    assert sorted((r.name, list(r.entries)) for r in mesh.regions) == [
+        ("edge", [0, 3]),
+        ("plate", [1, 2]),
+    ]
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.0", "4.1"])
+def test_convert_gmsh_periodic_native(version, tmp_path, monkeypatch):
+    from meshioplusplus import _fallback
+
+    from .test_gmsh import assert_periodic, periodic_fixture
+
+    source = tmp_path / "periodic.msh"
+    source.write_bytes(periodic_fixture(version, binary=True))
+    target = tmp_path / "output.msh"
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    monkeypatch.setattr(_fallback, "_strict", True)
+    _dump(
+        _tools.tool_convert(
+            str(source), str(target), input_format="gmsh", output_format="gmsh22"
+        )
+    )
+    assert_periodic(meshioplusplus.read(target, file_format="gmsh"))
+
+
+def test_convert_mdpa_preserves_nested_geometry_constraint_membership(tmp_path):
+    source = tmp_path / "membership.mdpa"
+    source.write_text(
+        "Begin Nodes\n10 0 0 0\n20 1 0 0\n30 0 1 0\nEnd Nodes\n"
+        "Begin Geometries Triangle3D3\n17 10 20 30\nEnd Geometries\n"
+        "Begin Constraints LinearMasterSlaveConstraint\n"
+        "91 10 DISPLACEMENT_X 20 DISPLACEMENT_X 1.0 0.0\nEnd Constraints\n"
+        "Begin SubModelPart Outer\nBegin SubModelPart Inner\n"
+        "Begin SubModelPartGeometries\n17\nEnd SubModelPartGeometries\n"
+        "Begin SubModelPartConstraints\n91\nEnd SubModelPartConstraints\n"
+        "End SubModelPart\nEnd SubModelPart\n"
+    )
+    target = tmp_path / "out.mdpa"
+    report = _dump(_tools.tool_convert(str(source), str(target)))
+    assert report["num_points"] == 3
+    assert report["num_cells"] == 0  # geometry membership is not mesh cells
+    part = meshioplusplus.mdpa.read(target).misc_data["submodelpart_info"][
+        "Outer/Inner"
+    ]
+    assert part["geometry_ids"] == [17]
+    assert part["constraint_ids"] == [91]
+
+
 def test_convert_ascii_variant(mesh_file, tmp_path):
     out = _dump(_tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="ascii"))
     with open(out["output_path"], "rb") as f:
@@ -763,6 +939,23 @@ def test_pipeline_tool(mesh_file, tmp_path):
     assert os.path.isfile(other)
 
 
+def test_pipeline_tool_pcd_lzf(mesh_file, tmp_path):
+    path = tmp_path / "cloud.pcd"
+    settings = tmp_path / "lzf.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Input": {"Path": mesh_file},
+                "Operations": [],
+                "Output": {"Path": str(path), "Codec": "lzf"},
+            }
+        )
+    )
+    result = _dump(_tools.tool_pipeline(str(settings)))
+    assert result["output_path"] == str(path)
+    assert b"DATA binary_compressed\n" in path.read_bytes()
+
+
 def test_pipeline_tool_sandboxes_the_inner_paths(mesh_file, tmp_path, monkeypatch):
     # A settings document naming a path outside the root must fail exactly the
     # way a path argument would -- the sandbox covers the document's insides.
@@ -779,6 +972,51 @@ def test_pipeline_tool_sandboxes_the_inner_paths(mesh_file, tmp_path, monkeypatc
     monkeypatch.setattr(_tools, "_ROOT", str(tmp_path))
     with pytest.raises(ValueError, match="outside the configured root"):
         _tools.tool_pipeline(settings_path)
+
+
+def test_pipeline_v2_sandboxes_auxiliary_inputs(mesh_file, tmp_path, monkeypatch):
+    settings = tmp_path / "v2.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Input": {"Path": mesh_file},
+                "Output": {"Path": str(tmp_path / "out.vtu")},
+                "Operations": [{"Op": "Merge", "Inputs": ["/etc/passwd"]}],
+            }
+        )
+    )
+    monkeypatch.setattr(_tools, "_ROOT", str(tmp_path))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_pipeline(str(settings))
+
+
+def test_pipeline_v2_sandboxes_expanded_output_symlinks(
+    mesh_file, tmp_path, monkeypatch
+):
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "in.vtu"
+    source.write_bytes(pathlib.Path(mesh_file).read_bytes())
+    victim = tmp_path / "keep.vtu"
+    victim.write_bytes(b"keep")
+    # The template itself is in the root, but the generated tetra file is not.
+    (root / "piece_tetra.vtu").symlink_to(victim)
+    settings = root / "v2.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Input": {"Path": str(source)},
+                "Output": {"Pattern": str(root / "piece_{key}.vtu")},
+                "Operations": [{"Op": "Split", "By": "type"}],
+            }
+        )
+    )
+    monkeypatch.setattr(_tools, "_ROOT", str(root))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_pipeline(str(settings))
+    assert victim.read_bytes() == b"keep"
 
 
 # --------------------------------------------------------------------------- #
@@ -1422,6 +1660,36 @@ def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
         assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo"), name
+
+
+def test_sets_data_tool_and_cache_isolation(mesh_file, tmp_path):
+    mesh = _tools._load(mesh_file)
+    mesh.point_sets["a"] = [0, 1]
+    mesh.point_sets["b"] = [1, 2, 3, 4]
+    source = tmp_path / "sets.vtu"
+    meshioplusplus.write(source, mesh)
+    output = tmp_path / "labels.vtu"
+    report = _dump(_tools.tool_sets_data(str(source), str(output), location="point"))
+    assert "error" not in report
+    labels = meshioplusplus.read(output)
+    np.testing.assert_array_equal(labels.point_data["a-b"], [0, 1, 1, 1, 1])
+    assert not labels.point_sets
+    assert _tools._load(str(source)).point_sets
+    restored = tmp_path / "restored.vtu"
+    _dump(
+        _tools.tool_sets_data(
+            str(output),
+            str(restored),
+            direction="data_to_sets",
+            location="point",
+            key="a-b",
+        )
+    )
+    back = meshioplusplus.read(restored)
+    assert "a-b" not in back.point_data
+    np.testing.assert_array_equal(back.point_sets["b"], [1, 2, 3, 4])
+    with pytest.raises(ValueError, match="requires key"):
+        _tools.tool_sets_data(str(source), str(output), direction="data_to_sets")
 
 
 def test_every_tool_function_is_callable():

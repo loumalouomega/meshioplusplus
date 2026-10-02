@@ -60,20 +60,11 @@
  * blocks are iterated in HDF5 **creation order** (matching h5py's
  * `track_order`) since block order must align with `cell_data`/`cell_sets`.
  *
- * **What always falls back to Python** (the C++ functions `throw` and the
- * `meshioplusplus.med` shim catches and retries with the pure-Python/h5py
- * implementation): a `CHA` **field** past the single-timestep, no-profile,
- * no-units common case (MED-4.1 bitmask attributes,
- * `field_data["med:field_units"]`/`["med:step_meta"]`, and multi-timestep
- * field-name grouping are Python-only — see `read_cha_fields`/
- * `write_cha_nodal_field`/`write_cha_cell_field`), the `gmsh:physical`→family
- * **bridging** performed on write, non-default **profiles** / `ELGA`
- * support, and **multi-mesh** files (`read_med_multi`/`write_med_multi`,
- * which have no C++ equivalent at all). Quadratic 3D types (`tetra10`,
- * `hexahedron20`, `pyramid13`, `wedge15`) share the linear types' orientation
- * convention but have no implemented corners+midpoints permutation yet —
- * they round-trip unconverted (a warning is logged the first time one is
- * seen); see doc/formats/med.md for the planned fix.
+ * Enhanced field units/component names, multi-step metadata/name grouping
+ * and ELNO/ELGA retain the Python reference path. Ordinary named nodal/element
+ * profiles expand natively with NaN fill. Named meshes are enumerated/read/
+ * written through additive APIs below. Gmsh physical-group family bridging,
+ * MED-4.1 bitmask output and quadratic 3D node permutations are native too.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -156,7 +147,7 @@ struct MedInfo {
      * Mirrors `MdpaInfo::mSkippedConstructs`. Empty after a strict read, since
      * a strict read either represents everything or throws. Each entry names
      * the field and the construct, e.g.
-     * `"field 'v' on a named profile"`.
+     * `"field 'v' support 'NOE.TR3' (ELNO/ELGA data)"`.
      */
     std::vector<std::string> mSkippedConstructs;
     /**
@@ -211,13 +202,26 @@ struct MedInfo {
  *         cell_data["cell_tags"], named regions, arbitrary named point/cell
  *         data from `CHA` fields except those excluded below)
  * @throws ReadError — on a file written by MED major version > 4; on a `CHA`
- *         field past the single-timestep/no-profile/no-units common case
- *         (units, multi-timestep metadata, a named profile, or ELNO/ELGA
+ *         field past the single-timestep/no-units common case
+ *         (units, multi-timestep metadata, or ELNO/ELGA
  *         support); on multi-mesh files; on malformed/unsupported HDF5
  *         layout. Callers (the Python shim) catch this and retry with the
  *         pure-Python/h5py reader.
  */
 MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
+
+/** Enumerate meshes in ENS_MAA link order without materializing geometry. */
+MESHIOPLUSPLUS_API std::vector<std::string> med_mesh_names(const std::string& rPath);
+/** Read one explicitly selected mesh, filtering CHA fields by their owner.
+ * Ordinary named nodal/element profiles expand with NaN on uncovered rows. */
+MESHIOPLUSPLUS_API Mesh read_med_named(const std::string& rPath, const std::string& rName,
+                                       MedInfo& rInfo, const ReadOptions& rOptions = {});
+/** Write several named meshes into one file. Names must be unique/nonempty;
+ * colliding field names use @mesh suffixes and are restored on named reads. */
+MESHIOPLUSPLUS_API void write_med_multi(const std::string& rPath,
+                                        const std::vector<const Mesh*>& rMeshes,
+                                        const std::vector<MedInfo>& rInfos,
+                                        const std::string& rMedVersion = "4.1.0");
 
 /**
  * @brief `read_med` with read options — the overload that makes a MED file
@@ -232,8 +236,8 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * `MedInfo::mSkippedConstructs`, so the mesh, its tags/families/regions and
  * every *representable* field still come back. Units and non-default step
  * metadata are not skipped but **read into** `MedInfo::mFieldUnits` /
- * `mStepMeta`; only a construct with no representation at all (a named
- * profile, an ELNO/ELGA support, a field mixing nodal and cell support) causes
+ * `mStepMeta`; only a construct with no supported representation (an
+ * ELNO/ELGA support, a field mixing nodal and cell support) causes
  * that one field to be dropped. This is the same mechanism, and the same
  * rationale, as `ReadOptions::mLenient` for MDPA: strict is what the Python
  * shim uses (so it still falls back and the Python surface is unchanged),

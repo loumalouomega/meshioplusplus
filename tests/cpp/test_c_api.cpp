@@ -41,11 +41,14 @@
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
 
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
 
 #include "mesh_fixtures.hpp"
+#include "gmsh_fixtures.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
@@ -85,6 +88,133 @@ TEST(CApi, VersionAndBackend) {
     EXPECT_STRNE(mio_version(), "");
     const std::string backend = mio_mesh_backend();
     EXPECT_TRUE(backend == "meshio" || backend == "native" || backend == "kratos") << backend;
+}
+
+TEST(CApi, VtkPiecesAndLegacyStructuredWithoutPython) {
+    const std::string xml =
+        "<VTKFile type='ImageData'><ImageData WholeExtent='0 2 0 1 0 1'>"
+        "<Piece Extent='0 1 0 1 0 1'/><Piece Extent='1 2 0 1 0 1'/></ImageData></VTKFile>";
+    const std::string legacy =
+        "# vtk DataFile Version 4.2\nindependent\nASCII\n"
+        "DATASET STRUCTURED_POINTS\nDIMENSIONS 3 2 2\nORIGIN 0 0 0\nSPACING 1 1 1\n";
+    for (const std::string format : {"vti", "vtk"}) {
+        const auto path = mt::temp_path("." + format);
+        {
+            auto out = meshioplusplus::detail::make_classic_ofstream(path);
+            out << (format == "vti" ? xml : legacy);
+        }
+        mio_mesh* mesh = mio_read(path.c_str(), format.c_str());
+        ASSERT_NE(mesh, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(mesh), format == "vti" ? 16 : 12);
+        const auto target = mt::temp_path(".vtu");
+        EXPECT_EQ(mio_write(target.c_str(), mesh, "vtu"), MIO_OK) << mio_last_error();
+        mio_mesh_free(mesh);
+        std::remove(path.c_str());
+        std::remove(target.c_str());
+    }
+}
+
+TEST(CApi, AppendedVtkXmlReadsWithoutPython) {
+    for (const std::string format : {"vtp", "vts", "vtr", "vti"}) {
+        const bool surface = format == "vtp";
+        const std::size_t n = surface ? 4 : 8;
+        const std::string type = surface           ? "PolyData"
+                                 : format == "vts" ? "StructuredGrid"
+                                 : format == "vtr" ? "RectilinearGrid"
+                                                   : "ImageData";
+        for (bool base64 : {false, true}) {
+            std::string xml =
+                "<VTKFile type='" + type + "' byte_order='LittleEndian'><" + type +
+                (surface ? "" : " WholeExtent='0 1 0 1 0 1'") + "><Piece " +
+                (surface ? "NumberOfPoints='4'" : "Extent='0 1 0 1 0 1'") +
+                "><PointData><DataArray type='Int32' Name='tag' format='appended' offset='0'/>"
+                "</PointData>";
+            if (surface || format == "vts") {
+                xml +=
+                    "<Points><DataArray type='Float64' NumberOfComponents='3' format='ascii'>"
+                    "0 0 0 1 0 0 0 1 0 1 1 0 ";
+                if (!surface)
+                    xml += "0 0 1 1 0 1 0 1 1 1 1 1 ";
+                xml += "</DataArray></Points>";
+            }
+            if (surface)
+                xml +=
+                    "<Polys><DataArray type='Int32' Name='connectivity' format='ascii'>0 1 3 "
+                    "2</DataArray>"
+                    "<DataArray type='Int32' Name='offsets' format='ascii'>4</DataArray></Polys>";
+            if (format == "vtr")
+                xml +=
+                    "<Coordinates><DataArray type='Float64' format='ascii'>0 1</DataArray>"
+                    "<DataArray type='Float64' format='ascii'>0 1</DataArray>"
+                    "<DataArray type='Float64' format='ascii'>0 1</DataArray></Coordinates>";
+            xml += "</Piece></" + type + "><AppendedData encoding='" + (base64 ? "base64" : "raw") +
+                   "'>_";
+            std::vector<unsigned char> bytes{static_cast<unsigned char>(n * 4), 0, 0, 0};
+            for (std::size_t i = 0; i < n; ++i)
+                bytes.insert(bytes.end(), {static_cast<unsigned char>(i + 7), 0, 0, 0});
+            if (base64)
+                xml += meshioplusplus::detail::b64encode(bytes.data(), bytes.size());
+            else
+                xml.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            xml += "</AppendedData></VTKFile>";
+            const auto path = mt::temp_path("_appended." + format);
+            {
+                auto out = meshioplusplus::detail::make_classic_ofstream(path, std::ios::binary);
+                out.write(xml.data(), static_cast<std::streamsize>(xml.size()));
+            }
+            mio_mesh* mesh = mio_read(path.c_str(), format.c_str());
+            ASSERT_NE(mesh, nullptr) << mio_last_error();
+            EXPECT_EQ(mio_mesh_num_points(mesh), static_cast<std::int64_t>(n));
+            EXPECT_EQ(mio_mesh_num_cell_blocks(mesh), 1);
+            mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), format.c_str());
+            ASSERT_NE(meta, nullptr) << mio_last_error();
+            EXPECT_EQ(mio_read_metadata_fell_back(meta), 0);
+            mio_read_metadata_free(meta);
+            const auto converted = mt::temp_path("_appended_converted.vtu");
+            EXPECT_EQ(mio_write(converted.c_str(), mesh, "vtu"), MIO_OK) << mio_last_error();
+            mio_mesh_free(mesh);
+            std::remove(path.c_str());
+            std::remove(converted.c_str());
+        }
+    }
+}
+
+TEST(CApi, Gmsh40ReadsBothBinaryCountWidthsAndConverts) {
+    for (int width : {0, 4, 8}) {
+        const std::string path = mt::temp_path("_gmsh40.msh");
+        const std::string bytes = mt::gmsh40_fixture(width != 0, width);
+        {
+            std::ofstream os(path, std::ios::binary);
+            os.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        mio_mesh* mesh = mio_read(path.c_str(), "gmsh");
+        ASSERT_NE(mesh, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(mesh), 4);
+        ASSERT_EQ(mio_mesh_num_cell_blocks(mesh), 3);
+        EXPECT_EQ(block_type(mesh, 1), "triangle");
+        const void* conn = nullptr;
+        mio_dtype dtype;
+        ASSERT_EQ(mio_mesh_cell_block_conn(mesh, 1, &conn, &dtype), MIO_OK);
+        ASSERT_EQ(dtype, MIO_INT64);
+        const auto* ids = static_cast<const std::int64_t*>(conn);
+        EXPECT_EQ(std::vector<std::int64_t>(ids, ids + 6),
+                  (std::vector<std::int64_t>{1, 0, 2, 1, 2, 3}));
+        mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), "gmsh");
+        ASSERT_NE(meta, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_read_metadata_fell_back(meta), 1);
+        EXPECT_EQ(mio_read_metadata_num_regions(meta), 2);
+        mio_read_metadata_free(meta);
+        const std::string out = mt::temp_path("_gmsh40.vtu");
+        ASSERT_EQ(mio_write(out.c_str(), mesh, "vtu"), MIO_OK) << mio_last_error();
+        mio_mesh* back = mio_read(out.c_str(), "vtu");
+        ASSERT_NE(back, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(back), 4);
+        EXPECT_EQ(mio_mesh_num_cell_blocks(back), 3);
+        mio_mesh_free(back);
+        mio_mesh_free(mesh);
+        std::remove(out.c_str());
+        std::remove(path.c_str());
+    }
 }
 
 // The compile-time macros describe the HEADER; mio_version() describes the
@@ -1112,6 +1242,44 @@ TEST(CApi, DataDropAndKeep) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SetsDataConversionsAndErrorGuards) {
+    mio_mesh* mesh = build_data_mesh();
+    const std::int64_t a[] = {0, 1}, b[] = {1, 2};
+    ASSERT_EQ(mio_mesh_add_region(mesh, "a", MIO_REGION_POINT, 0, 7, a, 2), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(mesh, "b", MIO_REGION_POINT, -1, -1, b, 2), MIO_OK);
+    const char* order[] = {"b", "a"};
+    mio_mesh* out = mio_sets_to_data(mesh, MIO_DATA_POINT, nullptr, "-", order, 2);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    auto* regions = mio_regions_create(out);
+    ASSERT_NE(regions, nullptr);
+    EXPECT_EQ(mio_regions_count(regions), 0);
+    mio_regions_free(regions);
+    const void* data = nullptr;
+    mio_dtype dtype{};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "b-a", &data, &dtype, nullptr, nullptr), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    const auto* labels = static_cast<const std::int64_t*>(data);
+    EXPECT_EQ(labels[0], 1);
+    EXPECT_EQ(labels[1], 1);
+    EXPECT_EQ(labels[2], 0);
+    EXPECT_EQ(labels[4], -1);
+    mio_mesh* back = mio_data_to_sets(out, MIO_DATA_POINT, "b-a");
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    regions = mio_regions_create(back);
+    ASSERT_NE(regions, nullptr);
+    EXPECT_EQ(mio_regions_count(regions), 3);  // -1 is a tag, not discarded.
+    mio_regions_free(regions);
+    mio_mesh_free(back);
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_sets_to_data(nullptr, MIO_DATA_POINT, nullptr, nullptr, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_sets_to_data(mesh, MIO_DATA_FIELD, nullptr, nullptr, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_sets_to_data(mesh, MIO_DATA_POINT, nullptr, nullptr, order, -1), nullptr);
+    EXPECT_EQ(mio_data_to_sets(mesh, MIO_DATA_POINT, nullptr), nullptr);
+    EXPECT_EQ(mio_data_to_sets(mesh, MIO_DATA_POINT, "T"), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    mio_mesh_free(mesh);
+}
+
 TEST(CApi, DataDropUnknownKeyFails) {
     mio_mesh* m = build_data_mesh();
     const char* names[] = {"nope"};
@@ -1218,16 +1386,15 @@ TEST(CApi, DataCondition) {
 TEST(CApi, TensorInvariants) {
     mio_mesh* m = build_data_mesh();
     // xx yy zz xy yz zx, repeated once per point (5 points).
-    static const std::array<double, 30> s = {1, 2, 3, 0.5, 0.6, 0.7, 1, 2, 3, 0.5, 0.6, 0.7,
-                                             1, 2, 3, 0.5, 0.6, 0.7, 1, 2, 3, 0.5, 0.6, 0.7,
-                                             1, 2, 3, 0.5, 0.6, 0.7};
+    static const std::array<double, 30> s = {1,   2,   3,   0.5, 0.6, 0.7, 1,   2,   3,   0.5,
+                                             0.6, 0.7, 1,   2,   3,   0.5, 0.6, 0.7, 1,   2,
+                                             3,   0.5, 0.6, 0.7, 1,   2,   3,   0.5, 0.6, 0.7};
     std::int64_t shape[2] = {5, 6};
     ASSERT_EQ(mio_mesh_add_point_data(m, "s", MIO_FLOAT64, 2, shape, s.data()), MIO_OK);
 
     const char* names[] = {"s"};
-    mio_mesh* out = mio_tensor_invariants(m, MIO_DATA_POINT, names, 1,
-                                          MIO_TINV_MISES | MIO_TINV_HYDROSTATIC, nullptr, nullptr,
-                                          1);
+    mio_mesh* out = mio_tensor_invariants(
+        m, MIO_DATA_POINT, names, 1, MIO_TINV_MISES | MIO_TINV_HYDROSTATIC, nullptr, nullptr, 1);
     ASSERT_NE(out, nullptr) << mio_last_error();
     const void* data = nullptr;
     mio_dtype dt;
@@ -1250,7 +1417,7 @@ TEST(CApi, TensorInvariants) {
 TEST(CApi, TensorInvariantsRejectsFieldLocation) {
     mio_mesh* m = build_data_mesh();
     EXPECT_EQ(mio_tensor_invariants(m, MIO_DATA_FIELD, nullptr, 0, 0, nullptr, nullptr, 1),
-             nullptr);
+              nullptr);
     EXPECT_STRNE(mio_last_error(), "");
     mio_mesh_free(m);
 }
@@ -1394,6 +1561,74 @@ TEST(CApi, DataIntegrateHandle) {
 
 }  // namespace
 
+TEST(CApi, GmshPeriodicSideChannel) {
+    for (int version : {22, 40, 41})
+        for (bool binary : {false, true}) {
+            const auto path = mt::temp_path(".msh");
+            const auto bytes = mt::gmsh_periodic_fixture(version, binary);
+            {
+                std::ofstream out(path, std::ios::binary);
+                out.write(bytes.data(), bytes.size());
+            }
+            EXPECT_EQ(mio_read(path.c_str(), "gmsh"), nullptr);
+            mio_format_info* info = nullptr;
+            mio_mesh* mesh = mio_read_with_info(path.c_str(), "gmsh", nullptr, &info);
+            ASSERT_NE(mesh, nullptr) << mio_last_error();
+            ASSERT_NE(info, nullptr);
+            EXPECT_EQ(mio_gmsh_info_count(info, MIO_GMSH_PERIODIC), 2);
+            EXPECT_EQ(mio_gmsh_info_count(info, 123), -1);
+            const void* data = nullptr;
+            mio_dtype dtype;
+            int32_t ndim;
+            int64_t shape[MIO_MAX_NDIM]{};
+            ASSERT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 1, 2, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(dtype, MIO_INT64);
+            EXPECT_EQ(ndim, 2);
+            EXPECT_EQ(shape[0], 3);
+            EXPECT_EQ(shape[1], 2);
+            EXPECT_EQ(static_cast<const int64_t*>(data)[1], 1);
+            EXPECT_EQ(static_cast<const int64_t*>(data)[3], 3);
+            EXPECT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, -1, 2, &data, &dtype, &ndim, shape),
+                MIO_ERR_INVALID_ARG);
+            EXPECT_NE(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 0, 99, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 0, 2, nullptr, &dtype, &ndim, shape),
+                MIO_OK);
+            ASSERT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 0, 1, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(shape[0], 0);
+            for (const char* target : {"gmsh", "gmsh22"}) {
+                const auto output = mt::temp_path(".msh");
+                ASSERT_EQ(mio_write_with_info(output.c_str(), mesh, target, info), MIO_OK)
+                    << mio_last_error();
+                mio_format_info* info2 = nullptr;
+                auto* back = mio_read_with_info(output.c_str(), "gmsh", nullptr, &info2);
+                ASSERT_NE(back, nullptr) << mio_last_error();
+                ASSERT_EQ(mio_gmsh_info_array(info2, MIO_GMSH_PERIODIC, 1, 2, &data, &dtype, &ndim,
+                                              shape),
+                          MIO_OK);
+                EXPECT_EQ(static_cast<const int64_t*>(data)[3], 3);
+                mio_mesh_free(back);
+                mio_format_info_free(info2);
+                std::remove(output.c_str());
+            }
+            mio_mesh_free(mesh);  // Info arrays outlive the mesh handle.
+            ASSERT_EQ(
+                mio_gmsh_info_array(info, MIO_GMSH_PERIODIC, 1, 0, &data, &dtype, &ndim, shape),
+                MIO_OK);
+            EXPECT_EQ(static_cast<const int32_t*>(data)[1], 12);
+            mio_format_info_free(info);
+            std::remove(path.c_str());
+        }
+    EXPECT_EQ(mio_gmsh_info_count(nullptr, MIO_GMSH_PERIODIC), -1);
+}
+
 // ---------------------------------------------------------------------------
 // Selective reads (mio_read_ex) and the opaque file summary (mio_read_metadata)
 // ---------------------------------------------------------------------------
@@ -1442,6 +1677,63 @@ TEST(CApi, WriteExHonoursEncodingAndCodec) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, WriteExPcdLzfIsReachableAndRejectsIncompatibleOptions) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_wex_lzf.pcd");
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.codec = MIO_CODEC_LZF;
+    ASSERT_EQ(mio_write_ex(path.c_str(), m, "pcd", &opts), MIO_OK) << mio_last_error();
+    mio_mesh* back = mio_read(path.c_str(), "pcd");
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(back), mio_mesh_num_points(m));
+    mio_mesh_free(back);
+    opts.encoding = MIO_ENCODING_ASCII;
+    EXPECT_NE(mio_write_ex(path.c_str(), m, "pcd", &opts), MIO_OK);
+    opts.encoding = MIO_ENCODING_BINARY;
+    EXPECT_NE(mio_write_ex(path.c_str(), m, "vtu", &opts), MIO_OK);
+    mio_mesh_free(m);
+    std::remove(path.c_str());
+}
+
+TEST(CApi, GltfOptionsExposeColourAxisAndScale) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_opts.gltf");
+    mio_gltf_opts opts;
+    mio_gltf_opts_init(&opts);
+    EXPECT_EQ(opts.normals, 1);
+    EXPECT_EQ(opts.scale, 1.0);
+    const double temperature[] = {0, 1, 2, 3, 4};
+    const int64_t shape[] = {5};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "temperature", MIO_FLOAT64, 1, shape, temperature),
+              MIO_OK);
+    opts.color_by = "temperature";
+    opts.cmap = "turbo";
+    opts.up_axis = 3;
+    opts.scale = 0.001;
+    opts.split_angle = 45;
+    opts.vmin_set = opts.vmax_set = 1;
+    opts.vmin = 0;
+    opts.vmax = 3;
+    ASSERT_EQ(mio_write_gltf(path.c_str(), m, &opts), MIO_OK) << mio_last_error();
+    std::ifstream in(path);
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_NE(text.find("COLOR_0"), std::string::npos);
+    EXPECT_NE(text.find("KHR_materials_unlit"), std::string::npos);
+    EXPECT_NE(text.find("0.001"), std::string::npos);
+    opts.up_axis = 4;
+    EXPECT_EQ(mio_write_gltf(path.c_str(), m, &opts), MIO_ERR_INVALID_ARG);
+    opts.up_axis = 0;
+    opts.scale = -1;
+    EXPECT_NE(mio_write_gltf(path.c_str(), m, &opts), MIO_OK);
+    EXPECT_EQ(mio_write_gltf(path.c_str(), nullptr, nullptr), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(m);
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path).replace_extension(".bin"));
+}
+
 TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {
     mio_mesh* m = build_tet_mesh();
     ASSERT_NE(m, nullptr);
@@ -1449,6 +1741,7 @@ TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {
     mio_write_opts opts;
     mio_write_opts_init(&opts);
     opts.encoding = MIO_ENCODING_RAW_APPENDED;
+    opts.codec = MIO_CODEC_NONE;
     ASSERT_EQ(mio_write_ex(path.c_str(), m, "vtu", &opts), MIO_OK) << mio_last_error();
     mio_mesh* back = mio_read(path.c_str(), "vtu");
     ASSERT_NE(back, nullptr) << mio_last_error();
@@ -1463,6 +1756,45 @@ TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {
     std::remove(bad.c_str());
     mio_mesh_free(m);
 }
+
+TEST(CApi, ExodusSeriesLifecycleOrExplicitMissingDependency) {
+    const auto path = mt::temp_path("_c_series.e");
+    EXPECT_EQ(mio_exodus_series_create(nullptr), nullptr);
+    EXPECT_EQ(mio_exodus_series_num_steps(nullptr), -1);
+    EXPECT_EQ(mio_exodus_series_flush(nullptr), MIO_ERR_INVALID_ARG);
+    mio_exodus_series_free(nullptr);
+    auto* series = mio_exodus_series_create(path.c_str());
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    ASSERT_NE(series, nullptr) << mio_last_error();
+    auto* mesh = build_tet_mesh();
+    ASSERT_NE(mesh, nullptr);
+    EXPECT_NE(mio_exodus_series_write_data(series, 0.0, mesh), MIO_OK);
+    ASSERT_EQ(mio_exodus_series_write_points_cells(series, mesh), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_exodus_series_write_data(series, 0.25, mesh), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_exodus_series_write_data(series, 1.25, mesh), MIO_OK) << mio_last_error();
+    EXPECT_EQ(mio_exodus_series_num_steps(series), 2);
+    EXPECT_EQ(mio_exodus_series_flush(series), MIO_OK);
+    EXPECT_EQ(mio_exodus_series_finalize(series), MIO_OK);
+    EXPECT_EQ(mio_exodus_series_finalize(series), MIO_OK);
+    EXPECT_EQ(mio_exodus_series_finalized(series), 1);
+    EXPECT_NE(mio_exodus_series_write_data(series, 2.0, mesh), MIO_OK);
+    mio_exodus_series_free(series);
+    mio_mesh_free(mesh);
+    std::filesystem::remove(path);
+#else
+    EXPECT_EQ(series, nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_NETCDF"), std::string::npos);
+#endif
+}
+
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+TEST(CApi, MedNamedFunctionsFailByNameWithoutHdf5) {
+    EXPECT_EQ(mio_med_mesh_count("missing.med"), -1);
+    EXPECT_NE(std::string(mio_last_error()).find("HDF5"), std::string::npos);
+    EXPECT_EQ(mio_med_read_named("missing.med", "mesh", nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("HDF5"), std::string::npos);
+}
+#endif
 
 TEST(CApi, WriteExRejectsAnOptionTheFormatCannotHonour) {
     mio_mesh* m = build_tet_mesh();
@@ -3119,6 +3451,11 @@ TEST(CApi, XdmfTimeSeries) {
 
     const std::string path = mt::temp_path(".xdmf");
 
+    const int64_t anchors[2] = {0, 4};
+    const int64_t wall[2] = {0, 1};
+    ASSERT_EQ(mio_mesh_add_region(m, "anchors", MIO_REGION_POINT, 0, 7, anchors, 2), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(m, "wall", MIO_REGION_SIDE, 2, 9, wall, 2), MIO_OK);
+
     mio_xdmf_series* s = mio_xdmf_series_create(path.c_str(), "XML", -1);
     ASSERT_NE(s, nullptr) << mio_last_error();
     ASSERT_EQ(mio_xdmf_series_write_points_cells(s, m), MIO_OK) << mio_last_error();
@@ -3151,6 +3488,20 @@ TEST(CApi, XdmfTimeSeries) {
         mio_mesh* out = mio_read_ex(path.c_str(), nullptr, &opts);
         ASSERT_NE(out, nullptr) << mio_last_error();
         EXPECT_EQ(mio_mesh_num_points(out), 5);
+        mio_regions* regions = mio_regions_create(out);
+        ASSERT_NE(regions, nullptr);
+        ASSERT_EQ(mio_regions_count(regions), 2);
+        mio_region_info region_info{};
+        ASSERT_EQ(mio_regions_info(regions, 1, &region_info), MIO_OK);
+        EXPECT_EQ(region_info.kind, MIO_REGION_SIDE);
+        EXPECT_EQ(region_info.tag, 9);
+        int64_t entry_count = 0;
+        const auto* entries = mio_regions_entries(regions, 1, &entry_count);
+        ASSERT_NE(entries, nullptr);
+        EXPECT_EQ(entry_count, 2);
+        EXPECT_EQ(entries[0], 0);
+        EXPECT_EQ(entries[1], 1);
+        mio_regions_free(regions);
         const void* data = nullptr;
         mio_dtype dt = MIO_FLOAT64;
         int32_t ndim = 0;
@@ -4445,6 +4796,12 @@ Begin SubModelPart Inlet
     Begin SubModelPartNodes
         1
     End SubModelPartNodes
+    Begin SubModelPartGeometries
+        7
+    End SubModelPartGeometries
+    Begin SubModelPartConstraints
+        1
+    End SubModelPartConstraints
 End SubModelPart
 Begin Mesh 3
     Begin MeshNodes
@@ -4525,6 +4882,15 @@ TEST(CApi, ReadWithInfoKeepsTheMdpaSideChannel) {
     ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_SUBMODELPARTS), 1);
     EXPECT_EQ(capi_info_string(info, MIO_MDPA_SUBMODELPARTS, 0, 0), "Inlet");
     EXPECT_EQ(mio_mdpa_info_data_kind(info, MIO_MDPA_SUBMODELPARTS, 0, 0), MIO_MDPA_VALUE_NUMBER);
+    for (int32_t field : {1, 2}) {
+        ASSERT_EQ(
+            mio_mdpa_info_array(info, MIO_MDPA_SUBMODELPARTS, 0, field, &data, &dt, &ndim, shape),
+            MIO_OK);
+        EXPECT_EQ(dt, MIO_INT64);
+        EXPECT_EQ(ndim, 1);
+        ASSERT_EQ(shape[0], 1);
+        EXPECT_EQ(static_cast<const int64_t*>(data)[0], field == 1 ? 7 : 1);
+    }
 
     ASSERT_EQ(mio_mdpa_info_count(info, MIO_MDPA_PROPERTIES), 1);
     ASSERT_EQ(mio_mdpa_info_data_count(info, MIO_MDPA_PROPERTIES, 0), 2);
@@ -4549,6 +4915,13 @@ TEST(CApi, ReadWithInfoKeepsTheMdpaSideChannel) {
     mio_format_info* info2 = nullptr;
     mio_mesh* mesh2 = mio_read_with_info(out.c_str(), nullptr, nullptr, &info2);
     ASSERT_NE(mesh2, nullptr) << mio_last_error();
+    for (int32_t field : {1, 2}) {
+        ASSERT_EQ(
+            mio_mdpa_info_array(info2, MIO_MDPA_SUBMODELPARTS, 0, field, &data, &dt, &ndim, shape),
+            MIO_OK);
+        ASSERT_EQ(shape[0], 1);
+        EXPECT_EQ(static_cast<const int64_t*>(data)[0], field == 1 ? 7 : 1);
+    }
     for (int32_t section : {MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES, MIO_MDPA_MESH_BLOCKS,
                             MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS, MIO_MDPA_PROPERTIES})
         EXPECT_EQ(mio_mdpa_info_count(info2, section), mio_mdpa_info_count(info, section))

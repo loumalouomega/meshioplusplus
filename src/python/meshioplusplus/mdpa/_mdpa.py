@@ -54,10 +54,10 @@ generating sequential IDs and default block names.
   future Kratos adds), kept verbatim as `{"header", "body", "end"}` dicts and
   written back unchanged after the `Mesh` blocks.
 
-Unsupported MDPA Blocks:
-------------------------
-`SubModelPartGeometries` and `SubModelPartConstraints`, which can appear within
-a `Begin SubModelPart` ... `End SubModelPart` block, are not processed.
+`SubModelPartGeometries` and `SubModelPartConstraints` membership is preserved
+as raw file IDs in `submodelpart_info` (`geometry_ids` and `constraint_ids`).
+Constraints themselves stay opaque in `raw_blocks`; mesh operations do not
+remap either list.
 
 Limitations:
 ------------
@@ -1061,7 +1061,7 @@ def _prepare_cells(cells_list_of_tuples, cell_tags_dict, cell_ids_dict=None):
     return final_cells_for_mesh, output_cell_tags_meshio, has_additional_tag_data
 
 
-def _parse_submodelpart_entity_list(f, end_block_str):
+def _parse_submodelpart_entity_list(f, end_block_str, *, strict=False):
     """
     Reads a list of entity IDs from a SubModelPart sub-block.
 
@@ -1087,6 +1087,8 @@ def _parse_submodelpart_entity_list(f, end_block_str):
     while True:
         line_raw = f.readline().decode()
         if not line_raw:
+            if strict:
+                raise ReadError(f"EOF while expecting {end_block_str}.")
             warn(f"EOF encountered while expecting {end_block_str}.")
             break
         stripped_line = line_raw.strip()
@@ -1096,8 +1098,17 @@ def _parse_submodelpart_entity_list(f, end_block_str):
         if not token:
             continue
         try:
-            entity_ids.append(int(token))
+            if strict and not (
+                token.lstrip("+-").isascii() and token.lstrip("+-").isdecimal()
+            ):
+                raise ValueError("ID is not a decimal integer")
+            entity_id = int(token)
+            if strict and not -(2**63) <= entity_id < 2**63:
+                raise ValueError("ID outside Int64 range")
+            entity_ids.append(entity_id)
         except ValueError:
+            if strict:
+                raise ReadError(f"Non-integer ID in {end_block_str}: {token}") from None
             warn(
                 f"Non-integer ID in {end_block_str.replace('End ', '')} list: {stripped_line}"
             )
@@ -1428,6 +1439,18 @@ def read_buffer(f):
             misc_data["submodelpart_info"][current_smp_name_hierarchical][
                 "tables"
             ].extend(smp_table_ids.tolist())
+        elif environ.startswith(
+            ("Begin SubModelPartGeometries", "Begin SubModelPartConstraints")
+        ):
+            geometry = environ.startswith("Begin SubModelPartGeometries")
+            tag = "SubModelPartGeometries" if geometry else "SubModelPartConstraints"
+            if not current_smp_name_hierarchical:
+                raise ReadError(f"{tag} outside a SubModelPart")
+            ids = _parse_submodelpart_entity_list(f, f"End {tag}", strict=True)
+            key = "geometry_ids" if geometry else "constraint_ids"
+            misc_data["submodelpart_info"][current_smp_name_hierarchical].setdefault(
+                key, []
+            ).extend(ids.tolist())
         elif environ.startswith("Begin SubModelPartNodes"):
             if not current_smp_name_hierarchical:
                 warn("SubModelPartNodes found outside a SubModelPart. Skipping.")
@@ -1472,6 +1495,8 @@ def read_buffer(f):
                 misc_data["submodelpart_info"][current_smp_name_hierarchical] = {
                     "data": {},
                     "tables": [],
+                    "geometry_ids": [],
+                    "constraint_ids": [],
                     "nodes": np.array([], dtype=int),
                     "elements_raw": np.array([], dtype=int),
                     "conditions_raw": np.array([], dtype=int),
@@ -2267,6 +2292,17 @@ def _write_submodelparts(
             for table_id in smp_content["tables"]:
                 fh.write(f"{item_indent}{table_id}\n".encode())
             fh.write(f"{data_indent}End SubModelPartTables\n".encode())
+
+        for key, tag in (
+            ("geometry_ids", "SubModelPartGeometries"),
+            ("constraint_ids", "SubModelPartConstraints"),
+        ):
+            ids = smp_content.get(key, [])
+            if len(ids):
+                fh.write(f"{data_indent}Begin {tag}\n".encode())
+                for entity_id in ids:
+                    fh.write(f"{item_indent}{entity_id}\n".encode())
+                fh.write(f"{data_indent}End {tag}\n".encode())
 
         if "nodes" in smp_content and len(smp_content["nodes"]) > 0:
             fh.write(f"{data_indent}Begin SubModelPartNodes\n".encode())

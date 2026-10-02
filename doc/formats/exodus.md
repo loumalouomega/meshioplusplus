@@ -41,8 +41,8 @@ Global attrs: `title`, `version=5.1f`, `api_version=5.1f`, `floating_point_word_
 - `name_elem_var`/`elem_var_tab`/`vals_elem_var{j}eb{k}` — ordinary (non-attribute) `cell_data`, one variable × block array each, read and written since v9.9.0 (see [Data mapping](#data-mapping)).
 - `name_elem_var`/`vals_elem_var{idx}[eb{block}]` — cell data indexed by `(variable index, element block)`, later concatenated across blocks in block order and re-split by target cell-block size.
 - `eb_names(num_el_blk, len_string)` — element-block names, read into `Cell` regions and, since v9.9.0, written back from them (see [Named regions](#named-regions)).
-- `ns_names`/`ns_prop1`/`node_ns{k}` — node sets, 1-based; read into `Point` regions.
-- `ss_names`/`ss_prop1`/`elem_ss{k}`/`side_ss{k}` — side sets; read into `Side` regions.
+- `ns_names`/`ns_prop1`/`node_ns{k}` — node sets, 1-based; read/written from `Point` regions.
+- `ss_names`/`ss_prop1`/`elem_ss{k}`/`side_ss{k}` — side sets; read/written from `Side` regions.
 - `info_records`/`qa_records` — free-text info strings, read into `mesh.info`.
 
 ## Cell types
@@ -108,9 +108,9 @@ Cell entries are **global block-major** cell indices; side entries are `(global 
 
 **Exodus side numbering is not meshio++ facet numbering.** Exodus orders an element's sides its own way, so the facet column is remapped through `exo_face_index` (the twin of `abq_face_index`) rather than stored raw; a gtest pins every entry against `detail/cell_faces.hpp` by node set. An unmappable `(cell type, side)` pair is skipped rather than stored pointing at the wrong face.
 
-**Element blocks round-trip since v9.9.0**; node sets and side sets are still read-only. The writer recovers `eb_names` by inverting the read path: a `Cell` region whose canonical entries are exactly the contiguous global range `[base_k, base_k+1)` *is* block `k`'s name. Entries are sorted and de-duplicated by `AddRegion`, so "covers exactly this block" is a first/last check rather than a set comparison. `eb_names` is written only when at least one block is actually named, so a region-less mesh's bytes are unchanged — and a block with no matching region gets `""`, which is what SEACAS itself writes.
+**Element blocks round-trip since v9.9.0.** The writer recovers `eb_names` by inverting the read path: a `Cell` region whose canonical entries are exactly the contiguous global range `[base_k, base_k+1)` *is* block `k`'s name. Entries are sorted and de-duplicated by `AddRegion`, so "covers exactly this block" is a first/last check rather than a set comparison. `eb_names` is written only when at least one block is actually named; a block with no matching region gets `""`, which is what SEACAS itself writes.
 
-The writer still emits no node sets and no side sets, so a `Point` or `Side` region written here does not come back.
+**Node/side output is native and reference-backed.** Point regions (including Python's compatibility `point_sets`) become node sets; Side regions become side sets through the inverse of `exo_face_index`. Names, explicit non-negative `tag` ids and empty groups survive. Missing ids receive the lowest available positive ids in deterministic `(name, dim, tag)` order, separately per set kind. Duplicate explicit ids within a kind, NUL-containing names, out-of-range point/cell indices and unsupported facets are write errors detected before the destination is created or truncated. `len_string` grows to fit set names; empty memberships have status zero. Exodus does not store a region's arbitrary `dim`: readers reconstruct dimensions from the kind/cell topology.
 
 ## Time steps
 
@@ -122,16 +122,31 @@ Exodus stores every data array with a leading `time_step` dimension. Before v8.6
 
 `read_metadata(...)["time_values"]` reports the recorded times (from `time_whole`), so a step request is checkable before it is issued. Exodus is registered as an options-aware reader, so `reader_supports_options("exodus")` is true and the option reaches every binding: `time_step=` in Python, `mio_read_opts.time_step` in C, `m%read(..., time_step=)` in Fortran, `ReadOptions(time_step=)` in Julia, `mio_read(time_step=)` in R, `readMeshSelective(path, {timeStep})` in WASM, and `--time-step=N` in both CLIs.
 
+## Stateful series writing
+
+```python
+with meshioplusplus.exodus.TimeSeriesWriter("run.e") as writer:
+    writer.write_points_cells(mesh)  # fixed geometry, sets and exodus:attr:* arrays
+    for time, state in states:
+        writer.write_data(time, state)
+    writer.flush()
+```
+
+The C++ class is `ExodusTimeSeriesWriter`, exposed explicitly as `_core.ExodusTimeSeriesWriter` in netCDF-enabled builds. The public Python class selects it when available and otherwise uses `netCDF4`. `write_points_cells(mesh)` runs exactly once; the first `write_data(time, mesh)` fixes point/cell field names, dtypes and shapes. Subsequent steps must have the same point count and cell block types/sizes and the same field schema. Time must be finite and is stored as float64. Geometry, memberships and `exodus:attr:*` arrays on step meshes are ignored; the grid's attributes remain static. Names use up to 33 non-NUL UTF-8 bytes for step fields. Multi-component fields retain the single-state writer's meshio++ extension layout.
+
+`flush()` publishes completed steps without closing; `finalize()` closes and is idempotent. Writes after finalization fail. Context-manager exit finalizes; native destruction closes the file, but explicit finalization is needed to observe close errors. No history of step meshes is retained. This is a truncate-only writer, not a restart/append reader of an existing file. `write_sequence("run.e", steps)` and sequence pipeline fan-in use it; format-specific Encoding/Codec/FloatFormat options are not supported for a series. Ordinary `write(path, mesh)` still writes one state with `field_data["exodus:time"]` (or zero) as its time.
+
+The flat surfaces expose the same lifecycle: C `mio_exodus_series_create` / `write_points_cells` / `write_data` / `flush` / `finalize` / `num_steps` / `finalized` / `free`; Fortran `mio_exodus_series`; Julia `ExodusSeries` with `write_points_cells!`/`write_data!`/`flush!`/`finalize!`/`close`; R `mio_exodus_series_*`; WASM `createExodusTimeSeriesWriter`. Builds without netCDF fail by name through their usual error channel rather than missing C symbols. Both CLIs reach series writing through their sequence/fan-in commands.
+
 ## Quirks & limitations
 
 - **A NUL-terminated `elem_type` used to fail the read.** netCDF text attributes carry an explicit length, and NetCDF.jl — which is what [PeriLab](https://github.com/PeriHub/PeriLab.jl) and other Julia solvers write Exodus with — counts the C string's terminating NUL as part of it. So a `SPHERE` block arrives as the 7 characters `"SPHERE\0"`, which matched no key in the C++ reader's type table: the read failed with `Exodus: unknown element type SPHERE`, the NUL invisible in the message because `std::runtime_error::what()` is a `const char*` that stops at it. `netCDF4` strips the NUL on the way in, so the Python reference never saw this and the shim's silent fallback hid it everywhere **except WASM**, which has no fallback — which is how it surfaced as [VSCode-MDPA-Preview#63](https://github.com/loumalouomega/VSCode-MDPA-Preview/issues/63) rather than as a Python bug. Fixed in v9.3.0: both readers now trim trailing NULs and spaces before the lookup. The same normalization covers fixed-width writers that pad with spaces.
 - The point-data name recombination (`categorize()`) has a **deliberately preserved quirk**: the check for a paired variable uses Python truthiness on the found array index, so an index of exactly `0` is treated the same as "not found". This is a latent edge case in the reference implementation that the C++ port reproduces on purpose, rather than silently fixing — changing it would make the two implementations disagree on some inputs.
 - `qa_records`/`info_records` are **provenance strings**, and `NDArray` has no string dtype, so they cannot ride on the mesh. They travel in an `ExodusInfo` side-channel struct (the `MedInfo`/`OpenFoamInfo` pattern) that the pybind binding attaches as `mesh.info`. The **flat bindings** (C, Fortran, Julia, R, WASM) construct one and drop it — the same documented gap `MedInfo` already has.
 - Before v8.6.0 the C++ reader **threw** on `qa_records`, `info_records`, `ns_names` and `node_ns*`, routing the whole file to Python. Since every file SEACAS, Cubit or Sierra writes carries `qa_records`, that made Exodus entirely unreadable from **WASM**, which has no Python fallback to defer to. Fixed; see [Time steps](#time-steps) and [Named regions](#named-regions) for what those variables now produce.
-- The C++ writer does not support `mesh.point_sets` at all; the shim only attempts the C++ write path when `point_sets` is empty. It also emits no node sets and no side sets, which is why only element-block regions round-trip.
 - **Ordinary `cell_data` round-trips since v9.9.0** as element variables (`name_elem_var`, an all-ones `elem_var_tab` truth table, and one `vals_elem_var{j}eb{k}` per variable × block). Before that neither writer emitted any of it, so every `cell_data` array except the `exodus:attr:`-prefixed ones was silently dropped while `point_data` round-tripped. The prefix stays explicit for the same reason it always was: an attribute is a *different* Exodus concept (constant in time, one column per element), so "write every cell_data as an attribute" was never the right rule. Trailing dimensions become extra netCDF dimensions exactly as the nodal path already does, so a vector cell field survives — standard Exodus element variables are scalar per element, making a k>1 array a meshio++ extension of the same kind the nodal path already is.
 - **Fixed in v9.9.0: a heap buffer overflow in the C++ reader.** Assembling a `cell_data` array allocated a scalar `{total}` buffer and then `memcpy`'d each block's full `Nbytes()` into it, so a multi-component element variable wrote `n*k` bytes into `n` bytes of space. Pre-existing, but unreachable until this release's writer started emitting element variables, and not reachable from any real SEACAS file — none carries a multi-component element variable, which is exactly why a format's own writer is not a sufficient test oracle for its reader.
-- **One step per write.** A `Mesh` is one state, so the writer emits a single `time_step`; `field_data["exodus:time"]` labels it. A genuinely multi-step Exodus writer is a stateful object of the shape `XdmfTimeSeriesWriter` has and is a follow-up, not something a `(path, mesh)` writer can express.
+- **One step per ordinary write.** A `Mesh` is one state; use [the stateful writer](#stateful-series-writing) for multiple steps in one file.
 - A file with `num_dim = 2` (`coordx`/`coordy`, no `coordz`) reads back with **3-component** points whose `z` column is zero, on both paths. That is upstream meshio's behaviour and is kept.
 
 ## Notes

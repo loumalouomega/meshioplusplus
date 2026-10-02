@@ -214,6 +214,32 @@ def _register_inspection(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_conversion(server: FastMCP) -> None:
     @server.tool()
+    def med_multi(
+        input_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        mesh_name: Optional[str] = None,
+        mesh_names: Optional[List[str]] = None,
+        output_format: Optional[str] = None,
+        med_version: str = "4.1.0",
+    ) -> dict:
+        """List named meshes in input_path, or extract mesh_name to output_path.
+        Alternatively combine nonempty input_paths into a MED output_path with
+        optional mesh_names and med_version (default 4.1.0). Input paths and
+        output paths obey the server's root sandbox. Ordinary MED nodal/element
+        profiles expand with NaN fill; enhanced fields may use Python/h5py."""
+        return _guard(
+            _tools.tool_med_multi,
+            input_path=input_path,
+            output_path=output_path,
+            input_paths=input_paths,
+            mesh_name=mesh_name,
+            mesh_names=mesh_names,
+            output_format=output_format,
+            med_version=med_version,
+        )
+
+    @server.tool()
     def convert(
         input_path: str,
         output_path: str,
@@ -245,7 +271,15 @@ def _register_conversion(server: FastMCP) -> None:
         supports it, or raw_appended (VTU: raw binary in one <AppendedData>
         section, no base64); compression selects zlib|lz4|zstd|lzma (VTU/VTP block
         codecs), gzip (CGNS/H5M/VTKHDF/XDMF), lzf (PCD binary_compressed) or
-        'none' to decompress."""
+        'none' to decompress. MDPA-to-MDPA preserves nested geometry/constraint
+        membership as raw file ids; constraints remain opaque, and other
+        output formats may drop that side-channel content. Gmsh input versions
+        2.2/4.0/4.1, including periodic links, use the native reader. Gmsh output
+        is 4.1, or 2.2 via gmsh22; both preserve periodic links. Serial VTK XML
+        inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64 arrays natively;
+        Multiple pieces concatenate without welding; VTP/VTS/VTR/VTI retain
+        inline output. Legacy VTK structured datasets also read natively.
+        XDMF time-series reads preserve fixed shared point/cell/side regions."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -341,7 +375,11 @@ def _register_conversion(server: FastMCP) -> None:
     ) -> dict:
         """Run a settings.json operation pipeline: read Input.Path, apply the
         Operations chain (Transform/Gradient/Refine/Clean/... -- PascalCase
-        ops and keys, see doc/pipeline.md), write Output.Path.
+        ops and keys, see doc/pipeline.md), write Output.Path. Version 2 adds
+        Merge/Interpolate/UndoGreen Inputs and terminal Split/Partition outputs
+        through Output.Pattern ({key}/{part}); all auxiliary inputs and every
+        expanded output, including symlinks, are checked against the sandbox.
+        Output.Codec='lzf' selects PCD compressed binary; ASCII is incompatible.
         input_path/output_path override the paths in the settings file; both
         the settings file and the paths inside it stay inside the sandbox
         root when one is configured."""
@@ -369,6 +407,8 @@ def _register_conversion(server: FastMCP) -> None:
         writes one file per step (fan-out); a plain path writes one multi-step
         file (fan-in, only for xdmf, gid, usd, vtkhdf, pvd and femap -- any
         other format fails by name rather than silently keeping step 0).
+        XDMF fan-in stores the first mesh's fixed point/cell/side regions;
+        later steps do not change their membership.
         Ordering is natural-numeric, so out_9 precedes
         out_10. mode optionally asserts 'sequence'/'fan-in'/'fan-out'.
         See doc/sequences.md."""
@@ -2272,6 +2312,38 @@ def _register_operations(server: FastMCP) -> None:
 # Data operations                                                             #
 # --------------------------------------------------------------------------- #
 def _register_data(server: FastMCP) -> None:
+    @server.tool()
+    def sets_data(
+        input_path: str,
+        output_path: str,
+        direction: str = "sets_to_data",
+        location: str = "cell",
+        key: Optional[str] = None,
+        data_name: Optional[str] = None,
+        join_char: str = "-",
+        order: Optional[List[str]] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Convert point/cell sets and scalar integer labels. direction is
+        sets_to_data|data_to_sets; location is point|cell. Labels are zero-based,
+        later overlaps win, uncovered rows are -1. data_to_sets requires key;
+        sets_to_data can choose data_name, join_char and explicit set order.
+        The converted sets or source field are removed; side regions survive."""
+        return _guard(
+            _tools.tool_sets_data,
+            input_path=input_path,
+            output_path=output_path,
+            direction=direction,
+            location=location,
+            key=key,
+            data_name=data_name,
+            join_char=join_char,
+            order=order,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
     @server.tool()
     def data_manage(
         input_path: str,

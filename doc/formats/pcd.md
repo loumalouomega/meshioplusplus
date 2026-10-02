@@ -53,7 +53,7 @@ DATA ascii | binary | binary_compressed
 ## Notes
 
 - `tests/python/meshes/pcd/` — PCL's own test corpus (BSD-3, see `LICENSE.PCL` there): `bun0.pcd` (ascii, normals + curvature), `colored_cloud.pcd` (binary, organised, uint `rgb`), `pcl_logo.pcd` (binary_compressed, float-slot `rgb`, non-identity viewpoint), `milk_color.pcd` (binary_compressed, `rgba`).
-- The C++ core handles all three `DATA` modes. Its LZF codec is an independent implementation of the liblzf stream format (no liblzf code is copied), and the Python reference writes byte-identical files. The CLI verbs `ascii`, `binary`, `compress` (`binary_compressed`) and `decompress` rewrite a `.pcd` in place, and the MCP `convert` tool takes `mode` and `compression: lzf`. The flat bindings (C, Fortran, Julia, R, WASM) read every mode and write `ascii`/`binary`; `binary_compressed` writing is on the [roadmap](../roadmap.md).
+- The C++ core handles all three `DATA` modes. Its LZF codec is an independent implementation of the liblzf stream format (no liblzf code is copied), and the Python reference writes byte-identical files. The CLI verbs `ascii`, `binary`, `compress` (`binary_compressed`) and `decompress` rewrite a `.pcd` in place, and the MCP `convert` tool takes `mode` and `compression: lzf`. Flat bindings select compressed binary with `mio_write_opts.codec = MIO_CODEC_LZF` (C), `codec='lzf'` (Fortran/Julia/R), or `{codec: 'lzf'}` (WASM); pipeline `Output.Codec: "lzf"` uses the same path. LZF needs no optional library and is rejected for non-PCD formats or explicit ASCII encoding.
 
 ## Web output
 

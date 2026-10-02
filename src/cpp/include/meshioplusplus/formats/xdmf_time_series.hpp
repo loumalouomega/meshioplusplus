@@ -184,11 +184,12 @@ public:
     /**
      * @brief Write the static grid: the points and cell blocks every step shares.
      *
-     * Only geometry and connectivity are consumed; any data the mesh carries is
-     * ignored here, because in a transient series data belongs to a step. Call
+     * Geometry, connectivity and named regions are consumed. Regions are fixed
+     * with the shared mesh and stored once as XDMF Sets; point/cell data belongs
+     * to a step and is ignored here. Call
      * exactly once, before the first `WriteData`.
      *
-     * @param rMesh The mesh whose points/cells define the series.
+     * @param rMesh The mesh whose points/cells/regions define the series.
      * @throws WriteError if called twice, if the points exceed dimension 3, or
      *         if a cell type has no XDMF spelling.
      */

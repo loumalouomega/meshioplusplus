@@ -117,3 +117,55 @@ def test_advanced(netgen_mesh, tmp_path):
         mesh.cell_data["netgen:index"], mesh_out.cell_data["netgen:index"]
     ):
         assert np.all(cd == cd_out)
+
+
+@pytest.mark.parametrize("suffix", [".vol", ".vol.gz"])
+def test_extras_use_native_core(tmp_path, monkeypatch, suffix):
+    core = pytest.importorskip("meshioplusplus._core")
+    if suffix == ".vol.gz" and not core.__has_zlib__:
+        pytest.skip("gzip requires native zlib")
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        [("triangle", np.array([[0, 1, 2]]))],
+        field_data={"wall": [2, 2], "edge": [1, 1]},
+        cell_data={"netgen:index": [np.array([2])]},
+        info={
+            "netgen:identifications": np.array([[1, 2, 1]]),
+            "netgen:identificationtypes": np.array([[2]]),
+        },
+    )
+    path = tmp_path / ("extras" + suffix)
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    meshioplusplus.write(path, mesh)
+    native = meshioplusplus.read(path)
+    reference = meshioplusplus.netgen._netgen.read(path)
+    np.testing.assert_array_equal(native.points, reference.points)
+    for key in mesh.field_data:
+        np.testing.assert_array_equal(native.field_data[key], reference.field_data[key])
+    for key in mesh.info:
+        np.testing.assert_array_equal(native.info[key], reference.info[key])
+
+
+def test_native_two_line_edges_and_auxiliary_sections(tmp_path):
+    core = pytest.importorskip("meshioplusplus._core")
+    path = tmp_path / "two-line.vol"
+    path.write_text(
+        "mesh3d\ndimension\n3\nsurf1 surf2 p1 p2\nedgesegmentsgi2\n1\n"
+        "7 0 1 2\n0 0 0 0\npoints\n2\n0 0 0\n1 0 0\n"
+        "face_colours\n1\n1 0 0\nsingular_points\n1\n1\nendmesh\n"
+    )
+    native = core.netgen_read(str(path))
+    reference = meshioplusplus.netgen._netgen.read(path)
+    np.testing.assert_array_equal(native.cells[0].data, reference.cells[0].data)
+    np.testing.assert_array_equal(native.cell_data["netgen:index"][0], [7])
+
+
+@pytest.mark.parametrize(
+    "section", ["identifications", "identificationtypes", "materials"]
+)
+def test_native_extras_reject_truncated_sections(tmp_path, section):
+    core = pytest.importorskip("meshioplusplus._core")
+    path = tmp_path / "truncated.vol"
+    path.write_text(f"mesh3d\ndimension\n3\n{section}\n1\n")
+    with pytest.raises(Exception, match="Netgen"):
+        core.netgen_read(str(path))

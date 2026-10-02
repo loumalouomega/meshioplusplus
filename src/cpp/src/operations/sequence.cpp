@@ -45,6 +45,7 @@
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 
@@ -264,6 +265,12 @@ std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFor
 }
 
 bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy) {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    if (rFormat == "exodus") {
+        rWhy.clear();
+        return true;
+    }
+#endif
     // The one multi-step writer in the repo. Unlike sequence_num_steps there is
     // no file to probe, so this is a predicate in registry_write_supports'
     // style. It is kept honest by a gtest that cross-checks it against what
@@ -276,8 +283,8 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd' and 'femap' "
-           "can); "
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap' "
+           "and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -562,10 +569,15 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
 /// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    const char* who = rFormat == "vtkhdf"  ? "VTKHDF"
-                      : rFormat == "pvd"   ? "PVD"
-                      : rFormat == "femap" ? "Femap"
-                                           : "XDMF";
+    if (rFormat == "exodus" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
+            "select");
+    const char* who = rFormat == "exodus"   ? "Exodus"
+                      : rFormat == "vtkhdf" ? "VTKHDF"
+                      : rFormat == "pvd"    ? "PVD"
+                      : rFormat == "femap"  ? "Femap"
+                                            : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -598,7 +610,8 @@ public:
 
 class SeqXdmfSink final : public SeqSeriesSink {
 public:
-    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat) : mWriter(rPath, rDataFormat) {}
+    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat)
+        : mWriter(rPath, rDataFormat) {}
     void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
     void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
     void Finalize() override { mWriter.Finalize(); }
@@ -606,6 +619,19 @@ public:
 private:
     XdmfTimeSeriesWriter mWriter;
 };
+
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+class SeqExodusSink final : public SeqSeriesSink {
+public:
+    explicit SeqExodusSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    ExodusTimeSeriesWriter mWriter;
+};
+#endif
 
 /// A `.pvd` stores geometry per step (each step is its own `.vtu`), so there is no
 /// static grid to write and `WritePointsCells` has nothing to do.
@@ -650,6 +676,13 @@ private:
 std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
                                                     const std::string& rPath,
                                                     const WriteOptions& rOptions) {
+    if (rFormat == "exodus") {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return std::make_unique<SeqExodusSink>(rPath);
+#else
+        throw WriteError("meshio++: sequence: Exodus requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    }
     if (rFormat == "pvd") {
         // The zlib codec follows the build, as the registry's own writers do.
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB

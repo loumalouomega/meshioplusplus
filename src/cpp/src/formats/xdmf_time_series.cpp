@@ -30,6 +30,7 @@
 
 // Project includes (private, not installed)
 #include "xdmf_doc.hpp"
+#include "xdmf_sets.hpp"
 
 // Project includes
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
@@ -140,7 +141,7 @@ struct XdmfTimeSeriesWriter::Impl {
         // TimeSeriesReader) resolve the collection structurally and skip this.
         pugi::xml_node inc = grid.append_child("xi:include");
         const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
-                                "\"]/*[self::Topology or self::Geometry])";
+                                "\"]/*[self::Topology or self::Geometry or self::Set])";
         inc.append_attribute("xpointer") = ptr.c_str();
         pugi::xml_node time = grid.append_child("Time");
         time.append_attribute("Value") = xts_format_time(Time).c_str();
@@ -314,6 +315,8 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
         xts_add_data_item(topo, *mImpl->mStore, cd);
     }
 
+    // Regions belong to the shared topology, not the transient field arrays.
+    xdmfdetail::xdmf_write_sets(grid, *mImpl->mStore, rMesh);
     mImpl->mHasMesh = true;
 }
 

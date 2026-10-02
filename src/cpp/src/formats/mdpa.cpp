@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -84,6 +85,19 @@ bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
 /// strtoll(…, 10) over the whole token.
 bool mdpa_parse_int(std::string_view S, std::int64_t& rOut) {
     return detail::parse_int_token(S, rOut);
+}
+
+/// Membership ids must not saturate: that would name a different entity.
+bool mdpa_parse_member_id(std::string_view S, std::int64_t& rOut) {
+    if (!S.empty() && S.front() == '+') {
+        S.remove_prefix(1);
+        if (S.empty() || S.front() < '0' || S.front() > '9')
+            return false;
+    }
+    if (S.empty())
+        return false;
+    const auto result = std::from_chars(S.data(), S.data() + S.size(), rOut);
+    return result.ec == std::errc{} && result.ptr == S.data() + S.size();
 }
 
 /// parse_double over the whole token.
@@ -619,7 +633,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
         if (it != smp_info_index.end())
             return pInfo->mSubModelParts[it->second];
         smp_info_index.emplace(rName, pInfo->mSubModelParts.size());
-        pInfo->mSubModelParts.push_back(MdpaSubModelPart{rName, {}, {}});
+        pInfo->mSubModelParts.push_back(MdpaSubModelPart{rName, {}, {}, {}, {}});
         return pInfo->mSubModelParts.back();
     };
 
@@ -633,7 +647,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
         return out;
     };
 
-    auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut) {
+    auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut,
+                            bool Strict = false) {
         while (!cur.Done()) {
             const std::string_view line = mdpa_clean(cur.Next());
             if (line.empty())
@@ -641,7 +656,9 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             if (line == rEnd)
                 return;
             std::int64_t v = 0;
-            if (!mdpa_parse_int(line, v)) {
+            if (!(Strict ? mdpa_parse_member_id(line, v) : mdpa_parse_int(line, v))) {
+                if (Strict)
+                    throw ReadError("MDPA: non-integer id in " + rEnd + ": " + std::string(line));
                 log::warn("mdpa: skipping non-integer id in {}: {}", rEnd, line);
                 continue;
             }
@@ -938,12 +955,25 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 mdpa_expect_empty_block(cur, "End SubModelPartTables",
                                         "a non-empty SubModelPartTables block", Lenient, pInfo);
             }
-        } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartGeometries",
-                                    "a non-empty SubModelPartGeometries block", Lenient, pInfo);
-        } else if (mdpa_starts_with(line, "Begin SubModelPartConstraints")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartConstraints",
-                                    "a non-empty SubModelPartConstraints block", Lenient, pInfo);
+        } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries") ||
+                   mdpa_starts_with(line, "Begin SubModelPartConstraints")) {
+            const bool geometry = mdpa_starts_with(line, "Begin SubModelPartGeometries");
+            const std::string tag = geometry ? "SubModelPartGeometries" : "SubModelPartConstraints";
+            if (smp_stack.empty())
+                throw ReadError("MDPA: " + tag + " outside a SubModelPart");
+            std::vector<std::int64_t> ids;
+            read_id_list("End " + tag, ids, /*Strict=*/true);
+            if (!ids.empty()) {
+                if (pInfo) {
+                    MdpaSubModelPart& r_smp = smp_info(smp_name());
+                    auto& out = geometry ? r_smp.mGeometryIds : r_smp.mConstraintIds;
+                    out.insert(out.end(), ids.begin(), ids.end());
+                } else if (!Lenient) {
+                    throw ReadError("MDPA: a non-empty " + tag + " block" + kMdpaNeedsInfo);
+                } else {
+                    log::warn("mdpa: skipping a non-empty {} block (ReadOptions::mLenient)", tag);
+                }
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartNodes")) {
             if (smp_stack.empty())
                 throw ReadError("MDPA: SubModelPartNodes outside a SubModelPart");
@@ -1389,14 +1419,14 @@ void mdpa_write_properties(std::ostream& rOs, const PropertySet& rSet) {
 }
 
 /// Emit an id list sub-block (`SubModelPartNodes`, `MeshElements`, ...), if non-empty.
-void mdpa_write_id_list(std::ostream& rOs, const char* pTag,
-                        const std::vector<std::int64_t>& rIds) {
+void mdpa_write_id_list(std::ostream& rOs, const char* pTag, const std::vector<std::int64_t>& rIds,
+                        const std::string& rIndent = "    ") {
     if (rIds.empty())
         return;
-    rOs << "    Begin " << pTag << "\n";
+    rOs << rIndent << "Begin " << pTag << "\n";
     for (std::int64_t id : rIds)
-        rOs << "        " << id << "\n";
-    rOs << "    End " << pTag << "\n";
+        rOs << rIndent << "    " << id << "\n";
+    rOs << rIndent << "End " << pTag << "\n";
 }
 
 }  // namespace
@@ -1719,41 +1749,74 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     }
 
     // ---- SubModelParts from named regions ---------------------------------
-    // The info's data/tables go inside the part of the same name; a part with
-    // data but no region left (an operation may have dropped it) is still
-    // written, so the data is not lost.
+    // Side-channel-only parts are retained. Hierarchical region keys are
+    // emitted as nested blocks, not a single Kratos name containing '/'.
     std::unordered_map<std::string, const MdpaSubModelPart*> smp_extras;
     for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts)
         smp_extras.emplace(r_smp.mName, &r_smp);
-    auto write_smp_extras = [&](const std::string& rName) {
+    auto write_smp_extras = [&](const std::string& rName, const std::string& rIndent) {
         const auto it = smp_extras.find(rName);
         if (it == smp_extras.end())
             return;
         if (!it->second->mData.empty()) {
-            os << "    Begin SubModelPartData\n";
+            os << rIndent << "Begin SubModelPartData\n";
             for (const PropertyValue& r_v : it->second->mData)
-                mdpa_write_kv(os, r_v, "        ");
-            os << "    End SubModelPartData\n";
+                mdpa_write_kv(os, r_v, (rIndent + "    ").c_str());
+            os << rIndent << "End SubModelPartData\n";
         }
-        mdpa_write_id_list(os, "SubModelPartTables", it->second->mTables);
-        smp_extras.erase(it);
+        mdpa_write_id_list(os, "SubModelPartTables", it->second->mTables, rIndent);
+        mdpa_write_id_list(os, "SubModelPartGeometries", it->second->mGeometryIds, rIndent);
+        mdpa_write_id_list(os, "SubModelPartConstraints", it->second->mConstraintIds, rIndent);
+    };
+    std::unordered_map<std::string, std::vector<std::string>> smp_children;
+    std::unordered_set<std::string> smp_seen;
+    auto add_smp = [&](const std::string& rName) {
+        if (rName.empty() || rName.front() == '/' || rName.back() == '/' ||
+            rName.find("//") != std::string::npos)
+            throw WriteError("MDPA: invalid SubModelPart hierarchy name '" + rName + "'");
+        std::string parent;
+        std::size_t start = 0;
+        while (start < rName.size()) {
+            const std::size_t slash = rName.find('/', start);
+            const std::string path = rName.substr(0, slash);
+            if (smp_seen.insert(path).second)
+                smp_children[parent].push_back(path);
+            parent = path;
+            if (slash == std::string::npos)
+                break;
+            start = slash + 1;
+        }
     };
     for (const auto& name : rMesh.RegionNames()) {
+        bool has_membership = false;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const auto& region = rMesh.Region(i);
+            if (region.mName != name)
+                continue;
+            if (region.mKind == RegionKind::Side) {
+                log::warn("mdpa: dropping side region '{}' (MDPA has no facet sets)", name);
+                detail::provenance_note(
+                    "regions-dropped",
+                    "side region '" + name + "' dropped -- MDPA has no facet sets");
+            } else {
+                has_membership = true;
+            }
+        }
+        if (has_membership)
+            add_smp(name);
+    }
+    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts)
+        add_smp(r_smp.mName);
+    auto write_smp = [&](const std::string& name, std::size_t depth) {
         std::vector<std::int64_t> nodes;
         std::vector<std::int64_t> elements, conditions;
-        bool any = false;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
             const meshioplusplus::Region& r = rMesh.Region(i);
             if (r.mName != name)
                 continue;
             if (r.mKind == RegionKind::Side) {
-                log::warn("mdpa: dropping side region '{}' (MDPA has no facet sets)", name);
-                detail::provenance_note("regions-dropped", "side region '" + name +
-                                                               "' dropped -- MDPA has no facet "
-                                                               "sets");
                 continue;
             }
-            any = true;
             const std::int64_t* e = r.Entries();
             for (std::size_t j = 0; j < r.NumEntries(); ++j) {
                 if (r.mKind == RegionKind::Point) {
@@ -1775,21 +1838,41 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                 }
             }
         }
-        if (!any)
+        const std::string indent(depth * 4, ' ');
+        const std::string body_indent = indent + "    ";
+        const std::size_t slash = name.rfind('/');
+        const std::string leaf = slash == std::string::npos ? name : name.substr(slash + 1);
+        os << indent << "Begin SubModelPart " << leaf << "\n";
+        write_smp_extras(name, body_indent);
+        mdpa_write_id_list(os, "SubModelPartNodes", nodes, body_indent);
+        mdpa_write_id_list(os, "SubModelPartElements", elements, body_indent);
+        mdpa_write_id_list(os, "SubModelPartConditions", conditions, body_indent);
+    };
+    // Explicit traversal stack: a valid deeply nested deck must not consume
+    // one C++ call frame per part.
+    struct MdpaSmpWriteFrame {
+        std::string mName;
+        std::size_t mDepth;
+        bool mClose;
+    };
+    std::vector<MdpaSmpWriteFrame> smp_frames;
+    const auto& roots = smp_children[""];
+    for (auto it = roots.rbegin(); it != roots.rend(); ++it)
+        smp_frames.push_back({*it, 0, false});
+    while (!smp_frames.empty()) {
+        const MdpaSmpWriteFrame frame = std::move(smp_frames.back());
+        smp_frames.pop_back();
+        if (frame.mClose) {
+            os << std::string(frame.mDepth * 4, ' ') << "End SubModelPart\n"
+               << (frame.mDepth == 0 ? "\n" : "");
             continue;
-        os << "Begin SubModelPart " << name << "\n";
-        write_smp_extras(name);
-        mdpa_write_id_list(os, "SubModelPartNodes", nodes);
-        mdpa_write_id_list(os, "SubModelPartElements", elements);
-        mdpa_write_id_list(os, "SubModelPartConditions", conditions);
-        os << "End SubModelPart\n\n";
-    }
-    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts) {
-        if (!smp_extras.count(r_smp.mName))
-            continue;
-        os << "Begin SubModelPart " << r_smp.mName << "\n";
-        write_smp_extras(r_smp.mName);
-        os << "End SubModelPart\n\n";
+        }
+        write_smp(frame.mName, frame.mDepth);
+        smp_frames.push_back({frame.mName, frame.mDepth, true});
+        const auto children = smp_children.find(frame.mName);
+        if (children != smp_children.end())
+            for (auto it = children->second.rbegin(); it != children->second.rend(); ++it)
+                smp_frames.push_back({*it, frame.mDepth + 1, false});
     }
 
     // ---- Mesh blocks ------------------------------------------------------

@@ -70,18 +70,16 @@ Full Netgen→meshio++ node permutation table (meshio++[i] = netgen[table[i]]); 
 
 - `cell_data["netgen:index"]` — the single per-cell region/material marker; Netgen cannot store the field's *name*, so on write meshio++ prefers a `netgen:index` entry if present, else the first integer-dtype cell_data array found.
 - `field_data[name] = [idx, edim]` — codimension-domain names (materials, boundary-condition names, co-dim-2/3 names).
-- `mesh.info["netgen:identifications"]` (an `(N,3)` int array: node1/node2/type id) and `mesh.info["netgen:identificationtypes"]` (a `(1,N)` int array) — periodic identification data.
+- `mesh.info["netgen:identifications"]` (an `(N,3)` int array: node1/node2/type id) and `mesh.info["netgen:identificationtypes"]` (a `(1,N)` int array) — periodic identification data in Python. Native meshes and flat bindings store these numeric arrays in `field_data` under the same keys, so registry reads/writes retain them without a format-info handle. Periodic node ids retain the file's **1-based** numbering; operations do not remap these arrays, so rebuild them after changing points.
 
 ## Quirks & limitations
 
 - **1-based** in file; `-1`/`+1` applied on read/write.
 - Row layout is column-position-dependent: `surfaceelements` reads its node count from a fixed column and node ids start at another fixed column; `volumeelements` uses different fixed positions — these encode Netgen's distinct per-dimension record schema (`surfnr bcnr domin domout np p1 p2 ...` for surfaces; `matnr np p1 p2 ...` for volumes).
-- `edgesegmentsgi2` has a **two-physical-line variant**, triggered by a header line exactly `surf1 surf2 p1 p2` — each cell's data is then split across two lines instead of one. **The C++ reader does not implement this two-line variant** (nor `identifications`, `materials`/`bcnames`/etc., `face_colours`, or `singular_*`) — any of these tokens make the C++ reader throw and defer to Python.
+- `edgesegmentsgi2` has a **two-physical-line variant**, triggered by a header line exactly `surf1 surf2 p1 p2` — connectivity is on the first line and the second carries auxiliary data. Both readers support it, the periodic and codimension-name tables, and discard `face_colours`/`singular_*` sections as the Python reference does.
 - Only **one** integer cell-data array can be stored per file (a Netgen format limitation, not a meshio++ choice); when reading back, it is always named `"netgen:index"` regardless of its original name.
-- The `.vol.gz` gzip container is handled entirely in Python (via `gzip.open`); the C++ reader/writer explicitly refuse the `.gz` suffix.
-- `identifications`/`identificationtypes` are stored in `mesh.info`, which has no C++-core representation — any mesh carrying them, or with non-empty `field_data` (materials/bc names), is routed to the Python writer.
+- Native `.vol.gz` reads/writes require `MESHIOPLUSPLUS_WITH_ZLIB=ON`; a build without zlib raises an explicit capability error, and Python can fall back to `gzip.open`. `.vol.gz` is also recognized by the native registry.
 
 ## Notes
 
-- `tests/python/meshes/netgen/periodic_1d.vol`, `periodic_2d.vol`, `periodic_3d.vol` — each carries `identifications` data (used to test the `netgen:identifications`/`netgen:identificationtypes` round-trip, which always forces the Python path per the rules above).
-- The C++ core handles the common `.vol` path (points, cells, `netgen:index`) for both ascii read/write.
+- `tests/python/meshes/netgen/periodic_1d.vol`, `periodic_2d.vol`, `periodic_3d.vol` — periodic identification round-trip fixtures. Synthetic strict-core tests cover names, periodic tables, gzip, two-line edges and truncated sections without relying on Python fallback.

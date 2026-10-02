@@ -109,7 +109,8 @@ enum class VtkCodec {
     Zlib,  ///< vtkZLibDataCompressor -- the default, and the only one always available
     LZ4,   ///< vtkLZ4DataCompressor -- a real VTK compressor
     ZSTD,  ///< vtkZSTDDataCompressor -- a meshio++ extension; VTK has no ZSTD compressor
-    LZMA   ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+    LZMA,  ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+    LZF    ///< PCD write-option selector only; not a VTK block compressor
 };
 
 /** @brief The `compressor=` attribute a codec is recorded under, or "" for None. */
@@ -145,12 +146,15 @@ MESHIOPLUSPLUS_API void vtk_codec_require_read(VtkCodec codec);
 MESHIOPLUSPLUS_API void vtk_codec_require_write(VtkCodec codec);
 
 /** @brief Compress one block with @p codec. Callers must have required it. */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsigned char* pSrc,
-                                                    std::size_t n);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec,
+                                                                       const unsigned char* pSrc,
+                                                                       std::size_t n);
 
 /** @brief Decompress one block with @p codec into @p expected bytes. */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
-                                                      std::size_t n, std::size_t expected);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec,
+                                                                         const unsigned char* pSrc,
+                                                                         std::size_t n,
+                                                                         std::size_t expected);
 /** @} */
 
 /**
@@ -172,8 +176,9 @@ MESHIOPLUSPLUS_API std::uint64_t read_uint_le(const unsigned char* pP, std::size
  * @throws ReadError if the decoded data is shorter than the header, or
  *         shorter than the header declares.
  */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_t len,
-                                                   std::size_t hsz);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_uncompressed(const char* pText,
+                                                                      std::size_t len,
+                                                                      std::size_t hsz);
 
 /**
  * @brief Decodes a compressed VTU "binary" `DataArray` (the VTK block
@@ -202,8 +207,8 @@ MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_uncompressed(const char
  * @throws ReadError if @p codec was not compiled into this build, or if the
  *         header/data is truncated, or if any block fails to decompress.
  */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len, std::size_t hsz,
-                                             VtkCodec codec);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
+                                                                std::size_t hsz, VtkCodec codec);
 
 /**
  * @brief Encodes raw little-endian bytes as a VTU "binary" `DataArray` text,
@@ -227,7 +232,8 @@ MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pTex
  * @throws WriteError if @p codec is requested but was not compiled into this
  *         build.
  */
-MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec);
+MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
+                                                 VtkCodec codec);
 
 /**
  * @brief As above, with the file's `header_type` item size: every size in the

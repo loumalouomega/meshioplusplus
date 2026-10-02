@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 20
+#define MESHIOPLUSPLUS_ABI_VERSION 22
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -7004,6 +7004,13 @@ inline std::ifstream make_classic_ifstream(const std::filesystem::path& rPath,
 }
 
 /// An output file stream over @p rPath; on failure `fail()` is set, as with the constructor.
+inline std::ofstream make_classic_ofstream() {
+    std::ofstream stream;
+    imbue_classic(stream);
+    return stream;
+}
+
+/// An output file stream over @p rPath; on failure `fail()` is set, as with the constructor.
 inline std::ofstream make_classic_ofstream(const std::filesystem::path& rPath,
                                            std::ios_base::openmode Mode = std::ios_base::out) {
     std::ofstream stream;
@@ -13811,7 +13818,8 @@ enum class VtkCodec {
     Zlib,  ///< vtkZLibDataCompressor -- the default, and the only one always available
     LZ4,   ///< vtkLZ4DataCompressor -- a real VTK compressor
     ZSTD,  ///< vtkZSTDDataCompressor -- a meshio++ extension; VTK has no ZSTD compressor
-    LZMA   ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+    LZMA,  ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+    LZF    ///< PCD write-option selector only; not a VTK block compressor
 };
 
 /** @brief The `compressor=` attribute a codec is recorded under, or "" for None. */
@@ -13847,12 +13855,15 @@ MESHIOPLUSPLUS_API void vtk_codec_require_read(VtkCodec codec);
 MESHIOPLUSPLUS_API void vtk_codec_require_write(VtkCodec codec);
 
 /** @brief Compress one block with @p codec. Callers must have required it. */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsigned char* pSrc,
-                                                    std::size_t n);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec,
+                                                                       const unsigned char* pSrc,
+                                                                       std::size_t n);
 
 /** @brief Decompress one block with @p codec into @p expected bytes. */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
-                                                      std::size_t n, std::size_t expected);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec,
+                                                                         const unsigned char* pSrc,
+                                                                         std::size_t n,
+                                                                         std::size_t expected);
 /** @} */
 
 /**
@@ -13874,8 +13885,9 @@ MESHIOPLUSPLUS_API std::uint64_t read_uint_le(const unsigned char* pP, std::size
  * @throws ReadError if the decoded data is shorter than the header, or
  *         shorter than the header declares.
  */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_t len,
-                                                   std::size_t hsz);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_uncompressed(const char* pText,
+                                                                      std::size_t len,
+                                                                      std::size_t hsz);
 
 /**
  * @brief Decodes a compressed VTU "binary" `DataArray` (the VTK block
@@ -13904,8 +13916,8 @@ MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_uncompressed(const char
  * @throws ReadError if @p codec was not compiled into this build, or if the
  *         header/data is truncated, or if any block fails to decompress.
  */
-MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len, std::size_t hsz,
-                                             VtkCodec codec);
+MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
+                                                                std::size_t hsz, VtkCodec codec);
 
 /**
  * @brief Encodes raw little-endian bytes as a VTU "binary" `DataArray` text,
@@ -13929,7 +13941,8 @@ MESHIOPLUSPLUS_API std::vector<unsigned char> vtu_decode_blocks(const char* pTex
  * @throws WriteError if @p codec is requested but was not compiled into this
  *         build.
  */
-MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec);
+MESHIOPLUSPLUS_API std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
+                                                 VtkCodec codec);
 
 /**
  * @brief As above, with the file's `header_type` item size: every size in the
@@ -15408,6 +15421,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_ensight_metadata(const std::string& rPath,
 
 // System includes
 #include <string>
+#include <memory>
 #include <vector>
 
 // Project includes
@@ -15475,10 +15489,35 @@ inline constexpr const char* kExodusAttributePrefix = "exodus:attr:";
  * @param rMesh the mesh to write
  * @throws WriteError if a cell block's type has no entry in the meshio++ ->
  *         Exodus type table, or if the connectivity dtype is unsupported
- * @note the shim only attempts this C++ path when `mesh.point_sets` is
- *       empty — the C++ writer has no support for Exodus node sets at all
+ * Point and Side regions are written as node and side sets, preserving names,
+ * explicit ids and empty groups. Invalid memberships and duplicate ids throw.
  */
 MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh);
+
+/** Stateful, bounded-memory Exodus writer. Write the fixed geometry, sets and
+ * exodus:attr:* arrays once, then append point/cell fields with WriteData.
+ * The first step fixes field names, dtypes and shapes; later steps must match.
+ * Geometry, regions and attributes on step meshes are ignored. Flush publishes
+ * completed steps, Finalize closes the file, and both are idempotent. */
+class MESHIOPLUSPLUS_API ExodusTimeSeriesWriter {
+public:
+    explicit ExodusTimeSeriesWriter(const std::string& rPath);
+    ~ExodusTimeSeriesWriter();
+    ExodusTimeSeriesWriter(const ExodusTimeSeriesWriter&) = delete;
+    ExodusTimeSeriesWriter& operator=(const ExodusTimeSeriesWriter&) = delete;
+    ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept;
+    ExodusTimeSeriesWriter& operator=(ExodusTimeSeriesWriter&&) noexcept;
+    void WritePointsCells(const Mesh& rMesh);
+    void WriteData(double Time, const Mesh& rMesh);
+    void Flush();
+    void Finalize();
+    std::size_t NumSteps() const;
+    bool Finalized() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
+};
 
 /**
  * @brief Read an Exodus II (netCDF classic) file.
@@ -15526,7 +15565,8 @@ MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh
  * @note point_data keys ending X/Y/Z or _R/_Z may be recombined into vector
  *       arrays; cell_data is split per cell block by node count
  */
-MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo,
+                                    const ReadOptions& rOptions = {});
 
 /**
  * @brief Read an Exodus II file, discarding the provenance side channel.
@@ -15545,7 +15585,8 @@ MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, const ReadOptions&
  * @param rOptions per-call reader options
  * @return the summary
  */
-MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath,
+                                                     const ReadOptions& rOptions = {});
 
 /**
  * @brief Map an Exodus 1-based side number to a meshio++ local facet index.
@@ -16641,7 +16682,7 @@ MESHIOPLUSPLUS_API void write_gltf(const std::string& rPath, const Mesh& rMesh,
 // ===== begin src/cpp/include/meshioplusplus/formats/gmsh.hpp =====
 /**
  * @file gmsh.hpp
- * @brief Gmsh mesh format (.msh, versions 2.2 and 4.1) C++ reader/writer.
+ * @brief Gmsh mesh format (.msh) C++ reader (2.2/4.0/4.1) and writer (2.2/4.1).
  *
  * `$MeshFormat` (`version filetype datasize`; `filetype` 0=ascii, 1=binary,
  * with a 4-byte endianness-detection integer `1` for binary) is read first
@@ -16685,6 +16726,7 @@ MESHIOPLUSPLUS_API void write_gltf(const std::string& rPath, const Mesh& rMesh,
  */
 
 // System includes
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -16693,13 +16735,24 @@ MESHIOPLUSPLUS_API void write_gltf(const std::string& rPath, const Mesh& rMesh,
 
 namespace meshioplusplus {
 
+/** Periodic entity (dimension, slave tag, master tag), optional affine
+ * coefficients, and owning Int64 (N,2) slave/master point indices (0-based).
+ * Pair ordering/duplicates survive I/O. Mesh operations do not remap this
+ * format side channel; entity tags remain raw file ids.
+ */
+struct MESHIOPLUSPLUS_API GmshPeriodicLink {
+    std::array<std::int32_t, 3> mEntityTags{};
+    std::vector<double> mAffine;
+    NDArray mNodePairs{DType::Int64, {0, 2}};
+};
+
 /**
  * @brief Gmsh data that has no place on a `Mesh` (the `MedInfo`/`ExodusInfo`
  *        side-channel pattern).
  *
  * A reader overload fills one, a writer overload consumes one, and the shared
- * registry -- and therefore every flat binding (WASM, C API, Fortran, Julia,
- * R) -- passes none: a documented gap, not a silent loss.
+ * registry passes none and refuses `$Periodic`. Python, WASM and the C API's
+ * read/write-with-info paths (also Fortran/Julia/R) carry it explicitly.
  */
 struct MESHIOPLUSPLUS_API GmshInfo {
     /**
@@ -16716,6 +16769,8 @@ struct MESHIOPLUSPLUS_API GmshInfo {
      * with no `$Entities` section at all.
      */
     std::vector<std::vector<std::int32_t>> mBoundingEntities;
+    /** Periodic links in file order, with node tags resolved to point rows. */
+    std::vector<GmshPeriodicLink> mPeriodic;
 };
 
 /**
@@ -16734,10 +16789,13 @@ struct MESHIOPLUSPLUS_API GmshInfo {
  * @throws WriteError if a cell block's type has no Gmsh type-code mapping
  * @note reads/writes `cell_data["gmsh:physical"]`/`cell_data["gmsh:geometrical"]`
  *       and `field_data` (as `$PhysicalNames`)
- * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
- *       `mesh.gmsh_periodic` is unset
+ * @note the shim attempts the info-bearing C++ path when `float_fmt == ".16e"`
  */
 MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary);
+
+/** Write 2.2 including periodic links from the format side channel. */
+MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                     const GmshInfo& rInfo);
 
 /**
  * @brief Write `mesh` to `path` as a Gmsh 4.1 .msh file (ascii or binary).
@@ -16760,47 +16818,51 @@ MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh
  * @throws WriteError if a cell block's type has no Gmsh type-code mapping, an
  *         entity dimension is outside 0..3, or two cell blocks claim the same
  *         `(dim, entity tag)` — that entity would have no single physical tag
- * @note this overload writes no bounding entities; use the @ref GmshInfo
- *       overload to carry them
- * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
- *       the mesh has no `gmsh_periodic`
+ * @note this overload writes no bounding entities or periodic links; use the
+ *       @ref GmshInfo overload to carry them
+ * @note the shim attempts the info-bearing C++ path when `float_fmt == ".16e"`
  */
 MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Write a Gmsh 4.1 .msh file, including the `$Entities` bounding
- *        entities.
+ *        entities and `$Periodic` links.
  *
  * Identical to @ref write_gmsh41(const std::string&, const Mesh&, bool) except
  * that each entity's bounding-entity list is taken from
  * `rInfo.mBoundingEntities` (indexed by cell block). Entries beyond the block
- * count, and dimension-0 entities, are ignored.
+ * count, and dimension-0 entities, are ignored. Periodic point rows are written
+ * as this writer's sequential node tags; invalid dimensions/tags, affine
+ * lengths/values and out-of-range rows throw WriteError before opening the file.
  */
 MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary,
                                      const GmshInfo& rInfo);
 
 /**
- * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
+ * @brief Read a Gmsh .msh file (versions 2.2, 4.0 and 4.1).
  *
  * Dispatches on the `$MeshFormat` version string; parses `$PhysicalNames`,
  * `$Nodes`, `$Elements` (applying the gmsh <-> meshio++ node-order
- * permutation where needed), and, for 4.1, `$Entities`/per-entity node and
+ * permutation where needed), and, for 4.0/4.1, `$Entities`/per-entity node and
  * element blocks with node-tag->index remapping.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["gmsh:physical"]`/
  *         `cell_data["gmsh:geometrical"]` (2.2: the first two element tags;
- *         4.1: the block's entity tag and its `$Entities` physical tag, the
+ *         4.0/4.1: the block's entity tag and its `$Entities` physical tag, the
  *         latter present only when the file tags any entity at all, and 0 for
  *         the untagged blocks), `point_data["gmsh:dim_tags"]` (v4.1 only),
  *         `field_data` from `$PhysicalNames`, and one `Cell` region per named
  *         physical group
  * @throws ReadError for anything not handled by the C++ path — version not
- *         2.2/4.1 (4.0's `$Entities` layout differs), `$Periodic` records,
+ *         2.2/4.0/4.1, `$Periodic` records,
  *         a Gmsh element type outside the curated type-code subset, or
  *         parametric nodes — so the Python reader can take over
- * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
- *       Python fallback does, for files containing `$Periodic`
+ * @note `$Periodic` requires the GmshInfo overload rather than being discarded.
+ *       Python's native binding uses it to populate `mesh.gmsh_periodic`.
+ * @note 4.0 binary unsigned-long counts may be 4 or 8 bytes; their width
+ *       is inferred by validating the section structure. Byte-swapped 4.0
+ *       files are refused, matching the Python reference.
  * @note this overload discards the `$Entities` bounding-entity tags; use the
  *       @ref GmshInfo overload to keep them
  */
@@ -16810,11 +16872,14 @@ MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, const ReadOptions& r
  * @brief Read a Gmsh .msh file, keeping the data that has no place on a `Mesh`.
  *
  * Identical to @ref read_gmsh(const std::string&, const ReadOptions&) except
- * that `rInfo` receives the format 4.1 `$Entities` bounding-entity tags.
+ * that `rInfo` receives the format 4.1 `$Entities` bounding-entity tags and
+ * `$Periodic` links in all three versions, with sparse node tags resolved to
+ * 0-based point rows. A section may precede `$Nodes`. Invalid counts/tags,
+ * non-finite or non-16-length affine transforms, missing node references and
+ * missing section terminators throw ReadError.
  *
  * @param rPath filesystem path to read
- * @param rInfo receives the side-channel data (cleared of nothing — append-only
- *        into whatever the caller passes)
+ * @param rInfo replaced on success; unchanged if the read fails
  * @param rOpts selective-read options
  * @return the read Mesh
  */
@@ -16836,7 +16901,8 @@ MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo,
  * @throws ReadError for format 2.2, `$Entities`/`$Periodic`, or an unsupported
  *         element type -- exactly what `read_gmsh` rejects
  */
-MESHIOPLUSPLUS_API MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_gmsh_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/gmsh.hpp =====
@@ -17518,9 +17584,8 @@ MESHIOPLUSPLUS_API MeshMetadata read_marc_t19_metadata(const std::string& rPath,
  * and the native CLI) **throw `ReadError` naming the construct**.
  * **`ReadOptions::mLenient` downgrades every one of those to a warning plus a
  * skip**, and what was skipped is recorded in `MdpaInfo::mSkippedConstructs`.
- * Two sub-model-part blocks are not parsed even with an #MdpaInfo and follow
- * the same strict/lenient rule: non-empty `SubModelPartGeometries` and
- * `SubModelPartConstraints`. Two things still throw even under `mLenient`,
+ * Geometry and constraint membership is carried in #MdpaSubModelPart as raw
+ * file ids, not mesh regions. Two things still throw even under `mLenient`,
  * because skipping them would return a mesh that is quietly wrong rather than
  * merely incomplete:
  *
@@ -17638,7 +17703,9 @@ struct MdpaMeshBlock {
  *
  * Membership (nodes, elements, conditions) is on the mesh as regions, which
  * operations remap; this holds only what a region cannot: the part's
- * `SubModelPartData` entries and `SubModelPartTables` ids.
+ * `SubModelPartData` entries and table, geometry and constraint ids. These ids
+ * stay in file order and are not remapped by mesh operations; constraints
+ * themselves remain opaque #MdpaRawBlock content.
  */
 struct MdpaSubModelPart {
     /** @brief The hierarchical name (`"parent/child"`), as the region is named. */
@@ -17647,6 +17714,10 @@ struct MdpaSubModelPart {
     std::vector<PropertyValue> mData;
     /** @brief The `SubModelPartTables` ids, in file order. */
     std::vector<std::int64_t> mTables;
+    /** @brief The `SubModelPartGeometries` file ids, in file order. */
+    std::vector<std::int64_t> mGeometryIds;
+    /** @brief The `SubModelPartConstraints` file ids, in file order. */
+    std::vector<std::int64_t> mConstraintIds;
 };
 
 /**
@@ -17701,7 +17772,7 @@ struct MdpaInfo {
     std::vector<MdpaGeometryBlock> mGeometries;
     /** @brief Every `Begin Mesh <id>` block, in file order. */
     std::vector<MdpaMeshBlock> mMeshBlocks;
-    /** @brief Sub-model-parts with `SubModelPartData`/`Tables` content, in file order. */
+    /** @brief Sub-model-parts with data or table/geometry/constraint ids, in file order. */
     std::vector<MdpaSubModelPart> mSubModelParts;
     /** @brief Every other top-level block, verbatim, in file order. */
     std::vector<MdpaRawBlock> mRawBlocks;
@@ -17813,9 +17884,8 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
  * The overload a round trip needs: `rInfo` comes back carrying the `Properties`
  * bodies, the per-block Kratos entity names, every block listed under "The
  * blocks the `Mesh` cannot hold" and (under `mLenient`) the list of skipped
- * constructs, all of which `write_mdpa(path, mesh, info)` puts back. Only a
- * non-empty `SubModelPartGeometries`/`SubModelPartConstraints` still throws
- * (or, under `mLenient`, is skipped).
+ * constructs, all of which `write_mdpa(path, mesh, info)` puts back, including
+ * geometry and constraint membership of nested sub-model-parts.
  *
  * @param rPath filesystem path to read
  * @param rInfo out: the side-channel content; cleared first
@@ -17872,20 +17942,11 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
  * blocks are iterated in HDF5 **creation order** (matching h5py's
  * `track_order`) since block order must align with `cell_data`/`cell_sets`.
  *
- * **What always falls back to Python** (the C++ functions `throw` and the
- * `meshioplusplus.med` shim catches and retries with the pure-Python/h5py
- * implementation): a `CHA` **field** past the single-timestep, no-profile,
- * no-units common case (MED-4.1 bitmask attributes,
- * `field_data["med:field_units"]`/`["med:step_meta"]`, and multi-timestep
- * field-name grouping are Python-only — see `read_cha_fields`/
- * `write_cha_nodal_field`/`write_cha_cell_field`), the `gmsh:physical`→family
- * **bridging** performed on write, non-default **profiles** / `ELGA`
- * support, and **multi-mesh** files (`read_med_multi`/`write_med_multi`,
- * which have no C++ equivalent at all). Quadratic 3D types (`tetra10`,
- * `hexahedron20`, `pyramid13`, `wedge15`) share the linear types' orientation
- * convention but have no implemented corners+midpoints permutation yet —
- * they round-trip unconverted (a warning is logged the first time one is
- * seen); see doc/formats/med.md for the planned fix.
+ * Enhanced field units/component names, multi-step metadata/name grouping
+ * and ELNO/ELGA retain the Python reference path. Ordinary named nodal/element
+ * profiles expand natively with NaN fill. Named meshes are enumerated/read/
+ * written through additive APIs below. Gmsh physical-group family bridging,
+ * MED-4.1 bitmask output and quadratic 3D node permutations are native too.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -17965,7 +18026,7 @@ struct MedInfo {
      * Mirrors `MdpaInfo::mSkippedConstructs`. Empty after a strict read, since
      * a strict read either represents everything or throws. Each entry names
      * the field and the construct, e.g.
-     * `"field 'v' on a named profile"`.
+     * `"field 'v' support 'NOE.TR3' (ELNO/ELGA data)"`.
      */
     std::vector<std::string> mSkippedConstructs;
     /**
@@ -18020,13 +18081,26 @@ struct MedInfo {
  *         cell_data["cell_tags"], named regions, arbitrary named point/cell
  *         data from `CHA` fields except those excluded below)
  * @throws ReadError — on a file written by MED major version > 4; on a `CHA`
- *         field past the single-timestep/no-profile/no-units common case
- *         (units, multi-timestep metadata, a named profile, or ELNO/ELGA
+ *         field past the single-timestep/no-units common case
+ *         (units, multi-timestep metadata, or ELNO/ELGA
  *         support); on multi-mesh files; on malformed/unsupported HDF5
  *         layout. Callers (the Python shim) catch this and retry with the
  *         pure-Python/h5py reader.
  */
 MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
+
+/** Enumerate meshes in ENS_MAA link order without materializing geometry. */
+MESHIOPLUSPLUS_API std::vector<std::string> med_mesh_names(const std::string& rPath);
+/** Read one explicitly selected mesh, filtering CHA fields by their owner.
+ * Ordinary named nodal/element profiles expand with NaN on uncovered rows. */
+MESHIOPLUSPLUS_API Mesh read_med_named(const std::string& rPath, const std::string& rName,
+                                       MedInfo& rInfo, const ReadOptions& rOptions = {});
+/** Write several named meshes into one file. Names must be unique/nonempty;
+ * colliding field names use @mesh suffixes and are restored on named reads. */
+MESHIOPLUSPLUS_API void write_med_multi(const std::string& rPath,
+                                        const std::vector<const Mesh*>& rMeshes,
+                                        const std::vector<MedInfo>& rInfos,
+                                        const std::string& rMedVersion = "4.1.0");
 
 /**
  * @brief `read_med` with read options — the overload that makes a MED file
@@ -18041,8 +18115,8 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * `MedInfo::mSkippedConstructs`, so the mesh, its tags/families/regions and
  * every *representable* field still come back. Units and non-default step
  * metadata are not skipped but **read into** `MedInfo::mFieldUnits` /
- * `mStepMeta`; only a construct with no representation at all (a named
- * profile, an ELNO/ELGA support, a field mixing nodal and cell support) causes
+ * `mStepMeta`; only a construct with no supported representation (an
+ * ELNO/ELGA support, a field mixing nodal and cell support) causes
  * that one field to be dropped. This is the same mechanism, and the same
  * rationale, as `ReadOptions::mLenient` for MDPA: strict is what the Python
  * shim uses (so it still falls back and the Python surface is unchanged),
@@ -18764,15 +18838,12 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_op2_metadata(const std::string& rPa
  * `[0,3,2,1,4,7,6,5,10,9,11,8,16,19,18,17,14,13,15,12]`
  * (`line`/`triangle`/`quad`/`vertex` use natural order).
  *
- * **Deferred to Python** (the reader throws when it meets any of these
- * tokens, and the writer is gated off by the shim when the mesh carries
- * the corresponding data): the `identifications`/`identificationtypes`
- * periodic node-pair tables (stored in `mesh.info`, which has no C++-core
- * representation), `materials`/`bcnames`/`cd2names`/`cd3names` codimension
- * name tables (-> non-empty `field_data`), the two-physical-line
- * `edgesegmentsgi2` variant, `face_colours`/`singular_*` sections, and the
- * gzip `.vol.gz` container (the C++ reader/writer explicitly refuse the
- * `.gz` suffix; Python handles it via `gzip.open`).
+ * Periodic tables use numeric `field_data` under `netgen:identifications`
+ * and `netgen:identificationtypes`; the Python binding moves these to its
+ * historical `mesh.info` representation. Codimension name tables map to
+ * `[id, dimension]` field data. Two-line `edgesegmentsgi2` is supported;
+ * auxiliary face-colour/singular sections are skipped. `.vol.gz` reads and
+ * writes require zlib, with a named error when it is compiled out.
  */
 
 // System includes
@@ -18784,7 +18855,7 @@ namespace meshioplusplus {
 
 /**
  * @brief Write a Mesh to a Netgen neutral mesh (.vol) file, ascii,
- *        common-path only.
+ *        including name/periodic tables and optional gzip storage.
  *
  * Emits `mesh3d`, `dimension`, `points`, and per-dimension element blocks
  * (`pointelements`/edge/`surfaceelements`/`volumeelements` as applicable)
@@ -18792,21 +18863,21 @@ namespace meshioplusplus {
  * permutation. The single per-cell region/material marker is taken from
  * `cell_data["netgen:index"]` if present, else the first integer-dtype
  * cell_data array found (Netgen has no way to store the array's name).
- * Refuses (via the shim) meshes carrying `mesh.info` entries or non-empty
- * `field_data`, and never handles the `.vol.gz` suffix.
+ * Name and periodic tables use field data; the Python binding supplies its
+ * periodic side channel explicitly. Gzip storage requires zlib.
  *
  * @param rPath filesystem path to the .vol file to create/overwrite
  * @param rMesh the mesh to write
  * @param rFloatFmt coordinate format string (e.g. `".16e"`)
  * @throws WriteError on an unsupported cell type, mixed content this path
- *         doesn't implement, or a `.gz` path
+ *         doesn't implement, or gzip storage without zlib
  * @note reads `cell_data["netgen:index"]` if present
  */
 MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read a Netgen neutral mesh (.vol) file into a Mesh, ascii,
- *        common-path only.
+ *        including name/periodic tables and optional gzip storage.
  *
  * Parses `dimension`, `geomtype` (unexpected values only warn),
  * `points`, and the point/edge/surface/volume element blocks, inferring
@@ -18817,11 +18888,8 @@ MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh
  *
  * @param rPath filesystem path to the .vol file to read
  * @return the read Mesh, with `cell_data["netgen:index"]` populated
- * @throws ReadError on `identifications`/`identificationtypes`,
- *         `materials`/`bcnames`/`cd2names`/`cd3names`, the two-line
- *         `edgesegmentsgi2` variant, `face_colours`/`singular_*` sections,
- *         a `.gz` path, or a malformed file — all of which route to the
- *         Python fallback
+ * @throws ReadError on malformed files, unsupported sections or gzip storage
+ *         in a build without zlib.
  */
 MESHIOPLUSPLUS_API Mesh read_netgen(const std::string& rPath);
 
@@ -20856,10 +20924,10 @@ MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
  * explicit `.vtu` spends the overwhelming majority of its bytes re-stating an
  * index formula. ImageData states it instead: `Origin`, `Spacing` and
  * `WholeExtent` **are** the grid header, which makes `.vti` the one format in
- * meshio++ that round-trips a generated grid's geometry exactly. (No format
- * persists arbitrary `field_data`, so the `sdf:*` keys do not survive any write
- * -- here they do not need to, because the geometry itself carries the same
- * information and `detail::lattice_from_mesh` recovers it.)
+ * meshio++ that round-trips a generated grid's geometry exactly. This writer
+ * does not persist the `sdf:*` field header: the geometry itself carries the
+ * same information and `detail::lattice_from_mesh` recovers it. Numeric field
+ * data supplied by another producer is read; VTU can also write it.
  *
  * The container is the same VTK XML this repo already reads and writes, so the
  * `<DataArray>` codec (`detail/vtk_xml.hpp`) and the base64 + block-compression
@@ -20871,7 +20939,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
  * A `Mesh` has no implicit geometry, so:
  *
  * - **`read_vti` expands** the extent into explicit points and one `hexahedron`
- *   cell block, through `detail/grid_lattice.hpp` -- the same numbering `grid()`
+ *   cell block, with the same numbering `grid()`
  *   and `voxelize()` produce, which is what makes `read_vti(write_vti(m)) == m`
  *   an identity rather than a coincidence.
  * - **`write_vti` requires a lattice.** A mesh that is not one has no `Origin`/
@@ -20880,12 +20948,14 @@ MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
  *   octree): ImageData cannot express a hole, and silently filling one in would
  *   write a different mesh than the caller handed over.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * - `<AppendedData>` -- the VTU C++ reader declines it too, for the same reason.
- * - More than one `<Piece>`, or a piece whose `Extent` is not the `WholeExtent`.
- * - `header_type="UInt64"` is supported on read (the header size is honoured);
- *   the writer always emits the default `UInt32`, as the VTU writer does.
+ * - Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order.
+ * - Multiple pieces and partial extents concatenate without welding. Each
+ *   piece's extent sizes its own geometry and arrays, within WholeExtent.
+ * - Writers remain inline, selecting UInt64 for large uncompressed arrays.
+ * - Lower-dimensional extents remain points-only; non-identity Direction
+ *   is refused rather than discarded.
  * - lzma, and any codec this build was compiled without -- by name.
  */
 
@@ -20943,13 +21013,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vti_metadata(const std::string& rPath,
 // ===== begin src/cpp/include/meshioplusplus/formats/vtk.hpp =====
 /**
  * @file vtk.hpp
- * @brief Legacy VTK (.vtk) `UNSTRUCTURED_GRID` C++ reader/writer, versions
+ * @brief Legacy VTK (.vtk) C++ reader/writer, versions
  *        4.2 and 5.1, ascii and binary.
  *
- * Only `DATASET UNSTRUCTURED_GRID` is handled by the C++ core; any other
- * dataset type (`STRUCTURED_POINTS`, `STRUCTURED_GRID`, `RECTILINEAR_GRID`)
- * always falls back to Python, which converts those into unstructured
- * line/quad/hex cells in Fortran (column-major) order. Binary numeric data
+ * The core reads `UNSTRUCTURED_GRID`, `STRUCTURED_POINTS`, `STRUCTURED_GRID`
+ * and `RECTILINEAR_GRID`; writers emit `UNSTRUCTURED_GRID`. Structured
+ * geometry becomes vertex/line/quad/hex cells in x-fastest (Fortran) order,
+ * with scalar/vector/tensor/field arrays retained. Binary numeric data
  * is **always big-endian on disk** regardless of host platform — an
  * explicit VTK-wiki convention, not a meshio++ choice — so binary I/O
  * byte-swaps through `detail/byteswap.hpp` intrinsics whenever the host is
@@ -21010,7 +21080,8 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `SCALARS`/`VECTORS`/
  *       `TENSORS`/`FIELD` blocks; no reserved key names.
  */
-MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51);
+MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                  bool v51);
 
 /**
  * @brief Read a VTK legacy file.
@@ -21024,9 +21095,8 @@ MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, b
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if `DATASET` is anything other than
- *         `UNSTRUCTURED_GRID` (structured points/grid, rectilinear grid all
- *         fall back to Python), on a truncated binary section, an ascii
+ * @throws ReadError on an unsupported dataset, invalid structured dimensions
+ *         or mismatched point/axis/attribute counts, a truncated binary section, an ascii
  *         parse failure, an unknown VTK data-type token, or an unrecognized
  *         section keyword
  * @note point_data/cell_data map generically from `SCALARS`/`VECTORS`/
@@ -21445,7 +21515,9 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtm_metadata(const std::string& rPath,
  * `triangle`/`quad`/`polygon` (Polys). Cell data follows VTK's canonical
  * PolyData cell order — Verts, then Lines, then Polys, then Strips — in
  * both directions. Triangle strips, poly-vertex/poly-line rows, multiple
- * pieces, appended data, and lzma compression raise (Python fallback).
+ * pieces, and lzma compression raise (Python additionally handles lzma).
+ * Appended raw/base64 arrays share VTU's framing decoder, with UInt32/UInt64
+ * headers and either byte order; writing remains inline.
  */
 
 // System includes
@@ -21473,7 +21545,8 @@ namespace meshioplusplus {
  *         cell type PolyData cannot hold (volume or quadratic cells,
  *         polyhedra)
  */
-MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
+MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                  bool zlib);
 
 /**
  * @brief Write a `.vtp` choosing the block-compression codec explicitly.
@@ -21490,14 +21563,16 @@ MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, b
  *         into this build.
  */
 MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
-                     detail::VtkCodec codec);
+                                        detail::VtkCodec codec);
 
 /**
  * @brief Read a VTK XML PolyData (.vtp) file.
  *
  * Verts rows become `vertex` cells, Lines rows `line` cells, and Polys rows
  * `triangle`/`quad`/`polygon` cells (grouped by row size); cell_data is
- * split per block in VTK's canonical Verts/Lines/Polys order.
+ * split per block in VTK's canonical Verts/Lines/Polys order within each piece.
+ * Multiple pieces concatenate in document order without welding; compatible
+ * arrays present in every piece survive. Piece-local region indices are shifted.
  *
  * @param rPath filesystem path of the `.vtp` file
  * @param rOpts optional narrowing of what is materialized; the default reads
@@ -21505,8 +21580,8 @@ MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rM
  *        before their payload is decoded.
  * @return the read Mesh
  * @throws ReadError on malformed XML, a non-PolyData file, triangle strips,
- *         poly-vertex/poly-line rows, multiple pieces, appended data, or
- *         lzma compression (all deferred to the Python reader)
+ *         poly-vertex/poly-line rows or lzma compression
+ *         (the Python reader additionally handles lzma)
  */
 MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
 
@@ -21521,7 +21596,8 @@ MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rO
  * @return the summary; `mHasBBox` is false (see `read_vtu_metadata`)
  * @throws ReadError on the same unsupported constructs as `read_vtp`
  */
-MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/vtp.hpp =====
@@ -21559,12 +21635,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, cons
  * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
  * codec machinery `.vti`/`.vts`/`.vtu` already use.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
- * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
- * build lacks. `header_type="UInt64"` is honoured on read; the writer always
- * emits the default `UInt32`.
+ * Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order
+ * are supported. Multiple pieces and partial extents concatenate without
+ * welding, with each piece's extent sizing its axes and arrays. lzma and
+ * unavailable codecs are refused. Writers remain inline; degenerate extents
+ * remain points-only, as in `.vti`.
  */
 
 // System includes
@@ -21654,12 +21731,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtr_metadata(const std::string& rPath,
  * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
  * codec machinery `.vti`/`.vtu` already use.
  *
- * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ * ### Read capabilities and remaining restrictions
  *
- * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
- * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
- * build lacks. `header_type="UInt64"` is honoured on read; the writer always
- * emits the default `UInt32`.
+ * Raw/base64 appended arrays, UInt32/UInt64 headers and either byte order
+ * are supported. Multiple pieces and partial extents concatenate without
+ * welding, with each piece's extent sizing its geometry and arrays. lzma
+ * and unavailable codecs are refused. Writers remain inline; degenerate
+ * extents remain points-only, as in `.vti`.
  */
 
 // System includes
@@ -21999,9 +22077,9 @@ MESHIOPLUSPLUS_API Mesh read_wkt(const std::string& rPath);
  * <Attribute Name=".." AttributeType="Scalar|Vector|Tensor|Tensor6|Matrix"
  * Center="Node|Cell|Grid"><DataItem .../></Attribute></Grid></Domain>
  * </Xdmf>`. Both XDMF2 and XDMF3 exist in the wild (dispatched by the major
- * version digit in the root `Version` attribute), but **the C++ core only
- * implements version 3** — any `Version="2.x"` file throws ReadError and
- * falls back to Python. XDMF3 accepts either `Type=` or `TopologyType=`/
+ * version digit in the root `Version` attribute). The native reader accepts
+ * both versions, including absolute DataItem references and embedded
+ * Information field data. It accepts either `Type=` or `TopologyType=`/
  * `GeometryType=` but errors if both are given on the same element.
  *
  * `Format="XML"` DataItem text is whitespace-separated inline numbers;
@@ -22020,10 +22098,10 @@ MESHIOPLUSPLUS_API Mesh read_wkt(const std::string& rPath);
  * extra "point count" field that **must equal exactly 2** — anything else
  * throws ReadError. The C++ type table is a strict subset of the Python
  * one: it covers through `hexahedron27` but omits the higher-order
- * `hexahedron64`..`hexahedron1331` types, and does not implement
- * `Reference="XML"`/XPath DataItem references or the XDMF2-only
- * `Information`-based `field_data` — all of these throw and fall back to
- * Python. Points are restricted to dimension <=3 on write.
+ * `hexahedron64`..`hexahedron1331` types, which fall back to Python.
+ * Absolute DataItem references and embedded Information field data are read
+ * natively; cycles and invalid reference targets raise ReadError.
+ * Points are restricted to dimension <=3 on write.
  *
  * Temporal XDMF (a `GridType="Collection" CollectionType="Temporal"` grid) is
  * *written* by `formats/xdmf_time_series.hpp`, which is a stateful multi-call
@@ -22063,8 +22141,8 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `<Attribute Center="Node"|
  *       "Cell">` elements, keyed by the raw attribute name.
  */
-MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
-                int gzip_level = -1);
+MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh,
+                                   const std::string& rDataFormat, int gzip_level = -1);
 
 /**
  * @brief Read an XDMF3 file's first `<Grid>`.
@@ -22076,9 +22154,8 @@ MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh, 
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if the file is XDMF2 (`Version="2.x"`), uses a
- *         `Reference` DataItem attribute, an XDMF2 `Information` field-data
- *         block, a Mixed `Polyline` entry with a point count other than 2, a
+ * @throws ReadError on an invalid reference/Information payload,
+ *         a Mixed `Polyline` entry with a point count other than 2, a
  *         cell type outside the C++ type table (e.g. `hexahedron64`+), or a
  *         `Format="HDF"` DataItem on a build without HDF5 support — the shim
  *         then falls back to the Python/`h5py` reader.
@@ -22099,7 +22176,8 @@ MESHIOPLUSPLUS_API Mesh read_xdmf(const std::string& rPath, const ReadOptions& r
  * @throws ReadError on Mixed topology (which needs the full reader to resolve
  *         per-block counts) and on everything `read_xdmf` rejects
  */
-MESHIOPLUSPLUS_API MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_xdmf_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/xdmf.hpp =====
@@ -22270,11 +22348,12 @@ public:
     /**
      * @brief Write the static grid: the points and cell blocks every step shares.
      *
-     * Only geometry and connectivity are consumed; any data the mesh carries is
-     * ignored here, because in a transient series data belongs to a step. Call
+     * Geometry, connectivity and named regions are consumed. Regions are fixed
+     * with the shared mesh and stored once as XDMF Sets; point/cell data belongs
+     * to a step and is ignored here. Call
      * exactly once, before the first `WriteData`.
      *
-     * @param rMesh The mesh whose points/cells define the series.
+     * @param rMesh The mesh whose points/cells/regions define the series.
      * @throws WriteError if called twice, if the points exceed dimension 3, or
      *         if a cell type has no XDMF spelling.
      */
@@ -24534,6 +24613,7 @@ MESHIOPLUSPLUS_API DataIntegrateReport data_integrate(const Mesh& rMesh,
 
 // System includes
 #include <string>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -24628,6 +24708,25 @@ MESHIOPLUSPLUS_API Mesh data_keep(const Mesh& rMesh, DataLocation Location, cons
  */
 MESHIOPLUSPLUS_API Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rFrom,
                  const std::string& rTo);
+
+/** Convert point/cell region-backed sets to scalar Int64 labels on a new mesh.
+ * Labels follow rOrder, or native region-name order when it is empty. rOrder
+ * must name every set exactly once. Later overlapping sets win; uncovered rows
+ * are -1. All converted regions are removed; side regions remain. An unset
+ * rName joins set names with rJoin; an explicit name (even empty) is used as-is.
+ * Geometry, unrelated data and property sets remain bit-identical. */
+MESHIOPLUSPLUS_API Mesh sets_to_data(const Mesh& rMesh, DataLocation Location,
+                                     const std::optional<std::string>& rName = std::nullopt,
+                                     const std::string& rJoin = "-",
+                                     const std::vector<std::string>& rOrder = {});
+
+/** Convert one scalar integer field into point/cell region-backed sets on a
+ * new mesh, then remove that field. Tags are sorted numerically; unique names
+ * from splitting rKey on '-' are used when their count matches the tags.
+ * Otherwise names are set-<key>-<tag> for cells and set-key-<tag> for points,
+ * matching the Python Mesh methods. Same-name regions retain dim/tag. */
+MESHIOPLUSPLUS_API Mesh data_to_sets(const Mesh& rMesh, DataLocation Location,
+                                     const std::string& rKey);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/data_manage.hpp =====
@@ -27151,11 +27250,11 @@ struct WriteOptions {
     WriteEncoding mEncoding = WriteEncoding::Default;
 
     /**
-     * @brief Block compression codec for the VTK-XML formats (vtu/vtp).
+     * @brief Compression codec for VTK-XML, or LZF for PCD binary_compressed.
      *
      * `Zlib` is the default those formats already use when binary; `None`
-     * disables compression. Errors for any other format -- no other format in
-     * meshio++ has a block codec, so naming one is a mistake.
+     * disables compression. LZF selects PCD's compressed binary encoding and
+     * is rejected for VTK; VTK codecs are rejected for PCD.
      */
     detail::VtkCodec mCodec = detail::VtkCodec::Zlib;
     bool mCodecSet = false;  ///< whether mCodec was chosen explicitly
@@ -27312,6 +27411,10 @@ struct PipelineReport {
     std::vector<std::string> mWarnings;
 };
 
+/** Serialize the shared {steps: [{op, ...counters}], warnings: [...]} report.
+ * Non-finite counters become JSON null. Requires the optional JSON support. */
+MESHIOPLUSPLUS_API std::string pipeline_report_json(const PipelineReport& rReport);
+
 /**
  * @brief The step vocabulary itself: op name -> its parameter keys, in table
  * order (aliases like `Section` included).
@@ -27322,6 +27425,13 @@ struct PipelineReport {
  */
 MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
 pipeline_op_table();
+
+/** Version 2 vocabulary: v1 plus file-backed Merge/Interpolate/UndoGreen,
+ * terminal Split and partition-to-pieces. PipelineOutput::mPath may contain
+ * {key}/{part}; JSON Output.Pattern maps to it without changing installed layouts.
+ * Version 2 spatial fan-out is separate from transient sequence fan-out. */
+MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
+pipeline_v2_op_table();
 
 /**
  * @brief Checks @p rStep against the step vocabulary.
@@ -32752,6 +32862,1580 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/typed_view.hpp =====
+// ===== begin src/cpp/src/detail/vtk_xml_pieces.hpp =====
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+// Core-private shared reader for serial PolyData and structured XML pieces.
+Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts, const char* pType,
+                         const char* pFormat);
+MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType,
+                                     const char* pFormat);
+
+// Point dimensions, x-fastest. Legacy structured datasets also use lines/quads.
+void vtk_structured_cells(const std::array<std::int64_t, 3>& rDims,
+                          std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                          std::vector<std::int64_t>& rTypes, bool VolumeOnly = false);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/vtk_xml_pieces.hpp =====
+// ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
+/**
+ * pugixml parser - version 1.14
+ * --------------------------------------------------------
+ * Copyright (C) 2006-2023, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
+ * Report bugs and download new versions at https://pugixml.org/
+ *
+ * This library is distributed under the MIT License. See notice at the end
+ * of this file.
+ *
+ * This work is based on the pugxml parser, which is:
+ * Copyright (C) 2003, by Kristen Wegner (kristen@tima.net)
+ */
+
+// Define version macro; evaluates to major * 1000 + minor * 10 + patch so that it's safe to use in less-than comparisons
+// Note: pugixml used major * 100 + minor * 10 + patch format up until 1.9 (which had version identifier 190); starting from pugixml 1.10, the minor version number is two digits
+#ifndef PUGIXML_VERSION
+#	define PUGIXML_VERSION 1140 // 1.14
+#endif
+
+// Include user configuration file (this can define various configuration macros)
+
+#ifndef HEADER_PUGIXML_HPP
+#define HEADER_PUGIXML_HPP
+
+// Include stddef.h for size_t and ptrdiff_t
+#include <stddef.h>
+
+// Include exception header for XPath
+#if !defined(PUGIXML_NO_XPATH) && !defined(PUGIXML_NO_EXCEPTIONS)
+#	include <exception>
+#endif
+
+// Include STL headers
+#ifndef PUGIXML_NO_STL
+#	include <iterator>
+#	include <iosfwd>
+#	include <string>
+#endif
+
+// Macro for deprecated features
+#ifndef PUGIXML_DEPRECATED
+#	if defined(__GNUC__)
+#		define PUGIXML_DEPRECATED __attribute__((deprecated))
+#	elif defined(_MSC_VER) && _MSC_VER >= 1300
+#		define PUGIXML_DEPRECATED __declspec(deprecated)
+#	else
+#		define PUGIXML_DEPRECATED
+#	endif
+#endif
+
+// If no API is defined, assume default
+#ifndef PUGIXML_API
+#	define PUGIXML_API
+#endif
+
+// If no API for classes is defined, assume default
+#ifndef PUGIXML_CLASS
+#	define PUGIXML_CLASS PUGIXML_API
+#endif
+
+// If no API for functions is defined, assume default
+#ifndef PUGIXML_FUNCTION
+#	define PUGIXML_FUNCTION PUGIXML_API
+#endif
+
+// If the platform is known to have long long support, enable long long functions
+#ifndef PUGIXML_HAS_LONG_LONG
+#	if __cplusplus >= 201103
+#		define PUGIXML_HAS_LONG_LONG
+#	elif defined(_MSC_VER) && _MSC_VER >= 1400
+#		define PUGIXML_HAS_LONG_LONG
+#	endif
+#endif
+
+// If the platform is known to have move semantics support, compile move ctor/operator implementation
+#ifndef PUGIXML_HAS_MOVE
+#	if __cplusplus >= 201103
+#		define PUGIXML_HAS_MOVE
+#	elif defined(_MSC_VER) && _MSC_VER >= 1600
+#		define PUGIXML_HAS_MOVE
+#	endif
+#endif
+
+// If C++ is 2011 or higher, add 'noexcept' specifiers
+#ifndef PUGIXML_NOEXCEPT
+#	if __cplusplus >= 201103
+#		define PUGIXML_NOEXCEPT noexcept
+#	elif defined(_MSC_VER) && _MSC_VER >= 1900
+#		define PUGIXML_NOEXCEPT noexcept
+#	else
+#		define PUGIXML_NOEXCEPT
+#	endif
+#endif
+
+// Some functions can not be noexcept in compact mode
+#ifdef PUGIXML_COMPACT
+#	define PUGIXML_NOEXCEPT_IF_NOT_COMPACT
+#else
+#	define PUGIXML_NOEXCEPT_IF_NOT_COMPACT PUGIXML_NOEXCEPT
+#endif
+
+// If C++ is 2011 or higher, add 'override' qualifiers
+#ifndef PUGIXML_OVERRIDE
+#	if __cplusplus >= 201103
+#		define PUGIXML_OVERRIDE override
+#	elif defined(_MSC_VER) && _MSC_VER >= 1700
+#		define PUGIXML_OVERRIDE override
+#	else
+#		define PUGIXML_OVERRIDE
+#	endif
+#endif
+
+// If C++ is 2011 or higher, use 'nullptr'
+#ifndef PUGIXML_NULL
+#	if __cplusplus >= 201103
+#		define PUGIXML_NULL nullptr
+#	elif defined(_MSC_VER) && _MSC_VER >= 1600
+#		define PUGIXML_NULL nullptr
+#	else
+#		define PUGIXML_NULL 0
+#	endif
+#endif
+
+// Character interface macros
+#ifdef PUGIXML_WCHAR_MODE
+#	define PUGIXML_TEXT(t) L ## t
+#	define PUGIXML_CHAR wchar_t
+#else
+#	define PUGIXML_TEXT(t) t
+#	define PUGIXML_CHAR char
+#endif
+
+namespace pugi
+{
+	// Character type used for all internal storage and operations; depends on PUGIXML_WCHAR_MODE
+	typedef PUGIXML_CHAR char_t;
+
+#ifndef PUGIXML_NO_STL
+	// String type used for operations that work with STL string; depends on PUGIXML_WCHAR_MODE
+	typedef std::basic_string<PUGIXML_CHAR, std::char_traits<PUGIXML_CHAR>, std::allocator<PUGIXML_CHAR> > string_t;
+#endif
+}
+
+// The PugiXML namespace
+namespace pugi
+{
+	// Tree node types
+	enum xml_node_type
+	{
+		node_null,			// Empty (null) node handle
+		node_document,		// A document tree's absolute root
+		node_element,		// Element tag, i.e. '<node/>'
+		node_pcdata,		// Plain character data, i.e. 'text'
+		node_cdata,			// Character data, i.e. '<![CDATA[text]]>'
+		node_comment,		// Comment tag, i.e. '<!-- text -->'
+		node_pi,			// Processing instruction, i.e. '<?name?>'
+		node_declaration,	// Document declaration, i.e. '<?xml version="1.0"?>'
+		node_doctype		// Document type declaration, i.e. '<!DOCTYPE doc>'
+	};
+
+	// Parsing options
+
+	// Minimal parsing mode (equivalent to turning all other flags off).
+	// Only elements and PCDATA sections are added to the DOM tree, no text conversions are performed.
+	const unsigned int parse_minimal = 0x0000;
+
+	// This flag determines if processing instructions (node_pi) are added to the DOM tree. This flag is off by default.
+	const unsigned int parse_pi = 0x0001;
+
+	// This flag determines if comments (node_comment) are added to the DOM tree. This flag is off by default.
+	const unsigned int parse_comments = 0x0002;
+
+	// This flag determines if CDATA sections (node_cdata) are added to the DOM tree. This flag is on by default.
+	const unsigned int parse_cdata = 0x0004;
+
+	// This flag determines if plain character data (node_pcdata) that consist only of whitespace are added to the DOM tree.
+	// This flag is off by default; turning it on usually results in slower parsing and more memory consumption.
+	const unsigned int parse_ws_pcdata = 0x0008;
+
+	// This flag determines if character and entity references are expanded during parsing. This flag is on by default.
+	const unsigned int parse_escapes = 0x0010;
+
+	// This flag determines if EOL characters are normalized (converted to #xA) during parsing. This flag is on by default.
+	const unsigned int parse_eol = 0x0020;
+
+	// This flag determines if attribute values are normalized using CDATA normalization rules during parsing. This flag is on by default.
+	const unsigned int parse_wconv_attribute = 0x0040;
+
+	// This flag determines if attribute values are normalized using NMTOKENS normalization rules during parsing. This flag is off by default.
+	const unsigned int parse_wnorm_attribute = 0x0080;
+
+	// This flag determines if document declaration (node_declaration) is added to the DOM tree. This flag is off by default.
+	const unsigned int parse_declaration = 0x0100;
+
+	// This flag determines if document type declaration (node_doctype) is added to the DOM tree. This flag is off by default.
+	const unsigned int parse_doctype = 0x0200;
+
+	// This flag determines if plain character data (node_pcdata) that is the only child of the parent node and that consists only
+	// of whitespace is added to the DOM tree.
+	// This flag is off by default; turning it on may result in slower parsing and more memory consumption.
+	const unsigned int parse_ws_pcdata_single = 0x0400;
+
+	// This flag determines if leading and trailing whitespace is to be removed from plain character data. This flag is off by default.
+	const unsigned int parse_trim_pcdata = 0x0800;
+
+	// This flag determines if plain character data that does not have a parent node is added to the DOM tree, and if an empty document
+	// is a valid document. This flag is off by default.
+	const unsigned int parse_fragment = 0x1000;
+
+	// This flag determines if plain character data is be stored in the parent element's value. This significantly changes the structure of
+	// the document; this flag is only recommended for parsing documents with many PCDATA nodes in memory-constrained environments.
+	// This flag is off by default.
+	const unsigned int parse_embed_pcdata = 0x2000;
+
+	// This flag determines whether determines whether the the two pcdata should be merged or not, if no intermediatory data are parsed in the document.
+	// This flag is off by default.
+	const unsigned int parse_merge_pcdata = 0x4000;
+
+	// The default parsing mode.
+	// Elements, PCDATA and CDATA sections are added to the DOM tree, character/reference entities are expanded,
+	// End-of-Line characters are normalized, attribute values are normalized using CDATA normalization rules.
+	const unsigned int parse_default = parse_cdata | parse_escapes | parse_wconv_attribute | parse_eol;
+
+	// The full parsing mode.
+	// Nodes of all types are added to the DOM tree, character/reference entities are expanded,
+	// End-of-Line characters are normalized, attribute values are normalized using CDATA normalization rules.
+	const unsigned int parse_full = parse_default | parse_pi | parse_comments | parse_declaration | parse_doctype;
+
+	// These flags determine the encoding of input data for XML document
+	enum xml_encoding
+	{
+		encoding_auto,		// Auto-detect input encoding using BOM or < / <? detection; use UTF8 if BOM is not found
+		encoding_utf8,		// UTF8 encoding
+		encoding_utf16_le,	// Little-endian UTF16
+		encoding_utf16_be,	// Big-endian UTF16
+		encoding_utf16,		// UTF16 with native endianness
+		encoding_utf32_le,	// Little-endian UTF32
+		encoding_utf32_be,	// Big-endian UTF32
+		encoding_utf32,		// UTF32 with native endianness
+		encoding_wchar,		// The same encoding wchar_t has (either UTF16 or UTF32)
+		encoding_latin1
+	};
+
+	// Formatting flags
+
+	// Indent the nodes that are written to output stream with as many indentation strings as deep the node is in DOM tree. This flag is on by default.
+	const unsigned int format_indent = 0x01;
+
+	// Write encoding-specific BOM to the output stream. This flag is off by default.
+	const unsigned int format_write_bom = 0x02;
+
+	// Use raw output mode (no indentation and no line breaks are written). This flag is off by default.
+	const unsigned int format_raw = 0x04;
+
+	// Omit default XML declaration even if there is no declaration in the document. This flag is off by default.
+	const unsigned int format_no_declaration = 0x08;
+
+	// Don't escape attribute values and PCDATA contents. This flag is off by default.
+	const unsigned int format_no_escapes = 0x10;
+
+	// Open file using text mode in xml_document::save_file. This enables special character (i.e. new-line) conversions on some systems. This flag is off by default.
+	const unsigned int format_save_file_text = 0x20;
+
+	// Write every attribute on a new line with appropriate indentation. This flag is off by default.
+	const unsigned int format_indent_attributes = 0x40;
+
+	// Don't output empty element tags, instead writing an explicit start and end tag even if there are no children. This flag is off by default.
+	const unsigned int format_no_empty_element_tags = 0x80;
+
+	// Skip characters belonging to range [0; 32) instead of "&#xNN;" encoding. This flag is off by default.
+	const unsigned int format_skip_control_chars = 0x100;
+
+	// Use single quotes ' instead of double quotes " for enclosing attribute values. This flag is off by default.
+	const unsigned int format_attribute_single_quote = 0x200;
+
+	// The default set of formatting flags.
+	// Nodes are indented depending on their depth in DOM tree, a default declaration is output if document has none.
+	const unsigned int format_default = format_indent;
+
+	const int default_double_precision = 17;
+	const int default_float_precision = 9;
+
+	// Forward declarations
+	struct xml_attribute_struct;
+	struct xml_node_struct;
+
+	class xml_node_iterator;
+	class xml_attribute_iterator;
+	class xml_named_node_iterator;
+
+	class xml_tree_walker;
+
+	struct xml_parse_result;
+
+	class xml_node;
+
+	class xml_text;
+
+	#ifndef PUGIXML_NO_XPATH
+	class xpath_node;
+	class xpath_node_set;
+	class xpath_query;
+	class xpath_variable_set;
+	#endif
+
+	// Range-based for loop support
+	template <typename It> class xml_object_range
+	{
+	public:
+		typedef It const_iterator;
+		typedef It iterator;
+
+		xml_object_range(It b, It e): _begin(b), _end(e)
+		{
+		}
+
+		It begin() const { return _begin; }
+		It end() const { return _end; }
+
+		bool empty() const { return _begin == _end; }
+
+	private:
+		It _begin, _end;
+	};
+
+	// Writer interface for node printing (see xml_node::print)
+	class PUGIXML_CLASS xml_writer
+	{
+	public:
+		virtual ~xml_writer();
+
+		// Write memory chunk into stream/file/whatever
+		virtual void write(const void* data, size_t size) = 0;
+	};
+
+	// xml_writer implementation for FILE*
+	class PUGIXML_CLASS xml_writer_file: public xml_writer
+	{
+	public:
+		// Construct writer from a FILE* object; void* is used to avoid header dependencies on stdio
+		xml_writer_file(void* file);
+
+		virtual void write(const void* data, size_t size) PUGIXML_OVERRIDE;
+
+	private:
+		void* file;
+	};
+
+	#ifndef PUGIXML_NO_STL
+	// xml_writer implementation for streams
+	class PUGIXML_CLASS xml_writer_stream: public xml_writer
+	{
+	public:
+		// Construct writer from an output stream object
+		xml_writer_stream(std::basic_ostream<char, std::char_traits<char> >& stream);
+		xml_writer_stream(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& stream);
+
+		virtual void write(const void* data, size_t size) PUGIXML_OVERRIDE;
+
+	private:
+		std::basic_ostream<char, std::char_traits<char> >* narrow_stream;
+		std::basic_ostream<wchar_t, std::char_traits<wchar_t> >* wide_stream;
+	};
+	#endif
+
+	// A light-weight handle for manipulating attributes in DOM tree
+	class PUGIXML_CLASS xml_attribute
+	{
+		friend class xml_attribute_iterator;
+		friend class xml_node;
+
+	private:
+		xml_attribute_struct* _attr;
+
+		typedef void (*unspecified_bool_type)(xml_attribute***);
+
+	public:
+		// Default constructor. Constructs an empty attribute.
+		xml_attribute();
+
+		// Constructs attribute from internal pointer
+		explicit xml_attribute(xml_attribute_struct* attr);
+
+		// Safe bool conversion operator
+		operator unspecified_bool_type() const;
+
+		// Borland C++ workaround
+		bool operator!() const;
+
+		// Comparison operators (compares wrapped attribute pointers)
+		bool operator==(const xml_attribute& r) const;
+		bool operator!=(const xml_attribute& r) const;
+		bool operator<(const xml_attribute& r) const;
+		bool operator>(const xml_attribute& r) const;
+		bool operator<=(const xml_attribute& r) const;
+		bool operator>=(const xml_attribute& r) const;
+
+		// Check if attribute is empty
+		bool empty() const;
+
+		// Get attribute name/value, or "" if attribute is empty
+		const char_t* name() const;
+		const char_t* value() const;
+
+		// Get attribute value, or the default value if attribute is empty
+		const char_t* as_string(const char_t* def = PUGIXML_TEXT("")) const;
+
+		// Get attribute value as a number, or the default value if conversion did not succeed or attribute is empty
+		int as_int(int def = 0) const;
+		unsigned int as_uint(unsigned int def = 0) const;
+		double as_double(double def = 0) const;
+		float as_float(float def = 0) const;
+
+	#ifdef PUGIXML_HAS_LONG_LONG
+		long long as_llong(long long def = 0) const;
+		unsigned long long as_ullong(unsigned long long def = 0) const;
+	#endif
+
+		// Get attribute value as bool (returns true if first character is in '1tTyY' set), or the default value if attribute is empty
+		bool as_bool(bool def = false) const;
+
+		// Set attribute name/value (returns false if attribute is empty or there is not enough memory)
+		bool set_name(const char_t* rhs);
+		bool set_name(const char_t* rhs, size_t size);
+		bool set_value(const char_t* rhs);
+		bool set_value(const char_t* rhs, size_t size);
+
+		// Set attribute value with type conversion (numbers are converted to strings, boolean is converted to "true"/"false")
+		bool set_value(int rhs);
+		bool set_value(unsigned int rhs);
+		bool set_value(long rhs);
+		bool set_value(unsigned long rhs);
+		bool set_value(double rhs);
+		bool set_value(double rhs, int precision);
+		bool set_value(float rhs);
+		bool set_value(float rhs, int precision);
+		bool set_value(bool rhs);
+
+	#ifdef PUGIXML_HAS_LONG_LONG
+		bool set_value(long long rhs);
+		bool set_value(unsigned long long rhs);
+	#endif
+
+		// Set attribute value (equivalent to set_value without error checking)
+		xml_attribute& operator=(const char_t* rhs);
+		xml_attribute& operator=(int rhs);
+		xml_attribute& operator=(unsigned int rhs);
+		xml_attribute& operator=(long rhs);
+		xml_attribute& operator=(unsigned long rhs);
+		xml_attribute& operator=(double rhs);
+		xml_attribute& operator=(float rhs);
+		xml_attribute& operator=(bool rhs);
+
+	#ifdef PUGIXML_HAS_LONG_LONG
+		xml_attribute& operator=(long long rhs);
+		xml_attribute& operator=(unsigned long long rhs);
+	#endif
+
+		// Get next/previous attribute in the attribute list of the parent node
+		xml_attribute next_attribute() const;
+		xml_attribute previous_attribute() const;
+
+		// Get hash value (unique for handles to the same object)
+		size_t hash_value() const;
+
+		// Get internal pointer
+		xml_attribute_struct* internal_object() const;
+	};
+
+#ifdef __BORLANDC__
+	// Borland C++ workaround
+	bool PUGIXML_FUNCTION operator&&(const xml_attribute& lhs, bool rhs);
+	bool PUGIXML_FUNCTION operator||(const xml_attribute& lhs, bool rhs);
+#endif
+
+	// A light-weight handle for manipulating nodes in DOM tree
+	class PUGIXML_CLASS xml_node
+	{
+		friend class xml_attribute_iterator;
+		friend class xml_node_iterator;
+		friend class xml_named_node_iterator;
+
+	protected:
+		xml_node_struct* _root;
+
+		typedef void (*unspecified_bool_type)(xml_node***);
+
+	public:
+		// Default constructor. Constructs an empty node.
+		xml_node();
+
+		// Constructs node from internal pointer
+		explicit xml_node(xml_node_struct* p);
+
+		// Safe bool conversion operator
+		operator unspecified_bool_type() const;
+
+		// Borland C++ workaround
+		bool operator!() const;
+
+		// Comparison operators (compares wrapped node pointers)
+		bool operator==(const xml_node& r) const;
+		bool operator!=(const xml_node& r) const;
+		bool operator<(const xml_node& r) const;
+		bool operator>(const xml_node& r) const;
+		bool operator<=(const xml_node& r) const;
+		bool operator>=(const xml_node& r) const;
+
+		// Check if node is empty.
+		bool empty() const;
+
+		// Get node type
+		xml_node_type type() const;
+
+		// Get node name, or "" if node is empty or it has no name
+		const char_t* name() const;
+
+		// Get node value, or "" if node is empty or it has no value
+		// Note: For <node>text</node> node.value() does not return "text"! Use child_value() or text() methods to access text inside nodes.
+		const char_t* value() const;
+
+		// Get attribute list
+		xml_attribute first_attribute() const;
+		xml_attribute last_attribute() const;
+
+		// Get children list
+		xml_node first_child() const;
+		xml_node last_child() const;
+
+		// Get next/previous sibling in the children list of the parent node
+		xml_node next_sibling() const;
+		xml_node previous_sibling() const;
+
+		// Get parent node
+		xml_node parent() const;
+
+		// Get root of DOM tree this node belongs to
+		xml_node root() const;
+
+		// Get text object for the current node
+		xml_text text() const;
+
+		// Get child, attribute or next/previous sibling with the specified name
+		xml_node child(const char_t* name) const;
+		xml_attribute attribute(const char_t* name) const;
+		xml_node next_sibling(const char_t* name) const;
+		xml_node previous_sibling(const char_t* name) const;
+
+		// Get attribute, starting the search from a hint (and updating hint so that searching for a sequence of attributes is fast)
+		xml_attribute attribute(const char_t* name, xml_attribute& hint) const;
+
+		// Get child value of current node; that is, value of the first child node of type PCDATA/CDATA
+		const char_t* child_value() const;
+
+		// Get child value of child with specified name. Equivalent to child(name).child_value().
+		const char_t* child_value(const char_t* name) const;
+
+		// Set node name/value (returns false if node is empty, there is not enough memory, or node can not have name/value)
+		bool set_name(const char_t* rhs);
+		bool set_name(const char_t* rhs, size_t size);
+		bool set_value(const char_t* rhs);
+		bool set_value(const char_t* rhs, size_t size);
+
+		// Add attribute with specified name. Returns added attribute, or empty attribute on errors.
+		xml_attribute append_attribute(const char_t* name);
+		xml_attribute prepend_attribute(const char_t* name);
+		xml_attribute insert_attribute_after(const char_t* name, const xml_attribute& attr);
+		xml_attribute insert_attribute_before(const char_t* name, const xml_attribute& attr);
+
+		// Add a copy of the specified attribute. Returns added attribute, or empty attribute on errors.
+		xml_attribute append_copy(const xml_attribute& proto);
+		xml_attribute prepend_copy(const xml_attribute& proto);
+		xml_attribute insert_copy_after(const xml_attribute& proto, const xml_attribute& attr);
+		xml_attribute insert_copy_before(const xml_attribute& proto, const xml_attribute& attr);
+
+		// Add child node with specified type. Returns added node, or empty node on errors.
+		xml_node append_child(xml_node_type type = node_element);
+		xml_node prepend_child(xml_node_type type = node_element);
+		xml_node insert_child_after(xml_node_type type, const xml_node& node);
+		xml_node insert_child_before(xml_node_type type, const xml_node& node);
+
+		// Add child element with specified name. Returns added node, or empty node on errors.
+		xml_node append_child(const char_t* name);
+		xml_node prepend_child(const char_t* name);
+		xml_node insert_child_after(const char_t* name, const xml_node& node);
+		xml_node insert_child_before(const char_t* name, const xml_node& node);
+
+		// Add a copy of the specified node as a child. Returns added node, or empty node on errors.
+		xml_node append_copy(const xml_node& proto);
+		xml_node prepend_copy(const xml_node& proto);
+		xml_node insert_copy_after(const xml_node& proto, const xml_node& node);
+		xml_node insert_copy_before(const xml_node& proto, const xml_node& node);
+
+		// Move the specified node to become a child of this node. Returns moved node, or empty node on errors.
+		xml_node append_move(const xml_node& moved);
+		xml_node prepend_move(const xml_node& moved);
+		xml_node insert_move_after(const xml_node& moved, const xml_node& node);
+		xml_node insert_move_before(const xml_node& moved, const xml_node& node);
+
+		// Remove specified attribute
+		bool remove_attribute(const xml_attribute& a);
+		bool remove_attribute(const char_t* name);
+
+		// Remove all attributes
+		bool remove_attributes();
+
+		// Remove specified child
+		bool remove_child(const xml_node& n);
+		bool remove_child(const char_t* name);
+
+		// Remove all children
+		bool remove_children();
+
+		// Parses buffer as an XML document fragment and appends all nodes as children of the current node.
+		// Copies/converts the buffer, so it may be deleted or changed after the function returns.
+		// Note: append_buffer allocates memory that has the lifetime of the owning document; removing the appended nodes does not immediately reclaim that memory.
+		xml_parse_result append_buffer(const void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+
+		// Find attribute using predicate. Returns first attribute for which predicate returned true.
+		template <typename Predicate> xml_attribute find_attribute(Predicate pred) const
+		{
+			if (!_root) return xml_attribute();
+
+			for (xml_attribute attrib = first_attribute(); attrib; attrib = attrib.next_attribute())
+				if (pred(attrib))
+					return attrib;
+
+			return xml_attribute();
+		}
+
+		// Find child node using predicate. Returns first child for which predicate returned true.
+		template <typename Predicate> xml_node find_child(Predicate pred) const
+		{
+			if (!_root) return xml_node();
+
+			for (xml_node node = first_child(); node; node = node.next_sibling())
+				if (pred(node))
+					return node;
+
+			return xml_node();
+		}
+
+		// Find node from subtree using predicate. Returns first node from subtree (depth-first), for which predicate returned true.
+		template <typename Predicate> xml_node find_node(Predicate pred) const
+		{
+			if (!_root) return xml_node();
+
+			xml_node cur = first_child();
+
+			while (cur._root && cur._root != _root)
+			{
+				if (pred(cur)) return cur;
+
+				if (cur.first_child()) cur = cur.first_child();
+				else if (cur.next_sibling()) cur = cur.next_sibling();
+				else
+				{
+					while (!cur.next_sibling() && cur._root != _root) cur = cur.parent();
+
+					if (cur._root != _root) cur = cur.next_sibling();
+				}
+			}
+
+			return xml_node();
+		}
+
+		// Find child node by attribute name/value
+		xml_node find_child_by_attribute(const char_t* name, const char_t* attr_name, const char_t* attr_value) const;
+		xml_node find_child_by_attribute(const char_t* attr_name, const char_t* attr_value) const;
+
+	#ifndef PUGIXML_NO_STL
+		// Get the absolute node path from root as a text string.
+		string_t path(char_t delimiter = '/') const;
+	#endif
+
+		// Search for a node by path consisting of node names and . or .. elements.
+		xml_node first_element_by_path(const char_t* path, char_t delimiter = '/') const;
+
+		// Recursively traverse subtree with xml_tree_walker
+		bool traverse(xml_tree_walker& walker);
+
+	#ifndef PUGIXML_NO_XPATH
+		// Select single node by evaluating XPath query. Returns first node from the resulting node set.
+		xpath_node select_node(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL) const;
+		xpath_node select_node(const xpath_query& query) const;
+
+		// Select node set by evaluating XPath query
+		xpath_node_set select_nodes(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL) const;
+		xpath_node_set select_nodes(const xpath_query& query) const;
+
+		// (deprecated: use select_node instead) Select single node by evaluating XPath query.
+		PUGIXML_DEPRECATED xpath_node select_single_node(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL) const;
+		PUGIXML_DEPRECATED xpath_node select_single_node(const xpath_query& query) const;
+
+	#endif
+
+		// Print subtree using a writer object
+		void print(xml_writer& writer, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto, unsigned int depth = 0) const;
+
+	#ifndef PUGIXML_NO_STL
+		// Print subtree to stream
+		void print(std::basic_ostream<char, std::char_traits<char> >& os, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto, unsigned int depth = 0) const;
+		void print(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& os, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, unsigned int depth = 0) const;
+	#endif
+
+		// Child nodes iterators
+		typedef xml_node_iterator iterator;
+
+		iterator begin() const;
+		iterator end() const;
+
+		// Attribute iterators
+		typedef xml_attribute_iterator attribute_iterator;
+
+		attribute_iterator attributes_begin() const;
+		attribute_iterator attributes_end() const;
+
+		// Range-based for support
+		xml_object_range<xml_node_iterator> children() const;
+		xml_object_range<xml_attribute_iterator> attributes() const;
+
+		// Range-based for support for all children with the specified name
+		// Note: name pointer must have a longer lifetime than the returned object; be careful with passing temporaries!
+		xml_object_range<xml_named_node_iterator> children(const char_t* name) const;
+
+		// Get node offset in parsed file/string (in char_t units) for debugging purposes
+		ptrdiff_t offset_debug() const;
+
+		// Get hash value (unique for handles to the same object)
+		size_t hash_value() const;
+
+		// Get internal pointer
+		xml_node_struct* internal_object() const;
+	};
+
+#ifdef __BORLANDC__
+	// Borland C++ workaround
+	bool PUGIXML_FUNCTION operator&&(const xml_node& lhs, bool rhs);
+	bool PUGIXML_FUNCTION operator||(const xml_node& lhs, bool rhs);
+#endif
+
+	// A helper for working with text inside PCDATA nodes
+	class PUGIXML_CLASS xml_text
+	{
+		friend class xml_node;
+
+		xml_node_struct* _root;
+
+		typedef void (*unspecified_bool_type)(xml_text***);
+
+		explicit xml_text(xml_node_struct* root);
+
+		xml_node_struct* _data_new();
+		xml_node_struct* _data() const;
+
+	public:
+		// Default constructor. Constructs an empty object.
+		xml_text();
+
+		// Safe bool conversion operator
+		operator unspecified_bool_type() const;
+
+		// Borland C++ workaround
+		bool operator!() const;
+
+		// Check if text object is empty
+		bool empty() const;
+
+		// Get text, or "" if object is empty
+		const char_t* get() const;
+
+		// Get text, or the default value if object is empty
+		const char_t* as_string(const char_t* def = PUGIXML_TEXT("")) const;
+
+		// Get text as a number, or the default value if conversion did not succeed or object is empty
+		int as_int(int def = 0) const;
+		unsigned int as_uint(unsigned int def = 0) const;
+		double as_double(double def = 0) const;
+		float as_float(float def = 0) const;
+
+	#ifdef PUGIXML_HAS_LONG_LONG
+		long long as_llong(long long def = 0) const;
+		unsigned long long as_ullong(unsigned long long def = 0) const;
+	#endif
+
+		// Get text as bool (returns true if first character is in '1tTyY' set), or the default value if object is empty
+		bool as_bool(bool def = false) const;
+
+		// Set text (returns false if object is empty or there is not enough memory)
+		bool set(const char_t* rhs);
+		bool set(const char_t* rhs, size_t size);
+
+		// Set text with type conversion (numbers are converted to strings, boolean is converted to "true"/"false")
+		bool set(int rhs);
+		bool set(unsigned int rhs);
+		bool set(long rhs);
+		bool set(unsigned long rhs);
+		bool set(double rhs);
+		bool set(double rhs, int precision);
+		bool set(float rhs);
+		bool set(float rhs, int precision);
+		bool set(bool rhs);
+
+	#ifdef PUGIXML_HAS_LONG_LONG
+		bool set(long long rhs);
+		bool set(unsigned long long rhs);
+	#endif
+
+		// Set text (equivalent to set without error checking)
+		xml_text& operator=(const char_t* rhs);
+		xml_text& operator=(int rhs);
+		xml_text& operator=(unsigned int rhs);
+		xml_text& operator=(long rhs);
+		xml_text& operator=(unsigned long rhs);
+		xml_text& operator=(double rhs);
+		xml_text& operator=(float rhs);
+		xml_text& operator=(bool rhs);
+
+	#ifdef PUGIXML_HAS_LONG_LONG
+		xml_text& operator=(long long rhs);
+		xml_text& operator=(unsigned long long rhs);
+	#endif
+
+		// Get the data node (node_pcdata or node_cdata) for this object
+		xml_node data() const;
+	};
+
+#ifdef __BORLANDC__
+	// Borland C++ workaround
+	bool PUGIXML_FUNCTION operator&&(const xml_text& lhs, bool rhs);
+	bool PUGIXML_FUNCTION operator||(const xml_text& lhs, bool rhs);
+#endif
+
+	// Child node iterator (a bidirectional iterator over a collection of xml_node)
+	class PUGIXML_CLASS xml_node_iterator
+	{
+		friend class xml_node;
+
+	private:
+		mutable xml_node _wrap;
+		xml_node _parent;
+
+		xml_node_iterator(xml_node_struct* ref, xml_node_struct* parent);
+
+	public:
+		// Iterator traits
+		typedef ptrdiff_t difference_type;
+		typedef xml_node value_type;
+		typedef xml_node* pointer;
+		typedef xml_node& reference;
+
+	#ifndef PUGIXML_NO_STL
+		typedef std::bidirectional_iterator_tag iterator_category;
+	#endif
+
+		// Default constructor
+		xml_node_iterator();
+
+		// Construct an iterator which points to the specified node
+		xml_node_iterator(const xml_node& node);
+
+		// Iterator operators
+		bool operator==(const xml_node_iterator& rhs) const;
+		bool operator!=(const xml_node_iterator& rhs) const;
+
+		xml_node& operator*() const;
+		xml_node* operator->() const;
+
+		xml_node_iterator& operator++();
+		xml_node_iterator operator++(int);
+
+		xml_node_iterator& operator--();
+		xml_node_iterator operator--(int);
+	};
+
+	// Attribute iterator (a bidirectional iterator over a collection of xml_attribute)
+	class PUGIXML_CLASS xml_attribute_iterator
+	{
+		friend class xml_node;
+
+	private:
+		mutable xml_attribute _wrap;
+		xml_node _parent;
+
+		xml_attribute_iterator(xml_attribute_struct* ref, xml_node_struct* parent);
+
+	public:
+		// Iterator traits
+		typedef ptrdiff_t difference_type;
+		typedef xml_attribute value_type;
+		typedef xml_attribute* pointer;
+		typedef xml_attribute& reference;
+
+	#ifndef PUGIXML_NO_STL
+		typedef std::bidirectional_iterator_tag iterator_category;
+	#endif
+
+		// Default constructor
+		xml_attribute_iterator();
+
+		// Construct an iterator which points to the specified attribute
+		xml_attribute_iterator(const xml_attribute& attr, const xml_node& parent);
+
+		// Iterator operators
+		bool operator==(const xml_attribute_iterator& rhs) const;
+		bool operator!=(const xml_attribute_iterator& rhs) const;
+
+		xml_attribute& operator*() const;
+		xml_attribute* operator->() const;
+
+		xml_attribute_iterator& operator++();
+		xml_attribute_iterator operator++(int);
+
+		xml_attribute_iterator& operator--();
+		xml_attribute_iterator operator--(int);
+	};
+
+	// Named node range helper
+	class PUGIXML_CLASS xml_named_node_iterator
+	{
+		friend class xml_node;
+
+	public:
+		// Iterator traits
+		typedef ptrdiff_t difference_type;
+		typedef xml_node value_type;
+		typedef xml_node* pointer;
+		typedef xml_node& reference;
+
+	#ifndef PUGIXML_NO_STL
+		typedef std::bidirectional_iterator_tag iterator_category;
+	#endif
+
+		// Default constructor
+		xml_named_node_iterator();
+
+		// Construct an iterator which points to the specified node
+		// Note: name pointer is stored in the iterator and must have a longer lifetime than iterator itself
+		xml_named_node_iterator(const xml_node& node, const char_t* name);
+
+		// Iterator operators
+		bool operator==(const xml_named_node_iterator& rhs) const;
+		bool operator!=(const xml_named_node_iterator& rhs) const;
+
+		xml_node& operator*() const;
+		xml_node* operator->() const;
+
+		xml_named_node_iterator& operator++();
+		xml_named_node_iterator operator++(int);
+
+		xml_named_node_iterator& operator--();
+		xml_named_node_iterator operator--(int);
+
+	private:
+		mutable xml_node _wrap;
+		xml_node _parent;
+		const char_t* _name;
+
+		xml_named_node_iterator(xml_node_struct* ref, xml_node_struct* parent, const char_t* name);
+	};
+
+	// Abstract tree walker class (see xml_node::traverse)
+	class PUGIXML_CLASS xml_tree_walker
+	{
+		friend class xml_node;
+
+	private:
+		int _depth;
+
+	protected:
+		// Get current traversal depth
+		int depth() const;
+
+	public:
+		xml_tree_walker();
+		virtual ~xml_tree_walker();
+
+		// Callback that is called when traversal begins
+		virtual bool begin(xml_node& node);
+
+		// Callback that is called for each node traversed
+		virtual bool for_each(xml_node& node) = 0;
+
+		// Callback that is called when traversal ends
+		virtual bool end(xml_node& node);
+	};
+
+	// Parsing status, returned as part of xml_parse_result object
+	enum xml_parse_status
+	{
+		status_ok = 0,				// No error
+
+		status_file_not_found,		// File was not found during load_file()
+		status_io_error,			// Error reading from file/stream
+		status_out_of_memory,		// Could not allocate memory
+		status_internal_error,		// Internal error occurred
+
+		status_unrecognized_tag,	// Parser could not determine tag type
+
+		status_bad_pi,				// Parsing error occurred while parsing document declaration/processing instruction
+		status_bad_comment,			// Parsing error occurred while parsing comment
+		status_bad_cdata,			// Parsing error occurred while parsing CDATA section
+		status_bad_doctype,			// Parsing error occurred while parsing document type declaration
+		status_bad_pcdata,			// Parsing error occurred while parsing PCDATA section
+		status_bad_start_element,	// Parsing error occurred while parsing start element tag
+		status_bad_attribute,		// Parsing error occurred while parsing element attribute
+		status_bad_end_element,		// Parsing error occurred while parsing end element tag
+		status_end_element_mismatch,// There was a mismatch of start-end tags (closing tag had incorrect name, some tag was not closed or there was an excessive closing tag)
+
+		status_append_invalid_root,	// Unable to append nodes since root type is not node_element or node_document (exclusive to xml_node::append_buffer)
+
+		status_no_document_element	// Parsing resulted in a document without element nodes
+	};
+
+	// Parsing result
+	struct PUGIXML_CLASS xml_parse_result
+	{
+		// Parsing status (see xml_parse_status)
+		xml_parse_status status;
+
+		// Last parsed offset (in char_t units from start of input data)
+		ptrdiff_t offset;
+
+		// Source document encoding
+		xml_encoding encoding;
+
+		// Default constructor, initializes object to failed state
+		xml_parse_result();
+
+		// Cast to bool operator
+		operator bool() const;
+
+		// Get error description
+		const char* description() const;
+	};
+
+	// Document class (DOM tree root)
+	class PUGIXML_CLASS xml_document: public xml_node
+	{
+	private:
+		char_t* _buffer;
+
+		char _memory[192];
+
+		// Non-copyable semantics
+		xml_document(const xml_document&);
+		xml_document& operator=(const xml_document&);
+
+		void _create();
+		void _destroy();
+		void _move(xml_document& rhs) PUGIXML_NOEXCEPT_IF_NOT_COMPACT;
+
+	public:
+		// Default constructor, makes empty document
+		xml_document();
+
+		// Destructor, invalidates all node/attribute handles to this document
+		~xml_document();
+
+	#ifdef PUGIXML_HAS_MOVE
+		// Move semantics support
+		xml_document(xml_document&& rhs) PUGIXML_NOEXCEPT_IF_NOT_COMPACT;
+		xml_document& operator=(xml_document&& rhs) PUGIXML_NOEXCEPT_IF_NOT_COMPACT;
+	#endif
+
+		// Removes all nodes, leaving the empty document
+		void reset();
+
+		// Removes all nodes, then copies the entire contents of the specified document
+		void reset(const xml_document& proto);
+
+	#ifndef PUGIXML_NO_STL
+		// Load document from stream.
+		xml_parse_result load(std::basic_istream<char, std::char_traits<char> >& stream, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+		xml_parse_result load(std::basic_istream<wchar_t, std::char_traits<wchar_t> >& stream, unsigned int options = parse_default);
+	#endif
+
+		// (deprecated: use load_string instead) Load document from zero-terminated string. No encoding conversions are applied.
+		PUGIXML_DEPRECATED xml_parse_result load(const char_t* contents, unsigned int options = parse_default);
+
+		// Load document from zero-terminated string. No encoding conversions are applied.
+		xml_parse_result load_string(const char_t* contents, unsigned int options = parse_default);
+
+		// Load document from file
+		xml_parse_result load_file(const char* path, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+		xml_parse_result load_file(const wchar_t* path, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+
+		// Load document from buffer. Copies/converts the buffer, so it may be deleted or changed after the function returns.
+		xml_parse_result load_buffer(const void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+
+		// Load document from buffer, using the buffer for in-place parsing (the buffer is modified and used for storage of document data).
+		// You should ensure that buffer data will persist throughout the document's lifetime, and free the buffer memory manually once document is destroyed.
+		xml_parse_result load_buffer_inplace(void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+
+		// Load document from buffer, using the buffer for in-place parsing (the buffer is modified and used for storage of document data).
+		// You should allocate the buffer with pugixml allocation function; document will free the buffer when it is no longer needed (you can't use it anymore).
+		xml_parse_result load_buffer_inplace_own(void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
+
+		// Save XML document to writer (semantics is slightly different from xml_node::print, see documentation for details).
+		void save(xml_writer& writer, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
+
+	#ifndef PUGIXML_NO_STL
+		// Save XML document to stream (semantics is slightly different from xml_node::print, see documentation for details).
+		void save(std::basic_ostream<char, std::char_traits<char> >& stream, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
+		void save(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& stream, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default) const;
+	#endif
+
+		// Save XML to file
+		bool save_file(const char* path, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
+		bool save_file(const wchar_t* path, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
+
+		// Get document element
+		xml_node document_element() const;
+	};
+
+#ifndef PUGIXML_NO_XPATH
+	// XPath query return type
+	enum xpath_value_type
+	{
+		xpath_type_none,	  // Unknown type (query failed to compile)
+		xpath_type_node_set,  // Node set (xpath_node_set)
+		xpath_type_number,	  // Number
+		xpath_type_string,	  // String
+		xpath_type_boolean	  // Boolean
+	};
+
+	// XPath parsing result
+	struct PUGIXML_CLASS xpath_parse_result
+	{
+		// Error message (0 if no error)
+		const char* error;
+
+		// Last parsed offset (in char_t units from string start)
+		ptrdiff_t offset;
+
+		// Default constructor, initializes object to failed state
+		xpath_parse_result();
+
+		// Cast to bool operator
+		operator bool() const;
+
+		// Get error description
+		const char* description() const;
+	};
+
+	// A single XPath variable
+	class PUGIXML_CLASS xpath_variable
+	{
+		friend class xpath_variable_set;
+
+	protected:
+		xpath_value_type _type;
+		xpath_variable* _next;
+
+		xpath_variable(xpath_value_type type);
+
+		// Non-copyable semantics
+		xpath_variable(const xpath_variable&);
+		xpath_variable& operator=(const xpath_variable&);
+
+	public:
+		// Get variable name
+		const char_t* name() const;
+
+		// Get variable type
+		xpath_value_type type() const;
+
+		// Get variable value; no type conversion is performed, default value (false, NaN, empty string, empty node set) is returned on type mismatch error
+		bool get_boolean() const;
+		double get_number() const;
+		const char_t* get_string() const;
+		const xpath_node_set& get_node_set() const;
+
+		// Set variable value; no type conversion is performed, false is returned on type mismatch error
+		bool set(bool value);
+		bool set(double value);
+		bool set(const char_t* value);
+		bool set(const xpath_node_set& value);
+	};
+
+	// A set of XPath variables
+	class PUGIXML_CLASS xpath_variable_set
+	{
+	private:
+		xpath_variable* _data[64];
+
+		void _assign(const xpath_variable_set& rhs);
+		void _swap(xpath_variable_set& rhs);
+
+		xpath_variable* _find(const char_t* name) const;
+
+		static bool _clone(xpath_variable* var, xpath_variable** out_result);
+		static void _destroy(xpath_variable* var);
+
+	public:
+		// Default constructor/destructor
+		xpath_variable_set();
+		~xpath_variable_set();
+
+		// Copy constructor/assignment operator
+		xpath_variable_set(const xpath_variable_set& rhs);
+		xpath_variable_set& operator=(const xpath_variable_set& rhs);
+
+	#ifdef PUGIXML_HAS_MOVE
+		// Move semantics support
+		xpath_variable_set(xpath_variable_set&& rhs) PUGIXML_NOEXCEPT;
+		xpath_variable_set& operator=(xpath_variable_set&& rhs) PUGIXML_NOEXCEPT;
+	#endif
+
+		// Add a new variable or get the existing one, if the types match
+		xpath_variable* add(const char_t* name, xpath_value_type type);
+
+		// Set value of an existing variable; no type conversion is performed, false is returned if there is no such variable or if types mismatch
+		bool set(const char_t* name, bool value);
+		bool set(const char_t* name, double value);
+		bool set(const char_t* name, const char_t* value);
+		bool set(const char_t* name, const xpath_node_set& value);
+
+		// Get existing variable by name
+		xpath_variable* get(const char_t* name);
+		const xpath_variable* get(const char_t* name) const;
+	};
+
+	// A compiled XPath query object
+	class PUGIXML_CLASS xpath_query
+	{
+	private:
+		void* _impl;
+		xpath_parse_result _result;
+
+		typedef void (*unspecified_bool_type)(xpath_query***);
+
+		// Non-copyable semantics
+		xpath_query(const xpath_query&);
+		xpath_query& operator=(const xpath_query&);
+
+	public:
+		// Construct a compiled object from XPath expression.
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws xpath_exception on compilation errors.
+		explicit xpath_query(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL);
+
+		// Constructor
+		xpath_query();
+
+		// Destructor
+		~xpath_query();
+
+	#ifdef PUGIXML_HAS_MOVE
+		// Move semantics support
+		xpath_query(xpath_query&& rhs) PUGIXML_NOEXCEPT;
+		xpath_query& operator=(xpath_query&& rhs) PUGIXML_NOEXCEPT;
+	#endif
+
+		// Get query expression return type
+		xpath_value_type return_type() const;
+
+		// Evaluate expression as boolean value in the specified context; performs type conversion if necessary.
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
+		bool evaluate_boolean(const xpath_node& n) const;
+
+		// Evaluate expression as double value in the specified context; performs type conversion if necessary.
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
+		double evaluate_number(const xpath_node& n) const;
+
+	#ifndef PUGIXML_NO_STL
+		// Evaluate expression as string value in the specified context; performs type conversion if necessary.
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
+		string_t evaluate_string(const xpath_node& n) const;
+	#endif
+
+		// Evaluate expression as string value in the specified context; performs type conversion if necessary.
+		// At most capacity characters are written to the destination buffer, full result size is returned (includes terminating zero).
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
+		// If PUGIXML_NO_EXCEPTIONS is defined, returns empty  set instead.
+		size_t evaluate_string(char_t* buffer, size_t capacity, const xpath_node& n) const;
+
+		// Evaluate expression as node set in the specified context.
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws xpath_exception on type mismatch and std::bad_alloc on out of memory errors.
+		// If PUGIXML_NO_EXCEPTIONS is defined, returns empty node set instead.
+		xpath_node_set evaluate_node_set(const xpath_node& n) const;
+
+		// Evaluate expression as node set in the specified context.
+		// Return first node in document order, or empty node if node set is empty.
+		// If PUGIXML_NO_EXCEPTIONS is not defined, throws xpath_exception on type mismatch and std::bad_alloc on out of memory errors.
+		// If PUGIXML_NO_EXCEPTIONS is defined, returns empty node instead.
+		xpath_node evaluate_node(const xpath_node& n) const;
+
+		// Get parsing result (used to get compilation errors in PUGIXML_NO_EXCEPTIONS mode)
+		const xpath_parse_result& result() const;
+
+		// Safe bool conversion operator
+		operator unspecified_bool_type() const;
+
+		// Borland C++ workaround
+		bool operator!() const;
+	};
+
+	#ifndef PUGIXML_NO_EXCEPTIONS
+        #if defined(_MSC_VER)
+          // C4275 can be ignored in Visual C++ if you are deriving
+          // from a type in the Standard C++ Library
+          #pragma warning(push)
+          #pragma warning(disable: 4275)
+        #endif
+	// XPath exception class
+	class PUGIXML_CLASS xpath_exception: public std::exception
+	{
+	private:
+		xpath_parse_result _result;
+
+	public:
+		// Construct exception from parse result
+		explicit xpath_exception(const xpath_parse_result& result);
+
+		// Get error message
+		virtual const char* what() const throw() PUGIXML_OVERRIDE;
+
+		// Get parse result
+		const xpath_parse_result& result() const;
+	};
+        #if defined(_MSC_VER)
+          #pragma warning(pop)
+        #endif
+	#endif
+
+	// XPath node class (either xml_node or xml_attribute)
+	class PUGIXML_CLASS xpath_node
+	{
+	private:
+		xml_node _node;
+		xml_attribute _attribute;
+
+		typedef void (*unspecified_bool_type)(xpath_node***);
+
+	public:
+		// Default constructor; constructs empty XPath node
+		xpath_node();
+
+		// Construct XPath node from XML node/attribute
+		xpath_node(const xml_node& node);
+		xpath_node(const xml_attribute& attribute, const xml_node& parent);
+
+		// Get node/attribute, if any
+		xml_node node() const;
+		xml_attribute attribute() const;
+
+		// Get parent of contained node/attribute
+		xml_node parent() const;
+
+		// Safe bool conversion operator
+		operator unspecified_bool_type() const;
+
+		// Borland C++ workaround
+		bool operator!() const;
+
+		// Comparison operators
+		bool operator==(const xpath_node& n) const;
+		bool operator!=(const xpath_node& n) const;
+	};
+
+#ifdef __BORLANDC__
+	// Borland C++ workaround
+	bool PUGIXML_FUNCTION operator&&(const xpath_node& lhs, bool rhs);
+	bool PUGIXML_FUNCTION operator||(const xpath_node& lhs, bool rhs);
+#endif
+
+	// A fixed-size collection of XPath nodes
+	class PUGIXML_CLASS xpath_node_set
+	{
+	public:
+		// Collection type
+		enum type_t
+		{
+			type_unsorted,			// Not ordered
+			type_sorted,			// Sorted by document order (ascending)
+			type_sorted_reverse		// Sorted by document order (descending)
+		};
+
+		// Constant iterator type
+		typedef const xpath_node* const_iterator;
+
+		// We define non-constant iterator to be the same as constant iterator so that various generic algorithms (i.e. boost foreach) work
+		typedef const xpath_node* iterator;
+
+		// Default constructor. Constructs empty set.
+		xpath_node_set();
+
+		// Constructs a set from iterator range; data is not checked for duplicates and is not sorted according to provided type, so be careful
+		xpath_node_set(const_iterator begin, const_iterator end, type_t type = type_unsorted);
+
+		// Destructor
+		~xpath_node_set();
+
+		// Copy constructor/assignment operator
+		xpath_node_set(const xpath_node_set& ns);
+		xpath_node_set& operator=(const xpath_node_set& ns);
+
+	#ifdef PUGIXML_HAS_MOVE
+		// Move semantics support
+		xpath_node_set(xpath_node_set&& rhs) PUGIXML_NOEXCEPT;
+		xpath_node_set& operator=(xpath_node_set&& rhs) PUGIXML_NOEXCEPT;
+	#endif
+
+		// Get collection type
+		type_t type() const;
+
+		// Get collection size
+		size_t size() const;
+
+		// Indexing operator
+		const xpath_node& operator[](size_t index) const;
+
+		// Collection iterators
+		const_iterator begin() const;
+		const_iterator end() const;
+
+		// Sort the collection in ascending/descending order by document order
+		void sort(bool reverse = false);
+
+		// Get first node in the collection by document order
+		xpath_node first() const;
+
+		// Check if collection is empty
+		bool empty() const;
+
+	private:
+		type_t _type;
+
+		xpath_node _storage[1];
+
+		xpath_node* _begin;
+		xpath_node* _end;
+
+		void _assign(const_iterator begin, const_iterator end, type_t type);
+		void _move(xpath_node_set& rhs) PUGIXML_NOEXCEPT;
+	};
+#endif
+
+#ifndef PUGIXML_NO_STL
+	// Convert wide string to UTF8
+	std::basic_string<char, std::char_traits<char>, std::allocator<char> > PUGIXML_FUNCTION as_utf8(const wchar_t* str);
+	std::basic_string<char, std::char_traits<char>, std::allocator<char> > PUGIXML_FUNCTION as_utf8(const std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> >& str);
+
+	// Convert UTF8 to wide string
+	std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> > PUGIXML_FUNCTION as_wide(const char* str);
+	std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> > PUGIXML_FUNCTION as_wide(const std::basic_string<char, std::char_traits<char>, std::allocator<char> >& str);
+#endif
+
+	// Memory allocation function interface; returns pointer to allocated memory or NULL on failure
+	typedef void* (*allocation_function)(size_t size);
+
+	// Memory deallocation function interface
+	typedef void (*deallocation_function)(void* ptr);
+
+	// Override default memory management functions. All subsequent allocations/deallocations will be performed via supplied functions.
+	void PUGIXML_FUNCTION set_memory_management_functions(allocation_function allocate, deallocation_function deallocate);
+
+	// Get current memory management functions
+	allocation_function PUGIXML_FUNCTION get_memory_allocation_function();
+	deallocation_function PUGIXML_FUNCTION get_memory_deallocation_function();
+}
+
+#if !defined(PUGIXML_NO_STL) && (defined(_MSC_VER) || defined(__ICC))
+namespace std
+{
+	// Workarounds for (non-standard) iterator category detection for older versions (MSVC7/IC8 and earlier)
+	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_node_iterator&);
+	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_attribute_iterator&);
+	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_named_node_iterator&);
+}
+#endif
+
+#if !defined(PUGIXML_NO_STL) && defined(__SUNPRO_CC)
+namespace std
+{
+	// Workarounds for (non-standard) iterator category detection
+	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_node_iterator&);
+	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_attribute_iterator&);
+	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_named_node_iterator&);
+}
+#endif
+
+#endif
+
+// Make sure implementation is included in header-only mode
+// Use macro expansion in #include to work around QMake (QTBUG-11923)
+#if defined(PUGIXML_HEADER_ONLY) && !defined(PUGIXML_SOURCE)
+#	define PUGIXML_SOURCE "pugixml.cpp"
+#	include PUGIXML_SOURCE
+#endif
+
+/**
+ * Copyright (c) 2006-2023 Arseny Kapoulkine
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following
+ * conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+// ===== end src/cpp/third_party/pugixml/pugixml.hpp =====
+// ===== begin src/cpp/src/detail/vtk_xml_read.hpp =====
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace meshioplusplus::detail {
+
+struct VtuContext {
+    VtkCodec mCodec = VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    bool mBigEndian = false;
+    const unsigned char* mRaw = nullptr;
+    std::size_t mRawLen = 0;
+    const char* mBase64 = nullptr;
+    std::size_t mBase64Len = 0;
+};
+
+// Owns both XML and raw file bytes. Contexts borrow it for the duration of a
+// read; every decoded NDArray owns its storage independently of this source.
+struct VtuSource {
+    pugi::xml_document mDoc;
+    std::optional<FileSource> mFile;
+    std::string_view mBytes;
+    std::size_t mRawStart = 0;
+    std::size_t mRawStop = 0;
+    bool mIsRaw = false;
+};
+
+void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource,
+              const char* pType = "UnstructuredGrid", const char* pFormat = "VTU");
+VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat);
+NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx, int& rNumComponents);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/vtk_xml_read.hpp =====
 // ===== begin src/cpp/src/detail/vtu_decode.hpp =====
 /**
  * @file detail/vtu_decode.hpp
@@ -34641,1523 +36325,6 @@ inline void vtk_preflight(const std::string& rPath, const char* pType, const cha
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtk_preflight.hpp =====
-// ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
-/**
- * pugixml parser - version 1.14
- * --------------------------------------------------------
- * Copyright (C) 2006-2023, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
- * Report bugs and download new versions at https://pugixml.org/
- *
- * This library is distributed under the MIT License. See notice at the end
- * of this file.
- *
- * This work is based on the pugxml parser, which is:
- * Copyright (C) 2003, by Kristen Wegner (kristen@tima.net)
- */
-
-// Define version macro; evaluates to major * 1000 + minor * 10 + patch so that it's safe to use in less-than comparisons
-// Note: pugixml used major * 100 + minor * 10 + patch format up until 1.9 (which had version identifier 190); starting from pugixml 1.10, the minor version number is two digits
-#ifndef PUGIXML_VERSION
-#	define PUGIXML_VERSION 1140 // 1.14
-#endif
-
-// Include user configuration file (this can define various configuration macros)
-
-#ifndef HEADER_PUGIXML_HPP
-#define HEADER_PUGIXML_HPP
-
-// Include stddef.h for size_t and ptrdiff_t
-#include <stddef.h>
-
-// Include exception header for XPath
-#if !defined(PUGIXML_NO_XPATH) && !defined(PUGIXML_NO_EXCEPTIONS)
-#	include <exception>
-#endif
-
-// Include STL headers
-#ifndef PUGIXML_NO_STL
-#	include <iterator>
-#	include <iosfwd>
-#	include <string>
-#endif
-
-// Macro for deprecated features
-#ifndef PUGIXML_DEPRECATED
-#	if defined(__GNUC__)
-#		define PUGIXML_DEPRECATED __attribute__((deprecated))
-#	elif defined(_MSC_VER) && _MSC_VER >= 1300
-#		define PUGIXML_DEPRECATED __declspec(deprecated)
-#	else
-#		define PUGIXML_DEPRECATED
-#	endif
-#endif
-
-// If no API is defined, assume default
-#ifndef PUGIXML_API
-#	define PUGIXML_API
-#endif
-
-// If no API for classes is defined, assume default
-#ifndef PUGIXML_CLASS
-#	define PUGIXML_CLASS PUGIXML_API
-#endif
-
-// If no API for functions is defined, assume default
-#ifndef PUGIXML_FUNCTION
-#	define PUGIXML_FUNCTION PUGIXML_API
-#endif
-
-// If the platform is known to have long long support, enable long long functions
-#ifndef PUGIXML_HAS_LONG_LONG
-#	if __cplusplus >= 201103
-#		define PUGIXML_HAS_LONG_LONG
-#	elif defined(_MSC_VER) && _MSC_VER >= 1400
-#		define PUGIXML_HAS_LONG_LONG
-#	endif
-#endif
-
-// If the platform is known to have move semantics support, compile move ctor/operator implementation
-#ifndef PUGIXML_HAS_MOVE
-#	if __cplusplus >= 201103
-#		define PUGIXML_HAS_MOVE
-#	elif defined(_MSC_VER) && _MSC_VER >= 1600
-#		define PUGIXML_HAS_MOVE
-#	endif
-#endif
-
-// If C++ is 2011 or higher, add 'noexcept' specifiers
-#ifndef PUGIXML_NOEXCEPT
-#	if __cplusplus >= 201103
-#		define PUGIXML_NOEXCEPT noexcept
-#	elif defined(_MSC_VER) && _MSC_VER >= 1900
-#		define PUGIXML_NOEXCEPT noexcept
-#	else
-#		define PUGIXML_NOEXCEPT
-#	endif
-#endif
-
-// Some functions can not be noexcept in compact mode
-#ifdef PUGIXML_COMPACT
-#	define PUGIXML_NOEXCEPT_IF_NOT_COMPACT
-#else
-#	define PUGIXML_NOEXCEPT_IF_NOT_COMPACT PUGIXML_NOEXCEPT
-#endif
-
-// If C++ is 2011 or higher, add 'override' qualifiers
-#ifndef PUGIXML_OVERRIDE
-#	if __cplusplus >= 201103
-#		define PUGIXML_OVERRIDE override
-#	elif defined(_MSC_VER) && _MSC_VER >= 1700
-#		define PUGIXML_OVERRIDE override
-#	else
-#		define PUGIXML_OVERRIDE
-#	endif
-#endif
-
-// If C++ is 2011 or higher, use 'nullptr'
-#ifndef PUGIXML_NULL
-#	if __cplusplus >= 201103
-#		define PUGIXML_NULL nullptr
-#	elif defined(_MSC_VER) && _MSC_VER >= 1600
-#		define PUGIXML_NULL nullptr
-#	else
-#		define PUGIXML_NULL 0
-#	endif
-#endif
-
-// Character interface macros
-#ifdef PUGIXML_WCHAR_MODE
-#	define PUGIXML_TEXT(t) L ## t
-#	define PUGIXML_CHAR wchar_t
-#else
-#	define PUGIXML_TEXT(t) t
-#	define PUGIXML_CHAR char
-#endif
-
-namespace pugi
-{
-	// Character type used for all internal storage and operations; depends on PUGIXML_WCHAR_MODE
-	typedef PUGIXML_CHAR char_t;
-
-#ifndef PUGIXML_NO_STL
-	// String type used for operations that work with STL string; depends on PUGIXML_WCHAR_MODE
-	typedef std::basic_string<PUGIXML_CHAR, std::char_traits<PUGIXML_CHAR>, std::allocator<PUGIXML_CHAR> > string_t;
-#endif
-}
-
-// The PugiXML namespace
-namespace pugi
-{
-	// Tree node types
-	enum xml_node_type
-	{
-		node_null,			// Empty (null) node handle
-		node_document,		// A document tree's absolute root
-		node_element,		// Element tag, i.e. '<node/>'
-		node_pcdata,		// Plain character data, i.e. 'text'
-		node_cdata,			// Character data, i.e. '<![CDATA[text]]>'
-		node_comment,		// Comment tag, i.e. '<!-- text -->'
-		node_pi,			// Processing instruction, i.e. '<?name?>'
-		node_declaration,	// Document declaration, i.e. '<?xml version="1.0"?>'
-		node_doctype		// Document type declaration, i.e. '<!DOCTYPE doc>'
-	};
-
-	// Parsing options
-
-	// Minimal parsing mode (equivalent to turning all other flags off).
-	// Only elements and PCDATA sections are added to the DOM tree, no text conversions are performed.
-	const unsigned int parse_minimal = 0x0000;
-
-	// This flag determines if processing instructions (node_pi) are added to the DOM tree. This flag is off by default.
-	const unsigned int parse_pi = 0x0001;
-
-	// This flag determines if comments (node_comment) are added to the DOM tree. This flag is off by default.
-	const unsigned int parse_comments = 0x0002;
-
-	// This flag determines if CDATA sections (node_cdata) are added to the DOM tree. This flag is on by default.
-	const unsigned int parse_cdata = 0x0004;
-
-	// This flag determines if plain character data (node_pcdata) that consist only of whitespace are added to the DOM tree.
-	// This flag is off by default; turning it on usually results in slower parsing and more memory consumption.
-	const unsigned int parse_ws_pcdata = 0x0008;
-
-	// This flag determines if character and entity references are expanded during parsing. This flag is on by default.
-	const unsigned int parse_escapes = 0x0010;
-
-	// This flag determines if EOL characters are normalized (converted to #xA) during parsing. This flag is on by default.
-	const unsigned int parse_eol = 0x0020;
-
-	// This flag determines if attribute values are normalized using CDATA normalization rules during parsing. This flag is on by default.
-	const unsigned int parse_wconv_attribute = 0x0040;
-
-	// This flag determines if attribute values are normalized using NMTOKENS normalization rules during parsing. This flag is off by default.
-	const unsigned int parse_wnorm_attribute = 0x0080;
-
-	// This flag determines if document declaration (node_declaration) is added to the DOM tree. This flag is off by default.
-	const unsigned int parse_declaration = 0x0100;
-
-	// This flag determines if document type declaration (node_doctype) is added to the DOM tree. This flag is off by default.
-	const unsigned int parse_doctype = 0x0200;
-
-	// This flag determines if plain character data (node_pcdata) that is the only child of the parent node and that consists only
-	// of whitespace is added to the DOM tree.
-	// This flag is off by default; turning it on may result in slower parsing and more memory consumption.
-	const unsigned int parse_ws_pcdata_single = 0x0400;
-
-	// This flag determines if leading and trailing whitespace is to be removed from plain character data. This flag is off by default.
-	const unsigned int parse_trim_pcdata = 0x0800;
-
-	// This flag determines if plain character data that does not have a parent node is added to the DOM tree, and if an empty document
-	// is a valid document. This flag is off by default.
-	const unsigned int parse_fragment = 0x1000;
-
-	// This flag determines if plain character data is be stored in the parent element's value. This significantly changes the structure of
-	// the document; this flag is only recommended for parsing documents with many PCDATA nodes in memory-constrained environments.
-	// This flag is off by default.
-	const unsigned int parse_embed_pcdata = 0x2000;
-	
-	// This flag determines whether determines whether the the two pcdata should be merged or not, if no intermediatory data are parsed in the document.
-	// This flag is off by default.
-	const unsigned int parse_merge_pcdata = 0x4000;
-
-	// The default parsing mode.
-	// Elements, PCDATA and CDATA sections are added to the DOM tree, character/reference entities are expanded,
-	// End-of-Line characters are normalized, attribute values are normalized using CDATA normalization rules.
-	const unsigned int parse_default = parse_cdata | parse_escapes | parse_wconv_attribute | parse_eol;
-
-	// The full parsing mode.
-	// Nodes of all types are added to the DOM tree, character/reference entities are expanded,
-	// End-of-Line characters are normalized, attribute values are normalized using CDATA normalization rules.
-	const unsigned int parse_full = parse_default | parse_pi | parse_comments | parse_declaration | parse_doctype;
-
-	// These flags determine the encoding of input data for XML document
-	enum xml_encoding
-	{
-		encoding_auto,		// Auto-detect input encoding using BOM or < / <? detection; use UTF8 if BOM is not found
-		encoding_utf8,		// UTF8 encoding
-		encoding_utf16_le,	// Little-endian UTF16
-		encoding_utf16_be,	// Big-endian UTF16
-		encoding_utf16,		// UTF16 with native endianness
-		encoding_utf32_le,	// Little-endian UTF32
-		encoding_utf32_be,	// Big-endian UTF32
-		encoding_utf32,		// UTF32 with native endianness
-		encoding_wchar,		// The same encoding wchar_t has (either UTF16 or UTF32)
-		encoding_latin1
-	};
-
-	// Formatting flags
-
-	// Indent the nodes that are written to output stream with as many indentation strings as deep the node is in DOM tree. This flag is on by default.
-	const unsigned int format_indent = 0x01;
-
-	// Write encoding-specific BOM to the output stream. This flag is off by default.
-	const unsigned int format_write_bom = 0x02;
-
-	// Use raw output mode (no indentation and no line breaks are written). This flag is off by default.
-	const unsigned int format_raw = 0x04;
-
-	// Omit default XML declaration even if there is no declaration in the document. This flag is off by default.
-	const unsigned int format_no_declaration = 0x08;
-
-	// Don't escape attribute values and PCDATA contents. This flag is off by default.
-	const unsigned int format_no_escapes = 0x10;
-
-	// Open file using text mode in xml_document::save_file. This enables special character (i.e. new-line) conversions on some systems. This flag is off by default.
-	const unsigned int format_save_file_text = 0x20;
-
-	// Write every attribute on a new line with appropriate indentation. This flag is off by default.
-	const unsigned int format_indent_attributes = 0x40;
-
-	// Don't output empty element tags, instead writing an explicit start and end tag even if there are no children. This flag is off by default.
-	const unsigned int format_no_empty_element_tags = 0x80;
-
-	// Skip characters belonging to range [0; 32) instead of "&#xNN;" encoding. This flag is off by default.
-	const unsigned int format_skip_control_chars = 0x100;
-
-	// Use single quotes ' instead of double quotes " for enclosing attribute values. This flag is off by default.
-	const unsigned int format_attribute_single_quote = 0x200;
-
-	// The default set of formatting flags.
-	// Nodes are indented depending on their depth in DOM tree, a default declaration is output if document has none.
-	const unsigned int format_default = format_indent;
-
-	const int default_double_precision = 17;
-	const int default_float_precision = 9;
-
-	// Forward declarations
-	struct xml_attribute_struct;
-	struct xml_node_struct;
-
-	class xml_node_iterator;
-	class xml_attribute_iterator;
-	class xml_named_node_iterator;
-
-	class xml_tree_walker;
-
-	struct xml_parse_result;
-
-	class xml_node;
-
-	class xml_text;
-
-	#ifndef PUGIXML_NO_XPATH
-	class xpath_node;
-	class xpath_node_set;
-	class xpath_query;
-	class xpath_variable_set;
-	#endif
-
-	// Range-based for loop support
-	template <typename It> class xml_object_range
-	{
-	public:
-		typedef It const_iterator;
-		typedef It iterator;
-
-		xml_object_range(It b, It e): _begin(b), _end(e)
-		{
-		}
-
-		It begin() const { return _begin; }
-		It end() const { return _end; }
-
-		bool empty() const { return _begin == _end; }
-
-	private:
-		It _begin, _end;
-	};
-
-	// Writer interface for node printing (see xml_node::print)
-	class PUGIXML_CLASS xml_writer
-	{
-	public:
-		virtual ~xml_writer();
-
-		// Write memory chunk into stream/file/whatever
-		virtual void write(const void* data, size_t size) = 0;
-	};
-
-	// xml_writer implementation for FILE*
-	class PUGIXML_CLASS xml_writer_file: public xml_writer
-	{
-	public:
-		// Construct writer from a FILE* object; void* is used to avoid header dependencies on stdio
-		xml_writer_file(void* file);
-
-		virtual void write(const void* data, size_t size) PUGIXML_OVERRIDE;
-
-	private:
-		void* file;
-	};
-
-	#ifndef PUGIXML_NO_STL
-	// xml_writer implementation for streams
-	class PUGIXML_CLASS xml_writer_stream: public xml_writer
-	{
-	public:
-		// Construct writer from an output stream object
-		xml_writer_stream(std::basic_ostream<char, std::char_traits<char> >& stream);
-		xml_writer_stream(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& stream);
-
-		virtual void write(const void* data, size_t size) PUGIXML_OVERRIDE;
-
-	private:
-		std::basic_ostream<char, std::char_traits<char> >* narrow_stream;
-		std::basic_ostream<wchar_t, std::char_traits<wchar_t> >* wide_stream;
-	};
-	#endif
-
-	// A light-weight handle for manipulating attributes in DOM tree
-	class PUGIXML_CLASS xml_attribute
-	{
-		friend class xml_attribute_iterator;
-		friend class xml_node;
-
-	private:
-		xml_attribute_struct* _attr;
-
-		typedef void (*unspecified_bool_type)(xml_attribute***);
-
-	public:
-		// Default constructor. Constructs an empty attribute.
-		xml_attribute();
-
-		// Constructs attribute from internal pointer
-		explicit xml_attribute(xml_attribute_struct* attr);
-
-		// Safe bool conversion operator
-		operator unspecified_bool_type() const;
-
-		// Borland C++ workaround
-		bool operator!() const;
-
-		// Comparison operators (compares wrapped attribute pointers)
-		bool operator==(const xml_attribute& r) const;
-		bool operator!=(const xml_attribute& r) const;
-		bool operator<(const xml_attribute& r) const;
-		bool operator>(const xml_attribute& r) const;
-		bool operator<=(const xml_attribute& r) const;
-		bool operator>=(const xml_attribute& r) const;
-
-		// Check if attribute is empty
-		bool empty() const;
-
-		// Get attribute name/value, or "" if attribute is empty
-		const char_t* name() const;
-		const char_t* value() const;
-
-		// Get attribute value, or the default value if attribute is empty
-		const char_t* as_string(const char_t* def = PUGIXML_TEXT("")) const;
-
-		// Get attribute value as a number, or the default value if conversion did not succeed or attribute is empty
-		int as_int(int def = 0) const;
-		unsigned int as_uint(unsigned int def = 0) const;
-		double as_double(double def = 0) const;
-		float as_float(float def = 0) const;
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		long long as_llong(long long def = 0) const;
-		unsigned long long as_ullong(unsigned long long def = 0) const;
-	#endif
-
-		// Get attribute value as bool (returns true if first character is in '1tTyY' set), or the default value if attribute is empty
-		bool as_bool(bool def = false) const;
-
-		// Set attribute name/value (returns false if attribute is empty or there is not enough memory)
-		bool set_name(const char_t* rhs);
-		bool set_name(const char_t* rhs, size_t size);
-		bool set_value(const char_t* rhs);
-		bool set_value(const char_t* rhs, size_t size);
-
-		// Set attribute value with type conversion (numbers are converted to strings, boolean is converted to "true"/"false")
-		bool set_value(int rhs);
-		bool set_value(unsigned int rhs);
-		bool set_value(long rhs);
-		bool set_value(unsigned long rhs);
-		bool set_value(double rhs);
-		bool set_value(double rhs, int precision);
-		bool set_value(float rhs);
-		bool set_value(float rhs, int precision);
-		bool set_value(bool rhs);
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		bool set_value(long long rhs);
-		bool set_value(unsigned long long rhs);
-	#endif
-
-		// Set attribute value (equivalent to set_value without error checking)
-		xml_attribute& operator=(const char_t* rhs);
-		xml_attribute& operator=(int rhs);
-		xml_attribute& operator=(unsigned int rhs);
-		xml_attribute& operator=(long rhs);
-		xml_attribute& operator=(unsigned long rhs);
-		xml_attribute& operator=(double rhs);
-		xml_attribute& operator=(float rhs);
-		xml_attribute& operator=(bool rhs);
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		xml_attribute& operator=(long long rhs);
-		xml_attribute& operator=(unsigned long long rhs);
-	#endif
-
-		// Get next/previous attribute in the attribute list of the parent node
-		xml_attribute next_attribute() const;
-		xml_attribute previous_attribute() const;
-
-		// Get hash value (unique for handles to the same object)
-		size_t hash_value() const;
-
-		// Get internal pointer
-		xml_attribute_struct* internal_object() const;
-	};
-
-#ifdef __BORLANDC__
-	// Borland C++ workaround
-	bool PUGIXML_FUNCTION operator&&(const xml_attribute& lhs, bool rhs);
-	bool PUGIXML_FUNCTION operator||(const xml_attribute& lhs, bool rhs);
-#endif
-
-	// A light-weight handle for manipulating nodes in DOM tree
-	class PUGIXML_CLASS xml_node
-	{
-		friend class xml_attribute_iterator;
-		friend class xml_node_iterator;
-		friend class xml_named_node_iterator;
-
-	protected:
-		xml_node_struct* _root;
-
-		typedef void (*unspecified_bool_type)(xml_node***);
-
-	public:
-		// Default constructor. Constructs an empty node.
-		xml_node();
-
-		// Constructs node from internal pointer
-		explicit xml_node(xml_node_struct* p);
-
-		// Safe bool conversion operator
-		operator unspecified_bool_type() const;
-
-		// Borland C++ workaround
-		bool operator!() const;
-
-		// Comparison operators (compares wrapped node pointers)
-		bool operator==(const xml_node& r) const;
-		bool operator!=(const xml_node& r) const;
-		bool operator<(const xml_node& r) const;
-		bool operator>(const xml_node& r) const;
-		bool operator<=(const xml_node& r) const;
-		bool operator>=(const xml_node& r) const;
-
-		// Check if node is empty.
-		bool empty() const;
-
-		// Get node type
-		xml_node_type type() const;
-
-		// Get node name, or "" if node is empty or it has no name
-		const char_t* name() const;
-
-		// Get node value, or "" if node is empty or it has no value
-		// Note: For <node>text</node> node.value() does not return "text"! Use child_value() or text() methods to access text inside nodes.
-		const char_t* value() const;
-
-		// Get attribute list
-		xml_attribute first_attribute() const;
-		xml_attribute last_attribute() const;
-
-		// Get children list
-		xml_node first_child() const;
-		xml_node last_child() const;
-
-		// Get next/previous sibling in the children list of the parent node
-		xml_node next_sibling() const;
-		xml_node previous_sibling() const;
-
-		// Get parent node
-		xml_node parent() const;
-
-		// Get root of DOM tree this node belongs to
-		xml_node root() const;
-
-		// Get text object for the current node
-		xml_text text() const;
-
-		// Get child, attribute or next/previous sibling with the specified name
-		xml_node child(const char_t* name) const;
-		xml_attribute attribute(const char_t* name) const;
-		xml_node next_sibling(const char_t* name) const;
-		xml_node previous_sibling(const char_t* name) const;
-
-		// Get attribute, starting the search from a hint (and updating hint so that searching for a sequence of attributes is fast)
-		xml_attribute attribute(const char_t* name, xml_attribute& hint) const;
-
-		// Get child value of current node; that is, value of the first child node of type PCDATA/CDATA
-		const char_t* child_value() const;
-
-		// Get child value of child with specified name. Equivalent to child(name).child_value().
-		const char_t* child_value(const char_t* name) const;
-
-		// Set node name/value (returns false if node is empty, there is not enough memory, or node can not have name/value)
-		bool set_name(const char_t* rhs);
-		bool set_name(const char_t* rhs, size_t size);
-		bool set_value(const char_t* rhs);
-		bool set_value(const char_t* rhs, size_t size);
-
-		// Add attribute with specified name. Returns added attribute, or empty attribute on errors.
-		xml_attribute append_attribute(const char_t* name);
-		xml_attribute prepend_attribute(const char_t* name);
-		xml_attribute insert_attribute_after(const char_t* name, const xml_attribute& attr);
-		xml_attribute insert_attribute_before(const char_t* name, const xml_attribute& attr);
-
-		// Add a copy of the specified attribute. Returns added attribute, or empty attribute on errors.
-		xml_attribute append_copy(const xml_attribute& proto);
-		xml_attribute prepend_copy(const xml_attribute& proto);
-		xml_attribute insert_copy_after(const xml_attribute& proto, const xml_attribute& attr);
-		xml_attribute insert_copy_before(const xml_attribute& proto, const xml_attribute& attr);
-
-		// Add child node with specified type. Returns added node, or empty node on errors.
-		xml_node append_child(xml_node_type type = node_element);
-		xml_node prepend_child(xml_node_type type = node_element);
-		xml_node insert_child_after(xml_node_type type, const xml_node& node);
-		xml_node insert_child_before(xml_node_type type, const xml_node& node);
-
-		// Add child element with specified name. Returns added node, or empty node on errors.
-		xml_node append_child(const char_t* name);
-		xml_node prepend_child(const char_t* name);
-		xml_node insert_child_after(const char_t* name, const xml_node& node);
-		xml_node insert_child_before(const char_t* name, const xml_node& node);
-
-		// Add a copy of the specified node as a child. Returns added node, or empty node on errors.
-		xml_node append_copy(const xml_node& proto);
-		xml_node prepend_copy(const xml_node& proto);
-		xml_node insert_copy_after(const xml_node& proto, const xml_node& node);
-		xml_node insert_copy_before(const xml_node& proto, const xml_node& node);
-
-		// Move the specified node to become a child of this node. Returns moved node, or empty node on errors.
-		xml_node append_move(const xml_node& moved);
-		xml_node prepend_move(const xml_node& moved);
-		xml_node insert_move_after(const xml_node& moved, const xml_node& node);
-		xml_node insert_move_before(const xml_node& moved, const xml_node& node);
-
-		// Remove specified attribute
-		bool remove_attribute(const xml_attribute& a);
-		bool remove_attribute(const char_t* name);
-
-		// Remove all attributes
-		bool remove_attributes();
-
-		// Remove specified child
-		bool remove_child(const xml_node& n);
-		bool remove_child(const char_t* name);
-
-		// Remove all children
-		bool remove_children();
-
-		// Parses buffer as an XML document fragment and appends all nodes as children of the current node.
-		// Copies/converts the buffer, so it may be deleted or changed after the function returns.
-		// Note: append_buffer allocates memory that has the lifetime of the owning document; removing the appended nodes does not immediately reclaim that memory.
-		xml_parse_result append_buffer(const void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-
-		// Find attribute using predicate. Returns first attribute for which predicate returned true.
-		template <typename Predicate> xml_attribute find_attribute(Predicate pred) const
-		{
-			if (!_root) return xml_attribute();
-
-			for (xml_attribute attrib = first_attribute(); attrib; attrib = attrib.next_attribute())
-				if (pred(attrib))
-					return attrib;
-
-			return xml_attribute();
-		}
-
-		// Find child node using predicate. Returns first child for which predicate returned true.
-		template <typename Predicate> xml_node find_child(Predicate pred) const
-		{
-			if (!_root) return xml_node();
-
-			for (xml_node node = first_child(); node; node = node.next_sibling())
-				if (pred(node))
-					return node;
-
-			return xml_node();
-		}
-
-		// Find node from subtree using predicate. Returns first node from subtree (depth-first), for which predicate returned true.
-		template <typename Predicate> xml_node find_node(Predicate pred) const
-		{
-			if (!_root) return xml_node();
-
-			xml_node cur = first_child();
-
-			while (cur._root && cur._root != _root)
-			{
-				if (pred(cur)) return cur;
-
-				if (cur.first_child()) cur = cur.first_child();
-				else if (cur.next_sibling()) cur = cur.next_sibling();
-				else
-				{
-					while (!cur.next_sibling() && cur._root != _root) cur = cur.parent();
-
-					if (cur._root != _root) cur = cur.next_sibling();
-				}
-			}
-
-			return xml_node();
-		}
-
-		// Find child node by attribute name/value
-		xml_node find_child_by_attribute(const char_t* name, const char_t* attr_name, const char_t* attr_value) const;
-		xml_node find_child_by_attribute(const char_t* attr_name, const char_t* attr_value) const;
-
-	#ifndef PUGIXML_NO_STL
-		// Get the absolute node path from root as a text string.
-		string_t path(char_t delimiter = '/') const;
-	#endif
-
-		// Search for a node by path consisting of node names and . or .. elements.
-		xml_node first_element_by_path(const char_t* path, char_t delimiter = '/') const;
-
-		// Recursively traverse subtree with xml_tree_walker
-		bool traverse(xml_tree_walker& walker);
-
-	#ifndef PUGIXML_NO_XPATH
-		// Select single node by evaluating XPath query. Returns first node from the resulting node set.
-		xpath_node select_node(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL) const;
-		xpath_node select_node(const xpath_query& query) const;
-
-		// Select node set by evaluating XPath query
-		xpath_node_set select_nodes(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL) const;
-		xpath_node_set select_nodes(const xpath_query& query) const;
-
-		// (deprecated: use select_node instead) Select single node by evaluating XPath query.
-		PUGIXML_DEPRECATED xpath_node select_single_node(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL) const;
-		PUGIXML_DEPRECATED xpath_node select_single_node(const xpath_query& query) const;
-
-	#endif
-
-		// Print subtree using a writer object
-		void print(xml_writer& writer, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto, unsigned int depth = 0) const;
-
-	#ifndef PUGIXML_NO_STL
-		// Print subtree to stream
-		void print(std::basic_ostream<char, std::char_traits<char> >& os, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto, unsigned int depth = 0) const;
-		void print(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& os, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, unsigned int depth = 0) const;
-	#endif
-
-		// Child nodes iterators
-		typedef xml_node_iterator iterator;
-
-		iterator begin() const;
-		iterator end() const;
-
-		// Attribute iterators
-		typedef xml_attribute_iterator attribute_iterator;
-
-		attribute_iterator attributes_begin() const;
-		attribute_iterator attributes_end() const;
-
-		// Range-based for support
-		xml_object_range<xml_node_iterator> children() const;
-		xml_object_range<xml_attribute_iterator> attributes() const;
-
-		// Range-based for support for all children with the specified name
-		// Note: name pointer must have a longer lifetime than the returned object; be careful with passing temporaries!
-		xml_object_range<xml_named_node_iterator> children(const char_t* name) const;
-
-		// Get node offset in parsed file/string (in char_t units) for debugging purposes
-		ptrdiff_t offset_debug() const;
-
-		// Get hash value (unique for handles to the same object)
-		size_t hash_value() const;
-
-		// Get internal pointer
-		xml_node_struct* internal_object() const;
-	};
-
-#ifdef __BORLANDC__
-	// Borland C++ workaround
-	bool PUGIXML_FUNCTION operator&&(const xml_node& lhs, bool rhs);
-	bool PUGIXML_FUNCTION operator||(const xml_node& lhs, bool rhs);
-#endif
-
-	// A helper for working with text inside PCDATA nodes
-	class PUGIXML_CLASS xml_text
-	{
-		friend class xml_node;
-
-		xml_node_struct* _root;
-
-		typedef void (*unspecified_bool_type)(xml_text***);
-
-		explicit xml_text(xml_node_struct* root);
-
-		xml_node_struct* _data_new();
-		xml_node_struct* _data() const;
-
-	public:
-		// Default constructor. Constructs an empty object.
-		xml_text();
-
-		// Safe bool conversion operator
-		operator unspecified_bool_type() const;
-
-		// Borland C++ workaround
-		bool operator!() const;
-
-		// Check if text object is empty
-		bool empty() const;
-
-		// Get text, or "" if object is empty
-		const char_t* get() const;
-
-		// Get text, or the default value if object is empty
-		const char_t* as_string(const char_t* def = PUGIXML_TEXT("")) const;
-
-		// Get text as a number, or the default value if conversion did not succeed or object is empty
-		int as_int(int def = 0) const;
-		unsigned int as_uint(unsigned int def = 0) const;
-		double as_double(double def = 0) const;
-		float as_float(float def = 0) const;
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		long long as_llong(long long def = 0) const;
-		unsigned long long as_ullong(unsigned long long def = 0) const;
-	#endif
-
-		// Get text as bool (returns true if first character is in '1tTyY' set), or the default value if object is empty
-		bool as_bool(bool def = false) const;
-
-		// Set text (returns false if object is empty or there is not enough memory)
-		bool set(const char_t* rhs);
-		bool set(const char_t* rhs, size_t size);
-
-		// Set text with type conversion (numbers are converted to strings, boolean is converted to "true"/"false")
-		bool set(int rhs);
-		bool set(unsigned int rhs);
-		bool set(long rhs);
-		bool set(unsigned long rhs);
-		bool set(double rhs);
-		bool set(double rhs, int precision);
-		bool set(float rhs);
-		bool set(float rhs, int precision);
-		bool set(bool rhs);
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		bool set(long long rhs);
-		bool set(unsigned long long rhs);
-	#endif
-
-		// Set text (equivalent to set without error checking)
-		xml_text& operator=(const char_t* rhs);
-		xml_text& operator=(int rhs);
-		xml_text& operator=(unsigned int rhs);
-		xml_text& operator=(long rhs);
-		xml_text& operator=(unsigned long rhs);
-		xml_text& operator=(double rhs);
-		xml_text& operator=(float rhs);
-		xml_text& operator=(bool rhs);
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		xml_text& operator=(long long rhs);
-		xml_text& operator=(unsigned long long rhs);
-	#endif
-
-		// Get the data node (node_pcdata or node_cdata) for this object
-		xml_node data() const;
-	};
-
-#ifdef __BORLANDC__
-	// Borland C++ workaround
-	bool PUGIXML_FUNCTION operator&&(const xml_text& lhs, bool rhs);
-	bool PUGIXML_FUNCTION operator||(const xml_text& lhs, bool rhs);
-#endif
-
-	// Child node iterator (a bidirectional iterator over a collection of xml_node)
-	class PUGIXML_CLASS xml_node_iterator
-	{
-		friend class xml_node;
-
-	private:
-		mutable xml_node _wrap;
-		xml_node _parent;
-
-		xml_node_iterator(xml_node_struct* ref, xml_node_struct* parent);
-
-	public:
-		// Iterator traits
-		typedef ptrdiff_t difference_type;
-		typedef xml_node value_type;
-		typedef xml_node* pointer;
-		typedef xml_node& reference;
-
-	#ifndef PUGIXML_NO_STL
-		typedef std::bidirectional_iterator_tag iterator_category;
-	#endif
-
-		// Default constructor
-		xml_node_iterator();
-
-		// Construct an iterator which points to the specified node
-		xml_node_iterator(const xml_node& node);
-
-		// Iterator operators
-		bool operator==(const xml_node_iterator& rhs) const;
-		bool operator!=(const xml_node_iterator& rhs) const;
-
-		xml_node& operator*() const;
-		xml_node* operator->() const;
-
-		xml_node_iterator& operator++();
-		xml_node_iterator operator++(int);
-
-		xml_node_iterator& operator--();
-		xml_node_iterator operator--(int);
-	};
-
-	// Attribute iterator (a bidirectional iterator over a collection of xml_attribute)
-	class PUGIXML_CLASS xml_attribute_iterator
-	{
-		friend class xml_node;
-
-	private:
-		mutable xml_attribute _wrap;
-		xml_node _parent;
-
-		xml_attribute_iterator(xml_attribute_struct* ref, xml_node_struct* parent);
-
-	public:
-		// Iterator traits
-		typedef ptrdiff_t difference_type;
-		typedef xml_attribute value_type;
-		typedef xml_attribute* pointer;
-		typedef xml_attribute& reference;
-
-	#ifndef PUGIXML_NO_STL
-		typedef std::bidirectional_iterator_tag iterator_category;
-	#endif
-
-		// Default constructor
-		xml_attribute_iterator();
-
-		// Construct an iterator which points to the specified attribute
-		xml_attribute_iterator(const xml_attribute& attr, const xml_node& parent);
-
-		// Iterator operators
-		bool operator==(const xml_attribute_iterator& rhs) const;
-		bool operator!=(const xml_attribute_iterator& rhs) const;
-
-		xml_attribute& operator*() const;
-		xml_attribute* operator->() const;
-
-		xml_attribute_iterator& operator++();
-		xml_attribute_iterator operator++(int);
-
-		xml_attribute_iterator& operator--();
-		xml_attribute_iterator operator--(int);
-	};
-
-	// Named node range helper
-	class PUGIXML_CLASS xml_named_node_iterator
-	{
-		friend class xml_node;
-
-	public:
-		// Iterator traits
-		typedef ptrdiff_t difference_type;
-		typedef xml_node value_type;
-		typedef xml_node* pointer;
-		typedef xml_node& reference;
-
-	#ifndef PUGIXML_NO_STL
-		typedef std::bidirectional_iterator_tag iterator_category;
-	#endif
-
-		// Default constructor
-		xml_named_node_iterator();
-
-		// Construct an iterator which points to the specified node
-		// Note: name pointer is stored in the iterator and must have a longer lifetime than iterator itself
-		xml_named_node_iterator(const xml_node& node, const char_t* name);
-
-		// Iterator operators
-		bool operator==(const xml_named_node_iterator& rhs) const;
-		bool operator!=(const xml_named_node_iterator& rhs) const;
-
-		xml_node& operator*() const;
-		xml_node* operator->() const;
-
-		xml_named_node_iterator& operator++();
-		xml_named_node_iterator operator++(int);
-
-		xml_named_node_iterator& operator--();
-		xml_named_node_iterator operator--(int);
-
-	private:
-		mutable xml_node _wrap;
-		xml_node _parent;
-		const char_t* _name;
-
-		xml_named_node_iterator(xml_node_struct* ref, xml_node_struct* parent, const char_t* name);
-	};
-
-	// Abstract tree walker class (see xml_node::traverse)
-	class PUGIXML_CLASS xml_tree_walker
-	{
-		friend class xml_node;
-
-	private:
-		int _depth;
-
-	protected:
-		// Get current traversal depth
-		int depth() const;
-
-	public:
-		xml_tree_walker();
-		virtual ~xml_tree_walker();
-
-		// Callback that is called when traversal begins
-		virtual bool begin(xml_node& node);
-
-		// Callback that is called for each node traversed
-		virtual bool for_each(xml_node& node) = 0;
-
-		// Callback that is called when traversal ends
-		virtual bool end(xml_node& node);
-	};
-
-	// Parsing status, returned as part of xml_parse_result object
-	enum xml_parse_status
-	{
-		status_ok = 0,				// No error
-
-		status_file_not_found,		// File was not found during load_file()
-		status_io_error,			// Error reading from file/stream
-		status_out_of_memory,		// Could not allocate memory
-		status_internal_error,		// Internal error occurred
-
-		status_unrecognized_tag,	// Parser could not determine tag type
-
-		status_bad_pi,				// Parsing error occurred while parsing document declaration/processing instruction
-		status_bad_comment,			// Parsing error occurred while parsing comment
-		status_bad_cdata,			// Parsing error occurred while parsing CDATA section
-		status_bad_doctype,			// Parsing error occurred while parsing document type declaration
-		status_bad_pcdata,			// Parsing error occurred while parsing PCDATA section
-		status_bad_start_element,	// Parsing error occurred while parsing start element tag
-		status_bad_attribute,		// Parsing error occurred while parsing element attribute
-		status_bad_end_element,		// Parsing error occurred while parsing end element tag
-		status_end_element_mismatch,// There was a mismatch of start-end tags (closing tag had incorrect name, some tag was not closed or there was an excessive closing tag)
-
-		status_append_invalid_root,	// Unable to append nodes since root type is not node_element or node_document (exclusive to xml_node::append_buffer)
-
-		status_no_document_element	// Parsing resulted in a document without element nodes
-	};
-
-	// Parsing result
-	struct PUGIXML_CLASS xml_parse_result
-	{
-		// Parsing status (see xml_parse_status)
-		xml_parse_status status;
-
-		// Last parsed offset (in char_t units from start of input data)
-		ptrdiff_t offset;
-
-		// Source document encoding
-		xml_encoding encoding;
-
-		// Default constructor, initializes object to failed state
-		xml_parse_result();
-
-		// Cast to bool operator
-		operator bool() const;
-
-		// Get error description
-		const char* description() const;
-	};
-
-	// Document class (DOM tree root)
-	class PUGIXML_CLASS xml_document: public xml_node
-	{
-	private:
-		char_t* _buffer;
-
-		char _memory[192];
-
-		// Non-copyable semantics
-		xml_document(const xml_document&);
-		xml_document& operator=(const xml_document&);
-
-		void _create();
-		void _destroy();
-		void _move(xml_document& rhs) PUGIXML_NOEXCEPT_IF_NOT_COMPACT;
-
-	public:
-		// Default constructor, makes empty document
-		xml_document();
-
-		// Destructor, invalidates all node/attribute handles to this document
-		~xml_document();
-
-	#ifdef PUGIXML_HAS_MOVE
-		// Move semantics support
-		xml_document(xml_document&& rhs) PUGIXML_NOEXCEPT_IF_NOT_COMPACT;
-		xml_document& operator=(xml_document&& rhs) PUGIXML_NOEXCEPT_IF_NOT_COMPACT;
-	#endif
-
-		// Removes all nodes, leaving the empty document
-		void reset();
-
-		// Removes all nodes, then copies the entire contents of the specified document
-		void reset(const xml_document& proto);
-
-	#ifndef PUGIXML_NO_STL
-		// Load document from stream.
-		xml_parse_result load(std::basic_istream<char, std::char_traits<char> >& stream, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-		xml_parse_result load(std::basic_istream<wchar_t, std::char_traits<wchar_t> >& stream, unsigned int options = parse_default);
-	#endif
-
-		// (deprecated: use load_string instead) Load document from zero-terminated string. No encoding conversions are applied.
-		PUGIXML_DEPRECATED xml_parse_result load(const char_t* contents, unsigned int options = parse_default);
-
-		// Load document from zero-terminated string. No encoding conversions are applied.
-		xml_parse_result load_string(const char_t* contents, unsigned int options = parse_default);
-
-		// Load document from file
-		xml_parse_result load_file(const char* path, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-		xml_parse_result load_file(const wchar_t* path, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-
-		// Load document from buffer. Copies/converts the buffer, so it may be deleted or changed after the function returns.
-		xml_parse_result load_buffer(const void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-
-		// Load document from buffer, using the buffer for in-place parsing (the buffer is modified and used for storage of document data).
-		// You should ensure that buffer data will persist throughout the document's lifetime, and free the buffer memory manually once document is destroyed.
-		xml_parse_result load_buffer_inplace(void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-
-		// Load document from buffer, using the buffer for in-place parsing (the buffer is modified and used for storage of document data).
-		// You should allocate the buffer with pugixml allocation function; document will free the buffer when it is no longer needed (you can't use it anymore).
-		xml_parse_result load_buffer_inplace_own(void* contents, size_t size, unsigned int options = parse_default, xml_encoding encoding = encoding_auto);
-
-		// Save XML document to writer (semantics is slightly different from xml_node::print, see documentation for details).
-		void save(xml_writer& writer, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
-
-	#ifndef PUGIXML_NO_STL
-		// Save XML document to stream (semantics is slightly different from xml_node::print, see documentation for details).
-		void save(std::basic_ostream<char, std::char_traits<char> >& stream, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
-		void save(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& stream, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default) const;
-	#endif
-
-		// Save XML to file
-		bool save_file(const char* path, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
-		bool save_file(const wchar_t* path, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto) const;
-
-		// Get document element
-		xml_node document_element() const;
-	};
-
-#ifndef PUGIXML_NO_XPATH
-	// XPath query return type
-	enum xpath_value_type
-	{
-		xpath_type_none,	  // Unknown type (query failed to compile)
-		xpath_type_node_set,  // Node set (xpath_node_set)
-		xpath_type_number,	  // Number
-		xpath_type_string,	  // String
-		xpath_type_boolean	  // Boolean
-	};
-
-	// XPath parsing result
-	struct PUGIXML_CLASS xpath_parse_result
-	{
-		// Error message (0 if no error)
-		const char* error;
-
-		// Last parsed offset (in char_t units from string start)
-		ptrdiff_t offset;
-
-		// Default constructor, initializes object to failed state
-		xpath_parse_result();
-
-		// Cast to bool operator
-		operator bool() const;
-
-		// Get error description
-		const char* description() const;
-	};
-
-	// A single XPath variable
-	class PUGIXML_CLASS xpath_variable
-	{
-		friend class xpath_variable_set;
-
-	protected:
-		xpath_value_type _type;
-		xpath_variable* _next;
-
-		xpath_variable(xpath_value_type type);
-
-		// Non-copyable semantics
-		xpath_variable(const xpath_variable&);
-		xpath_variable& operator=(const xpath_variable&);
-
-	public:
-		// Get variable name
-		const char_t* name() const;
-
-		// Get variable type
-		xpath_value_type type() const;
-
-		// Get variable value; no type conversion is performed, default value (false, NaN, empty string, empty node set) is returned on type mismatch error
-		bool get_boolean() const;
-		double get_number() const;
-		const char_t* get_string() const;
-		const xpath_node_set& get_node_set() const;
-
-		// Set variable value; no type conversion is performed, false is returned on type mismatch error
-		bool set(bool value);
-		bool set(double value);
-		bool set(const char_t* value);
-		bool set(const xpath_node_set& value);
-	};
-
-	// A set of XPath variables
-	class PUGIXML_CLASS xpath_variable_set
-	{
-	private:
-		xpath_variable* _data[64];
-
-		void _assign(const xpath_variable_set& rhs);
-		void _swap(xpath_variable_set& rhs);
-
-		xpath_variable* _find(const char_t* name) const;
-
-		static bool _clone(xpath_variable* var, xpath_variable** out_result);
-		static void _destroy(xpath_variable* var);
-
-	public:
-		// Default constructor/destructor
-		xpath_variable_set();
-		~xpath_variable_set();
-
-		// Copy constructor/assignment operator
-		xpath_variable_set(const xpath_variable_set& rhs);
-		xpath_variable_set& operator=(const xpath_variable_set& rhs);
-
-	#ifdef PUGIXML_HAS_MOVE
-		// Move semantics support
-		xpath_variable_set(xpath_variable_set&& rhs) PUGIXML_NOEXCEPT;
-		xpath_variable_set& operator=(xpath_variable_set&& rhs) PUGIXML_NOEXCEPT;
-	#endif
-
-		// Add a new variable or get the existing one, if the types match
-		xpath_variable* add(const char_t* name, xpath_value_type type);
-
-		// Set value of an existing variable; no type conversion is performed, false is returned if there is no such variable or if types mismatch
-		bool set(const char_t* name, bool value);
-		bool set(const char_t* name, double value);
-		bool set(const char_t* name, const char_t* value);
-		bool set(const char_t* name, const xpath_node_set& value);
-
-		// Get existing variable by name
-		xpath_variable* get(const char_t* name);
-		const xpath_variable* get(const char_t* name) const;
-	};
-
-	// A compiled XPath query object
-	class PUGIXML_CLASS xpath_query
-	{
-	private:
-		void* _impl;
-		xpath_parse_result _result;
-
-		typedef void (*unspecified_bool_type)(xpath_query***);
-
-		// Non-copyable semantics
-		xpath_query(const xpath_query&);
-		xpath_query& operator=(const xpath_query&);
-
-	public:
-		// Construct a compiled object from XPath expression.
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws xpath_exception on compilation errors.
-		explicit xpath_query(const char_t* query, xpath_variable_set* variables = PUGIXML_NULL);
-
-		// Constructor
-		xpath_query();
-
-		// Destructor
-		~xpath_query();
-
-	#ifdef PUGIXML_HAS_MOVE
-		// Move semantics support
-		xpath_query(xpath_query&& rhs) PUGIXML_NOEXCEPT;
-		xpath_query& operator=(xpath_query&& rhs) PUGIXML_NOEXCEPT;
-	#endif
-
-		// Get query expression return type
-		xpath_value_type return_type() const;
-
-		// Evaluate expression as boolean value in the specified context; performs type conversion if necessary.
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
-		bool evaluate_boolean(const xpath_node& n) const;
-
-		// Evaluate expression as double value in the specified context; performs type conversion if necessary.
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
-		double evaluate_number(const xpath_node& n) const;
-
-	#ifndef PUGIXML_NO_STL
-		// Evaluate expression as string value in the specified context; performs type conversion if necessary.
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
-		string_t evaluate_string(const xpath_node& n) const;
-	#endif
-
-		// Evaluate expression as string value in the specified context; performs type conversion if necessary.
-		// At most capacity characters are written to the destination buffer, full result size is returned (includes terminating zero).
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws std::bad_alloc on out of memory errors.
-		// If PUGIXML_NO_EXCEPTIONS is defined, returns empty  set instead.
-		size_t evaluate_string(char_t* buffer, size_t capacity, const xpath_node& n) const;
-
-		// Evaluate expression as node set in the specified context.
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws xpath_exception on type mismatch and std::bad_alloc on out of memory errors.
-		// If PUGIXML_NO_EXCEPTIONS is defined, returns empty node set instead.
-		xpath_node_set evaluate_node_set(const xpath_node& n) const;
-
-		// Evaluate expression as node set in the specified context.
-		// Return first node in document order, or empty node if node set is empty.
-		// If PUGIXML_NO_EXCEPTIONS is not defined, throws xpath_exception on type mismatch and std::bad_alloc on out of memory errors.
-		// If PUGIXML_NO_EXCEPTIONS is defined, returns empty node instead.
-		xpath_node evaluate_node(const xpath_node& n) const;
-
-		// Get parsing result (used to get compilation errors in PUGIXML_NO_EXCEPTIONS mode)
-		const xpath_parse_result& result() const;
-
-		// Safe bool conversion operator
-		operator unspecified_bool_type() const;
-
-		// Borland C++ workaround
-		bool operator!() const;
-	};
-
-	#ifndef PUGIXML_NO_EXCEPTIONS
-        #if defined(_MSC_VER)
-          // C4275 can be ignored in Visual C++ if you are deriving
-          // from a type in the Standard C++ Library
-          #pragma warning(push)
-          #pragma warning(disable: 4275)
-        #endif
-	// XPath exception class
-	class PUGIXML_CLASS xpath_exception: public std::exception
-	{
-	private:
-		xpath_parse_result _result;
-
-	public:
-		// Construct exception from parse result
-		explicit xpath_exception(const xpath_parse_result& result);
-
-		// Get error message
-		virtual const char* what() const throw() PUGIXML_OVERRIDE;
-
-		// Get parse result
-		const xpath_parse_result& result() const;
-	};
-        #if defined(_MSC_VER)
-          #pragma warning(pop)
-        #endif
-	#endif
-
-	// XPath node class (either xml_node or xml_attribute)
-	class PUGIXML_CLASS xpath_node
-	{
-	private:
-		xml_node _node;
-		xml_attribute _attribute;
-
-		typedef void (*unspecified_bool_type)(xpath_node***);
-
-	public:
-		// Default constructor; constructs empty XPath node
-		xpath_node();
-
-		// Construct XPath node from XML node/attribute
-		xpath_node(const xml_node& node);
-		xpath_node(const xml_attribute& attribute, const xml_node& parent);
-
-		// Get node/attribute, if any
-		xml_node node() const;
-		xml_attribute attribute() const;
-
-		// Get parent of contained node/attribute
-		xml_node parent() const;
-
-		// Safe bool conversion operator
-		operator unspecified_bool_type() const;
-
-		// Borland C++ workaround
-		bool operator!() const;
-
-		// Comparison operators
-		bool operator==(const xpath_node& n) const;
-		bool operator!=(const xpath_node& n) const;
-	};
-
-#ifdef __BORLANDC__
-	// Borland C++ workaround
-	bool PUGIXML_FUNCTION operator&&(const xpath_node& lhs, bool rhs);
-	bool PUGIXML_FUNCTION operator||(const xpath_node& lhs, bool rhs);
-#endif
-
-	// A fixed-size collection of XPath nodes
-	class PUGIXML_CLASS xpath_node_set
-	{
-	public:
-		// Collection type
-		enum type_t
-		{
-			type_unsorted,			// Not ordered
-			type_sorted,			// Sorted by document order (ascending)
-			type_sorted_reverse		// Sorted by document order (descending)
-		};
-
-		// Constant iterator type
-		typedef const xpath_node* const_iterator;
-
-		// We define non-constant iterator to be the same as constant iterator so that various generic algorithms (i.e. boost foreach) work
-		typedef const xpath_node* iterator;
-
-		// Default constructor. Constructs empty set.
-		xpath_node_set();
-
-		// Constructs a set from iterator range; data is not checked for duplicates and is not sorted according to provided type, so be careful
-		xpath_node_set(const_iterator begin, const_iterator end, type_t type = type_unsorted);
-
-		// Destructor
-		~xpath_node_set();
-
-		// Copy constructor/assignment operator
-		xpath_node_set(const xpath_node_set& ns);
-		xpath_node_set& operator=(const xpath_node_set& ns);
-
-	#ifdef PUGIXML_HAS_MOVE
-		// Move semantics support
-		xpath_node_set(xpath_node_set&& rhs) PUGIXML_NOEXCEPT;
-		xpath_node_set& operator=(xpath_node_set&& rhs) PUGIXML_NOEXCEPT;
-	#endif
-
-		// Get collection type
-		type_t type() const;
-
-		// Get collection size
-		size_t size() const;
-
-		// Indexing operator
-		const xpath_node& operator[](size_t index) const;
-
-		// Collection iterators
-		const_iterator begin() const;
-		const_iterator end() const;
-
-		// Sort the collection in ascending/descending order by document order
-		void sort(bool reverse = false);
-
-		// Get first node in the collection by document order
-		xpath_node first() const;
-
-		// Check if collection is empty
-		bool empty() const;
-
-	private:
-		type_t _type;
-
-		xpath_node _storage[1];
-
-		xpath_node* _begin;
-		xpath_node* _end;
-
-		void _assign(const_iterator begin, const_iterator end, type_t type);
-		void _move(xpath_node_set& rhs) PUGIXML_NOEXCEPT;
-	};
-#endif
-
-#ifndef PUGIXML_NO_STL
-	// Convert wide string to UTF8
-	std::basic_string<char, std::char_traits<char>, std::allocator<char> > PUGIXML_FUNCTION as_utf8(const wchar_t* str);
-	std::basic_string<char, std::char_traits<char>, std::allocator<char> > PUGIXML_FUNCTION as_utf8(const std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> >& str);
-
-	// Convert UTF8 to wide string
-	std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> > PUGIXML_FUNCTION as_wide(const char* str);
-	std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> > PUGIXML_FUNCTION as_wide(const std::basic_string<char, std::char_traits<char>, std::allocator<char> >& str);
-#endif
-
-	// Memory allocation function interface; returns pointer to allocated memory or NULL on failure
-	typedef void* (*allocation_function)(size_t size);
-
-	// Memory deallocation function interface
-	typedef void (*deallocation_function)(void* ptr);
-
-	// Override default memory management functions. All subsequent allocations/deallocations will be performed via supplied functions.
-	void PUGIXML_FUNCTION set_memory_management_functions(allocation_function allocate, deallocation_function deallocate);
-
-	// Get current memory management functions
-	allocation_function PUGIXML_FUNCTION get_memory_allocation_function();
-	deallocation_function PUGIXML_FUNCTION get_memory_deallocation_function();
-}
-
-#if !defined(PUGIXML_NO_STL) && (defined(_MSC_VER) || defined(__ICC))
-namespace std
-{
-	// Workarounds for (non-standard) iterator category detection for older versions (MSVC7/IC8 and earlier)
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_node_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_attribute_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_named_node_iterator&);
-}
-#endif
-
-#if !defined(PUGIXML_NO_STL) && defined(__SUNPRO_CC)
-namespace std
-{
-	// Workarounds for (non-standard) iterator category detection
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_node_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_attribute_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_named_node_iterator&);
-}
-#endif
-
-#endif
-
-// Make sure implementation is included in header-only mode
-// Use macro expansion in #include to work around QMake (QTBUG-11923)
-#if defined(PUGIXML_HEADER_ONLY) && !defined(PUGIXML_SOURCE)
-#	define PUGIXML_SOURCE "pugixml.cpp"
-#	include PUGIXML_SOURCE
-#endif
-
-/**
- * Copyright (c) 2006-2023 Arseny Kapoulkine
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use,
- * copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following
- * conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
- * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
- * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- */
-// ===== end src/cpp/third_party/pugixml/pugixml.hpp =====
 // ===== begin src/cpp/src/formats/xdmf_doc.hpp =====
 /**
  * @file formats/xdmf_doc.hpp
@@ -36242,7 +36409,7 @@ struct XdmfDoc {
  *
  * @param rDoc The parsed document.
  * @return The resolved grids.
- * @throws ReadError if the document is not an XDMF 3 document with a `<Grid>`,
+ * @throws ReadError if the document is not an XDMF 2/3 document with a `<Grid>`,
  *         or if a temporal collection carries no mesh grid at all.
  */
 inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
@@ -36250,8 +36417,8 @@ inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
     if (!root)
         throw ReadError("XDMF: missing <Xdmf> root");
     std::string version = root.attribute("Version").value();
-    if (!version.empty() && version[0] != '3')
-        throw ReadError("XDMF: only version 3 handled by the C++ core");
+    if (!version.empty() && version[0] != '2' && version[0] != '3')
+        throw ReadError("XDMF: unsupported version '" + version + "'");
 
     pugi::xml_node domain = root.child("Domain");
     pugi::xml_node first, uniform, collection;
@@ -36356,6 +36523,16 @@ inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
 }  // namespace xdmfdetail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/xdmf_doc.hpp =====
+// ===== begin src/cpp/src/formats/xdmf_sets.hpp =====
+
+namespace meshioplusplus::xdmfdetail {
+
+// Private: pugixml must not appear in installed headers. Both XDMF writers use
+// the same region encoding and heavy-data store, including empty named sets.
+void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh);
+
+}  // namespace meshioplusplus::xdmfdetail
+// ===== end src/cpp/src/formats/xdmf_sets.hpp =====
 // ===== begin src/cpp/src/operations/smooth_odt.hpp =====
 /**
  * @file operations/smooth_odt.hpp
@@ -58948,7 +59125,9 @@ void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
-    std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t nc = 1;
+    for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+        nc *= rA.Shape()[k];
     std::size_t isz = dtype_size(rA.Dtype());
     std::size_t rowbytes = nc * isz;
     std::vector<std::size_t> shape = rA.Shape();
@@ -58966,7 +59145,9 @@ namespace {
 /// Rows `rIdx` of `rA` (any rank >= 1), as an owning array: what a polyhedron bucket needs,
 /// because its members are not contiguous in the file.
 NDArray vtkcells_gather_rows(const NDArray& rA, const std::vector<std::size_t>& rIdx) {
-    const std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t nc = 1;
+    for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+        nc *= rA.Shape()[k];
     const std::size_t rowbytes = nc * dtype_size(rA.Dtype());
     std::vector<std::size_t> shape = rA.Shape();
     if (shape.empty())
@@ -59671,6 +59852,573 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtk_xml.cpp =====
+// ===== begin src/cpp/src/detail/vtk_xml_pieces.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <map>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+namespace {
+
+std::size_t vxp_product(std::size_t a, std::size_t b) {
+    if (b && a > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) / b)
+        throw ReadError("VTK: structured dimensions overflow");
+    return a * b;
+}
+
+std::size_t vxp_sum(std::size_t a, std::size_t b) {
+    const auto max = static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max());
+    if (a > max || b > max - a)
+        throw ReadError("VTK: piece counts overflow");
+    return a + b;
+}
+
+std::size_t vxp_count(pugi::xml_node node, const char* pName) {
+    const std::string text = node.attribute(pName).as_string();
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw ReadError(std::string("VTK: invalid ") + pName);
+    try {
+        return vxp_sum(0, std::stoull(text));
+    } catch (const std::exception&) {
+        throw ReadError(std::string("VTK: invalid ") + pName);
+    }
+}
+
+template <class T, std::size_t N>
+std::array<T, N> vxp_attribute(pugi::xml_node node, const char* name, std::array<T, N> fallback,
+                               bool required = false) {
+    const auto attr = node.attribute(name);
+    if (!attr) {
+        if (required)
+            throw ReadError(std::string("VTK: missing ") + name);
+        return fallback;
+    }
+    TextStream in(attr.as_string());
+    for (auto& value : fallback)
+        if (!(in >> value))
+            throw ReadError(std::string("VTK: malformed ") + name);
+    std::string extra;
+    if (in >> extra)
+        throw ReadError(std::string("VTK: malformed ") + name);
+    return fallback;
+}
+
+std::array<std::int64_t, 3> vxp_dimensions(const std::array<std::int64_t, 6>& rExtent) {
+    bool empty = true;
+    for (std::size_t k = 0; k < 3; ++k)
+        empty = empty && rExtent[2 * k] != std::numeric_limits<std::int64_t>::min() &&
+                rExtent[2 * k + 1] == rExtent[2 * k] - 1;
+    if (empty)
+        return {{0, 0, 0}};
+    std::array<std::int64_t, 3> dims;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const auto lo = rExtent[2 * k], hi = rExtent[2 * k + 1];
+        if (hi < lo || (lo < 0 && hi > std::numeric_limits<std::int64_t>::max() + lo - 1) ||
+            hi - lo == std::numeric_limits<std::int64_t>::max())
+            throw ReadError("VTK: inverted or overflowing extent");
+        dims[k] = hi - lo + 1;
+    }
+    return dims;
+}
+
+struct VxpPiece {
+    pugi::xml_node mNode;
+    std::array<std::int64_t, 6> mExtent{};
+    std::array<std::int64_t, 3> mDims{};
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+};
+
+struct VxpHeader {
+    pugi::xml_node mGrid;
+    VtuContext mCtx;
+    std::vector<VxpPiece> mPieces;
+    std::array<double, 3> mOrigin{};
+    std::array<double, 3> mSpacing{{1, 1, 1}};
+    bool mPoly = false;
+    bool mImage = false;
+};
+
+VxpHeader vxp_header(const VtuSource& rSource, const char* pType, const char* pFormat) {
+    const auto root = rSource.mDoc.child("VTKFile");
+    if (!root || std::string(root.attribute("type").as_string()) != pType)
+        throw ReadError(std::string("VTK: expected ") + pType);
+    VxpHeader h;
+    h.mGrid = root.child(pType);
+    if (!h.mGrid)
+        throw ReadError(std::string("VTK: missing ") + pType);
+    h.mCtx = vtk_xml_read_context(rSource, pFormat);
+    h.mPoly = std::string(pType) == "PolyData";
+    h.mImage = std::string(pType) == "ImageData";
+    std::array<std::int64_t, 6> whole{};
+    if (!h.mPoly) {
+        whole = vxp_attribute<std::int64_t, 6>(h.mGrid, "WholeExtent", {}, true);
+        vxp_dimensions(whole);
+    }
+    if (h.mImage) {
+        h.mOrigin = vxp_attribute<double, 3>(h.mGrid, "Origin", {});
+        h.mSpacing = vxp_attribute<double, 3>(h.mGrid, "Spacing", {{1, 1, 1}});
+        const std::array<double, 9> identity{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+        if (vxp_attribute<double, 9>(h.mGrid, "Direction", identity) != identity)
+            throw ReadError("VTI with a non-identity Direction is not supported");
+    }
+    const bool many = h.mGrid.child("Piece").next_sibling("Piece");
+    for (const auto node : h.mGrid.children("Piece")) {
+        VxpPiece piece;
+        piece.mNode = node;
+        if (h.mPoly) {
+            piece.mNumPoints = vxp_count(node, "NumberOfPoints");
+        } else {
+            piece.mExtent = vxp_attribute<std::int64_t, 6>(node, "Extent", whole, many);
+            piece.mDims = vxp_dimensions(piece.mExtent);
+            for (std::size_t k = 0; piece.mDims[0] != 0 && k < 3; ++k)
+                if (piece.mExtent[2 * k] < whole[2 * k] ||
+                    piece.mExtent[2 * k + 1] > whole[2 * k + 1])
+                    throw ReadError("VTK: Piece Extent is outside WholeExtent");
+            piece.mNumPoints =
+                vxp_product(vxp_product(piece.mDims[0], piece.mDims[1]), piece.mDims[2]);
+            piece.mNumCells = piece.mNumPoints == 0
+                                  ? 0
+                                  : vxp_product(vxp_product(piece.mDims[0] - 1, piece.mDims[1] - 1),
+                                                piece.mDims[2] - 1);
+        }
+        h.mPieces.push_back(piece);
+    }
+    if (h.mPieces.empty())
+        throw ReadError("No Piece found");
+    return h;
+}
+
+NDArray vxp_array(pugi::xml_node da, const VtuContext& rCtx, std::size_t rows,
+                  int default_components = 1) {
+    if (!da)
+        throw ReadError("VTK: missing DataArray");
+    int nc = 0;
+    NDArray arr = vtu_read_data_array(da, rCtx, nc);
+    if (!da.attribute("NumberOfComponents"))
+        nc = default_components;
+    if (arr.Size() != vxp_product(rows, nc))
+        throw ReadError("VTK: DataArray length differs from piece count");
+    if (nc > 1)
+        arr.Reshape({rows, static_cast<std::size_t>(nc)});
+    return arr;
+}
+
+bool vxp_same_shape(const NDArray& rA, const NDArray& rB) {
+    return rA.Dtype() == rB.Dtype() && rA.Shape().size() == rB.Shape().size() &&
+           std::equal(rA.Shape().begin() + 1, rA.Shape().end(), rB.Shape().begin() + 1);
+}
+
+NDArray vxp_concat(const std::vector<NDArray>& rParts) {
+    auto shape = rParts.front().Shape();
+    shape[0] = 0;
+    for (const auto& arr : rParts) {
+        if (!vxp_same_shape(rParts.front(), arr))
+            throw ReadError("VTK: pieces disagree on array dtype or components");
+        shape[0] = vxp_sum(shape[0], arr.Shape()[0]);
+    }
+    NDArray out = NDArray::Uninit(rParts.front().Dtype(), shape);
+    std::size_t offset = 0;
+    for (const auto& arr : rParts) {
+        if (arr.Nbytes())
+            std::memcpy(out.Data() + offset, arr.Data(), arr.Nbytes());
+        offset += arr.Nbytes();
+    }
+    return out;
+}
+
+void vxp_poly_cells(const VxpPiece& rPiece, const VtuContext& rCtx,
+                    std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                    std::vector<std::int64_t>& rTypes, bool Metadata) {
+    const std::array<const char*, 4> tags{{"Verts", "Lines", "Polys", "Strips"}};
+    const std::array<const char*, 4> counts{
+        {"NumberOfVerts", "NumberOfLines", "NumberOfPolys", "NumberOfStrips"}};
+    for (std::size_t kind = 0; kind < tags.size(); ++kind) {
+        const auto section = rPiece.mNode.child(tags[kind]);
+        if (!section) {
+            if (rPiece.mNode.attribute(counts[kind]) && vxp_count(rPiece.mNode, counts[kind]))
+                throw ReadError("VTP: missing cell section with nonzero count");
+            continue;
+        }
+        std::vector<std::int64_t> conn, offsets;
+        for (const auto da : section.children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (name != "offsets" && (Metadata || name != "connectivity"))
+                continue;
+            int nc = 0;
+            auto values = vtu_to_int64(vtu_read_data_array(da, rCtx, nc));
+            if (name == "offsets")
+                offsets = std::move(values);
+            else
+                conn = std::move(values);
+        }
+        if (rPiece.mNode.attribute(counts[kind]) &&
+            vxp_count(rPiece.mNode, counts[kind]) != offsets.size())
+            throw ReadError("VTP: cell count differs from section offsets");
+        std::int64_t prev = 0;
+        const auto base = Metadata ? (rOffsets.empty() ? 0 : rOffsets.back())
+                                   : static_cast<std::int64_t>(rConn.size());
+        for (const auto end : offsets) {
+            if (end <= prev)
+                throw ReadError("VTP: non-increasing cell offsets");
+            const auto size = end - prev;
+            if (kind == 0 && size != 1)
+                throw ReadError("poly-vertex VTP cells are not supported");
+            if (kind == 1 && size != 2)
+                throw ReadError("poly-line VTP cells are not supported");
+            if (kind == 2 && size < 3)
+                throw ReadError("VTP: polygon has fewer than three points");
+            if (kind == 3)
+                throw ReadError("triangle-strip VTP cells are not supported");
+            rTypes.push_back(kind == 0 ? 1 : kind == 1 ? 3 : size == 3 ? 5 : size == 4 ? 9 : 7);
+            rOffsets.push_back(vxp_sum(base, end));
+            prev = end;
+        }
+        if (!Metadata && static_cast<std::size_t>(prev) != conn.size())
+            throw ReadError("VTP: offsets do not span connectivity");
+        for (const auto index : conn)
+            if (index < 0 || static_cast<std::size_t>(index) >= rPiece.mNumPoints)
+                throw ReadError("VTP: point index out of range");
+        rConn.insert(rConn.end(), conn.begin(), conn.end());
+    }
+}
+
+std::vector<std::pair<std::string, NDArray>> vxp_fields(pugi::xml_node holder,
+                                                        const VtuContext& rCtx,
+                                                        const ReadOptions& rOpts) {
+    std::vector<std::pair<std::string, NDArray>> out;
+    for (const auto da : holder.child("FieldData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!is_region_field_name(name) && (!rOpts.WantsAnyData() || !rOpts.WantsArray(name)))
+            continue;
+        try {
+            dtype_from_vtu(da.attribute("type").as_string());
+        } catch (const ReadError&) {
+            log::warn("VTK: skipping non-numeric field array '{}'", name);
+            continue;
+        }
+        int nc = 0;
+        NDArray arr = vtu_read_data_array(da, rCtx, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+        out.emplace_back(name, std::move(arr));
+    }
+    return out;
+}
+
+using VxpData = std::map<std::string, std::vector<NDArray>>;
+
+void vxp_data(const VxpPiece& rPiece, const VtuContext& rCtx, const ReadOptions& rOpts,
+              const char* pSection, std::size_t count, VxpData& rOut) {
+    if (!rOpts.WantsAnyData())
+        return;
+    std::unordered_set<std::string> seen;
+    for (const auto da : rPiece.mNode.child(pSection).children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (rOpts.WantsArray(name)) {
+            if (!seen.insert(name).second)
+                throw ReadError("VTK: duplicate data array '" + name + "' in one piece");
+            rOut[name].push_back(vxp_array(da, rCtx, count));
+        }
+    }
+}
+
+std::vector<std::string> vxp_names(const VxpHeader& rHeader, const char* pSection) {
+    // Metadata follows the same cross-piece dtype/component compatibility rule.
+    std::map<std::string, std::vector<std::pair<std::string, int>>> names;
+    for (const auto& piece : rHeader.mPieces) {
+        std::unordered_set<std::string> seen;
+        for (const auto da : piece.mNode.child(pSection).children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (!seen.insert(name).second)
+                throw ReadError("VTK: duplicate data array '" + name + "' in one piece");
+            names[da.attribute("Name").as_string()].emplace_back(
+                da.attribute("type").as_string(), da.attribute("NumberOfComponents").as_int(1));
+        }
+    }
+    std::vector<std::string> out;
+    for (const auto& [name, parts] : names)
+        if (parts.size() == rHeader.mPieces.size() &&
+            std::all_of(parts.begin(), parts.end(),
+                        [&](const auto& part) { return part == parts[0]; }))
+            out.push_back(name);
+    return out;
+}
+
+}  // namespace
+
+void vtk_structured_cells(const std::array<std::int64_t, 3>& rDims,
+                          std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rOffsets,
+                          std::vector<std::int64_t>& rTypes, bool VolumeOnly) {
+    std::vector<std::size_t> axes;
+    std::array<std::int64_t, 3> cells;
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rDims[k] < 1)
+            throw ReadError("VTK: dimensions must be positive");
+        if (rDims[k] > 1)
+            axes.push_back(k);
+        cells[k] = std::max<std::int64_t>(rDims[k] - 1, 1);
+    }
+    if (VolumeOnly && axes.size() != 3)
+        return;
+    const std::array<std::int64_t, 3> stride{
+        {1, rDims[0], static_cast<std::int64_t>(vxp_product(rDims[0], rDims[1]))}};
+    const auto count = vxp_product(vxp_product(cells[0], cells[1]), cells[2]);
+    const std::size_t width = std::size_t{1} << axes.size();
+    const auto conn_base = rConn.size(), cell_base = rTypes.size();
+    rConn.resize(vxp_sum(conn_base, vxp_product(count, width)));
+    rOffsets.resize(vxp_sum(cell_base, count));
+    rTypes.resize(vxp_sum(cell_base, count));
+    parallel_for_bw(count, [&](std::size_t row) {
+        const auto i = static_cast<std::int64_t>(row % cells[0]);
+        const auto j = static_cast<std::int64_t>((row / cells[0]) % cells[1]);
+        const auto k = static_cast<std::int64_t>(row / cells[0] / cells[1]);
+        const auto base = i + j * stride[1] + k * stride[2];
+        const auto a = axes.empty() ? 0 : stride[axes[0]];
+        const auto b = axes.size() < 2 ? 0 : stride[axes[1]];
+        const auto c = axes.size() < 3 ? 0 : stride[axes[2]];
+        const std::array<std::int64_t, 8> nodes{{base, base + a, base + a + b, base + b, base + c,
+                                                 base + a + c, base + a + b + c, base + b + c}};
+        std::copy_n(nodes.begin(), width, rConn.begin() + conn_base + row * width);
+        rOffsets[cell_base + row] = conn_base + (row + 1) * width;
+        rTypes[cell_base + row] = axes.empty()       ? 1
+                                  : axes.size() == 1 ? 3
+                                  : axes.size() == 2 ? 9
+                                                     : 12;
+    });
+}
+
+Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts, const char* pType,
+                         const char* pFormat) {
+    VtuSource source;
+    vtu_load(rPath, pugi::parse_default, source, pType, pFormat);
+    auto h = vxp_header(source, pType, pFormat);
+    std::vector<NDArray> points;
+    VxpData point_data, cell_data;
+    std::vector<std::int64_t> conn, offsets, types;
+    auto fields = vxp_fields(h.mGrid, h.mCtx, rOpts);
+    std::map<std::string, NDArray> passthrough;
+    std::map<std::string, std::vector<NDArray>> piece_regions;
+    std::size_t point_base = 0, cell_base = 0;
+    for (auto& piece : h.mPieces) {
+        NDArray pts;
+        if (h.mPoly || std::string(pType) == "StructuredGrid") {
+            const auto da = piece.mNode.child("Points").child("DataArray");
+            if (!da && piece.mNumPoints == 0)
+                pts = NDArray(DType::Float64, {0, 3});
+            else
+                pts = vxp_array(da, h.mCtx, piece.mNumPoints, 3);
+            if (pts.Shape().size() != 2 || pts.Shape()[1] != 3)
+                throw ReadError("VTK: points must have three components");
+        } else if (piece.mNumPoints == 0) {
+            pts = NDArray(DType::Float64, {0, 3});
+        } else {
+            std::array<std::vector<double>, 3> coordinates;
+            if (!h.mImage) {
+                std::vector<pugi::xml_node> arrays;
+                for (const auto da : piece.mNode.child("Coordinates").children("DataArray"))
+                    arrays.push_back(da);
+                if (arrays.size() != 3)
+                    throw ReadError("VTR Coordinates must have three axis DataArrays");
+                const std::array<const char*, 3> names{
+                    {"x_coordinates", "y_coordinates", "z_coordinates"}};
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    auto selected = arrays[axis];
+                    for (const auto da : arrays)
+                        if (std::string(da.attribute("Name").as_string()) == names[axis])
+                            selected = da;
+                    const auto arr = vxp_array(selected, h.mCtx, piece.mDims[axis]);
+                    if (arr.Shape().size() != 1)
+                        throw ReadError("VTR: axis coordinates must be scalar");
+                    for (std::size_t n = 0; n < arr.Size(); ++n)
+                        coordinates[axis].push_back(read_double(arr, n));
+                }
+            }
+            pts = NDArray::Uninit(DType::Float64, {piece.mNumPoints, 3});
+            auto dst = pts.As<double>();
+            parallel_for_bw(piece.mNumPoints, [&](std::size_t row) {
+                const auto i = static_cast<std::int64_t>(row % piece.mDims[0]);
+                const auto j = static_cast<std::int64_t>((row / piece.mDims[0]) % piece.mDims[1]);
+                const auto k = static_cast<std::int64_t>(row / piece.mDims[0] / piece.mDims[1]);
+                const std::array<std::int64_t, 3> index{{i, j, k}};
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    dst[row * 3 + axis] =
+                        h.mImage ? (h.mOrigin[axis] + static_cast<double>(piece.mExtent[2 * axis]) *
+                                                          h.mSpacing[axis]) +
+                                       static_cast<double>(index[axis]) * h.mSpacing[axis]
+                                 : coordinates[axis][index[axis]];
+            });
+        }
+        std::vector<std::int64_t> pc, po, pt;
+        if (h.mPoly)
+            vxp_poly_cells(piece, h.mCtx, pc, po, pt, false);
+        else if (piece.mNumPoints)
+            vtk_structured_cells(piece.mDims, pc, po, pt, true);
+        piece.mNumCells = pt.size();
+        vxp_data(piece, h.mCtx, rOpts, "PointData", piece.mNumPoints, point_data);
+        vxp_data(piece, h.mCtx, rOpts, "CellData", pt.size(), cell_data);
+
+        // Decode piece-local regions with the shared validator before shifting.
+        // Dataset-level regions already index the assembled, piece-major file.
+        auto local_fields = vxp_fields(piece.mNode, h.mCtx, rOpts);
+        if (!local_fields.empty()) {
+            Mesh local;
+            local.AssignPoints(NDArray(pts));
+            std::unordered_map<std::string, NDArray> no_data;
+            std::vector<std::int64_t> file_map;
+            reconstruct_cells(pc.data(), po, pt, no_data, nullptr, {}, local, &file_map);
+            regions_from_field_arrays(local, local_fields, &file_map, pFormat);
+            std::vector<std::int64_t> inverse(file_map.size());
+            for (std::size_t n = 0; n < file_map.size(); ++n)
+                inverse[file_map[n]] = n;
+            auto encoded = regions_to_field_arrays(local, &inverse);
+            for (auto& [name, arr] : encoded) {
+                if (name.rfind("region-meta:", 0) == 0) {
+                    fields.emplace_back(name, std::move(arr));
+                    continue;
+                }
+                const bool point = name.rfind("region:point:", 0) == 0;
+                const std::size_t step = name.rfind("region:side:", 0) == 0 ? 2 : 1;
+                for (std::size_t n = 0; n < arr.Size(); n += step)
+                    arr.As<std::int64_t>()[n] += point ? point_base : cell_base;
+                piece_regions[name].push_back(std::move(arr));
+            }
+            for (const auto& name : local.FieldDataNames()) {
+                if (is_region_field_name(name))
+                    passthrough.insert_or_assign(name, NDArray(local.FieldData(name)));
+                else
+                    fields.emplace_back(name, NDArray(local.FieldData(name)));
+            }
+        }
+        const auto conn_base = conn.size();
+        for (const auto index : pc)
+            conn.push_back(index + point_base);
+        for (const auto end : po)
+            offsets.push_back(vxp_sum(conn_base, end));
+        types.insert(types.end(), pt.begin(), pt.end());
+        point_base = vxp_sum(point_base, piece.mNumPoints);
+        cell_base = vxp_sum(cell_base, pt.size());
+        points.push_back(std::move(pts));
+    }
+    Mesh mesh;
+    const auto first =
+        std::find_if(points.begin(), points.end(), [](const auto& arr) { return arr.Size() != 0; });
+    if (first != points.end())
+        for (std::size_t k = 0; k < points.size(); ++k)
+            if (points[k].Size() == 0 && !h.mPieces[k].mNode.child("Points").child("DataArray"))
+                points[k] = NDArray(first->Dtype(), {0, 3});
+    mesh.AssignPoints(vxp_concat(points));
+    std::unordered_map<std::string, NDArray> raw_data;
+    auto assemble = [&](VxpData& data, bool point) {
+        for (auto& [name, parts] : data) {
+            if (parts.size() != h.mPieces.size() ||
+                !std::all_of(parts.begin(), parts.end(),
+                             [&](const auto& arr) { return vxp_same_shape(parts.front(), arr); })) {
+                log::warn("{}: data '{}' is missing from, or differs between, pieces; dropped",
+                          pFormat, name);
+                continue;
+            }
+            auto arr = vxp_concat(parts);
+            if (point)
+                mesh.AddPointData(name, std::move(arr));
+            else
+                raw_data.emplace(name, std::move(arr));
+        }
+    };
+    assemble(point_data, true);
+    assemble(cell_data, false);
+    check_vtk_cell_arrays(conn.size(), offsets, types, raw_data);
+    std::vector<std::int64_t> file_map;
+    reconstruct_cells(conn.data(), offsets, types, raw_data, nullptr, {}, mesh, &file_map);
+    for (auto& [name, parts] : piece_regions)
+        fields.emplace_back(name, vxp_concat(parts));
+    regions_from_field_arrays(mesh, fields, &file_map, pFormat);
+    for (auto& [name, arr] : passthrough)
+        mesh.AddFieldData(name, std::move(arr));
+    return mesh;
+}
+
+MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType,
+                                     const char* pFormat) {
+    VtuSource source;
+    vtu_load(rPath, pugi::parse_minimal, source, pType, pFormat);
+    const auto h = vxp_header(source, pType, pFormat);
+    MeshMetadata meta;
+    meta.mPointDim = 3;
+    meta.mHasBBox = h.mImage;
+    std::vector<std::int64_t> conn, offsets, types;
+    for (const auto& piece : h.mPieces) {
+        meta.mNumPoints = vxp_sum(meta.mNumPoints, piece.mNumPoints);
+        if (h.mPoly)
+            vxp_poly_cells(piece, h.mCtx, conn, offsets, types, true);
+        else if (piece.mNumCells) {
+            // No geometry or array payload is decoded for structured metadata.
+            CellBlockInfo info;
+            info.mType = "hexahedron";
+            info.mNumCells = piece.mNumCells;
+            info.mNodesPerCell = 8;
+            if (meta.mCellBlocks.empty())
+                meta.mCellBlocks.push_back(info);
+            else
+                meta.mCellBlocks[0].mNumCells =
+                    vxp_sum(meta.mCellBlocks[0].mNumCells, piece.mNumCells);
+        }
+        if (h.mImage && piece.mNumPoints)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double a =
+                    h.mOrigin[k] + static_cast<double>(piece.mExtent[2 * k]) * h.mSpacing[k];
+                const double b = a + static_cast<double>(piece.mDims[k] - 1) * h.mSpacing[k];
+                const bool first = meta.mNumPoints == piece.mNumPoints;
+                meta.mBBoxMin[k] =
+                    first ? std::min(a, b) : std::min(meta.mBBoxMin[k], std::min(a, b));
+                meta.mBBoxMax[k] =
+                    first ? std::max(a, b) : std::max(meta.mBBoxMax[k], std::max(a, b));
+            }
+    }
+    if (h.mPoly)
+        meta.mCellBlocks = summarize_cells(offsets, types);
+    if (meta.mNumPoints == 0)
+        meta.mHasBBox = false;
+    meta.mPointDataNames = vxp_names(h, "PointData");
+    meta.mCellDataNames = vxp_names(h, "CellData");
+    std::vector<pugi::xml_node> holders{h.mGrid};
+    for (const auto& piece : h.mPieces)
+        holders.push_back(piece.mNode);
+    std::map<std::string, std::size_t> region_counts;
+    for (const auto holder : holders)
+        for (const auto da : holder.child("FieldData").children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (is_region_field_name(name)) {
+                if (name.rfind("region:", 0) == 0)
+                    region_counts[name] =
+                        vxp_sum(region_counts[name], da.attribute("NumberOfTuples").as_ullong());
+            } else {
+                try {
+                    dtype_from_vtu(da.attribute("type").as_string());
+                    meta.mFieldDataNames.push_back(name);
+                } catch (const ReadError&) {
+                }
+            }
+        }
+    std::vector<std::pair<std::string, std::size_t>> regions(region_counts.begin(),
+                                                             region_counts.end());
+    meta.mRegions = region_summaries_from_field_names(regions);
+    auto& names = meta.mFieldDataNames;
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return meta;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/vtk_xml_pieces.cpp =====
 // ===== begin src/cpp/src/detail/vtu_binary.cpp =====
 #include <algorithm>
 #include <array>
@@ -59887,6 +60635,8 @@ const char* vtk_codec_name(VtkCodec codec) {
             return "zstd";
         case VtkCodec::LZMA:
             return "lzma";
+        case VtkCodec::LZF:
+            return "lzf";
         default:
             return "none";
     }
@@ -73383,6 +74133,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Project includes
@@ -74302,7 +75053,123 @@ MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& r
     return meta;
 }
 
-void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+namespace {
+
+struct ExoWriteSet {
+    std::string mName;
+    std::int64_t mId;
+    std::vector<long long> mEntities;
+    std::vector<long long> mSides;
+};
+
+std::vector<ExoWriteSet> exo_write_sets(const Mesh& rMesh, RegionKind Kind) {
+    std::vector<const Region*> regions;
+    std::unordered_set<std::int64_t> ids;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& region = rMesh.Region(i);
+        if (region.mKind != Kind)
+            continue;
+        if (region.mName.find('\0') != std::string::npos)
+            throw WriteError("Exodus: set names cannot contain NUL characters");
+        if (region.mTag >= 0 && !ids.insert(region.mTag).second)
+            throw WriteError("Exodus: duplicate set id " + std::to_string(region.mTag));
+        regions.push_back(&region);
+    }
+    std::sort(regions.begin(), regions.end(),
+              [](const Region* a, const Region* b) { return a->Key() < b->Key(); });
+    const auto bases = detail::block_bases(rMesh);
+    std::int64_t next_id = 1;
+    std::vector<ExoWriteSet> sets;
+    for (const Region* region : regions) {
+        while (ids.count(next_id))
+            ++next_id;
+        const auto id = region->mTag >= 0 ? region->mTag : next_id;
+        ids.insert(id);
+        ExoWriteSet set{region->mName, id, {}, {}};
+        const auto* entries = region->Entries();
+        for (std::size_t i = 0; i < region->NumEntries(); ++i) {
+            const auto entity = entries[i * region->Stride()];
+            if (Kind == RegionKind::Point) {
+                if (entity < 0 || static_cast<std::size_t>(entity) >= rMesh.NumPoints())
+                    throw WriteError("Exodus: node set '" + region->mName +
+                                     "' has an invalid point");
+            } else {
+                const auto [block, row] = detail::global_to_block_row(bases, entity);
+                (void)row;
+                if (block == static_cast<std::size_t>(-1))
+                    throw WriteError("Exodus: side set '" + region->mName +
+                                     "' has an invalid cell");
+                const auto facet = entries[2 * i + 1];
+                int side = 1;
+                while (exo_face_index(rMesh.Cells(block).Type(), side) >= 0 &&
+                       exo_face_index(rMesh.Cells(block).Type(), side) != facet)
+                    ++side;
+                if (exo_face_index(rMesh.Cells(block).Type(), side) < 0)
+                    throw WriteError("Exodus: side set '" + region->mName +
+                                     "' has an unsupported facet");
+                set.mSides.push_back(side);
+            }
+            set.mEntities.push_back(entity + 1);
+        }
+        sets.push_back(std::move(set));
+    }
+    return sets;
+}
+
+void exo_put_sets(int Ncid, int StringDim, const std::vector<ExoWriteSet>& rSets, bool Sides) {
+    if (rSets.empty())
+        return;
+    const std::string prefix = Sides ? "ss" : "ns";
+    int dim, prop, names, status;
+    check(nc_def_dim(Ncid, Sides ? "num_side_sets" : "num_node_sets", rSets.size(), &dim),
+          "set count", true);
+    check(nc_def_var(Ncid, (prefix + "_prop1").c_str(), NC_INT64, 1, &dim, &prop), "set ids", true);
+    check(nc_put_att_text(Ncid, prop, "name", 2, "ID"), "set id property", true);
+    check(nc_def_var(Ncid, (prefix + "_status").c_str(), NC_INT, 1, &dim, &status), "set status",
+          true);
+    const int dims[] = {dim, StringDim};
+    check(nc_def_var(Ncid, (prefix + "_names").c_str(), NC_CHAR, 2, dims, &names), "set names",
+          true);
+    for (std::size_t i = 0; i < rSets.size(); ++i) {
+        const auto& set = rSets[i];
+        const long long id = set.mId;
+        const int active = !set.mEntities.empty();
+        check(nc_put_var1_longlong(Ncid, prop, &i, &id), "set id", true);
+        check(nc_put_var1_int(Ncid, status, &i, &active), "set status", true);
+        const std::size_t start[] = {i, 0}, count[] = {1, set.mName.size()};
+        if (!set.mName.empty())
+            check(nc_put_vara_text(Ncid, names, start, count, set.mName.data()), "set name", true);
+        const auto suffix = std::to_string(i + 1);
+        int entry_dim, var;
+        const std::string entry_name = (Sides ? "num_side_ss" : "num_nod_ns") + suffix;
+        check(nc_def_dim(Ncid, entry_name.c_str(), set.mEntities.size(), &entry_dim), "set size",
+              true);
+        const std::string entity_name = (Sides ? "elem_ss" : "node_ns") + suffix;
+        check(nc_def_var(Ncid, entity_name.c_str(), NC_INT64, 1, &entry_dim, &var), "set entries",
+              true);
+        if (!set.mEntities.empty())
+            check(nc_put_var_longlong(Ncid, var, set.mEntities.data()), "set entries", true);
+        if (Sides) {
+            check(nc_def_var(Ncid, ("side_ss" + suffix).c_str(), NC_INT64, 1, &entry_dim, &var),
+                  "set sides", true);
+            if (!set.mSides.empty())
+                check(nc_put_var_longlong(Ncid, var, set.mSides.data()), "set sides", true);
+        }
+    }
+}
+
+}  // namespace
+
+namespace {
+
+void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, bool DoubleTime) {
+    // Validate memberships and ids before creating or truncating the destination.
+    const auto node_sets = exo_write_sets(rMesh, RegionKind::Point);
+    const auto side_sets = exo_write_sets(rMesh, RegionKind::Side);
+    std::size_t string_size = 33;
+    for (const auto* sets : {&node_sets, &side_sets})
+        for (const auto& set : *sets)
+            string_size = std::max(string_size, set.mName.size() + 1);
     int ncid;
     check(nc_create(rPath.c_str(), NC_CLOBBER | NC_NETCDF4, &ncid), "create", true);
     struct Closer {
@@ -74337,13 +75204,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         total_elems += cb.NumCells();
 
-    int d_nodes, d_dim, d_elem, d_blk, d_ns, d_str, d_line, d_four, d_time;
+    int d_nodes, d_dim, d_elem, d_blk, d_str, d_line, d_four, d_time;
     check(nc_def_dim(ncid, "num_nodes", npts, &d_nodes), "def num_nodes", true);
     check(nc_def_dim(ncid, "num_dim", pdim, &d_dim), "def num_dim", true);
     check(nc_def_dim(ncid, "num_elem", total_elems, &d_elem), "def num_elem", true);
     check(nc_def_dim(ncid, "num_el_blk", rMesh.NumCellBlocks(), &d_blk), "def num_el_blk", true);
-    check(nc_def_dim(ncid, "num_node_sets", 0, &d_ns), "def num_node_sets", true);
-    check(nc_def_dim(ncid, "len_string", 33, &d_str), "def len_string", true);
+    check(nc_def_dim(ncid, "len_string", string_size, &d_str), "def len_string", true);
     check(nc_def_dim(ncid, "len_line", 81, &d_line), "def len_line", true);
     check(nc_def_dim(ncid, "four", 4, &d_four), "def four", true);
     check(nc_def_dim(ncid, "time_step", NC_UNLIMITED, &d_time), "def time_step", true);
@@ -74357,7 +75223,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     // the shape `XdmfTimeSeriesWriter` already has; that remains a follow-up.
     {
         int var;
-        check(nc_def_var(ncid, "time_whole", NC_FLOAT, 1, &d_time, &var), "def time_whole", true);
+        check(nc_def_var(ncid, "time_whole", DoubleTime ? NC_DOUBLE : NC_FLOAT, 1, &d_time, &var),
+              "def time_whole", true);
         std::size_t start = 0, count = 1;
         float t = 0.0f;
         if (rMesh.HasFieldData("exodus:time")) {
@@ -74370,7 +75237,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
                     "single time step; using the first.",
                     tv.Size());
         }
-        check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
+        if (EmitStep)
+            check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
     }
 
     // coor_names
@@ -74582,7 +75450,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         const std::string prefix(kExodusAttributePrefix);
         std::vector<std::string> var_names;
         for (const auto& name : rMesh.CellDataNames())
-            if (name.rfind(prefix, 0) != 0)
+            if (EmitStep && name.rfind(prefix, 0) != 0)
                 var_names.push_back(name);
 
         if (!var_names.empty()) {
@@ -74662,7 +75530,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // point data
-    if (rMesh.NumPointData() > 0) {
+    if (EmitStep && rMesh.NumPointData() > 0) {
         int d_nnv;
         check(nc_def_dim(ncid, "num_nod_var", rMesh.NumPointData(), &d_nnv), "num_nod_var", true);
         int name_var;
@@ -74706,8 +75574,176 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    // Node sets (point_sets) are not representable in the conversion layer;
-    // the shim routes meshes with point_sets to the Python writer.
+    exo_put_sets(ncid, d_str, node_sets, false);
+    exo_put_sets(ncid, d_str, side_sets, true);
+}
+
+struct ExoSeriesField {
+    std::string mName;
+    std::string mVariable;
+    DType mDtype;
+    std::vector<std::size_t> mShape;
+    std::size_t mBlock;
+    bool mPoint;
+};
+
+std::vector<ExoSeriesField> exo_series_fields(const Mesh& rMesh) {
+    std::vector<ExoSeriesField> fields;
+    std::size_t j = 0;
+    const auto add = [&](const std::string& name, const std::string& variable, const NDArray& data,
+                         std::size_t rows, std::size_t block, bool point) {
+        if (name.empty() || name.size() > 33 || name.find('\0') != std::string::npos)
+            throw WriteError("Exodus: series field names must contain 1 to 33 non-NUL bytes");
+        if (data.Shape().empty() || data.Shape()[0] != rows ||
+            std::find(data.Shape().begin() + 1, data.Shape().end(), 0) != data.Shape().end())
+            throw WriteError("Exodus: series field '" + name + "' has an invalid shape");
+        fields.push_back({name, variable, data.Dtype(), data.Shape(), block, point});
+    };
+    for (const auto& name : rMesh.PointDataNames()) {
+        add(name, "vals_nod_var" + std::to_string(++j), rMesh.PointData(name), rMesh.NumPoints(), 0,
+            true);
+    }
+    j = 0;
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (name.rfind(kExodusAttributePrefix, 0) == 0)
+            continue;
+        ++j;
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())
+            throw WriteError("Exodus: series field '" + name + "' must cover every cell block");
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            add(name, "vals_elem_var" + std::to_string(j) + "eb" + std::to_string(b + 1),
+                rMesh.CellData(name, b), rMesh.Cells(b).NumCells(), b, false);
+    }
+    return fields;
+}
+
+}  // namespace
+
+void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+    exo_write_file(rPath, rMesh, true, false);
+}
+
+struct ExodusTimeSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<Mesh> mGeometry;
+    std::size_t mNumPoints = 0;
+    std::vector<std::size_t> mBlockSizes;
+    std::vector<std::string> mBlockTypes;
+    std::vector<ExoSeriesField> mFields;
+    int mNcid = -1;
+    std::size_t mNumSteps = 0;
+    bool mGrid = false;
+    bool mFinalized = false;
+    explicit Impl(std::string path) : mPath(std::move(path)) {}
+    ~Impl() {
+        if (mNcid >= 0)
+            nc_close(mNcid);
+    }
+};
+
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath)
+    : mImpl(std::make_unique<Impl>(rPath)) {
+    if (rPath.empty())
+        throw WriteError("Exodus: series path is empty");
+}
+ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() = default;
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept = default;
+ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(ExodusTimeSeriesWriter&&) noexcept =
+    default;
+
+void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    if (!mImpl || mImpl->mFinalized || mImpl->mGrid)
+        throw WriteError("Exodus: write_points_cells requires a new, open series");
+    auto geometry =
+        detail::clone_mesh(rMesh, [](DataLocation location, const std::string& name, std::string&) {
+            return location == DataLocation::Cell && name.rfind(kExodusAttributePrefix, 0) == 0;
+        });
+    exo_write_file(mImpl->mPath, geometry, false, true);
+    mImpl->mNumPoints = rMesh.NumPoints();
+    for (const auto block : rMesh.CellRange()) {
+        mImpl->mBlockSizes.push_back(block.NumCells());
+        mImpl->mBlockTypes.push_back(block.Type());
+    }
+    mImpl->mGeometry = std::make_unique<Mesh>(std::move(geometry));
+    mImpl->mGrid = true;
+}
+
+void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    if (!mImpl || mImpl->mFinalized || !mImpl->mGrid)
+        throw WriteError("Exodus: write_data requires write_points_cells and an open series");
+    if (!std::isfinite(Time))
+        throw WriteError("Exodus: series time must be finite");
+    if (rMesh.NumPoints() != mImpl->mNumPoints ||
+        rMesh.NumCellBlocks() != mImpl->mBlockSizes.size())
+        throw WriteError("Exodus: series mesh counts do not match the fixed grid");
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        if (rMesh.Cells(b).NumCells() != mImpl->mBlockSizes[b] ||
+            rMesh.Cells(b).Type() != mImpl->mBlockTypes[b])
+            throw WriteError("Exodus: series cell blocks do not match the fixed grid");
+    auto fields = exo_series_fields(rMesh);
+    if (mImpl->mNumSteps) {
+        if (fields.size() != mImpl->mFields.size())
+            throw WriteError("Exodus: series field schema changed");
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            const auto& a = fields[i];
+            const auto& b = mImpl->mFields[i];
+            if (a.mName != b.mName || a.mDtype != b.mDtype || a.mShape != b.mShape ||
+                a.mBlock != b.mBlock || a.mPoint != b.mPoint)
+                throw WriteError("Exodus: series field schema changed for '" + a.mName + "'");
+        }
+    } else {
+        auto first = detail::clone_mesh(*mImpl->mGeometry);
+        for (const auto& field : fields) {
+            if (field.mPoint)
+                first.AddPointData(field.mName,
+                                   detail::data_owned_copy(rMesh.PointData(field.mName)));
+            else
+                first.AppendCellData(field.mName, detail::data_owned_copy(
+                                                      rMesh.CellData(field.mName, field.mBlock)));
+        }
+        exo_write_file(mImpl->mPath, first, true, true);
+        check(nc_open(mImpl->mPath.c_str(), NC_WRITE, &mImpl->mNcid), "open series", true);
+        mImpl->mFields = std::move(fields);
+        mImpl->mGeometry.reset();
+    }
+    const auto step = mImpl->mNumSteps;
+    for (const auto& field : mImpl->mFields) {
+        const auto& data =
+            field.mPoint ? rMesh.PointData(field.mName) : rMesh.CellData(field.mName, field.mBlock);
+        int var;
+        check(nc_inq_varid(mImpl->mNcid, field.mVariable.c_str(), &var), "series field", true);
+        std::vector<std::size_t> start(data.Shape().size() + 1, 0), count{1};
+        start[0] = step;
+        count.insert(count.end(), data.Shape().begin(), data.Shape().end());
+        if (data.Size())
+            check(nc_put_vara(mImpl->mNcid, var, start.data(), count.data(), data.Data()),
+                  "series field", true);
+    }
+    int time_var;
+    check(nc_inq_varid(mImpl->mNcid, "time_whole", &time_var), "series time", true);
+    check(nc_put_var1_double(mImpl->mNcid, time_var, &step, &Time), "series time", true);
+    ++mImpl->mNumSteps;
+}
+
+void ExodusTimeSeriesWriter::Flush() {
+    if (mImpl && mImpl->mNcid >= 0)
+        check(nc_sync(mImpl->mNcid), "flush series", true);
+}
+void ExodusTimeSeriesWriter::Finalize() {
+    if (!mImpl || mImpl->mFinalized)
+        return;
+    if (mImpl->mNcid >= 0) {
+        check(nc_close(mImpl->mNcid), "close series", true);
+        mImpl->mNcid = -1;
+    }
+    mImpl->mFinalized = true;
+    mImpl->mGeometry.reset();
+}
+std::size_t ExodusTimeSeriesWriter::NumSteps() const {
+    return mImpl ? mImpl->mNumSteps : 0;
+}
+bool ExodusTimeSeriesWriter::Finalized() const {
+    return !mImpl || mImpl->mFinalized;
 }
 
 }  // namespace meshioplusplus
@@ -83535,6 +84571,8 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -83543,11 +84581,13 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <limits>
 #include <map>
 #include <set>
-#include <sstream>
+#include <ostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -83711,6 +84751,131 @@ struct EBlock {
     std::vector<std::int64_t> mConn;  // count*n, 0-based gmsh ids
     std::vector<std::int64_t> mTags;  // count*num_tags
 };
+
+// Periodic records use text in 2.2 even in binary files. 4.0 binary uses
+// int32 entity/node tags and a signed producer-long count (-1 announces a
+// 16-double affine). 4.1 uses size_t counts/node tags in both modes.
+std::vector<GmshPeriodicLink> gmsh_read_periodic(GmshCursor& rCur, bool is_ascii, int version,
+                                                 int width) {
+    const bool text = is_ascii || version == 22;
+    auto text_token = [&]() -> std::string_view {
+        while (!rCur.eof() && std::isspace(static_cast<unsigned char>(rCur.mBuf[rCur.mPos])))
+            ++rCur.mPos;
+        const auto start = rCur.mPos;
+        while (!rCur.eof() && !std::isspace(static_cast<unsigned char>(rCur.mBuf[rCur.mPos])))
+            ++rCur.mPos;
+        return rCur.mBuf.substr(start, rCur.mPos - start);
+    };
+    auto text_integer = [&]() -> std::int64_t {
+        std::int64_t value = 0;
+        const auto token = text_token();
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+        if (token.empty() || parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size())
+            throw ReadError("Gmsh $Periodic: invalid integer token");
+        return value;
+    };
+    auto integer = [&]() -> std::int32_t {
+        if (!text)
+            return rCur.read_i32();
+        const auto value = text_integer();
+        if (value < INT32_MIN || value > INT32_MAX)
+            throw ReadError("Gmsh $Periodic: entity/node tag exceeds Int32");
+        return static_cast<std::int32_t>(value);
+    };
+    auto size = [&]() -> std::int64_t {
+        if (text)
+            return text_integer();
+        const auto n = rCur.read_uint(width);
+        if (n > static_cast<std::uint64_t>(INT64_MAX))
+            throw ReadError("Gmsh $Periodic: count/tag exceeds Int64");
+        return static_cast<std::int64_t>(n);
+    };
+    const auto links = rCur.count(version == 41 ? size() : integer());
+    std::vector<GmshPeriodicLink> out;
+    for (std::int64_t i = 0; i < links; ++i) {
+        GmshPeriodicLink link;
+        for (auto& tag : link.mEntityTags)
+            tag = integer();
+        if (link.mEntityTags[0] < 0 || link.mEntityTags[0] > 3 || link.mEntityTags[1] < 1 ||
+            link.mEntityTags[2] < 1)
+            throw ReadError("Gmsh $Periodic: invalid entity dimension/tag");
+        std::int64_t pairs = 0, affine = 0;
+        if (version == 41) {
+            affine = size();
+            if (affine != 0 && affine != 16)
+                throw ReadError("Gmsh $Periodic: affine must have 0 or 16 coefficients");
+        } else if (text) {
+            while (!rCur.eof() && std::isspace(static_cast<unsigned char>(rCur.mBuf[rCur.mPos])))
+                ++rCur.mPos;
+            if (rCur.mBuf.substr(rCur.mPos, 6) == "Affine") {
+                rCur.mPos += 6;
+                affine = 16;
+            }
+        } else {
+            const auto n = rCur.read_uint(width);
+            if (n == (width == 4 ? UINT32_MAX : UINT64_MAX))
+                affine = 16;
+            else {
+                if (n > (width == 4 ? static_cast<std::uint64_t>(INT32_MAX)
+                                    : static_cast<std::uint64_t>(INT64_MAX)))
+                    throw ReadError("Gmsh $Periodic: invalid signed node count");
+                pairs = rCur.count(static_cast<std::int64_t>(n));
+            }
+        }
+        for (std::int64_t c = 0; c < affine; ++c) {
+            double value;
+            if (text) {
+                // Affine values are few: an owning bounded token avoids relying
+                // on a terminator beyond the end of a memory-mapped view.
+                const std::string token(text_token());
+                const char* end = nullptr;
+                value = detail::parse_double(token.c_str(), end);
+                if (token.empty() || end != token.c_str() + token.size())
+                    throw ReadError("Gmsh $Periodic: invalid affine coefficient");
+            } else
+                value = rCur.read_f64();
+            if (!std::isfinite(value))
+                throw ReadError("Gmsh $Periodic: non-finite affine coefficient");
+            link.mAffine.push_back(value);
+        }
+        if (version == 41 || text || affine)
+            pairs = rCur.count(size());
+        const std::size_t n = static_cast<std::size_t>(pairs);
+        const std::size_t stride = text ? 2 : 2 * (version == 41 ? width : 4);
+        detail::checked_count(n, (rCur.mBuf.size() - rCur.mPos) / stride, "Gmsh $Periodic", "pair");
+        link.mNodePairs = NDArray(DType::Int64, {n, 2});
+        auto* dst = link.mNodePairs.As<std::int64_t>();
+        for (std::size_t j = 0; j < n * 2; ++j) {
+            dst[j] = version == 41 ? size() : integer();
+            if (dst[j] < 1)
+                throw ReadError("Gmsh $Periodic: node tag below 1");
+        }
+        out.push_back(std::move(link));
+    }
+    if (rCur.next_nonblank() != "$EndPeriodic")
+        throw ReadError("Gmsh: expected $EndPeriodic");
+    return out;
+}
+
+void gmsh_remap_periodic(std::vector<GmshPeriodicLink>& rLinks,
+                         const std::vector<std::int64_t>& rTags, int offset) {
+    if (rLinks.empty())
+        return;
+    std::unordered_map<std::int64_t, std::int64_t> rows;
+    rows.reserve(rTags.size());
+    for (std::size_t i = 0; i < rTags.size(); ++i)
+        if (!rows.emplace(rTags[i] + offset, static_cast<std::int64_t>(i)).second)
+            throw ReadError("Gmsh $Periodic: duplicate node tag");
+    for (auto& link : rLinks) {
+        auto* dst = link.mNodePairs.As<std::int64_t>();
+        for (std::size_t i = 0; i < link.mNodePairs.Size(); ++i) {
+            const auto row = rows.find(dst[i]);
+            if (row == rows.end())
+                throw ReadError("Gmsh $Periodic: node tag outside $Nodes");
+            dst[i] = row->second;
+        }
+    }
+}
 
 void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArray>& rFieldData) {
     std::int64_t num = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
@@ -84203,7 +85368,19 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     return out;
 }
 
-// ---- version 4.1 -------------------------------------------------------------
+// ---- versions 4.0 / 4.1 -------------------------------------------------------
+
+// 4.0's binary counts are unsigned long (4 or 8 bytes on the producer),
+// while its tags are int32 and its header reports sizeof(double), not the
+// count width. 4.1 reports the size_t width and uses it for tags too.
+void gmsh_finish_section_4(GmshCursor& rCur, const std::string& rName, bool version40) {
+    if (version40) {
+        if (rCur.next_nonblank() != "$End" + rName)
+            throw ReadError("Gmsh: expected $End" + rName);
+    } else {
+        rCur.skip_to_end(rName);
+    }
+}
 
 struct E41 {
     std::string mType;
@@ -84249,12 +85426,16 @@ struct GmshEntities41 {
  * Deliberately serial -- the section is tiny next to `$Nodes`/`$Elements` and
  * the work is hash-map inserts.
  */
-GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) {
+GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size,
+                                bool version40 = false) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
     auto rd_int = [&]() -> std::int32_t {
-        return is_ascii ? static_cast<std::int32_t>(rCur.next_int()) : rCur.read_i32();
+        if (!is_ascii)
+            return rCur.read_i32();
+        return version40 ? detail::checked_integer<std::int32_t>(rCur.next_double(), "Gmsh")
+                         : static_cast<std::int32_t>(rCur.next_int());
     };
     auto skip_dbl = [&](int n) {
         if (is_ascii) {
@@ -84276,7 +85457,7 @@ GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) 
         const std::size_t dz = static_cast<std::size_t>(d);
         for (std::int64_t i = 0; i < counts[dz]; ++i) {
             const std::int32_t tag = rd_int();
-            skip_dbl(d == 0 ? 3 : 6);  // bounding box
+            skip_dbl(d == 0 && !version40 ? 3 : 6);  // 4.0 has six doubles even for points
             const std::int64_t num_phys = rCur.count(rd_size());
             if (num_phys > 0) {
                 std::vector<std::int32_t> phys(static_cast<std::size_t>(num_phys));
@@ -84294,34 +85475,47 @@ GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) 
             }
         }
     }
-    rCur.skip_to_end("Entities");
+    gmsh_finish_section_4(rCur, "Entities", version40);
     return out;
 }
 
 void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoints,
                    std::vector<std::int64_t>& rTags,
-                   std::vector<std::array<std::int64_t, 2>>& rDimTags) {
+                   std::vector<std::array<std::int64_t, 2>>& rDimTags, bool version40) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
     auto rd_int = [&]() -> int {
-        return is_ascii ? static_cast<int>(rCur.next_int()) : rCur.read_i32();
+        if (!is_ascii)
+            return rCur.read_i32();
+        return version40 ? detail::checked_integer<std::int32_t>(rCur.next_double(), "Gmsh")
+                         : static_cast<int>(rCur.next_int());
     };
     auto rd_dbl = [&]() -> double { return is_ascii ? rCur.next_double() : rCur.read_f64(); };
 
     std::int64_t num_blocks = rCur.count(rd_size());
     std::int64_t num_nodes = rCur.count(rd_size());
-    rd_size();  // min tag
-    rd_size();  // max tag
+    if (version40 && !is_ascii)
+        detail::checked_count(num_nodes, (rCur.mBuf.size() - rCur.mPos) / 28, "Gmsh", "node");
+    if (!version40) {
+        rd_size();  // min tag
+        rd_size();  // max tag
+    }
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
     rTags.resize(num_nodes);
-    rDimTags.resize(num_nodes);
+    if (!version40)
+        rDimTags.resize(num_nodes);
     double* pp = rPoints.As<double>();
 
     std::size_t idx = 0;
     for (std::int64_t b = 0; b < num_blocks; ++b) {
         int dim = rd_int();
         int entity_tag = rd_int();
+        if (version40) {
+            std::swap(dim, entity_tag);  // 4.0: tagEntity, dimEntity
+            if (dim < 0 || dim > 3)
+                throw ReadError("Gmsh: node entity dimension outside 0..3");
+        }
         int parametric = rd_int();
         if (parametric != 0)
             throw ReadError("parametric Gmsh nodes not supported");
@@ -84329,7 +85523,20 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
         const std::size_t nbz = static_cast<std::size_t>(nb);
         if (idx + nbz > static_cast<std::size_t>(num_nodes))
             throw ReadError("Gmsh: $Nodes blocks hold more nodes than declared");
-        if (!is_ascii && data_size == 8 && nbz > 0) {
+        if (version40) {
+            // 4.0 interleaves int32 tags with coordinates, rather than
+            // storing the two separate lists introduced by 4.1.
+            if (!is_ascii)
+                rCur.need(nbz * 28);
+            for (std::size_t i = 0; i < nbz; ++i) {
+                const std::int64_t tag = rd_int();
+                if (tag < 1)
+                    throw ReadError("Gmsh: a node tag below 1");
+                rTags[idx + i] = tag - 1;
+                for (std::size_t c = 0; c < 3; ++c)
+                    pp[(idx + i) * 3 + c] = rd_dbl();
+            }
+        } else if (!is_ascii && data_size == 8 && nbz > 0) {
             rCur.need(nbz * 4 * 8);
             // Native-endian, contiguous: bulk-copy tags (u64) and coords (3*f64).
             std::memcpy(&rTags[idx], rCur.mBuf.data() + rCur.mPos, nbz * 8);
@@ -84347,11 +85554,14 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
                 pp[(idx + i) * 3 + 2] = rd_dbl();
             }
         }
-        for (std::int64_t i = 0; i < nb; ++i)
-            rDimTags[idx + i] = {dim, entity_tag};
+        if (!version40)
+            for (std::int64_t i = 0; i < nb; ++i)
+                rDimTags[idx + i] = {dim, entity_tag};
         idx += static_cast<std::size_t>(nb);
     }
-    rCur.skip_to_end("Nodes");
+    if (version40 && idx != static_cast<std::size_t>(num_nodes))
+        throw ReadError("Gmsh: $Nodes blocks hold fewer nodes than declared");
+    gmsh_finish_section_4(rCur, "Nodes", version40);
 }
 
 /**
@@ -84363,26 +85573,43 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
  *        reference assumes.
  */
 void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vector<E41>& rBlocks,
-                      const GmshEntities41* pEntities) {
+                      const GmshEntities41* pEntities, bool version40) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
     auto rd_int = [&]() -> int {
-        return is_ascii ? static_cast<int>(rCur.next_int()) : rCur.read_i32();
+        if (!is_ascii)
+            return rCur.read_i32();
+        return version40 ? detail::checked_integer<std::int32_t>(rCur.next_double(), "Gmsh")
+                         : static_cast<int>(rCur.next_int());
     };
 
     std::int64_t num_blocks = rCur.count(rd_size());
-    rd_size();  // num elements
-    rd_size();  // min tag
-    rd_size();  // max tag
+    const std::int64_t total = rd_size();
+    if (version40)
+        rCur.count(total);
+    else {
+        rd_size();  // min tag
+        rd_size();  // max tag
+    }
+    std::int64_t done = 0;
     const auto& g2m = gmsh_to_meshio_type();
     const auto& nnpc = num_nodes_per_cell();
 
     for (std::int64_t b = 0; b < num_blocks; ++b) {
         int entity_dim = rd_int();
         int entity_tag = rd_int();
+        if (version40) {
+            std::swap(entity_dim, entity_tag);
+            if (entity_dim < 0 || entity_dim > 3)
+                throw ReadError("Gmsh: element entity dimension outside 0..3");
+        }
         int etype = rd_int();
         std::int64_t num_ele = rCur.count(rd_size());
+        if (version40 && num_ele > total - done)
+            throw ReadError("Gmsh: $Elements blocks hold more elements than declared");
+        if (version40)
+            done += num_ele;
         auto it = g2m.find(etype);
         if (it == g2m.end())
             throw ReadError("Gmsh element type " + std::to_string(etype) +
@@ -84409,9 +85636,12 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
             }
         }
         const std::size_t nez = static_cast<std::size_t>(num_ele);
+        if (version40 && !is_ascii)
+            detail::checked_count(nez, (rCur.mBuf.size() - rCur.mPos) / ((n + 1) * 4), "Gmsh",
+                                  "element");
         blk.mConn = NDArray(DType::Int64, {nez, n});
         std::int64_t* dst = blk.mConn.As<std::int64_t>();
-        if (!is_ascii && data_size == 8) {
+        if (!is_ascii && data_size == 8 && !version40) {
             // Each element is [tag, node0..node(n-1)] u64, native-endian and
             // contiguous. Decode the nodes straight from the slurped buffer into
             // the owning connectivity array (drop the tag), one parallel pass.
@@ -84428,26 +85658,39 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
             });
             rCur.mPos += nez * stride * 8;
         } else {
+            if (version40 && !is_ascii)
+                rCur.need(nez * (n + 1) * 4);
             std::size_t p = 0;
             for (std::int64_t e = 0; e < num_ele; ++e) {
-                rd_size();  // element tag
-                for (std::size_t j = 0; j < n; ++j)
-                    dst[p++] = rd_size() - 1;
+                if (version40)
+                    rd_int();  // element tag (int32)
+                else
+                    rd_size();
+                for (std::size_t j = 0; j < n; ++j) {
+                    const std::int64_t tag = version40 ? rd_int() : rd_size();
+                    if (version40 && tag < 1)
+                        throw ReadError("Gmsh: an element node tag below 1");
+                    dst[p++] = tag - 1;
+                }
             }
         }
         rBlocks.push_back(std::move(blk));
     }
-    rCur.skip_to_end("Elements");
+    if (version40 && done != total)
+        throw ReadError("Gmsh: $Elements blocks hold fewer elements than declared");
+    gmsh_finish_section_4(rCur, "Elements", version40);
 }
 
 Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts,
-                      GmshInfo* pInfo, const double* pTargetTime) {
+                      GmshInfo* pInfo, const double* pTargetTime, bool version40 = false) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
     std::vector<E41> eblocks;
     GmshEntities41 entities;
     bool have_entities = false;
+    std::vector<GmshPeriodicLink> periodic;
+    bool have_periodic = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!rCur.eof()) {
@@ -84460,16 +85703,19 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         if (env == "PhysicalNames")
             read_physical_names(rCur, field_data);
         else if (env == "Entities") {
-            entities = read_entities_41(rCur, is_ascii, data_size);
+            entities = read_entities_41(rCur, is_ascii, data_size, version40);
             have_entities = true;
         } else if (env == "Nodes")
-            read_nodes_41(rCur, is_ascii, data_size, points, point_tags, dim_tags);
+            read_nodes_41(rCur, is_ascii, data_size, points, point_tags, dim_tags, version40);
         else if (env == "Elements")
             read_elements_41(rCur, is_ascii, data_size, eblocks,
-                             have_entities ? &entities : nullptr);
-        else if (env == "Periodic")
-            throw ReadError("Gmsh $Periodic not supported by the C++ reader");
-        else if (env == "NodeData")
+                             have_entities ? &entities : nullptr, version40);
+        else if (env == "Periodic") {
+            if (have_periodic)
+                throw ReadError("Gmsh: duplicate $Periodic section");
+            have_periodic = true;
+            periodic = gmsh_read_periodic(rCur, is_ascii, version40 ? 40 : 41, data_size);
+        } else if (env == "NodeData")
             read_data(rCur, "NodeData", is_ascii, point_data, rOpts, pTargetTime);
         else if (env == "ElementData")
             read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts, pTargetTime);
@@ -84477,6 +85723,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
             rCur.skip_to_end(env);
     }
 
+    gmsh_remap_periodic(periodic, point_tags, 1);
     // When node tags are contiguous 0..N-1 (the common case) the tag->row remap
     // is the identity, so we can skip building it *and* skip the random-access
     // gather below (the connectivity is already the final mesh indexing).
@@ -84501,10 +85748,19 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         if (static_cast<std::uint64_t>(max_tag) >= limit)
             throw ReadError("Gmsh: node tags too sparse for the node count");
         remap.assign(static_cast<std::size_t>(max_tag) + 1, -1);
+        if (version40) {
+            for (std::size_t i = 0; i < point_tags.size(); ++i) {
+                auto& slot = remap[static_cast<std::size_t>(point_tags[i])];
+                if (slot != -1)
+                    throw ReadError("Gmsh: duplicate node tag");
+                slot = static_cast<std::int64_t>(i);
+            }
+        }
         // Scatter: node tags are unique, so writes never alias -> parallel.
-        parallel_for_bw(point_tags.size(), [&](std::size_t i) {
-            remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
-        });
+        if (!version40)
+            parallel_for_bw(point_tags.size(), [&](std::size_t i) {
+                remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
+            });
     }
 
     Mesh mesh;
@@ -84520,7 +85776,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
     // exceptions the caller has to know about. (A points_only mesh is an
     // explicitly lossy request; preserving this for round-tripping would make
     // the contract inconsistent instead of useful.)
-    if (rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:dim_tags")) {
+    if (!version40 && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:dim_tags")) {
         NDArray dt(DType::Int64, {dim_tags.size(), 2});
         parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
             dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
@@ -84604,7 +85860,10 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
 
     // Bounding entities are signed (the sign carries orientation), so they
     // cannot be a Region -- they ride the side channel instead, like MedInfo.
-    if (pInfo && have_entities) {
+    if (pInfo)
+        for (auto& link : periodic)
+            pInfo->mPeriodic.push_back(std::move(link));
+    if (pInfo && have_entities && !version40) {
         pInfo->mBoundingEntities.reserve(eblocks.size());
         for (const auto& b : eblocks)
             pInfo->mBoundingEntities.push_back(b.mBounding);
@@ -84786,13 +86045,15 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
+    if (version == "4.0" && (!fss || (file_type != 0 && file_type != 1)))
+        throw ReadError("Gmsh 4.0: invalid $MeshFormat header");
     const bool is_ascii = (file_type == 0);
     if (!is_ascii) {
         cur.read_i32();
         if (cur.mPos < rBuf.size() && rBuf[cur.mPos] == '\n')
             ++cur.mPos;
     }
-    cur.skip_to_end("MeshFormat");
+    gmsh_finish_section_4(cur, "MeshFormat", version == "4.0");
 
     std::set<double> times;
     while (!cur.eof()) {
@@ -84811,14 +86072,17 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
 }
 /// Whether the file has a `$Periodic` section: the header on a line of its own,
 /// found by one search of the buffer before `$Nodes` and `$Elements` are
-/// parsed only to be refused (roadmap §3). `$` is rare in mesh data, so the
-/// search runs at memchr speed; a match inside binary data only declines a
-/// read the Python reader then takes, which is what a real `$Periodic` does.
+/// parsed only to be refused on info-less reads. `$` is rare in mesh data, so
+/// the search runs at memchr speed. Match the section parser's indentation
+/// tolerance too, so an indented header cannot silently lose its metadata.
 bool gmsh_has_periodic(std::string_view rBuf) {
     constexpr std::string_view kTag = "$Periodic";
     std::size_t at = 0;
     while ((at = rBuf.find(kTag, at)) != std::string_view::npos) {
-        const bool line_start = at == 0 || rBuf[at - 1] == '\n';
+        std::size_t before = at;
+        while (before > 0 && (rBuf[before - 1] == ' ' || rBuf[before - 1] == '\t'))
+            --before;
+        const bool line_start = before == 0 || rBuf[before - 1] == '\n';
         std::size_t after = at + kTag.size();
         const std::size_t next = after;
         while (after < rBuf.size() && (rBuf[after] == ' ' || rBuf[after] == '\t'))
@@ -84833,12 +86097,8 @@ bool gmsh_has_periodic(std::string_view rBuf) {
 
 }  // namespace
 
-Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
-    GmshInfo unused;
-    return read_gmsh(rPath, unused, rOpts);
-}
-
-Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts) {
+static Mesh gmsh_read_impl(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts,
+                           bool keep_periodic) {
     // Memory-mapped where that pays (see detail/file_source.hpp), copied
     // otherwise. The source is function-local: every parsed value is copied
     // into owning mesh storage below, so nothing in the returned Mesh points
@@ -84855,15 +86115,19 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
     bool is_ascii = (file_type == 0);
+    if (version == "4.0" && (!fss || (file_type != 0 && file_type != 1)))
+        throw ReadError("Gmsh 4.0: invalid $MeshFormat header");
     if (!is_ascii) {
-        cur.read_i32();  // endianness marker
+        const std::int32_t marker = cur.read_i32();
+        if (version == "4.0" && marker != 1)
+            throw ReadError("Gmsh: unsupported binary endianness marker");
         // consume trailing newline before $EndMeshFormat
         if (cur.mPos < buf.size() && buf[cur.mPos] == '\n')
             ++cur.mPos;
     }
-    cur.skip_to_end("MeshFormat");
-    if (gmsh_has_periodic(buf))
-        throw ReadError("Gmsh $Periodic not supported by the C++ reader");
+    gmsh_finish_section_4(cur, "MeshFormat", version == "4.0");
+    if (!keep_periodic && gmsh_has_periodic(buf))
+        throw ReadError("Gmsh $Periodic requires read_gmsh(path, GmshInfo, options)");
 
     // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
     // against the sorted union of every $NodeData/$ElementData section's time
@@ -84884,12 +86148,34 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
 
     if (version == "4.1" || version == "4")
         return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo, target_time_ptr);
+    if (version == "4.0") {
+        if (is_ascii)
+            return read_gmsh41_body(cur, true, 8, rOpts, &rInfo, target_time_ptr, true);
+        if (data_size != 8)
+            throw ReadError("Gmsh 4.0: binary coordinates must be 8-byte doubles");
+        // 4.0 stores unsigned-long counts without announcing their width.
+        // Try the 64-bit producer layout, then the 32-bit one. Exact count
+        // checks and section terminators prevent a wrong-width parse from
+        // succeeding; neither attempt mutates the caller's info channel.
+        GmshCursor candidate = cur;
+        GmshInfo info;
+        try {
+            Mesh mesh = read_gmsh41_body(candidate, false, 8, rOpts, &info, target_time_ptr, true);
+            for (auto& link : info.mPeriodic)
+                rInfo.mPeriodic.push_back(std::move(link));
+            return mesh;
+        } catch (const ReadError&) {
+            return read_gmsh41_body(cur, false, 4, rOpts, &rInfo, target_time_ptr, true);
+        }
+    }
     if (version.rfind("2", 0) != 0)
-        throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
+        throw ReadError("C++ Gmsh reader handles versions 2.2, 4.0 and 4.1 only");
 
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<EBlock> eblocks;
+    std::vector<GmshPeriodicLink> periodic;
+    bool have_periodic = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!cur.eof()) {
@@ -84905,9 +86191,12 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             read_nodes(cur, is_ascii, points, point_tags);
         else if (env == "Elements")
             read_elements(cur, is_ascii, eblocks);
-        else if (env == "Periodic")
-            throw ReadError("Gmsh $Periodic not supported by the C++ reader");
-        else if (env == "NodeData")
+        else if (env == "Periodic") {
+            if (have_periodic)
+                throw ReadError("Gmsh: duplicate $Periodic section");
+            have_periodic = true;
+            periodic = gmsh_read_periodic(cur, is_ascii, 22, 8);
+        } else if (env == "NodeData")
             read_data(cur, "NodeData", is_ascii, point_data, rOpts, target_time_ptr);
         else if (env == "ElementData")
             read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts, target_time_ptr);
@@ -84915,6 +86204,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
             cur.skip_to_end(env);
     }
 
+    gmsh_remap_periodic(periodic, point_tags, 0);
     // Build node-tag remap (gmsh ids are 1-based, possibly non-contiguous).
     // Tags are 1-based; a tag below 1, or one so large for the node count
     // that the dense table would be gigabytes, is a corrupt $Nodes (the 4.1
@@ -85002,12 +86292,99 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
 
     gmsh_attach_regions(mesh);
 
+    for (auto& link : periodic)
+        rInfo.mPeriodic.push_back(std::move(link));
+    return mesh;
+}
+
+Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
+    GmshInfo unused;
+    return gmsh_read_impl(rPath, unused, rOpts, false);
+}
+
+Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts) {
+    GmshInfo info;
+    Mesh mesh = gmsh_read_impl(rPath, info, rOpts, true);
+    rInfo = std::move(info);
     return mesh;
 }
 
 // ---- writer ------------------------------------------------------------------
 
 namespace {
+
+void gmsh_validate_periodic(const GmshInfo& rInfo, std::size_t points, int version) {
+    for (const auto& link : rInfo.mPeriodic) {
+        if (link.mEntityTags[0] < 0 || link.mEntityTags[0] > 3 || link.mEntityTags[1] < 1 ||
+            link.mEntityTags[2] < 1)
+            throw WriteError("Gmsh $Periodic: invalid entity dimension/tag");
+        if (!link.mAffine.empty() && link.mAffine.size() != 16)
+            throw WriteError("Gmsh $Periodic: affine must have 0 or 16 coefficients");
+        for (const double value : link.mAffine)
+            if (!std::isfinite(value))
+                throw WriteError("Gmsh $Periodic: non-finite affine coefficient");
+        const auto& pairs = link.mNodePairs;
+        if (pairs.Dtype() != DType::Int64 || pairs.Shape().size() != 2 || pairs.Shape()[1] != 2)
+            throw WriteError("Gmsh $Periodic: pairs must be Int64 (N,2)");
+        for (std::size_t i = 0; i < pairs.Size(); ++i) {
+            const auto index = detail::read_int(pairs, i);
+            if (index < 0 || static_cast<std::uint64_t>(index) >= points ||
+                (version == 22 && index >= INT32_MAX))
+                throw WriteError("Gmsh $Periodic: point index outside mesh/tag range");
+        }
+    }
+}
+
+void gmsh_write_periodic(std::ostream& rOs, const GmshInfo& rInfo, bool binary, int version) {
+    if (rInfo.mPeriodic.empty())
+        return;
+    const bool text = !binary || version == 22;
+    auto size = [&](std::uint64_t value) {
+        if (text)
+            rOs << value << '\n';
+        else
+            rOs.write(reinterpret_cast<const char*>(&value), 8);
+    };
+    auto real = [&](double value) {
+        if (text) {
+            char buffer[64];
+            detail::snprintf_c(buffer, sizeof(buffer), "%.16e", value);
+            rOs << buffer << ' ';
+        } else
+            rOs.write(reinterpret_cast<const char*>(&value), 8);
+    };
+    rOs << "$Periodic\n";
+    size(rInfo.mPeriodic.size());
+    for (const auto& link : rInfo.mPeriodic) {
+        for (const auto tag : link.mEntityTags)
+            if (text)
+                rOs << tag << ' ';
+            else
+                rOs.write(reinterpret_cast<const char*>(&tag), 4);
+        if (text)
+            rOs << '\n';
+        if (version == 41)
+            size(link.mAffine.size());
+        else if (!link.mAffine.empty())
+            rOs << "Affine ";
+        for (double value : link.mAffine)
+            real(value);
+        if (text && !link.mAffine.empty())
+            rOs << '\n';
+        size(link.mNodePairs.Size() / 2);
+        const auto* pairs = link.mNodePairs.As<std::int64_t>();
+        for (std::size_t i = 0; i < link.mNodePairs.Size(); ++i) {
+            const std::uint64_t tag = static_cast<std::uint64_t>(pairs[i]) + 1;
+            if (text)
+                rOs << tag << (i % 2 ? '\n' : ' ');
+            else
+                rOs.write(reinterpret_cast<const char*>(&tag), 8);
+        }
+    }
+    if (!text)
+        rOs << '\n';
+    rOs << "$EndPeriodic\n";
+}
 
 void write_physical_names(std::ostream& rOs, const Mesh& rMesh,
                           const std::vector<GmshRegionTag>& rTags) {
@@ -85278,6 +86655,11 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    write_gmsh22(rPath, rMesh, binary, GmshInfo{});
+}
+
+void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, const GmshInfo& rInfo) {
+    gmsh_validate_periodic(rInfo, rMesh.NumPoints(), 22);
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -85398,6 +86780,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     if (binary)
         os << '\n';
     os << "$EndElements\n";
+    gmsh_write_periodic(os, rInfo, binary, 22);
 
     for (const auto& name : rMesh.PointDataNames()) {
         if (name == "gmsh:dim_tags")
@@ -85444,6 +86827,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                   const GmshInfo& rInfo) {
+    gmsh_validate_periodic(rInfo, rMeshIn.NumPoints(), 41);
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -85752,6 +87136,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     if (binary)
         os << '\n';
     os << "$EndElements\n";
+    gmsh_write_periodic(os, rInfo, binary, 41);
 
     for (const auto& name : rMesh.PointDataNames()) {
         if (name == "gmsh:dim_tags")
@@ -85791,6 +87176,18 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
 MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts) {
     const detail::FileSource source(rPath, rOpts.mMmap);
+    if (gmsh_has_periodic(source.View())) {
+        // A summary returns no mesh to lose the side channel from. Validate
+        // it through the info-bearing reader, including the node-tag remap.
+        GmshInfo info;
+        ReadOptions options;
+        options.mMmap = rOpts.mMmap;
+        const auto mesh = read_gmsh(rPath, info, options);
+        auto metadata = metadata_from_mesh(mesh);
+        metadata.mTimeValues = gmsh_scan_time_values(source.View());
+        metadata.mFellBackToFullRead = true;
+        return metadata;
+    }
     GmshCursor cur(source.View());
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
@@ -93817,6 +95214,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/marc.cpp =====
 // ===== begin src/cpp/src/formats/mdpa.cpp =====
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -93872,6 +95270,19 @@ bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
 /// strtoll(…, 10) over the whole token.
 bool mdpa_parse_int(std::string_view S, std::int64_t& rOut) {
     return detail::parse_int_token(S, rOut);
+}
+
+/// Membership ids must not saturate: that would name a different entity.
+bool mdpa_parse_member_id(std::string_view S, std::int64_t& rOut) {
+    if (!S.empty() && S.front() == '+') {
+        S.remove_prefix(1);
+        if (S.empty() || S.front() < '0' || S.front() > '9')
+            return false;
+    }
+    if (S.empty())
+        return false;
+    const auto result = std::from_chars(S.data(), S.data() + S.size(), rOut);
+    return result.ec == std::errc{} && result.ptr == S.data() + S.size();
 }
 
 /// parse_double over the whole token.
@@ -94407,7 +95818,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
         if (it != smp_info_index.end())
             return pInfo->mSubModelParts[it->second];
         smp_info_index.emplace(rName, pInfo->mSubModelParts.size());
-        pInfo->mSubModelParts.push_back(MdpaSubModelPart{rName, {}, {}});
+        pInfo->mSubModelParts.push_back(MdpaSubModelPart{rName, {}, {}, {}, {}});
         return pInfo->mSubModelParts.back();
     };
 
@@ -94421,7 +95832,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
         return out;
     };
 
-    auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut) {
+    auto read_id_list = [&](const std::string& rEnd, std::vector<std::int64_t>& rOut,
+                            bool Strict = false) {
         while (!cur.Done()) {
             const std::string_view line = mdpa_clean(cur.Next());
             if (line.empty())
@@ -94429,7 +95841,9 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             if (line == rEnd)
                 return;
             std::int64_t v = 0;
-            if (!mdpa_parse_int(line, v)) {
+            if (!(Strict ? mdpa_parse_member_id(line, v) : mdpa_parse_int(line, v))) {
+                if (Strict)
+                    throw ReadError("MDPA: non-integer id in " + rEnd + ": " + std::string(line));
                 log::warn("mdpa: skipping non-integer id in {}: {}", rEnd, line);
                 continue;
             }
@@ -94726,12 +96140,25 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 mdpa_expect_empty_block(cur, "End SubModelPartTables",
                                         "a non-empty SubModelPartTables block", Lenient, pInfo);
             }
-        } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartGeometries",
-                                    "a non-empty SubModelPartGeometries block", Lenient, pInfo);
-        } else if (mdpa_starts_with(line, "Begin SubModelPartConstraints")) {
-            mdpa_expect_empty_block(cur, "End SubModelPartConstraints",
-                                    "a non-empty SubModelPartConstraints block", Lenient, pInfo);
+        } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries") ||
+                   mdpa_starts_with(line, "Begin SubModelPartConstraints")) {
+            const bool geometry = mdpa_starts_with(line, "Begin SubModelPartGeometries");
+            const std::string tag = geometry ? "SubModelPartGeometries" : "SubModelPartConstraints";
+            if (smp_stack.empty())
+                throw ReadError("MDPA: " + tag + " outside a SubModelPart");
+            std::vector<std::int64_t> ids;
+            read_id_list("End " + tag, ids, /*Strict=*/true);
+            if (!ids.empty()) {
+                if (pInfo) {
+                    MdpaSubModelPart& r_smp = smp_info(smp_name());
+                    auto& out = geometry ? r_smp.mGeometryIds : r_smp.mConstraintIds;
+                    out.insert(out.end(), ids.begin(), ids.end());
+                } else if (!Lenient) {
+                    throw ReadError("MDPA: a non-empty " + tag + " block" + kMdpaNeedsInfo);
+                } else {
+                    log::warn("mdpa: skipping a non-empty {} block (ReadOptions::mLenient)", tag);
+                }
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartNodes")) {
             if (smp_stack.empty())
                 throw ReadError("MDPA: SubModelPartNodes outside a SubModelPart");
@@ -95177,14 +96604,14 @@ void mdpa_write_properties(std::ostream& rOs, const PropertySet& rSet) {
 }
 
 /// Emit an id list sub-block (`SubModelPartNodes`, `MeshElements`, ...), if non-empty.
-void mdpa_write_id_list(std::ostream& rOs, const char* pTag,
-                        const std::vector<std::int64_t>& rIds) {
+void mdpa_write_id_list(std::ostream& rOs, const char* pTag, const std::vector<std::int64_t>& rIds,
+                        const std::string& rIndent = "    ") {
     if (rIds.empty())
         return;
-    rOs << "    Begin " << pTag << "\n";
+    rOs << rIndent << "Begin " << pTag << "\n";
     for (std::int64_t id : rIds)
-        rOs << "        " << id << "\n";
-    rOs << "    End " << pTag << "\n";
+        rOs << rIndent << "    " << id << "\n";
+    rOs << rIndent << "End " << pTag << "\n";
 }
 
 }  // namespace
@@ -95507,41 +96934,74 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     }
 
     // ---- SubModelParts from named regions ---------------------------------
-    // The info's data/tables go inside the part of the same name; a part with
-    // data but no region left (an operation may have dropped it) is still
-    // written, so the data is not lost.
+    // Side-channel-only parts are retained. Hierarchical region keys are
+    // emitted as nested blocks, not a single Kratos name containing '/'.
     std::unordered_map<std::string, const MdpaSubModelPart*> smp_extras;
     for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts)
         smp_extras.emplace(r_smp.mName, &r_smp);
-    auto write_smp_extras = [&](const std::string& rName) {
+    auto write_smp_extras = [&](const std::string& rName, const std::string& rIndent) {
         const auto it = smp_extras.find(rName);
         if (it == smp_extras.end())
             return;
         if (!it->second->mData.empty()) {
-            os << "    Begin SubModelPartData\n";
+            os << rIndent << "Begin SubModelPartData\n";
             for (const PropertyValue& r_v : it->second->mData)
-                mdpa_write_kv(os, r_v, "        ");
-            os << "    End SubModelPartData\n";
+                mdpa_write_kv(os, r_v, (rIndent + "    ").c_str());
+            os << rIndent << "End SubModelPartData\n";
         }
-        mdpa_write_id_list(os, "SubModelPartTables", it->second->mTables);
-        smp_extras.erase(it);
+        mdpa_write_id_list(os, "SubModelPartTables", it->second->mTables, rIndent);
+        mdpa_write_id_list(os, "SubModelPartGeometries", it->second->mGeometryIds, rIndent);
+        mdpa_write_id_list(os, "SubModelPartConstraints", it->second->mConstraintIds, rIndent);
+    };
+    std::unordered_map<std::string, std::vector<std::string>> smp_children;
+    std::unordered_set<std::string> smp_seen;
+    auto add_smp = [&](const std::string& rName) {
+        if (rName.empty() || rName.front() == '/' || rName.back() == '/' ||
+            rName.find("//") != std::string::npos)
+            throw WriteError("MDPA: invalid SubModelPart hierarchy name '" + rName + "'");
+        std::string parent;
+        std::size_t start = 0;
+        while (start < rName.size()) {
+            const std::size_t slash = rName.find('/', start);
+            const std::string path = rName.substr(0, slash);
+            if (smp_seen.insert(path).second)
+                smp_children[parent].push_back(path);
+            parent = path;
+            if (slash == std::string::npos)
+                break;
+            start = slash + 1;
+        }
     };
     for (const auto& name : rMesh.RegionNames()) {
+        bool has_membership = false;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const auto& region = rMesh.Region(i);
+            if (region.mName != name)
+                continue;
+            if (region.mKind == RegionKind::Side) {
+                log::warn("mdpa: dropping side region '{}' (MDPA has no facet sets)", name);
+                detail::provenance_note(
+                    "regions-dropped",
+                    "side region '" + name + "' dropped -- MDPA has no facet sets");
+            } else {
+                has_membership = true;
+            }
+        }
+        if (has_membership)
+            add_smp(name);
+    }
+    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts)
+        add_smp(r_smp.mName);
+    auto write_smp = [&](const std::string& name, std::size_t depth) {
         std::vector<std::int64_t> nodes;
         std::vector<std::int64_t> elements, conditions;
-        bool any = false;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
             const meshioplusplus::Region& r = rMesh.Region(i);
             if (r.mName != name)
                 continue;
             if (r.mKind == RegionKind::Side) {
-                log::warn("mdpa: dropping side region '{}' (MDPA has no facet sets)", name);
-                detail::provenance_note("regions-dropped", "side region '" + name +
-                                                               "' dropped -- MDPA has no facet "
-                                                               "sets");
                 continue;
             }
-            any = true;
             const std::int64_t* e = r.Entries();
             for (std::size_t j = 0; j < r.NumEntries(); ++j) {
                 if (r.mKind == RegionKind::Point) {
@@ -95563,21 +97023,41 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                 }
             }
         }
-        if (!any)
+        const std::string indent(depth * 4, ' ');
+        const std::string body_indent = indent + "    ";
+        const std::size_t slash = name.rfind('/');
+        const std::string leaf = slash == std::string::npos ? name : name.substr(slash + 1);
+        os << indent << "Begin SubModelPart " << leaf << "\n";
+        write_smp_extras(name, body_indent);
+        mdpa_write_id_list(os, "SubModelPartNodes", nodes, body_indent);
+        mdpa_write_id_list(os, "SubModelPartElements", elements, body_indent);
+        mdpa_write_id_list(os, "SubModelPartConditions", conditions, body_indent);
+    };
+    // Explicit traversal stack: a valid deeply nested deck must not consume
+    // one C++ call frame per part.
+    struct MdpaSmpWriteFrame {
+        std::string mName;
+        std::size_t mDepth;
+        bool mClose;
+    };
+    std::vector<MdpaSmpWriteFrame> smp_frames;
+    const auto& roots = smp_children[""];
+    for (auto it = roots.rbegin(); it != roots.rend(); ++it)
+        smp_frames.push_back({*it, 0, false});
+    while (!smp_frames.empty()) {
+        const MdpaSmpWriteFrame frame = std::move(smp_frames.back());
+        smp_frames.pop_back();
+        if (frame.mClose) {
+            os << std::string(frame.mDepth * 4, ' ') << "End SubModelPart\n"
+               << (frame.mDepth == 0 ? "\n" : "");
             continue;
-        os << "Begin SubModelPart " << name << "\n";
-        write_smp_extras(name);
-        mdpa_write_id_list(os, "SubModelPartNodes", nodes);
-        mdpa_write_id_list(os, "SubModelPartElements", elements);
-        mdpa_write_id_list(os, "SubModelPartConditions", conditions);
-        os << "End SubModelPart\n\n";
-    }
-    for (const MdpaSubModelPart& r_smp : rInfo.mSubModelParts) {
-        if (!smp_extras.count(r_smp.mName))
-            continue;
-        os << "Begin SubModelPart " << r_smp.mName << "\n";
-        write_smp_extras(r_smp.mName);
-        os << "End SubModelPart\n\n";
+        }
+        write_smp(frame.mName, frame.mDepth);
+        smp_frames.push_back({frame.mName, frame.mDepth, true});
+        const auto children = smp_children.find(frame.mName);
+        if (children != smp_children.end())
+            for (auto it = children->second.rbegin(); it != children->second.rend(); ++it)
+                smp_frames.push_back({*it, frame.mDepth + 1, false});
     }
 
     // ---- Mesh blocks ------------------------------------------------------
@@ -95622,6 +97102,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -96003,7 +97484,7 @@ void write_cha_bitmask(hid_t field, hid_t ts, int entity_bit, const std::string&
 h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const std::string& rName,
                                DType dt, std::size_t ncomponents, bool IsNodal,
                                const std::vector<std::string>& rMedCellTypes) {
-    h5::Hid field = h5::create_group(cha, rName);
+    h5::Hid field = h5::create_group_crt(cha, rName);
     write_attr_bytes(field, "MAI", rMeshName);
     h5::write_attr_int(field, "TYP", med_field_type_code(dt));
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
@@ -96020,7 +97501,7 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
 
     char step_name[64];
     std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
-    h5::Hid ts = h5::create_group(field, step_name);
+    h5::Hid ts = h5::create_group_crt(field, step_name);
     h5::write_attr_int(ts, "NDT", 1);
     h5::write_attr_int(ts, "NOR", -1);
     write_attr_double(ts, "PDT", 0.0);
@@ -96051,10 +97532,10 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
 // One "support" subgroup (NOE for nodal, MAI.<type> for a cell block):
 // GAU/PFL attrs, the default-profile subgroup with NBR/NGA/GAU/CO.
 void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData) {
-    h5::Hid typ = h5::create_group(ts, rSupportName);
+    h5::Hid typ = h5::create_group_crt(ts, rSupportName);
     write_attr_bytes(typ, "GAU", "");
     write_attr_bytes(typ, "PFL", kProfile);
-    h5::Hid profile = h5::create_group(typ, kProfile);
+    h5::Hid profile = h5::create_group_crt(typ, kProfile);
     h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(detail::rows(rData)));
     h5::write_attr_int(profile, "NGA", 1);
     write_attr_bytes(profile, "GAU", "");
@@ -96071,7 +97552,7 @@ void write_cha_nodal_field(hid_t cha, const std::string& rMeshName, const std::s
 }
 
 void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
-                          const Mesh& rMesh) {
+                          const Mesh& rMesh, const std::string& rDiskName) {
     // The type/component count come from the first block that actually has
     // rows -- an empty mesh's block still has a dtype/shape, so this never
     // has nothing to report.
@@ -96113,7 +97594,7 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             contributing.push_back(med_type);
     }
 
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents,
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, ncomponents,
                                         /*IsNodal=*/false, contributing);
 
     for (const std::string& med_type : contributing)
@@ -96187,12 +97668,12 @@ void write_families(hid_t fm_group, const std::map<std::int64_t, std::vector<std
         if (gname.size() > 64)
             gname = "FAM_" + std::to_string(set_id);
 
-        h5::Hid family = h5::create_group(fm_group, gname);
+        h5::Hid family = h5::create_group_crt(fm_group, gname);
         h5::write_attr_int(family, "NUM", set_id);
         if (names.empty())
             continue;
 
-        h5::Hid gro = h5::create_group(family, "GRO");
+        h5::Hid gro = h5::create_group_crt(family, "GRO");
         h5::write_attr_int(gro, "NBR", static_cast<std::int64_t>(names.size()));
         hsize_t n = names.size(), eighty = 80;
         h5::Hid at(H5Tarray_create2(H5T_STD_I8LE, 1, &eighty), H5Tclose);
@@ -96486,14 +97967,14 @@ void med_warn_side_regions_dropped(const Mesh& rMesh) {
 // --- CHA (field) reading: the mirror image of write_cha_*, same scope -----
 //
 // Accepts only the exact shape write_med's CHA writer produces: one timestep
-// group (the fixed ndt=1/nor=-1 key), the default profile, and either a
+// group (the fixed ndt=1/nor=-1 key), ordinary profiles, and either a
 // single "NOE" (nodal) support or one-or-more "MAI.<type>" (cell) supports --
 // never a mix of the two, since the writer never produces one. Anything else
-// (multi-timestep, a named profile, an ELNO/ELGA support name) declines by
+// (multi-timestep metadata, an ELNO/ELGA support name) declines by
 // throwing, exactly like the pre-existing unconditional CHA guard did, so a
 // file the enhanced Python reader is needed for still gets it.
 
-// Read one support subgroup's data ("CO" under its default-profile child),
+// Read one support subgroup's data ("CO" under its selected profile child),
 // reshaped to `(rows,)` for a scalar field or `(rows, ncomponents)` otherwise
 // -- the "1-D scalars stay 1-D" convention the rest of the core keeps.
 /**
@@ -96514,18 +97995,46 @@ void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) 
         pInfo->mSkippedConstructs.push_back(rWhat);
 }
 
-/// Whether a support subgroup names a real (non-default) profile, i.e. its
-/// `CO` covers a subset of the entities indexed by a separate list this reader
-/// does not resolve. The caller decides whether that is fatal or a skip.
-bool med_support_has_named_profile(hid_t support) {
-    const std::string pfl = read_attr_bytes(support, "PFL");
-    return !pfl.empty() && pfl != kProfile;
-}
-
-NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
-    h5::Hid profile = h5::open_group(support, kProfile);
+/// Named profiles use one-based entity indices and NaN on uncovered rows.
+NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents,
+                              std::size_t rows) {
+    std::string profile_name = read_attr_bytes(support, "PFL");
+    if (profile_name.empty())
+        profile_name = kProfile;
+    h5::Hid profile = h5::open_group(support, profile_name);
     NDArray flat = h5::read_dataset(profile, "CO");
-    const std::size_t k = ncomponents > 0 ? static_cast<std::size_t>(ncomponents) : 1;
+    if (ncomponents <= 0 || (rows && static_cast<std::uint64_t>(ncomponents) >
+                                         std::numeric_limits<std::size_t>::max() / rows))
+        throw ReadError("MED: invalid field component count");
+    const auto k = static_cast<std::size_t>(ncomponents);
+    if (h5::has_attr(profile, "NGA") && h5::read_attr_int(profile, "NGA") != 1)
+        throw ReadError("MED: Gauss-point data requires the Python reference reader");
+    if (profile_name != kProfile) {
+        h5::Hid profiles = h5::open_group(file, "PROFILS");
+        h5::Hid definition = h5::open_group(profiles, profile_name);
+        NDArray indices = h5::read_dataset(definition, "PFL");
+        if (indices.Ndim() != 1 || indices.Dtype() == DType::Float32 ||
+            indices.Dtype() == DType::Float64 ||
+            indices.Size() > std::numeric_limits<std::size_t>::max() / k ||
+            flat.Size() != indices.Size() * k)
+            throw ReadError("MED: profile values/indices have inconsistent shapes");
+        if (h5::has_attr(definition, "NBR") &&
+            h5::read_attr_int(definition, "NBR") != static_cast<std::int64_t>(indices.Size()))
+            throw ReadError("MED: profile index count disagrees with NBR");
+        NDArray values = unflatten_f(flat, indices.Size(), k, 0);
+        NDArray out(DType::Float64,
+                    k == 1 ? std::vector<std::size_t>{rows} : std::vector<std::size_t>{rows, k});
+        std::fill_n(out.As<double>(), out.Size(), std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t i = 0; i < indices.Size(); ++i) {
+            const auto index = detail::read_int(indices, i);
+            if (index <= 0 || static_cast<std::uint64_t>(index) > rows)
+                throw ReadError("MED: profile index is out of range");
+            for (std::size_t c = 0; c < k; ++c)
+                out.As<double>()[(static_cast<std::size_t>(index) - 1) * k + c] =
+                    detail::read_double(values, i * k + c);
+        }
+        return out;
+    }
     if (flat.Size() != rows * k)
         throw ReadError("MED: field data size does not match its declared shape");
     NDArray out = unflatten_f(flat, rows, k, 0);
@@ -96534,8 +98043,8 @@ NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size
     return out;
 }
 
-void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rOptions,
-                     MedInfo* pInfo) {
+void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& rMesh, bool Lenient,
+                     const ReadOptions& rOptions, MedInfo* pInfo, bool DecodeMeshSuffix) {
     std::unordered_map<std::string, std::size_t> med_to_block;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         auto it = meshio_to_med().find(rMesh.Cells(b).Type());
@@ -96543,10 +98052,29 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
             med_to_block.emplace(it->second, b);
     }
 
-    for (const std::string& field_name : h5::group_links(cha)) {
-        h5::Hid field = h5::open_group(cha, field_name);
+    for (const std::string& disk_name :
+         (DecodeMeshSuffix ? h5::group_links_crt(cha) : h5::group_links(cha))) {
+        h5::Hid field = h5::open_group(cha, disk_name);
+        std::string field_name = disk_name;
+        const auto owner = read_attr_bytes(field, "MAI");
+        if (!owner.empty() && owner != rMeshName)
+            continue;
+        const auto suffix = disk_name.rfind('@');
+        if (DecodeMeshSuffix && suffix != std::string::npos) {
+            if (owner.empty() && disk_name.substr(suffix + 1) != rMeshName)
+                continue;
+            if (disk_name.substr(suffix + 1) == rMeshName)
+                field_name = disk_name.substr(0, suffix);
+        }
         const std::int64_t ncomponents =
             h5::has_attr(field, "NCO") ? h5::read_attr_int(field, "NCO") : 1;
+        if (DecodeMeshSuffix && pInfo && h5::has_attr(field, "NOM")) {
+            auto tokens = detail::make_classic_istringstream(read_attr_bytes(field, "NOM"));
+            std::vector<std::string> components;
+            for (std::string name; tokens >> name;)
+                components.push_back(std::move(name));
+            pInfo->mMedNom.push_back(std::move(components));
+        }
 
         // Units are a real piece of information the C++ Mesh cannot carry
         // (they are strings; `med:field_units` is a Python-only dict-valued
@@ -96555,6 +98083,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
         // nothing is lost even though nothing lands on the Mesh.
         const std::string uni = read_attr_bytes(field, "UNI");
         const std::string unt = read_attr_bytes(field, "UNT");
+        if (DecodeMeshSuffix && pInfo)
+            pInfo->mFieldUnits.emplace(field_name, std::make_pair(uni, unt));
         if (!uni.empty() || !unt.empty()) {
             if (!Lenient)
                 throw ReadError("MED: field '" + field_name +
@@ -96622,6 +98152,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
         const std::int64_t ndt = h5::read_attr_int(ts, "NDT");
         const std::int64_t nor = h5::read_attr_int(ts, "NOR");
         const double pdt = read_attr_double(ts, "PDT");
+        if (DecodeMeshSuffix && pInfo)
+            pInfo->mStepMeta.emplace(field_name, std::make_tuple(ndt, nor, pdt));
         if (ndt != 1 || nor != -1 || pdt != 0.0) {
             if (!Lenient && rOptions.mTimeStep == 0)
                 throw ReadError("MED: field '" + field_name +
@@ -96642,12 +98174,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
                 continue;
             }
             h5::Hid noe = h5::open_group(ts, "NOE");
-            if (med_support_has_named_profile(noe)) {
-                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
-                continue;
-            }
             rMesh.AddPointData(field_name,
-                               read_cha_support_data(noe, ncomponents, rMesh.NumPoints()));
+                               read_cha_support_data(file, noe, ncomponents, rMesh.NumPoints()));
             continue;
         }
 
@@ -96680,12 +98208,7 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
             }
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
-            if (med_support_has_named_profile(grp)) {
-                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
-                skip_field = true;
-                break;
-            }
-            per_block[b] = read_cha_support_data(grp, ncomponents, rMesh.Cells(b).NumCells());
+            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells());
             filled[b] = true;
         }
         if (skip_field)
@@ -96715,7 +98238,8 @@ void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rO
 // default-constructed reproduces the historical strict behaviour exactly,
 // which is what let the options overload land without touching any caller.
 namespace {
-Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
+Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions,
+                   const std::string* pName = nullptr) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -96741,10 +98265,13 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
 
     h5::Hid ens = h5::open_group(f, "ENS_MAA");
     std::vector<std::string> meshes = h5::group_links(ens);
-    if (meshes.size() != 1)
+    if (!pName && meshes.size() != 1)
         throw ReadError(
             detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
-    const std::string mesh_name = meshes[0];
+    const std::string mesh_name = pName ? *pName : meshes[0];
+    if (std::find(meshes.begin(), meshes.end(), mesh_name) == meshes.end())
+        throw ReadError("MED: no mesh named '" + mesh_name + "'");
+    rInfo = MedInfo{};
     h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
 
     std::int64_t dim = h5::read_attr_int(mesh_grp, "ESP");
@@ -97018,7 +98545,8 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
     // caller with no Python fallback read it anyway.
     if (h5::exists(f, "CHA")) {
         h5::Hid cha = h5::open_group(f, "CHA");
-        read_cha_fields(cha, mesh, rOptions.mLenient, rOptions, &rInfo);
+        read_cha_fields(f, cha, mesh_name, mesh, rOptions.mLenient, rOptions, &rInfo,
+                        pName != nullptr);
     }
 
     return mesh;
@@ -97032,6 +98560,18 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
 
 Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
     return med_read_impl(rPath, rInfo, rOptions);
+}
+
+std::vector<std::string> med_mesh_names(const std::string& rPath) {
+    h5::SilenceErrors silence;
+    auto file = h5::open_file_read(rPath);
+    auto meshes = h5::open_group(file, "ENS_MAA");
+    return h5::group_links_crt(meshes);
+}
+
+Mesh read_med_named(const std::string& rPath, const std::string& rName, MedInfo& rInfo,
+                    const ReadOptions& rOptions) {
+    return med_read_impl(rPath, rInfo, rOptions, &rName);
 }
 
 MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
@@ -97140,8 +98680,23 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
     return meta;
 }
 
-void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
-               const std::string& rMedVersion) {
+namespace {
+h5::Hid med_create_file(const std::string& rPath) {
+    h5::Hid props(H5Pcreate(H5P_FILE_CREATE), H5Pclose);
+    if (!props.Valid() ||
+        H5Pset_link_creation_order(props, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED) < 0)
+        throw WriteError("MED: cannot enable root link creation order");
+    h5::Hid file(H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, props, H5P_DEFAULT), H5Fclose);
+    if (!file.Valid()) throw WriteError("MED: cannot create file '" + rPath + "'");
+    return file;
+}
+
+h5::Hid med_open_or_create_group(hid_t file, const char* pName) {
+    return h5::exists(file, pName) ? h5::open_group(file, pName) : h5::create_group_crt(file, pName);
+}
+
+void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
+                    const std::string& rMedVersion, const std::set<std::string>& rCollisions) {
     // No provenance slot in this format: drop the notes this write raises on
     // the way out rather than let them reach the next file written.
     const detail::ProvenanceSlotlessWrite slotless;
@@ -97225,18 +98780,18 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         }
     }
 
-    h5::Hid f = h5::create_file(rPath);
-
-    h5::Hid infos = h5::create_group(f, "INFOS_GENERALES");
-    h5::write_attr_int(infos, "MAJ", maj);
-    h5::write_attr_int(infos, "MIN", min);
-    h5::write_attr_int(infos, "REL", rel);
+    if (!h5::exists(f, "INFOS_GENERALES")) {
+        h5::Hid infos = h5::create_group_crt(f, "INFOS_GENERALES");
+        h5::write_attr_int(infos, "MAJ", maj);
+        h5::write_attr_int(infos, "MIN", min);
+        h5::write_attr_int(infos, "REL", rel);
+    }
 
     const std::string mesh_name = rInfo.mMeshName.empty() ? "mesh" : rInfo.mMeshName;
     const std::size_t dim = rMesh.PointDim();
 
-    h5::Hid ens = h5::create_group(f, "ENS_MAA");
-    h5::Hid med_mesh = h5::create_group(ens, mesh_name);
+    h5::Hid ens = med_open_or_create_group(f, "ENS_MAA");
+    h5::Hid med_mesh = h5::create_group_crt(ens, mesh_name);
     h5::write_attr_int(med_mesh, "DIM", static_cast<std::int64_t>(dim));
     h5::write_attr_int(med_mesh, "ESP", static_cast<std::int64_t>(dim));
     h5::write_attr_int(med_mesh, "REP", 0);
@@ -97258,14 +98813,14 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         rInfo.mDescription.empty() ? "Mesh created with meshio++" : rInfo.mDescription);
     h5::write_attr_int(med_mesh, "TYP", 0);
 
-    h5::Hid time_step = h5::create_group(med_mesh, "-0000000000000000001-0000000000000000001");
+    h5::Hid time_step = h5::create_group_crt(med_mesh, "-0000000000000000001-0000000000000000001");
     h5::write_attr_int(time_step, "CGT", 1);
     h5::write_attr_int(time_step, "NDT", -1);
     h5::write_attr_int(time_step, "NOR", -1);
     write_attr_double(time_step, "PDT", -1.0);
 
     // Points
-    h5::Hid noe = h5::create_group(time_step, "NOE");
+    h5::Hid noe = h5::create_group_crt(time_step, "NOE");
     h5::write_attr_int(noe, "CGT", 1);
     h5::write_attr_int(noe, "CGS", 1);
     write_attr_bytes(noe, "PFL", kProfile);
@@ -97297,7 +98852,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     // the contributing blocks' connectivity/FAM/NUM. Mirrors the Python
     // reference's write-time merge (_med.py:811-869), which is why this
     // never rejects a mesh the pre-v9.8.0 pairwise-type check used to.
-    h5::Hid mai = h5::create_group(time_step, "MAI");
+    h5::Hid mai = h5::create_group_crt(time_step, "MAI");
     h5::write_attr_int(mai, "CGT", 1);
     const bool has_cell_num = rMesh.HasCellData("med:num");
     const bool has_native_cell_tags = rMesh.HasCellData("cell_tags");
@@ -97343,7 +98898,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                         ctype, npc, rMesh.Cells(bi).NodesPerCell()));
         }
 
-        h5::Hid g = h5::create_group(mai, meshio_to_med().at(ctype));
+        h5::Hid g = h5::create_group_crt(mai, meshio_to_med().at(ctype));
         h5::write_attr_int(g, "CGT", 1);
         h5::write_attr_int(g, "CGS", 1);
         write_attr_bytes(g, "PFL", kProfile);
@@ -97485,16 +99040,16 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     }
 
     // Families
-    h5::Hid fas = h5::create_group(f, "FAS");
-    h5::Hid families = h5::create_group(fas, mesh_name);
-    h5::Hid family_zero = h5::create_group(families, "FAMILLE_ZERO");
+    h5::Hid fas = med_open_or_create_group(f, "FAS");
+    h5::Hid families = h5::create_group_crt(fas, mesh_name);
+    h5::Hid family_zero = h5::create_group_crt(families, "FAMILLE_ZERO");
     h5::write_attr_int(family_zero, "NUM", 0);
     if (!point_tags.empty()) {
-        h5::Hid node = h5::create_group(families, "NOEUD");
+        h5::Hid node = h5::create_group_crt(families, "NOEUD");
         write_families(node, point_tags, point_tag_groups);
     }
     if (!cell_tags.empty()) {
-        h5::Hid element = h5::create_group(families, "ELEME");
+        h5::Hid element = h5::create_group_crt(families, "ELEME");
         write_families(element, cell_tags, cell_tag_groups);
     }
 
@@ -97546,14 +99101,67 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             }
         }
 
-        h5::Hid cha = h5::create_group(f, "CHA");
+        h5::Hid cha = med_open_or_create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
             if (name != "point_tags" && name != "med:num")
-                write_cha_nodal_field(cha, mesh_name, name, rMesh.PointData(name));
+                write_cha_nodal_field(cha, mesh_name,
+                                      rCollisions.count(name) ? name + "@" + mesh_name : name,
+                                      rMesh.PointData(name));
         for (const auto& name : rMesh.CellDataNames())
             if (name != "cell_tags" && name != "med:num")
-                write_cha_cell_field(cha, mesh_name, name, rMesh);
+                write_cha_cell_field(cha, mesh_name, name, rMesh,
+                                     rCollisions.count(name) ? name + "@" + mesh_name : name);
     }
+}
+
+}  // namespace
+
+void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
+               const std::string& rMedVersion) {
+    h5::SilenceErrors silence;
+    auto file = med_create_file(rPath);
+    med_write_mesh(file, rMesh, rInfo, rMedVersion, {});
+}
+
+void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& rMeshes,
+                     const std::vector<MedInfo>& rInfos, const std::string& rMedVersion) {
+    if (rMeshes.empty() || rMeshes.size() != rInfos.size())
+        throw WriteError("MED: provide one name/info per mesh and at least one mesh");
+    std::set<std::string> names, collisions, disk_names;
+    std::map<std::string, std::size_t> counts;
+    for (std::size_t i = 0; i < rMeshes.size(); ++i) {
+        const auto& name = rInfos[i].mMeshName;
+        if (!rMeshes[i] || name.empty() || name.find('/') != std::string::npos ||
+            name.find('@') != std::string::npos || !names.insert(name).second)
+            throw WriteError("MED: mesh names must be unique, nonempty and contain no '/' or '@'");
+        std::set<std::string> fields;
+        for (const auto& field : rMeshes[i]->PointDataNames())
+            if (field != "point_tags" && field != "med:num")
+                fields.insert(field);
+        for (const auto& field : rMeshes[i]->CellDataNames())
+            if (field != "cell_tags" && field != "med:num" && field != "gmsh:physical")
+                fields.insert(field);
+        for (const auto& field : fields)
+            ++counts[field];
+    }
+    for (const auto& [field, count] : counts)
+        if (count > 1)
+            collisions.insert(field);
+    for (std::size_t i = 0; i < rMeshes.size(); ++i)
+        for (auto location : {DataLocation::Point, DataLocation::Cell})
+            for (const auto& field : data_names(*rMeshes[i], location)) {
+                if (field == "point_tags" || field == "cell_tags" || field == "med:num" ||
+                    field == "gmsh:physical")
+                    continue;
+                const auto disk =
+                    collisions.count(field) ? field + "@" + rInfos[i].mMeshName : field;
+                if (!disk_names.insert(disk).second)
+                    throw WriteError("MED: colliding field storage name: " + disk);
+            }
+    h5::SilenceErrors silence;
+    auto file = med_create_file(rPath);
+    for (std::size_t i = 0; i < rMeshes.size(); ++i)
+        med_write_mesh(file, *rMeshes[i], rInfos[i], rMedVersion, collisions);
 }
 
 }  // namespace meshioplusplus
@@ -107549,6 +109157,7 @@ MeshMetadata read_nastran_op2_metadata(const std::string& rPath, const ReadOptio
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -107556,6 +109165,10 @@ MeshMetadata read_nastran_op2_metadata(const std::string& rPath, const ReadOptio
 #include <vector>
 
 // Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 namespace meshioplusplus {
 
@@ -107647,11 +109260,14 @@ std::string netgen_strip(const std::string& rS) {
 struct LineCursor {
     std::vector<std::string> mLines;
     std::size_t mPos = 0;
+    std::size_t mBytes = 0;
 
     explicit LineCursor(std::istream& rIn) {
         std::string line;
-        while (std::getline(rIn, line))
+        while (std::getline(rIn, line)) {
+            mBytes += line.size() + 1;
             mLines.push_back(line);
+        }
     }
 
     bool Eof() const { return mPos >= mLines.size(); }
@@ -107683,7 +109299,15 @@ struct NetgenRawBlock {
     std::vector<std::int64_t> mIndex;
 };
 
-void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenRawBlock>& rBlocks) {
+std::int64_t netgen_integer(const std::string& rToken) {
+    std::int64_t value = 0;
+    if (!detail::parse_int_token(rToken, value))
+        throw ReadError("Netgen: invalid integer '" + rToken + "'");
+    return value;
+}
+
+void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenRawBlock>& rBlocks,
+                bool TwoLines) {
     int dim, pi0, i_index, fixed_nump = -1;
     if (rSection == "pointelements") {
         dim = 0;
@@ -107707,10 +109331,11 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         throw ReadError("Netgen: unknown cell section '" + rSection + "'");
     }
 
-    std::int64_t num_cells = std::strtoll(rC.NextCount().c_str(), nullptr, 10);
+    const std::size_t num_cells =
+        detail::checked_count(netgen_integer(rC.NextCount()), rC.mBytes, "Netgen", "cell");
     const auto& tmap = netgen_type(dim);
 
-    for (std::int64_t k = 0; k < num_cells; ++k) {
+    for (std::size_t k = 0; k < num_cells; ++k) {
         bool eof = false;
         std::string line = rC.NextReal(eof);
         if (eof)
@@ -107719,44 +109344,61 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         // The node count sits at a fixed column; check the row reaches it.
         detail::need_tokens(data, dim == 2 ? 5 : (dim == 3 ? 2 : 0), "Netgen");
 
-        int nump = fixed_nump;
+        std::int64_t nump = fixed_nump;
         if (dim == 2)
-            nump = static_cast<int>(std::strtoll(data[4].c_str(), nullptr, 10));
+            nump = netgen_integer(data[4]);
         else if (dim == 3)
-            nump = static_cast<int>(std::strtoll(data[1].c_str(), nullptr, 10));
+            nump = netgen_integer(data[1]);
 
-        auto tit = tmap.find(nump);
+        auto tit = nump >= 1 && nump <= 20 ? tmap.find(static_cast<int>(nump)) : tmap.end();
         if (tit != tmap.end())
-            detail::need_tokens(data, static_cast<std::size_t>(std::max(i_index + 1, pi0 + nump)),
-                                "Netgen");
-        std::int64_t index =
-            tit == tmap.end() ? 0 : std::strtoll(data[i_index].c_str(), nullptr, 10);
+            detail::need_tokens(
+                data, static_cast<std::size_t>(std::max<std::int64_t>(i_index + 1, pi0 + nump)),
+                "Netgen");
+        std::int64_t index = tit == tmap.end() ? 0 : netgen_integer(data[i_index]);
         if (tit == tmap.end())
             throw ReadError("Netgen: unsupported element with " + std::to_string(nump) + " nodes");
         const std::string& type = tit->second;
 
         std::vector<std::int64_t> pi(nump);
         for (int j = 0; j < nump; ++j)
-            pi[j] = std::strtoll(data[pi0 + j].c_str(), nullptr, 10);
+            pi[j] = netgen_integer(data[pi0 + j]);
 
         if (rBlocks.empty() || rBlocks.back().mType != type) {
             rBlocks.push_back(NetgenRawBlock{type, {}, {}});
         }
         rBlocks.back().mRows.push_back(std::move(pi));
         rBlocks.back().mIndex.push_back(index);
+        if (TwoLines && rSection == "edgesegmentsgi2") {
+            rC.NextReal(eof);
+            if (eof)
+                throw ReadError("Netgen: unexpected end of file in two-line edge data");
+        }
     }
 }
 
 }  // namespace
 
 Mesh read_netgen(const std::string& rPath) {
-    if (rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0)
-        throw ReadError("Netgen: gzip container handled by Python fallback");
-
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
-    LineCursor c(in);
+    std::string bytes;
+    auto unpacked = detail::make_classic_istringstream("");
+    const bool gzip = rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0;
+    if (gzip) {
+        const std::string compressed{std::istreambuf_iterator<char>(in),
+                                     std::istreambuf_iterator<char>()};
+        std::size_t pos = 0;
+        do {
+            std::size_t consumed = 0;
+            bytes += detail::zlib_inflate(std::string_view(compressed).substr(pos), 31, &consumed,
+                                          "Netgen");
+            pos += consumed;
+        } while (pos < compressed.size());
+        unpacked.str(bytes);
+    }
+    LineCursor c(gzip ? static_cast<std::istream&>(unpacked) : static_cast<std::istream&>(in));
 
     bool eof = false;
     std::string line = c.NextReal(eof);
@@ -107767,6 +109409,13 @@ Mesh read_netgen(const std::string& rPath) {
     std::vector<double> raw_points;  // flat, 3 per point
     std::int64_t num_points = 0;
     std::vector<NetgenRawBlock> blocks;
+    std::map<std::string, NDArray> fields;
+    bool two_lines = false;
+    const std::map<std::string, int> codims = {
+        {"materials", 0}, {"bcnames", 1}, {"cd2names", 2}, {"cd3names", 3}};
+    auto count = [&]() {
+        return detail::checked_count(netgen_integer(c.NextCount()), c.mBytes, "Netgen", "section");
+    };
 
     while (true) {
         line = c.NextReal(eof);
@@ -107780,9 +109429,8 @@ Mesh read_netgen(const std::string& rPath) {
             c.NextCount();  // value; ignored
         } else if (line == "points") {
             // A point row is at least a few bytes: bound the count by the file.
-            num_points = static_cast<std::int64_t>(
-                detail::checked_count(std::strtoll(c.NextCount().c_str(), nullptr, 10),
-                                      detail::file_bytes(rPath), "Netgen", "point"));
+            num_points = static_cast<std::int64_t>(detail::checked_count(
+                std::strtoll(c.NextCount().c_str(), nullptr, 10), c.mBytes, "Netgen", "point"));
             raw_points.resize(static_cast<std::size_t>(num_points) * 3, 0.0);
             for (std::int64_t i = 0; i < num_points; ++i) {
                 std::string pl = c.NextReal(eof);
@@ -107795,17 +109443,59 @@ Mesh read_netgen(const std::string& rPath) {
         } else if (line == "pointelements" || line == "edgesegments" || line == "edgesegmentsgi" ||
                    line == "surfaceelements" || line == "surfaceelementsgi" ||
                    line == "surfaceelementsuv" || line == "volumeelements") {
-            read_cells(c, line, blocks);
+            read_cells(c, line, blocks, two_lines);
         } else if (line == "edgesegmentsgi2") {
-            // Single-line variant (meshio's own output). The two-line variant
-            // is signalled by a "surf1 surf2 p1 p2" header, handled below.
-            read_cells(c, line, blocks);
+            read_cells(c, line, blocks, two_lines);
+        } else if (netgen_split_ws(line) ==
+                   std::vector<std::string>{"surf1", "surf2", "p1", "p2"}) {
+            two_lines = true;
+        } else if (codims.count(line)) {
+            const int edim = dimension - codims.at(line);
+            const std::size_t n = count();
+            for (std::size_t i = 0; i < n; ++i) {
+                if (c.Eof())
+                    throw ReadError("Netgen: unexpected EOF in name table");
+                const auto tokens = netgen_split_ws(c.mLines[c.mPos++]);
+                if (tokens.size() != 2)
+                    continue;  // an unnamed slot, as in the Python reference
+                NDArray data(DType::Int64, {2});
+                if (!detail::parse_int_token(tokens[0], data.As<std::int64_t>()[0]))
+                    throw ReadError("Netgen: invalid name-table index");
+                data.As<std::int64_t>()[1] = edim;
+                fields.insert_or_assign(tokens[1], std::move(data));
+            }
+        } else if (line == "identifications" || line == "identificationtypes") {
+            const std::string key = "netgen:" + line;
+            const std::size_t n = count();
+            const bool pairs = line == "identifications";
+            NDArray data(DType::Int64,
+                         pairs ? std::vector<std::size_t>{n, 3} : std::vector<std::size_t>{1, n});
+            if (n) {
+                for (std::size_t i = 0; i < (pairs ? n : 1); ++i) {
+                    const auto tokens = netgen_split_ws(c.NextReal(eof));
+                    const std::size_t width = pairs ? 3 : n;
+                    if (eof || tokens.size() != width)
+                        throw ReadError("Netgen: malformed periodic table");
+                    for (std::size_t j = 0; j < width; ++j)
+                        if (!detail::parse_int_token(tokens[j],
+                                                     data.As<std::int64_t>()[i * width + j]))
+                            throw ReadError("Netgen: invalid periodic-table integer");
+                }
+            }
+            fields.insert_or_assign(key, std::move(data));
+        } else if (line == "face_colours" || line == "singular_edge_left" ||
+                   line == "singular_edge_right" || line == "singular_face_inside" ||
+                   line == "singular_face_outside" || line == "singular_points") {
+            const std::size_t n = count();
+            for (std::size_t i = 0; i < n; ++i) {
+                if (c.Eof())
+                    throw ReadError("Netgen: unexpected EOF in auxiliary section");
+                ++c.mPos;
+            }
         } else if (line == "endmesh") {
             break;
         } else {
-            // identifications, materials/bcnames/cd*names, face_colours,
-            // singular_*, the two-line edgesegmentsgi2 header, etc.
-            throw ReadError("Netgen: token '" + line + "' handled by Python fallback");
+            throw ReadError("Netgen: unknown token '" + line + "'");
         }
     }
 
@@ -107836,6 +109526,8 @@ Mesh read_netgen(const std::string& rPath) {
         index_blocks.push_back(std::move(idx));
     }
     mesh.AddCellData("netgen:index", std::move(index_blocks));
+    for (auto& [name, data] : fields)
+        mesh.AddFieldData(name, std::move(data));
 
     return mesh;
 }
@@ -107886,9 +109578,16 @@ void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
 }  // namespace
 
 void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt) {
-    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!f)
+    const bool gzip = rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0;
+    if (gzip && !detail::zlib_available())
+        throw WriteError("Netgen: gzip needs -DMESHIOPLUSPLUS_WITH_ZLIB=ON");
+    auto file = detail::make_classic_ofstream();
+    auto buffer = detail::make_classic_ostringstream();
+    if (!gzip)
+        file.open(rPath, std::ios::binary);
+    if (!gzip && !file)
         throw WriteError("Could not open file for writing: " + rPath);
+    std::ostream& f = gzip ? static_cast<std::ostream&>(buffer) : static_cast<std::ostream&>(file);
 
     const NDArray& points = rMesh.Points();
     const int dimension = points.Shape().size() >= 2 ? static_cast<int>(points.Shape()[1]) : 3;
@@ -107956,7 +109655,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
     for (std::size_t i = 0; i < npts; ++i) {
         for (int j = 0; j < 3; ++j) {
             double v = (j < dimension) ? detail::read_double(points, i * dimension + j) : 0.0;
-            std::snprintf(buf, sizeof(buf), fmt.c_str(), v);
+            detail::snprintf_c(buf, sizeof(buf), fmt.c_str(), v);
             f << buf << (j == 2 ? '\n' : ' ');
         }
     }
@@ -107967,7 +109666,77 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
         if (topo_dim(rMesh.Cells(ci).Type()) == 0)
             write_block(f, rMesh.Cells(ci), index_for(ci));
 
+    for (const char* key : {"netgen:identifications", "netgen:identificationtypes"}) {
+        if (!rMesh.HasFieldData(key))
+            continue;
+        const NDArray& data = rMesh.FieldData(key);
+        const bool pairs = std::string(key) == "netgen:identifications";
+        if (pairs && (data.Ndim() != 2 || data.Shape()[1] != 3))
+            throw WriteError("Netgen: identifications must have shape (n,3)");
+        const std::size_t n = pairs ? data.Shape()[0] : data.Size();
+        f << '\n' << (pairs ? "identifications" : "identificationtypes") << '\n' << n << '\n';
+        for (std::size_t i = 0; i < data.Size(); ++i)
+            f << detail::read_int(data, i) << ((pairs ? (i % 3 == 2) : (i + 1 == n)) ? '\n' : ' ');
+    }
+    const char* codim_names[] = {"materials", "bcnames", "cd2names", "cd3names"};
+    for (int codim = 0; codim <= dimension; ++codim) {
+        std::map<std::int64_t, std::string> names;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            if (name == "netgen:identifications" || name == "netgen:identificationtypes")
+                continue;
+            const NDArray& data = rMesh.FieldData(name);
+            if (data.Size() != 2)
+                throw WriteError("Netgen: name-table field '" + name +
+                                 "' must hold [id, dimension]");
+            if (detail::read_int(data, 1) == dimension - codim)
+                names[detail::read_int(data, 0)] = name;
+        }
+        if (names.empty()) {
+            for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+                if (topo_dim(rMesh.Cells(ci).Type()) != dimension - codim)
+                    continue;
+                const NDArray* idx = index_for(ci);
+                if (idx)
+                    for (std::size_t i = 0; i < idx->Size(); ++i) {
+                        const auto id = detail::read_int(*idx, i);
+                        names[id] = "cd" + std::to_string(codim) + "_" + std::to_string(id);
+                    }
+            }
+        }
+        if (names.empty())
+            continue;
+        const std::int64_t max_id = names.rbegin()->first;
+        if (max_id > 10000000)
+            throw WriteError("Netgen: name-table id exceeds the 10000000-entry budget");
+        f << '\n' << codim_names[codim] << '\n' << max_id << '\n';
+        for (std::int64_t id = 1; id <= max_id; ++id) {
+            const auto it = names.find(id);
+            f << id << ' ' << (it == names.end() ? "" : it->second) << '\n';
+        }
+    }
     f << "\nendmesh\n";
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    if (gzip) {
+        const std::string text = buffer.str();
+        gzFile out = gzopen(rPath.c_str(), "wb");
+        if (!out)
+            throw WriteError("Netgen: could not open gzip output " + rPath);
+        bool ok = true;
+        for (std::size_t pos = 0; pos < text.size();) {
+            const unsigned n =
+                static_cast<unsigned>(std::min<std::size_t>(text.size() - pos, 1 << 20));
+            if (gzwrite(out, text.data() + pos, n) != static_cast<int>(n)) {
+                ok = false;
+                break;
+            }
+            pos += n;
+        }
+        if (gzclose(out) != Z_OK || !ok)
+            throw WriteError("Netgen: failed writing gzip output " + rPath);
+    }
+#endif
+    if (!f)
+        throw WriteError("Netgen: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus
@@ -125543,18 +127312,11 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/unv.cpp =====
 // ===== begin src/cpp/src/formats/vti.cpp =====
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <fstream>
-#include <algorithm>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
 
 // Project includes
 
@@ -125566,139 +127328,6 @@ using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
 
-// Parse a whitespace-separated run of N numbers from an XML attribute. VTK's own
-// files use plain spaces; being liberal here costs nothing and a mis-parse would
-// silently relocate the whole grid.
-template <class T>
-bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-// The framing every ImageData path needs, resolved once so the mesh reader and
-// the metadata reader cannot disagree about which files they accept.
-struct vti_header {
-    pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
-    detail::LatticeSpec mSpec;
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vti_header vti_parse_header(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "ImageData")
-        throw ReadError("Expected type ImageData");
-
-    vti_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTI not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTI compressor '" + compressor + "'");
-    // Fail early and actionably when the file needs a codec this build lacks.
-    detail::vtk_codec_require_read(h.mCodec);
-
-    const std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
-    if (root.child("AppendedData"))
-        throw ReadError("appended VTI data not supported by the C++ reader");
-
-    pugi::xml_node grid = root.child("ImageData");
-    if (!grid)
-        throw ReadError("No ImageData found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vti_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("ImageData has no readable WholeExtent");
-    double origin[3] = {0.0, 0.0, 0.0};
-    double spacing[3] = {1.0, 1.0, 1.0};
-    if (grid.attribute("Origin"))
-        vti_parse_n(grid.attribute("Origin").as_string(), origin, 3);
-    if (grid.attribute("Spacing"))
-        vti_parse_n(grid.attribute("Spacing").as_string(), spacing, 3);
-    if (grid.attribute("Direction")) {
-        // A non-identity direction matrix rotates the lattice, which an
-        // axis-aligned hexahedron grid cannot express without baking the
-        // rotation into the coordinates -- a different mesh from the one the
-        // file describes. Refuse rather than silently drop the rotation.
-        double dir[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        if (vti_parse_n(grid.attribute("Direction").as_string(), dir, 9)) {
-            const double id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-            for (std::size_t i = 0; i < 9; ++i)
-                if (dir[i] != id[i])
-                    throw ReadError(
-                        "VTI with a non-identity Direction is not supported by the "
-                        "C++ reader");
-        }
-    }
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTI not supported by the C++ reader");
-    // The piece's own extent may legally be a sub-box of the whole extent; the
-    // arrays are then sized to the PIECE, and reading them against the whole
-    // extent would be silently misaligned. One piece covering everything is what
-    // every writer emits, so decline the rest by name.
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vti_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTI Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTI WholeExtent is inverted on axis " + std::to_string(k));
-        h.mSpec.mDims[k] = n;
-        // The extent may start away from zero; the point at extent index i sits
-        // at Origin + i * Spacing, so the mesh's own lo corner is offset by the
-        // extent's start. Dropping that offset would translate the whole grid.
-        h.mSpec.mOrigin[k] = origin[k] + static_cast<double>(whole[2 * k]) * spacing[k];
-        h.mSpec.mSpacing[k] = spacing[k];
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mSpec.mDims[0] + 1) * (h.mSpec.mDims[1] + 1) *
-                                            (h.mSpec.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(detail::lattice_num_cells(h.mSpec));
-    return h;
-}
-
-NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
-                            int& rNumComponents) {
-    const std::string fmt = rDa.attribute("format").as_string("ascii");
-    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTI '" + fmt + "' data is not supported by the C++ reader");
-}
-
 // One geometry attribute value. `%.17g` rather than the stream's default six
 // significant digits, which would lose ~10 digits of a real origin -- a grid
 // placed 1e-7 off its own points, which nothing downstream would flag. 17 is the
@@ -125708,16 +127337,6 @@ std::string vti_num(double Value) {
     char buf[40];
     detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
     return buf;
-}
-
-std::vector<std::string> vti_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    // The uniform mesh API hands back sorted names; match it so a summary and a
-    // real read report data arrays in the same order.
-    std::sort(names.begin(), names.end());
-    return names;
 }
 
 }  // namespace
@@ -125825,93 +127444,11 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "ImageData",
-                          "lzma-compressed VTI not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
-
-    const vti_header h = vti_parse_header(doc);
-
-    // The extent is expanded into explicit points and hexahedra through the same
-    // helper `grid()` and `voxelize()` use, so a .vti read and a grid() call of
-    // the same shape produce byte-identical meshes.
-    Mesh mesh = detail::lattice_build_mesh(h.mSpec);
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTI point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTI cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;  // no cell block to attach it to
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "ImageData", "VTI");
 }
 
 MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
-    // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
-    // metadata path this decodes NOTHING at all: the extent attribute alone
-    // gives both counts.
-    detail::vtk_preflight(rPath, "ImageData",
-                          "lzma-compressed VTI not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
-
-    const vti_header h = vti_parse_header(doc);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vti_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vti_array_names(h.mPiece, "CellData");
-
-    // The bounding box IS the extent here, so unlike every other native metadata
-    // path this one can report it for free rather than declining.
-    meta.mHasBBox = true;
-    for (std::size_t k = 0; k < 3; ++k) {
-        meta.mBBoxMin[k] = h.mSpec.mOrigin[k];
-        meta.mBBoxMax[k] =
-            h.mSpec.mOrigin[k] + static_cast<double>(h.mSpec.mDims[k]) * h.mSpec.mSpacing[k];
-    }
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "ImageData", "VTI");
 }
 
 }  // namespace meshioplusplus
@@ -126283,6 +127820,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 // ===== end src/cpp/src/formats/vtk.cpp =====
 // ===== begin src/cpp/src/formats/vtk_read.cpp =====
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -126308,21 +127846,21 @@ DType dtype_from_vtk_token(std::string t) {
         return DType::Float32;
     if (t == "double")
         return DType::Float64;
-    if (t == "int" || t == "vtktypeint64" || t == "long")
+    if (t == "vtktypeint64" || t == "long")
         return DType::Int64;
     if (t == "vtktypeint8" || t == "char")
         return DType::Int8;
     if (t == "vtktypeint16" || t == "short")
         return DType::Int16;
-    if (t == "vtktypeint32")
+    if (t == "vtktypeint32" || t == "int")
         return DType::Int32;
     if (t == "vtktypeuint8" || t == "unsigned_char")
         return DType::UInt8;
-    if (t == "vtktypeuint16")
+    if (t == "vtktypeuint16" || t == "unsigned_short")
         return DType::UInt16;
-    if (t == "vtktypeuint32")
+    if (t == "vtktypeuint32" || t == "unsigned_int")
         return DType::UInt32;
-    if (t == "vtktypeuint64")
+    if (t == "vtktypeuint64" || t == "unsigned_long")
         return DType::UInt64;
     throw ReadError("VTK data type '" + t + "' not supported by the C++ reader");
 }
@@ -126471,7 +128009,7 @@ std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
 
 }  // namespace
 
-Mesh read_vtk(const std::string& rPath) {
+Mesh read_vtk(const std::string& rPath) try {
     // Mapped where that pays, copied otherwise. Function-local: every parsed
     // value is copied into owning mesh storage, so nothing in the returned Mesh
     // points back into this buffer.
@@ -126479,6 +128017,8 @@ Mesh read_vtk(const std::string& rPath) {
     VtkCursor cur(source.View());
 
     std::string header = cur.ReadLine();
+    if (header.rfind("# vtk DataFile Version", 0) != 0)
+        throw ReadError("Illegal VTK header");
     const bool is_v5 = header.find("Version 5") != std::string::npos;
     cur.ReadLine();  // title
     std::string dtype_line = vtk_upper(cur.ReadLine());
@@ -126499,6 +128039,32 @@ Mesh read_vtk(const std::string& rPath) {
     bool conn_owned = false;  // conn_nd owns the int64 connectivity (VTK 5.1)
     std::unordered_map<std::string, NDArray> cell_data_raw;
     std::string active;  // POINT_DATA or CELL_DATA
+    std::string dataset;
+    std::array<std::int64_t, 3> dims{};
+    std::array<double, 3> origin{}, spacing{};
+    std::array<NDArray, 3> axes;
+    bool have_dims = false, have_origin = false, have_spacing = false;
+    std::size_t active_count = 0;
+    std::size_t declared_points = 0, declared_cells = 0;
+    bool have_point_data = false, have_cell_data = false;
+    auto parse_attribute = [&]<class T>(const std::vector<std::string>& rTokens,
+                                        std::array<T, 3>& rValues) {
+        detail::need_tokens(rTokens, 4, "VTK");
+        for (std::size_t k = 0; k < 3; ++k) {
+            detail::TextStream in(rTokens[k + 1]);
+            std::string extra;
+            if (!(in >> rValues[k]) || (in >> extra))
+                throw ReadError("VTK: malformed geometry attribute");
+        }
+    };
+    auto add_array = [&](const std::string& rName, NDArray&& rArr) {
+        if (active == "POINT_DATA")
+            mesh.AddPointData(rName, std::move(rArr));
+        else if (active == "CELL_DATA")
+            cell_data_raw.insert_or_assign(rName, std::move(rArr));
+        else
+            mesh.AddFieldData(rName, std::move(rArr));
+    };
 
     while (!cur.Eof()) {
         std::string line = cur.ReadLine();
@@ -126510,8 +128076,29 @@ Mesh read_vtk(const std::string& rPath) {
         std::string section = vtk_upper(tok[0]);
 
         if (section == "DATASET") {
-            if (tok.size() < 2 || vtk_upper(tok[1]) != "UNSTRUCTURED_GRID")
-                throw ReadError("C++ VTK reader only handles UNSTRUCTURED_GRID");
+            detail::need_tokens(tok, 2, "VTK");
+            dataset = vtk_upper(tok[1]);
+            if (dataset != "UNSTRUCTURED_GRID" && dataset != "STRUCTURED_POINTS" &&
+                dataset != "STRUCTURED_GRID" && dataset != "RECTILINEAR_GRID")
+                throw ReadError("VTK: unsupported DATASET '" + dataset + "'");
+        } else if (section == "DIMENSIONS") {
+            parse_attribute(tok, dims);
+            for (const auto d : dims)
+                if (d < 1)
+                    throw ReadError("VTK: DIMENSIONS must be positive");
+            have_dims = true;
+        } else if (section == "ORIGIN") {
+            parse_attribute(tok, origin);
+            have_origin = true;
+        } else if (section == "SPACING" || section == "ASPECT_RATIO") {
+            parse_attribute(tok, spacing);
+            have_spacing = true;
+        } else if (section == "X_COORDINATES" || section == "Y_COORDINATES" ||
+                   section == "Z_COORDINATES") {
+            detail::need_tokens(tok, 3, "VTK");
+            const auto axis = section[0] == 'X' ? 0 : section[0] == 'Y' ? 1 : 2;
+            axes[axis] =
+                cur.ReadValues(dtype_from_vtk_token(tok[2]), std::stoull(tok[1]), is_ascii);
         } else if (section == "POINTS") {
             detail::need_tokens(tok, 3, "VTK");
             std::size_t n = std::stoull(tok[1]);
@@ -126583,9 +128170,49 @@ Mesh read_vtk(const std::string& rPath) {
             DType dt = is_ascii ? DType::Int64 : DType::Int32;
             types = vtk_to_int64(cur.ReadValues(dt, n, is_ascii));
         } else if (section == "POINT_DATA") {
+            detail::need_tokens(tok, 2, "VTK");
+            active_count = std::stoull(tok[1]);
+            declared_points = active_count;
+            have_point_data = true;
             active = "POINT_DATA";
         } else if (section == "CELL_DATA") {
+            detail::need_tokens(tok, 2, "VTK");
+            active_count = std::stoull(tok[1]);
+            declared_cells = active_count;
+            have_cell_data = true;
             active = "CELL_DATA";
+        } else if (section == "SCALARS" || section == "VECTORS" || section == "TENSORS" ||
+                   section == "NORMALS" || section == "TEXTURE_COORDINATES") {
+            detail::need_tokens(tok, section == "TEXTURE_COORDINATES" ? 4 : 3, "VTK");
+            std::size_t components = section == "TENSORS" ? 9
+                                     : section == "SCALARS"
+                                         ? (tok.size() > 3 ? std::stoull(tok[3]) : 1)
+                                         : 3;
+            const DType dt = dtype_from_vtk_token(tok[section == "TEXTURE_COORDINATES" ? 3 : 2]);
+            if (section == "TEXTURE_COORDINATES")
+                components = std::stoull(tok[2]);
+            if (active.empty() || components == 0 ||
+                active_count > std::numeric_limits<std::size_t>::max() / components)
+                throw ReadError("VTK: invalid attribute count");
+            if (section == "SCALARS") {
+                const auto lookup = split(cur.ReadLine());
+                if (lookup.empty() || vtk_upper(lookup[0]) != "LOOKUP_TABLE")
+                    throw ReadError("VTK: SCALARS requires LOOKUP_TABLE");
+            }
+            auto arr = cur.ReadValues(dt, active_count * components, is_ascii);
+            if (section == "TENSORS")
+                arr.Reshape({active_count, 3, 3});
+            else
+                arr.Reshape({active_count, components});
+            add_array(tok[1], std::move(arr));
+        } else if (section == "COLOR_SCALARS" || section == "LOOKUP_TABLE") {
+            detail::need_tokens(tok, 3, "VTK");
+            const std::size_t count =
+                section == "COLOR_SCALARS" ? active_count : std::stoull(tok[2]);
+            const std::size_t components = section == "COLOR_SCALARS" ? std::stoull(tok[2]) : 4;
+            if (components == 0 || count > std::numeric_limits<std::size_t>::max() / components)
+                throw ReadError("VTK: invalid color array count");
+            cur.ReadValues(is_ascii ? DType::Float32 : DType::UInt8, count * components, is_ascii);
         } else if (section == "FIELD") {
             detail::need_tokens(tok, 3, "VTK");
             std::size_t k = std::stoull(tok[2]);
@@ -126613,10 +128240,7 @@ Mesh read_vtk(const std::string& rPath) {
                 NDArray arr = cur.ReadValues(dt, ncomp * ntuples, is_ascii);
                 if (ncomp != 1)
                     arr.Reshape({ntuples, ncomp});
-                if (active == "POINT_DATA")
-                    mesh.AddPointData(name, std::move(arr));
-                else
-                    cell_data_raw.emplace(name, std::move(arr));
+                add_array(name, std::move(arr));
             }
         } else if (section == "METADATA") {
             while (true) {
@@ -126632,6 +128256,82 @@ Mesh read_vtk(const std::string& rPath) {
             throw ReadError("VTK section '" + section + "' not supported by the C++ reader");
         }
     }
+
+    if (dataset.empty())
+        throw ReadError("VTK: missing DATASET");
+    if (dataset != "UNSTRUCTURED_GRID") {
+        if (!have_dims)
+            throw ReadError("VTK: missing DIMENSIONS");
+        if (!conn.empty() || !offsets.empty() || !types.empty() || conn_owned)
+            throw ReadError("VTK: structured datasets must not declare CELLS/CELL_TYPES");
+        std::size_t count = 1;
+        for (const auto d : dims) {
+            if (static_cast<std::uint64_t>(d) > std::numeric_limits<std::size_t>::max() / count)
+                throw ReadError("VTK: dimensions overflow");
+            count *= d;
+        }
+        if (dataset == "STRUCTURED_POINTS" || dataset == "RECTILINEAR_GRID") {
+            if (dataset == "STRUCTURED_POINTS" && (!have_origin || !have_spacing))
+                throw ReadError("VTK: structured points requires ORIGIN and SPACING/ASPECT_RATIO");
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                if (dataset == "RECTILINEAR_GRID" &&
+                    axes[axis].Size() != static_cast<std::size_t>(dims[axis]))
+                    throw ReadError("VTK: coordinate count differs from DIMENSIONS");
+            if (count > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) /
+                            (3 * sizeof(double)))
+                throw ReadError("VTK: structured point allocation overflows");
+            auto pts = NDArray::Uninit(
+                dataset == "RECTILINEAR_GRID" ? axes[0].Dtype() : DType::Float64, {count, 3});
+            auto fill_point = [&](std::size_t row) {
+                const std::array<std::int64_t, 3> index{
+                    {static_cast<std::int64_t>(row % dims[0]),
+                     static_cast<std::int64_t>((row / dims[0]) % dims[1]),
+                     static_cast<std::int64_t>(row / dims[0] / dims[1])}};
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    double value;
+                    if (dataset == "STRUCTURED_POINTS") {
+                        // Match the Python reference's linspace endpoints.
+                        const double last =
+                            origin[axis] + static_cast<double>(dims[axis] - 1) * spacing[axis];
+                        const double step = dims[axis] > 1 ? (last - origin[axis]) /
+                                                                 static_cast<double>(dims[axis] - 1)
+                                                           : 0;
+                        value = index[axis] == dims[axis] - 1
+                                    ? last
+                                    : origin[axis] + static_cast<double>(index[axis]) * step;
+                    } else {
+                        value = detail::read_double(axes[axis], index[axis]);
+                    }
+                    const auto integer = detail::is_float_dtype(pts.Dtype())
+                                             ? 0
+                                             : detail::checked_integer<std::int64_t>(value, "VTK");
+                    store(pts, row * 3 + axis, value, integer);
+                }
+            };
+            if (detail::is_float_dtype(pts.Dtype()))
+                parallel_for_bw(count, fill_point);
+            else
+                // Checked integer conversion may throw: keep it outside workers.
+                for (std::size_t row = 0; row < count; ++row)
+                    fill_point(row);
+            mesh.AssignPoints(std::move(pts));
+        }
+        if (mesh.NumPoints() != count)
+            throw ReadError("VTK: POINTS count differs from DIMENSIONS");
+        detail::vtk_structured_cells(dims, conn, offsets, types);
+        conn_ptr = conn.data();
+    }
+    if ((have_point_data && declared_points != mesh.NumPoints()) ||
+        (have_cell_data && declared_cells != types.size()))
+        throw ReadError("VTK: declared data count differs from geometry");
+    for (const auto& name : mesh.PointDataNames()) {
+        const auto& arr = mesh.PointData(name);
+        if (arr.Shape().empty() || arr.Shape()[0] != mesh.NumPoints())
+            throw ReadError("VTK: point data count differs from geometry");
+    }
+    for (const auto& [name, arr] : cell_data_raw)
+        if (arr.Shape().empty() || arr.Shape()[0] != types.size())
+            throw ReadError("VTK: cell data count differs from geometry");
 
     // Fast path (zero copy): a single cell type spanning all cells, non-special,
     // with an identity VTK->meshio node order and regular end-offsets
@@ -126675,6 +128375,10 @@ Mesh read_vtk(const std::string& rPath) {
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
     }
     return mesh;
+} catch (const ReadError&) {
+    throw;
+} catch (const std::exception& rError) {
+    throw ReadError(std::string("VTK: ") + rError.what());
 }
 
 }  // namespace meshioplusplus
@@ -129282,382 +130986,24 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtp.cpp =====
 // ===== begin src/cpp/src/formats/vtp_read.cpp =====
-#include <cstdint>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-// External includes
-
-// Project includes
 
 namespace meshioplusplus {
 
-namespace {
-
-using detail::vtu_to_int64;
-
-// The codec is resolved once from the root's compressor= attribute.
-NDArray vtp_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
-                            int& rNumComponents) {
-    std::string fmt = rDa.attribute("format").as_string("ascii");
-    DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
-}
-
-// One PolyData section's connectivity + VTK end-offsets.
-struct VtpPiece {
-    std::vector<std::int64_t> mConn;
-    std::vector<std::int64_t> mOffsets;
-    bool mPresent = false;
-};
-
-/**
- * @param offsets_only Skip the `connectivity` array. PolyData has no `types`
- *        array -- cell types are synthesized from each section's per-cell size
- *        -- so `offsets` alone (one value per cell) is enough to summarize a
- *        section, while `connectivity` is the bulk of the section's bytes.
- */
-VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec, std::size_t hsz,
-                          bool offsets_only = false) {
-    VtpPiece out;
-    if (!rSection)
-        return out;
-    out.mPresent = true;
-    for (pugi::xml_node da : rSection.children("DataArray")) {
-        std::string name = da.attribute("Name").as_string();
-        if (offsets_only && name != "offsets")
-            continue;
-        int nc = 0;
-        NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
-        if (name == "connectivity")
-            out.mConn = vtu_to_int64(arr);
-        else if (name == "offsets")
-            out.mOffsets = vtu_to_int64(arr);
-    }
-    return out;
-}
-
-/** @brief `<Piece>` plus the framing attributes; mirrors `vtu_parse_header`. */
-struct vtp_header {
-    pugi::xml_node mGrid;
-    pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
-    std::size_t mNumPoints = 0;
-};
-
-vtp_header vtp_parse_header(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "PolyData")
-        throw ReadError("Expected type PolyData");
-
-    vtp_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTP not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTP compressor '" + compressor + "'");
-    // Fail early and actionably when the file needs a codec this build lacks,
-    // rather than at the first array body.
-    detail::vtk_codec_require_read(h.mCodec);
-
-    std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
-    pugi::xml_node grid = root.child("PolyData");
-    if (!grid)
-        throw ReadError("No PolyData found");
-
-    // Appended data is not handled here -> let the Python reader take over.
-    if (grid.parent().child("AppendedData") || root.child("AppendedData"))
-        throw ReadError("appended VTP data not supported by the C++ reader");
-
-    h.mGrid = grid;
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    // A single piece is supported; multiple pieces -> Python reader.
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTP not supported by the C++ reader");
-
-    h.mNumPoints = static_cast<std::size_t>(h.mPiece.attribute("NumberOfPoints").as_ullong());
-    return h;
-}
-
-/** @brief `<DataArray>` `Name` attributes under @p pSection, sorted. */
-std::vector<std::string> vtp_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-/** @brief Whether a `<DataArray type=>` is one of the ten numeric types meshio++ holds. */
-bool vtp_is_numeric_type(const std::string& rType) {
-    return rType == "Float32" || rType == "Float64" || rType == "Int8" || rType == "Int16" ||
-           rType == "Int32" || rType == "Int64" || rType == "UInt8" || rType == "UInt16" ||
-           rType == "UInt32" || rType == "UInt64";
-}
-
-/**
- * @brief Read the `<FieldData>` arrays under @p rNode into `mesh.field_data`.
- *
- * Field data belongs to the dataset, not to a piece: VTK writes it on the
- * `<PolyData>` element, before the `<Piece>`, and also accepts it inside one, so the
- * reader looks at both (the piece's overriding the grid's, since `AddFieldData`
- * is insert-or-assign). A non-numeric array (`type="String"`, `"Bit"`) has no
- * meshio++ dtype: it is skipped with a warning rather than failing a read that
- * used to succeed by ignoring the whole section.
- */
-void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
-                         std::size_t HeaderSize, const ReadOptions& rOpts, bool WantData,
-                         std::vector<std::pair<std::string, NDArray>>& rOut) {
-    for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        // Region arrays are topology, not data (detail/region_field_data.hpp).
-        if (!detail::is_region_field_name(name) && (!WantData || !rOpts.WantsArray(name)))
-            continue;
-        if (!vtp_is_numeric_type(da.attribute("type").as_string())) {
-            log::warn(
-                "meshio++: VTP: skipping <FieldData> array '{}' of type '{}' (only numeric "
-                "arrays are read)",
-                name, da.attribute("type").as_string());
-            continue;
-        }
-        int nc = 0;
-        NDArray arr = vtp_read_data_array(da, Codec, HeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-        rOut.emplace_back(name, std::move(arr));
-    }
-}
-
-/**
- * @brief The field-data names a real read would return: the numeric arrays of the
- * grid's and the piece's `<FieldData>`, sorted and unique.
- *
- * Numeric only, like `vtp_read_field_data`, so a summary never names an array the
- * read skips.
- */
-std::vector<std::string> vtp_field_data_names(const vtp_header& rHeader) {
-    std::vector<std::string> names;
-    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
-        for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-            if (vtp_is_numeric_type(da.attribute("type").as_string()) &&
-                !detail::is_region_field_name(da.attribute("Name").as_string()))
-                names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
-}
-
-/**
- * @brief Synthesize `types`/`offsets` for the three PolyData sections.
- *
- * Factored out of `read_vtp` so the mesh and metadata paths derive cell types
- * from section sizes in exactly one place, and therefore cannot disagree.
- */
-void vtp_build_types(const VtpPiece& rSec, int kind, std::vector<std::int64_t>& rConn,
-                     std::vector<std::int64_t>& rOffsets, std::vector<std::int64_t>& rTypes) {
-    const std::int64_t conn_base = static_cast<std::int64_t>(rConn.size());
-    std::int64_t prev = 0;
-    for (std::int64_t end : rSec.mOffsets) {
-        const std::int64_t sz = end - prev;
-        prev = end;
-        std::int64_t vtk_type = 0;
-        if (kind == 0) {
-            if (sz != 1)
-                throw ReadError("poly-vertex VTP cells not supported by the C++ reader");
-            vtk_type = 1;  // VTK_VERTEX
-        } else if (kind == 1) {
-            if (sz != 2)
-                throw ReadError("poly-line VTP cells not supported by the C++ reader");
-            vtk_type = 3;  // VTK_LINE
-        } else {
-            vtk_type = sz == 3 ? 5 : sz == 4 ? 9 : 7;  // triangle / quad / polygon
-        }
-        rTypes.push_back(vtk_type);
-        rOffsets.push_back(conn_base + end);
-    }
-    rConn.insert(rConn.end(), rSec.mConn.begin(), rSec.mConn.end());
-}
-
-}  // namespace
-
 Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
-
-    const vtp_header h = vtp_parse_header(doc);
-    const pugi::xml_node piece = h.mPiece;
-    const detail::VtkCodec codec = h.mCodec;
-    const std::size_t hsz = h.mHeaderSize;
-    const std::size_t num_points = h.mNumPoints;
-    const bool want_data = rOpts.WantsAnyData();
-
-    Mesh mesh;
-    std::unordered_map<std::string, NDArray> cell_data_raw;
-
-    for (pugi::xml_node child : piece.children()) {
-        std::string tag = child.name();
-        if (tag == "Points") {
-            pugi::xml_node da = child.child("DataArray");
-            int nc = 0;
-            NDArray pts = vtp_read_data_array(da, codec, hsz, nc);
-            if (nc <= 0)
-                nc = 3;
-            pts.Reshape({num_points, static_cast<std::size_t>(nc)});
-            mesh.AssignPoints(std::move(pts));
-        } else if (tag == "PointData") {
-            if (!want_data)
-                continue;
-            for (pugi::xml_node da : child.children("DataArray")) {
-                int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                // Name is readable before the payload -- skipping is free.
-                if (!rOpts.WantsArray(name))
-                    continue;
-                NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
-                if (nc > 1)
-                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                mesh.AddPointData(name, std::move(arr));
-            }
-        } else if (tag == "CellData") {
-            if (!want_data)
-                continue;
-            for (pugi::xml_node da : child.children("DataArray")) {
-                int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                if (!rOpts.WantsArray(name))
-                    continue;
-                NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
-                if (nc > 1)
-                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                cell_data_raw.emplace(name, std::move(arr));
-            }
-        }
-    }
-
-    std::vector<std::pair<std::string, NDArray>> field_arrays;
-    vtp_read_field_data(h.mGrid, codec, hsz, rOpts, want_data, field_arrays);
-    vtp_read_field_data(piece, codec, hsz, rOpts, want_data, field_arrays);
-
-    VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
-    VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
-    VtpPiece polys = vtp_read_section(piece.child("Polys"), codec, hsz);
-    VtpPiece strips = vtp_read_section(piece.child("Strips"), codec, hsz);
-    if (!strips.mOffsets.empty())
-        throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
-
-    // Concatenate sections in VTK's canonical PolyData cell order (Verts,
-    // Lines, Polys), synthesizing a VTK type id per row so the shared
-    // reconstruction (detail/vtk_cells.hpp) can build the blocks and split
-    // cell_data.
-    std::vector<std::int64_t> conn, offsets, types;
-    vtp_build_types(verts, 0, conn, offsets, types);
-    vtp_build_types(lines, 1, conn, offsets, types);
-    vtp_build_types(polys, 2, conn, offsets, types);
-
-    detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
-    static const std::vector<std::int64_t> kNoFaceOffsets;
-    std::vector<std::int64_t> file_to_global;
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, nullptr, kNoFaceOffsets,
-                              mesh, &file_to_global);
-    detail::regions_from_field_arrays(mesh, field_arrays, &file_to_global, "vtp");
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "PolyData", "VTP");
 }
 
 MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
-    // See read_vtu_metadata: parse_minimal trims text conversions, but the
-    // saving that matters is skipping the array bodies below.
-    detail::vtk_preflight(rPath, "PolyData", "lzma-compressed VTP not supported by the C++ reader");
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
-
-    const vtp_header h = vtp_parse_header(doc);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;  // an attribute -- free
-
-    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
-    const int point_nc = points_da ? points_da.attribute("NumberOfComponents").as_int(0) : 0;
-    meta.mPointDim = point_nc > 0 ? static_cast<std::size_t>(point_nc) : 3;
-
-    // PolyData carries no `types` array; cell types follow from each section's
-    // per-cell size, so reading `offsets` alone suffices and the connectivity --
-    // the bulk of the bytes -- is never decoded.
-    const VtpPiece verts = vtp_read_section(h.mPiece.child("Verts"), h.mCodec, h.mHeaderSize,
-                                            /*offsets_only=*/true);
-    const VtpPiece lines = vtp_read_section(h.mPiece.child("Lines"), h.mCodec, h.mHeaderSize,
-                                            /*offsets_only=*/true);
-    const VtpPiece polys = vtp_read_section(h.mPiece.child("Polys"), h.mCodec, h.mHeaderSize,
-                                            /*offsets_only=*/true);
-    if (h.mPiece.child("Strips") &&
-        !vtp_read_section(h.mPiece.child("Strips"), h.mCodec, h.mHeaderSize,
-                          /*offsets_only=*/true)
-             .mOffsets.empty())
-        throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
-
-    std::vector<std::int64_t> conn, offsets, types;
-    vtp_build_types(verts, 0, conn, offsets, types);
-    vtp_build_types(lines, 1, conn, offsets, types);
-    vtp_build_types(polys, 2, conn, offsets, types);
-    meta.mCellBlocks = detail::summarize_cells(offsets, types);
-
-    meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
-    meta.mFieldDataNames = vtp_field_data_names(h);
-    {
-        std::vector<std::pair<std::string, std::size_t>> arrays;
-        for (const pugi::xml_node& rNode : {h.mGrid, h.mPiece})
-            for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
-                arrays.emplace_back(da.attribute("Name").as_string(),
-                                    da.attribute("NumberOfTuples").as_ullong(0));
-        meta.mRegions = detail::region_summaries_from_field_names(arrays);
-    }
-
-    // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
-    meta.mHasBBox = false;
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "PolyData", "VTP");
 }
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtp_read.cpp =====
 // ===== begin src/cpp/src/formats/vtr.cpp =====
-#include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
 
 // Project includes
 
@@ -129668,146 +131014,6 @@ namespace {
 using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
-
-template <class T>
-bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-struct vtr_header {
-    pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
-    std::array<std::int64_t, 3> mDims{{0, 0, 0}};
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vtr_header vtr_parse_header(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "RectilinearGrid")
-        throw ReadError("Expected type RectilinearGrid");
-
-    vtr_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTR not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTR compressor '" + compressor + "'");
-    detail::vtk_codec_require_read(h.mCodec);
-
-    const std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
-    if (root.child("AppendedData"))
-        throw ReadError("appended VTR data not supported by the C++ reader");
-
-    pugi::xml_node grid = root.child("RectilinearGrid");
-    if (!grid)
-        throw ReadError("No RectilinearGrid found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vtr_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("RectilinearGrid has no readable WholeExtent");
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTR not supported by the C++ reader");
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vtr_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTR Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTR WholeExtent is inverted on axis " + std::to_string(k));
-        h.mDims[k] = n;
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mDims[0] + 1) * (h.mDims[1] + 1) * (h.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(h.mDims[0] * h.mDims[1] * h.mDims[2]);
-    return h;
-}
-
-NDArray vtr_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
-                            int& rNumComponents) {
-    const std::string fmt = rDa.attribute("format").as_string("ascii");
-    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTR '" + fmt + "' data is not supported by the C++ reader");
-}
-
-std::vector<std::string> vtr_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-// One axis's coordinate array, read as Float64 regardless of its on-disk
-// dtype -- the tensor product below needs doubles to combine with the other
-// two axes, and VTK's own coordinate arrays are conventionally Float32/64.
-std::vector<double> vtr_read_axis(const pugi::xml_node& rCoordinates, const char* pName,
-                                  std::int64_t ExpectedCount, detail::VtkCodec codec,
-                                  std::size_t hsz) {
-    for (pugi::xml_node da : rCoordinates.children("DataArray")) {
-        if (std::string(da.attribute("Name").as_string()) != pName)
-            continue;
-        int nc = 0;
-        NDArray arr = vtr_read_data_array(da, codec, hsz, nc);
-        if (static_cast<std::int64_t>(arr.Size()) != ExpectedCount)
-            throw ReadError(std::string("VTR ") + pName + " has " + std::to_string(arr.Size()) +
-                            " entries, but WholeExtent needs " + std::to_string(ExpectedCount));
-        std::vector<double> out(arr.Size());
-        for (std::size_t i = 0; i < arr.Size(); ++i)
-            out[i] = detail::read_double(arr, i);
-        return out;
-    }
-    throw ReadError(std::string("VTR Coordinates has no '") + pName + "' DataArray");
-}
-
-void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
-                  std::int64_t* pOut) {
-    const std::int64_t base = (k * py + j) * px + i;
-    const std::int64_t top = base + px * py;
-    pOut[0] = base;
-    pOut[1] = base + 1;
-    pOut[2] = base + px + 1;
-    pOut[3] = base + px;
-    pOut[4] = top;
-    pOut[5] = top + 1;
-    pOut[6] = top + px + 1;
-    pOut[7] = top + px;
-}
 
 }  // namespace
 
@@ -129926,131 +131132,20 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "RectilinearGrid",
-                          "lzma-compressed VTR not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTR XML parse failed: ") + res.description());
-
-    const vtr_header h = vtr_parse_header(doc);
-
-    pugi::xml_node coords = h.mPiece.child("Coordinates");
-    if (!coords)
-        throw ReadError("VTR Piece has no Coordinates");
-    const std::vector<double> xs =
-        vtr_read_axis(coords, "x_coordinates", h.mDims[0] + 1, h.mCodec, h.mHeaderSize);
-    const std::vector<double> ys =
-        vtr_read_axis(coords, "y_coordinates", h.mDims[1] + 1, h.mCodec, h.mHeaderSize);
-    const std::vector<double> zs =
-        vtr_read_axis(coords, "z_coordinates", h.mDims[2] + 1, h.mCodec, h.mHeaderSize);
-
-    Mesh mesh;
-    {
-        NDArray pts = NDArray::Uninit(DType::Float64, {h.mNumPoints, std::size_t{3}});
-        double* dst = pts.As<double>();
-        const std::int64_t px = h.mDims[0] + 1, py = h.mDims[1] + 1, pz = h.mDims[2] + 1;
-        std::size_t p = 0;
-        for (std::int64_t k = 0; k < pz; ++k)
-            for (std::int64_t j = 0; j < py; ++j)
-                for (std::int64_t i = 0; i < px; ++i, ++p) {
-                    dst[p * 3 + 0] = xs[static_cast<std::size_t>(i)];
-                    dst[p * 3 + 1] = ys[static_cast<std::size_t>(j)];
-                    dst[p * 3 + 2] = zs[static_cast<std::size_t>(k)];
-                }
-        mesh.AssignPoints(std::move(pts));
-    }
-
-    if (h.mNumCells != 0) {
-        const std::int64_t px = h.mDims[0] + 1;
-        const std::int64_t py = h.mDims[1] + 1;
-        NDArray conn = NDArray::Uninit(DType::Int64, {h.mNumCells, std::size_t{8}});
-        std::int64_t* dst = conn.As<std::int64_t>();
-        std::size_t c = 0;
-        for (std::int64_t k = 0; k < h.mDims[2]; ++k)
-            for (std::int64_t j = 0; j < h.mDims[1]; ++j)
-                for (std::int64_t i = 0; i < h.mDims[0]; ++i, ++c)
-                    vtr_hex_conn(i, j, k, px, py, dst + c * 8);
-        mesh.AddCellBlock("hexahedron", std::move(conn));
-    }
-
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vtr_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTR point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vtr_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTR cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "RectilinearGrid", "VTR");
 }
 
 MeshMetadata read_vtr_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "RectilinearGrid",
-                          "lzma-compressed VTR not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTR XML parse failed: ") + res.description());
-
-    const vtr_header h = vtr_parse_header(doc);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vtr_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vtr_array_names(h.mPiece, "CellData");
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "RectilinearGrid", "VTR");
 }
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtr.cpp =====
 // ===== begin src/cpp/src/formats/vts.cpp =====
-#include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
-
-// External includes
 
 // Project includes
 
@@ -130061,134 +131156,6 @@ namespace {
 using detail::cols;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
-
-// Parse a whitespace-separated run of N numbers from an XML attribute.
-template <class T>
-bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
-    if (pText == nullptr)
-        return false;
-    detail::TextStream is(pText);
-    for (std::size_t i = 0; i < Count; ++i)
-        if (!(is >> pOut[i]))
-            return false;
-    return true;
-}
-
-// The framing every StructuredGrid path needs, resolved once so the mesh
-// reader and the metadata reader cannot disagree about which files they
-// accept. `mDims` are CELL counts per axis (as `LatticeSpec` uses them);
-// `mOrigin`/`mSpacing` are unused here (points are explicit) but the type is
-// shared with `.vti` for the writer's `lattice_from_mesh` call.
-struct vts_header {
-    pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
-    std::array<std::int64_t, 3> mDims{{0, 0, 0}};
-    std::size_t mNumPoints = 0;
-    std::size_t mNumCells = 0;
-};
-
-vts_header vts_parse_header(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("VTKFile");
-    if (!root)
-        throw ReadError("Expected tag 'VTKFile'");
-    if (std::string(root.attribute("type").as_string()) != "StructuredGrid")
-        throw ReadError("Expected type StructuredGrid");
-
-    vts_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTS not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTS compressor '" + compressor + "'");
-    detail::vtk_codec_require_read(h.mCodec);
-
-    const std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-
-    if (root.child("AppendedData"))
-        throw ReadError("appended VTS data not supported by the C++ reader");
-
-    pugi::xml_node grid = root.child("StructuredGrid");
-    if (!grid)
-        throw ReadError("No StructuredGrid found");
-
-    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
-    if (!vts_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
-        throw ReadError("StructuredGrid has no readable WholeExtent");
-
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
-        throw ReadError("No Piece found");
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTS not supported by the C++ reader");
-    if (h.mPiece.attribute("Extent")) {
-        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
-        if (vts_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
-            for (std::size_t i = 0; i < 6; ++i)
-                if (piece[i] != whole[i])
-                    throw ReadError(
-                        "VTS Piece Extent differs from WholeExtent; a partial piece "
-                        "is not supported by the C++ reader");
-    }
-
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
-        if (n < 0)
-            throw ReadError("VTS WholeExtent is inverted on axis " + std::to_string(k));
-        h.mDims[k] = n;
-    }
-    h.mNumPoints = static_cast<std::size_t>((h.mDims[0] + 1) * (h.mDims[1] + 1) * (h.mDims[2] + 1));
-    h.mNumCells = static_cast<std::size_t>(h.mDims[0] * h.mDims[1] * h.mDims[2]);
-    return h;
-}
-
-NDArray vts_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
-                            int& rNumComponents) {
-    const std::string fmt = rDa.attribute("format").as_string("ascii");
-    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
-    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt, codec,
-                                           hsz);
-    throw ReadError("VTS '" + fmt + "' data is not supported by the C++ reader");
-}
-
-std::vector<std::string> vts_array_names(const pugi::xml_node& rPiece, const char* pSection) {
-    std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-// hexahedron connectivity for cell (i, j, k), the same index formula
-// `detail/grid_lattice.hpp` uses -- points come from the file, not from a
-// recomputed origin/spacing, but the CONNECTIVITY formula is identical
-// regardless of where the points came from.
-void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px, std::int64_t py,
-                  std::int64_t* pOut) {
-    const std::int64_t base = (k * py + j) * px + i;
-    const std::int64_t top = base + px * py;
-    pOut[0] = base;
-    pOut[1] = base + 1;
-    pOut[2] = base + px + 1;
-    pOut[3] = base + px;
-    pOut[4] = top;
-    pOut[5] = top + 1;
-    pOut[6] = top + px + 1;
-    pOut[7] = top + px;
-}
 
 }  // namespace
 
@@ -130312,109 +131279,17 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "StructuredGrid",
-                          "lzma-compressed VTS not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTS XML parse failed: ") + res.description());
-
-    const vts_header h = vts_parse_header(doc);
-
-    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
-    if (!points_da)
-        throw ReadError("VTS Piece has no Points/DataArray");
-    int pnc = 0;
-    NDArray pts = vts_read_data_array(points_da, h.mCodec, h.mHeaderSize, pnc);
-    if (pnc > 1)
-        pts.Reshape({pts.Size() / static_cast<std::size_t>(pnc), static_cast<std::size_t>(pnc)});
-    if (detail::rows(pts) != h.mNumPoints)
-        throw ReadError("VTS Points has " + std::to_string(detail::rows(pts)) +
-                        " rows, but WholeExtent has " + std::to_string(h.mNumPoints) + " points");
-
-    Mesh mesh;
-    mesh.AssignPoints(std::move(pts));
-
-    if (h.mNumCells != 0) {
-        const std::int64_t px = h.mDims[0] + 1;
-        const std::int64_t py = h.mDims[1] + 1;
-        NDArray conn = NDArray::Uninit(DType::Int64, {h.mNumCells, std::size_t{8}});
-        std::int64_t* dst = conn.As<std::int64_t>();
-        std::size_t c = 0;
-        for (std::int64_t k = 0; k < h.mDims[2]; ++k)
-            for (std::int64_t j = 0; j < h.mDims[1]; ++j)
-                for (std::int64_t i = 0; i < h.mDims[0]; ++i, ++c)
-                    vts_hex_conn(i, j, k, px, py, dst + c * 8);
-        mesh.AddCellBlock("hexahedron", std::move(conn));
-    }
-
-    if (!rOpts.WantsAnyData())
-        return mesh;
-
-    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vts_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
-            throw ReadError("VTS point array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumPoints) + " points");
-        mesh.AddPointData(name, std::move(arr));
-    }
-    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (!rOpts.WantsArray(name))
-            continue;
-        int nc = 0;
-        NDArray arr = vts_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
-        if (nc > 1)
-            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
-        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
-            throw ReadError("VTS cell array '" + name + "' has " +
-                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
-                            std::to_string(h.mNumCells) + " cells");
-        if (h.mNumCells == 0)
-            continue;
-        std::vector<NDArray> blocks;
-        blocks.push_back(std::move(arr));
-        mesh.AddCellData(name, std::move(blocks));
-    }
-    return mesh;
+    return detail::vtk_xml_read_pieces(rPath, rOpts, "StructuredGrid", "VTS");
 }
 
 MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
-    detail::vtk_preflight(rPath, "StructuredGrid",
-                          "lzma-compressed VTS not supported by the C++ reader");
-    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTS XML parse failed: ") + res.description());
-
-    const vts_header h = vts_parse_header(doc);
-
-    MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;
-    meta.mPointDim = 3;
-    if (h.mNumCells != 0) {
-        CellBlockInfo info;
-        info.mType = "hexahedron";
-        info.mNumCells = h.mNumCells;
-        info.mNodesPerCell = 8;
-        info.mRagged = false;
-        meta.mCellBlocks.push_back(std::move(info));
-    }
-    meta.mPointDataNames = vts_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vts_array_names(h.mPiece, "CellData");
-    return meta;
+    return detail::vtk_xml_pieces_metadata(rPath, "StructuredGrid", "VTS");
 }
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vts.cpp =====
 // ===== begin src/cpp/src/formats/vtu.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -130500,7 +131375,13 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             log::warn("vtu: field_data '{}' uses the region naming convention; not written", name);
             continue;
         }
-        field_arrays.emplace_back(name, &rMesh.FieldData(name));
+        const auto& array = rMesh.FieldData(name);
+        const auto& shape = array.Shape();
+        if (shape.size() > 1 && std::find(shape.begin() + 1, shape.end(), 0) != shape.end()) {
+            log::warn("vtu: field_data '{}' has zero components; not written", name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &array);
     }
     for (const auto& [name, arr] : region_arrays)
         field_arrays.emplace_back(name, &arr);
@@ -130763,6 +131644,7 @@ void write_vtu_appended(const std::string& rPath, const Mesh& rMesh, detail::Vtk
 // ===== begin src/cpp/src/formats/vtu_read.cpp =====
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -130780,6 +131662,7 @@ void write_vtu_appended(const std::string& rPath, const Mesh& rMesh, detail::Vtk
 
 namespace meshioplusplus {
 
+namespace detail {
 namespace {
 
 using detail::vtu_to_int64;
@@ -130929,13 +131812,17 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
             static_cast<std::size_t>(k + 1 == sizes.size() ? last_block : max_block);
         std::vector<unsigned char> dec =
             detail::vtk_codec_decompress_block(Codec, comp.data(), comp.size(), expected);
-        out.insert(out.end(), dec.begin(), dec.begin() + std::min(dec.size(), expected));
+        if (dec.size() != expected)
+            throw ReadError("VTK XML: decompressed block size differs from its header");
+        out.insert(out.end(), dec.begin(), dec.end());
     }
     return out;
 }
 
 NDArray vtu_array_from_bytes(const std::vector<unsigned char>& rBytes, DType Dt, bool BigEndian) {
     const std::size_t isz = dtype_size(Dt);
+    if (!isz || rBytes.size() % isz != 0)
+        throw ReadError("VTK XML: array byte count is not a multiple of its element size");
     const std::size_t n = isz ? rBytes.size() / isz : 0;
     NDArray a(Dt, {n});
     if (n)
@@ -130948,60 +131835,69 @@ NDArray vtu_array_from_bytes(const std::vector<unsigned char>& rBytes, DType Dt,
     return a;
 }
 
-/** @brief How the arrays of one file are framed: codec, header width, byte
- * order and, when present, the `<AppendedData>` payload. */
-struct VtuContext {
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
-    bool mBigEndian = false;
-    // Raw appended payload (bytes after the opening '_'), or base64 text.
-    const unsigned char* mRaw = nullptr;
-    std::size_t mRawLen = 0;
-    const char* mBase64 = nullptr;
-    std::size_t mBase64Len = 0;
-};
+}  // namespace
 
 NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
                             int& rNumComponents) {
     std::string fmt = rDa.attribute("format").as_string("ascii");
     DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
     rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+    if (rDa.attribute("NumberOfComponents") && rNumComponents <= 0)
+        throw ReadError("VTK XML: NumberOfComponents must be positive");
 
-    if (fmt == "ascii")
-        return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary") {
-        if (!rCtx.mBigEndian)
-            return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt,
-                                               rCtx.mCodec, rCtx.mHeaderSize);
-        const char* text = rDa.text().get();
-        VtuByteSource src;
-        src.mText = text;
-        src.mTextLen = std::strlen(text);
-        return vtu_array_from_bytes(vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true),
-                                    dt, true);
-    }
-    if (fmt == "appended") {
-        // strtoull skips the padding some writers put around the offset.
-        const std::uint64_t offset =
-            std::strtoull(rDa.attribute("offset").as_string("0"), nullptr, 10);
-        VtuByteSource src;
-        if (rCtx.mRaw) {
-            src.mRaw = rCtx.mRaw;
-            src.mRawLen = rCtx.mRawLen;
-        } else if (rCtx.mBase64) {
-            src.mText = rCtx.mBase64;
-            src.mTextLen = rCtx.mBase64Len;
-        } else {
-            throw ReadError("VTU: appended DataArray but no <AppendedData>");
+    auto decode = [&]() -> NDArray {
+        if (fmt == "ascii")
+            return detail::vtu_parse_ascii(rDa.text().get(), dt);
+        if (fmt == "binary") {
+            if (!rCtx.mBigEndian)
+                return detail::vtu_decode_bin_view(detail::vtu_strip_view(rDa.text().get()), dt,
+                                                   rCtx.mCodec, rCtx.mHeaderSize);
+            const char* text = rDa.text().get();
+            VtuByteSource src;
+            src.mText = text;
+            src.mTextLen = std::strlen(text);
+            return vtu_array_from_bytes(
+                vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true), dt, true);
         }
-        if (offset > (src.mRaw ? src.mRawLen : src.mTextLen))
-            throw ReadError("VTU: appended offset past the end of the data");
-        src.mPos = static_cast<std::size_t>(offset);
-        return vtu_array_from_bytes(
-            vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, rCtx.mBigEndian), dt,
-            rCtx.mBigEndian);
-    }
-    throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
+        if (fmt == "appended") {
+            // Accept padding, but not missing, negative, overflowing or junk offsets.
+            const char* text = rDa.attribute("offset").as_string("");
+            while (*text && std::isspace(static_cast<unsigned char>(*text)))
+                ++text;
+            if (*text < '0' || *text > '9')
+                throw ReadError("VTK XML: invalid appended offset");
+            char* end = nullptr;
+            errno = 0;
+            const std::uint64_t offset = std::strtoull(text, &end, 10);
+            if (errno == ERANGE)
+                throw ReadError("VTK XML: appended offset overflows UInt64");
+            while (*end && std::isspace(static_cast<unsigned char>(*end)))
+                ++end;
+            if (*end)
+                throw ReadError("VTK XML: invalid appended offset");
+            VtuByteSource src;
+            if (rCtx.mRaw) {
+                src.mRaw = rCtx.mRaw;
+                src.mRawLen = rCtx.mRawLen;
+            } else if (rCtx.mBase64) {
+                src.mText = rCtx.mBase64;
+                src.mTextLen = rCtx.mBase64Len;
+            } else {
+                throw ReadError("VTU: appended DataArray but no <AppendedData>");
+            }
+            if (offset > (src.mRaw ? src.mRawLen : src.mTextLen))
+                throw ReadError("VTU: appended offset past the end of the data");
+            src.mPos = static_cast<std::size_t>(offset);
+            return vtu_array_from_bytes(
+                vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, rCtx.mBigEndian), dt,
+                rCtx.mBigEndian);
+        }
+        throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
+    };
+    NDArray out = decode();
+    if (rNumComponents > 0 && out.Size() % static_cast<std::size_t>(rNumComponents) != 0)
+        throw ReadError("VTK XML: array size does not fit NumberOfComponents");
+    return out;
 }
 
 /**
@@ -131011,18 +131907,11 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  * included): the file is read as bytes, the payload cut out, and only the text
  * around it parsed. Every other file parses as before.
  */
-struct VtuSource {
-    pugi::xml_document mDoc;
-    std::optional<detail::FileSource> mFile;  // the file, read once
-    std::string_view mBytes;                  // its bytes: a raw payload is a view into them
-    std::size_t mRawStart = 0;
-    std::size_t mRawStop = 0;
-    bool mIsRaw = false;
-};
-
-void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
-    detail::vtk_preflight(rPath, "UnstructuredGrid",
-                          "lzma-compressed VTU not supported by the C++ reader");
+void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource,
+              const char* pType, const char* pFormat) {
+    const std::string format(pFormat);
+    const std::string decline = "lzma-compressed " + format + " not supported by the C++ reader";
+    detail::vtk_preflight(rPath, pType, decline.c_str());
     // The file is read once: a raw <AppendedData> payload is not XML, so only
     // the text around it is parsed, and the payload is a view into the same
     // bytes (it read the file twice and parsed it twice before v16.21.0).
@@ -131031,29 +131920,90 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
     const std::size_t tag_end = tag == std::string_view::npos ? tag : b.find('>', tag);
-    const bool raw = tag_end != std::string_view::npos &&
-                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string_view::npos;
+    const bool raw =
+        tag_end != std::string_view::npos &&
+        detail::vtk_preflight_attribute(b.substr(tag, tag_end - tag), "encoding") == "raw";
     pugi::xml_parse_result res;
     if (!raw) {
         res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
         if (!res)
-            throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+            throw ReadError(format + " XML parse failed: " + res.description());
         return;
     }
-    const std::size_t underscore = b.find('_', tag_end);
+    std::size_t underscore = tag_end + 1;
+    while (underscore < b.size() && std::isspace(static_cast<unsigned char>(b[underscore])))
+        ++underscore;
     const std::size_t stop = b.rfind("</AppendedData>");
-    if (underscore == std::string::npos || stop == std::string::npos || stop <= underscore)
-        throw ReadError("VTU: AppendedData is not closed");
+    if (underscore >= b.size() || b[underscore] != '_' || stop == std::string::npos ||
+        stop <= underscore)
+        throw ReadError(format + ": AppendedData must start with '_' and be closed");
     std::string xml(b.substr(0, tag_end + 1));
     xml += b.substr(stop);
     rSource.mDoc.reset();
     res = rSource.mDoc.load_buffer(xml.data(), xml.size(), ParseOptions);
     if (!res)
-        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+        throw ReadError(format + " XML parse failed: " + res.description());
     rSource.mIsRaw = true;
     rSource.mRawStart = underscore + 1;
     rSource.mRawStop = stop;
 }
+
+VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
+    VtuContext ctx;
+    const std::string format(pFormat);
+    const auto root = rSource.mDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (!compressor.empty()) {
+        bool found = false;
+        for (const auto codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD})
+            if (compressor == vtk_codec_compressor(codec)) {
+                ctx.mCodec = codec;
+                found = true;
+            }
+        if (!found) {
+            if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
+                throw ReadError("lzma-compressed " + format + " not supported by the C++ reader");
+            throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
+        }
+    }
+    vtk_codec_require_read(ctx.mCodec);
+    const std::string header = root.attribute("header_type").as_string("UInt32");
+    if (header != "UInt32" && header != "UInt64")
+        throw ReadError("Unknown " + format + " header type '" + header + "'");
+    ctx.mHeaderSize = header == "UInt64" ? 8 : 4;
+    const std::string order = root.attribute("byte_order").as_string("LittleEndian");
+    if (order != "LittleEndian" && order != "BigEndian")
+        throw ReadError("Unknown " + format + " byte order '" + order + "'");
+    ctx.mBigEndian = order == "BigEndian";
+    if (rSource.mIsRaw) {
+        ctx.mRaw =
+            reinterpret_cast<const unsigned char*>(rSource.mBytes.data()) + rSource.mRawStart;
+        ctx.mRawLen = rSource.mRawStop - rSource.mRawStart;
+    } else if (const auto app = root.child("AppendedData")) {
+        const std::string encoding = app.attribute("encoding").as_string("base64");
+        if (encoding != "base64")
+            throw ReadError("Unknown " + format + " AppendedData encoding '" + encoding + "'");
+        const char* text = app.text().get();
+        while (*text && std::isspace(static_cast<unsigned char>(*text)))
+            ++text;
+        if (*text != '_')
+            throw ReadError(format + ": AppendedData does not start with '_'");
+        ctx.mBase64 = text + 1;
+        ctx.mBase64Len = std::strlen(text + 1);
+    }
+    return ctx;
+}
+
+}  // namespace detail
+
+namespace {
+using detail::vtu_load;
+using detail::vtu_read_data_array;
+using detail::vtu_to_int64;
+using detail::VtuContext;
+using detail::VtuSource;
 
 /**
  * @brief The `<Piece>` nodes plus the framing attributes every path needs.
@@ -131077,50 +132027,11 @@ vtu_header vtu_parse_header(const VtuSource& rSource) {
         throw ReadError("Expected type UnstructuredGrid");
 
     vtu_header h;
-    const std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor.empty())
-        h.mCtx.mCodec = detail::VtkCodec::None;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCtx.mCodec = detail::VtkCodec::Zlib;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCtx.mCodec = detail::VtkCodec::LZ4;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCtx.mCodec = detail::VtkCodec::ZSTD;
-    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
-        throw ReadError("lzma-compressed VTU not supported by the C++ reader");
-    else
-        throw ReadError("Unknown VTU compressor '" + compressor + "'");
-    // Fail early and actionably when the file needs a codec this build lacks,
-    // rather than at the first array body.
-    detail::vtk_codec_require_read(h.mCtx.mCodec);
-
-    std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mCtx.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
-    const std::string byte_order = root.attribute("byte_order").as_string("LittleEndian");
-    if (byte_order != "LittleEndian" && byte_order != "BigEndian")
-        throw ReadError("Unknown VTU byte order '" + byte_order + "'");
-    h.mCtx.mBigEndian = byte_order == "BigEndian";
+    h.mCtx = detail::vtk_xml_read_context(rSource, "VTU");
 
     pugi::xml_node grid = root.child("UnstructuredGrid");
     if (!grid)
         throw ReadError("No UnstructuredGrid found");
-
-    if (rSource.mIsRaw) {
-        h.mCtx.mRaw =
-            reinterpret_cast<const unsigned char*>(rSource.mBytes.data()) + rSource.mRawStart;
-        h.mCtx.mRawLen = rSource.mRawStop - rSource.mRawStart;
-    } else if (pugi::xml_node app = root.child("AppendedData")) {
-        const std::string encoding = app.attribute("encoding").as_string("base64");
-        if (encoding != "base64")
-            throw ReadError("Unknown VTU AppendedData encoding '" + encoding + "'");
-        const char* text = app.text().get();
-        while (*text && std::isspace(static_cast<unsigned char>(*text)))
-            ++text;
-        if (*text != '_')
-            throw ReadError("VTU: AppendedData does not start with '_'");
-        h.mCtx.mBase64 = text + 1;
-        h.mCtx.mBase64Len = std::strlen(text + 1);
-    }
 
     h.mGrid = grid;
     for (pugi::xml_node piece : grid.children("Piece")) {
@@ -132454,6 +133365,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // External includes
@@ -132530,10 +133442,42 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
     return p == 4 ? DType::Float32 : DType::Float64;
 }
 
-NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
+// References are document-local. Resolve iteratively so cycles never recurse
+// into the parser, and share this with metadata reads (which need the target's
+// Dimensions rather than the reference node's usually absent attributes).
+pugi::xml_node xdmf_resolve_data_item(pugi::xml_node node) {
+    std::unordered_set<const void*> visited;
+    while (node.attribute("Reference")) {
+        if (!visited.insert(node.internal_object()).second)
+            throw ReadError("XDMF: cyclic DataItem reference");
+        const std::string ref = node.attribute("Reference").value();
+        std::string xpath = ref == "XML" ? node.text().get() : ref;
+        const std::size_t first = xpath.find_first_not_of(" \t\r\n");
+        const std::size_t last = xpath.find_last_not_of(" \t\r\n");
+        xpath = first == std::string::npos ? "" : xpath.substr(first, last - first + 1);
+        if (xpath.empty() || xpath[0] != '/')
+            throw ReadError("XDMF: DataItem reference must be an absolute XPath");
+        try {
+            const auto targets = node.root().select_nodes(xpath.c_str());
+            if (targets.size() != 1 || std::string(targets[0].node().name()) != "DataItem")
+                throw ReadError("XDMF: reference must select exactly one DataItem: " + xpath);
+            node = targets[0].node();
+        } catch (const pugi::xpath_exception& exc) {
+            throw ReadError("XDMF: invalid reference XPath '" + xpath + "': " + exc.what());
+        }
+    }
+    if (!node || std::string(node.name()) != "DataItem")
+        throw ReadError("XDMF: missing DataItem");
+    return node;
+}
+
+NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
+    const pugi::xml_node rDi = xdmf_resolve_data_item(rItem);
     std::vector<std::size_t> dims = parse_dims(rDi.attribute("Dimensions").value());
 
     std::string data_type = "Float";
+    if (rDi.attribute("DataType") && rDi.attribute("NumberType"))
+        throw ReadError("XDMF: DataItem has both DataType and NumberType");
     if (rDi.attribute("DataType"))
         data_type = rDi.attribute("DataType").value();
     else if (rDi.attribute("NumberType"))
@@ -132820,6 +133764,30 @@ void xdmf_attach_regions(Mesh& rMesh, std::vector<Region>& rRegions) {
     for (Region& r_region : rRegions)
         rMesh.AddRegion(std::move(r_region));
 }
+
+void xdmf_read_information(const pugi::xml_node& rNode, Mesh& rMesh, const ReadOptions& rOpts) {
+    pugi::xml_document info;
+    if (!info.load_string(rNode.text().get()))
+        throw ReadError("XDMF: malformed Information payload");
+    for (pugi::xml_node entry : info.document_element().children()) {
+        if (!entry.attribute("key") || !entry.attribute("dim"))
+            throw ReadError("XDMF: Information entry needs key and dim");
+        if (!rOpts.WantsArray(entry.attribute("key").value()))
+            continue;
+        std::int64_t tag = 0, dim = 0;
+        detail::TextStream tag_stream(entry.text().get());
+        detail::TextStream dim_stream(entry.attribute("dim").value());
+        if (!(tag_stream >> tag) || !(dim_stream >> dim))
+            throw ReadError("XDMF: invalid Information tag or dimension");
+        std::string extra;
+        if ((tag_stream >> extra) || (dim_stream >> extra))
+            throw ReadError("XDMF: invalid Information tag or dimension");
+        NDArray data(DType::Int64, {2});
+        data.As<std::int64_t>()[0] = tag;
+        data.As<std::int64_t>()[1] = dim;
+        rMesh.AddFieldData(entry.attribute("key").value(), std::move(data));
+    }
+}
 }  // namespace
 
 Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
@@ -132900,8 +133868,8 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
         } else if (tag == "Set") {
             xdmf_read_set(c, base_dir, regions);
         } else if (tag == "Information") {
-            // field_data not handled by the C++ core
-            throw ReadError("XDMF: Information section handled by Python fallback");
+            if (want_data)
+                xdmf_read_information(c, mesh, rOpts);
         } else {
             throw ReadError("XDMF: unknown section " + tag);
         }
@@ -132916,7 +133884,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
 
 MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
-    if (!doc.load_file(rPath.c_str(), pugi::parse_minimal))
+    if (!doc.load_file(rPath.c_str()))
         throw ReadError("XDMF: could not parse " + rPath);
     XdmfDoc parsed = xdmf_resolve(doc);
 
@@ -132953,16 +133921,16 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                                                           : c.attribute("TopologyType").value();
             if (ctype == "Mixed")
                 throw ReadError("XDMF: Mixed topology needs the full reader to be summarized");
-            const std::vector<std::size_t> dims =
-                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            const std::vector<std::size_t> dims = parse_dims(
+                xdmf_resolve_data_item(c.child("DataItem")).attribute("Dimensions").value());
             CellBlockInfo info;
             info.mType = xdmf_to_meshio(ctype);
             info.mNumCells = dims.empty() ? 0 : dims[0];
             info.mNodesPerCell = dims.size() >= 2 ? dims[1] : 0;
             meta.mCellBlocks.push_back(std::move(info));
         } else if (tag == "Geometry") {
-            const std::vector<std::size_t> dims =
-                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            const std::vector<std::size_t> dims = parse_dims(
+                xdmf_resolve_data_item(c.child("DataItem")).attribute("Dimensions").value());
             meta.mNumPoints = dims.empty() ? 0 : dims[0];
             meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
         } else if (!parsed.mSteps.empty() && tag != "Set") {
@@ -132989,8 +133957,8 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
             rs.mName = c.attribute("Name").value();
             rs.mKind = kind;
             xdmf_set_dim_tag(c, rs.mDim, rs.mTag);
-            const std::vector<std::size_t> dims =
-                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            const std::vector<std::size_t> dims = parse_dims(
+                xdmf_resolve_data_item(c.child("DataItem")).attribute("Dimensions").value());
             rs.mNumEntries = dims.empty() ? 0 : dims[0];
             bool merged = false;
             for (RegionSummary& r_prev : meta.mRegions)
@@ -133001,7 +133969,9 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
             if (!merged)
                 meta.mRegions.push_back(std::move(rs));
         } else if (tag == "Information") {
-            throw ReadError("XDMF: Information section handled by Python fallback");
+            Mesh fields;
+            xdmf_read_information(c, fields, {});
+            meta.mFieldDataNames = fields.FieldDataNames();
         } else {
             throw ReadError("XDMF: unknown section " + tag);
         }
@@ -133009,6 +133979,7 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
     // Match the uniform API's sorted-name guarantee.
     std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
     std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+    std::sort(meta.mFieldDataNames.begin(), meta.mFieldDataNames.end());
 
     meta.mHasBBox = false;  // would require reading the Geometry payload
     return meta;
@@ -133069,6 +134040,10 @@ void xdmf_write_set(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, cons
         xdmf_add_ids(set, rStore, *pLocal);
 }
 
+}  // namespace
+
+namespace xdmfdetail {
+
 void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, const Mesh& rMesh) {
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
@@ -133104,7 +134079,7 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
     }
 }
 
-}  // namespace
+}  // namespace xdmfdetail
 
 void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
                 int gzip_level) {
@@ -133181,7 +134156,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
 
     // Regions as <Set>s (see "<Set> <-> regions" above).
-    xdmf_write_sets(grid, store, rMesh);
+    xdmfdetail::xdmf_write_sets(grid, store, rMesh);
 
     if (!doc.save_file(rPath.c_str(), "  "))
         throw WriteError("XDMF: could not write " + rPath);
@@ -133307,7 +134282,7 @@ struct XdmfTimeSeriesWriter::Impl {
         // TimeSeriesReader) resolve the collection structurally and skip this.
         pugi::xml_node inc = grid.append_child("xi:include");
         const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
-                                "\"]/*[self::Topology or self::Geometry])";
+                                "\"]/*[self::Topology or self::Geometry or self::Set])";
         inc.append_attribute("xpointer") = ptr.c_str();
         pugi::xml_node time = grid.append_child("Time");
         time.append_attribute("Value") = xts_format_time(Time).c_str();
@@ -133481,6 +134456,8 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
         xts_add_data_item(topo, *mImpl->mStore, cd);
     }
 
+    // Regions belong to the shared topology, not the transient field arrays.
+    xdmfdetail::xdmf_write_sets(grid, *mImpl->mStore, rMesh);
     mImpl->mHasMesh = true;
 }
 
@@ -142087,12 +143064,16 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
 #include <array>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <map>
+#include <cstring>
+#include <type_traits>
 
 // Project includes
 
@@ -142268,6 +143249,187 @@ Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rF
     DataManageOptions opts;
     opts.rename.push_back(DataRename{Location, rFrom, rTo});
     return data_manage(rMesh, opts).mMesh;
+}
+
+namespace {
+
+RegionKind dmanage_set_kind(DataLocation location) {
+    if (location == DataLocation::Point)
+        return RegionKind::Point;
+    if (location == DataLocation::Cell)
+        return RegionKind::Cell;
+    throw std::invalid_argument("meshio++: sets/data conversions require point or cell location");
+}
+
+NDArray dmanage_indices(const std::vector<std::int64_t>& rEntries) {
+    NDArray data(DType::Int64, {rEntries.size()});
+    if (!rEntries.empty())
+        std::memcpy(data.Data(), rEntries.data(), rEntries.size() * sizeof(std::int64_t));
+    return data;
+}
+
+// Exact integer ordering, including UInt64 values above INT64_MAX, without
+// converting labels through double or overflowing on INT64_MIN.
+struct DmanageTag {
+    bool mNegative;
+    std::uint64_t mMagnitude;
+    bool operator<(const DmanageTag& rOther) const {
+        if (mNegative != rOther.mNegative)
+            return mNegative;
+        return mNegative ? mMagnitude > rOther.mMagnitude : mMagnitude < rOther.mMagnitude;
+    }
+    std::string Name() const { return (mNegative ? "-" : "") + std::to_string(mMagnitude); }
+};
+
+template <class T>
+DmanageTag dmanage_tag(T value) {
+    if constexpr (std::is_signed_v<T>) {
+        if (value < 0)
+            return {true, static_cast<std::uint64_t>(-(value + 1)) + 1};
+    }
+    return {false, static_cast<std::uint64_t>(value)};
+}
+
+}  // namespace
+
+Mesh sets_to_data(const Mesh& rMesh, DataLocation Location, const std::optional<std::string>& rName,
+                  const std::string& rJoin, const std::vector<std::string>& rOrder) {
+    const auto kind = dmanage_set_kind(Location);
+    std::vector<std::string> names;
+    std::unordered_map<std::string, std::size_t> regions;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const auto& region = rMesh.Region(i);
+        if (region.mKind != kind)
+            continue;
+        if (regions.emplace(region.mName, i).second)
+            names.push_back(region.mName);
+        else
+            regions[region.mName] = i;  // Compatibility view uses the last same-name region.
+    }
+    if (!rOrder.empty()) {
+        std::unordered_set<std::string> seen;
+        if (rOrder.size() != names.size())
+            throw std::invalid_argument("meshio++: set order must name every set exactly once");
+        for (const auto& name : rOrder)
+            if (!regions.count(name) || !seen.insert(name).second)
+                throw std::invalid_argument("meshio++: invalid/duplicate set name in order: " +
+                                            name);
+        names = rOrder;
+    }
+    if (names.empty())
+        return detail::clone_mesh(rMesh);
+    std::string key;
+    if (rName)
+        key = *rName;
+    else
+        for (const auto& name : names) {
+            if (&name != &names.front())
+                key += rJoin;
+            key += name;
+        }
+    const auto bases = detail::block_bases(rMesh);
+    const std::size_t n = Location == DataLocation::Point ? rMesh.NumPoints()
+                                                          : static_cast<std::size_t>(bases.back());
+    std::vector<std::int64_t> labels(n, -1);
+    for (std::size_t label = 0; label < names.size(); ++label) {
+        const auto& region = rMesh.Region(regions.at(names[label]));
+        for (std::size_t i = 0; i < region.NumEntries(); ++i) {
+            auto index = region.Entries()[i];
+            if (Location == DataLocation::Point && index < 0 &&
+                index >= -static_cast<std::int64_t>(n))
+                index += static_cast<std::int64_t>(n);
+            if (index < 0 || static_cast<std::uint64_t>(index) >= n) {
+                if (Location == DataLocation::Cell)
+                    continue;  // Python's global-to-block compatibility view drops these.
+                throw std::invalid_argument("meshio++: point set index is out of range");
+            }
+            labels[static_cast<std::size_t>(index)] = static_cast<std::int64_t>(label);
+        }
+    }
+    if (std::find(labels.begin(), labels.end(), -1) != labels.end())
+        log::warn("sets_to_data: not all entities belong to a set; using default value -1");
+    Mesh out = detail::clone_mesh(rMesh);
+    if (Location == DataLocation::Point)
+        out.AddPointData(key, dmanage_indices(labels));
+    else {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            NDArray data(DType::Int64, {rMesh.Cells(b).NumCells()});
+            if (data.Size())
+                std::memcpy(data.Data(), labels.data() + bases[b],
+                            data.Size() * sizeof(std::int64_t));
+            blocks.push_back(std::move(data));
+        }
+        out.AddCellData(key, std::move(blocks));
+    }
+    for (std::size_t i = out.NumRegions(); i > 0; --i)
+        if (out.Region(i - 1).mKind == kind)
+            out.RemoveRegion(i - 1);
+    return out;
+}
+
+Mesh data_to_sets(const Mesh& rMesh, DataLocation Location, const std::string& rKey) {
+    const auto kind = dmanage_set_kind(Location);
+    dmanage_require(rMesh, Location, rKey, false);
+    const auto bases = detail::block_bases(rMesh);
+    const std::size_t num_blocks = Location == DataLocation::Point ? 1 : rMesh.NumCellBlocks();
+    if (Location == DataLocation::Cell && rMesh.CellDataNumBlocks(rKey) != num_blocks)
+        throw std::invalid_argument("meshio++: cell data must have one array per block");
+    std::map<DmanageTag, std::vector<std::int64_t>> tags;
+    for (std::size_t b = 0; b < num_blocks; ++b) {
+        const auto& array =
+            Location == DataLocation::Point ? rMesh.PointData(rKey) : rMesh.CellData(rKey, b);
+        const auto rows =
+            Location == DataLocation::Point ? rMesh.NumPoints() : rMesh.Cells(b).NumCells();
+        if (array.Ndim() != 1 || array.Size() != rows)
+            throw Unsupported("meshio++: data_to_sets requires scalar one-dimensional fields");
+        detail::dispatch_dtype(array.Dtype(), [&]<class T>() {
+            if constexpr (!std::is_integral_v<T>)
+                throw std::invalid_argument("meshio++: data_to_sets array '" + rKey +
+                                            "' is not int data");
+            else {
+                const T* values = array.As<T>();
+                const auto base = Location == DataLocation::Point ? 0 : bases[b];
+                for (std::size_t i = 0; i < rows; ++i)
+                    tags[dmanage_tag(values[i])].push_back(base + static_cast<std::int64_t>(i));
+            }
+        });
+    }
+    std::vector<std::string> names;
+    std::unordered_set<std::string> seen;
+    for (std::size_t start = 0;;) {
+        const auto end = rKey.find('-', start);
+        const auto name = rKey.substr(start, end == std::string::npos ? end : end - start);
+        if (seen.insert(name).second)
+            names.push_back(name);
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    if (names.size() != tags.size()) {
+        names.clear();
+        for (const auto& [tag, entries] : tags)
+            names.push_back("set-" + (Location == DataLocation::Point ? std::string("key") : rKey) +
+                            "-" + tag.Name());
+    }
+    Mesh out = detail::clone_mesh(
+        rMesh, [&](DataLocation location, const std::string& rName, std::string&) {
+            return location != Location || rName != rKey;
+        });
+    std::size_t i = 0;
+    for (const auto& [tag, entries] : tags) {
+        const auto& name = names[i++];
+        Region region(name, kind, dmanage_indices(entries));
+        for (std::size_t j = 0; j < out.NumRegions(); ++j)
+            if (out.Region(j).mKind == kind && out.Region(j).mName == name) {
+                region.mDim = out.Region(j).mDim;
+                region.mTag = out.Region(j).mTag;
+                out.RemoveRegion(j);
+                break;
+            }
+        out.AddRegion(std::move(region));
+    }
+    return out;
 }
 
 }  // namespace meshioplusplus
@@ -151512,6 +152674,7 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -151520,6 +152683,7 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
 #include <utility>
 #include <variant>
 #include <vector>
+#include <unordered_set>
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_JSON
@@ -151757,6 +152921,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataDrop", {"Point", "Cell", "Field", "IgnoreMissing"}},
         {"DataKeep", {"Point", "Cell", "Field"}},
         {"DataRename", {"Point", "Cell", "Field"}},
+        {"SetsToData", {"Location", "Name", "Join", "Order"}},
+        {"DataToSets", {"Location", "Key"}},
         {"DataCalc", {"Expr", "Location", "Overwrite"}},
         {"DataCondition",
          {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
@@ -152677,6 +153843,23 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
     }
     if (op == "DataDrop" || op == "DataKeep" || op == "DataRename")
         return pipe_apply_data_manage(std::move(mesh), rStep, rReport);
+    if (op == "SetsToData" || op == "DataToSets") {
+        const auto location = data_location_from_name(pipe_text(rStep, "Location", "cell"));
+        Mesh out;
+        if (op == "SetsToData") {
+            std::optional<std::string> name;
+            if (pipe_find(rStep, "Name"))
+                name = pipe_text(rStep, "Name", "");
+            out = sets_to_data(mesh, location, name, pipe_text(rStep, "Join", "-"),
+                               pipe_svec(rStep, "Order"));
+        } else {
+            if (!pipe_find(rStep, "Key"))
+                throw std::invalid_argument(pipe_err(rStep, "'DataToSets' requires 'Key'"));
+            out = data_to_sets(mesh, location, pipe_text(rStep, "Key", ""));
+        }
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
     if (op == "DataCalc") {
         const std::string spec = pipe_text(rStep, "Expr", "");
         // "NAME = EXPR" splits on the FIRST '=' (the CLI's documented rule):
@@ -152715,7 +153898,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
         opts.names = pipe_svec(rStep, "Names");
         const std::string outputs_str = pipe_text(rStep, "Outputs", "");
-        opts.outputs = outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
+        opts.outputs =
+            outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
         opts.prefix = pipe_text(rStep, "Prefix", "");
         opts.suffix = pipe_text(rStep, "Suffix", "");
         opts.overwrite = pipe_flag(rStep, "Overwrite", true);
@@ -152753,10 +153937,168 @@ Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
     return mesh;
 }
 
+std::vector<std::pair<std::string, std::vector<std::string>>> pipeline_v2_op_table() {
+    auto table = pipeline_op_table();
+    table.push_back(
+        {"Merge", {"Inputs", "Weld", "Atol", "SourceTag", "DataPolicy", "DropDuplicateCells"}});
+    table.push_back({"Interpolate",
+                     {"Inputs", "Method", "Arrays", "Extrapolate", "DefaultValue", "OnConflict"}});
+    table.push_back({"UndoGreen", {"Inputs"}});
+    table.push_back({"Split", {"By", "Tag"}});
+    for (auto& [op, keys] : table)
+        if (op == "Partition") {
+            keys.push_back("RecordIds");
+            keys.push_back("GhostLayers");
+        }
+    return table;
+}
+
+namespace {
+
+void pipe_validate_v2(const PipelineStep& rStep) {
+    const auto table = pipeline_v2_op_table();
+    const auto found = std::find_if(table.begin(), table.end(),
+                                    [&](const auto& entry) { return entry.first == rStep.mOp; });
+    if (found == table.end()) {
+        validate_pipeline_step(rStep);
+        return;
+    }
+    for (const auto& [key, value] : rStep.mParams) {
+        (void)value;
+        if (std::find(found->second.begin(), found->second.end(), key) == found->second.end())
+            throw std::invalid_argument(pipe_err(rStep, "unknown key '" + key + "'"));
+    }
+    if (rStep.mOp == "Merge" || rStep.mOp == "Interpolate" || rStep.mOp == "UndoGreen") {
+        const auto inputs = pipe_svec(rStep, "Inputs");
+        if (inputs.empty() || (rStep.mOp != "Merge" && inputs.size() != 1))
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "Inputs requires " +
+                    std::string(rStep.mOp == "Merge" ? "at least one path" : "exactly one path")));
+        for (const auto& path : inputs)
+            if (path.empty())
+                throw std::invalid_argument(pipe_err(rStep, "Inputs paths must not be empty"));
+    }
+}
+
+Mesh pipe_read_extra(const std::string& rPath) {
+    std::string fmt;
+    try {
+        fmt = resolve_format(rPath, "");
+    } catch (const ReadError&) {
+        fmt = sniff_format(rPath);
+        if (fmt.empty())
+            throw;
+    }
+    return registry_read(rPath, fmt, ReadOptions{});
+}
+
+Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    const auto& op = rStep.mOp;
+    if (op == "Merge") {
+        std::vector<Mesh> owned;
+        for (const auto& path : pipe_svec(rStep, "Inputs"))
+            owned.push_back(pipe_read_extra(path));
+        std::vector<const Mesh*> inputs{&mesh};
+        for (const auto& extra : owned)
+            inputs.push_back(&extra);
+        MergeOptions options;
+        options.weld = pipe_flag(rStep, "Weld", false);
+        options.atol = pipe_number(rStep, "Atol", 1e-8);
+        options.source_tag = pipe_flag(rStep, "SourceTag", true);
+        options.drop_duplicate_cells = pipe_flag(rStep, "DropDuplicateCells", false);
+        const auto policy = pipe_text(rStep, "DataPolicy", "intersection");
+        if (policy != "intersection" && policy != "fill")
+            throw std::invalid_argument(
+                pipe_err(rStep, "DataPolicy must be 'intersection' or 'fill'"));
+        options.data_policy =
+            policy == "fill" ? MergeDataPolicy::Fill : MergeDataPolicy::Intersection;
+        auto result = merge(inputs, options);
+        pipe_push_step(rReport, rStep, {{"NumInputs", static_cast<double>(inputs.size())}});
+        return std::move(result.mMesh);
+    }
+    if (op == "Interpolate" || op == "UndoGreen") {
+        Mesh extra = pipe_read_extra(pipe_svec(rStep, "Inputs")[0]);
+        if (op == "UndoGreen") {
+            auto result = undo_green(extra, mesh);
+            pipe_push_step(rReport, rStep,
+                           {{"NumGroupsUndone", static_cast<double>(result.mNumGroupsUndone)},
+                            {"NumCellsRemoved", static_cast<double>(result.mNumCellsRemoved)}});
+            return std::move(result.mMesh);
+        }
+        InterpolateOptions options;
+        options.mMethod = interpolate_method_from_name(pipe_text(rStep, "Method", "nearest"));
+        options.mArrays = pipe_svec(rStep, "Arrays");
+        options.mExtrapolate = pipe_flag(rStep, "Extrapolate", false);
+        options.mDefaultValue = pipe_number(rStep, "DefaultValue", 0.0);
+        options.mOnConflict =
+            interpolate_conflict_from_name(pipe_text(rStep, "OnConflict", "error"));
+        auto result = interpolate(extra, mesh, options);
+        pipe_push_step(rReport, rStep);
+        return result;
+    }
+    return apply_pipeline_step(std::move(mesh), rStep, rReport);
+}
+
+std::string pipe_piece_path(const std::string& rPattern, const std::string& rKey, bool Part) {
+    std::string key;
+    for (const unsigned char c : rKey)
+        key += ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.')
+                   ? static_cast<char>(c)
+                   : '_';
+    if (key.empty() || key == "." || key == "..")
+        key = "_";
+    const std::string token = Part ? "{part}" : "{key}";
+    std::string path = rPattern;
+    std::size_t pos = 0;
+    while ((pos = path.find(token, pos)) != std::string::npos) {
+        path.replace(pos, token.size(), key);
+        pos += key.size();
+    }
+    if (path.find('{') != std::string::npos || path.find('}') != std::string::npos)
+        throw std::invalid_argument("meshio++: pipeline: unsupported Output.Pattern token");
+    return path;
+}
+
+std::string pipe_normal_path(const std::string& rPath) {
+    return std::filesystem::weakly_canonical(std::filesystem::absolute(rPath)).string();
+}
+
+void pipe_write_pieces(const Pipeline& rPipeline,
+                       std::vector<std::pair<std::string, Mesh>>& rPieces, bool Part) {
+    std::vector<std::string> paths;
+    std::unordered_set<std::string> unique, inputs{pipe_normal_path(rPipeline.mInput.mPath)};
+    for (const auto& step : rPipeline.mSteps)
+        if (step.mOp == "Merge" || step.mOp == "Interpolate" || step.mOp == "UndoGreen")
+            for (const auto& path : pipe_svec(step, "Inputs"))
+                inputs.insert(pipe_normal_path(path));
+    for (const auto& [key, mesh] : rPieces) {
+        (void)mesh;
+        const auto path = pipe_piece_path(rPipeline.mOutput.mPath, key, Part);
+        const auto canonical = pipe_normal_path(path);
+        if (!unique.insert(canonical).second || inputs.count(canonical))
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern collides with another output or an input: " +
+                path);
+        std::string why;
+        const auto fmt = resolve_write_format(path, rPipeline.mOutput.mFormat);
+        if (!registry_write_supports(fmt, rPipeline.mOutput.mOptions, why))
+            throw WriteError(why);
+        paths.push_back(path);
+    }
+    for (std::size_t i = 0; i < paths.size(); ++i)
+        registry_write_ex(paths[i], rPieces[i].second, rPipeline.mOutput.mFormat,
+                          rPipeline.mOutput.mOptions);
+}
+
+}  // namespace
+
 PipelineReport run_pipeline(const Pipeline& rPipeline) {
-    if (rPipeline.mVersion != 1)
+    if (rPipeline.mVersion != 1 && rPipeline.mVersion != 2)
         throw std::invalid_argument("meshio++: pipeline: unsupported Version " +
-                                    std::to_string(rPipeline.mVersion) + " (this build knows 1)");
+                                    std::to_string(rPipeline.mVersion) +
+                                    " (this build knows 1 and 2)");
     if (rPipeline.mInput.mPath.empty())
         throw std::invalid_argument("meshio++: pipeline: Input.Path is required");
     if (rPipeline.mOutput.mPath.empty())
@@ -152764,8 +154106,39 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     // Validate the whole chain before the (possibly expensive) read: a typo in
     // step 7 must not cost reading a 10 GB mesh first.
-    for (const PipelineStep& step : rPipeline.mSteps)
-        validate_pipeline_step(step);
+    const bool fanout = rPipeline.mOutput.mPath.find("{key}") != std::string::npos ||
+                        rPipeline.mOutput.mPath.find("{part}") != std::string::npos;
+    if (rPipeline.mVersion == 2 && !fanout &&
+        (rPipeline.mOutput.mPath.find('{') != std::string::npos || rPipeline.mOutput.mPath.find('}') != std::string::npos))
+        throw std::invalid_argument("meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1");
+    for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
+        const auto& step = rPipeline.mSteps[i];
+        if (rPipeline.mVersion == 1)
+            validate_pipeline_step(step);
+        else
+            pipe_validate_v2(step);
+        if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
+            throw std::invalid_argument(
+                "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
+                "{key}");
+        if (step.mOp == "Partition" && !fanout &&
+            (pipe_find(step, "RecordIds") || pipe_find(step, "GhostLayers")))
+            throw std::invalid_argument(
+                "meshio++: pipeline: RecordIds/GhostLayers require partition fan-out");
+    }
+    if (fanout) {
+        if (rPipeline.mVersion != 2 || rPipeline.mSteps.empty())
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern requires Version 2 and a terminal "
+                "Split/Partition");
+        const auto& last = rPipeline.mSteps.back();
+        const auto token = last.mOp == "Split" ? "{key}" : "{part}";
+        if ((last.mOp != "Split" && last.mOp != "Partition") ||
+            rPipeline.mOutput.mPath.find(token) == std::string::npos)
+            throw std::invalid_argument(
+                "meshio++: pipeline: Output.Pattern needs {key} for Split or {part} for Partition");
+        pipe_piece_path(rPipeline.mOutput.mPath, "probe", last.mOp == "Partition");
+    }
 
     // Read: resolve_format with the sniff_format fallback, the read-path rule
     // everywhere (the CLI, mio_read, the wasm read_mesh).
@@ -152792,7 +154165,36 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
 
     PipelineReport report;
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
-    mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+    for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
+        const auto& step = rPipeline.mSteps[i];
+        if (fanout && i + 1 == rPipeline.mSteps.size()) {
+            std::vector<std::pair<std::string, Mesh>> pieces;
+            if (step.mOp == "Split") {
+                auto result = split(mesh, split_by_from_name(pipe_text(step, "By", "type")),
+                                    pipe_text(step, "Tag", ""));
+                for (auto& piece : result.mPieces)
+                    pieces.emplace_back(piece.mKey, std::move(piece.mMesh));
+            } else {
+                PartitionOptions options;
+                options.mNParts = static_cast<int>(pipe_number(step, "Nparts", 2));
+                options.mMethod = partition_method_from_name(pipe_text(step, "Method", "auto"));
+                options.mMode = partition_mode_from_name(pipe_text(step, "Mode", "eco"));
+                options.mImbalance = pipe_number(step, "Imbalance", 0.03);
+                options.mSeed = static_cast<int>(pipe_number(step, "Seed", 0));
+                options.mWeightsKey = pipe_text(step, "WeightsKey", "");
+                options.mRecordIds = pipe_flag(step, "RecordIds", false);
+                options.mGhostLayers = static_cast<int>(pipe_number(step, "GhostLayers", 0));
+                auto result = partition(mesh, options);
+                for (auto& piece : result.mPieces)
+                    pieces.emplace_back(std::to_string(piece.mPartId), std::move(piece.mMesh));
+            }
+            pipe_push_step(report, step, {{"NumPieces", static_cast<double>(pieces.size())}});
+            pipe_write_pieces(rPipeline, pieces, step.mOp == "Partition");
+            return report;
+        }
+        mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report)
+                                       : apply_pipeline_step(std::move(mesh), step, report);
+    }
 
     const std::string out_fmt =
         resolve_write_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
@@ -152835,9 +154237,11 @@ detail::VtkCodec pipeline_codec_from_name(const std::string& rName) {
         return detail::VtkCodec::LZ4;
     if (rName == "zstd")
         return detail::VtkCodec::ZSTD;
+    if (rName == "lzf")
+        return detail::VtkCodec::LZF;
     throw std::invalid_argument(
         "meshio++: pipeline: Output.Codec must be 'none', 'zlib', "
-        "'lz4' or 'zstd', not '" +
+        "'lz4', 'zstd' or 'lzf', not '" +
         rName + "'");
 }
 
@@ -152892,6 +154296,10 @@ PipelineReport run_pipeline_file(const std::string&) {
     pipe_no_json();
 }
 
+std::string pipeline_report_json(const PipelineReport&) {
+    pipe_no_json();
+}
+
 // The sequence document shares this parser, and therefore this guard: the
 // typed sequence driver in operations/sequence.cpp compiles either way, but a
 // settings document cannot be read without a JSON parser.
@@ -152909,6 +154317,17 @@ PipelineReport run_sequence_file(const std::string&) {
 }
 
 #else  // MESHIOPLUSPLUS_HAS_JSON
+
+std::string pipeline_report_json(const PipelineReport& rReport) {
+    auto steps = nlohmann::json::array();
+    for (const auto& entry : rReport.mSteps) {
+        nlohmann::json step = {{"op", entry.mOp}};
+        for (const auto& [name, value] : entry.mCounters)
+            step[name] = std::isfinite(value) ? nlohmann::json(value) : nlohmann::json(nullptr);
+        steps.push_back(std::move(step));
+    }
+    return nlohmann::json{{"steps", std::move(steps)}, {"warnings", rReport.mWarnings}}.dump();
+}
 
 namespace {
 
@@ -153095,12 +154514,23 @@ SequenceInput pipe_sequence_input_from_json(const pipe_json& rInput, bool& rSequ
     return input;
 }
 
-SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput) {
+SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput, int Version) {
     if (!rOutput.is_object())
         pipe_schema_error("Output must be an object");
-    pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+    if (Version == 2)
+        pipe_check_keys(rOutput, "Output",
+                        {"Path", "Pattern", "Format", "Encoding", "Codec", "FloatFormat"});
+    else
+        pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
     SequenceOutput output;
-    output.mPath = pipe_get_string(rOutput, "Path", "Output", /*required=*/true);
+    const bool pattern = pipe_get(rOutput, "Pattern") != nullptr;
+    if (pattern && pipe_get(rOutput, "Path"))
+        pipe_schema_error("Output.Path and Output.Pattern are mutually exclusive");
+    output.mPath =
+        pipe_get_string(rOutput, pattern ? "Pattern" : "Path", "Output", /*required=*/true);
+    if (pattern && output.mPath.find("{key}") == std::string::npos &&
+        output.mPath.find("{part}") == std::string::npos)
+        pipe_schema_error("Output.Pattern requires {key} or {part}");
     output.mFormat = pipe_get_string(rOutput, "Format", "Output");
     output.mOptions.mEncoding =
         pipeline_encoding_from_name(pipe_get_string(rOutput, "Encoding", "Output"));
@@ -153132,9 +154562,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
         if (!v->is_number_integer() && !v->is_number_unsigned())
             pipe_schema_error("Version must be an integer");
         pipeline.mVersion = v->get<int>();
-        if (pipeline.mVersion != 1)
+        if (pipeline.mVersion != 1 && pipeline.mVersion != 2)
             pipe_schema_error("unsupported Version " + std::to_string(pipeline.mVersion) +
-                              " (this build knows 1)");
+                              " (this build knows 1 and 2)");
     }
 
     if (pipe_get(doc, "Mode")) {
@@ -153206,7 +154636,7 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     const pipe_json* output = pipe_get(doc, "Output");
     if (!output)
         pipe_schema_error("Output is required");
-    pipeline.mOutput = pipe_sequence_output_from_json(*output);
+    pipeline.mOutput = pipe_sequence_output_from_json(*output, pipeline.mVersion);
 
     if (const pipe_json* ops = pipe_get(doc, "Operations")) {
         if (!ops->is_array())
@@ -153224,7 +154654,10 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
                 step.mParams.emplace(item.key(),
                                      pipe_value_from_json(item.value(), where + "." + item.key()));
             }
-            validate_pipeline_step(step);
+            if (pipeline.mVersion == 2)
+                pipe_validate_v2(step);
+            else
+                validate_pipeline_step(step);
             pipeline.mSteps.push_back(std::move(step));
         }
     }
@@ -153299,6 +154732,10 @@ PipelineReport run_sequence_json(const std::string& rText) {
     if (!parsed.mSequenceKeys &&
         !sequence_input_needs_driver(parsed.mSeq.mInput, parsed.mSeq.mOutput))
         return run_pipeline(pipe_project_single(parsed));
+    if (parsed.mSeq.mVersion == 2)
+        throw std::invalid_argument(
+            "meshio++: pipeline: Version 2 spatial steps cannot be combined with transient "
+            "sequence input/output");
     return run_sequence_pipeline(parsed.mSeq);
 }
 
@@ -160200,6 +161637,12 @@ std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFor
 }
 
 bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy) {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    if (rFormat == "exodus") {
+        rWhy.clear();
+        return true;
+    }
+#endif
     // The one multi-step writer in the repo. Unlike sequence_num_steps there is
     // no file to probe, so this is a predicate in registry_write_supports'
     // style. It is kept honest by a gtest that cross-checks it against what
@@ -160212,8 +161655,8 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd' and 'femap' "
-           "can); "
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap' "
+           "and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -160498,10 +161941,15 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
 /// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    const char* who = rFormat == "vtkhdf"  ? "VTKHDF"
-                      : rFormat == "pvd"   ? "PVD"
-                      : rFormat == "femap" ? "Femap"
-                                           : "XDMF";
+    if (rFormat == "exodus" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
+            "select");
+    const char* who = rFormat == "exodus"   ? "Exodus"
+                      : rFormat == "vtkhdf" ? "VTKHDF"
+                      : rFormat == "pvd"    ? "PVD"
+                      : rFormat == "femap"  ? "Femap"
+                                            : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -160534,7 +161982,8 @@ public:
 
 class SeqXdmfSink final : public SeqSeriesSink {
 public:
-    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat) : mWriter(rPath, rDataFormat) {}
+    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat)
+        : mWriter(rPath, rDataFormat) {}
     void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
     void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
     void Finalize() override { mWriter.Finalize(); }
@@ -160542,6 +161991,19 @@ public:
 private:
     XdmfTimeSeriesWriter mWriter;
 };
+
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+class SeqExodusSink final : public SeqSeriesSink {
+public:
+    explicit SeqExodusSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    ExodusTimeSeriesWriter mWriter;
+};
+#endif
 
 /// A `.pvd` stores geometry per step (each step is its own `.vtu`), so there is no
 /// static grid to write and `WritePointsCells` has nothing to do.
@@ -160586,6 +162048,13 @@ private:
 std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
                                                     const std::string& rPath,
                                                     const WriteOptions& rOptions) {
+    if (rFormat == "exodus") {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return std::make_unique<SeqExodusSink>(rPath);
+#else
+        throw WriteError("meshio++: sequence: Exodus requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    }
     if (rFormat == "pvd") {
         // The zlib codec follows the build, as the registry's own writers do.
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
@@ -167156,6 +168625,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".fem", "nastran"},
         {".op2", "nastran_op2"},
         {".vol", "netgen"},
+        {".vol.gz", "netgen"},
         {".obj", "obj"},
         // OpenFOAM: the `.foam` marker file. A case *directory* has no
         // extension at all, so that form still needs an explicit format.
@@ -167710,9 +169180,20 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         rWhy = "format '" + rFormat + "' has no raw appended encoding (only vtu does)";
         return false;
     }
-    if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
-        rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
-        return false;
+    if (rOptions.mCodecSet) {
+        if (rOptions.mCodec == detail::VtkCodec::LZF) {
+            if (rFormat != "pcd") {
+                rWhy = "LZF codec is supported only for pcd";
+                return false;
+            }
+            if (rOptions.mEncoding == WriteEncoding::Ascii) {
+                rWhy = "pcd LZF codec requires binary encoding, not ascii";
+                return false;
+            }
+        } else if (!wopt_has_codec(rFormat)) {
+            rWhy = "format '" + rFormat + "' has no VTK block compression codec";
+            return false;
+        }
     }
     if (!rOptions.mFloatFormat.empty() && !wopt_has_float_format(rFormat)) {
         rWhy = "format '" + rFormat + "' takes no float-format string";
@@ -167768,7 +169249,9 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         wopts.mBinary = binary;
         write_openfoam(rPath, rMesh, info, wopts);
     } else if (fmt == "pcd") {
-        write_pcd(rPath, rMesh, binary ? PcdData::Binary : PcdData::Ascii);
+        write_pcd(rPath, rMesh,
+                  rOptions.mCodecSet ? PcdData::BinaryCompressed
+                                     : (binary ? PcdData::Binary : PcdData::Ascii));
     } else if (fmt == "ply") {
         write_ply(rPath, rMesh, binary, /*skin=*/true);
     } else if (fmt == "stl") {

@@ -211,10 +211,57 @@ mio_read <- function(path, format = NULL, points_only = FALSE, metadata_only = F
 #' @param mesh A `mio_mesh` object.
 #' @param path Destination path.
 #' @param format Explicit format name, or `NULL` to infer it from the extension.
+#' @param encoding One of `default`, `ascii`, `binary`, or `raw_appended`.
+#' @param codec One of `default`, `none`, `zlib`, `lz4`, `zstd`, or `lzf` (PCD only).
+#' @param float_format Optional printf-style format for supported ASCII writers.
 #' @return `NULL`, invisibly.
 #' @export
-mio_write <- function(mesh, path, format = NULL) {
-  invisible(.Call(R_mio_write, mesh, as.character(path), format))
+mio_write <- function(mesh, path, format = NULL, encoding = "default",
+                      codec = "default", float_format = NULL) {
+  encoding <- match.arg(encoding, c("default", "ascii", "binary", "raw_appended"))
+  codec <- match.arg(codec, c("default", "none", "zlib", "lz4", "zstd", "lzf"))
+  invisible(.Call(R_mio_write, mesh, as.character(path), format,
+    as.integer(match(encoding, c("default", "ascii", "binary", "raw_appended")) - 1L),
+    as.integer(match(codec, c("default", "none", "zlib", "lz4", "zstd", "lzf")) - 1L),
+    float_format))
+}
+
+#' Export a coloured glTF surface
+#'
+#' @param mesh A `mio_mesh` object.
+#' @param path Destination `.glb` or `.gltf` path.
+#' @param color_by Point or cell field to colour by; `NULL` disables colouring.
+#' @param cmap Colormap: `viridis`, `coolwarm`, or `turbo`.
+#' @param component 1-based component, or `NULL` for magnitude.
+#' @param vmin,vmax Optional colour range limits.
+#' @param split_angle Smooth-normal split angle in degrees.
+#' @param up_axis Source up axis (`auto`, `z`, `y`, `x`).
+#' @param scale Source units to metres.
+#' @param container `auto`, `glb`, or `gltf`.
+#' @param normal_weight `angle` or `area`.
+#' @param normals,fields,recenter,by_region,unlit Native export flags.
+#' @param nan_color Colour for non-finite field values, as `#rrggbb`.
+#' @return `NULL`, invisibly.
+#' @export
+mio_write_gltf <- function(mesh, path, color_by = NULL, cmap = "viridis", component = NULL,
+                           vmin = NULL, vmax = NULL, split_angle = 30, up_axis = "auto",
+                           scale = 1, container = "auto", normal_weight = "angle",
+                           normals = TRUE, fields = TRUE, recenter = TRUE,
+                           by_region = TRUE, unlit = TRUE, nan_color = "#808080") {
+  container <- match.arg(container, c("auto", "glb", "gltf"))
+  up_axis <- match.arg(up_axis, c("auto", "z", "y", "x"))
+  normal_weight <- match.arg(normal_weight, c("angle", "area"))
+  options <- list(
+    as.integer(match(container, c("auto", "glb", "gltf")) - 1L),
+    as.integer(match(up_axis, c("auto", "z", "y", "x")) - 1L),
+    as.integer(match(normal_weight, c("angle", "area")) - 1L),
+    normals, fields, recenter, by_region, unlit,
+    if (is.null(component)) 1L else as.integer(component), !is.null(component),
+    !is.null(vmin), !is.null(vmax), as.double(split_angle), as.double(scale),
+    if (is.null(vmin)) 0 else as.double(vmin), if (is.null(vmax)) 0 else as.double(vmax),
+    color_by, as.character(cmap), as.character(nan_color)
+  )
+  invisible(.Call(R_mio_write_gltf, mesh, as.character(path), options))
 }
 
 #' Convert a mesh file without materializing it
@@ -230,6 +277,37 @@ mio_convert <- function(in_path, out_path, in_format = NULL, out_format = NULL) 
     R_mio_convert, as.character(in_path), in_format,
     as.character(out_path), out_format
   ))
+}
+
+#' Named MED meshes
+#'
+#' Enumerate or read named MED meshes, or write several meshes to one file.
+#' Ordinary named nodal and element profiles expand with NaN fill.
+#' @param path MED file path.
+#' @param name A mesh name.
+#' @param time_step Zero-based step index; negative counts from the end.
+#' @param lenient Skip unsupported field constructs.
+#' @param meshes Nonempty list of mesh handles.
+#' @param names Unique, nonempty names, one per mesh.
+#' @param version MED version string, default "4.1.0".
+#' @return Names, an owning mesh handle, or invisibly NULL for writes.
+#' @export
+mio_med_mesh_names <- function(path) {
+  .Call(R_mio_med_mesh_names, as.character(path))
+}
+
+#' @rdname mio_med_mesh_names
+#' @export
+mio_med_read_named <- function(path, name, time_step = 0L, lenient = FALSE) {
+  .Call(R_mio_med_read_named, as.character(path), as.character(name),
+        as.integer(time_step), as.logical(lenient))
+}
+
+#' @rdname mio_med_mesh_names
+#' @export
+mio_med_write_multi <- function(path, meshes, names, version = "4.1.0") {
+  invisible(.Call(R_mio_med_write_multi, as.character(path), meshes,
+                  as.character(names), as.character(version)))
 }
 
 #' Run a settings.json operation pipeline
@@ -1694,6 +1772,31 @@ mio_data_rename <- function(mesh, location, from, to) {
   )
 }
 
+#' Convert sets and integer data
+#'
+#' Convert point/cell region-backed sets into scalar integer labels, or one
+#' scalar integer field into sets. Both return a new mesh. Labels are zero-based
+#' (not indices): later overlapping sets win; uncovered entities have label -1.
+#' Side regions, geometry, unrelated data and property sets are preserved.
+#' @param mesh A `mio_mesh` object.
+#' @param location One of `"point"`, `"cell"`.
+#' @param data_name Output field name, or `NULL` to join set names.
+#' @param join_char Separator used when joining set names.
+#' @param order Every set name exactly once, or `NULL` for native region-name order.
+#' @param key Source scalar integer field to convert and remove.
+#' @return A new `mio_mesh`.
+#' @export
+mio_sets_to_data <- function(mesh, location, data_name = NULL, join_char = "-", order = NULL) {
+  .Call(R_mio_sets_to_data, mesh, .mio_location(location), data_name,
+        as.character(join_char), if (is.null(order)) NULL else as.character(order))
+}
+
+#' @rdname mio_sets_to_data
+#' @export
+mio_data_to_sets <- function(mesh, location, key) {
+  .Call(R_mio_data_to_sets, mesh, .mio_location(location), as.character(key))
+}
+
 #' @rdname mio_data_drop
 #' @export
 mio_data_point_to_cell <- function(mesh, names = NULL, suffix = NULL) {
@@ -1815,6 +1918,8 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' `Constraints`. [mio_read()] refuses such a file by name (or, with
 #' `lenient = TRUE`, skips the content); `mio_read_with_info()` keeps it in a
 #' `mio_format_info` handle that `mio_write_with_info()` puts back.
+#' Gmsh periodic files also require this channel (even with `lenient = TRUE`);
+#' [mio_gmsh_info()] copies their links and 4.1 bounding-entity tags.
 #'
 #' `mio_mdpa_info()` **copies** an MDPA side channel into plain R values: a
 #' list with `properties` (`id`, `values`), `entity_names` (`name`,
@@ -1823,7 +1928,7 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' matrix), `geometries` (`name`, `type`, 1-based `connectivity` as a
 #' `(nodes_per_geometry, num_geometries)` matrix, `ids`), `mesh_blocks` (`id`,
 #' `data`, 1-based `nodes`, `element_ids`, `condition_ids`), `submodelparts`
-#' (`name`, `data`, `tables`) and `raw_blocks` (`header`, `body`,
+#' (`name`, `data`, `tables`, `geometry_ids`, `constraint_ids`) and `raw_blocks` (`header`, `body`,
 #' `terminator`). File ids stay as the file spelled them; they arrive as
 #' `double`, since R has no native 64-bit integer.
 #'
@@ -1863,6 +1968,18 @@ mio_write_with_info <- function(mesh, info, path, format = NULL) {
 #' @rdname mio_read_with_info
 #' @export
 mio_mdpa_info <- function(info) .Call(R_mio_mdpa_info, info)
+
+#' Copy a Gmsh format side channel
+#'
+#' Returns `bounding_entities` (signed entity tags per cell block) and `periodic`
+#' links with `entity` (dimension, slave tag, master tag), `affine` (0 or 16
+#' coefficients), and `node_pairs` (2,N), with 1-based point rows. Entity tags
+#' remain file ids. Ordering and duplicates survive I/O; operations do not remap
+#' these pairs. The copy remains valid after releasing the handle.
+#' @param info A format-info handle from `mio_read_with_info()`.
+#' @return A list with `bounding_entities` and `periodic`.
+#' @export
+mio_gmsh_info <- function(info) .Call(R_mio_gmsh_info, info)
 
 #' @rdname mio_read_with_info
 #' @export
@@ -1915,7 +2032,7 @@ print.mio_format_info <- function(x, ...) {
 #'   means no compression. Ignored by the other formats.
 #' @param series A `mio_xdmf_series` object.
 #' @param mesh A `mio_mesh`. `mio_xdmf_series_write_points_cells()` uses only
-#'   its points and cells; `mio_xdmf_series_write_data()` uses only its
+#'   its points, cells and fixed regions; `mio_xdmf_series_write_data()` uses only its
 #'   `point_data`/`cell_data`, so a solver can pass the very object it updates
 #'   in place. Its cell blocks must match those of the static grid.
 #' @param time The step's time value.
@@ -2195,6 +2312,34 @@ mio_sequence_pipeline_run_file <- function(settings_path) {
 #' @export
 mio_sequence_pipeline_run_json <- function(json_text) {
   invisible(.Call(R_mio_sequence_pipeline_run_json, as.character(json_text)))
+}
+
+#' Pipeline structured reports as JSON
+#'
+#' Execute once and return JSON with steps (op plus PascalCase counters) and
+#' warnings. Non-finite counters are null. No JSON package is required; callers
+#' can parse the string with jsonlite if desired. Existing status-only APIs remain.
+#' @param path Settings file path.
+#' @param text Settings JSON text.
+#' @return A JSON character scalar. Requires a JSON-enabled native build.
+#' @export
+mio_pipeline_run_file_report <- function(path) {
+  .Call(R_mio_pipeline_run_file_report, as.character(path))
+}
+#' @rdname mio_pipeline_run_file_report
+#' @export
+mio_pipeline_run_json_report <- function(text) {
+  .Call(R_mio_pipeline_run_json_report, as.character(text))
+}
+#' @rdname mio_pipeline_run_file_report
+#' @export
+mio_sequence_pipeline_run_file_report <- function(path) {
+  .Call(R_mio_sequence_pipeline_run_file_report, as.character(path))
+}
+#' @rdname mio_pipeline_run_file_report
+#' @export
+mio_sequence_pipeline_run_json_report <- function(text) {
+  .Call(R_mio_sequence_pipeline_run_json_report, as.character(text))
 }
 
 #' @rdname mio_extract_surface

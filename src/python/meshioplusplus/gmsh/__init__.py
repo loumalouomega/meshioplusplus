@@ -4,6 +4,7 @@ from .._files import is_buffer
 from .._helpers import register_format
 from .common import _gmsh_to_meshio_type as gmsh_to_meshioplusplus_type
 from .common import _meshio_to_gmsh_type as meshioplusplus_to_gmsh_type
+from .common import _validate_periodic
 from .main import read as _py_read
 from .main import write as _py_write
 
@@ -11,9 +12,9 @@ from .main import write as _py_write
 def read(filename, points_only=False, arrays=None, time_step: int = 0):
     """Read a Gmsh .msh file.
 
-    Uses the C++ core for format version 2.2 (ascii or binary), falling back to
-    the reference Python reader for versions 4.0/4.1, periodic meshes, and
-    anything else the C++ reader doesn't handle.
+    Uses the C++ core for format versions 2.2, 4.0 and 4.1 (ASCII or binary),
+    including periodic links, falling back to the reference Python reader for
+    constructs the C++ reader doesn't handle.
 
     ``time_step`` selects one step of a `$NodeData`/`$ElementData` timeline
     (0 = first, negative counts from the end), resolved the same way the C
@@ -45,14 +46,11 @@ def read(filename, points_only=False, arrays=None, time_step: int = 0):
 def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
     """Write a Gmsh .msh file.
 
-    Uses the C++ core for format versions 2.2 and 4.1 (ascii or binary) on
-    non-periodic meshes; otherwise falls back to the reference Python writer.
+    Uses the C++ core for format versions 2.2 and 4.1 (ASCII or binary), including
+    periodic links; otherwise falls back to the reference Python writer.
     """
-    if (
-        float_fmt == ".16e"
-        and getattr(mesh, "gmsh_periodic", None) is None
-        and not is_buffer(filename, "w")
-    ):
+    _validate_periodic(getattr(mesh, "gmsh_periodic", None), len(mesh.points))
+    if float_fmt == ".16e" and not is_buffer(filename, "w"):
         if fmt_version == "2.2":
             try:
                 _core.gmsh22_write(str(filename), mesh, binary)

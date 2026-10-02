@@ -28,7 +28,9 @@
  * `triangle`/`quad`/`polygon` (Polys). Cell data follows VTK's canonical
  * PolyData cell order — Verts, then Lines, then Polys, then Strips — in
  * both directions. Triangle strips, poly-vertex/poly-line rows, multiple
- * pieces, appended data, and lzma compression raise (Python fallback).
+ * pieces, and lzma compression raise (Python additionally handles lzma).
+ * Appended raw/base64 arrays share VTU's framing decoder, with UInt32/UInt64
+ * headers and either byte order; writing remains inline.
  */
 
 // System includes
@@ -60,7 +62,8 @@ namespace meshioplusplus {
  *         cell type PolyData cannot hold (volume or quadratic cells,
  *         polyhedra)
  */
-MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
+MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                  bool zlib);
 
 /**
  * @brief Write a `.vtp` choosing the block-compression codec explicitly.
@@ -77,14 +80,16 @@ MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, b
  *         into this build.
  */
 MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
-                     detail::VtkCodec codec);
+                                        detail::VtkCodec codec);
 
 /**
  * @brief Read a VTK XML PolyData (.vtp) file.
  *
  * Verts rows become `vertex` cells, Lines rows `line` cells, and Polys rows
  * `triangle`/`quad`/`polygon` cells (grouped by row size); cell_data is
- * split per block in VTK's canonical Verts/Lines/Polys order.
+ * split per block in VTK's canonical Verts/Lines/Polys order within each piece.
+ * Multiple pieces concatenate in document order without welding; compatible
+ * arrays present in every piece survive. Piece-local region indices are shifted.
  *
  * @param rPath filesystem path of the `.vtp` file
  * @param rOpts optional narrowing of what is materialized; the default reads
@@ -92,8 +97,8 @@ MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rM
  *        before their payload is decoded.
  * @return the read Mesh
  * @throws ReadError on malformed XML, a non-PolyData file, triangle strips,
- *         poly-vertex/poly-line rows, multiple pieces, appended data, or
- *         lzma compression (all deferred to the Python reader)
+ *         poly-vertex/poly-line rows or lzma compression
+ *         (the Python reader additionally handles lzma)
  */
 MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
 
@@ -108,6 +113,7 @@ MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rO
  * @return the summary; `mHasBBox` is false (see `read_vtu_metadata`)
  * @throws ReadError on the same unsupported constructs as `read_vtp`
  */
-MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

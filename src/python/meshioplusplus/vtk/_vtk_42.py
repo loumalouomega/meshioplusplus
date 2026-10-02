@@ -297,6 +297,8 @@ def _generate_cells(dim):
     ele_no = int(np.prod(ele_dim))
     spatial_dim = len(ele_dim)
 
+    if spatial_dim == 0:
+        return np.array([1, 0], dtype=np.int64), np.array([1], dtype=np.int64)
     if spatial_dim == 1:
         # cells are lines in 1D
         cells = np.empty((ele_no, 3), dtype=int)

@@ -130,9 +130,9 @@ typedef struct mio_contact_pairs_result mio_contact_pairs_result;
 typedef struct mio_partition_result mio_partition_result;
 
 typedef enum mio_status {
-    MIO_OK = 0,           /**< success */
-    MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
-    MIO_ERR_WRITE = 2,    /**< mesh could not be serialized / write-side failure */
+    MIO_OK = 0,              /**< success */
+    MIO_ERR_READ = 1,        /**< file could not be parsed / read-side failure */
+    MIO_ERR_WRITE = 2,       /**< mesh could not be serialized / write-side failure */
     MIO_ERR_INVALID_ARG = 3, /**< NULL handle/pointer, bad dtype, bad shape, ... */
     MIO_ERR_NOT_FOUND = 4,   /**< unknown format/data name/block index */
     MIO_ERR_UNSUPPORTED = 5, /**< valid but unsupported (e.g. ragged connectivity) */
@@ -142,7 +142,7 @@ typedef enum mio_status {
 /** Overall outcome of comparing two meshes (see mio_diff()), in increasing
  *  order of severity — mirrors meshioplusplus::DiffVerdict. */
 typedef enum mio_diff_verdict {
-    MIO_DIFF_IDENTICAL = 0,             /**< structurally equal, values bitwise-equal */
+    MIO_DIFF_IDENTICAL = 0,              /**< structurally equal, values bitwise-equal */
     MIO_DIFF_EQUAL_WITHIN_TOLERANCE = 1, /**< values drifted but within tolerance */
     MIO_DIFF_DIFFERENT = 2               /**< a structural or beyond-tolerance difference */
 } mio_diff_verdict;
@@ -170,19 +170,26 @@ typedef enum mio_dtype {
  * cell_type.hpp). c_api.cpp static_asserts every entry and the terminal
  * MIO_CELL_Custom against the C++ enum, so any drift between the two lists
  * is a compile error, never a runtime mismatch. */
-#define MIO_CELL_TYPES(X)                                                                        \
-    X(Vertex) X(Line) X(Line3) X(Line4) X(Line5) X(Line6) X(Line7) X(Line8) X(Line9) X(Line10)  \
-    X(Line11) X(Triangle) X(Triangle6) X(Triangle10) X(Triangle15) X(Triangle21) X(Triangle28)  \
-    X(Triangle36) X(Triangle45) X(Triangle55) X(Triangle66) X(Quad) X(Quad8) X(Quad9) X(Quad16) \
-    X(Quad25) X(Quad36) X(Quad49) X(Quad64) X(Quad81) X(Quad100) X(Quad121) X(Tetra) X(Tetra10) \
-    X(Tetra20) X(Tetra35) X(Tetra56) X(Tetra84) X(Tetra120) X(Tetra165) X(Tetra220) X(Tetra286) \
-    X(Hexahedron) X(Hexahedron20) X(Hexahedron24) X(Hexahedron27) X(Hexahedron64)               \
-    X(Hexahedron125) X(Hexahedron216) X(Hexahedron343) X(Hexahedron512) X(Hexahedron729)        \
-    X(Hexahedron1000) X(Hexahedron1331) X(Wedge) X(Wedge15) X(Wedge18) X(Wedge40) X(Wedge75)    \
-    X(Wedge126) X(Wedge196) X(Wedge288) X(Wedge405) X(Wedge550) X(Pyramid) X(Pyramid13)         \
-    X(Pyramid14) X(Polygon) X(Polyhedron) X(VtkLagrangeCurve) X(VtkLagrangeTriangle)            \
-    X(VtkLagrangeQuadrilateral) X(VtkLagrangeTetrahedron) X(VtkLagrangeHexahedron)              \
-    X(VtkLagrangeWedge) X(VtkLagrangePyramid) X(Triangle7)
+#define MIO_CELL_TYPES(X)                                                                          \
+    X(Vertex)                                                                                      \
+    X(Line)                                                                                        \
+    X(Line3)                                                                                       \
+    X(Line4)                                                                                       \
+    X(Line5)                                                                                       \
+    X(Line6) X(Line7) X(Line8) X(Line9) X(Line10) X(Line11) X(Triangle) X(Triangle6) X(Triangle10) \
+        X(Triangle15) X(Triangle21) X(Triangle28) X(Triangle36) X(Triangle45) X(Triangle55) X(     \
+            Triangle66) X(Quad) X(Quad8) X(Quad9) X(Quad16) X(Quad25) X(Quad36) X(Quad49)          \
+            X(Quad64) X(Quad81) X(Quad100) X(Quad121) X(Tetra) X(Tetra10) X(Tetra20) X(Tetra35) X( \
+                Tetra56) X(Tetra84) X(Tetra120) X(Tetra165) X(Tetra220) X(Tetra286) X(Hexahedron)  \
+                X(Hexahedron20) X(Hexahedron24) X(Hexahedron27) X(Hexahedron64) X(Hexahedron125)   \
+                    X(Hexahedron216) X(Hexahedron343) X(Hexahedron512) X(Hexahedron729)            \
+                        X(Hexahedron1000) X(Hexahedron1331) X(Wedge) X(Wedge15) X(Wedge18)         \
+                            X(Wedge40) X(Wedge75) X(Wedge126) X(Wedge196) X(Wedge288) X(Wedge405)  \
+                                X(Wedge550) X(Pyramid) X(Pyramid13) X(Pyramid14) X(Polygon)        \
+                                    X(Polyhedron) X(VtkLagrangeCurve) X(VtkLagrangeTriangle)       \
+                                        X(VtkLagrangeQuadrilateral) X(VtkLagrangeTetrahedron)      \
+                                            X(VtkLagrangeHexahedron) X(VtkLagrangeWedge)           \
+                                                X(VtkLagrangePyramid) X(Triangle7)
 
 /** Integer mirror of the meshio++ cell-type table. The string names (e.g.
  *  "tetra10") are the primary representation everywhere in this API; the
@@ -208,12 +215,12 @@ typedef enum mio_region_kind {
 
 /** Fixed-size description of one region (see mio_regions_info). */
 typedef struct mio_region_info {
-    int32_t kind;         /**< a mio_region_kind */
-    int32_t dim;          /**< topological dimension, or -1 if unspecified */
-    int64_t tag;          /**< format-native integer id, or -1 if none */
-    int64_t num_entries;  /**< number of grouped entities (rows) */
-    int64_t stride;       /**< values per entry: 2 for SIDE, else 1 (0 where entries aren't
-                            *   carried at all, as in mio_read_metadata_region_info) */
+    int32_t kind;        /**< a mio_region_kind */
+    int32_t dim;         /**< topological dimension, or -1 if unspecified */
+    int64_t tag;         /**< format-native integer id, or -1 if none */
+    int64_t num_entries; /**< number of grouped entities (rows) */
+    int64_t stride;      /**< values per entry: 2 for SIDE, else 1 (0 where entries aren't
+                          *   carried at all, as in mio_read_metadata_region_info) */
 } mio_region_info;
 
 /* ---------------------------------------------------------------------
@@ -325,7 +332,7 @@ MIO_API mio_mesh* mio_read(const char* path, const char* format);
  * default sensibly in code compiled against an older header.
  */
 typedef struct mio_read_opts {
-    int points_only;  /**< read geometry only, skipping every data array */
+    int points_only;   /**< read geometry only, skipping every data array */
     int metadata_only; /**< read the header/summary only (see mio_read_metadata) */
     /** NULL = every array; otherwise `num_arrays` names to keep. An array
      *  count of 0 with a non-NULL pointer means "no arrays" -- the distinction
@@ -333,7 +340,7 @@ typedef struct mio_read_opts {
      *  are ignored. The pointed-to strings are copied during the call. */
     const char* const* arrays;
     int64_t num_arrays;
-    int mmap_mode;      /**< 0 = auto, 1 = on, 2 = off */
+    int mmap_mode; /**< 0 = auto, 1 = on, 2 = off */
     /** Which step of a multi-step file to materialize: 0 (the default) is the
      *  first, preserving the historical behaviour; negative counts from the end.
      *  Out of range fails the call rather than clamping. Honoured by formats
@@ -526,13 +533,14 @@ typedef enum mio_write_encoding {
                                        no base64 (since v16.21.0) */
 } mio_write_encoding;
 
-/** Block compression codec for mio_write_opts.codec (vti/vtu/vtp only). */
+/** Compression codec for mio_write_opts.codec (VTK block codecs, or PCD LZF). */
 typedef enum mio_write_codec {
     MIO_CODEC_DEFAULT = 0, /**< leave the format's default in place */
     MIO_CODEC_NONE = 1,
     MIO_CODEC_ZLIB = 2,
     MIO_CODEC_LZ4 = 3,  /**< vtkLZ4DataCompressor; ParaView-readable */
-    MIO_CODEC_ZSTD = 4  /**< a meshio++ extension; ParaView cannot read it */
+    MIO_CODEC_ZSTD = 4, /**< a meshio++ extension; ParaView cannot read it */
+    MIO_CODEC_LZF = 5   /**< pcd only: binary_compressed; incompatible with ASCII */
 } mio_write_codec;
 
 /**
@@ -547,8 +555,8 @@ typedef enum mio_write_codec {
  * ignored -- asking for zstd in a Gmsh file is a mistake worth reporting.
  */
 typedef struct mio_write_opts {
-    int encoding;      /**< a mio_write_encoding value */
-    int codec;         /**< a mio_write_codec value; vti/vtu/vtp only */
+    int encoding; /**< a mio_write_encoding value */
+    int codec;    /**< a mio_write_codec value; VTK codecs or PCD LZF */
     /** printf-style float format for the ASCII writers that take one (e.g.
      *  ".16e"). NULL or empty keeps the writer's own default. Copied during
      *  the call. Currently honoured by flac3d and xyz. */
@@ -566,6 +574,37 @@ MIO_API void mio_write_opts_init(mio_write_opts* opts);
  */
 MIO_API mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                                 const mio_write_opts* opts);
+
+/** glTF/GLB export options. Initialize with mio_gltf_opts_init; strings are
+ * borrowed for the call only. Unset component/range selects magnitude/auto.
+ * This is a new layout; future fields consume reserved capacity only. */
+typedef struct mio_gltf_opts {
+    int container;     /**< 0 auto, 1 GLB, 2 glTF + bin */
+    int up_axis;       /**< 0 auto, 1 Z, 2 Y, 3 X */
+    int normal_weight; /**< 0 angle, 1 area */
+    int normals;
+    int fields;
+    int recenter;
+    int by_region;
+    int unlit;
+    int component; /**< 0-based; only used when component_set is nonzero */
+    int component_set;
+    int vmin_set;
+    int vmax_set;
+    double split_angle; /**< degrees, default 30 */
+    double scale;       /**< source units to metres, default 1 */
+    double vmin;
+    double vmax;
+    const char* color_by;
+    const char* cmap;      /**< NULL keeps viridis */
+    const char* nan_color; /**< NULL keeps #808080 */
+    int64_t reserved[8];
+} mio_gltf_opts;
+
+MIO_API void mio_gltf_opts_init(mio_gltf_opts* opts);
+/** NULL opts selects the existing glTF writer's defaults. */
+MIO_API mio_status mio_write_gltf(const char* path, const mio_mesh* mesh,
+                                  const mio_gltf_opts* opts);
 
 /* ---------------------------------------------------------------------
  * Format side channels (v16.27.0)
@@ -585,7 +624,7 @@ typedef struct mio_format_info mio_format_info;
 /**
  * Read a mesh, keeping what it cannot hold in `*info`.
  *
- * Formats with a side channel (currently "mdpa") read through their full
+ * Formats with a side channel (currently "mdpa" and "gmsh") read through their full
  * reader and set `*info` to a new handle; every other format reads exactly as
  * mio_read_ex() and sets `*info` to NULL. `opts` may be NULL (the defaults).
  * @return the mesh, or NULL on failure (`*info` is then NULL too).
@@ -610,6 +649,26 @@ MIO_API int64_t mio_format_info_format(const mio_format_info* info, char* buf, i
 /** Destroy a side-channel handle. NULL is a no-op. */
 MIO_API void mio_format_info_free(mio_format_info* info);
 
+/** Gmsh side-channel sections. BOUNDING_ENTITIES: array field 0 is a signed
+ * Int32 entity-tag list per cell block. PERIODIC: field 0 is Int32[3]
+ * (dimension, slave entity tag, master entity tag), field 1 is Float64[0 or 16]
+ * affine coefficients, field 2 is Int64[N,2] slave/master 0-based point rows.
+ * Ordering/duplicates are kept. Mesh operations do not remap the side channel.
+ */
+typedef enum mio_gmsh_section {
+    MIO_GMSH_BOUNDING_ENTITIES = 0,
+    MIO_GMSH_PERIODIC = 1
+} mio_gmsh_section;
+
+/** Number of items, or -1 on an invalid handle/section. */
+MIO_API int64_t mio_gmsh_info_count(const mio_format_info* info, int32_t section);
+/** Borrow an array until info is freed. Index is 0-based; shape needs space
+ * for MIO_MAX_NDIM dimensions. Any output may be NULL. Invalid arguments return
+ * an error status. */
+MIO_API mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                       int32_t field, const void** data, mio_dtype* dtype,
+                                       int32_t* ndim, int64_t* shape);
+
 /**
  * The sections of an MDPA side channel. Each is a list; the accessors below
  * take a section, an item index in [0, mio_mdpa_info_count()) and, where an
@@ -629,8 +688,9 @@ MIO_API void mio_format_info_free(mio_format_info* info);
  *  - MESH_BLOCKS: `Begin Mesh <id>`. int field 0 = id; array field 0 =
  *    Int64 0-based point rows, 1 = element ids, 2 = condition ids (file ids);
  *    data entries (MeshData).
- *  - SUBMODELPARTS: parts with SubModelPartData/Tables. string field 0 =
- *    hierarchical name; array field 0 = Int64 table ids; data entries.
+ *  - SUBMODELPARTS: parts with data or table/geometry/constraint membership.
+ *    string field 0 = hierarchical name; array field 0 = Int64 table ids,
+ *    1 = geometry ids, 2 = constraint ids (raw file ids); data entries.
  *  - RAW_BLOCKS: blocks kept verbatim (Constraints, ...). string field 0 =
  *    header line, 1 = body (lines ending in '\n'), 2 = terminator.
  */
@@ -733,8 +793,8 @@ MIO_API void mio_provenance_set_source(const char* path, const char* format);
 
 /** Sets the target format/encoding/codec/float_format on the active record
  *  (pass "" for a field that does not apply). A no-op outside a scope. */
-MIO_API void mio_provenance_set_target(const char* format, const char* encoding,
-                                       const char* codec, const char* float_format);
+MIO_API void mio_provenance_set_target(const char* format, const char* encoding, const char* codec,
+                                       const char* float_format);
 
 /** Read `in_path` and immediately write it to `out_path` (the CLI's
  *  `convert`), without materializing a handle for the caller. */
@@ -817,10 +877,9 @@ typedef struct mio_quality_gate_report {
  * @return MIO_OK whether or not the gate passed (read `report->passed`); an
  *         error only when the check could not run.
  */
-MIO_API mio_status mio_check_quality(const mio_mesh* mesh, const char* spec,
-                                     int64_t max_inverted, int64_t max_degenerate,
-                                     mio_quality_gate_report* report, char* summary,
-                                     int64_t summary_len);
+MIO_API mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int64_t max_inverted,
+                                     int64_t max_degenerate, mio_quality_gate_report* report,
+                                     char* summary, int64_t summary_len);
 
 /**
  * Guess a mesh file's format from its contents (magic-byte sniffing).
@@ -863,8 +922,7 @@ MIO_API mio_mesh* mio_merge(const mio_mesh* const* meshes, int64_t count, int we
  *               (trailing dim 9) point_data by the transform's 3x3 linear block.
  * @return the transformed mesh (free with mio_mesh_free), or NULL on failure.
  */
-MIO_API mio_mesh* mio_transform(const mio_mesh* mesh, const double* matrix,
-                                int rotate_vector_data);
+MIO_API mio_mesh* mio_transform(const mio_mesh* mesh, const double* matrix, int rotate_vector_data);
 
 /**
  * Clean a mesh in one pass: weld coincident points, drop degenerate/duplicate
@@ -1282,10 +1340,9 @@ MIO_API mio_mesh* mio_hessian(const mio_mesh* mesh, const char* array_name, cons
  *         or NULL on failure.
  */
 MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name,
-                                     const char* method, const char* marking,
-                                     double marking_value, const char* output_name,
-                                     const char* marked_name, int overwrite,
-                                     double* global_error, int64_t* num_skipped,
+                                     const char* method, const char* marking, double marking_value,
+                                     const char* output_name, const char* marked_name,
+                                     int overwrite, double* global_error, int64_t* num_skipped,
                                      int64_t* num_marked);
 
 /**
@@ -1348,8 +1405,7 @@ MIO_API mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int sub
                              int max_repair_passes, const char* metric, double gradation,
                              int preserve_boundary, int64_t* num_clusters_out,
                              int64_t* num_iterations, int* subdivide_applied,
-                             int64_t* num_isolated_clusters,
-                             int64_t* num_non_manifold_vertices);
+                             int64_t* num_isolated_clusters, int64_t* num_non_manifold_vertices);
 
 /**
  * Options for `mio_remesh_ex`; use `mio_remesh_opts_init` to get the same
@@ -1706,8 +1762,7 @@ MIO_API mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* resul
  * @param n      receives the input mesh's total cell count.
  */
 MIO_API mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result,
-                                                   const void** data, mio_dtype* dtype,
-                                                   int64_t* n);
+                                                   const void** data, mio_dtype* dtype, int64_t* n);
 
 /** Free an agglomerate result (and the mesh it still owns). */
 MIO_API void mio_agglomerate_result_free(mio_agglomerate_result* result);
@@ -2062,12 +2117,9 @@ MIO_API void mio_decimate_result_free(mio_decimate_result* result);
  *         NULL on failure — a non-tet-only mesh, a non-manifold boundary
  *         face, and a criterion count != 1 all fail by name.
  */
-MIO_API mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double target_ratio,
-                                                         int64_t target_cells, double max_error,
-                                                         const char* placement,
-                                                         int preserve_boundary,
-                                                         int preserve_features,
-                                                         double feature_angle);
+MIO_API mio_decimate_volume_result* mio_decimate_volume(
+    const mio_mesh* mesh, double target_ratio, int64_t target_cells, double max_error,
+    const char* placement, int preserve_boundary, int preserve_features, double feature_angle);
 
 /**
  * Options for mio_decimate_volume_ex.
@@ -2082,11 +2134,13 @@ typedef struct mio_decimate_volume_opts {
     double target_ratio;
     /** Absolute tet count to stop at; negative = unset. */
     int64_t target_cells;
-    /** Collapse only while the cheapest boundary-touching candidate's error is at most this; negative = unset. */
+    /** Collapse only while the cheapest boundary-touching candidate's error is at most this;
+     * negative = unset. */
     double max_error;
     /** "optimal", "midpoint" or "endpoint"; NULL = "optimal". */
     const char* placement;
-    /** Nonzero to pin every boundary vertex outright (mio_decimate's own default; here defaults off). */
+    /** Nonzero to pin every boundary vertex outright (mio_decimate's own default; here defaults
+     * off). */
     int32_t preserve_boundary;
     /** Nonzero to pin boundary feature vertices. */
     int32_t preserve_features;
@@ -2116,7 +2170,7 @@ MIO_API void mio_decimate_volume_opts_init(mio_decimate_volume_opts* opts);
  *         NULL on failure, including an out-of-range `frozen` id.
  */
 MIO_API mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
-                                                            const mio_decimate_volume_opts* opts);
+                                                           const mio_decimate_volume_opts* opts);
 
 /**
  * Borrow the decimated mesh. Owned by the result: valid until
@@ -2139,8 +2193,8 @@ MIO_API mio_mesh* mio_decimate_volume_result_take_mesh(mio_decimate_volume_resul
  * may be NULL.
  */
 MIO_API mio_status mio_decimate_volume_result_point_map(const mio_decimate_volume_result* result,
-                                                         const void** data, mio_dtype* dtype,
-                                                         int64_t* n);
+                                                        const void** data, mio_dtype* dtype,
+                                                        int64_t* n);
 
 /** Number of per-block cell maps in a decimate_volume result, or -1 on error. */
 MIO_API int64_t mio_decimate_volume_result_num_cell_maps(const mio_decimate_volume_result* result);
@@ -2156,16 +2210,14 @@ MIO_API int64_t mio_decimate_volume_result_num_cell_maps(const mio_decimate_volu
  * @param n      receives the block's input cell count.
  */
 MIO_API mio_status mio_decimate_volume_result_cell_map(const mio_decimate_volume_result* result,
-                                                        int64_t block, const void** data,
-                                                        mio_dtype* dtype, int64_t* n);
+                                                       int64_t block, const void** data,
+                                                       mio_dtype* dtype, int64_t* n);
 
 /** Tets removed, or -1 on error. */
-MIO_API int64_t
-mio_decimate_volume_result_tets_removed(const mio_decimate_volume_result* result);
+MIO_API int64_t mio_decimate_volume_result_tets_removed(const mio_decimate_volume_result* result);
 
 /** Points removed (collapsed plus pruned-unreferenced), or -1 on error. */
-MIO_API int64_t
-mio_decimate_volume_result_points_removed(const mio_decimate_volume_result* result);
+MIO_API int64_t mio_decimate_volume_result_points_removed(const mio_decimate_volume_result* result);
 
 /** Guard-rejection events during the run, or -1 on error. */
 MIO_API int64_t
@@ -2174,8 +2226,8 @@ mio_decimate_volume_result_collapses_rejected(const mio_decimate_volume_result* 
 /** The largest committed boundary-touching (regime 0) collapse error (0.0
  *  when nothing collapsed, or every collapse was purely interior), or a
  *  negative value on error. */
-MIO_API double
-mio_decimate_volume_result_max_error_applied(const mio_decimate_volume_result* result);
+MIO_API double mio_decimate_volume_result_max_error_applied(
+    const mio_decimate_volume_result* result);
 
 /** Free a decimate_volume result (and the mesh it still owns). */
 MIO_API void mio_decimate_volume_result_free(mio_decimate_volume_result* result);
@@ -2246,9 +2298,8 @@ MIO_API mio_mesh* mio_partition_result_take_mesh(mio_partition_result* result, i
  * @param dtype  receives MIO_INT64.
  * @param n      receives the input point count.
  */
-MIO_API mio_status mio_partition_result_point_map(const mio_partition_result* result,
-                                                  int64_t index, const void** data,
-                                                  mio_dtype* dtype, int64_t* n);
+MIO_API mio_status mio_partition_result_point_map(const mio_partition_result* result, int64_t index,
+                                                  const void** data, mio_dtype* dtype, int64_t* n);
 
 /** Number of per-block cell maps in each piece (== the input's cell-block
  *  count), or -1 on error. */
@@ -2266,8 +2317,8 @@ MIO_API int64_t mio_partition_result_num_cell_maps(const mio_partition_result* r
  * @param n      receives the block's input cell count.
  */
 MIO_API mio_status mio_partition_result_cell_map(const mio_partition_result* result, int64_t index,
-                                                 int64_t block, const void** data,
-                                                 mio_dtype* dtype, int64_t* n);
+                                                 int64_t block, const void** data, mio_dtype* dtype,
+                                                 int64_t* n);
 
 /** Free a partition result (and every piece mesh it still owns). */
 MIO_API void mio_partition_result_free(mio_partition_result* result);
@@ -2332,9 +2383,9 @@ typedef enum mio_voxel_fill {
 
 /** How a signed distance decides which side of the surface a point is on. */
 typedef enum mio_sdf_sign {
-    MIO_SDF_UNSIGNED = 0,       /**< no sign; the only mode valid on an open sheet */
-    MIO_SDF_PSEUDONORMAL = 1,   /**< angle-weighted pseudonormal of the nearest feature */
-    MIO_SDF_WINDING_NUMBER = 2  /**< generalized winding number; O(triangles) per query */
+    MIO_SDF_UNSIGNED = 0,      /**< no sign; the only mode valid on an open sheet */
+    MIO_SDF_PSEUDONORMAL = 1,  /**< angle-weighted pseudonormal of the nearest feature */
+    MIO_SDF_WINDING_NUMBER = 2 /**< generalized winding number; O(triangles) per query */
 } mio_sdf_sign;
 
 /** How incident faces are weighted when building a vertex pseudonormal. */
@@ -2351,9 +2402,9 @@ typedef enum mio_sdf_location {
 
 /** What to do when the surface turns out not to be watertight. */
 typedef enum mio_sdf_watertight_check {
-    MIO_SDF_WATERTIGHT_OFF = 0,   /**< do not look */
-    MIO_SDF_WATERTIGHT_WARN = 1,  /**< log the counts and carry on */
-    MIO_SDF_WATERTIGHT_ERROR = 2  /**< fail, naming the counts */
+    MIO_SDF_WATERTIGHT_OFF = 0,  /**< do not look */
+    MIO_SDF_WATERTIGHT_WARN = 1, /**< log the counts and carry on */
+    MIO_SDF_WATERTIGHT_ERROR = 2 /**< fail, naming the counts */
 } mio_sdf_watertight_check;
 
 /**
@@ -2433,11 +2484,11 @@ typedef struct mio_voxel_opts {
     double padding_relative;
     /** Refuse above this many cells; 0 or less lifts the limit. */
     int64_t max_cells;
-    int32_t fill;              /**< a mio_voxel_fill */
-    int32_t attach_occupancy;  /**< nonzero to attach voxel:occupancy */
-    int32_t sign;              /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE */
-    int32_t watertight_check;  /**< a mio_sdf_watertight_check */
-    int64_t reserved[6];       /**< must be zero; room for additive growth */
+    int32_t fill;             /**< a mio_voxel_fill */
+    int32_t attach_occupancy; /**< nonzero to attach voxel:occupancy */
+    int32_t sign;             /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE */
+    int32_t watertight_check; /**< a mio_sdf_watertight_check */
+    int64_t reserved[6];      /**< must be zero; room for additive growth */
 } mio_voxel_opts;
 
 /** Zero-initialize voxelization options (every field its default). */
@@ -2457,8 +2508,8 @@ MIO_API void mio_voxel_opts_init(mio_voxel_opts* opts);
  * @param max_cells refuse above this many cells; 0 or less lifts the limit.
  * @return the lattice (free with mio_mesh_free), or NULL on failure.
  */
-MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3],
-                           const double spacing[3], int64_t max_cells);
+MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3], const double spacing[3],
+                           int64_t max_cells);
 
 /**
  * Build a regular grid around a mesh and keep the cells its fill rule selects.
@@ -2474,8 +2525,8 @@ MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3],
  * @return the grid (free with mio_mesh_free), or NULL on failure.
  */
 MIO_API mio_mesh* mio_voxelize(const mio_mesh* mesh, const mio_voxel_opts* opts,
-                               int64_t dims_out[3], double origin_out[3],
-                               double spacing_out[3], int64_t* num_occupied);
+                               int64_t dims_out[3], double origin_out[3], double spacing_out[3],
+                               int64_t* num_occupied);
 
 /**
  * Report what is wrong with a surface, without computing any distances.
@@ -2483,8 +2534,7 @@ MIO_API mio_mesh* mio_voxelize(const mio_mesh* mesh, const mio_voxel_opts* opts,
  * @param out     receives the counts (must be non-NULL).
  * @return MIO_OK, or an error status (see mio_last_error()).
  */
-MIO_API mio_status mio_surface_watertight_check(const mio_mesh* surface,
-                                                mio_surface_quality* out);
+MIO_API mio_status mio_surface_watertight_check(const mio_mesh* surface, mio_surface_quality* out);
 
 /**
  * Signed distances from arbitrary points to a surface.
@@ -2518,8 +2568,8 @@ MIO_API mio_mesh* mio_distance_to_surface(const mio_mesh* query, const mio_mesh*
 
 /** Which structure mio_compute_sdf generates. */
 typedef enum mio_sdf_structure {
-    MIO_SDF_VOXEL = 0,  /**< a dense uniform lattice over the padded box */
-    MIO_SDF_OCTREE = 1  /**< adaptive, refined near the surface (1-irregular) */
+    MIO_SDF_VOXEL = 0, /**< a dense uniform lattice over the padded box */
+    MIO_SDF_OCTREE = 1 /**< adaptive, refined near the surface (1-irregular) */
 } mio_sdf_structure;
 
 /**
@@ -2553,9 +2603,9 @@ typedef struct mio_compute_sdf_opts {
     int64_t root_resolution;
     /** Octree: how many refinement passes. */
     int64_t max_depth;
-    int32_t structure;      /**< a mio_sdf_structure */
-    int32_t record_levels;  /**< octree: nonzero to attach refine:level */
-    int64_t reserved[6];    /**< must be zero; room for additive growth */
+    int32_t structure;     /**< a mio_sdf_structure */
+    int32_t record_levels; /**< octree: nonzero to attach refine:level */
+    int64_t reserved[6];   /**< must be zero; room for additive growth */
     /** How the distances themselves are computed. Embedded by value, as in C++. */
     mio_sdf_opts distance;
 } mio_compute_sdf_opts;
@@ -2586,9 +2636,9 @@ MIO_API void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts);
  * @return the grid (free with mio_mesh_free), or NULL on failure.
  */
 MIO_API mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf_opts* opts,
-                                  int64_t dims_out[3], double origin_out[3],
-                                  double spacing_out[3], int64_t* max_depth_out,
-                                  int64_t* num_banded, mio_surface_quality* quality);
+                                  int64_t dims_out[3], double origin_out[3], double spacing_out[3],
+                                  int64_t* max_depth_out, int64_t* num_banded,
+                                  mio_surface_quality* quality);
 
 /**
  * Options for mio_remesh_volume_ex.
@@ -2874,15 +2924,16 @@ MIO_API mio_mesh* mio_compute_normals(const mio_mesh* mesh, const mio_normals_op
  * so an all-zero struct is NOT the default here.
  */
 typedef struct mio_repair_opts {
-    int32_t fix_orientation;    /**< nonzero (the default) rewinds triangles so neighbours agree */
-    int32_t orient_outward;     /**< nonzero (the default) flips closed components with a negative volume */
-    int32_t fill_holes;         /**< nonzero (the default) fan-fills boundary loops */
+    int32_t fix_orientation; /**< nonzero (the default) rewinds triangles so neighbours agree */
+    int32_t
+        orient_outward; /**< nonzero (the default) flips closed components with a negative volume */
+    int32_t fill_holes; /**< nonzero (the default) fan-fills boundary loops */
     int32_t split_non_manifold; /**< nonzero (the default) duplicates bowtie vertices */
     int32_t record_provenance;  /**< nonzero attaches repair:parent_point and repair:hole */
     int32_t reserved_pad;       /**< must be zero; keeps the int64 tail aligned */
     int64_t max_hole_edges;     /**< longest loop still filled (default 10); <= 0 means no limit */
-    double weld_tolerance;      /**< weld coincident points within this first; 0 (the default) skips */
-    int64_t reserved[5];        /**< must be zero; room for additive growth */
+    double weld_tolerance; /**< weld coincident points within this first; 0 (the default) skips */
+    int64_t reserved[5];   /**< must be zero; room for additive growth */
 } mio_repair_opts;
 
 /** Initialize repair options to their defaults (every pass on, limit 10, no weld). */
@@ -2900,11 +2951,11 @@ typedef struct mio_repair_report {
     int64_t num_vertices_split;         /**< bowtie vertices duplicated */
     int64_t num_holes_detected;         /**< boundary loops found */
     int64_t num_holes_filled;
-    int64_t num_holes_skipped;          /**< too long, or not traceable */
-    int64_t num_faces_added;            /**< fill triangles */
-    int64_t num_points_added;           /**< copies plus centroids */
-    int64_t points_welded;              /**< from the optional weld */
-    int64_t reserved[4];                /**< must be zero; room for additive growth */
+    int64_t num_holes_skipped; /**< too long, or not traceable */
+    int64_t num_faces_added;   /**< fill triangles */
+    int64_t num_points_added;  /**< copies plus centroids */
+    int64_t points_welded;     /**< from the optional weld */
+    int64_t reserved[4];       /**< must be zero; room for additive growth */
 } mio_repair_report;
 
 /**
@@ -2938,14 +2989,14 @@ typedef struct mio_shrinkwrap_opts {
     const char* weights;
     /** Restrict the TARGET to this named cell region; NULL or "" takes all. */
     const char* target_region;
-    double offset;              /**< signed offset along the hit feature's unit pseudonormal */
-    double max_distance;        /**< farther points are left alone; <= 0 means unlimited */
-    double grid_cell_size;      /**< accelerator bucket size; 0 derives one (never changes the answer) */
-    int32_t normal_weight;      /**< a mio_sdf_weight; MIO_SDF_WEIGHT_ANGLE by default */
-    int32_t record_distance;    /**< nonzero attaches shrinkwrap:distance */
-    int32_t record_closest_cell;/**< nonzero attaches shrinkwrap:closest_cell */
-    int32_t reserved_pad;       /**< must be zero */
-    int64_t reserved[5];        /**< must be zero; room for additive growth */
+    double offset;         /**< signed offset along the hit feature's unit pseudonormal */
+    double max_distance;   /**< farther points are left alone; <= 0 means unlimited */
+    double grid_cell_size; /**< accelerator bucket size; 0 derives one (never changes the answer) */
+    int32_t normal_weight; /**< a mio_sdf_weight; MIO_SDF_WEIGHT_ANGLE by default */
+    int32_t record_distance;     /**< nonzero attaches shrinkwrap:distance */
+    int32_t record_closest_cell; /**< nonzero attaches shrinkwrap:closest_cell */
+    int32_t reserved_pad;        /**< must be zero */
+    int64_t reserved[5];         /**< must be zero; room for additive growth */
 } mio_shrinkwrap_opts;
 
 /** Initialize shrinkwrap options to their defaults. */
@@ -2991,13 +3042,13 @@ typedef struct mio_sobolev_opts {
      *  "" pins nothing this way. (The C++ mask form is a flat-ABI gap, like
      *  mio_smooth's frozen.) */
     const char* fixed_points_array;
-    double length_scale;        /**< the smoothing length; 0 applies the raw field at free points */
-    double tolerance;           /**< relative residual tolerance (default 1e-10) */
-    int32_t max_iterations;     /**< conjugate-gradient cap (default 128) */
-    int32_t fix_boundary;       /**< nonzero pins every point on a boundary facet */
-    int32_t record_filtered;    /**< nonzero attaches sobolev:displacement */
-    int32_t reserved_pad;       /**< must be zero */
-    int64_t reserved[5];        /**< must be zero; room for additive growth */
+    double length_scale;     /**< the smoothing length; 0 applies the raw field at free points */
+    double tolerance;        /**< relative residual tolerance (default 1e-10) */
+    int32_t max_iterations;  /**< conjugate-gradient cap (default 128) */
+    int32_t fix_boundary;    /**< nonzero pins every point on a boundary facet */
+    int32_t record_filtered; /**< nonzero attaches sobolev:displacement */
+    int32_t reserved_pad;    /**< must be zero */
+    int64_t reserved[5];     /**< must be zero; room for additive growth */
 } mio_sobolev_opts;
 
 /** Initialize Sobolev options to their defaults (no array, l = 0, 128 iterations, 1e-10). */
@@ -3111,6 +3162,20 @@ MIO_API mio_mesh* mio_data_keep(const mio_mesh* mesh, mio_data_location location
 MIO_API mio_mesh* mio_data_rename(const mio_mesh* mesh, mio_data_location location,
                                   const char* from_name, const char* to_name);
 
+/** Point/cell region-backed sets -> scalar Int64 data on a new mesh. NULL
+ * data_name joins set names with join_char (NULL means "-"). order/count may
+ * specify every set name exactly once; count=0 uses native region-name order.
+ * Later overlapping sets win, uncovered rows are -1; side regions remain.
+ * Free the result with mio_mesh_free; NULL indicates failure. */
+MIO_API mio_mesh* mio_sets_to_data(const mio_mesh* mesh, mio_data_location location,
+                                   const char* data_name, const char* join_char,
+                                   const char* const* order, int64_t count);
+/** Scalar integer point/cell data -> region-backed sets on a new mesh.
+ * Removes key; geometry, unrelated data and property sets survive.
+ * Free the result with mio_mesh_free; NULL indicates failure. */
+MIO_API mio_mesh* mio_data_to_sets(const mio_mesh* mesh, mio_data_location location,
+                                   const char* key);
+
 /**
  * Average point_data onto the cells: each cell's value is the mean over its own
  * nodes. The output is always Float64. `count == 0` converts every point_data
@@ -3145,8 +3210,7 @@ MIO_API mio_mesh* mio_data_cell_to_point(const mio_mesh* mesh, const char* const
  * @return a new mesh (free with mio_mesh_free), or NULL on failure.
  */
 MIO_API mio_mesh* mio_data_calc(const mio_mesh* mesh, const char* expression,
-                                mio_data_location location, const char* output_name,
-                                int overwrite);
+                                mio_data_location location, const char* output_name, int overwrite);
 
 /**
  * Condition the values of the selected data arrays (clamp / normalize /
@@ -3166,11 +3230,11 @@ MIO_API mio_mesh* mio_data_condition(const mio_mesh* mesh, mio_data_location loc
 
 /** Which invariant(s) mio_tensor_invariants computes; OR together. */
 typedef enum mio_tensor_invariant {
-    MIO_TINV_MISES = 1,        /**< von Mises equivalent */
-    MIO_TINV_PRINCIPAL = 2,    /**< eigenvalues, ascending */
-    MIO_TINV_HYDROSTATIC = 4,  /**< mean of the diagonal */
-    MIO_TINV_DEVIATORIC = 8,   /**< input minus hydrostatic on the diagonal */
-    MIO_TINV_ALL = 15          /**< every invariant above (also 0 defaults to this) */
+    MIO_TINV_MISES = 1,       /**< von Mises equivalent */
+    MIO_TINV_PRINCIPAL = 2,   /**< eigenvalues, ascending */
+    MIO_TINV_HYDROSTATIC = 4, /**< mean of the diagonal */
+    MIO_TINV_DEVIATORIC = 8,  /**< input minus hydrostatic on the diagonal */
+    MIO_TINV_ALL = 15         /**< every invariant above (also 0 defaults to this) */
 } mio_tensor_invariant;
 
 /**
@@ -3198,18 +3262,18 @@ typedef struct mio_data_info mio_data_info;
 /** Fixed-size summary of one data array (see mio_data_info_entry). Per-component
  *  statistics are retrieved separately with mio_data_info_component(). */
 typedef struct mio_data_array_info {
-    int location;           /**< a mio_data_location */
-    int dtype;              /**< a mio_dtype, as stored */
-    int64_t num_blocks;     /**< cell_data: number of cell blocks; else 1 */
-    int64_t num_entries;    /**< rows: points / cells over all blocks / length */
-    int64_t num_components; /**< product of the trailing dimensions */
-    int64_t num_values;     /**< num_entries * num_components */
-    double min;             /**< over finite values; NaN when there are none */
-    double max;             /**< over finite values; NaN when there are none */
-    double mean;            /**< over finite values; NaN when there are none */
-    int64_t num_nan;        /**< count of NaN values */
-    int64_t num_inf;        /**< count of +/-inf values */
-    int64_t num_finite;     /**< count of finite values */
+    int location;            /**< a mio_data_location */
+    int dtype;               /**< a mio_dtype, as stored */
+    int64_t num_blocks;      /**< cell_data: number of cell blocks; else 1 */
+    int64_t num_entries;     /**< rows: points / cells over all blocks / length */
+    int64_t num_components;  /**< product of the trailing dimensions */
+    int64_t num_values;      /**< num_entries * num_components */
+    double min;              /**< over finite values; NaN when there are none */
+    double max;              /**< over finite values; NaN when there are none */
+    double mean;             /**< over finite values; NaN when there are none */
+    int64_t num_nan;         /**< count of NaN values */
+    int64_t num_inf;         /**< count of +/-inf values */
+    int64_t num_finite;      /**< count of finite values */
     int inconsistent_blocks; /**< cell_data blocks disagree in component count */
 } mio_data_array_info;
 
@@ -3269,7 +3333,7 @@ typedef struct mio_field_integral_info {
  *         failure.
  */
 MIO_API mio_data_integrate* mio_data_integrate_create(const mio_mesh* mesh,
-                                                       const char* const* names, int64_t count);
+                                                      const char* const* names, int64_t count);
 
 /** @return the number of arrays described, or -1 on error. */
 MIO_API int64_t mio_data_integrate_count(const mio_data_integrate* result);
@@ -3279,8 +3343,8 @@ MIO_API int64_t mio_data_integrate_count(const mio_data_integrate* result);
  * @return the required length excluding the NUL (so a value >= buflen means the
  *         name was truncated), or -1 on error.
  */
-MIO_API int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index,
-                                        char* buf, int64_t buflen);
+MIO_API int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index, char* buf,
+                                        int64_t buflen);
 
 /** Fill `out` with the `index`-th array's whole-mesh summary. */
 MIO_API mio_status mio_data_integrate_entry(const mio_data_integrate* result, int64_t index,
@@ -3311,9 +3375,9 @@ MIO_API mio_status mio_data_integrate_region_entry(const mio_data_integrate* res
 /** Per-component totals of the `index`-th array's `region`-th region. Any out
  *  pointer may be NULL. */
 MIO_API mio_status mio_data_integrate_region_component(const mio_data_integrate* result,
-                                                        int64_t index, int64_t region,
-                                                        int64_t comp, double* total, double* mean,
-                                                        double* domain_measure, int64_t* num_nan);
+                                                       int64_t index, int64_t region, int64_t comp,
+                                                       double* total, double* mean,
+                                                       double* domain_measure, int64_t* num_nan);
 
 /** Destroy a result handle. Safe to call with NULL. */
 MIO_API void mio_data_integrate_free(mio_data_integrate* result);
@@ -3477,9 +3541,9 @@ MIO_API mio_status mio_mesh_set_points(mio_mesh* mesh, mio_dtype dtype, int64_t 
  * @param connectivity   row-major `(num_cells, nodes_per_cell)` buffer of
  *                       0-based point indices.
  */
-MIO_API mio_status mio_mesh_add_cell_block(mio_mesh* mesh, const char* cell_type,
-                                           int64_t num_cells, int64_t nodes_per_cell,
-                                           mio_dtype dtype, const void* connectivity);
+MIO_API mio_status mio_mesh_add_cell_block(mio_mesh* mesh, const char* cell_type, int64_t num_cells,
+                                           int64_t nodes_per_cell, mio_dtype dtype,
+                                           const void* connectivity);
 
 /**
  * Append one 1-level ragged (jagged polygon) cell block, in flat CSR form.
@@ -3574,9 +3638,8 @@ MIO_API int64_t mio_mesh_num_cell_blocks(const mio_mesh* mesh);
  * mio_poly_conn_create(), and use mio_mesh_cell_block_info_ex() to learn
  * whether it is 1-level (polygon) or 2-level (polyhedron).
  */
-MIO_API mio_status mio_mesh_cell_block_info(const mio_mesh* mesh, int64_t block,
-                                            int64_t* num_cells, int64_t* nodes_per_cell,
-                                            int32_t* is_ragged);
+MIO_API mio_status mio_mesh_cell_block_info(const mio_mesh* mesh, int64_t block, int64_t* num_cells,
+                                            int64_t* nodes_per_cell, int32_t* is_ragged);
 
 /**
  * One cell block's full shape -- the growable successor to the five-argument
@@ -3805,6 +3868,22 @@ MIO_API mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_reg
 /** Opaque transient XDMF writer. Destroy with mio_xdmf_series_free(). */
 typedef struct mio_xdmf_series mio_xdmf_series;
 
+/** Owning Exodus series handle. Geometry, Point/Side sets and exodus:attr:*
+ * arrays are fixed by write_points_cells. The first step fixes field names,
+ * dtypes and shapes. Requires a netCDF-enabled library; absent support fails
+ * by name through mio_last_error. Free is NULL-safe; finalize/flush are idempotent. */
+typedef struct mio_exodus_series mio_exodus_series;
+MIO_API mio_exodus_series* mio_exodus_series_create(const char* path);
+MIO_API mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series,
+                                                        const mio_mesh* mesh);
+MIO_API mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time,
+                                                const mio_mesh* mesh);
+MIO_API mio_status mio_exodus_series_flush(mio_exodus_series* series);
+MIO_API mio_status mio_exodus_series_finalize(mio_exodus_series* series);
+MIO_API int64_t mio_exodus_series_num_steps(const mio_exodus_series* series);
+MIO_API int32_t mio_exodus_series_finalized(const mio_exodus_series* series);
+MIO_API void mio_exodus_series_free(mio_exodus_series* series);
+
 /**
  * Open a transient XDMF series for writing. Nothing is written yet.
  * @param path        the .xdmf/.xmf light-data file to write.
@@ -3858,7 +3937,7 @@ MIO_API mio_xdmf_series* mio_xdmf_series_create_ex(const char* path,
 
 /**
  * Write the static grid every step shares. Call once, before the first
- * mio_xdmf_series_write_data(). Only the mesh's points and cells are used.
+ * mio_xdmf_series_write_data(). Uses the mesh's points, cells and fixed regions.
  */
 MIO_API mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series,
                                                       const mio_mesh* mesh);
@@ -3939,9 +4018,34 @@ MIO_API mio_status mio_pipeline_run_file(const char* settings_path);
  */
 MIO_API mio_status mio_pipeline_run_json(const char* json_text);
 
-
 /** @return 1 when this build carries the JSON pipeline parser, else 0. */
 MIO_API int32_t mio_pipeline_has_json(void);
+
+/** Owned report of a successful pipeline run. NULL on error; use last_error.
+ * Running happens once, not during the caller-buffer accessor. Existing
+ * status-only entry points remain unchanged. */
+typedef struct mio_pipeline_report mio_pipeline_report;
+MIO_API mio_pipeline_report* mio_pipeline_run_file_report(const char* settings_path);
+MIO_API mio_pipeline_report* mio_pipeline_run_json_report(const char* json_text);
+MIO_API mio_pipeline_report* mio_sequence_pipeline_run_file_report(const char* settings_path);
+MIO_API mio_pipeline_report* mio_sequence_pipeline_run_json_report(const char* json_text);
+/** String rule 5: required byte length excluding NUL, -1 on error.
+ * JSON is {"steps":[{"op":"Clean",...counters}],"warnings":[...]}; non-finite
+ * counters are null. Buffer may be NULL/zero to query length. */
+MIO_API int64_t mio_pipeline_report_json(const mio_pipeline_report* report, char* buf, int64_t buflen);
+/** NULL is allowed. Accessors expire when their owning report is freed. */
+MIO_API void mio_pipeline_report_free(mio_pipeline_report* report);
+
+/** MED named-mesh APIs. Count/name return -1 on error; names follow string
+ * rule 5. Mesh reads return owning handles. Profiles expand with NaN fill. */
+MIO_API int64_t mio_med_mesh_count(const char* path);
+MIO_API int64_t mio_med_mesh_name(const char* path, int64_t index, char* buf, int64_t buflen);
+MIO_API mio_mesh* mio_med_read_named(const char* path, const char* name, const mio_read_opts* opts);
+/** Write one MED file from count named meshes. Names must be unique/nonempty.
+ * NULL version selects 4.1.0. Inputs are borrowed only for this call. */
+MIO_API mio_status mio_med_write_multi(const char* path, const mio_mesh* const* meshes,
+                                       const char* const* names, int64_t count,
+                                       const char* version);
 
 /* ---------------------------------------------------------------------------
  * Sequences: multi-file / transient datasets (doc/sequences.md).
@@ -3982,8 +4086,7 @@ MIO_API void mio_sequence_opts_init(mio_sequence_opts* opts);
 MIO_API mio_sequence* mio_sequence_open(const char* pattern);
 
 /** mio_sequence_open with options; `opts` may be NULL for the defaults. */
-MIO_API mio_sequence* mio_sequence_open_ex(const char* pattern,
-                                           const mio_sequence_opts* opts);
+MIO_API mio_sequence* mio_sequence_open_ex(const char* pattern, const mio_sequence_opts* opts);
 
 /**
  * Open a sequence from an explicit, ordered path list. The order is the
@@ -4243,16 +4346,16 @@ typedef struct mio_find_interface_opts {
 /** Options for mio_contact_pairs. Initialize with mio_contact_pairs_opts_init. */
 typedef struct mio_contact_pairs_opts {
     double tolerance;         /**< zero derives 1% of the master mean edge length */
-    int32_t require_complete;  /**< nonzero fails if any slave point is unmatched */
+    int32_t require_complete; /**< nonzero fails if any slave point is unmatched */
     int32_t reserved_pad;
-    int64_t reserved[4];      /**< initialize to zero; reserved for ABI-compatible growth */
+    int64_t reserved[4]; /**< initialize to zero; reserved for ABI-compatible growth */
 } mio_contact_pairs_opts;
 
 /** Options for mio_split_interface. Initialize with mio_split_interface_opts_init. */
 typedef struct mio_split_interface_opts {
     int32_t add_cohesive; /**< insert cohesive line/wedge/hexahedron cells */
     int32_t reserved_pad;
-    int64_t reserved[4];  /**< initialize to zero; reserved for ABI-compatible growth */
+    int64_t reserved[4]; /**< initialize to zero; reserved for ABI-compatible growth */
 } mio_split_interface_opts;
 
 MIO_API void mio_find_interface_opts_init(mio_find_interface_opts* opts);
@@ -4296,40 +4399,42 @@ MIO_API mio_mesh* mio_edit_regions(const mio_mesh* mesh, int32_t op,
  * local-facet, group-index and measure cell data. See doc/region_adjacency.md.
  * @return the adjacency mesh (free with mio_mesh_free), or NULL on failure.
  */
-MIO_API mio_mesh* mio_region_adjacency(const mio_mesh* mesh,
-                                      const mio_region_selector* regions,
-                                      int64_t num_regions);
+MIO_API mio_mesh* mio_region_adjacency(const mio_mesh* mesh, const mio_region_selector* regions,
+                                       int64_t num_regions);
 
 /** Find an interface between Cell regions. A NULL mesh_b selects both sides
  * from mesh_a. Result mesh and Side-entry accessors are borrowed until the
  * result is freed. See doc/region_adjacency.md. */
-MIO_API mio_find_interface_result* mio_find_interface(
-    const mio_mesh* mesh_a, const mio_region_selector* region_a,
-    const mio_mesh* mesh_b, const mio_region_selector* region_b,
-    const mio_find_interface_opts* opts);
+MIO_API mio_find_interface_result* mio_find_interface(const mio_mesh* mesh_a,
+                                                      const mio_region_selector* region_a,
+                                                      const mio_mesh* mesh_b,
+                                                      const mio_region_selector* region_b,
+                                                      const mio_find_interface_opts* opts);
 MIO_API const mio_mesh* mio_find_interface_result_mesh(const mio_find_interface_result* result);
 MIO_API mio_mesh* mio_find_interface_result_take_mesh(mio_find_interface_result* result);
 MIO_API mio_status mio_find_interface_result_report(const mio_find_interface_result* result,
-    int64_t* num_pairs, double* area, double* max_gap,
-    int64_t* unmatched_a, int64_t* unmatched_b);
+                                                    int64_t* num_pairs, double* area,
+                                                    double* max_gap, int64_t* unmatched_a,
+                                                    int64_t* unmatched_b);
 /** Borrow flattened `(cell, local_facet)` Int64 Side entries; count is rows. */
-MIO_API const int64_t* mio_find_interface_result_side_a(
-    const mio_find_interface_result* result, int64_t* count);
+MIO_API const int64_t* mio_find_interface_result_side_a(const mio_find_interface_result* result,
+                                                        int64_t* count);
 /** Borrow flattened `(cell, local_facet)` Int64 Side entries; count is rows. */
-MIO_API const int64_t* mio_find_interface_result_side_b(
-    const mio_find_interface_result* result, int64_t* count);
+MIO_API const int64_t* mio_find_interface_result_side_b(const mio_find_interface_result* result,
+                                                        int64_t* count);
 MIO_API void mio_find_interface_result_free(mio_find_interface_result* result);
 
 /** Project Point-region entries to the closest facets in a Cell region.
  * Set master_mesh to NULL to use slave_mesh as both inputs. All result arrays
  * are borrowed until mio_contact_pairs_result_free(); geometric arrays are
  * Float64 and ids are Int64. */
-MIO_API mio_contact_pairs_result* mio_contact_pairs(
-    const mio_mesh* slave_mesh, const mio_region_selector* slave_points,
-    const mio_mesh* master_mesh, const mio_region_selector* master_cells,
-    const mio_contact_pairs_opts* opts);
+MIO_API mio_contact_pairs_result* mio_contact_pairs(const mio_mesh* slave_mesh,
+                                                    const mio_region_selector* slave_points,
+                                                    const mio_mesh* master_mesh,
+                                                    const mio_region_selector* master_cells,
+                                                    const mio_contact_pairs_opts* opts);
 MIO_API mio_status mio_contact_pairs_result_info(const mio_contact_pairs_result* result,
-    int64_t* count, int64_t* unmatched_count);
+                                                 int64_t* count, int64_t* unmatched_count);
 MIO_API const int64_t* mio_contact_pairs_slave_point(const mio_contact_pairs_result* result);
 MIO_API const int64_t* mio_contact_pairs_master_cell(const mio_contact_pairs_result* result);
 MIO_API const int64_t* mio_contact_pairs_master_facet(const mio_contact_pairs_result* result);
@@ -4343,9 +4448,9 @@ MIO_API void mio_contact_pairs_result_free(mio_contact_pairs_result* result);
 
 /** Duplicate point fans along a Side region. Polyhedron inputs are refused.
  * Optional count outputs may be NULL. */
-MIO_API mio_mesh* mio_split_interface(const mio_mesh* mesh,
-    const mio_region_selector* side, const mio_split_interface_opts* opts,
-    int64_t* num_duplicated_points, int64_t* num_cohesive_cells);
+MIO_API mio_mesh* mio_split_interface(const mio_mesh* mesh, const mio_region_selector* side,
+                                      const mio_split_interface_opts* opts,
+                                      int64_t* num_duplicated_points, int64_t* num_cohesive_cells);
 
 /** Remove the `index`-th region (mio_regions_create order) from `mesh`. */
 MIO_API mio_status mio_mesh_remove_region(mio_mesh* mesh, int64_t index);

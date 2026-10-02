@@ -208,7 +208,14 @@ def _write_mesh_fields(fields, mesh, mesh_name, collisions):
 
         tracker = FieldBitmaskWriter()
         meta_list = step_meta.get(base_name, [])
-        for i, (idx, pdt_orig, cell_type, data) in enumerate(entries):
+        # One entry per (timestep, block): the step ordinal comes from the
+        # timestep, so every block of one step lands in the same step group
+        # rather than each block opening a step of its own (which the reader
+        # would expand with None for the absent blocks). Same rule as the
+        # single-mesh writer in _med.py.
+        step_ids = list(dict.fromkeys(e[0] for e in entries))
+        for idx, pdt_orig, cell_type, data in entries:
+            i = step_ids.index(idx)
             if data.dtype == object:
                 continue
             med_type = meshio_to_med_type[cell_type]

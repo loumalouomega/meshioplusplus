@@ -1,5 +1,21 @@
 # MCP server
 
+## Spatial pipeline Version 2
+
+The existing `pipeline` tool accepts [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps): Merge/Interpolate/UndoGreen with auxiliary path `Inputs`, followed optionally by terminal Split/Partition with `Output.Pattern`. Input/output overrides remain available; `output_path` in the response is the resolved template for fan-out. The sandbox checks the settings file, main input, every auxiliary input and every expanded output (including existing symlinks) before any output writer runs. No implicit spatial/transient cross-product is performed; transient sequence pipelines remain Version 1. Exodus series fan-in is reachable through the existing sequence tool in netCDF-enabled builds.
+
+## Pipeline reports
+
+The `pipeline` tool's existing `steps`/`warnings` report matches the additive native C/Fortran/Julia/R report JSON APIs; MCP signatures and sandbox behavior are unchanged by the flat-ABI report addition. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED multi-mesh files
+
+The `med_multi` tool lists meshes with `input_path`, extracts one with `input_path`, `mesh_name` and `output_path` (optional `output_format`), or combines nonempty `input_paths` into a MED `output_path` with optional `mesh_names` and `med_version` (default `4.1.0`). Its JSON report contains `mesh_names` for list/combine or `mesh_name` for extraction, plus the resolved input/output path. Every input and output is sandbox-resolved before any I/O. Named nodal/element profiles expand with NaN fill; enhanced field metadata may use the Python/h5py reader. See [MED](./formats/med.md).
+
+The `pipeline` tool accepts `Output.Codec: "lzf"` for PCD compressed binary, matching `convert`'s existing `compression: "lzf"`. LZF is rejected for non-PCD formats and explicit ASCII encoding. Native XDMF2/reference and Netgen extras support is also available through the existing path-based tools; tool signatures and report fields are unchanged.
+
+XDMF series reads and conversions preserve fixed shared point/cell/side regions, and `sequence` fan-in to XDMF writes the first input mesh's regions alongside the static topology. Later step regions do not change that fixed membership. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
 Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 80+ mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
 
 ```bash
@@ -10,6 +26,10 @@ claude mcp add meshioplusplus -- meshioplusplus-mcp
 Then ask the agent things like *"convert `bracket.msh` to VTU, report its quality, and slice it at z = 0.02"* — it drives `convert`, `quality` and `slice` itself.
 
 Every tool is **file-path based**: input path(s) in, output path(s) out, a strict-JSON report back. That mirrors the CLI, keeps arbitrarily large meshes out of the protocol, and lets the agent work in its own filesystem workspace. The only state kept between calls is a [read cache](#read-cache). Nothing here is part of the C++ core, which stays dependency-free.
+
+`convert` reads Gmsh 2.2/4.0/4.1 inputs, including periodic links, through the native core. The 4.0 binary path accepts 4- or 8-byte producer counts. Gmsh output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`), both preserving periodic links; other formats need not carry Gmsh-specific metadata. See [Gmsh](formats/gmsh.md).
+
+Serial VTK XML input (`vtu`, `vtp`, `vts`, `vtr`, `vti`) accepts multiple pieces without welding and appended raw/base64 arrays through the native core, including UInt32/UInt64 headers and either byte order. `points_only` and `arrays` still narrow data loading. VTP/VTS/VTR/VTI write inline output; `mode="raw_appended"` remains VTU-only. Legacy `vtk` structured points, structured grids and rectilinear grids also convert natively, in ASCII and big-endian binary. See [formats](formats.md).
 
 ## Installation
 
@@ -80,6 +100,8 @@ Formats whose reader follows other files are never cached, because the entry fil
 
 ## Tools
 
+MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint memberships as raw file ids, through the Python format side channel. Constraints remain opaque; the lists are not mesh-cell indices and operations do not remap them. Other output formats need not preserve MDPA-specific content. See [MDPA](formats/mdpa.md).
+
 89 tools; the six marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
 
 ### Inspection (read-only)
@@ -128,6 +150,7 @@ Formats whose reader follows other files are never cached, because the entry fil
 |---|---|
 | `data_manage` | keep/drop/rename arrays: `keep`/`drop` are `[location, name]` pairs, `rename` is `[location, old, new]` triples |
 | `data_convert` | average between locations (`direction: point_to_cell \| cell_to_point`) |
+| `sets_data` | region-backed sets ↔ scalar integer data (`direction: sets_to_data \| data_to_sets`, `location: point \| cell`); `key` required for data→sets; sets→data accepts `data_name`, `join_char` and explicit `order` |
 | `data_calc` | expression evaluator; accepts the CLI's `"NAME = EXPR"` spelling |
 | `data_condition` | clamp / normalize / standardize |
 | `tensor_invariants` | von Mises / principal / hydrostatic / deviatoric of a symmetric (6-component) or general 3x3 (9-component) tensor array; `outputs` selects any of `mises`/`principal`/`hydrostatic`/`deviatoric` (default: all four) |

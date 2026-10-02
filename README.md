@@ -18,6 +18,18 @@
 
 There are various mesh formats available for representing unstructured meshes. meshio++ can read and write all of the following and smoothly converts between them:
 
+Native parity additions: XDMF2/3 and absolute DataItem references; Netgen name/periodic tables, two-line edges and zlib-enabled `.vol.gz`; PCD compressed writes via `MIO_CODEC_LZF` / `codec="lzf"`; and parameterized glTF export in C, Fortran, Julia, R and WASM. See [formats](doc/formats.md), [C API](doc/c_api.md) and [WASM](doc/wasm.md) for options and indexing conventions.
+
+Region-backed point/cell sets now convert to and from scalar integer data in the native core, C/Fortran/Julia/R/WASM bindings and native CLI `convert -s/-d`. Python's mutating `Mesh` methods preserve their ordering and metadata contract; pipelines expose `SetsToData` / `DataToSets`, and MCP exposes `sets_data`. See [sets/data conversions](doc/data_manage.md#sets--integer-data).
+
+Native C/Fortran/Julia/R pipelines also expose owning structured JSON reports (`steps` and `warnings`), without replacing their existing status-only entry points; see [pipeline reports](doc/pipeline.md#structured-reports-on-the-flat-abi).
+
+Exodus writers now preserve node/side sets and expose fixed-grid time-series writers across Python, C++, C, Fortran, Julia, R and WASM; sequence fan-in can write one Exodus file. Pipeline schema Version 2 adds file-backed `Merge`/`Interpolate`/`UndoGreen` and terminal `Split`/`Partition` with `Output.Pattern`. Version 1 remains unchanged. See [Exodus](doc/formats/exodus.md#stateful-series-writing) and [pipeline v2](doc/pipeline.md#version-2-spatial-multi-mesh-steps).
+
+XDMF time-series writers preserve fixed point, cell and side regions alongside the shared topology. Python's array-based writer accepts `regions=` and its series reader exposes `reader.regions`; native writers use the regions already on the mesh. See [XDMF time series](doc/xdmf_time_series.md).
+
+Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple pieces and appended raw/base64 arrays in both the native core and Python reference, with UInt32/UInt64 headers and either byte order. Pieces concatenate without welding; VTP/VTS/VTR/VTI writers remain inline. Native legacy `.vtk` reads also support structured points, structured grids and rectilinear grids in ASCII and big-endian binary; see the [format documentation](doc/formats.md).
+
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary, read-only; every increment is a step, nodal and element results by output location),
 > [ANSYS Fluent](https://www.ansys.com/products/fluids/ansys-fluent) mesh (`.msh`; cells rebuilt from faces, written face-based as Fluent reads it, zones as named regions),
@@ -43,21 +55,21 @@ There are various mesh formats available for representing unstructured meshes. m
 > [HMF](https://loumalouomega.github.io/meshioplusplus/formats/hmf) (`.hmf`, experimental, meshio++-specific),
 > [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`, `.uff`),
 > [ANSYS Fluent interpolation](https://github.com/victorsndvg/FEconv) (`.ip`),
-> [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`; tables, geometries, `Mesh` blocks and `Constraints` kept in a side channel on every surface),
+> [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`; tables, geometries, `Mesh` blocks and `Constraints`, including nested sub-model-part geometry/constraint membership, kept in a side channel on every surface),
 > [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, also gzip/bzip2; active cells of refined meshes, subdomains, side, edge, shell-face and node sets as named regions, written back in the 1.8.0 layout),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
 > [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output, read-only; `nodout` outputs are steps, the other databases field data),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
-> [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`),
+> [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),
 > [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),
 > [Nastran OP2](https://loumalouomega.github.io/meshioplusplus/formats/nastran_op2) results (`.op2`, MSC and NX, 32- and 64-bit, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
-> [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`),
+> [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`; native periodic reads across language bindings via format metadata, periodic writes in 2.2/4.1),
 > [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) (output only; the surface with per-vertex normals, fields as `_NAME` attributes, `color_by` into `COLOR_0`) (`.glb`, `.gltf`),
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),

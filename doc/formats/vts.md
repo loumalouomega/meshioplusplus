@@ -68,7 +68,7 @@ Same as `.vti`: `voxelize`'s `surface`/`inside` fills and `compute_sdf`'s octree
 
 ## Quirks & limitations
 
-Identical to [`.vti`'s](./vti.md#quirks-limitations): `<AppendedData>` is declined by both readers; one `<Piece>` only, whose `Extent` must equal the `WholeExtent`; lzma is rejected by both readers (a deliberate parity choice, not a capability gap — Python has the module); `header_type="UInt64"` is honoured on read, the writer always emits the default `UInt32`.
+Identical to [`.vti`'s](./vti.md#quirks-limitations): both readers accept raw/base64 `<AppendedData>`, UInt32/UInt64 headers and either byte order, with optional zlib/LZ4/ZSTD codecs; writers remain inline. Multiple pieces concatenate in document order without welding; each piece's `Extent` sizes its own geometry and arrays and must lie inside `WholeExtent`. Single partial pieces are also supported. Missing or incompatible data arrays are dropped with a warning. Numeric field data and piece-local named regions use the [VTP convention](./vtp.md#quirks-limitations). lzma is rejected by both readers (a deliberate parity choice, not a capability gap — Python has the module).
 
 **Degenerate (2-D/1-D) extents are not expanded to quad/line/vertex cells.** VTK itself allows a `WholeExtent` with one or more axes at zero cells; this reader, like `.vti`'s, only ever emits `hexahedron` connectivity, so a degenerate extent reads back as a points-only mesh. Documented, not silent — a genuinely 2-D/1-D structured file is a follow-up, not implemented here.
 

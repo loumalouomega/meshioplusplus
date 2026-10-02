@@ -1,5 +1,25 @@
 # R
 
+## Exodus series and pipeline Version 2
+
+`mio_exodus_series(path)` returns an owning external pointer with a distinct tag and GC finalizer. `mio_exodus_series_write_points_cells(series, mesh)` fixes geometry, sets and attributes; `mio_exodus_series_write_data(series, time, mesh)` appends fields. `_flush`, `_finalize`, `_num_steps`, `_finalized`, `_is_open` and idempotent `_release` expose the lifecycle. Released/foreign pointers are R errors, never dereferenced; without netCDF construction fails naming the dependency. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+The existing status/report pipeline functions accept [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) documents with auxiliary `Inputs` and terminal `Output.Pattern`; the binding requires no JSON parser package. Transient sequence documents remain Version 1.
+
+## Pipeline reports
+
+`mio_pipeline_run_file_report(path)`, `mio_pipeline_run_json_report(text)` and `mio_sequence_pipeline_run_*_report` return a JSON character scalar with `steps` and `warnings`, automatically releasing its native owner. Parsing with `jsonlite::fromJSON` is optional; no new binding dependency is required. Existing status-only APIs are unchanged. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+`mio_med_mesh_names(path)` enumerates file link order; `mio_med_read_named(path, name, time_step=0L, lenient=FALSE)` returns an owning mesh handle; `mio_med_write_multi(path, meshes, names, version="4.1.0")` writes a nonempty list of meshes with one unique name per mesh. HDF5 is required; ordinary nodal/element profiles expand with NaN fill. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
+`mio_write(mesh, 'cloud.pcd', codec='lzf')` selects PCD compressed binary without an optional codec library; explicit ASCII or non-PCD combinations fail. Generic writes also accept `encoding` and `float_format`. `mio_write_gltf(mesh, 'colored.glb', color_by='temperature', cmap='turbo', up_axis='z', scale=0.001)` exposes all native glTF options; `component` is 1-based or `NULL` for magnitude, and unset `vmin`/`vmax` select automatic bounds. Native reads also support XDMF2/3 with absolute DataItem references and Netgen names/periodic arrays; Netgen periodic arrays live in `field_data` and keep file node ids 1-based, while `.vol.gz` requires zlib.
+
+XDMF series `mio_xdmf_series_write_points_cells(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
+The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
+
 meshio++ ships an R package, `meshioplusplus`, layered on the [C API](/c_api) — the same flat C library the [Fortran](/fortran) and [Julia](/julia) bindings sit on:
 
 ```r
@@ -15,6 +35,8 @@ mio_release(m)
 ```
 
 Every exported function is prefixed `mio_`, which keeps the package clear of base R names such as `points()`, `stats()`, `split()` and `merge()`.
+
+`mio_read(path, format = "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `mio_read_with_info` / `mio_write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
 The package is MIT-licensed like the rest of meshio++. (The sibling [Julia](/julia) binding is deliberately not — see its page.)
 
@@ -179,6 +201,8 @@ The handle is an external pointer with its **own** tag, so a `mio_mesh` and a `m
 
 ## Documented gaps
 
+Sets↔data conversions are available as `mio_sets_to_data(mesh, location, data_name=NULL, join_char="-", order=NULL)` and `mio_data_to_sets(mesh, location, key)` for `location="point"` or `"cell"`. Both return a new mesh. Labels are values, not indices: zero-based labels and -1 for uncovered rows are not shifted. Omit `order` for native region-name order, or list every set name once. See [sets/data semantics](data_manage.md#sets--integer-data).
+
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia](/julia) bindings; the R package invents no workaround for any of them:
 
 - **Four Python-only formats.** `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them. They are export targets for a training pipeline rather than interchange formats; see [formats](/formats).
@@ -273,6 +297,10 @@ The two counters come back as `double`, like every other 64-bit integer in this 
 As elsewhere in this binding, remember to release a series *before* its tempdir is removed: a write failure during the implicit finalize in a GC finalizer cannot be reported. 
 
 ## Format side channels
+
+Gmsh `mio_read_with_info` returns a format-info handle; `mio_gmsh_info(info)` copies `bounding_entities` (signed tags per 4.1 cell block) and `periodic` links with `entity` (dimension, slave entity tag, master entity tag), `affine` (0 or 16 coefficients), and `node_pairs` (`(2, N)`, **1-based point rows**). Entity tags stay file ids; ordering and duplicates survive. All arrays use R `double`, like the other binding getters. `mio_write_with_info(mesh, info, path, format = "gmsh")` or `"gmsh22"` restores the records; `mio_format_info_release(info)` frees the handle, not the copies. Operations do not remap the channel; rebuild it after point/topology edits.
+
+MDPA's `mio_mdpa_info(info)$submodelparts` entries contain `name`, `data`, `tables`, `geometry_ids` and `constraint_ids`. Membership values retain raw file ids, ordering and duplicates without R's point-index shift (represented as `double`, as other file ids are); mesh operations do not remap them. `mio_write_with_info` restores nested membership-only parts; constraints stay opaque in `raw_blocks`.
 
 `mio_read_with_info(path, format = NULL, lenient = FALSE)` returns `list(mesh = , info = )`, `info` a `mio_format_info` external pointer for a format with a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`) and `NULL` otherwise. `mio_write_with_info(mesh, info, path)` puts it back, `mio_format_info_release(info)` frees it, and `mio_mdpa_info(info)` copies the MDPA side channel into a list (`tables`, `geometries` with 1-based connectivity, `mesh_blocks`, `submodelparts`, `raw_blocks`, …); ids arrive as `double`. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 

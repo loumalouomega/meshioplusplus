@@ -835,23 +835,77 @@ TEST(Mdpa, LenientWithoutAnInfoSkipsWhatOnlyAnInfoCanHold) {
     std::filesystem::remove(path, ec);
 }
 
-TEST(Mdpa, LenientSkipsSubModelPartGeometriesEvenWithAnInfo) {
-    // Not even an MdpaInfo holds a non-empty SubModelPartGeometries: strict
-    // throws, lenient records the skip.
+TEST(Mdpa, SubModelPartGeometryAndConstraintIdsRoundTrip) {
     std::string deck = kMdpaProductionDeck;
     deck +=
-        "Begin SubModelPart Extra\n    Begin SubModelPartGeometries\n        1\n"
-        "    End SubModelPartGeometries\nEnd SubModelPart\n";
+        "Begin Geometries Triangle3D3\n17 1 2 3\nEnd Geometries\n"
+        "Begin Constraints LinearMasterSlaveConstraint\n"
+        "91 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0\nEnd Constraints\n"
+        "Begin SubModelPart Extra\n    Begin SubModelPart Inner\n"
+        "        Begin SubModelPartGeometries\n17 // preserved id\n"
+        "        End SubModelPartGeometries\n"
+        "        Begin SubModelPartGeometries\n17\nEnd SubModelPartGeometries\n"
+        "        Begin SubModelPartConstraints\n91\nEnd SubModelPartConstraints\n"
+        "    End SubModelPart\nEnd SubModelPart\n";
     const std::string path = mdpa_temp_file(deck);
     meshioplusplus::MdpaInfo info;
-    EXPECT_THROW(meshioplusplus::read_mdpa(path, info), meshioplusplus::ReadError);
+    const Mesh mesh = meshioplusplus::read_mdpa(path, info);
+    ASSERT_FALSE(info.mSubModelParts.empty());
+    const auto& smp = info.mSubModelParts.back();
+    EXPECT_EQ(smp.mName, "Extra/Inner");
+    EXPECT_EQ(smp.mGeometryIds, (std::vector<std::int64_t>{17, 17}));
+    EXPECT_EQ(smp.mConstraintIds, (std::vector<std::int64_t>{91}));
+    EXPECT_TRUE(info.mSkippedConstructs.empty());
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, mesh, info);
+    meshioplusplus::MdpaInfo back;
+    meshioplusplus::read_mdpa(out, back);
+    EXPECT_EQ(back.mSubModelParts.back().mName, smp.mName);
+    EXPECT_EQ(back.mSubModelParts.back().mGeometryIds, smp.mGeometryIds);
+    EXPECT_EQ(back.mSubModelParts.back().mConstraintIds, smp.mConstraintIds);
     meshioplusplus::ReadOptions opts;
     opts.mLenient = true;
     meshioplusplus::read_mdpa(path, info, opts);
-    ASSERT_EQ(info.mSkippedConstructs.size(), 1u);
-    EXPECT_NE(info.mSkippedConstructs[0].find("SubModelPartGeometries"), std::string::npos);
+    EXPECT_TRUE(info.mSkippedConstructs.empty());
+    for (const std::string name : {"", "/Inner", "Outer/", "Outer//Inner"}) {
+        info.mSubModelParts.back().mName = name;
+        EXPECT_THROW(meshioplusplus::write_mdpa(out, mesh, info), meshioplusplus::WriteError);
+    }
     std::error_code ec;
     std::filesystem::remove(path, ec);
+    std::filesystem::remove(out, ec);
+}
+
+TEST(Mdpa, SubModelPartExtraIdsNeedInfoAndRejectMalformedListsEvenLenient) {
+    for (const std::string tag : {"SubModelPartGeometries", "SubModelPartConstraints"}) {
+        const std::string header =
+            "Begin Nodes\n1 0 0 0\nEnd Nodes\n"
+            "Begin SubModelPart Extra\nBegin " +
+            tag + "\n";
+        const std::string end = "End " + tag + "\nEnd SubModelPart\n";
+        const std::string path = mdpa_temp_file(header + "17\n" + end);
+        EXPECT_THROW(meshioplusplus::read_mdpa(path), meshioplusplus::ReadError);
+        meshioplusplus::ReadOptions opts;
+        opts.mLenient = true;
+        EXPECT_EQ(meshioplusplus::read_mdpa(path, opts).NumPoints(), 1u);
+        meshioplusplus::MdpaInfo info;
+        for (const std::string body : {"bad\n", "17 18\n", "1_7\n", "9223372036854775808\n"}) {
+            const std::string bad = mdpa_temp_file(header + body + end);
+            EXPECT_THROW(meshioplusplus::read_mdpa(bad, info, opts), meshioplusplus::ReadError);
+            EXPECT_THROW(meshioplusplus::read_mdpa(bad, opts), meshioplusplus::ReadError);
+            std::error_code ec;
+            std::filesystem::remove(bad, ec);
+        }
+        const std::string truncated = mdpa_temp_file(header + "17\n");
+        EXPECT_THROW(meshioplusplus::read_mdpa(truncated, info, opts), meshioplusplus::ReadError);
+        const std::string empty = mdpa_temp_file(header + end);
+        EXPECT_EQ(meshioplusplus::read_mdpa(empty).NumPoints(), 1u);
+        const std::string outside = mdpa_temp_file("Begin " + tag + "\n17\nEnd " + tag + "\n");
+        EXPECT_THROW(meshioplusplus::read_mdpa(outside, info, opts), meshioplusplus::ReadError);
+        std::error_code ec;
+        for (const auto& file : {path, truncated, empty, outside})
+            std::filesystem::remove(file, ec);
+    }
 }
 
 namespace {

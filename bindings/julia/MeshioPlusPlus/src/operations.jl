@@ -1271,6 +1271,34 @@ function data_drop(m::Mesh, location::Symbol, names; ignore_missing::Bool=false)
 end
 
 """
+    sets_to_data(mesh, location; data_name=nothing, join_char="-", order=String[]) -> Mesh
+
+Convert point/cell region-backed sets to scalar integer labels on a new mesh.
+Labels are zero-based, later overlapping sets win, and uncovered rows are -1.
+`order` must name every set once, or be empty to use native region-name order.
+"""
+function sets_to_data(m::Mesh, location::Symbol; data_name=nothing,
+                      join_char::AbstractString="-", order=String[])
+    h = _handle(m); loc = _location(location)
+    ptr = _with_names(order) do p, c
+        ccall(_sym(:mio_sets_to_data), Ptr{Cvoid},
+              (Ptr{Cvoid}, Cint, Cstring, Cstring, Ptr{Cstring}, Int64),
+              h, loc, isnothing(data_name) ? C_NULL : data_name, join_char, p, c)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_to_sets(mesh, location, key) -> Mesh
+
+Convert a scalar integer point/cell field into region-backed sets, removing
+the source field on the returned mesh. Geometry and unrelated metadata survive.
+"""
+data_to_sets(m::Mesh, location::Symbol, key::AbstractString) =
+    Mesh(_check_ptr(ccall(_sym(:mio_data_to_sets), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Cint, Cstring), _handle(m), _location(location), key)))
+
+"""
     data_keep(mesh, location, names; ignore_missing=false) -> Mesh
 
 Keep only the named arrays at one location, dropping the rest **there**; the
@@ -1586,6 +1614,25 @@ end
 Whether the loaded library carries the JSON pipeline parser.
 """
 pipeline_has_json() = ccall(_sym(:mio_pipeline_has_json), Cint, ()) != 0
+
+function _pipeline_report(run::Symbol, text::AbstractString)
+    h = _check_ptr(ccall(_sym(run), Ptr{Cvoid}, (Cstring,), text))
+    try
+        _getstring((buf, len) -> ccall(_sym(:mio_pipeline_report_json), Int64,
+                   (Ptr{Cvoid}, Ptr{UInt8}, Int64), h, buf, len))
+    finally
+        ccall(_sym(:mio_pipeline_report_free), Cvoid, (Ptr{Cvoid},), h)
+    end
+end
+
+"""Run once and return the shared steps/warnings report as JSON text."""
+run_pipeline_file_report(path::AbstractString) = _pipeline_report(:mio_pipeline_run_file_report, path)
+"""Run JSON settings once and return steps/warnings as JSON text."""
+run_pipeline_json_report(text::AbstractString) = _pipeline_report(:mio_pipeline_run_json_report, text)
+"""Run a sequence settings file once and return steps/warnings as JSON text."""
+run_sequence_file_report(path::AbstractString) = _pipeline_report(:mio_sequence_pipeline_run_file_report, path)
+"""Run sequence JSON settings once and return steps/warnings as JSON text."""
+run_sequence_json_report(text::AbstractString) = _pipeline_report(:mio_sequence_pipeline_run_json_report, text)
 
 # --- regular grids and signed distance ---------------------------------------
 

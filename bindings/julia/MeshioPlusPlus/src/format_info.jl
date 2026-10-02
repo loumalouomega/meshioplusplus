@@ -12,13 +12,15 @@ const MIO_MDPA_GEOMETRIES = Int32(5)
 const MIO_MDPA_MESH_BLOCKS = Int32(6)
 const MIO_MDPA_SUBMODELPARTS = Int32(7)
 const MIO_MDPA_RAW_BLOCKS = Int32(8)
+const MIO_GMSH_BOUNDING_ENTITIES = Int32(0)
+const MIO_GMSH_PERIODIC = Int32(1)
 
 """
     FormatInfo
 
 A format's side channel, returned by [`read_with_info`](@ref). Released by a
 finalizer; [`close`](@ref) does it deterministically and is idempotent. Inspect
-an MDPA one with [`mdpa_info`](@ref).
+an MDPA one with [`mdpa_info`](@ref), or a Gmsh one with [`gmsh_info`](@ref).
 """
 mutable struct FormatInfo
     ptr::Ptr{Cvoid}
@@ -52,7 +54,7 @@ end
     read_with_info(path; format="", options=nothing) -> (Mesh, Union{FormatInfo,Nothing})
 
 Read a mesh, keeping what it cannot hold. For a format with a side channel
-(currently `"mdpa"`) the second value is a [`FormatInfo`](@ref); for every other
+(currently `"mdpa"` and `"gmsh"`) the second value is a [`FormatInfo`](@ref); for every other
 format it is `nothing` and the read is exactly [`read`](@ref)'s.
 """
 function read_with_info(path::AbstractString; format::AbstractString="",
@@ -83,7 +85,7 @@ end
 """
     format_name(info) -> String
 
-The format the side channel belongs to (`"mdpa"`).
+The format the side channel belongs to (`"mdpa"` or `"gmsh"`).
 """
 format_name(info::FormatInfo) =
     _getstring((buf, n) -> ccall(_sym(:mio_format_info_format), Int64,
@@ -122,6 +124,31 @@ _mdpa_array(h, section, i, field) =
                                      (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{Ptr{Cvoid}}, Ptr{Cint},
                                       Ptr{Int32}, Ptr{Int64}),
                                      h, section, Int64(i), Int32(field), d, t, n, s))
+
+"""
+    gmsh_info(info) -> NamedTuple
+
+Copy of Gmsh `bounding_entities` (signed entity tags per cell block) and
+`periodic` links `(entity, affine, node_pairs)`. Entity is `(dimension, slave tag,
+master tag)` in file ids. Node pairs are 1-based point rows in a `(2, N)` matrix;
+ordering/duplicates are kept. Mesh operations do not remap the side channel.
+"""
+function gmsh_info(info::FormatInfo)
+    h = _handle(info)
+    format_name(info) == "gmsh" ||
+        throw(MeshioError(MIO_ERR_INVALID_ARG, "not a gmsh side channel"))
+    n(section) = Int(_check_count(ccall(_sym(:mio_gmsh_info_count), Int64,
+                                       (Ptr{Cvoid}, Int32), h, section), "gmsh count"))
+    a(section, i, field) = _mdpa_copy((d, t, nd, s) -> ccall(_sym(:mio_gmsh_info_array), Cint,
+        (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int32}, Ptr{Int64}),
+        h, section, Int64(i), Int32(field), d, t, nd, s))
+    (bounding_entities=[a(MIO_GMSH_BOUNDING_ENTITIES, i, 0)
+                        for i in 0:n(MIO_GMSH_BOUNDING_ENTITIES)-1],
+     periodic=[(entity=Tuple(a(MIO_GMSH_PERIODIC, i, 0)),
+                affine=a(MIO_GMSH_PERIODIC, i, 1),
+                node_pairs=a(MIO_GMSH_PERIODIC, i, 2) .+ 1)
+               for i in 0:n(MIO_GMSH_PERIODIC)-1])
+end
 
 function _mdpa_data(h, section, i)
     n = Int(_check_count(ccall(_sym(:mio_mdpa_info_data_count), Int64,
@@ -167,7 +194,7 @@ end
   `(nodes_per_geometry, num_geometries)` like [`connectivity`](@ref);
 * `mesh_blocks` — `(id, data, nodes, element_ids, condition_ids)`, `nodes`
   1-based points, the ids as the file spelled them;
-* `submodelparts` — `(name, data, tables)`;
+* `submodelparts` — `(name, data, tables, geometry_ids, constraint_ids)`;
 * `raw_blocks` — `(header, body, terminator)`, kept verbatim (`Constraints`, ...).
 
 `data`/`values` entries are `key => value` pairs: a number, a string, or a
@@ -203,7 +230,9 @@ function mdpa_info(info::FormatInfo)
                      for i in 0:n(MIO_MDPA_MESH_BLOCKS)-1],
         submodelparts=[(name=_mdpa_string(h, MIO_MDPA_SUBMODELPARTS, i, 0),
                         data=_mdpa_data(h, MIO_MDPA_SUBMODELPARTS, i),
-                        tables=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 0))
+                         tables=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 0),
+                         geometry_ids=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 1),
+                         constraint_ids=_mdpa_array(h, MIO_MDPA_SUBMODELPARTS, i, 2))
                        for i in 0:n(MIO_MDPA_SUBMODELPARTS)-1],
         raw_blocks=[(header=_mdpa_string(h, MIO_MDPA_RAW_BLOCKS, i, 0),
                      body=_mdpa_string(h, MIO_MDPA_RAW_BLOCKS, i, 1),

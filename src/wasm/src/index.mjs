@@ -285,6 +285,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataRename: (mesh: Mesh, location: string, from: string, to: string) => Mesh,
+ *   setsToData: (mesh: Mesh, location: string, options?: object) => Mesh,
+ *   dataToSets: (mesh: Mesh, location: string, key: string) => Mesh,
  *   dataPointToCell: (mesh: Mesh, names?: string[], suffix?: string) => Mesh,
  *   dataCellToPoint: (mesh: Mesh, names?: string[], weight?: string, suffix?: string) => Mesh,
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
@@ -293,6 +295,11 @@ export class MeshioPlusPlusLoadError extends Error {
  *   dataInfo: (mesh: Mesh) => object[],
  *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
+ *   createExodusTimeSeriesWriter: (path: string) => ExodusTimeSeriesWriter,
+ *   medMeshNames: (path: string) => string[],
+ *   readMedNamed: (path: string, name: string, options?: object) => Mesh,
+ *   writeMedMulti: (path: string, meshes: Mesh[], names: string[], options?: object) => void,
+ *   writeGltf: (path: string, mesh: Mesh, options?: object) => string[],
  *   openSequence: (source: string|string[], options?: object) => SequenceReader,
  * }>}
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
@@ -365,6 +372,11 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
     return {
         FS: Module.FS,
         readMesh: (path, format = '') => Module.readMesh(path, format),
+        medMeshNames: (path) => Module.medMeshNames(path),
+        readMedNamed: (path, name, { timeStep = 0, lenient = false } = {}) =>
+            Module.readMedNamed(path, name, timeStep, lenient),
+        writeMedMulti: (path, meshes, names, { version = '4.1.0' } = {}) =>
+            Module.writeMedMulti(path, meshes, names, version),
         // Selective reads (see doc/selective_read.md). `arrays: null` reads
         // every data array, `arrays: []` reads none -- the distinction is
         // deliberate. Formats without a native selective path are read whole
@@ -419,6 +431,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // an OpenFOAM `polyMesh` directory's files, ...).
         writeMesh: (path, mesh, format = '', options = undefined) =>
             Module.writeMesh(path, mesh, format, options),
+        writeGltf: (path, mesh, options = undefined) => Module.writeGltf(path, mesh, options),
         // `options` adds `encoding`/`codec`/`floatFormat` to `inFormat`/
         // `outFormat` (see `writeMesh`). Returns the written paths, as
         // `writeMesh` does.
@@ -1002,6 +1015,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         dataKeep: (mesh, location, names = [], ignoreMissing = false) =>
             Module.dataKeep(mesh, location, names, ignoreMissing),
         dataRename: (mesh, location, from, to) => Module.dataRename(mesh, location, from, to),
+        setsToData: (mesh, location, {dataName = null, joinChar = '-', order = []} = {}) =>
+            Module.setsToData(mesh, location, dataName, joinChar, order),
+        dataToSets: (mesh, location, key) => Module.dataToSets(mesh, location, key),
         dataPointToCell: (mesh, names = [], suffix = '') =>
             Module.dataPointToCell(mesh, names, suffix),
         dataCellToPoint: (mesh, names = [], weight = 'uniform', suffix = '') =>
@@ -1045,6 +1061,24 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // dataFormat 'HDF' the series is TWO files in the virtual FS: `<path>`
         // and its sibling `<path minus extension>.h5`. Copy BOTH out of
         // Module.FS. `mode: 'append'` continues a series already at `path`.
+        createExodusTimeSeriesWriter: (path) => {
+            const handle = Module.exodusSeriesCreate(path);
+            let open = true;
+            const action = (name, time = 0, mesh = null) => Module.exodusSeriesAction(handle, name, time, mesh);
+            return {
+                writePointsCells: (mesh) => action('grid', 0, mesh),
+                writeData: (time, mesh) => action('data', time, mesh),
+                flush: () => action('flush'),
+                finalize: () => action('finalize'),
+                numSteps: () => action('steps'),
+                finalized: () => action('finalized'),
+                close: () => {
+                    if (!open) return;
+                    open = false;
+                    try { action('finalize'); } finally { action('free'); }
+                },
+            };
+        },
         createXdmfTimeSeriesWriter: (
             path,
             { dataFormat = 'HDF', gzipLevel = -1, mode = 'truncate', autoFlush = false } = {},

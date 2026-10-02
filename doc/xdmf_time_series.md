@@ -26,9 +26,11 @@ with meshioplusplus.xdmf.TimeSeriesWriter("simulation.xdmf") as writer:
 
 Must be used as a context manager (`with` statement). The `.xdmf` file is written on `__exit__`.
 
-### `writer.write_points_cells(points, cells)`
+### `writer.write_points_cells(points, cells, *, regions=None)`
 
 Write the shared mesh topology. Must be called before `write_data`.
+
+`regions` optionally supplies the fixed point/cell/side regions associated with that topology. Existing calls without it behave as before.
 
 ### `writer.write_data(t, point_data=None, cell_data=None)`
 
@@ -57,9 +59,33 @@ Total number of time steps stored in the file.
 
 Returns `(points, cells)` — the shared mesh topology as a numpy array and a list of `CellBlock`.
 
+Also populates `reader.regions`, initially an empty list, from the shared mesh grid's `<Set>` elements. The return tuple is unchanged.
+
 ### `reader.read_data(k)`
 
 Returns `(t, point_data, cell_data)` for time step index `k`.
+
+## Shared named regions
+
+Regions are fixed with the shared topology: both writers store them once as `<Set>` elements in the static mesh grid, and every step's XInclude references Topology, Geometry and Set. Native reads return the same regions at every selected step, including selective reads; Python's `TimeSeriesReader.regions` holds them after `read_points_cells()` and is unchanged by `read_data(k)`.
+
+```python
+with meshioplusplus.xdmf.TimeSeriesWriter("regions.xdmf", "XML") as writer:
+    writer.write_points_cells(mesh.points, mesh.cells, regions=mesh.regions)
+    writer.write_data(0.0, point_data=mesh.point_data, cell_data=mesh.cell_data)
+
+with meshioplusplus.xdmf.TimeSeriesReader("regions.xdmf") as reader:
+    points, cells = reader.read_points_cells()
+    restored = meshioplusplus.Mesh(points, cells, regions=reader.regions)
+```
+
+The native writer already takes a complete `Mesh`, so `WritePointsCells(mesh)` (or its Python/C/Fortran/Julia/R/WASM equivalent) now includes its regions without new arguments. `WriteData(time, mesh)` still consumes only field arrays: regions on later step meshes do not change the shared membership. Raw-array steps, flush and append reuse the same shared sets without duplicating them. Sequence fan-in to XDMF preserves the first input mesh's fixed regions through both writers.
+
+Point sets use `Node`, cell sets use `Cell`, and side sets use `Face`/`Edge` with separate arrays for global block-major cell ids and local facet ids. Mixed 3-D/2-D side membership is split into Face and Edge sets and read back as one region. Names, empty groups, `dim` and `tag` survive in XML, Binary and HDF storage. Step-local/time-varying sets are outside this contract. Native metadata reports region names, kinds, tags and declared counts; mixed topology retains its existing full-read metadata fallback. See [XDMF sets](regions.md#xdmf-sets).
+
+Binary payloads are read relative to the `.xdmf` directory, including native-written sibling files. The pure-Python writer's existing CWD-relative heavy-data output convention is unchanged: write from the output directory when using its Binary or HDF modes.
+
+Executed graphical examples: [`example/python/30_xdmf_series_regions.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/30_xdmf_series_regions.ipynb) highlights fixed point/side membership while the field evolves; [`example/cpp/06_xdmf_series_regions.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/cpp/06_xdmf_series_regions.ipynb) demonstrates native flush/append and SVG rendering.
 
 ---
 
@@ -79,7 +105,7 @@ for (int k = 0; k < nsteps; ++k) {
 w.Finalize();                        // the destructor would do this too
 ```
 
-`WritePointsCells` takes the whole `Mesh` and uses its points and cells; `WriteData` takes a `Mesh` and uses its `point_data`/`cell_data`, so a solver can pass the same object it is updating in place. Arrays are written in the uniform API's sorted-name order, which makes a series byte-deterministic across mesh backends. `Finalize()` is idempotent and is called by the destructor; an explicit call exists so a write failure surfaces as an exception rather than being swallowed during unwinding.
+`WritePointsCells` takes the whole `Mesh` and uses its points, cells and fixed regions; `WriteData` takes a `Mesh` and uses its `point_data`/`cell_data`, so a solver can pass the same object it is updating in place. Arrays are written in the uniform API's sorted-name order, which makes a series byte-deterministic across mesh backends. `Finalize()` is idempotent and is called by the destructor; an explicit call exists so a write failure surfaces as an exception rather than being swallowed during unwinding.
 
 ::: warning Deleting the output
 Because the destructor writes the `.xdmf`, removing that file while the writer is still alive **recreates it**:

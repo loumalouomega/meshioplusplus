@@ -1,5 +1,25 @@
 # Julia
 
+## Exodus series and pipeline Version 2
+
+`ExodusSeries(path)` (or its do-block form) owns the fixed-grid Exodus writer. Call `write_points_cells!(series, mesh)` once and `write_data!(series, time, mesh)` for each step; `flush!`, `finalize!`, `finalized`, `num_steps` and idempotent `close` follow the XDMF lifecycle. netCDF is required; named `MeshioError`s report missing support. Geometry, sets and attributes are static; field schema is fixed by the first step. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+Existing `run_pipeline_*` and report routines accept [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) without new parser dependencies: auxiliary path `Inputs` and terminal `Output.Pattern` with `{key}`/`{part}`. Transient sequence schemas remain Version 1.
+
+## Pipeline reports
+
+`run_pipeline_file_report(path)`, `run_pipeline_json_report(text)` and `run_sequence_file_report` / `run_sequence_json_report` return structured report JSON (`steps` and `warnings`) without adding package dependencies. The native owner is always released in `finally`; existing status-only APIs are unchanged. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+`med_mesh_names(path)` enumerates file link order; `read_med_named(path, name; options=ReadOptions())` returns an owning `Mesh` (close it normally); `write_med_multi(path, meshes, names; version="4.1.0")` borrows input meshes only for the call. Names must be unique/nonempty, without `/` or `@`. HDF5 is required; ordinary nodal/element profiles expand with NaN fill. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
+Parameterized writes support `mio.write(mesh, path; encoding="binary", codec="lzf")` for PCD compressed binary (no optional dependency; ASCII/non-PCD combinations fail). `write_gltf(mesh, path; color_by="temperature", cmap="turbo", up_axis="z", scale=0.001)` exposes all native glTF options; `component` is 1-based or `nothing` for magnitude, and unset `vmin`/`vmax` selects automatic bounds. Native reads accept XDMF2/3 and absolute DataItem references and carry Netgen names/periodic arrays; Netgen periodic arrays use `field_data` and keep file node ids 1-based, while `.vol.gz` requires native zlib.
+
+XDMF series `write_points_cells!(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
+The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
+
 meshio++ ships a Julia package, `MeshioPlusPlus`, layered on the [C API](/c_api) via `ccall` — the same way the [Fortran](/fortran) module is, and aimed at the same HPC audience:
 
 ```julia
@@ -17,6 +37,8 @@ mio.write(surf, "bracket_surface.vtu")
 
 The C API and C++ core this binding calls are unaffected and stay MIT. Calling that stable, non-GPL C ABI via `ccall`/`dlopen` at runtime is the standard "linking exception" case — it does not require the C library to also be GPL. See [`bindings/julia/LICENSE`](https://github.com/loumalouomega/meshioplusplus/blob/master/bindings/julia/LICENSE).
 :::
+
+`read(path; format="gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `read_with_info` / `write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
 ## Building and installing
 
@@ -194,13 +216,16 @@ Two things worth knowing before reading the result back:
 
 Like `Mesh`, the handle is released by a GC finalizer and `close` is the deterministic, idempotent form. The name is `finalize!` rather than `finalize` because `Base.finalize` runs an object's GC finalizer and means something quite different. Reading a finished series back is the ordinary `MeshioPlusPlus.read(path; options = ReadOptions(time_step = k))`.
 
+## Sets ↔ integer data
+
+`sets_to_data(mesh, :point; data_name=nothing, join_char="-", order=String[])` and `data_to_sets(mesh, :cell, "material")` operate on region-backed memberships and return a new mesh. Labels remain zero-based (uncovered rows are -1), even though region accessors are 1-based. See [sets/data conversions](data_manage.md#sets--integer-data).
+
 ## Documented gaps
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r) bindings; the Julia package invents no workaround for any of them:
 
 - **Four Python-only formats.** `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them. They are export targets for a training pipeline rather than interchange formats; see [formats](/formats).
 
-- **point / cell sets beyond regions** never reach the C++ core at all;
 - the **`frozen` pin mask** of `smooth` and `decimate`;
 - **per-cell-type counts** in `stats` — use `cell_block_types` with `cell_block_info`;
 - ~~ragged block connectivity~~ — **closed in v9.15.0**: `polygon_block` / `polyhedron_block` read them as nested 1-based vectors and `add_polygon_block!` / `add_polyhedron_block!` build them. `connectivity` still throws, since a ragged block has no matrix. See [Polyhedra and ragged cells](/polyhedra);
@@ -308,6 +333,10 @@ Two spellings to note. `method` is given as an underscored symbol (`:green_gauss
 `flush!` is named with a bang for the same reason `finalize!` is: `Base.flush` means "flush this IO stream". 
 
 ## Format side channels
+
+Gmsh `read_with_info` returns a `FormatInfo`; `gmsh_info(info)` copies `bounding_entities` (signed tags per 4.1 cell block) and `periodic` links `(entity, affine, node_pairs)`. `entity` is `(dimension, slave entity tag, master entity tag)` in raw file ids, `affine` has 0 or 16 coefficients, and `node_pairs` is `(2, N)` with **1-based point rows**, retaining ordering and duplicates. `write_with_info(mesh, info, path; format="gmsh")` or `"gmsh22"` restores the records. `close(info)` releases the handle, not the copies. Operations do not remap the channel; rebuild it after point/topology edits.
+
+MDPA's `mdpa_info(info).submodelparts` entries contain `name`, `data`, `tables`, `geometry_ids` and `constraint_ids`. The last two lists retain original file ids, ordering and duplicates without Julia's point-index shift; mesh operations do not remap them. `write_with_info` restores nested membership-only parts, with constraints themselves kept opaque in `raw_blocks`.
 
 `read_with_info(path; format="", options=nothing)` returns `(mesh, info)`, `info` a `FormatInfo` for a format that has a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`) and `nothing` otherwise; `write_with_info(mesh, info, path)` puts it back and `close(info)` releases it. `mdpa_info(info)` copies the MDPA side channel into a `NamedTuple` (`tables`, `geometries` with 1-based `(nodes, n)` connectivity, `mesh_blocks`, `submodelparts`, `raw_blocks`, …); file ids stay as the file spelled them. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 

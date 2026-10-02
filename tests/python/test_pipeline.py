@@ -607,7 +607,7 @@ def test_transform_requires_exactly_one_source(settings_env):
     "mutate, match",
     [
         (lambda s: s.update(Bogus=1), "unknown key 'Bogus'"),
-        (lambda s: s.update(Version=2), "Version"),
+        (lambda s: s.update(Version=99), "Version"),
         (lambda s: s.pop("Input"), "Input is required"),
         (lambda s: s["Output"].pop("Path"), "Output.Path is required"),
         (

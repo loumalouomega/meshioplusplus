@@ -51,7 +51,9 @@ module meshioplusplus
 
     public :: mio_mesh
     public :: mio_xdmf_series
+    public :: mio_exodus_series
     public :: mio_format_info
+    public :: mio_gltf_options
     public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
     public :: MIO_MDPA_MODEL_PART_DATA, MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES
     public :: MIO_MDPA_MESH_BLOCKS, MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS
@@ -64,6 +66,9 @@ module meshioplusplus
     public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
+    public :: mio_pipeline_run_file_report, mio_pipeline_run_json_report
+    public :: mio_sequence_pipeline_run_file_report, mio_sequence_pipeline_run_json_report
+    public :: mio_med_mesh_names, mio_med_read_named, mio_med_write_multi
     ! `mio_sequence`'s fan-in is the type-bound `%to_timeseries`; only the
     ! fan-out (which starts from a path, not a handle) is module-level.
     public :: mio_sequence, mio_timeseries_to_sequence
@@ -94,6 +99,33 @@ module meshioplusplus
     public :: mio_region_info
     public :: MIO_TINV_MISES, MIO_TINV_PRINCIPAL, MIO_TINV_HYDROSTATIC, MIO_TINV_DEVIATORIC
     public :: MIO_TINV_ALL
+
+    ! Mirror of mio_write_opts; keep its size and reserved tail unchanged.
+    type, bind(c) :: mio_write_opts_c
+        integer(c_int) :: encoding = 0, codec = 0
+        type(c_ptr) :: float_format = c_null_ptr
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    ! Public owning options; strings never have to be passed as C pointers.
+    type :: mio_gltf_options
+        integer :: container = 0, up_axis = 0, normal_weight = 0
+        logical :: normals = .true., fields = .true., recenter = .true.
+        logical :: by_region = .true., unlit = .true.
+        integer :: component = 1 ! Fortran component indices are 1-based.
+        logical :: component_set = .false., vmin_set = .false., vmax_set = .false.
+        real(c_double) :: split_angle = 30, scale = 1, vmin = 0, vmax = 0
+        character(:), allocatable :: color_by, cmap, nan_color
+    end type
+
+    type, bind(c) :: mio_gltf_opts_c
+        integer(c_int) :: container = 0, up_axis = 0, normal_weight = 0
+        integer(c_int) :: normals = 1, fields = 1, recenter = 1, by_region = 1, unlit = 1
+        integer(c_int) :: component = 0, component_set = 0, vmin_set = 0, vmax_set = 0
+        real(c_double) :: split_angle = 30, scale = 1, vmin = 0, vmax = 0
+        type(c_ptr) :: color_by = c_null_ptr, cmap = c_null_ptr, nan_color = c_null_ptr
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
 
     ! What is wrong with a surface (bind(c); layout must match
     ! mio_surface_quality in meshioplusplus.h). The four counts are separate
@@ -496,6 +528,7 @@ module meshioplusplus
 
     ! MDPA side-channel sections and value kinds (must match the C enums
     ! mio_mdpa_section / mio_mdpa_value_kind; see mio_format_info).
+    integer(c_int32_t), parameter, public :: MIO_GMSH_BOUNDING_ENTITIES = 0, MIO_GMSH_PERIODIC = 1
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -768,6 +801,7 @@ module meshioplusplus
         procedure :: is_valid => mesh_is_valid
         procedure :: read => mesh_read
         procedure :: write => mesh_write
+        procedure :: write_gltf => mesh_write_gltf
         procedure :: read_with_info => mesh_read_with_info
         procedure :: write_with_info => mesh_write_with_info
         ! -- operations --
@@ -830,6 +864,8 @@ module meshioplusplus
         procedure :: data_drop => mesh_data_drop
         procedure :: data_keep => mesh_data_keep
         procedure :: data_rename => mesh_data_rename
+        procedure :: sets_to_data => mesh_sets_to_data
+        procedure :: data_to_sets => mesh_data_to_sets
         procedure :: data_point_to_cell => mesh_data_point_to_cell
         procedure :: data_cell_to_point => mesh_data_cell_to_point
         procedure :: data_calc => mesh_data_calc
@@ -989,6 +1025,22 @@ module meshioplusplus
         procedure :: num_steps => xdmf_series_num_steps
     end type mio_xdmf_series
 
+    !> Fixed Exodus grid/sets/attributes with time-dependent fields. Requires netCDF.
+    type :: mio_exodus_series
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: create => exodus_series_create
+        procedure :: free => exodus_series_free
+        procedure :: is_valid => exodus_series_is_valid
+        procedure :: write_points_cells => exodus_series_write_points_cells
+        procedure :: write_data => exodus_series_write_data
+        procedure :: flush => exodus_series_flush
+        procedure :: finalize => exodus_series_finalize
+        procedure :: finalized => exodus_series_finalized
+        procedure :: num_steps => exodus_series_num_steps
+    end type mio_exodus_series
+
     !> A format's side channel: what `m%read_with_info` kept that a mesh
     !> cannot hold (MDPA's tables, geometries, Mesh blocks, constraints, ...),
     !> for `m%write_with_info` to put back. Freed explicitly, like `mio_mesh`.
@@ -1011,6 +1063,10 @@ module meshioplusplus
         procedure :: is_valid => format_info_is_valid
         procedure :: format => format_info_format
         procedure :: mdpa_count => format_info_mdpa_count
+        procedure :: gmsh_count => format_info_gmsh_count
+        procedure :: gmsh_tags => format_info_gmsh_tags
+        procedure :: gmsh_affine => format_info_gmsh_affine
+        procedure :: gmsh_pairs => format_info_gmsh_pairs
         procedure :: mdpa_string => format_info_mdpa_string
         procedure :: mdpa_int => format_info_mdpa_int
         procedure :: mdpa_ids => format_info_mdpa_ids
@@ -1217,11 +1273,57 @@ module meshioplusplus
             integer(c_int) :: s
         end function
 
+        function c_mio_write_ex(path, h, format, opts) bind(c, name="mio_write_ex") result(s)
+            import :: c_ptr, c_char, c_int, mio_write_opts_c
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr), value :: h
+            type(mio_write_opts_c), intent(in) :: opts
+            integer(c_int) :: s
+        end function
+
+        function c_mio_write_gltf(path, h, opts) bind(c, name="mio_write_gltf") result(s)
+            import :: c_ptr, c_char, c_int, mio_gltf_opts_c
+            character(kind=c_char), dimension(*), intent(in) :: path
+            type(c_ptr), value :: h
+            type(mio_gltf_opts_c), intent(in) :: opts
+            integer(c_int) :: s
+        end function
+
         function c_mio_convert(in_path, in_format, out_path, out_format) &
                 bind(c, name="mio_convert") result(s)
             import :: c_char, c_int
             character(kind=c_char), dimension(*), intent(in) :: in_path, in_format
             character(kind=c_char), dimension(*), intent(in) :: out_path, out_format
+            integer(c_int) :: s
+        end function
+
+        function c_mio_med_mesh_count(path) bind(c, name="mio_med_mesh_count") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(in) :: path(*)
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_med_mesh_name(path, index, buf, buflen) bind(c, name="mio_med_mesh_name") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(in) :: path(*)
+            integer(c_int64_t), value :: index, buflen
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_med_read_named(path, name, opts) bind(c, name="mio_med_read_named") result(h)
+            import :: c_char, c_ptr, mio_read_opts_t
+            character(c_char), intent(in) :: path(*), name(*)
+            type(mio_read_opts_t), intent(in) :: opts
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_med_write_multi(path, meshes, names, count, version) &
+                bind(c, name="mio_med_write_multi") result(s)
+            import :: c_char, c_ptr, c_int64_t, c_int
+            character(c_char), intent(in) :: path(*), version(*)
+            type(c_ptr), intent(in) :: meshes(*), names(*)
+            integer(c_int64_t), value :: count
             integer(c_int) :: s
         end function
 
@@ -1231,6 +1333,45 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: settings_path
             integer(c_int) :: s
         end function
+
+        function c_mio_pipeline_run_file_report(path) bind(c, name="mio_pipeline_run_file_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_pipeline_run_json_report(text) bind(c, name="mio_pipeline_run_json_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: text(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_sequence_pipeline_run_file_report(path) &
+                bind(c, name="mio_sequence_pipeline_run_file_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_sequence_pipeline_run_json_report(text) &
+                bind(c, name="mio_sequence_pipeline_run_json_report") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: text(*)
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_pipeline_report_json(h, buf, buflen) bind(c, name="mio_pipeline_report_json") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: h
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        subroutine c_mio_pipeline_report_free(h) bind(c, name="mio_pipeline_report_free")
+            import :: c_ptr
+            type(c_ptr), value :: h
+        end subroutine
 
         function c_mio_pipeline_run_json(json_text) &
                 bind(c, name="mio_pipeline_run_json") result(s)
@@ -2387,6 +2528,23 @@ module meshioplusplus
             type(c_ptr) :: m
         end function
 
+        function c_mio_sets_to_data(h, location, data_name, join_char, names, count) &
+                bind(c, name="mio_sets_to_data") result(m)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h, data_name, join_char, names
+            integer(c_int), value :: location
+            integer(c_int64_t), value :: count
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_to_sets(h, location, key) bind(c, name="mio_data_to_sets") result(m)
+            import :: c_ptr, c_int, c_char
+            type(c_ptr), value :: h
+            integer(c_int), value :: location
+            character(kind=c_char), dimension(*), intent(in) :: key
+            type(c_ptr) :: m
+        end function
+
         function c_mio_data_point_to_cell(h, names, count, suffix) &
                 bind(c, name="mio_data_point_to_cell") result(m)
             import :: c_ptr, c_int64_t, c_char
@@ -2956,6 +3114,49 @@ module meshioplusplus
 
         ! -- transient XDMF series --
 
+        function c_mio_exodus_series_create(path) bind(c, name="mio_exodus_series_create") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr) :: h
+        end function
+        function c_mio_exodus_series_write_points_cells(s, mesh) &
+                bind(c, name="mio_exodus_series_write_points_cells") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s, mesh
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_write_data(s, time, mesh) &
+                bind(c, name="mio_exodus_series_write_data") result(st)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: s, mesh
+            real(c_double), value :: time
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_flush(s) bind(c, name="mio_exodus_series_flush") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_finalize(s) bind(c, name="mio_exodus_series_finalize") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_finalized(s) bind(c, name="mio_exodus_series_finalized") result(f)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: s
+            integer(c_int32_t) :: f
+        end function
+        function c_mio_exodus_series_num_steps(s) bind(c, name="mio_exodus_series_num_steps") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: s
+            integer(c_int64_t) :: n
+        end function
+        subroutine c_mio_exodus_series_free(s) bind(c, name="mio_exodus_series_free")
+            import :: c_ptr
+            type(c_ptr), value :: s
+        end subroutine
+
         function c_mio_xdmf_series_create(path, data_format, gzip_level) &
                 bind(c, name="mio_xdmf_series_create") result(h)
             import :: c_ptr, c_char, c_int32_t
@@ -3093,6 +3294,27 @@ module meshioplusplus
             type(c_ptr), value :: info
             integer(c_int32_t), value :: section
             integer(c_int64_t) :: n
+        end function
+
+        function c_mio_gmsh_info_count(info, section) &
+                bind(c, name="mio_gmsh_info_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_gmsh_info_array(info, section, index, field, data, dtype, ndim, shape) &
+                bind(c, name="mio_gmsh_info_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
         end function
 
         function c_mio_mdpa_info_string(info, section, index, field, buf, buflen) &
@@ -3340,6 +3562,95 @@ contains
                                          c_str(ofmt)), 'convert', stat, errmsg)
     end subroutine
 
+    !> Enumerate MED mesh names without geometry. Names are dynamically sized.
+    subroutine mio_med_mesh_names(path, names, stat, errmsg)
+        character(*), intent(in) :: path
+        character(:), allocatable, intent(out) :: names(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n, len_name, longest, i
+        n = c_mio_med_mesh_count(c_str(path))
+        if (n < 0) then
+            call handle_failure('med_mesh_names', mio_error_message(), stat, errmsg)
+            return
+        end if
+        longest = 0
+        allocate(buf(1))
+        do i = 0, n - 1
+            len_name = c_mio_med_mesh_name(c_str(path), i, buf, 0_c_int64_t)
+            if (len_name < 0) then
+                call handle_failure('med_mesh_names', mio_error_message(), stat, errmsg)
+                return
+            end if
+            longest = max(longest, len_name)
+        end do
+        deallocate(buf)
+        allocate(character(len=int(longest)) :: names(int(n)))
+        allocate(buf(int(longest) + 1))
+        do i = 0, n - 1
+            len_name = c_mio_med_mesh_name(c_str(path), i, buf, longest + 1)
+            if (len_name < 0) then
+                call handle_failure('med_mesh_names', mio_error_message(), stat, errmsg)
+                return
+            end if
+            names(int(i) + 1) = from_c_buf(buf, int(len_name))
+        end do
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Read a named MED mesh, replacing output only after a successful read.
+    subroutine mio_med_read_named(path, name, mesh, time_step, lenient, stat, errmsg)
+        character(*), intent(in) :: path, name
+        type(mio_mesh), intent(inout) :: mesh
+        integer, intent(in), optional :: time_step
+        logical, intent(in), optional :: lenient
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_read_opts_t) :: opts
+        type(c_ptr) :: h
+        call c_mio_read_opts_init(opts)
+        if (present(time_step)) opts%time_step = int(time_step, c_int64_t)
+        if (present(lenient)) then
+            if (lenient) opts%lenient = 1
+        end if
+        h = c_mio_med_read_named(c_str(path), c_str(name), opts)
+        if (.not. c_associated(h)) then
+            call handle_failure('med_read_named', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call mesh%free()
+        mesh%handle = h
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Write several named meshes to one MED file; no input handle is modified.
+    subroutine mio_med_write_multi(path, meshes, names, version, stat, errmsg)
+        character(*), intent(in) :: path, names(:)
+        type(mio_mesh), intent(in) :: meshes(:)
+        character(*), intent(in), optional :: version
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: ver
+        character(kind=c_char, len=:), allocatable, target :: bufs(:)
+        type(c_ptr), allocatable :: ptrs(:), handles(:)
+        integer :: i
+        if (size(meshes) /= size(names) .or. size(meshes) == 0) then
+            call handle_failure('med_write_multi', 'provide one name per mesh', stat, errmsg)
+            return
+        end if
+        ver = '4.1.0'; if (present(version)) ver = version
+        allocate(character(kind=c_char, len=len(names) + 1) :: bufs(size(names)))
+        allocate(ptrs(size(names)), handles(size(names)))
+        do i = 1, size(names)
+            bufs(i) = trim(names(i))//c_null_char
+            ptrs(i) = c_loc(bufs(i)(1:1))
+            handles(i) = meshes(i)%handle
+        end do
+        call handle_status(c_mio_med_write_multi(c_str(path), handles, ptrs, &
+            int(size(meshes), c_int64_t), c_str(ver)), 'med_write_multi', stat, errmsg)
+    end subroutine
+
     !> Run a whole settings.json pipeline (read -> operation chain -> write;
     !> PascalCase vocabulary, see doc/pipeline.md). Needs a build with the
     !> JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON); otherwise the error names
@@ -3359,6 +3670,71 @@ contains
         character(:), allocatable, intent(out), optional :: errmsg
         call handle_status(c_mio_pipeline_run_json(c_str(json_text)), &
                            'pipeline_run_json', stat, errmsg)
+    end subroutine
+
+    !> Copy an owning report's JSON into an allocatable string, then release it.
+    subroutine pipeline_copy_report(h, report, stat, errmsg)
+        type(c_ptr), value :: h
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        report = ''
+        if (.not. c_associated(h)) then
+            call handle_failure('pipeline_report', mio_error_message(), stat, errmsg)
+            return
+        end if
+        allocate(buf(1))
+        n = c_mio_pipeline_report_json(h, buf, 0_c_int64_t)
+        if (n < 0 .or. n >= int(huge(0) - 1, c_int64_t)) then
+            call c_mio_pipeline_report_free(h)
+            call handle_failure('pipeline_report', 'invalid report length', stat, errmsg)
+            return
+        end if
+        deallocate(buf)
+        allocate(buf(int(n) + 1))
+        n = c_mio_pipeline_report_json(h, buf, n + 1)
+        if (n < 0) then
+            call c_mio_pipeline_report_free(h)
+            call handle_failure('pipeline_report', mio_error_message(), stat, errmsg)
+            return
+        end if
+        report = from_c_buf(buf, int(n))
+        call c_mio_pipeline_report_free(h)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    subroutine mio_pipeline_run_file_report(path, report, stat, errmsg)
+        character(*), intent(in) :: path
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_pipeline_run_file_report(c_str(path)), report, stat, errmsg)
+    end subroutine
+
+    subroutine mio_pipeline_run_json_report(text, report, stat, errmsg)
+        character(*), intent(in) :: text
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_pipeline_run_json_report(c_str(text)), report, stat, errmsg)
+    end subroutine
+
+    subroutine mio_sequence_pipeline_run_file_report(path, report, stat, errmsg)
+        character(*), intent(in) :: path
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_sequence_pipeline_run_file_report(c_str(path)), report, stat, errmsg)
+    end subroutine
+
+    subroutine mio_sequence_pipeline_run_json_report(text, report, stat, errmsg)
+        character(*), intent(in) :: text
+        character(:), allocatable, intent(out) :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call pipeline_copy_report(c_mio_sequence_pipeline_run_json_report(c_str(text)), report, stat, errmsg)
     end subroutine
 
     !> Whether this build carries the JSON pipeline parser.
@@ -3583,16 +3959,92 @@ contains
     end subroutine
 
     !> Write the mesh to a file.
-    subroutine mesh_write(self, path, format, stat, errmsg)
+    subroutine mesh_write(self, path, format, stat, errmsg, encoding, codec, float_format)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: encoding, codec, float_format
         character(:), allocatable :: fmt
+        character(kind=c_char), allocatable, target :: ff(:)
+        type(mio_write_opts_c) :: opts
         fmt = ''; if (present(format)) fmt = format
-        call handle_status(c_mio_write(c_str(path), self%handle, c_str(fmt)), 'write', &
+        if (present(encoding)) then
+            select case (encoding)
+            case ('default'); opts%encoding = 0
+            case ('ascii'); opts%encoding = 1
+            case ('binary'); opts%encoding = 2
+            case ('raw_appended'); opts%encoding = 3
+            case default
+                call handle_failure('write', 'invalid write encoding: '//encoding, stat, errmsg)
+                return
+            end select
+        end if
+        if (present(codec)) then
+            select case (codec)
+            case ('default'); opts%codec = 0
+            case ('none'); opts%codec = 1
+            case ('zlib'); opts%codec = 2
+            case ('lz4'); opts%codec = 3
+            case ('zstd'); opts%codec = 4
+            case ('lzf'); opts%codec = 5
+            case default
+                call handle_failure('write', 'invalid write codec: '//codec, stat, errmsg)
+                return
+            end select
+        end if
+        if (present(float_format)) then
+            ff = c_str(float_format)
+            opts%float_format = c_loc(ff(1))
+        end if
+        call handle_status(c_mio_write_ex(c_str(path), self%handle, c_str(fmt), opts), 'write', &
                            stat, errmsg)
+    end subroutine
+
+    subroutine mesh_write_gltf(self, path, options, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: path
+        type(mio_gltf_options), intent(in), optional :: options
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_gltf_opts_c) :: opts
+        character(kind=c_char), allocatable, target :: color(:), cmap(:), nan_color(:)
+        if (present(options)) then
+            opts%container = options%container
+            opts%up_axis = options%up_axis
+            opts%normal_weight = options%normal_weight
+            opts%normals = merge(1_c_int, 0_c_int, options%normals)
+            opts%fields = merge(1_c_int, 0_c_int, options%fields)
+            opts%recenter = merge(1_c_int, 0_c_int, options%recenter)
+            opts%by_region = merge(1_c_int, 0_c_int, options%by_region)
+            opts%unlit = merge(1_c_int, 0_c_int, options%unlit)
+            opts%component = options%component - 1
+            opts%component_set = merge(1_c_int, 0_c_int, options%component_set)
+            opts%vmin_set = merge(1_c_int, 0_c_int, options%vmin_set)
+            opts%vmax_set = merge(1_c_int, 0_c_int, options%vmax_set)
+            opts%split_angle = options%split_angle
+            opts%scale = options%scale
+            opts%vmin = options%vmin
+            opts%vmax = options%vmax
+            if (allocated(options%color_by)) then
+                color = c_str(options%color_by)
+                opts%color_by = c_loc(color(1))
+            end if
+            if (allocated(options%cmap)) then
+                cmap = c_str(options%cmap)
+                opts%cmap = c_loc(cmap(1))
+            end if
+            if (allocated(options%nan_color)) then
+                nan_color = c_str(options%nan_color)
+                opts%nan_color = c_loc(nan_color(1))
+            end if
+        end if
+        if (c_sizeof(opts) /= 168_c_size_t) then
+            call handle_failure('write_gltf', 'glTF option layout mismatch', stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_write_gltf(c_str(path), self%handle, opts), 'write_gltf', stat, errmsg)
     end subroutine
 
     !> Extract the boundary of the mesh's highest-dimension cells as a new mesh
@@ -6598,6 +7050,55 @@ contains
     ! `location` is one of MIO_DATA_POINT / _CELL / _FIELD.
     ! ------------------------------------------------------------------
 
+    !> Convert point/cell sets into scalar labels (labels remain zero-based).
+    function mesh_sets_to_data(self, location, data_name, join_char, order, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in), optional :: data_name, join_char, order(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: cname(:), cjoin(:), storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: pname, pjoin, arr
+        integer(c_int64_t) :: count
+        pname = c_null_ptr
+        pjoin = c_null_ptr
+        arr = c_null_ptr
+        count = 0_c_int64_t
+        if (present(data_name)) then
+            cname = c_str(data_name)
+            pname = c_loc(cname(1))
+        end if
+        if (present(join_char)) then
+            cjoin = c_str(join_char)
+            pjoin = c_loc(cjoin(1))
+        end if
+        if (present(order)) call c_str_array(order, storage, cptrs, arr, count)
+        out%handle = c_mio_sets_to_data(self%handle, location, pname, pjoin, arr, count)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('sets_to_data', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Convert one scalar integer point/cell field to sets on a new mesh.
+    function mesh_data_to_sets(self, location, key, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in) :: key
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out%handle = c_mio_data_to_sets(self%handle, location, c_str(key))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_to_sets', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
     !> Drop the named data arrays at `location`.
     function mesh_data_drop(self, location, names, ignore_missing, stat, errmsg) result(out)
         class(mio_mesh), intent(in) :: self
@@ -8038,6 +8539,78 @@ contains
     !> `"XML"` (inline) or `"Binary"`. `gzip_level` applies to `"HDF"` datasets
     !> only; negative (the default) means no compression. An unknown format, or
     !> `"HDF"` without HDF5 support, fails through `stat`/`errmsg`.
+    subroutine exodus_series_create(self, path, stat, errmsg)
+        class(mio_exodus_series), intent(inout) :: self
+        character(*), intent(in) :: path
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call self%free()
+        self%handle = c_mio_exodus_series_create(c_str(path))
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('exodus_series create', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_free(self)
+        class(mio_exodus_series), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_exodus_series_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    logical function exodus_series_is_valid(self)
+        class(mio_exodus_series), intent(in) :: self
+        exodus_series_is_valid = c_associated(self%handle)
+    end function
+
+    subroutine exodus_series_write_points_cells(self, mesh, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        class(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_write_points_cells(self%handle, mesh%handle), &
+                           'exodus_series write_points_cells', stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_write_data(self, time, mesh, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        real(real64), intent(in) :: time
+        class(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_write_data(self%handle, real(time, c_double), mesh%handle), &
+                           'exodus_series write_data', stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_flush(self, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_flush(self%handle), 'exodus_series flush', stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_finalize(self, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_finalize(self%handle), 'exodus_series finalize', stat, errmsg)
+    end subroutine
+
+    function exodus_series_finalized(self) result(f)
+        class(mio_exodus_series), intent(in) :: self
+        logical :: f
+        f = .true.
+        if (c_associated(self%handle)) f = c_mio_exodus_series_finalized(self%handle) == 1_c_int32_t
+    end function
+
+    function exodus_series_num_steps(self) result(n)
+        class(mio_exodus_series), intent(in) :: self
+        integer(int64) :: n
+        n = 0_int64
+        if (c_associated(self%handle)) n = int(c_mio_exodus_series_num_steps(self%handle), int64)
+    end function
+
     subroutine xdmf_series_create(self, path, data_format, gzip_level, mode, auto_flush, &
                                   stat, errmsg)
         class(mio_xdmf_series), intent(inout) :: self
@@ -8126,7 +8699,7 @@ contains
     end function
 
     !> Write the static grid every step shares. Call once, before the first
-    !> `write_data`. Only the mesh's points and cells are used.
+    !> `write_data`. Uses the mesh's points, cells and fixed named regions.
     subroutine xdmf_series_write_points_cells(self, mesh, stat, errmsg)
         class(mio_xdmf_series), intent(in) :: self
         class(mio_mesh), intent(in) :: mesh
@@ -8557,6 +9130,81 @@ contains
     end function
 
     !> Number of items in an MDPA section (a MIO_MDPA_* value); -1 on error.
+    !> Number of Gmsh blocks/links in a MIO_GMSH_* section; -1 on error.
+    integer function format_info_gmsh_count(self, section)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section
+        format_info_gmsh_count = int(c_mio_gmsh_info_count(self%handle, int(section, c_int32_t)))
+    end function
+
+    !> Signed bounding-entity tags, or periodic (dimension, slave tag, master tag).
+    !> Item index is 1-based; tags are raw file ids, not point indices.
+    function format_info_gmsh_tags(self, section, index, stat, errmsg) result(tags)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int32), allocatable :: tags(:)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        integer(c_int32_t), pointer :: vals(:)
+        allocate (tags(0))
+        st = c_mio_gmsh_info_array(self%handle, int(section, c_int32_t), &
+                                  int(index - 1, c_int64_t), 0_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'gmsh_tags', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        tags = int(vals, int32)
+    end function
+
+    !> A periodic link's affine coefficients (empty or 16 doubles), copied.
+    function format_info_gmsh_affine(self, index, stat, errmsg) result(affine)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: affine(:)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        real(c_double), pointer :: vals(:)
+        allocate (affine(0))
+        st = c_mio_gmsh_info_array(self%handle, MIO_GMSH_PERIODIC, &
+                                  int(index - 1, c_int64_t), 1_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'gmsh_affine', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        affine = real(vals, real64)
+    end function
+
+    !> Periodic slave/master pairs (2,N), copied as 1-based point rows.
+    !> Ordering/duplicates survive I/O; mesh operations do not remap this info.
+    function format_info_gmsh_pairs(self, index, stat, errmsg) result(pairs)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: pairs(:, :)
+        type(c_ptr) :: p
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        integer(c_int64_t), pointer :: vals(:, :)
+        allocate (pairs(2, 0))
+        st = c_mio_gmsh_info_array(self%handle, MIO_GMSH_PERIODIC, &
+                                  int(index - 1, c_int64_t), 2_c_int32_t, p, dt, nd, shp)
+        call handle_status(st, 'gmsh_pairs', stat, errmsg)
+        if (st /= 0_c_int) return
+        if (shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        pairs = int(vals, int64) + 1
+    end function
+
     integer function format_info_mdpa_count(self, section)
         class(mio_format_info), intent(in) :: self
         integer, intent(in) :: section
@@ -8603,6 +9251,7 @@ contains
     !> An id list of item `index` (1-based): geometry ids (GEOMETRIES field 1),
     !> Mesh-block nodes (MESH_BLOCKS field 0, 1-based points) / element ids (1)
     !> / condition ids (2), or table ids (SUBMODELPARTS field 0).
+    !> SUBMODELPARTS fields: 0 tables, 1 geometry ids, 2 constraint ids (raw file ids).
     function format_info_mdpa_ids(self, section, index, field, stat, errmsg) result(ids)
         class(mio_format_info), intent(in) :: self
         integer, intent(in) :: section, index, field

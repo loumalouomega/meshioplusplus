@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -67,6 +68,40 @@ TEST(Pipeline, QualityAttachesMetrics) {
     EXPECT_TRUE(report.mSteps[0].mCounters.empty());
 }
 
+TEST(Pipeline, VersionTwoTypedMergeAndFanoutWorkWithoutJson) {
+    using namespace meshioplusplus;
+    const auto input = mt::temp_path("_v2_in.vtu");
+    const auto extra = mt::temp_path("_v2_extra.vtu");
+    const auto pattern = mt::temp_path("_piece_{part}.vtu");
+    WriteOptions options;
+    options.mCodecSet = true;
+    options.mCodec = detail::VtkCodec::None;
+    registry_write_ex(input, mt::tet_mesh(), "vtu", options);
+    registry_write_ex(extra, mt::tet_mesh(), "vtu", options);
+    Pipeline pipeline;
+    pipeline.mVersion = 2;
+    pipeline.mInput.mPath = input;
+    pipeline.mOutput.mPath = pattern;
+    pipeline.mOutput.mOptions = options;
+    pipeline.mSteps = {
+        step("Merge", {{"Inputs", std::vector<std::string>{extra}}}),
+        step("Partition", {{"Nparts", std::int64_t(2)}, {"Method", std::string("sfc")}})};
+    const auto report = run_pipeline(pipeline);
+    ASSERT_EQ(report.mSteps.size(), 2u);
+    EXPECT_EQ(report.mSteps[0].mCounters[0].second, 2.0);
+    std::size_t cells = 0;
+    for (const auto part : {"0", "1"}) {
+        auto path = pattern;
+        path.replace(path.find("{part}"), 6, part);
+        auto piece = registry_read(path, "vtu", ReadOptions{});
+        cells += total_cells(piece);
+        std::filesystem::remove(path);
+    }
+    EXPECT_EQ(cells, 2 * total_cells(mt::tet_mesh()));
+    std::filesystem::remove(input);
+    std::filesystem::remove(extra);
+}
+
 TEST(Pipeline, TransformRotatesAboutZ) {
     PipelineReport report;
     Mesh out = meshioplusplus::apply_pipeline_step(
@@ -79,6 +114,31 @@ TEST(Pipeline, TransformRotatesAboutZ) {
     const std::size_t dim = out.PointDim();
     EXPECT_NEAR(p[1 * dim + 0], 0.0, 1e-12);
     EXPECT_NEAR(p[1 * dim + 1], 1.0, 1e-12);
+}
+
+TEST(Pipeline, SetsDataStepsAndReports) {
+    PipelineReport report;
+    Mesh in = mt::data_mesh();
+    in.AddRegion(
+        meshioplusplus::Region("a", meshioplusplus::RegionKind::Point, mt::int_data_array({0, 1})));
+    in.AddRegion(
+        meshioplusplus::Region("b", meshioplusplus::RegionKind::Point, mt::int_data_array({1, 2})));
+    auto labels = meshioplusplus::apply_pipeline_step(
+        std::move(in),
+        step("SetsToData",
+             {{"Location", std::string("point")}, {"Order", std::vector<std::string>{"b", "a"}}}),
+        report);
+    EXPECT_EQ(labels.PointData("b-a").As<std::int64_t>()[1], 1);
+    EXPECT_EQ(labels.NumRegions(), 0u);
+    auto restored = meshioplusplus::apply_pipeline_step(
+        std::move(labels),
+        step("DataToSets", {{"Location", std::string("point")}, {"Key", std::string("b-a")}}),
+        report);
+    EXPECT_EQ(restored.NumRegions(), 3u);
+    EXPECT_FALSE(restored.HasPointData("b-a"));
+    ASSERT_EQ(report.mSteps.size(), 2u);
+    EXPECT_EQ(report.mSteps[0].mOp, "SetsToData");
+    EXPECT_EQ(report.mSteps[1].mOp, "DataToSets");
 }
 
 TEST(Pipeline, TransformRequiresExactlyOneSource) {
@@ -315,7 +375,7 @@ TEST(Pipeline, RemeshStepProducesANewMeshWithTheRequestedClusterCount) {
     std::vector<std::vector<double>> pts = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                             {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
     std::vector<std::vector<std::int64_t>> conn = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
-                                                    {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+                                                   {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
     const Mesh octa = mt::make_mesh(pts, "triangle", conn);
 
     const std::string in_path = mt::temp_path("_pipe_remesh_in.vtk");
@@ -343,7 +403,7 @@ TEST(Pipeline, RemeshVolumeStepProducesATetraMesh) {
     std::vector<std::vector<double>> pts = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                             {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
     std::vector<std::vector<std::int64_t>> conn = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
-                                                    {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+                                                   {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
     const Mesh octa = mt::make_mesh(pts, "triangle", conn);
 
     const std::string in_path = mt::temp_path("_pipe_remesh_volume_in.vtk");
@@ -352,8 +412,8 @@ TEST(Pipeline, RemeshVolumeStepProducesATetraMesh) {
 
     Pipeline pipeline;
     pipeline.mInput.mPath = in_path;
-    pipeline.mSteps = {step("RemeshVolume", {{"CellSize", 0.4},
-                                             {"WatertightCheck", std::string("off")}})};
+    pipeline.mSteps = {
+        step("RemeshVolume", {{"CellSize", 0.4}, {"WatertightCheck", std::string("off")}})};
     pipeline.mOutput.mPath = out_path;
     PipelineReport report = meshioplusplus::run_pipeline(pipeline);
     ASSERT_EQ(report.mSteps.size(), 1u);
@@ -450,7 +510,7 @@ TEST(PipelineJson, ParsesAFullDocument) {
 TEST(PipelineJson, StrictSchemaErrorsNameTheOffender) {
     const char* cases[][2] = {
         {R"({"Input": {"Path": "a"}, "Output": {"Path": "b"}, "Bogus": 1})", "Bogus"},
-        {R"({"Version": 2, "Input": {"Path": "a"}, "Output": {"Path": "b"}})", "Version"},
+        {R"({"Version": 99, "Input": {"Path": "a"}, "Output": {"Path": "b"}})", "Version"},
         {R"({"Output": {"Path": "b"}})", "Input is required"},
         {R"({"Input": {"Path": "a"}, "Output": {}})", "Output.Path"},
         {R"({"Input": {"Path": "a"}, "Output": {"Path": "b"},
@@ -505,6 +565,18 @@ TEST(PipelineJson, RunPipelineFileEndToEnd) {
     std::filesystem::remove(settings_path);
 }
 
+TEST(PipelineJson, ReportSerializationEscapesStringsAndNullsNonFiniteCounters) {
+    PipelineReport report;
+    report.mSteps.push_back(
+        {"quoted\"op", {{"count", 3.0}, {"invalid", std::numeric_limits<double>::quiet_NaN()}}});
+    report.mWarnings = {"line\nwith\tcontrols\\and quotes\""};
+    const auto text = meshioplusplus::pipeline_report_json(report);
+    EXPECT_NE(text.find("quoted\\\"op"), std::string::npos);
+    EXPECT_NE(text.find("\"invalid\":null"), std::string::npos);
+    EXPECT_NE(text.find("line\\nwith\\tcontrols\\\\and quotes\\\""), std::string::npos);
+    EXPECT_EQ(meshioplusplus::pipeline_report_json({}), "{\"steps\":[],\"warnings\":[]}");
+}
+
 TEST(PipelineJson, MissingSettingsFileFailsByPath) {
     try {
         meshioplusplus::parse_pipeline_file("/no/such/settings.json");
@@ -527,7 +599,8 @@ TEST(PipelineJson, EntryPointsThrowNamingTheFlag) {
     for (auto fn : {+[] { meshioplusplus::parse_pipeline_json("{}"); },
                     +[] { meshioplusplus::parse_pipeline_file("x.json"); },
                     +[] { meshioplusplus::run_pipeline_json("{}"); },
-                    +[] { meshioplusplus::run_pipeline_file("x.json"); }}) {
+                    +[] { meshioplusplus::run_pipeline_file("x.json"); },
+                    +[] { meshioplusplus::pipeline_report_json({}); }}) {
         try {
             fn();
             FAIL() << "expected runtime_error";

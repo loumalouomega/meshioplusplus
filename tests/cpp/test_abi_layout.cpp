@@ -56,6 +56,12 @@
 
 // Project includes
 #include "meshioplusplus/abi_version.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
+
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+static_assert(sizeof(meshioplusplus::ExodusTimeSeriesWriter) == sizeof(void*));
+static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*));
+#endif
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/mesh.hpp"
@@ -189,7 +195,9 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 // layout break, unlike v10.35.0's ABI 12, so this bumped
 // `MESHIOPLUSPLUS_ABI_VERSION` 12 -> 13 (see abi_version.hpp).
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
-MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
+// ABI 22: periodic links join the bounding-entity vector.
+MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::GmshPeriodicLink, 112, 8);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
 // blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping
@@ -198,7 +206,8 @@ MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaGeometryBlock, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaMeshBlock, 104, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MdpaSubModelPart, 80, 8);
+// ABI 21: geometry and constraint membership ids (two vectors).
+MIO_ABI_LAYOUT(meshioplusplus::MdpaSubModelPart, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaRawBlock, 96, 8);
 // `OpenFoamWriteOptions` (v15.5.0, roadmap §1.1) is a pure addition, pinned
 // from the release that introduces it -- the `PvdSeriesWriter` precedent

@@ -26,7 +26,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="dolfin-xml">`dolfin-xml`</span> |  |  | ✗ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int64 | `c_f64` float64, `c_i32` int64 | — | — |
 | <span id="elmer">`elmer`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="ensight">`ensight`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | — |
-| <span id="exodus">`exodus`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point |
+| <span id="exodus">`exodus`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point, side |
 | <span id="febio">`febio`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64?, `c_i32` float64? | — | cell, point, side |
 | <span id="femap">`femap`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point |
 | <span id="flac3d">`flac3d`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ↻ | ✓ | exact | — | — | — | — |
@@ -51,7 +51,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="mphbin">`mphbin`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="mphtxt">`mphtxt`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="nastran">`nastran`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
-| <span id="netgen">`netgen`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
+| <span id="netgen">`netgen`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | ✓ | — |
 | <span id="neuroglancer">`neuroglancer`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="obj">`obj`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="off">`off`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
@@ -102,6 +102,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
+- **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.

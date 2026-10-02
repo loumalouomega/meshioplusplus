@@ -89,9 +89,20 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         rWhy = "format '" + rFormat + "' has no raw appended encoding (only vtu does)";
         return false;
     }
-    if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
-        rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
-        return false;
+    if (rOptions.mCodecSet) {
+        if (rOptions.mCodec == detail::VtkCodec::LZF) {
+            if (rFormat != "pcd") {
+                rWhy = "LZF codec is supported only for pcd";
+                return false;
+            }
+            if (rOptions.mEncoding == WriteEncoding::Ascii) {
+                rWhy = "pcd LZF codec requires binary encoding, not ascii";
+                return false;
+            }
+        } else if (!wopt_has_codec(rFormat)) {
+            rWhy = "format '" + rFormat + "' has no VTK block compression codec";
+            return false;
+        }
     }
     if (!rOptions.mFloatFormat.empty() && !wopt_has_float_format(rFormat)) {
         rWhy = "format '" + rFormat + "' takes no float-format string";
@@ -147,7 +158,9 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         wopts.mBinary = binary;
         write_openfoam(rPath, rMesh, info, wopts);
     } else if (fmt == "pcd") {
-        write_pcd(rPath, rMesh, binary ? PcdData::Binary : PcdData::Ascii);
+        write_pcd(rPath, rMesh,
+                  rOptions.mCodecSet ? PcdData::BinaryCompressed
+                                     : (binary ? PcdData::Binary : PcdData::Ascii));
     } else if (fmt == "ply") {
         write_ply(rPath, rMesh, binary, /*skin=*/true);
     } else if (fmt == "stl") {

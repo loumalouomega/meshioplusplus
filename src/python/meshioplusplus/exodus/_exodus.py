@@ -735,9 +735,96 @@ def _write_attributes(rootgrp, mesh):
                 name_var[i, j] = letter.encode()
 
 
-def write(filename, mesh):
+def _sets_for_write(mesh, kind):
+    """Validate and encode memberships before truncating the destination."""
+    from .._regions import block_bases
+
+    regions = sorted(
+        (r for r in mesh.regions if r.kind == kind),
+        key=lambda r: (r.name, r.dim, r.tag),
+    )
+    ids = set()
+    for region in regions:
+        if "\0" in region.name:
+            raise WriteError("Exodus: set names cannot contain NUL characters")
+        if region.tag >= 0:
+            if region.tag in ids:
+                raise WriteError(f"Exodus: duplicate set id {region.tag}")
+            ids.add(region.tag)
+    bases = block_bases(mesh.cells)
+    sets = []
+    next_id = 1
+    for region in regions:
+        while next_id in ids:
+            next_id += 1
+        tag = region.tag if region.tag >= 0 else next_id
+        ids.add(tag)
+        entries = np.asarray(region.entries, dtype=np.int64)
+        if kind == "point":
+            if np.any(entries < 0) or np.any(entries >= len(mesh.points)):
+                raise WriteError(
+                    f"Exodus: node set '{region.name}' has an invalid point"
+                )
+            entities, sides = entries + 1, None
+        else:
+            entities = entries[:, 0] + 1
+            sides = []
+            for cell, facet in entries:
+                if cell < 0 or cell >= bases[-1]:
+                    raise WriteError(
+                        f"Exodus: side set '{region.name}' has an invalid cell"
+                    )
+                block = int(np.searchsorted(bases, cell, side="right")) - 1
+                cell_type = mesh.cells[block].type
+                base = _EXODUS_FACET_BASE.get(cell_type, cell_type)
+                table = _EXODUS_SIDE_TO_FACET.get(base, ())
+                if facet not in table:
+                    raise WriteError(
+                        f"Exodus: side set '{region.name}' has an unsupported facet"
+                    )
+                sides.append(table.index(facet) + 1)
+            sides = np.asarray(sides, dtype=np.int64)
+        sets.append((region.name, tag, entities, sides))
+    return sets
+
+
+def _write_sets(rootgrp, sets, side=False):
+    if not sets:
+        return
+    prefix = "ss" if side else "ns"
+    dim = "num_side_sets" if side else "num_node_sets"
+    rootgrp.createDimension(dim, len(sets))
+    ids = rootgrp.createVariable(f"{prefix}_prop1", "i8", (dim,))
+    ids.setncattr("name", "ID")
+    status = rootgrp.createVariable(f"{prefix}_status", "i4", (dim,))
+    names = rootgrp.createVariable(f"{prefix}_names", "S1", (dim, "len_string"))
+    names.set_auto_mask(False)
+    for k, (name, tag, entities, sides) in enumerate(sets, 1):
+        ids[k - 1] = tag
+        status[k - 1] = int(len(entities) > 0)
+        encoded = name.encode("utf-8")
+        names[k - 1, : len(encoded)] = np.frombuffer(encoded, dtype="S1")
+        entry_dim = f"num_side_ss{k}" if side else f"num_nod_ns{k}"
+        rootgrp.createDimension(entry_dim, len(entities))
+        var = rootgrp.createVariable(
+            f"elem_ss{k}" if side else f"node_ns{k}", "i8", (entry_dim,)
+        )
+        if len(entities):
+            var[:] = entities
+        if side:
+            var = rootgrp.createVariable(f"side_ss{k}", "i8", (entry_dim,))
+            if len(sides):
+                var[:] = sides
+
+
+def _write_file(filename, mesh, emit_step=True, double_time=False):
     import netCDF4
 
+    node_sets = _sets_for_write(mesh, "point")
+    side_sets = _sets_for_write(mesh, "side")
+    string_size = max(
+        [33] + [len(s[0].encode("utf-8")) + 1 for s in node_sets + side_sets]
+    )
     with netCDF4.Dataset(filename, "w") as rootgrp:
         # set global data
         rootgrp.title = "\n".join(_provenance.lines(_provenance.SlotTier.BLOCK))
@@ -751,8 +838,7 @@ def write(filename, mesh):
         rootgrp.createDimension("num_dim", mesh.points.shape[1])
         rootgrp.createDimension("num_elem", total_num_elems)
         rootgrp.createDimension("num_el_blk", len(mesh.cells))
-        rootgrp.createDimension("num_node_sets", len(mesh.point_sets))
-        rootgrp.createDimension("len_string", 33)
+        rootgrp.createDimension("len_string", string_size)
         rootgrp.createDimension("len_line", 81)
         rootgrp.createDimension("four", 4)
         rootgrp.createDimension("time_step", None)
@@ -764,7 +850,9 @@ def write(filename, mesh):
         # multi-step writer is a separate stateful object (the shape
         # `XdmfTimeSeriesWriter` has) and remains a follow-up. Twin of the C++
         # writer's identical block.
-        data = rootgrp.createVariable("time_whole", "f4", ("time_step",))
+        data = rootgrp.createVariable(
+            "time_whole", "f8" if double_time else "f4", ("time_step",)
+        )
         t = 0.0
         if "exodus:time" in mesh.field_data:
             tv = np.asarray(mesh.field_data["exodus:time"]).ravel()
@@ -775,7 +863,8 @@ def write(filename, mesh):
                     f'Exodus: field_data["exodus:time"] has {tv.size} values but '
                     "this writer emits a single time step; using the first."
                 )
-        data[:] = t
+        if emit_step:
+            data[:] = t
 
         # points
         coor_names = rootgrp.createVariable(
@@ -860,21 +949,131 @@ def write(filename, mesh):
                 )
                 node_data[0] = data
 
-        # node sets
-        num_point_sets = len(mesh.point_sets)
-        if num_point_sets > 0:
-            data = rootgrp.createVariable("ns_prop1", "i4", "num_node_sets")
-            data_names = rootgrp.createVariable(
-                "ns_names", "S1", ("num_node_sets", "len_string")
+        _write_sets(rootgrp, node_sets)
+        _write_sets(rootgrp, side_sets, side=True)
+
+
+def write(filename, mesh):
+    _write_file(filename, mesh)
+
+
+class TimeSeriesWriter:
+    """Fixed Exodus geometry/sets/attributes and a stable time-dependent schema.
+
+    ``write_points_cells(mesh)`` fixes the grid; ``write_data(time, mesh)``
+    appends fields. Geometry and attributes on step meshes are ignored. The
+    first step fixes field names, dtypes and shapes. No step meshes accumulate.
+    """
+
+    def __init__(self, filename):
+        self.filename = str(filename)
+        if not self.filename:
+            raise WriteError("Exodus: series path is empty")
+        self._geometry = None
+        self._grid = None
+        self._schema = None
+        self._file = None
+        self.num_steps = 0
+        self.finalized = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.finalize()
+        return False
+
+    def write_points_cells(self, mesh):
+        if self.finalized or self._grid is not None:
+            raise WriteError("Exodus: write_points_cells requires a new, open series")
+        geometry = mesh.copy()
+        geometry.point_data.clear()
+        geometry.cell_data = {
+            n: v
+            for n, v in geometry.cell_data.items()
+            if n.startswith(ATTRIBUTE_PREFIX)
+        }
+        geometry.field_data.clear()
+        _write_file(self.filename, geometry, emit_step=False, double_time=True)
+        self._geometry = geometry
+        self._grid = (len(mesh.points), [(c.type, len(c.data)) for c in mesh.cells])
+
+    def write_data(self, time, mesh):
+        import netCDF4
+
+        if self.finalized or self._grid is None:
+            raise WriteError(
+                "Exodus: write_data requires write_points_cells and an open series"
             )
-            for k, name in enumerate(mesh.point_sets.keys()):
-                data[k] = k
-                for i, letter in enumerate(name):
-                    data_names[k, i] = letter.encode()
-            for k, (key, values) in enumerate(mesh.point_sets.items()):
-                dim1 = f"num_nod_ns{k + 1}"
-                rootgrp.createDimension(dim1, values.shape[0])
-                dtype = numpy_to_exodus_dtype[values.dtype.name]
-                data = rootgrp.createVariable(f"node_ns{k + 1}", dtype, (dim1,))
-                # Exodus is 1-based
-                data[:] = values + 1
+        if not np.isfinite(time):
+            raise WriteError("Exodus: series time must be finite")
+        grid = (len(mesh.points), [(c.type, len(c.data)) for c in mesh.cells])
+        if grid != self._grid:
+            raise WriteError(
+                "Exodus: series cell blocks/counts do not match the fixed grid"
+            )
+        fields = []
+        for j, name in enumerate(sorted(mesh.point_data), 1):
+            fields.append(
+                (
+                    name,
+                    f"vals_nod_var{j}",
+                    np.asarray(mesh.point_data[name]),
+                    len(mesh.points),
+                )
+            )
+        names = sorted(n for n in mesh.cell_data if not n.startswith(ATTRIBUTE_PREFIX))
+        for j, name in enumerate(names, 1):
+            if len(mesh.cell_data[name]) != len(mesh.cells):
+                raise WriteError(
+                    f"Exodus: series field '{name}' must cover every cell block"
+                )
+            for b, data in enumerate(mesh.cell_data[name], 1):
+                fields.append(
+                    (
+                        name,
+                        f"vals_elem_var{j}eb{b}",
+                        np.asarray(data),
+                        len(mesh.cells[b - 1].data),
+                    )
+                )
+        for name, _, data, rows in fields:
+            if not name or len(name.encode("utf-8")) > 33 or "\0" in name:
+                raise WriteError(
+                    "Exodus: series field names must contain 1 to 33 non-NUL bytes"
+                )
+            if data.ndim == 0 or data.shape[0] != rows or 0 in data.shape[1:]:
+                raise WriteError(f"Exodus: series field '{name}' has an invalid shape")
+        schema = [
+            (name, var, data.dtype.str, data.shape) for name, var, data, _ in fields
+        ]
+        if self._schema is not None and schema != self._schema:
+            raise WriteError("Exodus: series field schema changed")
+        if self._schema is None:
+            first = self._geometry.copy()
+            first.point_data = {
+                n: np.asarray(mesh.point_data[n]) for n in sorted(mesh.point_data)
+            }
+            first.cell_data.update({n: mesh.cell_data[n] for n in names})
+            _write_file(self.filename, first, double_time=True)
+            self._file = netCDF4.Dataset(self.filename, "r+")
+            self._schema = schema
+            self._geometry = None
+        for _, var, data, _ in fields:
+            if data.size:
+                self._file.variables[var][self.num_steps] = data
+        self._file.variables["time_whole"][self.num_steps] = float(time)
+        self.num_steps += 1
+
+    def flush(self):
+        if self._file is not None:
+            self._file.sync()
+
+    def finalize(self):
+        if self.finalized:
+            return
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        self._geometry = None
+        self.finalized = True

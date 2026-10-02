@@ -20,7 +20,6 @@ literally reuses ``VtuReader``'s methods rather than transcribing them.
 from __future__ import annotations
 
 import base64
-import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -28,9 +27,11 @@ from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
+from .._vtk_xml_read import field_arrays
+from .._vtk_xml_read import load as _load_xml
+from .._vtk_xml_read import piece_extent, read_pieces
 from ..vtu._vtu import (
     _COMPRESSION_TO_ATTR,
-    VtuReader,
     _chunk_it,
     _compressor_for,
     numpy_to_vtu_type,
@@ -38,67 +39,25 @@ from ..vtu._vtu import (
 )
 
 
-class _ArrayReader:
-    """Just enough of a ``VtuReader`` to decode a ``<DataArray>``.
-
-    The three decode methods are *bound from* ``VtuReader`` rather than copied:
-    the base64 header framing, the per-block sizes and the byte-order handling
-    are subtle enough that a second implementation would drift, and the two
-    formats share the container exactly.
-    """
-
-    read_uncompressed_binary = VtuReader.read_uncompressed_binary
-    read_compressed_binary = VtuReader.read_compressed_binary
-    read_data = VtuReader.read_data
-
-    def __init__(self, header_type, byte_order, compression, appended_data=None):
-        self.header_type = header_type
-        self.byte_order = byte_order
-        self.compression = compression
-        self.appended_data = appended_data
-
-
 def _parse_n(text, count, dtype):
     if text is None:
         return None
     parts = text.replace(",", " ").split()
-    if len(parts) < count:
-        return None
-    return np.array([dtype(x) for x in parts[:count]])
+    if len(parts) != count:
+        raise ReadError("VTK: malformed geometry attribute")
+    try:
+        return np.array([dtype(x) for x in parts])
+    except ValueError as exc:
+        raise ReadError("VTK: malformed geometry attribute") from exc
 
 
 def read(filename):
-    tree = ET.parse(str(filename))
-    root = tree.getroot()
-    if root.tag != "VTKFile":
-        raise ReadError("Expected tag 'VTKFile'")
-    if root.get("type") != "ImageData":
-        raise ReadError("Expected type ImageData")
+    root, reader = _load_xml(filename, "ImageData", "VTI")
+    return read_pieces(root, reader, "ImageData", "VTI", _read_piece)
 
-    compression = root.get("compressor")
-    if compression == "vtkLZMADataCompressor":
-        # The C++ reader declines lzma too; Python has the module, so this is a
-        # deliberate parity choice rather than a capability gap. Removing it
-        # would make the two readers accept different files.
-        raise ReadError("lzma-compressed VTI is not supported")
-    header_type = root.get("header_type", "UInt32")
-    byte_order = root.get("byte_order")
 
-    appended = root.find("AppendedData")
-    appended_data = None
-    if appended is not None:
-        encoding = appended.get("encoding", "base64")
-        if encoding != "base64":
-            raise ReadError(f"VTI appended data encoding '{encoding}' is not supported")
-        text = appended.text or ""
-        appended_data = text.strip().lstrip("_")
-
-    grid = root.find("ImageData")
-    if grid is None:
-        raise ReadError("No ImageData found")
-    whole = _parse_n(grid.get("WholeExtent"), 6, int)
-    if whole is None:
-        raise ReadError("ImageData has no readable WholeExtent")
+def _read_piece(grid, piece, reader):
+    whole = piece_extent(grid, piece)
     origin = _parse_n(grid.get("Origin"), 3, float)
     if origin is None:
         origin = np.zeros(3)
@@ -109,32 +68,22 @@ def read(filename):
     if direction is not None and not np.array_equal(direction, np.eye(3).reshape(-1)):
         raise ReadError("VTI with a non-identity Direction is not supported")
 
-    pieces = grid.findall("Piece")
-    if not pieces:
-        raise ReadError("No Piece found")
-    if len(pieces) > 1:
-        raise ReadError("multi-piece VTI is not supported")
-    piece = pieces[0]
-    piece_extent = _parse_n(piece.get("Extent"), 6, int)
-    if piece_extent is not None and not np.array_equal(piece_extent, whole):
-        raise ReadError(
-            "VTI Piece Extent differs from WholeExtent; a partial piece "
-            "is not supported"
-        )
-
     dims = np.array([whole[2 * k + 1] - whole[2 * k] for k in range(3)], dtype=np.int64)
-    if np.any(dims < 0):
+    if np.any(dims < 0) and not np.all(dims == -1):
         raise ReadError("VTI WholeExtent is inverted")
     # A point at extent index i sits at Origin + i * Spacing, so an extent that
     # does not start at zero translates the mesh's own lo corner.
     lo = np.array([origin[k] + whole[2 * k] * spacing[k] for k in range(3)])
 
     points, conn = _lattice_py(dims, lo, spacing)
+    if conn is None:
+        axes = [lo[k] + np.arange(int(dims[k]) + 1) * spacing[k] for k in range(3)]
+        gz, gy, gx = np.meshgrid(axes[2], axes[1], axes[0], indexing="ij")
+        points = np.stack([gx.reshape(-1), gy.reshape(-1), gz.reshape(-1)], axis=1)
     cells = [] if conn is None else [("hexahedron", conn)]
     num_points = points.shape[0]
     num_cells = 0 if conn is None else conn.shape[0]
 
-    reader = _ArrayReader(header_type, byte_order, compression, appended_data)
     point_data = {}
     cell_data = {}
     for section, sink, expected, what in (
@@ -147,7 +96,7 @@ def read(filename):
         for da in node.findall("DataArray"):
             name = da.get("Name")
             arr = reader.read_data(da)
-            if arr.size and arr.shape[0] != expected:
+            if arr.shape[0] != expected:
                 raise ReadError(
                     f"VTI {what} array '{name}' has {arr.shape[0]} rows, but the "
                     f"extent has {expected} {what}s"
@@ -159,7 +108,13 @@ def read(filename):
             else:
                 sink[name] = arr
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_arrays(piece, reader, "VTI"),
+    )
 
 
 def _encode_binary(data, compression, header_type):

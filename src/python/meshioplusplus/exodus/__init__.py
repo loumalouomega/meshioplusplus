@@ -2,10 +2,13 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from ._exodus import TimeSeriesWriter as _PyTimeSeriesWriter
 from ._exodus import read as _py_read
 from ._exodus import write as _py_write
 
 _HAS_NETCDF = getattr(_core, "__has_netcdf__", False)
+
+TimeSeriesWriter = getattr(_core, "ExodusTimeSeriesWriter", _PyTimeSeriesWriter)
 
 
 def read(filename, time_step=0):
@@ -30,8 +33,7 @@ def read(filename, time_step=0):
 
 def write(filename, mesh):
     """Write an Exodus II file (C++ core when built with netCDF, Python fallback)."""
-    # Node sets (point_sets) live outside the conversion layer -> Python.
-    if _HAS_NETCDF and not mesh.point_sets and not is_buffer(filename, "w"):
+    if _HAS_NETCDF and not is_buffer(filename, "w"):
         try:
             _core.exodus_write(str(filename), mesh)
             return
@@ -43,4 +45,4 @@ def write(filename, mesh):
 
 register_format("exodus", [".e", ".exo", ".ex2"], read, {"exodus": write})
 
-__all__ = ["read", "write"]
+__all__ = ["read", "write", "TimeSeriesWriter"]

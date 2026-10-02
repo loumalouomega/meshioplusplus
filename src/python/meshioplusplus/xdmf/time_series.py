@@ -11,7 +11,7 @@ from numpy.typing import ArrayLike
 
 from .._common import cell_data_from_raw, raw_from_cell_data, write_xml
 from .._exceptions import ReadError, WriteError
-from .._mesh import CellBlock
+from .._mesh import CellBlock, Mesh
 from .common import (
     attribute_type,
     dtype_to_format_string,
@@ -22,6 +22,7 @@ from .common import (
     xdmf_to_meshio_type,
     xdmf_to_numpy_type,
 )
+from .main import XdmfWriter, _read_set
 
 
 class TimeSeriesReader:
@@ -64,6 +65,7 @@ class TimeSeriesReader:
         self.collection = list(collection_grid)
         self.num_steps = len(self.collection)
         self.cells = None
+        self.regions = []
         self.hdf5_files = {}
 
         # find the uniform grid
@@ -131,6 +133,10 @@ class TimeSeriesReader:
                 points = self._read_data_item(data_item)
 
         self.cells = cells
+        regions = {}
+        for c in self.mesh_grid.findall("Set"):
+            _read_set(self, c, regions)
+        self.regions = list(regions.values())
         return points, cells
 
     def read_data(self, k: int):
@@ -201,7 +207,8 @@ class TimeSeriesReader:
             ).reshape(dims)
         elif data_format == "Binary":
             return np.fromfile(
-                data_item.text.strip(), dtype=xdmf_to_numpy_type[(data_type, precision)]
+                self.filename.resolve().parent / data_item.text.strip(),
+                dtype=xdmf_to_numpy_type[(data_type, precision)],
             ).reshape(dims)
 
         if data_format != "HDF":
@@ -258,6 +265,11 @@ class TimeSeriesWriter:
     interop, or are running against a build with no compiled core.
     """
 
+    # Reuse the single-grid region encoder, with this writer's payload store.
+    _write_ids = XdmfWriter._write_ids
+    _write_set = XdmfWriter._write_set
+    write_sets = XdmfWriter.write_sets
+
     def __init__(self, filename, data_format: str = "HDF") -> None:
         if data_format not in ["XML", "Binary", "HDF"]:
             raise WriteError(
@@ -304,7 +316,13 @@ class TimeSeriesWriter:
         cells: Union[
             dict[str, ArrayLike], list[Union[tuple[str, ArrayLike], CellBlock]]
         ],
+        *,
+        regions=None,
     ) -> None:
+        """Write the shared topology and optional fixed point/cell/side regions."""
+        if isinstance(cells, dict):
+            cells = list(cells.items())
+        mesh = Mesh(points, cells, regions=regions)
         # <Grid Name="mesh" GridType="Uniform">
         #   <Topology NumberOfElements="16757" TopologyType="Triangle" NodesPerElement="3">
         #     <DataItem Dimensions="16757 3" NumberType="UInt" Format="HDF">maxwell.h5:/Mesh/0/mesh/topology</DataItem>
@@ -316,8 +334,9 @@ class TimeSeriesWriter:
         grid = ET.SubElement(
             self.domain, "Grid", Name=self.mesh_name, GridType="Uniform"
         )
-        self.points(grid, np.asarray(points))
-        self.cells(cells, grid)
+        self.points(grid, mesh.points)
+        self.cells(mesh.cells, grid)
+        self.write_sets(mesh, grid)
         self.has_mesh = True
 
     def write_data(self, t, point_data=None, cell_data=None):
@@ -332,7 +351,7 @@ class TimeSeriesWriter:
         grid = ET.SubElement(self.collection, "Grid")
         if not self.has_mesh:
             raise WriteError()
-        ptr = f'xpointer(//Grid[@Name="{self.mesh_name}"]/*[self::Topology or self::Geometry])'
+        ptr = f'xpointer(//Grid[@Name="{self.mesh_name}"]/*[self::Topology or self::Geometry or self::Set])'
         ET.SubElement(grid, "{http://www.w3.org/2003/XInclude}include", xpointer=ptr)
         ET.SubElement(grid, "Time", Value=str(t))
 
@@ -436,19 +455,24 @@ class TimeSeriesWriter:
                 NumberOfElements=str(total_num_cells),
             )
             total_num_cell_items = sum(np.prod(c.data.shape) for c in cell_blocks)
-            dim = total_num_cell_items + total_num_cells
-            # Lines translate to Polylines, and one needs to specify the exact
-            # number of nodes. Hence, prepend 2.
-            for c in cell_blocks:
-                if c.type == "line":
-                    c.data[:] = np.insert(c.data, 0, 2, axis=1)
-                    dim += len(c.data)
+            dim = (
+                total_num_cell_items
+                + total_num_cells
+                + sum(len(c.data) for c in cell_blocks if c.type in {"vertex", "line"})
+            )
             dim = str(dim)
             cd = np.concatenate(
                 [
                     # prepend column with xdmf type index
                     np.insert(
-                        c.data, 0, meshio_type_to_xdmf_index[c.type], axis=1
+                        (
+                            np.insert(c.data, 0, c.data.shape[1], axis=1)
+                            if c.type in {"vertex", "line"}
+                            else c.data
+                        ),
+                        0,
+                        meshio_type_to_xdmf_index[c.type],
+                        axis=1,
                     ).flatten()
                     for c in cell_blocks
                 ]

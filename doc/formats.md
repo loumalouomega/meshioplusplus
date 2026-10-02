@@ -1,6 +1,14 @@
 # Supported Formats
 
+The shared native readers now accept XDMF2/3 with absolute DataItem references and Netgen name tables, periodic arrays and two-line edges (`.vol.gz` requires zlib). Flat writers expose PCD `binary_compressed` through LZF write options and all glTF colour/axis/scale options. See [XDMF](formats/xdmf.md), [Netgen](formats/netgen.md), [PCD](formats/pcd.md) and [glTF](formats/gltf.md).
+
+XDMF time-series writers preserve fixed point/cell/side regions as `<Set>` elements in the shared mesh grid, in XML, Binary and HDF storage. Native reads return those regions at every step; Python's `TimeSeriesReader` exposes them as `reader.regions`. See [XDMF time series](xdmf_time_series.md#shared-named-regions).
+
+Gmsh 2.2/4.0/4.1 periodic links read natively via the format metadata channel and write natively in 2.2/4.1. Python carries them automatically; flat bindings need info-bearing reads/writes, and info-less native reads refuse them instead of dropping node pairs. See [Gmsh periodic metadata](formats/gmsh.md#periodic-metadata-across-bindings).
+
 ## Format table
+
+Exodus native/reference output now preserves Point/Side regions as node/side sets (including explicit ids and empty groups) and supports stateful fixed-grid series writing and sequence fan-in; see [Exodus](formats/exodus.md#stateful-series-writing).
 
 Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour). The **Round trip** column summarises what a write followed by a read keeps (cell types, point/cell/field data, region kinds), as checked by the [format conformance matrix](./conformance.md).
 
@@ -20,7 +28,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — | [1/8 cells · data PC](./conformance.md#dolfin-xml) |
 | [`elmer`](./formats/elmer.md) | a directory (`mesh.header`, …) | ✓ | ✓ | — | [7/8 cells · no data · regions C](./conformance.md#elmer) |
 | [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#ensight) |
-| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` | [8/8 cells · data PC · regions CP](./conformance.md#exodus) |
+| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` | [8/8 cells · data PC · regions CPS](./conformance.md#exodus) |
 | [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — | [7/8 cells · data PC · regions CPS](./conformance.md#febio) |
 | [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ | — | [8/8 cells · data PC · regions CP](./conformance.md#femap) |
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#flac3d) |
@@ -50,7 +58,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — | [8/8 cells · no data · regions C](./conformance.md#nastran) |
 | [`nastran_h5`](./formats/nastran_h5.md) | `.h5` | ✓ | — | `h5py` | [read-only](./conformance.md#nastran-h5) |
 | [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | — | — | [read-only](./conformance.md#nastran-op2) |
-| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#netgen) |
+| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · data F](./conformance.md#netgen) |
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#neuroglancer) |
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#obj) |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#off) |
@@ -273,6 +281,8 @@ meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-
 
 `mdpa` is the one format where the Python API deliberately does **not** prefer the C++ core for reading: only the pure-Python reference produces MDPA's `mesh.misc_data`, `mesh.geometries_block` and nested-by-cell-type `cell_data`. The C++ reader/writer exists (and is what the C API / Fortran / Julia / R / WebAssembly / native CLI use), and `mdpa.write` does use it for meshes carrying none of those extras — see [MDPA](./formats/mdpa.md#c-core).
 
+MDPA's info-bearing C++ and flat-binding readers/writers also preserve nested `SubModelPartGeometries` and `SubModelPartConstraints` memberships as original file ids, including parts with no mesh cells. Python's reference carries the same lists in `misc_data`; constraints stay opaque and operations do not remap these memberships. Info-less native reads remain explicitly strict or lossy under `lenient`.
+
 Behaviour and file compatibility are identical either way; the native paths are only faster. Install the optional runtime deps with `pip install meshioplusplus[all]`.
 
 ### When the native path declines
@@ -316,6 +326,8 @@ meshioplusplus.gmsh.write(filename, mesh,
 
 Use `file_format="gmsh22"` to write version 2.2 via the generic `meshioplusplus.write`.
 
+Non-periodic Gmsh 2.2, 4.0 and 4.1 inputs read through the native core on every language surface. The 4.0 binary path accepts producer counts of 4 or 8 bytes; native output is still 2.2/4.1 and periodic files still need Python. See [Gmsh](./formats/gmsh.md).
+
 ### VTU (`.vtu`)
 
 ```python
@@ -328,6 +340,8 @@ meshioplusplus.vtu.write(filename, mesh,
 ```
 
 ### VTI (`.vti`)
+
+Serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces and appended raw/base64 arrays in the native core and Python reference, including UInt32/UInt64 headers and either byte order. Pieces concatenate in document order without welding, preserving ghost arrays; compatible point/cell arrays present in every piece survive, otherwise they are dropped with a warning. VTP/VTS/VTR/VTI write inline arrays; only VTU exposes appended output. Native legacy `vtk` reads support structured points, structured grids and rectilinear grids, including lower-dimensional line/quad grids, in ASCII and big-endian binary. See the individual format pages for codec and structured-grid restrictions.
 
 ```python
 meshioplusplus.vti.write(filename, mesh,   # mesh must be a dense lattice
@@ -460,7 +474,7 @@ meshioplusplus.med.write(filename, mesh,
 )
 ```
 
-MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_med_multi` read/write files containing several meshes — see [`med.md`](./formats/med.md). Since v9.6.0 MED is also a Phase-1 [named region](./regions.md) format (`FAS`/`GRO` group names ↔ `Point`/`Cell` regions, no side regions), carries the optional `NUM` global numbering as `point_data`/`cell_data["med:num"]`, and rejects a file written by a newer MED major version with a named error.
+MED does not support compression. Native named-mesh enumeration/selection and multi-mesh writes are exposed on all language surfaces; Python `meshioplusplus.med.read_med_multi`/`write_med_multi` keep their existing tuple contract, and `med.read(..., mesh_name="solid")` selects a mesh. Ordinary named nodal/element profiles expand with NaN fill; enhanced field metadata and ELNO/ELGA retain the Python reference path. See [`med.md`](./formats/med.md). MED also carries point/cell named regions, optional global numbering and a major-version check.
 
 ### AnsysInp (`.cdb`, `.inp`)
 

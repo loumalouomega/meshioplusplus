@@ -70,6 +70,135 @@ end
     close(m)
 end
 
+@testset "PCD LZF write options" begin
+    mktempdir() do dir
+        m = Mesh()
+        set_points!(m, Float64[1 4; 2 5; 3 6])
+        path = joinpath(dir, "cloud.pcd")
+        mio.write(m, path; codec="lzf")
+        @test occursin("DATA binary_compressed\n", String(Base.read(path)))
+        back = mio.read(path)
+        @test points(back) == points(m)
+        @test_throws Exception mio.write(m, path; codec="lzf", encoding="ascii")
+        @test_throws Exception mio.write(m, joinpath(dir, "bad.vtu"); codec="lzf")
+        close(back)
+        close(m)
+    end
+end
+
+@testset "MED named meshes" begin
+    if format_writable("med")
+        mktempdir() do dir
+            first = fixture()
+            second = fixture()
+            add_point_data!(second, "temperature", Float64[6, 7, 8, 9, 10])
+            path = joinpath(dir, "multi.med")
+            write_med_multi(path, [first, second], ["z_mesh", "a_mesh"])
+            @test med_mesh_names(path) == ["z_mesh", "a_mesh"]
+            selected = read_med_named(path, "a_mesh")
+            @test points(selected) == points(second)
+            @test point_data(selected, "temperature") == point_data(second, "temperature")
+            @test_throws Exception read_med_named(path, "missing")
+            @test_throws Exception write_med_multi(path, [first, second], ["same", "same"])
+            @test med_mesh_names(path) == ["z_mesh", "a_mesh"]
+            close(selected)
+            close(first)
+            close(second)
+        end
+    end
+end
+
+@testset "glTF options" begin
+    mktempdir() do dir
+        m = fixture()
+        path = joinpath(dir, "colored.gltf")
+        write_gltf(m, path; color_by="temperature", cmap="turbo", up_axis="x",
+                   scale=0.001, vmin=1, vmax=5)
+        @test occursin("COLOR_0", Base.read(path, String))
+        @test isfile(joinpath(dir, "colored.bin"))
+        @test_throws Exception write_gltf(m, path; scale=-1)
+        @test_throws Exception write_gltf(m, path; color_by="temperature", component=0)
+        close(m)
+    end
+end
+
+@testset "native Gmsh 4.0 read" begin
+    mktempdir() do dir
+        path = joinpath(dir, "legacy40.msh")
+        Base.write(path, """\$MeshFormat
+4.0 0 8
+\$EndMeshFormat
+\$Nodes
+1 3
+22 2 0 3
+30 1 0 0
+10 0 0 0
+20 0 1 0
+\$EndNodes
+\$Elements
+1 1
+22 2 2 1
+90 10 30 20
+\$EndElements
+""")
+        m = mio.read(path; format="gmsh")
+        @test num_points(m) == 3
+        @test cell_block_type(m, 1) == "triangle"
+        @test connectivity(m, 1) == reshape(Int64[2, 1, 3], 3, 1)
+        @test !("gmsh:dim_tags" in point_data_names(m))
+        close(m)
+    end
+end
+
+@testset "Gmsh periodic side channel" begin
+    mktempdir() do dir
+        path = joinpath(dir, "periodic.msh")
+        Base.write(path, """\$MeshFormat
+4.0 0 8
+\$EndMeshFormat
+\$Nodes
+1 3
+22 2 0 3
+30 1 0 0
+10 0 0 0
+20 0 1 0
+\$EndNodes
+\$Elements
+1 1
+22 2 2 1
+90 10 30 20
+\$EndElements
+\$Periodic
+1
+1 12 33
+3
+30 10
+20 10
+30 10
+\$EndPeriodic
+""")
+        @test_throws MeshioError mio.read(path; format="gmsh")
+        mesh, info = read_with_info(path; format="gmsh")
+        @test format_name(info) == "gmsh"
+        copied = gmsh_info(info)
+        @test isempty(copied.bounding_entities)
+        @test copied.periodic[1].entity == (1, 12, 33)
+        @test isempty(copied.periodic[1].affine)
+        @test copied.periodic[1].node_pairs == reshape(Int64[1, 2, 3, 2, 1, 2], 2, 3)
+        for format in ("gmsh", "gmsh22")
+            output = joinpath(dir, "output.msh")
+            write_with_info(mesh, info, output; format)
+            back, back_info = read_with_info(output; format="gmsh")
+            @test gmsh_info(back_info).periodic == copied.periodic
+            close(back); close(back_info)
+        end
+        @test_throws MeshioError mdpa_info(info)
+        close(mesh); close(info)
+        @test copied.periodic[1].node_pairs[2, 2] == 2
+        @test_throws MeshioError gmsh_info(info)
+    end
+end
+
 @testset "column-major shape identity" begin
     m = fixture()
     p = points(m)
@@ -257,7 +386,7 @@ end
             mio.write(m, path)
             true
         catch e
-            (e isa MeshioError && occursin("no HDF5 support", sprint(showerror, e))) || rethrow()
+            (e isa MeshioError && occursin("HDF5", sprint(showerror, e))) || rethrow()
             false
         end
         close(m)
@@ -925,6 +1054,23 @@ end
     close(m)
 end
 
+@testset "region-backed sets/data conversions" begin
+    m = fixture()
+    add_region!(m, "a", :point, [1, 2])
+    add_region!(m, "b", :point, [2, 3])
+    labels = sets_to_data(m, :point; order=["b", "a"])
+    @test point_data(labels, "b-a") == [1, 1, 0, -1, -1]
+    @test isempty(regions(labels))
+    @test points(labels) == points(m)
+    @test connectivity(labels, 1) == connectivity(m, 1)
+    back = data_to_sets(labels, :point, "b-a")
+    @test !("b-a" in point_data_names(back))
+    @test length(regions(back)) == 3
+    @test_throws MeshioError sets_to_data(m, :field)
+    @test_throws MeshioError data_to_sets(m, :point, "temperature")
+    close(back); close(labels); close(m)
+end
+
 @testset "field integration (data_integrate)" begin
     m = fixture()
     add_region!(m, "solid", :cell, [1]; dim=3, tag=17)
@@ -964,6 +1110,10 @@ end
     mktempdir() do dir
         path = joinpath(dir, "series.xdmf")
         m = fixture()
+        add_region!(m, "anchors", :point, [1, 5]; dim=0, tag=7)
+        add_region!(m, "empty", :cell, Int64[]; dim=3, tag=21)
+        add_region!(m, "wall", :side, reshape(Int64[1, 1], 2, 1); dim=2, tag=9)
+        expected_regions = Dict(r.name => r for r in regions(m))
 
         s = XdmfSeries(path; data_format="XML")
         @test isopen(s)
@@ -999,6 +1149,13 @@ end
             back = mio.read(path; options=ReadOptions(time_step=k - 1))
             @test num_points(back) == 5
             @test point_data(back, "temperature") ≈ Float64[t + i for i in 1:5]
+            shared = regions(back)
+            @test length(shared) == 3
+            for r in shared
+                expected = expected_regions[r.name]
+                @test (r.kind, r.dim, r.tag) == (expected.kind, expected.dim, expected.tag)
+                @test r.entries == expected.entries
+            end
             close(back)
         end
 
@@ -1017,6 +1174,38 @@ end
         @test_throws MeshioError XdmfSeries(joinpath(dir, "bad.xdmf");
                                             data_format="NoSuchFormat")
         close(m)
+    end
+end
+
+@testset "transient Exodus series" begin
+    mktempdir() do dir
+        path = joinpath(dir, "series.e")
+        if !format_writable("exodus")
+            @test_throws MeshioError ExodusSeries(path)
+        else
+            m = fixture()
+            s = ExodusSeries(path)
+            @test num_steps(s) == 0
+            @test_throws MeshioError write_data!(s, 0, m)
+            write_points_cells!(s, m)
+            write_data!(s, 0.123456789012345, m)
+            write_data!(s, 1.5, m)
+            @test num_steps(s) == 2
+            flush!(s)
+            finalize!(s)
+            finalize!(s)
+            @test finalized(s)
+            @test_throws MeshioError write_data!(s, 2, m)
+            close(s)
+            close(s)
+            @test !isopen(s)
+            @test_throws MeshioError num_steps(s)
+            @test read_metadata(path).time_values == [0.123456789012345, 1.5]
+            back = mio.read(path; options=ReadOptions(time_step=-1))
+            @test point_data(back, "temperature") == point_data(m, "temperature")
+            close(back)
+            close(m)
+        end
     end
 end
 
@@ -1049,12 +1238,17 @@ end
                               "Output": {"Path": "$(out)"}}""")
             end
             run_pipeline_file(settings)
+            report = run_pipeline_file_report(settings)
+            @test occursin("\"op\":\"Quality\"", report)
+            @test occursin("\"warnings\":[]", report)
+            @test_throws MeshioError run_pipeline_json_report(bad)
             back = MeshioPlusPlus.read(out)
             @test "quality:scaled_jacobian" in cell_data_names(back)
             close(back)
         end
     else
         @test occursin("MESHIOPLUSPLUS_WITH_JSON", err.msg)
+        @test_throws MeshioError run_pipeline_json_report(bad)
     end
 end
 
@@ -1429,6 +1623,16 @@ end
         Begin Geometries Triangle3D3
         7 2 3 4
         End Geometries
+        Begin SubModelPart Part
+            Begin SubModelPart Inner
+                Begin SubModelPartGeometries
+                    7
+                End SubModelPartGeometries
+                Begin SubModelPartConstraints
+                    1
+                End SubModelPartConstraints
+            End SubModelPart
+        End SubModelPart
         Begin Constraints LinearMasterSlaveConstraint
             1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0
         End Constraints
@@ -1444,11 +1648,15 @@ end
         @test d.geometries[1].name == "Triangle3D3"
         @test d.geometries[1].connectivity == reshape([2, 3, 4], 3, 1)
         @test d.geometries[1].ids == [7]
+        @test d.submodelparts[1].name == "Part/Inner"
+        @test d.submodelparts[1].geometry_ids == [7]
+        @test d.submodelparts[1].constraint_ids == [1]
         @test d.raw_blocks[1].terminator == "End Constraints"
         out = joinpath(dir, "out.mdpa")
         write_with_info(m, info, out)
         m2, info2 = read_with_info(out)
         @test mdpa_info(info2).raw_blocks == d.raw_blocks
+        @test mdpa_info(info2).submodelparts == d.submodelparts
         @test_throws MeshioError write_with_info(m, info, joinpath(dir, "out.vtu"))
         # A format with no side channel: nothing, and a plain read.
         vtu = joinpath(dir, "plain.vtu")

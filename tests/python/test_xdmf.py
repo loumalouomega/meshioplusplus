@@ -60,6 +60,88 @@ def test_generic_io(tmp_path):
     helpers.generic_io(tmp_path / "test.0.xdmf")
 
 
+@pytest.mark.parametrize("version", ["2.0", "3.0"])
+@pytest.mark.parametrize(
+    "reference", ["XML", "/Xdmf/Domain/Grid/Attribute[2]/DataItem"]
+)
+def test_native_xpath_references(version, reference, tmp_path, monkeypatch):
+    core = pytest.importorskip("meshioplusplus._core")
+    path = tmp_path / "references.xdmf"
+    xpath = "/Xdmf/Domain/Grid/Attribute[2]/DataItem"
+    path.write_text(
+        f'<Xdmf Version="{version}"><Domain><Grid GridType="Uniform">'
+        '<Topology TopologyType="Triangle"><DataItem Dimensions="1 3" '
+        'NumberType="Int" Precision="8" Format="XML">0 1 2</DataItem></Topology>'
+        f'<Geometry GeometryType="XYZ"><DataItem Reference="{reference}">'
+        f'{xpath if reference == "XML" else ""}</DataItem></Geometry>'
+        '<Attribute Name="source" Center="Node"><DataItem Dimensions="3 3" '
+        'NumberType="Float" Precision="8" Format="XML">0 0 0 1 0 0 0 1 0</DataItem></Attribute>'
+        '<Attribute Name="alias" Center="Node"><DataItem '
+        'Reference="/Xdmf/Domain/Grid/Attribute[1]/DataItem"/></Attribute>'
+        "</Grid></Domain></Xdmf>"
+    )
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    native = meshioplusplus.read(path)
+    reference_mesh = meshioplusplus.xdmf.main.read(path)
+    np.testing.assert_array_equal(native.points, reference_mesh.points)
+    np.testing.assert_array_equal(native.cells[0].data, reference_mesh.cells[0].data)
+    for key in ("source", "alias"):
+        np.testing.assert_array_equal(
+            native.point_data[key], reference_mesh.point_data[key]
+        )
+    meta = meshioplusplus.read_metadata(path)
+    assert meta["num_points"] == 3
+    assert meta["point_dim"] == 3
+    assert core.xdmf_read(str(path), arrays=[]).point_data == {}
+
+
+def test_native_xdmf2_information(tmp_path, monkeypatch):
+    core = pytest.importorskip("meshioplusplus._core")
+    path = tmp_path / "information.xdmf"
+    path.write_text(
+        '<Xdmf Version="2.0"><Domain><Grid>'
+        '<Topology TopologyType="Triangle"><DataItem Dimensions="1 3" '
+        'NumberType="Int" Format="XML">0 1 2</DataItem></Topology>'
+        '<Geometry GeometryType="XYZ"><DataItem Dimensions="3 3" '
+        'NumberType="Float" Format="XML">0 0 0 1 0 0 0 1 0</DataItem></Geometry>'
+        '<Information><![CDATA[<main><map key="wall" dim="2">7</map></main>]]></Information>'
+        "</Grid></Domain></Xdmf>"
+    )
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    mesh = meshioplusplus.read(path)
+    np.testing.assert_array_equal(mesh.field_data["wall"], [7, 2])
+    assert core.xdmf_read(str(path), points_only=True).field_data == {}
+    assert core.xdmf_read(str(path), arrays=[]).field_data == {}
+    assert "wall" in meshioplusplus.read_metadata(path)["field_data_names"]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["relative/path", "/Xdmf/Domain/Missing", "/Xdmf/Domain/Grid", "///["],
+)
+def test_native_invalid_xpath_is_read_error(tmp_path, reference):
+    core = pytest.importorskip("meshioplusplus._core")
+    path = tmp_path / "bad-reference.xdmf"
+    path.write_text(
+        '<Xdmf Version="3.0"><Domain><Grid><Geometry>'
+        f'<DataItem Reference="{reference}"/></Geometry></Grid></Domain></Xdmf>'
+    )
+    with pytest.raises(Exception, match="XDMF:.*reference"):
+        core.xdmf_read(str(path))
+
+
+def test_native_cyclic_xpath_is_read_error(tmp_path):
+    core = pytest.importorskip("meshioplusplus._core")
+    path = tmp_path / "cycle.xdmf"
+    path.write_text(
+        '<Xdmf Version="3.0"><Domain><Grid><Geometry>'
+        '<DataItem Reference="/Xdmf/Domain/Grid/Geometry/DataItem"/>'
+        "</Geometry></Grid></Domain></Xdmf>"
+    )
+    with pytest.raises(Exception, match="cyclic DataItem reference"):
+        core.xdmf_read(str(path))
+
+
 def test_time_series():
     # write the data
     filename = "out.xdmf"

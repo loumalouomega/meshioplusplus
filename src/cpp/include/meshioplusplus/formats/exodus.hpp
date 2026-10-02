@@ -37,6 +37,7 @@
 
 // System includes
 #include <string>
+#include <memory>
 #include <vector>
 
 // Project includes
@@ -107,10 +108,35 @@ inline constexpr const char* kExodusAttributePrefix = "exodus:attr:";
  * @param rMesh the mesh to write
  * @throws WriteError if a cell block's type has no entry in the meshio++ ->
  *         Exodus type table, or if the connectivity dtype is unsupported
- * @note the shim only attempts this C++ path when `mesh.point_sets` is
- *       empty — the C++ writer has no support for Exodus node sets at all
+ * Point and Side regions are written as node and side sets, preserving names,
+ * explicit ids and empty groups. Invalid memberships and duplicate ids throw.
  */
 MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh);
+
+/** Stateful, bounded-memory Exodus writer. Write the fixed geometry, sets and
+ * exodus:attr:* arrays once, then append point/cell fields with WriteData.
+ * The first step fixes field names, dtypes and shapes; later steps must match.
+ * Geometry, regions and attributes on step meshes are ignored. Flush publishes
+ * completed steps, Finalize closes the file, and both are idempotent. */
+class MESHIOPLUSPLUS_API ExodusTimeSeriesWriter {
+public:
+    explicit ExodusTimeSeriesWriter(const std::string& rPath);
+    ~ExodusTimeSeriesWriter();
+    ExodusTimeSeriesWriter(const ExodusTimeSeriesWriter&) = delete;
+    ExodusTimeSeriesWriter& operator=(const ExodusTimeSeriesWriter&) = delete;
+    ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept;
+    ExodusTimeSeriesWriter& operator=(ExodusTimeSeriesWriter&&) noexcept;
+    void WritePointsCells(const Mesh& rMesh);
+    void WriteData(double Time, const Mesh& rMesh);
+    void Flush();
+    void Finalize();
+    std::size_t NumSteps() const;
+    bool Finalized() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
+};
 
 /**
  * @brief Read an Exodus II (netCDF classic) file.
@@ -158,7 +184,8 @@ MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh
  * @note point_data keys ending X/Y/Z or _R/_Z may be recombined into vector
  *       arrays; cell_data is split per cell block by node count
  */
-MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo,
+                                    const ReadOptions& rOptions = {});
 
 /**
  * @brief Read an Exodus II file, discarding the provenance side channel.
@@ -177,7 +204,8 @@ MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, const ReadOptions&
  * @param rOptions per-call reader options
  * @return the summary
  */
-MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath,
+                                                     const ReadOptions& rOptions = {});
 
 /**
  * @brief Map an Exodus 1-based side number to a meshio++ local facet index.

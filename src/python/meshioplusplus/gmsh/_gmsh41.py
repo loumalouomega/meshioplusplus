@@ -17,8 +17,11 @@ from .common import (
     _gmsh_to_meshio_type,
     _meshio_to_gmsh_order,
     _meshio_to_gmsh_type,
+    _periodic_count,
+    _periodic_end,
     _read_data,
     _read_physical_names,
+    _remap_periodic,
     _write_data,
     _write_physical_names,
 )
@@ -77,6 +80,8 @@ def read_buffer(f, is_ascii: bool, data_size):
                 field_data,
             )
         elif environ == "Periodic":
+            if periodic is not None:
+                raise ReadError("Gmsh: duplicate $Periodic section")
             periodic = _read_periodic(f, is_ascii, data_size)
         elif environ == "NodeData":
             _read_data(f, "NodeData", point_data, data_size, is_ascii)
@@ -101,6 +106,7 @@ def read_buffer(f, is_ascii: bool, data_size):
     # Add node entity information to the point data
     point_data.update({"gmsh:dim_tags": point_entities})
 
+    periodic = _remap_periodic(periodic, point_tags + 1)
     return Mesh(
         points,
         cells,
@@ -276,21 +282,24 @@ def _read_periodic(f, is_ascii, data_size):
     c_size_t = _size_type(data_size)
     periodic = []
     # numPeriodicLinks(size_t)
-    num_periodic = int(fromfile(f, c_size_t, 1)[0])
+    num_periodic = _periodic_count(f, fromfile(f, c_size_t, 1)[0])
     for _ in range(num_periodic):
         # entityDim(int) entityTag(int) entityTagMaster(int)
         edim, stag, mtag = fromfile(f, c_int, 3)
         # numAffine(size_t) value(double) ...
         num_affine = int(fromfile(f, c_size_t, 1)[0])
+        if num_affine not in (0, 16):
+            raise ReadError("Gmsh $Periodic: affine must have 0 or 16 coefficients")
         affine = fromfile(f, c_double, num_affine)
         # numCorrespondingNodes(size_t)
-        num_nodes = int(fromfile(f, c_size_t, 1)[0])
+        num_nodes = _periodic_count(
+            f, fromfile(f, c_size_t, 1)[0], 2 if is_ascii else 2 * c_size_t.itemsize
+        )
         # nodeTag(size_t) nodeTagMaster(size_t) ...
         slave_master = fromfile(f, c_size_t, num_nodes * 2).reshape(-1, 2)
-        slave_master = slave_master - 1  # Subtract one, Python is 0-based
         periodic.append([edim, (stag, mtag), affine, slave_master])
 
-    _fast_forward_to_end_block(f, "Periodic")
+    _periodic_end(f)
     return periodic
 
 

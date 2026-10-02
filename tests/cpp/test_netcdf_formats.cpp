@@ -25,11 +25,13 @@
 #include <netcdf.h>
 
 #include <cstddef>
+#include <algorithm>
 #include <filesystem>
 #include <set>
 #include <string>
 
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/registry.hpp"
 
@@ -40,6 +42,55 @@ TEST(Exodus, Basic) {
     mt::roundtrip(w, r, mt::tet_mesh(), ".e");
     mt::roundtrip(w, r, mt::hex_mesh(), ".e");
     mt::roundtrip(w, r, mt::tri_quad_mesh(), ".e");
+}
+
+TEST(Exodus, SetsAndStatefulSeriesPreserveEmptyGroupsAndFacetNumbers) {
+    using namespace meshioplusplus;
+    const auto path = mt::temp_path("_series.e");
+    Mesh mesh = mt::hex_mesh();
+    NDArray nodes(DType::Int64, {2});
+    nodes.As<std::int64_t>()[0] = 0;
+    nodes.As<std::int64_t>()[1] = 3;
+    mesh.AddRegion(Region("anchors", RegionKind::Point, -1, 41, std::move(nodes)));
+    NDArray sides(DType::Int64, {1, 2});
+    sides.As<std::int64_t>()[0] = 0;
+    sides.As<std::int64_t>()[1] = 0;  // Exodus side 4, not side 1.
+    mesh.AddRegion(Region("wall", RegionKind::Side, -1, 91, std::move(sides)));
+    mesh.AddRegion(Region("empty", RegionKind::Side, -1, 92, NDArray(DType::Int64, {0, 2})));
+    ExodusTimeSeriesWriter series(path);
+    EXPECT_THROW(series.WriteData(0, mesh), WriteError);
+    series.WritePointsCells(mesh);
+    EXPECT_THROW(series.WritePointsCells(mesh), WriteError);
+    NDArray values(DType::Float64, {mesh.NumPoints()});
+    std::fill_n(values.As<double>(), values.Size(), 2.0);
+    mesh.AddPointData("temperature", std::move(values));
+    series.WriteData(0.123456789012345, mesh);
+    series.WriteData(1.5, mesh);
+    series.Flush();
+    EXPECT_EQ(series.NumSteps(), 2u);
+    series.Finalize();
+    series.Finalize();
+    series.Flush();
+    EXPECT_TRUE(series.Finalized());
+    EXPECT_THROW(series.WriteData(2.0, mesh), WriteError);
+    ReadOptions options;
+    options.mTimeStep = -1;
+    auto back = read_exodus(path, options);
+    EXPECT_EQ(back.NumRegions(), mesh.NumRegions() + mesh.NumCellBlocks());
+    for (std::size_t i = 0; i < back.NumRegions(); ++i) {
+        const auto& region = back.Region(i);
+        if (region.mName == "wall") {
+            ASSERT_EQ(region.NumEntries(), 1u);
+            EXPECT_EQ(region.Entries()[1], 0);
+            EXPECT_EQ(region.mTag, 91);
+        }
+        if (region.mName == "empty")
+            EXPECT_EQ(region.NumEntries(), 0u);
+    }
+    auto metadata = read_exodus_metadata(path);
+    ASSERT_EQ(metadata.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(metadata.mTimeValues[0], 0.123456789012345);
+    std::filesystem::remove(path);
 }
 
 // The Exodus side->facet tables are a transcription from the Exodus II spec's

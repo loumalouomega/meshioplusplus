@@ -15,6 +15,7 @@
 //
 // Usage: node tests/wasm/smoke.mjs   (after `build/configure-wasm.sh --build`
 // has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
+// MESHIOPLUSPLUS_WASM_VARIANT=seq runs the same suite on a sequential-only build.
 
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -96,13 +97,70 @@ await asyncStep(
     },
 );
 
-const m = await loadMeshioPlusPlus({}, { variant: 'mt' });
-step('threaded (mt) build reports the openmp parallel backend', () => {
+const variant = process.env.MESHIOPLUSPLUS_WASM_VARIANT ?? 'mt';
+const m = await loadMeshioPlusPlus({}, { variant });
+step(`${variant} build reports its expected parallel backend`, () => {
     // The whole point of the mt artifact: it must actually be the OpenMP build,
     // not a mislabelled sequential one. parallelBackend() is exposed by the
     // embind binding; a build configured with SEQ would report "seq" here.
     assert.equal(typeof m.parallelBackend, 'function');
-    assert.equal(m.parallelBackend(), 'openmp');
+    assert.equal(m.parallelBackend(), variant === 'mt' ? 'openmp' : 'seq');
+});
+
+step('VTK pieces and legacy structured grids read without Python', () => {
+    const xml = `<VTKFile type="ImageData"><ImageData WholeExtent="0 2 0 1 0 1">
+      <Piece Extent="0 1 0 1 0 1"/><Piece Extent="1 2 0 1 0 1"/>
+      </ImageData></VTKFile>`;
+    const legacy = '# vtk DataFile Version 5.1\nindependent\nASCII\nDATASET STRUCTURED_POINTS\nDIMENSIONS 3 2 2\nORIGIN 0 0 0\nSPACING 1 1 1\n';
+    for (const [format, text, n] of [['vti', xml, 16], ['vtk', legacy, 12]]) {
+        const path = `/pieces.${format}`;
+        m.FS.writeFile(path, text);
+        const mesh = m.readMesh(path);
+        assert.equal(mesh.points.length / 3, n);
+        assert.equal(mesh.cells[0].type, 'hexahedron');
+        assert.equal(mesh.cells[0].data.length / 8, 2);
+    }
+});
+
+step('VTK XML: appended raw/base64, UInt64 big-endian and selective reads', () => {
+    for (const [format, type] of Object.entries({
+        vtp: 'PolyData', vts: 'StructuredGrid', vtr: 'RectilinearGrid', vti: 'ImageData',
+    })) {
+        const surface = format === 'vtp';
+        const n = surface ? 4 : 8;
+        const points = Array.from({ length: n }, (_, i) => `${i % 2} ${Math.floor(i / 2) % 2} ${Math.floor(i / 4)}`).join(' ');
+        for (const encoding of ['raw', 'base64']) {
+            let xml = `<VTKFile type="${type}" byte_order="BigEndian" header_type="UInt64"><${type}${surface ? '' : ' WholeExtent="0 1 0 1 0 1"'}><Piece ${surface ? 'NumberOfPoints="4"' : 'Extent="0 1 0 1 0 1"'}><PointData><DataArray type="Int32" Name="tag" format="appended" offset="0"/></PointData>`;
+            if (surface || format === 'vts')
+                xml += `<Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">${points}</DataArray></Points>`;
+            if (surface)
+                xml += '<Polys><DataArray type="Int32" Name="connectivity" format="ascii">0 1 3 2</DataArray><DataArray type="Int32" Name="offsets" format="ascii">4</DataArray></Polys>';
+            if (format === 'vtr')
+                xml += '<Coordinates>' + '<DataArray type="Float64" format="ascii">0 1</DataArray>'.repeat(3) + '</Coordinates>';
+            xml += `</Piece></${type}><AppendedData encoding="${encoding}">_`;
+            const payload = new Uint8Array(8 + n * 4);
+            const view = new DataView(payload.buffer);
+            view.setBigUint64(0, BigInt(n * 4));
+            for (let i = 0; i < n; i++) view.setInt32(8 + i * 4, i - 3);
+            const bytes = Buffer.concat([
+                Buffer.from(xml),
+                encoding === 'raw' ? payload : Buffer.from(Buffer.from(payload).toString('base64')),
+                Buffer.from('</AppendedData></VTKFile>'),
+            ]);
+            const path = `/appended_${encoding}.${format}`;
+            m.FS.writeFile(path, bytes);
+            const mesh = m.readMesh(path, format);
+            assert.equal(mesh.points.length / 3, n);
+            assert.equal(mesh.cells.length, 1);
+            assert.deepEqual(Array.from(mesh.point_data.tag, Number), Array.from({ length: n }, (_, i) => i - 3));
+            const meta = m.readMetadata(path, format);
+            assert.equal(meta.numPoints, n);
+            assert.equal(meta.fellBackToFullRead, false);
+            const geometry = m.readMeshSelective(path, { format, pointsOnly: true });
+            assert.equal(geometry.cells.length, 1);
+            assert.deepEqual(Object.keys(geometry.point_data), []);
+        }
+    }
 });
 
 // A small synthetic tetrahedron + a point/cell data field, built directly as
@@ -257,13 +315,23 @@ step('GMSH ascii round-trip (tetra, volume format)', () => {
 // generate itself.
 // --------------------------------------------------------------------------
 
-// MED is the one exception to writing `tet` as-is: the C++ MED writer defers a
-// mesh carrying named fields to the Python reference writer (CHA fields with
-// MED-4.1 bitmask/units/step metadata), and there is no Python anywhere in a
-// wasm build -- so here that documented fallback is simply an unsupported
-// case, and the geometry-only mesh is what this build can write. See
-// doc/wasm.md and doc/formats/med.md.
+// Enhanced field units/step metadata still need Python, but ordinary MED
+// fields, named meshes and nodal/element profiles are native.
 const tetNoData = { points: tet.points, dim: 3, cells: tet.cells };
+
+step('MED named meshes enumerate, select and disambiguate fields', () => {
+    const first = { ...tetNoData, point_data: { pressure: new Float64Array(tet.points.length / 3).fill(2) } };
+    const second = { ...tetNoData, point_data: { pressure: new Float64Array(tet.points.length / 3).fill(7) } };
+    m.writeMedMulti('/multi.med', [first, second], ['z_mesh', 'a_mesh']);
+    assert.deepEqual(m.medMeshNames('/multi.med'), ['z_mesh', 'a_mesh']);
+    const back = m.readMedNamed('/multi.med', 'a_mesh');
+    assert.deepEqual(Array.from(back.point_data.pressure), Array.from(second.point_data.pressure));
+    assert.deepEqual(Array.from(back.points), Array.from(tet.points));
+    assert.equal(back.info.meshName, 'a_mesh');
+    assert.throws(() => m.readMedNamed('/multi.med', 'missing'), /no mesh named/);
+    assert.throws(() => m.writeMedMulti('/multi.med', [first, second], ['same', 'same']));
+    assert.deepEqual(m.medMeshNames('/multi.med'), ['z_mesh', 'a_mesh']);
+});
 
 for (const [format, path, mesh] of [
     ['med', '/tet.med', tetNoData],
@@ -342,6 +410,53 @@ step('an ASCII read still works after netCDF/HDF5 has run (stack-size guard)', (
     const back = m.readMesh('/after-exodus.obj', 'obj');
     assert.equal(back.points.length, 9);
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2]);
+});
+
+step('Exodus series lifecycle preserves fixed sets and multiple times', () => {
+    const mesh = { ...tet, regions: [
+        { name: 'anchors', kind: 'point', dim: 0, tag: 41, entries: Int32Array.from([0, 2]) },
+        { name: 'wall', kind: 'side', dim: 2, tag: 91, entries: Int32Array.from([0, 1]) },
+    ] };
+    const writer = m.createExodusTimeSeriesWriter('/run.e');
+    assert.throws(() => writer.writeData(0, mesh), /write_points_cells/);
+    writer.writePointsCells(mesh);
+    writer.writeData(0.123456789012345, mesh);
+    writer.writeData(1.5, mesh);
+    assert.equal(writer.numSteps(), 2);
+    writer.flush();
+    writer.finalize();
+    writer.finalize();
+    assert.equal(writer.finalized(), true);
+    assert.throws(() => writer.writeData(2, mesh), /open series/);
+    writer.close();
+    writer.close();
+    assert.throws(() => writer.numSteps(), /closed|invalid/);
+    assert.deepEqual(m.readMetadata('/run.e', 'exodus').timeValues, [0.123456789012345, 1.5]);
+    const back = m.readMeshSelective('/run.e', { format: 'exodus', timeStep: -1 });
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+    assert.ok(back.regions.some(r => r.name === 'anchors' && r.tag === 41));
+    assert.ok(back.regions.some(r => r.name === 'wall' && r.tag === 91));
+});
+
+step('pipeline Version 2 ordered multi-input and partition fan-out', () => {
+    m.writeMesh('/v2_left.vtu', tet, 'vtu');
+    m.writeMesh('/v2_right.vtu', tet, 'vtu');
+    const report = m.runPipeline({
+        Version: 2, Input: { Path: '/v2_left.vtu' },
+        Operations: [ { Op: 'Merge', Inputs: ['/v2_right.vtu'] },
+                      { Op: 'Partition', Nparts: 2, Method: 'sfc', RecordIds: true } ],
+        Output: { Pattern: '/v2_part_{part}.vtu', Codec: 'none' },
+    });
+    assert.deepEqual(report.steps, [{ op: 'Merge', NumInputs: 2 }, { op: 'Partition', NumPieces: 2 }]);
+    for (const part of [0, 1]) {
+        const piece = m.readMesh(`/v2_part_${part}.vtu`, 'vtu');
+        assert.ok(piece.point_data['partition:original_point_id']);
+    }
+    assert.throws(() => m.runPipeline({
+        Version: 2, Input: { Path: '/v2_left.vtu' },
+        Operations: [{ Op: 'Split' }, { Op: 'Quality' }],
+        Output: { Pattern: '/v2_{key}.vtu' },
+    }), /terminal/);
 });
 
 step('MED writes plain point_data/cell_data directly (the single-timestep common case)', () => {
@@ -575,6 +690,23 @@ step('dataPointToCell / dataCellToPoint', () => {
     const toPoint = m.dataCellToPoint(tetv, ['material'], 'uniform', '');
     assert.equal(toPoint.point_data.material.length, 4);
     assert.ok(Math.abs(toPoint.point_data.material[0] - 7) < 1e-12);
+});
+
+step('setsToData / dataToSets keep labels, geometry and region semantics', () => {
+    const mesh = {...tetv, regions: [
+        {name: 'a', kind: 'point', dim: 0, tag: 7, entries: Int32Array.from([0, 1])},
+        {name: 'b', kind: 'point', dim: -1, tag: -1, entries: Int32Array.from([1, 2])},
+    ]};
+    const labels = m.setsToData(mesh, 'point', {order: ['b', 'a']});
+    assert.deepEqual(Array.from(labels.point_data['b-a'], Number), [1, 1, 0, -1]);
+    assert.equal(labels.regions.length, 0);
+    assert.deepEqual(labels.points, mesh.points);
+    assert.deepEqual(labels.cells[0].data, mesh.cells[0].data);
+    const back = m.dataToSets(labels, 'point', 'b-a');
+    assert.ok(!('b-a' in back.point_data));
+    assert.equal(back.regions.length, 3);
+    assert.throws(() => m.setsToData(mesh, 'field'));
+    assert.throws(() => m.dataToSets(mesh, 'point', 'temperature'));
 });
 
 step('dataCondition normalizes to [0, 1]', () => {
@@ -2505,6 +2637,31 @@ step('.vtm writes an index plus one .vtu piece per cell block, and reads two blo
     assert.deepEqual([piece0.cells[0].type, piece1.cells[0].type], ['tetra', 'triangle']);
 });
 
+step('.pcd LZF write options select binary_compressed', () => {
+    const cloud = {points: new Float64Array([1, 2, 3, 4, 5, 6]), dim: 3, cells: []};
+    m.writeMesh('/lzf.pcd', cloud, 'pcd', {codec: 'lzf'});
+    const bytes = m.FS.readFile('/lzf.pcd');
+    assert.ok(new TextDecoder().decode(bytes).includes('DATA binary_compressed\n'));
+    assert.deepEqual(Array.from(m.readMesh('/lzf.pcd').points), Array.from(cloud.points));
+    assert.throws(() => m.writeMesh('/bad-lzf.pcd', cloud, 'pcd', {codec: 'lzf', encoding: 'ascii'}));
+    assert.throws(() => m.writeMesh('/bad-lzf.vtu', cloud, 'vtu', {codec: 'lzf'}));
+});
+
+step('parameterized glTF writes colour and preserves the written-paths contract', () => {
+    const mesh = {points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), dim: 3,
+        cells: [{type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3}],
+        point_data: {temperature: new Float64Array([0, 1, 2])}};
+    const paths = m.writeGltf('/colored.gltf', mesh,
+        {colorBy: 'temperature', cmap: 'turbo', vmin: 0, vmax: 2, upAxis: 'x', scale: 0.001});
+    assert.ok(paths.includes('/colored.gltf'));
+    assert.ok(paths.includes('/colored.bin'));
+    const json = JSON.parse(m.FS.readFile('/colored.gltf', {encoding: 'utf8'}));
+    assert.ok(json.meshes[0].primitives[0].attributes.COLOR_0 !== undefined);
+    assert.throws(() => m.writeGltf('/bad.gltf', mesh, {scale: -1}));
+    assert.throws(() => m.writeGltf('/bad.gltf', mesh, {upAxis: 'bad'}));
+    assert.throws(() => m.writeGltf('/bad.gltf', mesh, {unknown: true}));
+});
+
 step('.pcd round-trips a point cloud through MEMFS and the format is picked by extension', () => {
     // Every value is exactly representable in float32, the precision the PCD
     // writer defaults to (PCL's typed loaders accept nothing else).
@@ -3041,6 +3198,10 @@ step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
         'Begin Nodes', '1 0 0 0', '2 1 0 0', '3 0 1 0', '4 0 0 1', 'End Nodes',
         'Begin Elements Element3D4N', '1 0 1 2 3 4', 'End Elements',
         'Begin Geometries Triangle3D3', '7 2 3 4', 'End Geometries',
+        'Begin SubModelPart Part', '    Begin SubModelPart Inner',
+        '        Begin SubModelPartGeometries', '            7', '        End SubModelPartGeometries',
+        '        Begin SubModelPartConstraints', '            1', '        End SubModelPartConstraints',
+        '    End SubModelPart', 'End SubModelPart',
         'Begin Mesh 5', '    Begin MeshNodes', '        4', '    End MeshNodes', 'End Mesh',
         'Begin Constraints LinearMasterSlaveConstraint',
         '    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0', 'End Constraints', '',
@@ -3050,12 +3211,127 @@ step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
     assert.equal(r.info.tables[0].key, '1 TIME VALUE');
     assert.deepEqual(Array.from(r.info.geometries[0].conn), [1, 2, 3]);
     assert.deepEqual(r.info.geometries[0].ids, [7]);
+    assert.equal(r.info.subModelParts[0].name, 'Part/Inner');
+    assert.deepEqual(r.info.subModelParts[0].geometryIds, [7]);
+    assert.deepEqual(r.info.subModelParts[0].constraintIds, [1]);
     assert.deepEqual(r.info.meshBlocks[0].nodes, [3]);
     assert.equal(r.info.rawBlocks[0].end, 'End Constraints');
     m.writeMesh('/side_out.mdpa', r, 'mdpa', { info: r.info });
     const back = m.readMeshSelective('/side_out.mdpa', { format: 'mdpa', info: true });
     assert.deepEqual(back.info.rawBlocks, r.info.rawBlocks);
     assert.equal(back.info.geometries[0].name, 'Triangle3D3');
+    assert.deepEqual(back.info.subModelParts, r.info.subModelParts);
+    // Info dictionaries made by older callers need not have the new fields.
+    const legacyInfo = structuredClone(r.info);
+    delete legacyInfo.subModelParts[0].geometryIds;
+    delete legacyInfo.subModelParts[0].constraintIds;
+    m.writeMesh('/side_legacy.mdpa', r, 'mdpa', { info: legacyInfo });
+    const legacy = m.readMeshSelective('/side_legacy.mdpa', { format: 'mdpa', info: true });
+    assert.deepEqual(legacy.info.subModelParts, []);
+});
+
+step('gmsh 4.0: ASCII and both binary producer count widths', () => {
+    // No host-sized long: a wasm32 reader must also read a 64-bit producer.
+    for (const width of [0, 4, 8]) {
+        const parts = [];
+        const text = (s) => parts.push(new TextEncoder().encode(s));
+        const put = (values, kind) => {
+            if (width === 0) {
+                text(values.join(' ') + '\n');
+                return;
+            }
+            const size = kind === 'double' ? 8 : kind === 'count' ? width : 4;
+            const bytes = new Uint8Array(size * values.length);
+            const view = new DataView(bytes.buffer);
+            values.forEach((v, i) => {
+                if (kind === 'double') view.setFloat64(i * size, v, true);
+                else if (kind === 'count' && width === 8) view.setBigUint64(i * size, BigInt(v), true);
+                else view.setInt32(i * size, v, true);
+            });
+            parts.push(bytes);
+        };
+        text(`$MeshFormat\n4.0 ${width === 0 ? 0 : 1} 8\n`);
+        if (width !== 0) { put([1], 'int'); text('\n'); }
+        text('$EndMeshFormat\n$PhysicalNames\n1\n2 7 "plate"\n$EndPhysicalNames\n$Entities\n');
+        put([1, 0, 1, 0], 'count');
+        put([5], 'int');
+        put([0, 0, 0, 0, 0, 0], 'double'); // 4.0 point bbox also has six doubles
+        put([0], 'count');
+        put([22], 'int');
+        put([0, 0, 0, 1, 1, 0], 'double');
+        put([1], 'count');
+        put([7], 'int');
+        put([0], 'count');
+        text('\n$EndEntities\n$Nodes\n');
+        put([1, 3], 'count');
+        put([22, 2, 0], 'int');
+        put([3], 'count');
+        for (const [tag, xyz] of [[30, [1, 0, 0]], [10, [0, 0, 0]], [20, [0, 1, 0]]]) {
+            put([tag], 'int'); put(xyz, 'double');
+        }
+        text('\n$EndNodes\n$Elements\n');
+        put([1, 1], 'count');
+        put([22, 2, 2], 'int');
+        put([1], 'count');
+        put([90, 10, 30, 20], 'int');
+        text('\n$EndElements\n');
+        const data = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+        let offset = 0;
+        for (const part of parts) { data.set(part, offset); offset += part.length; }
+        m.FS.writeFile('/gmsh40.msh', data);
+        const mesh = m.readMesh('/gmsh40.msh', 'gmsh');
+        assert.equal(mesh.points.length, 9);
+        assert.equal(mesh.cells[0].type, 'triangle');
+        assert.deepEqual(Array.from(mesh.cells[0].data), [1, 0, 2]);
+        assert.equal(mesh.point_data['gmsh:dim_tags'], undefined);
+        assert.deepEqual(Array.from(mesh.cell_data['gmsh:physical'][0], Number), [7]);
+        assert.equal(mesh.regions[0].name, 'plate');
+        assert.deepEqual(Array.from(mesh.regions[0].entries), [0]);
+        m.writeMesh('/gmsh40.vtu', mesh, 'vtu');
+        assert.deepEqual(Array.from(m.readMesh('/gmsh40.vtu', 'vtu').cells[0].data), [1, 0, 2]);
+    }
+});
+
+step('info: gmsh periodic sparse tags and duplicate pairs round trip', () => {
+    // A sparse-tag periodic file needs an info-bearing read, not a silent loss.
+    const periodic = `$MeshFormat
+4.0 0 8
+$EndMeshFormat
+$Nodes
+1 3
+22 2 0 3
+30 1 0 0
+10 0 0 0
+20 0 1 0
+$EndNodes
+$Elements
+1 1
+22 2 2 1
+90 10 30 20
+$EndElements
+$Periodic
+1
+1 12 33
+3
+30 10
+20 10
+30 10
+$EndPeriodic
+`;
+    m.FS.writeFile('/periodic.msh', periodic);
+    assert.throws(() => m.readMesh('/periodic.msh', 'gmsh'), /Periodic.*requires/);
+    const pm = m.readMeshSelective('/periodic.msh', { format: 'gmsh', info: true });
+    assert.deepEqual(pm.info.periodic[0].entity, [1, 12, 33]);
+    assert.deepEqual(pm.info.periodic[0].affine, []);
+    assert.deepEqual(Array.from(pm.info.periodic[0].nodePairs, Number), [0, 1, 2, 1, 0, 1]);
+    for (const format of ['gmsh', 'gmsh22']) {
+        m.writeMesh('/periodic_out.msh', pm, format);
+        const back = m.readMeshSelective('/periodic_out.msh', { format: 'gmsh', info: true });
+        assert.deepEqual(back.info.periodic, pm.info.periodic);
+    }
+    const invalid = structuredClone(pm.info);
+    invalid.periodic[0].nodePairs = [99, 0];
+    assert.throws(() => m.writeMesh('/periodic_invalid.msh', pm, 'gmsh', { info: invalid }), /point index/);
 });
 
 step('info: gmsh bounding entities survive a real $Entities round trip', () => {
@@ -4197,7 +4473,11 @@ step('XDMF time series (HDF): 3 steps, and the .h5 companion is written too', ()
     assert.equal(typeof w.finalized, 'function');
     assert.equal(typeof w.close, 'function');
 
-    w.writePointsCells(tet);
+    w.writePointsCells({ ...tet, regions: [
+        { name: 'anchors', kind: 'point', dim: 0, tag: 7, entries: Int32Array.from([0, 3]) },
+        { name: 'wall', kind: 'side', dim: 2, tag: 9, entries: Int32Array.from([0, 1]) },
+        { name: 'empty', kind: 'cell', entries: new Int32Array(0) },
+    ] });
     assert.equal(w.numSteps(), 0);
     for (let k = 0; k < 3; ++k) w.writeData(k * 0.5, seriesStep(k));
     assert.equal(w.numSteps(), 3);
@@ -4231,6 +4511,12 @@ step('XDMF time series (HDF): reads back with the right per-step values', () => 
         assert.deepEqual(Array.from(back.points), Array.from(tet.points));
         assert.deepEqual(Array.from(back.point_data.temperature), [k, k + 1, k + 2, k + 3]);
         assert.deepEqual(Array.from(back.cell_data.material[0]), [10 * k]);
+        assert.equal(back.regions.length, 3);
+        const wall = back.regions.find(r => r.name === 'wall');
+        assert.equal(wall.tag, 9);
+        assert.deepEqual(Array.from(wall.entries), [0, 1]);
+        assert.deepEqual(Array.from(back.regions.find(r => r.name === 'anchors').entries), [0, 3]);
+        assert.equal(back.regions.find(r => r.name === 'empty').entries.length, 0);
     }
     // -1 is the last step.
     assert.deepEqual(
@@ -4370,6 +4656,16 @@ step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
     const surf = mSeq.extractSurface(cube);
     assert.equal(surf.cells[0].type, 'quad');
     assert.equal(surf.cells[0].data.length, 6 * 4);
+});
+
+step('sequential build reads VTK pieces and legacy structured grids', () => {
+    for (const [format, n] of [['vti', 16], ['vtk', 12]]) {
+        const path = `/pieces.${format}`;
+        mSeq.FS.writeFile(path, m.FS.readFile(path));
+        const mesh = mSeq.readMesh(path);
+        assert.equal(mesh.points.length / 3, n);
+        assert.equal(mesh.cells[0].data.length / 8, 2);
+    }
 });
 
 step('checkQuality gates on thresholds', () => {

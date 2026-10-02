@@ -31,11 +31,13 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -961,7 +963,123 @@ MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& r
     return meta;
 }
 
-void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+namespace {
+
+struct ExoWriteSet {
+    std::string mName;
+    std::int64_t mId;
+    std::vector<long long> mEntities;
+    std::vector<long long> mSides;
+};
+
+std::vector<ExoWriteSet> exo_write_sets(const Mesh& rMesh, RegionKind Kind) {
+    std::vector<const Region*> regions;
+    std::unordered_set<std::int64_t> ids;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& region = rMesh.Region(i);
+        if (region.mKind != Kind)
+            continue;
+        if (region.mName.find('\0') != std::string::npos)
+            throw WriteError("Exodus: set names cannot contain NUL characters");
+        if (region.mTag >= 0 && !ids.insert(region.mTag).second)
+            throw WriteError("Exodus: duplicate set id " + std::to_string(region.mTag));
+        regions.push_back(&region);
+    }
+    std::sort(regions.begin(), regions.end(),
+              [](const Region* a, const Region* b) { return a->Key() < b->Key(); });
+    const auto bases = detail::block_bases(rMesh);
+    std::int64_t next_id = 1;
+    std::vector<ExoWriteSet> sets;
+    for (const Region* region : regions) {
+        while (ids.count(next_id))
+            ++next_id;
+        const auto id = region->mTag >= 0 ? region->mTag : next_id;
+        ids.insert(id);
+        ExoWriteSet set{region->mName, id, {}, {}};
+        const auto* entries = region->Entries();
+        for (std::size_t i = 0; i < region->NumEntries(); ++i) {
+            const auto entity = entries[i * region->Stride()];
+            if (Kind == RegionKind::Point) {
+                if (entity < 0 || static_cast<std::size_t>(entity) >= rMesh.NumPoints())
+                    throw WriteError("Exodus: node set '" + region->mName +
+                                     "' has an invalid point");
+            } else {
+                const auto [block, row] = detail::global_to_block_row(bases, entity);
+                (void)row;
+                if (block == static_cast<std::size_t>(-1))
+                    throw WriteError("Exodus: side set '" + region->mName +
+                                     "' has an invalid cell");
+                const auto facet = entries[2 * i + 1];
+                int side = 1;
+                while (exo_face_index(rMesh.Cells(block).Type(), side) >= 0 &&
+                       exo_face_index(rMesh.Cells(block).Type(), side) != facet)
+                    ++side;
+                if (exo_face_index(rMesh.Cells(block).Type(), side) < 0)
+                    throw WriteError("Exodus: side set '" + region->mName +
+                                     "' has an unsupported facet");
+                set.mSides.push_back(side);
+            }
+            set.mEntities.push_back(entity + 1);
+        }
+        sets.push_back(std::move(set));
+    }
+    return sets;
+}
+
+void exo_put_sets(int Ncid, int StringDim, const std::vector<ExoWriteSet>& rSets, bool Sides) {
+    if (rSets.empty())
+        return;
+    const std::string prefix = Sides ? "ss" : "ns";
+    int dim, prop, names, status;
+    check(nc_def_dim(Ncid, Sides ? "num_side_sets" : "num_node_sets", rSets.size(), &dim),
+          "set count", true);
+    check(nc_def_var(Ncid, (prefix + "_prop1").c_str(), NC_INT64, 1, &dim, &prop), "set ids", true);
+    check(nc_put_att_text(Ncid, prop, "name", 2, "ID"), "set id property", true);
+    check(nc_def_var(Ncid, (prefix + "_status").c_str(), NC_INT, 1, &dim, &status), "set status",
+          true);
+    const int dims[] = {dim, StringDim};
+    check(nc_def_var(Ncid, (prefix + "_names").c_str(), NC_CHAR, 2, dims, &names), "set names",
+          true);
+    for (std::size_t i = 0; i < rSets.size(); ++i) {
+        const auto& set = rSets[i];
+        const long long id = set.mId;
+        const int active = !set.mEntities.empty();
+        check(nc_put_var1_longlong(Ncid, prop, &i, &id), "set id", true);
+        check(nc_put_var1_int(Ncid, status, &i, &active), "set status", true);
+        const std::size_t start[] = {i, 0}, count[] = {1, set.mName.size()};
+        if (!set.mName.empty())
+            check(nc_put_vara_text(Ncid, names, start, count, set.mName.data()), "set name", true);
+        const auto suffix = std::to_string(i + 1);
+        int entry_dim, var;
+        const std::string entry_name = (Sides ? "num_side_ss" : "num_nod_ns") + suffix;
+        check(nc_def_dim(Ncid, entry_name.c_str(), set.mEntities.size(), &entry_dim), "set size",
+              true);
+        const std::string entity_name = (Sides ? "elem_ss" : "node_ns") + suffix;
+        check(nc_def_var(Ncid, entity_name.c_str(), NC_INT64, 1, &entry_dim, &var), "set entries",
+              true);
+        if (!set.mEntities.empty())
+            check(nc_put_var_longlong(Ncid, var, set.mEntities.data()), "set entries", true);
+        if (Sides) {
+            check(nc_def_var(Ncid, ("side_ss" + suffix).c_str(), NC_INT64, 1, &entry_dim, &var),
+                  "set sides", true);
+            if (!set.mSides.empty())
+                check(nc_put_var_longlong(Ncid, var, set.mSides.data()), "set sides", true);
+        }
+    }
+}
+
+}  // namespace
+
+namespace {
+
+void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, bool DoubleTime) {
+    // Validate memberships and ids before creating or truncating the destination.
+    const auto node_sets = exo_write_sets(rMesh, RegionKind::Point);
+    const auto side_sets = exo_write_sets(rMesh, RegionKind::Side);
+    std::size_t string_size = 33;
+    for (const auto* sets : {&node_sets, &side_sets})
+        for (const auto& set : *sets)
+            string_size = std::max(string_size, set.mName.size() + 1);
     int ncid;
     check(nc_create(rPath.c_str(), NC_CLOBBER | NC_NETCDF4, &ncid), "create", true);
     struct Closer {
@@ -996,13 +1114,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         total_elems += cb.NumCells();
 
-    int d_nodes, d_dim, d_elem, d_blk, d_ns, d_str, d_line, d_four, d_time;
+    int d_nodes, d_dim, d_elem, d_blk, d_str, d_line, d_four, d_time;
     check(nc_def_dim(ncid, "num_nodes", npts, &d_nodes), "def num_nodes", true);
     check(nc_def_dim(ncid, "num_dim", pdim, &d_dim), "def num_dim", true);
     check(nc_def_dim(ncid, "num_elem", total_elems, &d_elem), "def num_elem", true);
     check(nc_def_dim(ncid, "num_el_blk", rMesh.NumCellBlocks(), &d_blk), "def num_el_blk", true);
-    check(nc_def_dim(ncid, "num_node_sets", 0, &d_ns), "def num_node_sets", true);
-    check(nc_def_dim(ncid, "len_string", 33, &d_str), "def len_string", true);
+    check(nc_def_dim(ncid, "len_string", string_size, &d_str), "def len_string", true);
     check(nc_def_dim(ncid, "len_line", 81, &d_line), "def len_line", true);
     check(nc_def_dim(ncid, "four", 4, &d_four), "def four", true);
     check(nc_def_dim(ncid, "time_step", NC_UNLIMITED, &d_time), "def time_step", true);
@@ -1016,7 +1133,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     // the shape `XdmfTimeSeriesWriter` already has; that remains a follow-up.
     {
         int var;
-        check(nc_def_var(ncid, "time_whole", NC_FLOAT, 1, &d_time, &var), "def time_whole", true);
+        check(nc_def_var(ncid, "time_whole", DoubleTime ? NC_DOUBLE : NC_FLOAT, 1, &d_time, &var),
+              "def time_whole", true);
         std::size_t start = 0, count = 1;
         float t = 0.0f;
         if (rMesh.HasFieldData("exodus:time")) {
@@ -1029,7 +1147,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
                     "single time step; using the first.",
                     tv.Size());
         }
-        check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
+        if (EmitStep)
+            check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
     }
 
     // coor_names
@@ -1241,7 +1360,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         const std::string prefix(kExodusAttributePrefix);
         std::vector<std::string> var_names;
         for (const auto& name : rMesh.CellDataNames())
-            if (name.rfind(prefix, 0) != 0)
+            if (EmitStep && name.rfind(prefix, 0) != 0)
                 var_names.push_back(name);
 
         if (!var_names.empty()) {
@@ -1321,7 +1440,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // point data
-    if (rMesh.NumPointData() > 0) {
+    if (EmitStep && rMesh.NumPointData() > 0) {
         int d_nnv;
         check(nc_def_dim(ncid, "num_nod_var", rMesh.NumPointData(), &d_nnv), "num_nod_var", true);
         int name_var;
@@ -1365,8 +1484,176 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    // Node sets (point_sets) are not representable in the conversion layer;
-    // the shim routes meshes with point_sets to the Python writer.
+    exo_put_sets(ncid, d_str, node_sets, false);
+    exo_put_sets(ncid, d_str, side_sets, true);
+}
+
+struct ExoSeriesField {
+    std::string mName;
+    std::string mVariable;
+    DType mDtype;
+    std::vector<std::size_t> mShape;
+    std::size_t mBlock;
+    bool mPoint;
+};
+
+std::vector<ExoSeriesField> exo_series_fields(const Mesh& rMesh) {
+    std::vector<ExoSeriesField> fields;
+    std::size_t j = 0;
+    const auto add = [&](const std::string& name, const std::string& variable, const NDArray& data,
+                         std::size_t rows, std::size_t block, bool point) {
+        if (name.empty() || name.size() > 33 || name.find('\0') != std::string::npos)
+            throw WriteError("Exodus: series field names must contain 1 to 33 non-NUL bytes");
+        if (data.Shape().empty() || data.Shape()[0] != rows ||
+            std::find(data.Shape().begin() + 1, data.Shape().end(), 0) != data.Shape().end())
+            throw WriteError("Exodus: series field '" + name + "' has an invalid shape");
+        fields.push_back({name, variable, data.Dtype(), data.Shape(), block, point});
+    };
+    for (const auto& name : rMesh.PointDataNames()) {
+        add(name, "vals_nod_var" + std::to_string(++j), rMesh.PointData(name), rMesh.NumPoints(), 0,
+            true);
+    }
+    j = 0;
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (name.rfind(kExodusAttributePrefix, 0) == 0)
+            continue;
+        ++j;
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())
+            throw WriteError("Exodus: series field '" + name + "' must cover every cell block");
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            add(name, "vals_elem_var" + std::to_string(j) + "eb" + std::to_string(b + 1),
+                rMesh.CellData(name, b), rMesh.Cells(b).NumCells(), b, false);
+    }
+    return fields;
+}
+
+}  // namespace
+
+void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+    exo_write_file(rPath, rMesh, true, false);
+}
+
+struct ExodusTimeSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<Mesh> mGeometry;
+    std::size_t mNumPoints = 0;
+    std::vector<std::size_t> mBlockSizes;
+    std::vector<std::string> mBlockTypes;
+    std::vector<ExoSeriesField> mFields;
+    int mNcid = -1;
+    std::size_t mNumSteps = 0;
+    bool mGrid = false;
+    bool mFinalized = false;
+    explicit Impl(std::string path) : mPath(std::move(path)) {}
+    ~Impl() {
+        if (mNcid >= 0)
+            nc_close(mNcid);
+    }
+};
+
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath)
+    : mImpl(std::make_unique<Impl>(rPath)) {
+    if (rPath.empty())
+        throw WriteError("Exodus: series path is empty");
+}
+ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() = default;
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept = default;
+ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(ExodusTimeSeriesWriter&&) noexcept =
+    default;
+
+void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    if (!mImpl || mImpl->mFinalized || mImpl->mGrid)
+        throw WriteError("Exodus: write_points_cells requires a new, open series");
+    auto geometry =
+        detail::clone_mesh(rMesh, [](DataLocation location, const std::string& name, std::string&) {
+            return location == DataLocation::Cell && name.rfind(kExodusAttributePrefix, 0) == 0;
+        });
+    exo_write_file(mImpl->mPath, geometry, false, true);
+    mImpl->mNumPoints = rMesh.NumPoints();
+    for (const auto block : rMesh.CellRange()) {
+        mImpl->mBlockSizes.push_back(block.NumCells());
+        mImpl->mBlockTypes.push_back(block.Type());
+    }
+    mImpl->mGeometry = std::make_unique<Mesh>(std::move(geometry));
+    mImpl->mGrid = true;
+}
+
+void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    if (!mImpl || mImpl->mFinalized || !mImpl->mGrid)
+        throw WriteError("Exodus: write_data requires write_points_cells and an open series");
+    if (!std::isfinite(Time))
+        throw WriteError("Exodus: series time must be finite");
+    if (rMesh.NumPoints() != mImpl->mNumPoints ||
+        rMesh.NumCellBlocks() != mImpl->mBlockSizes.size())
+        throw WriteError("Exodus: series mesh counts do not match the fixed grid");
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        if (rMesh.Cells(b).NumCells() != mImpl->mBlockSizes[b] ||
+            rMesh.Cells(b).Type() != mImpl->mBlockTypes[b])
+            throw WriteError("Exodus: series cell blocks do not match the fixed grid");
+    auto fields = exo_series_fields(rMesh);
+    if (mImpl->mNumSteps) {
+        if (fields.size() != mImpl->mFields.size())
+            throw WriteError("Exodus: series field schema changed");
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            const auto& a = fields[i];
+            const auto& b = mImpl->mFields[i];
+            if (a.mName != b.mName || a.mDtype != b.mDtype || a.mShape != b.mShape ||
+                a.mBlock != b.mBlock || a.mPoint != b.mPoint)
+                throw WriteError("Exodus: series field schema changed for '" + a.mName + "'");
+        }
+    } else {
+        auto first = detail::clone_mesh(*mImpl->mGeometry);
+        for (const auto& field : fields) {
+            if (field.mPoint)
+                first.AddPointData(field.mName,
+                                   detail::data_owned_copy(rMesh.PointData(field.mName)));
+            else
+                first.AppendCellData(field.mName, detail::data_owned_copy(
+                                                      rMesh.CellData(field.mName, field.mBlock)));
+        }
+        exo_write_file(mImpl->mPath, first, true, true);
+        check(nc_open(mImpl->mPath.c_str(), NC_WRITE, &mImpl->mNcid), "open series", true);
+        mImpl->mFields = std::move(fields);
+        mImpl->mGeometry.reset();
+    }
+    const auto step = mImpl->mNumSteps;
+    for (const auto& field : mImpl->mFields) {
+        const auto& data =
+            field.mPoint ? rMesh.PointData(field.mName) : rMesh.CellData(field.mName, field.mBlock);
+        int var;
+        check(nc_inq_varid(mImpl->mNcid, field.mVariable.c_str(), &var), "series field", true);
+        std::vector<std::size_t> start(data.Shape().size() + 1, 0), count{1};
+        start[0] = step;
+        count.insert(count.end(), data.Shape().begin(), data.Shape().end());
+        if (data.Size())
+            check(nc_put_vara(mImpl->mNcid, var, start.data(), count.data(), data.Data()),
+                  "series field", true);
+    }
+    int time_var;
+    check(nc_inq_varid(mImpl->mNcid, "time_whole", &time_var), "series time", true);
+    check(nc_put_var1_double(mImpl->mNcid, time_var, &step, &Time), "series time", true);
+    ++mImpl->mNumSteps;
+}
+
+void ExodusTimeSeriesWriter::Flush() {
+    if (mImpl && mImpl->mNcid >= 0)
+        check(nc_sync(mImpl->mNcid), "flush series", true);
+}
+void ExodusTimeSeriesWriter::Finalize() {
+    if (!mImpl || mImpl->mFinalized)
+        return;
+    if (mImpl->mNcid >= 0) {
+        check(nc_close(mImpl->mNcid), "close series", true);
+        mImpl->mNcid = -1;
+    }
+    mImpl->mFinalized = true;
+    mImpl->mGeometry.reset();
+}
+std::size_t ExodusTimeSeriesWriter::NumSteps() const {
+    return mImpl ? mImpl->mNumSteps : 0;
+}
+bool ExodusTimeSeriesWriter::Finalized() const {
+    return !mImpl || mImpl->mFinalized;
 }
 
 }  // namespace meshioplusplus

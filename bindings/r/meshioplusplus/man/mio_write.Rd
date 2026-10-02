@@ -4,7 +4,8 @@
 \alias{mio_write}
 \title{Write a mesh file}
 \usage{
-mio_write(mesh, path, format = NULL)
+mio_write(mesh, path, format = NULL, encoding = "default",
+  codec = "default", float_format = NULL)
 }
 \arguments{
 \item{mesh}{A \code{mio_mesh} object.}
@@ -12,6 +13,12 @@ mio_write(mesh, path, format = NULL)
 \item{path}{Destination path.}
 
 \item{format}{Explicit format name, or \code{NULL} to infer it from the extension.}
+
+\item{encoding}{One of \code{default}, \code{ascii}, \code{binary}, or \code{raw_appended}.}
+
+\item{codec}{One of \code{default}, \code{none}, \code{zlib}, \code{lz4}, \code{zstd}, or \code{lzf} (PCD only).}
+
+\item{float_format}{Optional printf-style format for supported ASCII writers.}
 }
 \value{
 \code{NULL}, invisibly.

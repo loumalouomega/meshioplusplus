@@ -23,6 +23,7 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -118,6 +119,81 @@ TEST(Med, MetadataAndFamilies) {
     EXPECT_EQ(rout.mCellTags[-1], (std::vector<std::string>{"top"}));
     std::error_code ec;
     std::filesystem::remove(p, ec);
+}
+
+TEST(Med, NamedMeshesAndCollidingFields) {
+    auto first = mt::tri_mesh();
+    auto second = mt::tet_mesh();
+    for (auto* mesh : {&first, &second}) {
+        meshioplusplus::NDArray field(meshioplusplus::DType::Float64, {mesh->NumPoints()});
+        std::fill_n(field.As<double>(), field.Size(), mesh == &first ? 2.0 : 7.0);
+        mesh->AddPointData("pressure", std::move(field));
+    }
+    meshioplusplus::MedInfo a, b, info;
+    a.mMeshName = "z_surface";
+    b.mMeshName = "a_volume";
+    a.mDescription = "surface";
+    const auto path = mt::temp_path(".med");
+    meshioplusplus::write_med_multi(path, {&first, &second}, {a, b});
+    EXPECT_EQ(meshioplusplus::med_mesh_names(path),
+              (std::vector<std::string>{"z_surface", "a_volume"}));
+    auto out = meshioplusplus::read_med_named(path, a.mMeshName, info);
+    EXPECT_EQ(out.NumPoints(), first.NumPoints());
+    EXPECT_EQ(info.mDescription, "surface");
+    EXPECT_DOUBLE_EQ(read_double(out.PointData("pressure"), 0), 2.0);
+    auto volume = meshioplusplus::read_med_named(path, b.mMeshName, info);
+    EXPECT_DOUBLE_EQ(read_double(volume.PointData("pressure"), 0), 7.0);
+    EXPECT_THROW(meshioplusplus::read_med(path, info), meshioplusplus::ReadError);
+    EXPECT_THROW(meshioplusplus::read_med_named(path, "missing", info), meshioplusplus::ReadError);
+    EXPECT_THROW(meshioplusplus::write_med_multi(path, {&first, &second}, {a, a}),
+                 meshioplusplus::WriteError);
+    EXPECT_EQ(meshioplusplus::med_mesh_names(path).size(), 2u);  // invalid write did not clobber
+    std::filesystem::remove(path);
+}
+
+TEST(Med, NamedNodalProfileExpansionAndBounds) {
+    auto mesh = mt::tri_mesh();
+    meshioplusplus::NDArray field(meshioplusplus::DType::Float64, {mesh.NumPoints(), 2});
+    mesh.AddPointData("velocity", std::move(field));
+    const auto path = mt::temp_path(".med");
+    meshioplusplus::write_med(path, mesh, meshioplusplus::MedInfo{});
+    {
+        h5::Hid file(H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        auto fields = h5::open_group(file, "CHA/velocity");
+        auto step = h5::open_group(fields, h5::group_links(fields).front());
+        auto support = h5::open_group(step, "NOE");
+        ASSERT_GE(H5Lmove(support, "MED_NO_PROFILE_INTERNAL", support, "subset", H5P_DEFAULT,
+                          H5P_DEFAULT),
+                  0);
+        ASSERT_GE(H5Adelete(support, "PFL"), 0);
+        h5::write_attr_string(support, "PFL", "subset");
+        auto profile = h5::open_group(support, "subset");
+        ASSERT_GE(H5Ldelete(profile, "CO", H5P_DEFAULT), 0);
+        meshioplusplus::NDArray values(meshioplusplus::DType::Float64, {2});
+        values.As<double>()[0] = 5.0;
+        values.As<double>()[1] = 8.0;
+        h5::write_dataset(profile, "CO", values);
+        auto profiles = h5::create_group(file, "PROFILS");
+        auto definition = h5::create_group(profiles, "subset");
+        meshioplusplus::NDArray index(meshioplusplus::DType::Int64, {1});
+        index.As<std::int64_t>()[0] = 2;
+        h5::write_dataset(definition, "PFL", index);
+        h5::write_attr_int(definition, "NBR", 1);
+    }
+    meshioplusplus::MedInfo info;
+    auto out = meshioplusplus::read_med(path, info);
+    const auto& values = out.PointData("velocity");
+    EXPECT_TRUE(std::isnan(read_double(values, 0)));
+    EXPECT_DOUBLE_EQ(read_double(values, 2), 5.0);
+    EXPECT_DOUBLE_EQ(read_double(values, 3), 8.0);
+    {
+        h5::Hid file(H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid dataset(H5Dopen2(file, "PROFILS/subset/PFL", H5P_DEFAULT), H5Dclose);
+        const std::int64_t bad = 0;
+        ASSERT_GE(H5Dwrite(dataset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, &bad), 0);
+    }
+    EXPECT_THROW(meshioplusplus::read_med(path, info), meshioplusplus::ReadError);
+    std::filesystem::remove(path);
 }
 
 TEST(Med, RaggedPolygons) {
@@ -355,7 +431,7 @@ TEST(Med, LenientSkipsAnElgaSupportButKeepsTheMesh) {
     std::filesystem::remove(p, ec);
 }
 
-TEST(Med, LenientSkipsANamedProfile) {
+TEST(Med, MissingNamedProfileIsMalformedEvenWhenLenient) {
     std::string p = med_field_fixture();
     {
         h5::SilenceErrors silence;
@@ -372,11 +448,7 @@ TEST(Med, LenientSkipsANamedProfile) {
     EXPECT_THROW(meshioplusplus::read_med(p, strict_info), meshioplusplus::ReadError);
 
     meshioplusplus::MedInfo info;
-    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info, med_lenient());
-    EXPECT_FALSE(out.HasPointData("temperature"));
-    EXPECT_EQ(out.NumCellBlocks(), 1u);
-    ASSERT_EQ(info.mSkippedConstructs.size(), 1u);
-    EXPECT_NE(info.mSkippedConstructs[0].find("named profile"), std::string::npos);
+    EXPECT_THROW(meshioplusplus::read_med(p, info, med_lenient()), meshioplusplus::ReadError);
 
     std::error_code ec;
     std::filesystem::remove(p, ec);

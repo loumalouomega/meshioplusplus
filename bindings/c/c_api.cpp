@@ -43,6 +43,7 @@
 // System includes
 #include <algorithm>
 #include <climits>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -60,7 +61,9 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -78,6 +81,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
@@ -121,6 +125,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/skin.hpp"
 
 struct mio_mesh {
@@ -172,10 +177,21 @@ struct mio_diff_result {
     meshioplusplus::DiffReport mReport;
 };
 
+struct mio_pipeline_report {
+    std::string mJson;
+};
+
 struct mio_xdmf_series {
     // Held by value: the writer is already move-only and owns its open
     // heavy-data container, so the handle is just the C-side name for it.
     meshioplusplus::XdmfTimeSeriesWriter mWriter;
+};
+
+struct mio_exodus_series {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    meshioplusplus::ExodusTimeSeriesWriter mWriter;
+    explicit mio_exodus_series(const std::string& rPath) : mWriter(rPath) {}
+#endif
 };
 
 /// The PLAN for a sequence -- paths, per-file step indices and times. It owns
@@ -262,7 +278,7 @@ struct mio_read_metadata {
 // accessors check the alternative they need, so a handle is never misread.
 struct mio_format_info {
     std::string mFormat;
-    std::variant<std::monostate, meshioplusplus::MdpaInfo> mInfo;
+    std::variant<std::monostate, meshioplusplus::MdpaInfo, meshioplusplus::GmshInfo> mInfo;
 };
 
 namespace {
@@ -955,6 +971,57 @@ void mio_write_opts_init(mio_write_opts* opts) {
     *opts = mio_write_opts{};  // value-initialized: all zero == mio_write()
 }
 
+void mio_gltf_opts_init(mio_gltf_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_gltf_opts{};
+    opts->normals = opts->fields = opts->recenter = opts->by_region = opts->unlit = 1;
+    opts->split_angle = 30.0;
+    opts->scale = 1.0;
+}
+
+mio_status mio_write_gltf(const char* path, const mio_mesh* mesh, const mio_gltf_opts* opts) {
+    return guarded([&]() -> mio_status {
+        if (!path || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        meshioplusplus::GltfWriteOptions out;
+        if (opts) {
+            if (opts->container < 0 || opts->container > 2 || opts->up_axis < 0 ||
+                opts->up_axis > 3 || opts->normal_weight < 0 || opts->normal_weight > 1)
+                return fail(MIO_ERR_INVALID_ARG,
+                            "meshio++: invalid glTF container, axis or weight");
+            out.mContainer = static_cast<meshioplusplus::GltfContainer>(opts->container);
+            out.mUpAxis = static_cast<meshioplusplus::GltfUpAxis>(opts->up_axis);
+            out.mNormalWeight =
+                static_cast<meshioplusplus::SdfPseudonormalWeight>(opts->normal_weight);
+            out.mNormals = opts->normals != 0;
+            out.mFields = opts->fields != 0;
+            out.mRecenter = opts->recenter != 0;
+            out.mByRegion = opts->by_region != 0;
+            out.mUnlit = opts->unlit != 0;
+            out.mSplitAngle = opts->split_angle;
+            out.mScale = opts->scale;
+            if (opts->component_set)
+                out.mComponent = opts->component;
+            if (opts->vmin_set)
+                out.mVMin = opts->vmin;
+            if (opts->vmax_set)
+                out.mVMax = opts->vmax;
+            if (opts->color_by)
+                out.mColorBy = opts->color_by;
+            if (opts->cmap)
+                out.mCmap = opts->cmap;
+            if (opts->nan_color)
+                out.mNanColor = opts->nan_color;
+        }
+        meshioplusplus::detail::provenance_begin_write();
+        meshioplusplus::write_gltf(path, mesh->mMesh, out);
+        return MIO_OK;
+    });
+}
+
+static_assert(sizeof(mio_gltf_opts) == 168, "mio_gltf_opts layout changed");
+
 namespace {
 
 /// mio_write_opts -> WriteOptions, shared by mio_write_ex and
@@ -995,6 +1062,10 @@ mio_status write_opts_to_cxx(const mio_write_opts& rOpts, meshioplusplus::WriteO
             rOut.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
             rOut.mCodecSet = true;
             break;
+        case MIO_CODEC_LZF:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::LZF;
+            rOut.mCodecSet = true;
+            break;
         default:
             return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.codec");
     }
@@ -1031,6 +1102,16 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
         if (!path || !info)
             throw std::invalid_argument("meshio++: path/info is NULL");
         const std::string fmt = capi_resolve_read_format(path, format);
+        if (fmt == "gmsh") {
+            auto handle = std::make_unique<mio_format_info>();
+            handle->mFormat = fmt;
+            meshioplusplus::GmshInfo gmsh;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::read_gmsh(path, gmsh, capi_read_options(opts))});
+            handle->mInfo = std::move(gmsh);
+            *info = handle.release();
+            return mesh.release();
+        }
         if (fmt == "mdpa") {
             auto handle = std::make_unique<mio_format_info>();
             handle->mFormat = fmt;
@@ -1056,11 +1137,18 @@ mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const cha
         if (!info)
             return mio_write(path, mesh, format);
         const std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
-        if (fmt != info->mFormat)
+        if (fmt != info->mFormat && !(fmt == "gmsh22" && info->mFormat == "gmsh"))
             return fail(MIO_ERR_INVALID_ARG, "meshio++: a '" + info->mFormat +
                                                  "' side channel cannot be written as '" + fmt +
                                                  "'");
         meshioplusplus::detail::provenance_begin_write();
+        if (const auto* p_gmsh = std::get_if<meshioplusplus::GmshInfo>(&info->mInfo)) {
+            if (fmt == "gmsh22")
+                meshioplusplus::write_gmsh22(path, mesh->mMesh, true, *p_gmsh);
+            else
+                meshioplusplus::write_gmsh41(path, mesh->mMesh, true, *p_gmsh);
+            return MIO_OK;
+        }
         if (const auto* p_mdpa = std::get_if<meshioplusplus::MdpaInfo>(&info->mInfo)) {
             meshioplusplus::write_mdpa(path, mesh->mMesh, *p_mdpa);
             return MIO_OK;
@@ -1079,6 +1167,66 @@ int64_t mio_format_info_format(const mio_format_info* info, char* buf, int64_t b
 
 void mio_format_info_free(mio_format_info* info) {
     delete info;
+}
+
+namespace {
+const meshioplusplus::GmshInfo& capi_gmsh(const mio_format_info* pInfo) {
+    if (!pInfo)
+        throw std::invalid_argument("meshio++: format info handle is NULL");
+    const auto* info = std::get_if<meshioplusplus::GmshInfo>(&pInfo->mInfo);
+    if (!info)
+        throw std::invalid_argument("meshio++: not a gmsh side channel");
+    return *info;
+}
+std::size_t capi_gmsh_count(const meshioplusplus::GmshInfo& rInfo, int section) {
+    if (section == MIO_GMSH_BOUNDING_ENTITIES)
+        return rInfo.mBoundingEntities.size();
+    if (section == MIO_GMSH_PERIODIC)
+        return rInfo.mPeriodic.size();
+    throw std::invalid_argument("meshio++: unknown gmsh side-channel section");
+}
+}  // namespace
+
+int64_t mio_gmsh_info_count(const mio_format_info* info, int32_t section) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_gmsh_count(capi_gmsh(info), section));
+    });
+}
+
+mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                               int32_t field, const void** data, mio_dtype* dtype, int32_t* ndim,
+                               int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        const auto& gmsh = capi_gmsh(info);
+        if (index < 0 || static_cast<std::size_t>(index) >= capi_gmsh_count(gmsh, section))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: gmsh side-channel index out of range");
+        if (section == MIO_GMSH_BOUNDING_ENTITIES && field == 0) {
+            const auto& tags = gmsh.mBoundingEntities[static_cast<std::size_t>(index)];
+            return array_out(
+                meshioplusplus::NDArray::MakeView(
+                    meshioplusplus::DType::Int32, {tags.size()},
+                    reinterpret_cast<std::byte*>(const_cast<std::int32_t*>(tags.data()))),
+                data, dtype, ndim, shape);
+        }
+        if (section == MIO_GMSH_PERIODIC) {
+            const auto& link = gmsh.mPeriodic[static_cast<std::size_t>(index)];
+            if (field == 0)
+                return array_out(meshioplusplus::NDArray::MakeView(
+                                     meshioplusplus::DType::Int32, {3},
+                                     reinterpret_cast<std::byte*>(
+                                         const_cast<std::int32_t*>(link.mEntityTags.data()))),
+                                 data, dtype, ndim, shape);
+            if (field == 1)
+                return array_out(
+                    meshioplusplus::NDArray::MakeView(
+                        meshioplusplus::DType::Float64, {link.mAffine.size()},
+                        reinterpret_cast<std::byte*>(const_cast<double*>(link.mAffine.data()))),
+                    data, dtype, ndim, shape);
+            if (field == 2)
+                return array_out(link.mNodePairs, data, dtype, ndim, shape);
+        }
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: unknown gmsh side-channel array field");
+    });
 }
 
 namespace {
@@ -1284,6 +1432,12 @@ mio_status mio_mdpa_info_array(const mio_format_info* info, int32_t section, int
             case MIO_MDPA_SUBMODELPARTS:
                 if (field == 0)
                     return capi_ids_out(r_info.mSubModelParts[i].mTables, data, dtype, ndim, shape);
+                if (field == 1)
+                    return capi_ids_out(r_info.mSubModelParts[i].mGeometryIds, data, dtype, ndim,
+                                        shape);
+                if (field == 2)
+                    return capi_ids_out(r_info.mSubModelParts[i].mConstraintIds, data, dtype, ndim,
+                                        shape);
                 break;
             default:
                 break;
@@ -2450,8 +2604,8 @@ mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_op
         options.mTargetRatio = opts->target_ratio;
         options.mTargetFaces = opts->target_faces;
         options.mMaxError = opts->max_error;
-        options.mPlacement =
-            meshioplusplus::decimate_placement_from_name(opts->placement ? opts->placement : "optimal");
+        options.mPlacement = meshioplusplus::decimate_placement_from_name(
+            opts->placement ? opts->placement : "optimal");
         options.mPreserveBoundary = opts->preserve_boundary != 0;
         options.mPreserveFeatures = opts->preserve_features != 0;
         options.mFeatureAngleDeg = opts->feature_angle;
@@ -2562,7 +2716,8 @@ mio_decimate_volume_result* capi_decimate_volume(
     const mio_mesh* pMesh, const meshioplusplus::DecimateVolumeOptions& rOptions) {
     if (!pMesh)
         throw meshioplusplus::ReadError("meshio++: mesh is NULL");
-    meshioplusplus::DecimateVolumeResult r = meshioplusplus::decimate_volume(pMesh->mMesh, rOptions);
+    meshioplusplus::DecimateVolumeResult r =
+        meshioplusplus::decimate_volume(pMesh->mMesh, rOptions);
     auto* out = new mio_decimate_volume_result{};
     out->mMesh = mio_mesh{std::move(r.mMesh)};
     out->mPointMap = std::move(r.mPointMap);
@@ -2609,7 +2764,7 @@ void mio_decimate_volume_opts_init(mio_decimate_volume_opts* opts) {
 }
 
 mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
-                                                    const mio_decimate_volume_opts* opts) {
+                                                   const mio_decimate_volume_opts* opts) {
     return guarded_ptr(
         static_cast<mio_decimate_volume_result*>(nullptr), [&]() -> mio_decimate_volume_result* {
             if (!opts)
@@ -2632,7 +2787,7 @@ mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
 }
 
 static_assert(sizeof(mio_decimate_volume_opts) == 96,
-             "mio_decimate_volume_opts grew outside its reserved tail");
+              "mio_decimate_volume_opts grew outside its reserved tail");
 
 const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result) {
     return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
@@ -3008,6 +3163,27 @@ mio_mesh* mio_data_rename(const mio_mesh* mesh, mio_data_location location, cons
     });
 }
 
+mio_mesh* mio_sets_to_data(const mio_mesh* mesh, mio_data_location location, const char* data_name,
+                           const char* join_char, const char* const* order, int64_t count) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: sets_to_data: mesh is NULL");
+        return new mio_mesh{meshioplusplus::sets_to_data(
+            mesh->mMesh, data_location_of(location),
+            data_name ? std::optional<std::string>(data_name) : std::nullopt,
+            join_char ? join_char : "-", data_name_list(order, count))};
+    });
+}
+
+mio_mesh* mio_data_to_sets(const mio_mesh* mesh, mio_data_location location, const char* key) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !key)
+            throw std::invalid_argument("meshio++: data_to_sets: mesh/key is NULL");
+        return new mio_mesh{
+            meshioplusplus::data_to_sets(mesh->mMesh, data_location_of(location), key)};
+    });
+}
+
 mio_mesh* mio_data_point_to_cell(const mio_mesh* mesh, const char* const* names, int64_t count,
                                  const char* suffix) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
@@ -3078,8 +3254,8 @@ mio_mesh* mio_tensor_invariants(const mio_mesh* mesh, mio_data_location location
         meshioplusplus::TensorInvariantsOptions opts;
         opts.location = data_location_of(location);
         opts.names = data_name_list(names, count);
-        opts.outputs = static_cast<meshioplusplus::TensorInvariant>(outputs == 0 ? MIO_TINV_ALL
-                                                                                 : outputs);
+        opts.outputs =
+            static_cast<meshioplusplus::TensorInvariant>(outputs == 0 ? MIO_TINV_ALL : outputs);
         opts.prefix = prefix ? prefix : "";
         opts.suffix = suffix ? suffix : "";
         opts.overwrite = overwrite != 0;
@@ -3626,8 +3802,9 @@ mio_status mio_mesh_add_polygon_block(mio_mesh* mesh, const char* cell_type, int
         if (mio_status s = poly_check_nodes(nodes, num_nodes); s != MIO_OK)
             return s;
         // The C arrays are already the CSR the mesh stores: copy them in whole.
-        mesh->mMesh.AddPolygonBlock(cell_type, std::vector<std::int64_t>(nodes, nodes + num_nodes),
-                                    std::vector<std::int64_t>(row_offsets, row_offsets + num_cells + 1));
+        mesh->mMesh.AddPolygonBlock(
+            cell_type, std::vector<std::int64_t>(nodes, nodes + num_nodes),
+            std::vector<std::int64_t>(row_offsets, row_offsets + num_cells + 1));
         return MIO_OK;
     });
 }
@@ -4145,6 +4322,100 @@ mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind
 }
 
 // ---- transient (time-series) XDMF ----------------------------------------
+
+mio_exodus_series* mio_exodus_series_create(const char* path) {
+    return guarded_ptr(static_cast<mio_exodus_series*>(nullptr), [&]() -> mio_exodus_series* {
+        if (!path)
+            throw std::invalid_argument("meshio++: Exodus series path is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return new mio_exodus_series(path);
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const mio_mesh* mesh) {
+    return guarded([&]() -> mio_status {
+        if (!series || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.WritePointsCells(mesh->mMesh);
+        return MIO_OK;
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time,
+                                        const mio_mesh* mesh) {
+    return guarded([&]() -> mio_status {
+        if (!series || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.WriteData(time, mesh->mMesh);
+        return MIO_OK;
+#else
+        (void)time;
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_flush(mio_exodus_series* series) {
+    return guarded([&]() -> mio_status {
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.Flush();
+        return MIO_OK;
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_finalize(mio_exodus_series* series) {
+    return guarded([&]() -> mio_status {
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.Finalize();
+        return MIO_OK;
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+int64_t mio_exodus_series_num_steps(const mio_exodus_series* series) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!series)
+            throw std::invalid_argument("meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return static_cast<std::int64_t>(series->mWriter.NumSteps());
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+int32_t mio_exodus_series_finalized(const mio_exodus_series* series) {
+    return guarded_ptr(std::int32_t(-1), [&]() -> std::int32_t {
+        if (!series)
+            throw std::invalid_argument("meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return series->mWriter.Finalized();
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+void mio_exodus_series_free(mio_exodus_series* series) {
+    delete series;
+}
 //
 // The one writer that is a handle rather than a (path, mesh) call: the mesh is
 // written once and each step appended, so there is no single call for mio_write
@@ -4292,6 +4563,70 @@ mio_status mio_pipeline_run_file(const char* settings_path) {
     });
 }
 
+int64_t mio_med_mesh_count(const char* path) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (!path)
+            throw std::invalid_argument("MED: path is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        return static_cast<int64_t>(meshioplusplus::med_mesh_names(path).size());
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
+int64_t mio_med_mesh_name(const char* path, int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (!path)
+            throw std::invalid_argument("MED: path is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        auto names = meshioplusplus::med_mesh_names(path);
+        if (index < 0 || static_cast<std::size_t>(index) >= names.size())
+            throw std::invalid_argument("MED: mesh index out of range");
+        return copy_string(names[static_cast<std::size_t>(index)], buf, buflen);
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
+mio_mesh* mio_med_read_named(const char* path, const char* name, const mio_read_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!path || !name)
+            throw std::invalid_argument("MED: path/name is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        meshioplusplus::MedInfo info;
+        return new mio_mesh{
+            meshioplusplus::read_med_named(path, name, info, capi_read_options(opts))};
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
+mio_status mio_med_write_multi(const char* path, const mio_mesh* const* meshes,
+                               const char* const* names, int64_t count, const char* version) {
+    return guarded([&]() -> mio_status {
+        if (!path || !meshes || !names || count <= 0)
+            return fail(MIO_ERR_INVALID_ARG, "MED: provide path, meshes, names and positive count");
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        std::vector<const meshioplusplus::Mesh*> inputs;
+        std::vector<meshioplusplus::MedInfo> infos;
+        for (int64_t i = 0; i < count; ++i) {
+            if (!meshes[i] || !names[i])
+                throw std::invalid_argument("MED: NULL mesh/name");
+            inputs.push_back(&meshes[i]->mMesh);
+            infos.emplace_back();
+            infos.back().mMeshName = names[i];
+        }
+        meshioplusplus::write_med_multi(path, inputs, infos, version ? version : "4.1.0");
+        return MIO_OK;
+#else
+        throw std::runtime_error("MED requires HDF5");
+#endif
+    });
+}
+
 mio_status mio_pipeline_run_json(const char* json_text) {
     return guarded([&]() -> mio_status {
         if (!json_text)
@@ -4300,6 +4635,48 @@ mio_status mio_pipeline_run_json(const char* json_text) {
         return MIO_OK;
     });
 }
+
+mio_pipeline_report* mio_pipeline_run_file_report(const char* settings_path) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!settings_path) throw std::invalid_argument("meshio++: settings_path is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_pipeline_file(settings_path))};
+    });
+}
+
+mio_pipeline_report* mio_pipeline_run_json_report(const char* json_text) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!json_text) throw std::invalid_argument("meshio++: json_text is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_pipeline_json(json_text))};
+    });
+}
+
+mio_pipeline_report* mio_sequence_pipeline_run_file_report(const char* settings_path) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!settings_path) throw std::invalid_argument("meshio++: settings_path is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_sequence_file(settings_path))};
+    });
+}
+
+mio_pipeline_report* mio_sequence_pipeline_run_json_report(const char* json_text) {
+    return guarded_ptr(static_cast<mio_pipeline_report*>(nullptr), [&]() {
+        if (!json_text) throw std::invalid_argument("meshio++: json_text is NULL");
+        return new mio_pipeline_report{meshioplusplus::pipeline_report_json(
+            meshioplusplus::run_sequence_json(json_text))};
+    });
+}
+
+int64_t mio_pipeline_report_json(const mio_pipeline_report* report, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (!report) throw std::invalid_argument("meshio++: pipeline report is NULL");
+        if (buflen < 0) throw std::invalid_argument("meshio++: negative report buffer length");
+        return copy_string(report->mJson, buf, buflen);
+    });
+}
+
+void mio_pipeline_report_free(mio_pipeline_report* report) { delete report; }
 
 namespace {
 

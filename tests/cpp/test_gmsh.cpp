@@ -27,11 +27,28 @@
 #include <vector>
 
 // Project includes
+#include "gmsh_fixtures.hpp"
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace {
+void gmsh_check_periodic(const meshioplusplus::GmshInfo& rInfo) {
+    ASSERT_EQ(rInfo.mPeriodic.size(), 2);
+    EXPECT_TRUE(rInfo.mPeriodic[0].mAffine.empty());
+    EXPECT_EQ(rInfo.mPeriodic[0].mNodePairs.Shape(), (std::vector<std::size_t>{0, 2}));
+    const auto& link = rInfo.mPeriodic[1];
+    EXPECT_EQ(link.mEntityTags, (std::array<std::int32_t, 3>{1, 12, 33}));
+    ASSERT_EQ(link.mAffine.size(), 16);
+    EXPECT_EQ(link.mAffine[3], 1.0);
+    EXPECT_EQ(link.mNodePairs.Shape(), (std::vector<std::size_t>{3, 2}));
+    const std::vector<std::int64_t> expected{0, 1, 2, 3, 0, 1};
+    EXPECT_EQ(std::vector<std::int64_t>(link.mNodePairs.As<std::int64_t>(),
+                                        link.mNodePairs.As<std::int64_t>() + 6),
+              expected);
+}
 void rt22(const mt::Mesh& mesh, bool binary) {
     mt::roundtrip([=](const std::string& p,
                       const mt::Mesh& m) { meshioplusplus::write_gmsh22(p, m, binary); },
@@ -242,6 +259,120 @@ void expect_entities_fixture(const meshioplusplus::Mesh& mesh) {
 }
 }  // namespace
 
+TEST(Gmsh, PeriodicAllLayoutsAndRoundTrips) {
+    for (int version : {22, 40, 41})
+        for (bool binary : {false, true})
+            for (int width : {4, 8}) {
+                SCOPED_TRACE(std::to_string(version) + "/" + std::to_string(binary) + "/" +
+                             std::to_string(width));
+                const auto path =
+                    gmsh_write_fixture(mt::gmsh_periodic_fixture(version, binary, width));
+                EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError);
+                EXPECT_THROW(meshioplusplus::registry_read(path, "gmsh", {}),
+                             meshioplusplus::ReadError);
+                meshioplusplus::GmshInfo info;
+                const auto mesh = meshioplusplus::read_gmsh(path, info);
+                gmsh_check_periodic(info);
+                // Reusing an info object replaces rather than duplicates its records.
+                const auto again = meshioplusplus::read_gmsh(path, info);
+                gmsh_check_periodic(info);
+                for (int target : {22, 41}) {
+                    const auto output = mt::temp_path(".msh");
+                    if (target == 22)
+                        meshioplusplus::write_gmsh22(output, mesh, binary, info);
+                    else
+                        meshioplusplus::write_gmsh41(output, mesh, binary, info);
+                    meshioplusplus::GmshInfo back_info;
+                    const auto back = meshioplusplus::read_gmsh(output, back_info);
+                    gmsh_check_periodic(back_info);
+                    EXPECT_EQ(back.NumPoints(), 4);
+                    std::remove(output.c_str());
+                }
+                std::remove(path.c_str());
+            }
+}
+
+TEST(Gmsh, PeriodicBeforeNodes) {
+    auto bytes = mt::gmsh_periodic_fixture(41, false);
+    const auto start = bytes.find("$Periodic");
+    const auto section = bytes.substr(start);
+    bytes.erase(start);
+    bytes.insert(bytes.find("$Nodes"), section);
+    const auto path = gmsh_write_fixture(bytes);
+    meshioplusplus::GmshInfo info;
+    const auto mesh = meshioplusplus::read_gmsh(path, info);
+    gmsh_check_periodic(info);
+    std::remove(path.c_str());
+}
+
+TEST(Gmsh, IndentedEmptyPeriodicStillRequiresInfo) {
+    auto bytes = mt::gmsh_periodic_fixture(41, false);
+    bytes.erase(bytes.find("$Periodic"));
+    bytes += "  \t$Periodic\n0\n$EndPeriodic\n";
+    const auto path = gmsh_write_fixture(bytes);
+    EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError);
+    meshioplusplus::ReadOptions opts;
+    opts.mLenient = true;
+    EXPECT_THROW(meshioplusplus::read_gmsh(path, opts), meshioplusplus::ReadError);
+    meshioplusplus::GmshInfo info;
+    const auto mesh = meshioplusplus::read_gmsh(path, info);
+    EXPECT_TRUE(info.mPeriodic.empty());
+    EXPECT_EQ(mesh.NumPoints(), 4);
+    std::remove(path.c_str());
+}
+
+TEST(Gmsh, PeriodicRejectsMalformedRecords) {
+    const std::vector<std::string> records = {"-1\n",
+                                              "9999999999999999999999999\n",
+                                              "1oops\n",
+                                              "1\n4 1 2\n0\n0\n",
+                                              "1\n1 0 2\n0\n0\n",
+                                              "1\n1 1 2\n15\n",
+                                              "1\n1 1 2\n16\nnan\n",
+                                              "1\n1 1 2\n0\n-1\n",
+                                              "1\n1 1 2\n0\n1\n30 999\n",
+                                              "1\n1 1 2\n0\n1\n0 10\n",
+                                              "1\n1 1 2\n0\n1\n30\n",
+                                              "1\n1 2147483648 2\n0\n0\n",
+                                              "1\n1 1 2\n0\n0\n$Other\n"};
+    auto base = mt::gmsh_periodic_fixture(41, false);
+    base.erase(base.find("$Periodic"));
+    for (const auto& record : records) {
+        SCOPED_TRACE(record);
+        const auto path = gmsh_write_fixture(base + "$Periodic\n" + record + "$EndPeriodic\n");
+        meshioplusplus::GmshInfo info;
+        EXPECT_THROW(meshioplusplus::read_gmsh(path, info), meshioplusplus::ReadError);
+        std::remove(path.c_str());
+    }
+    for (int version : {22, 40, 41}) {
+        const auto bytes = mt::gmsh_periodic_fixture(version, true);
+        const auto start = bytes.find("$Periodic");
+        for (std::size_t n = start + 10; n < bytes.find("$EndPeriodic") + 12; ++n) {
+            const auto path = gmsh_write_fixture(bytes.substr(0, n));
+            meshioplusplus::GmshInfo info;
+            EXPECT_THROW(meshioplusplus::read_gmsh(path, info), meshioplusplus::ReadError);
+            std::remove(path.c_str());
+        }
+    }
+}
+
+TEST(Gmsh, PeriodicWriterValidatesBeforeCreatingFile) {
+    const auto mesh = mt::tri_mesh();
+    meshioplusplus::GmshInfo info;
+    info.mPeriodic.emplace_back();
+    auto& link = info.mPeriodic.back();
+    link.mEntityTags = {1, 2, 1};
+    link.mNodePairs = meshioplusplus::NDArray(meshioplusplus::DType::Int64, {1, 2});
+    link.mNodePairs.As<std::int64_t>()[1] = 999;
+    const auto path = mt::temp_path(".msh");
+    EXPECT_THROW(meshioplusplus::write_gmsh22(path, mesh, false, info), meshioplusplus::WriteError);
+    EXPECT_THROW(meshioplusplus::write_gmsh41(path, mesh, true, info), meshioplusplus::WriteError);
+    link.mNodePairs.As<std::int64_t>()[1] = 0;
+    link.mAffine.resize(15);
+    EXPECT_THROW(meshioplusplus::write_gmsh41(path, mesh, false, info), meshioplusplus::WriteError);
+    std::remove(path.c_str());
+}
+
 TEST(Gmsh, V22Ascii) {
     rt22(mt::tri_mesh(), false);
     rt22(mt::tet_mesh(), false);
@@ -257,6 +388,74 @@ TEST(Gmsh, V41Ascii) {
 }
 TEST(Gmsh, V41Binary) {
     rt41(mt::hex_mesh(), true);
+}
+
+TEST(Gmsh, V40AsciiAndBinaryThroughTheRegistry) {
+    for (int width : {0, 4, 8}) {
+        const std::string path = gmsh_write_fixture(mt::gmsh40_fixture(width != 0, width));
+        const auto mesh = meshioplusplus::registry_read(path, "gmsh", {});
+        ASSERT_EQ(mesh.NumPoints(), 4u);
+        ASSERT_EQ(mesh.NumCellBlocks(), 3u);
+        EXPECT_EQ(mesh.Cells(0).Type(), "line");
+        EXPECT_EQ(mesh.Cells(1).Type(), "triangle");
+        EXPECT_EQ(mesh.Cells(2).Type(), "line");
+        EXPECT_EQ(mesh.Cells(0).Conn().As<std::int64_t>()[0], 1);
+        EXPECT_EQ(mesh.Cells(0).Conn().As<std::int64_t>()[1], 0);
+        EXPECT_EQ(mesh.Cells(1).Conn().As<std::int64_t>()[5], 3);
+        EXPECT_EQ(mesh.Cells(2).Conn().As<std::int64_t>()[0], 3);
+        EXPECT_EQ(physical_per_block(mesh), (std::vector<std::int64_t>{8, 7, 8}));
+        ASSERT_EQ(mesh.NumRegions(), 2u);
+        EXPECT_EQ(
+            mesh.Region(mesh.FindRegion("edge", meshioplusplus::RegionKind::Cell)).NumEntries(),
+            2u);
+        EXPECT_FALSE(mesh.HasPointData("gmsh:dim_tags"));
+
+        // Native writes remain 2.2 / 4.1; 4.0 input converts to either.
+        const std::string out = mt::temp_path(".msh");
+        meshioplusplus::write_gmsh22(out, mesh, width != 0);
+        mt::expect_mesh_eq(mesh, meshioplusplus::read_gmsh(out));
+        std::remove(out.c_str());
+        std::remove(path.c_str());
+    }
+}
+
+TEST(Gmsh, V40MalformedSectionsAreReadErrors) {
+    const std::string original = mt::gmsh40_fixture(false);
+    const std::vector<std::pair<std::string, std::string>> replacements = {
+        {"4.0 0 8", "4.0 2 8"},
+        {"4.0 0 8", "4.0 0"},
+        {"$EndMeshFormat", "$MissingMeshFormat"},
+        {"2 4\n11 1 0 2", "2 5\n11 1 0 2"},
+        {"2 4\n11 1 0 2", "2 3\n11 1 0 2"},
+        {"3 4\n11 1 1 1", "3 5\n11 1 1 1"},
+        {"3 4\n11 1 1 1", "3 3\n11 1 1 1"},
+        {"30 1 0 0", "10 1 0 0"},
+        {"30 1 0 0", "0 1 0 0"},
+        {"30 1 0 0", "4294967326 1 0 0"},
+        {"90 10 30", "90 10 31"},
+        {"90 10 30", "90 10 -2147483648"},
+        {"11 1 0 2", "11 4 0 2"},
+        {"11 1 0 2", "11 1 1 2"},
+        {"11 1 1 1", "11 1 999 1"},
+        {"$EndNodes", "$MissingNodes"},
+        {"$EndEntities", "$MissingEntities"},
+        {"$EndElements", ""},
+    };
+    for (const auto& [from, to] : replacements) {
+        std::string text = original;
+        text.replace(text.find(from), from.size(), to);
+        const std::string path = gmsh_write_fixture(text);
+        EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError) << from;
+        std::remove(path.c_str());
+    }
+    for (int width : {4, 8}) {
+        const std::string bytes = mt::gmsh40_fixture(true, width);
+        for (const std::string marker : {"$EndEntities", "$EndNodes", "$EndElements"}) {
+            const std::string path = gmsh_write_fixture(bytes.substr(0, bytes.find(marker) - 3));
+            EXPECT_THROW(meshioplusplus::read_gmsh(path), meshioplusplus::ReadError);
+            std::remove(path.c_str());
+        }
+    }
 }
 TEST(Gmsh, SecondOrder) {
     rt22(mt::tet10_mesh(), false);

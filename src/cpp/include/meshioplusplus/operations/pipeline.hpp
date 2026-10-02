@@ -140,6 +140,10 @@ struct PipelineReport {
     std::vector<std::string> mWarnings;
 };
 
+/** Serialize the shared {steps: [{op, ...counters}], warnings: [...]} report.
+ * Non-finite counters become JSON null. Requires the optional JSON support. */
+MESHIOPLUSPLUS_API std::string pipeline_report_json(const PipelineReport& rReport);
+
 /**
  * @brief The step vocabulary itself: op name -> its parameter keys, in table
  * order (aliases like `Section` included).
@@ -150,6 +154,13 @@ struct PipelineReport {
  */
 MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
 pipeline_op_table();
+
+/** Version 2 vocabulary: v1 plus file-backed Merge/Interpolate/UndoGreen,
+ * terminal Split and partition-to-pieces. PipelineOutput::mPath may contain
+ * {key}/{part}; JSON Output.Pattern maps to it without changing installed layouts.
+ * Version 2 spatial fan-out is separate from transient sequence fan-out. */
+MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
+pipeline_v2_op_table();
 
 /**
  * @brief Checks @p rStep against the step vocabulary.

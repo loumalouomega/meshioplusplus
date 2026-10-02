@@ -32,6 +32,39 @@ test_that("a mesh can be built and inspected", {
   expect_equal(mio_cell_data_num_blocks(m, "material"), 1)
 })
 
+test_that("MED named meshes preserve file order and owning handles", {
+  skip_if_not(mio_format_writable("med"))
+  first <- fixture()
+  second <- fixture()
+  path <- tempfile(fileext = ".med")
+  on.exit({ mio_release(first); mio_release(second); unlink(path) })
+  mio_med_write_multi(path, list(first, second), c("z_mesh", "a_mesh"))
+  expect_equal(mio_med_mesh_names(path), c("z_mesh", "a_mesh"))
+  selected <- mio_med_read_named(path, "a_mesh")
+  on.exit(mio_release(selected), add = TRUE)
+  expect_equal(mio_points(selected), mio_points(second))
+  expect_equal(mio_point_data(selected, "temperature"), mio_point_data(second, "temperature"))
+  expect_error(mio_med_read_named(path, "missing"), "no mesh named")
+  expect_error(mio_med_write_multi(path, list(first, second), c("same", "same")))
+  expect_equal(mio_med_mesh_names(path), c("z_mesh", "a_mesh"))
+})
+
+test_that("Gmsh 4.0 reads natively with sparse node tags", {
+  path <- tempfile(fileext = ".msh")
+  on.exit(unlink(path), add = TRUE)
+  writeLines(c(
+    "$MeshFormat", "4.0 0 8", "$EndMeshFormat",
+    "$Nodes", "1 3", "22 2 0 3", "30 1 0 0", "10 0 0 0", "20 0 1 0",
+    "$EndNodes", "$Elements", "1 1", "22 2 2 1", "90 10 30 20", "$EndElements"
+  ), path)
+  m <- mio_read(path, format = "gmsh")
+  on.exit(mio_release(m), add = TRUE)
+  expect_equal(mio_num_points(m), 3)
+  expect_equal(mio_cell_block_type(m, 1), "triangle")
+  expect_equal(as.vector(mio_connectivity(m, 1)), c(2, 1, 3))
+  expect_false("gmsh:dim_tags" %in% mio_point_data_names(m))
+})
+
 test_that("the column-major shape identity holds", {
   m <- fixture()
   on.exit(mio_release(m))
@@ -187,6 +220,23 @@ test_that("selective reads and metadata work", {
   expect_false(meta$cell_block_is_ragged[1])
   expect_true("temperature" %in% meta$point_data_names)
   expect_true(mio_reader_supports_options("vtu"))
+})
+
+test_that("region-backed sets/data conversions preserve labels and geometry", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  mio_add_region(m, "a", "point", c(1, 2))
+  mio_add_region(m, "b", "point", c(2, 3))
+  labels <- mio_sets_to_data(m, "point", order = c("b", "a"))
+  on.exit(mio_release(labels), add = TRUE)
+  expect_equal(as.vector(mio_point_data(labels, "b-a")), c(1, 1, 0, -1, -1))
+  expect_length(mio_regions(labels), 0)
+  expect_equal(mio_points(labels), mio_points(m))
+  restored <- mio_data_to_sets(labels, "point", "b-a")
+  on.exit(mio_release(restored), add = TRUE)
+  expect_length(mio_regions(restored), 3)
+  expect_error(mio_sets_to_data(m, "field"))
+  expect_error(mio_data_to_sets(m, "point", "temperature"))
 })
 
 test_that("regions round-trip in memory", {
@@ -854,12 +904,17 @@ test_that("the settings pipeline runs (or fails naming the flag)", {
       inp, out
     ), settings)
     mio_pipeline_run_file(settings)
+    report <- mio_pipeline_run_file_report(settings)
+    expect_true(grepl('"op":"Quality"', report, fixed = TRUE))
+    expect_true(grepl('"warnings":[]', report, fixed = TRUE))
+    expect_error(mio_pipeline_run_json_report(bad), "Nope")
     back <- mio_read(out)
     expect_true("quality:scaled_jacobian" %in% mio_cell_data_names(back))
     mio_release(back)
     unlink(dir, recursive = TRUE)
   } else {
     expect_error(mio_pipeline_run_json(bad), "MESHIOPLUSPLUS_WITH_JSON")
+    expect_error(mio_pipeline_run_json_report(bad), "MESHIOPLUSPLUS_WITH_JSON")
   }
 })
 
@@ -896,6 +951,10 @@ test_that("a transient XDMF series round-trips", {
   path <- file.path(dir, "series.xdmf")
 
   m <- fixture()
+  mio_add_region(m, "anchors", "point", c(1, 5), dim = 0L, tag = 7)
+  mio_add_region(m, "empty", "cell", integer(0), dim = 3L, tag = 21)
+  mio_add_region(m, "wall", "side", matrix(c(1, 1), nrow = 2), dim = 2L, tag = 9)
+  expected_regions <- mio_regions(m)
   s <- mio_xdmf_series(path, data_format = "XML")
   expect_s3_class(s, "mio_xdmf_series")
   expect_true(mio_xdmf_series_is_open(s))
@@ -932,6 +991,7 @@ test_that("a transient XDMF series round-trips", {
     back <- mio_read(path, time_step = k - 1L)
     expect_equal(mio_num_points(back), 5)
     expect_equal(as.vector(mio_point_data(back, "temperature")), times[k] + seq_len(5))
+    expect_equal(mio_regions(back), expected_regions)
   }
 
   # An unknown data format is an error carrying the C API's own message.
@@ -1378,6 +1438,10 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
     "Begin Nodes", "1 0 0 0", "2 1 0 0", "3 0 1 0", "4 0 0 1", "End Nodes",
     "Begin Elements Element3D4N", "1 0 1 2 3 4", "End Elements",
     "Begin Geometries Triangle3D3", "7 2 3 4", "End Geometries",
+    "Begin SubModelPart Part", "    Begin SubModelPart Inner",
+    "        Begin SubModelPartGeometries", "            7", "        End SubModelPartGeometries",
+    "        Begin SubModelPartConstraints", "            1", "        End SubModelPartConstraints",
+    "    End SubModelPart", "End SubModelPart",
     "Begin Mesh 5", "    Begin MeshNodes", "        4", "    End MeshNodes", "End Mesh",
     "Begin Constraints LinearMasterSlaveConstraint",
     "    1 1 DISPLACEMENT_X 2 DISPLACEMENT_X 1.0 0.0", "End Constraints"
@@ -1394,6 +1458,9 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
   expect_equal(d$tables[[1]]$values, matrix(c(0, 2, 1, 3), nrow = 2))
   expect_equal(d$geometries[[1]]$connectivity, matrix(c(2, 3, 4), nrow = 3))
   expect_equal(d$geometries[[1]]$ids, 7)
+  expect_equal(d$submodelparts[[1]]$name, "Part/Inner")
+  expect_equal(d$submodelparts[[1]]$geometry_ids, 7)
+  expect_equal(d$submodelparts[[1]]$constraint_ids, 1)
   expect_equal(d$mesh_blocks[[1]]$id, 5)
   expect_equal(d$mesh_blocks[[1]]$nodes, 4)
   expect_equal(d$raw_blocks[[1]]$terminator, "End Constraints")
@@ -1402,6 +1469,7 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
   mio_write_with_info(r$mesh, r$info, out)
   r2 <- mio_read_with_info(out)
   expect_equal(mio_mdpa_info(r2$info)$raw_blocks, d$raw_blocks)
+  expect_equal(mio_mdpa_info(r2$info)$submodelparts, d$submodelparts)
   expect_error(mio_write_with_info(r$mesh, r$info, file.path(dir, "out.vtu")))
   mio_release(r2$mesh)
   mio_format_info_release(r2$info)
@@ -1413,4 +1481,60 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
   r3 <- mio_read_with_info(vtu)
   expect_null(r3$info)
   mio_release(r3$mesh)
+})
+test_that("PCD compressed binary is reachable through write options", {
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, matrix(c(1, 2, 3, 4, 5, 6), nrow = 3))
+  path <- tempfile(fileext = ".pcd")
+  on.exit(unlink(path), add = TRUE)
+  mio_write(m, path, codec = "lzf")
+  back <- mio_read(path)
+  on.exit(mio_release(back), add = TRUE)
+  expect_equal(mio_points(back), mio_points(m))
+  expect_error(mio_write(m, path, codec = "lzf", encoding = "ascii"))
+  expect_error(mio_write(m, tempfile(fileext = ".vtu"), codec = "lzf"))
+})
+
+test_that("glTF options colour the exported surface", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  path <- tempfile(fileext = ".gltf")
+  bin <- sub("[.]gltf$", ".bin", path)
+  on.exit(unlink(c(path, bin)), add = TRUE)
+  mio_write_gltf(m, path, color_by = "temperature", cmap = "turbo",
+    up_axis = "x", scale = 0.001, vmin = 1, vmax = 5)
+  expect_true(grepl("COLOR_0", paste(readLines(path, warn = FALSE), collapse = "")))
+  expect_true(file.exists(bin))
+  expect_error(mio_write_gltf(m, path, scale = -1))
+  expect_error(mio_write_gltf(m, path, component = 0, color_by = "temperature"))
+})
+
+test_that("Exodus series own their grid and expose an idempotent lifecycle", {
+  path <- tempfile(fileext = ".e")
+  if (!mio_format_writable("exodus")) {
+    expect_error(mio_exodus_series(path), "MESHIOPLUSPLUS_WITH_NETCDF")
+  } else {
+    m <- fixture()
+    s <- mio_exodus_series(path)
+    on.exit({ mio_exodus_series_release(s); mio_release(m); unlink(path) })
+    expect_equal(mio_exodus_series_num_steps(s), 0)
+    expect_error(mio_exodus_series_write_data(s, 0, m), "write_points_cells")
+    mio_exodus_series_write_points_cells(s, m)
+    mio_exodus_series_write_data(s, 0.123456789012345, m)
+    mio_exodus_series_write_data(s, 1.5, m)
+    expect_equal(mio_exodus_series_num_steps(s), 2)
+    mio_exodus_series_flush(s)
+    mio_exodus_series_finalize(s)
+    mio_exodus_series_finalize(s)
+    expect_true(mio_exodus_series_finalized(s))
+    expect_error(mio_exodus_series_write_data(s, 2, m), "open series")
+    back <- mio_read(path, time_step = -1L)
+    on.exit(mio_release(back), add = TRUE)
+    expect_equal(as.vector(mio_point_data(back, "temperature")), TEMPERATURE)
+    mio_exodus_series_release(s)
+    mio_exodus_series_release(s)
+    expect_false(mio_exodus_series_is_open(s))
+    expect_error(mio_exodus_series_num_steps(s), "released")
+  }
 })

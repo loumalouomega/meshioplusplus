@@ -102,7 +102,7 @@ struct XdmfDoc {
  *
  * @param rDoc The parsed document.
  * @return The resolved grids.
- * @throws ReadError if the document is not an XDMF 3 document with a `<Grid>`,
+ * @throws ReadError if the document is not an XDMF 2/3 document with a `<Grid>`,
  *         or if a temporal collection carries no mesh grid at all.
  */
 inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
@@ -110,8 +110,8 @@ inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
     if (!root)
         throw ReadError("XDMF: missing <Xdmf> root");
     std::string version = root.attribute("Version").value();
-    if (!version.empty() && version[0] != '3')
-        throw ReadError("XDMF: only version 3 handled by the C++ core");
+    if (!version.empty() && version[0] != '2' && version[0] != '3')
+        throw ReadError("XDMF: unsupported version '" + version + "'");
 
     pugi::xml_node domain = root.child("Domain");
     pugi::xml_node first, uniform, collection;

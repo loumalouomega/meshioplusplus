@@ -1386,6 +1386,43 @@ def test_med_multi_field_collision_disambiguated(tmp_path):
     ), "No @ suffix must appear in point_data keys after read"
 
 
+def test_med_multi_reference_multiblock_field_shares_one_step(tmp_path):
+    """Every block of one field step lands in the same step group.
+
+    Regression (Windows, HDF5-less builds): the reference multi-writer used
+    to open one step per block, which the reader expanded with None for the
+    absent blocks -- writing the result to VTU then crashed on None.astype.
+    Uses the reference path directly so it also runs where the native core
+    would otherwise hide it.
+    """
+    from meshioplusplus._mesh import CellBlock, Mesh
+    from meshioplusplus.med._medmulti import read_med_multi as reference_read
+    from meshioplusplus.med._medmulti import write_med_multi as reference_write
+
+    mesh = Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        [
+            CellBlock("triangle", np.array([[0, 1, 2]])),
+            CellBlock("tetra", np.array([[0, 1, 2, 3]])),
+        ],
+        cell_data={"c": [np.array([1.0]), np.array([2.0])]},
+    )
+    path = tmp_path / "multiblock.med"
+    reference_write(path, [mesh, mesh], ["a", "b"])
+    with h5py.File(path, "r") as f:
+        steps = list(f["CHA"]["c@a"].keys())
+        assert len(steps) == 1, f"one field step must stay one group, got {steps}"
+        supports = sorted(f["CHA"]["c@a"][steps[0]].keys())
+        assert supports == ["MAI.TE4", "MAI.TR3"], supports
+    meshes, names = reference_read(path)
+    assert names == ["a", "b"]
+    for back in meshes:
+        assert all(
+            block is not None for block in back.cell_data["c"]
+        ), "every block of the step must carry data, never None"
+        np.testing.assert_array_equal(np.concatenate(back.cell_data["c"]), [1.0, 2.0])
+
+
 def test_med_multi_no_field_collision(tmp_path):
     """
     When two meshes have different field names, no @ suffix must be used.

@@ -18,7 +18,7 @@
 
 /**
  * @file gmsh.hpp
- * @brief Gmsh mesh format (.msh, versions 2.2 and 4.1) C++ reader/writer.
+ * @brief Gmsh mesh format (.msh) C++ reader (2.2/4.0/4.1) and writer (2.2/4.1).
  *
  * `$MeshFormat` (`version filetype datasize`; `filetype` 0=ascii, 1=binary,
  * with a 4-byte endianness-detection integer `1` for binary) is read first
@@ -62,6 +62,7 @@
  */
 
 // System includes
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -73,13 +74,24 @@
 
 namespace meshioplusplus {
 
+/** Periodic entity (dimension, slave tag, master tag), optional affine
+ * coefficients, and owning Int64 (N,2) slave/master point indices (0-based).
+ * Pair ordering/duplicates survive I/O. Mesh operations do not remap this
+ * format side channel; entity tags remain raw file ids.
+ */
+struct MESHIOPLUSPLUS_API GmshPeriodicLink {
+    std::array<std::int32_t, 3> mEntityTags{};
+    std::vector<double> mAffine;
+    NDArray mNodePairs{DType::Int64, {0, 2}};
+};
+
 /**
  * @brief Gmsh data that has no place on a `Mesh` (the `MedInfo`/`ExodusInfo`
  *        side-channel pattern).
  *
  * A reader overload fills one, a writer overload consumes one, and the shared
- * registry -- and therefore every flat binding (WASM, C API, Fortran, Julia,
- * R) -- passes none: a documented gap, not a silent loss.
+ * registry passes none and refuses `$Periodic`. Python, WASM and the C API's
+ * read/write-with-info paths (also Fortran/Julia/R) carry it explicitly.
  */
 struct MESHIOPLUSPLUS_API GmshInfo {
     /**
@@ -96,6 +108,8 @@ struct MESHIOPLUSPLUS_API GmshInfo {
      * with no `$Entities` section at all.
      */
     std::vector<std::vector<std::int32_t>> mBoundingEntities;
+    /** Periodic links in file order, with node tags resolved to point rows. */
+    std::vector<GmshPeriodicLink> mPeriodic;
 };
 
 /**
@@ -114,10 +128,13 @@ struct MESHIOPLUSPLUS_API GmshInfo {
  * @throws WriteError if a cell block's type has no Gmsh type-code mapping
  * @note reads/writes `cell_data["gmsh:physical"]`/`cell_data["gmsh:geometrical"]`
  *       and `field_data` (as `$PhysicalNames`)
- * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
- *       `mesh.gmsh_periodic` is unset
+ * @note the shim attempts the info-bearing C++ path when `float_fmt == ".16e"`
  */
 MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary);
+
+/** Write 2.2 including periodic links from the format side channel. */
+MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                     const GmshInfo& rInfo);
 
 /**
  * @brief Write `mesh` to `path` as a Gmsh 4.1 .msh file (ascii or binary).
@@ -140,47 +157,51 @@ MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh
  * @throws WriteError if a cell block's type has no Gmsh type-code mapping, an
  *         entity dimension is outside 0..3, or two cell blocks claim the same
  *         `(dim, entity tag)` — that entity would have no single physical tag
- * @note this overload writes no bounding entities; use the @ref GmshInfo
- *       overload to carry them
- * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
- *       the mesh has no `gmsh_periodic`
+ * @note this overload writes no bounding entities or periodic links; use the
+ *       @ref GmshInfo overload to carry them
+ * @note the shim attempts the info-bearing C++ path when `float_fmt == ".16e"`
  */
 MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Write a Gmsh 4.1 .msh file, including the `$Entities` bounding
- *        entities.
+ *        entities and `$Periodic` links.
  *
  * Identical to @ref write_gmsh41(const std::string&, const Mesh&, bool) except
  * that each entity's bounding-entity list is taken from
  * `rInfo.mBoundingEntities` (indexed by cell block). Entries beyond the block
- * count, and dimension-0 entities, are ignored.
+ * count, and dimension-0 entities, are ignored. Periodic point rows are written
+ * as this writer's sequential node tags; invalid dimensions/tags, affine
+ * lengths/values and out-of-range rows throw WriteError before opening the file.
  */
 MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary,
                                      const GmshInfo& rInfo);
 
 /**
- * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
+ * @brief Read a Gmsh .msh file (versions 2.2, 4.0 and 4.1).
  *
  * Dispatches on the `$MeshFormat` version string; parses `$PhysicalNames`,
  * `$Nodes`, `$Elements` (applying the gmsh <-> meshio++ node-order
- * permutation where needed), and, for 4.1, `$Entities`/per-entity node and
+ * permutation where needed), and, for 4.0/4.1, `$Entities`/per-entity node and
  * element blocks with node-tag->index remapping.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["gmsh:physical"]`/
  *         `cell_data["gmsh:geometrical"]` (2.2: the first two element tags;
- *         4.1: the block's entity tag and its `$Entities` physical tag, the
+ *         4.0/4.1: the block's entity tag and its `$Entities` physical tag, the
  *         latter present only when the file tags any entity at all, and 0 for
  *         the untagged blocks), `point_data["gmsh:dim_tags"]` (v4.1 only),
  *         `field_data` from `$PhysicalNames`, and one `Cell` region per named
  *         physical group
  * @throws ReadError for anything not handled by the C++ path — version not
- *         2.2/4.1 (4.0's `$Entities` layout differs), `$Periodic` records,
+ *         2.2/4.0/4.1, `$Periodic` records,
  *         a Gmsh element type outside the curated type-code subset, or
  *         parametric nodes — so the Python reader can take over
- * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
- *       Python fallback does, for files containing `$Periodic`
+ * @note `$Periodic` requires the GmshInfo overload rather than being discarded.
+ *       Python's native binding uses it to populate `mesh.gmsh_periodic`.
+ * @note 4.0 binary unsigned-long counts may be 4 or 8 bytes; their width
+ *       is inferred by validating the section structure. Byte-swapped 4.0
+ *       files are refused, matching the Python reference.
  * @note this overload discards the `$Entities` bounding-entity tags; use the
  *       @ref GmshInfo overload to keep them
  */
@@ -190,11 +211,14 @@ MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, const ReadOptions& r
  * @brief Read a Gmsh .msh file, keeping the data that has no place on a `Mesh`.
  *
  * Identical to @ref read_gmsh(const std::string&, const ReadOptions&) except
- * that `rInfo` receives the format 4.1 `$Entities` bounding-entity tags.
+ * that `rInfo` receives the format 4.1 `$Entities` bounding-entity tags and
+ * `$Periodic` links in all three versions, with sparse node tags resolved to
+ * 0-based point rows. A section may precede `$Nodes`. Invalid counts/tags,
+ * non-finite or non-16-length affine transforms, missing node references and
+ * missing section terminators throw ReadError.
  *
  * @param rPath filesystem path to read
- * @param rInfo receives the side-channel data (cleared of nothing — append-only
- *        into whatever the caller passes)
+ * @param rInfo replaced on success; unchanged if the read fails
  * @param rOpts selective-read options
  * @return the read Mesh
  */
@@ -216,6 +240,7 @@ MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo,
  * @throws ReadError for format 2.2, `$Entities`/`$Periodic`, or an unsupported
  *         element type -- exactly what `read_gmsh` rejects
  */
-MESHIOPLUSPLUS_API MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_gmsh_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

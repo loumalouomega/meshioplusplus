@@ -45,6 +45,12 @@ _RAW_ONLY = {
     "sequenceTimeSource",
     "sequenceRead",
     "sequenceFree",
+    # One generic action entry point behind the
+    # `createExodusTimeSeriesWriter` wrapper: Emscripten's embind cannot bind
+    # an overloaded or enum-dispatched call cleanly here, so the action name is
+    # a runtime argument. Same reason `gidWriteSeries` takes a provider.
+    "exodusSeriesCreate",
+    "exodusSeriesAction",
 }
 
 # Wrapper keys with no `mio_*` counterpart, and why.
@@ -59,6 +65,8 @@ _JS_ONLY = {
     "convertSurface": "WASM/browser rendering convenience, no C entry point",
     "convertSurfaceOps": "WASM/browser rendering convenience, no C entry point",
     "createXdmfTimeSeriesWriter": "composes mio_xdmf_series_* (see _RAW_ONLY)",
+    "createExodusTimeSeriesWriter": "composes mio_exodus_series_* (see _RAW_ONLY)",
+    "medMeshNames": "bulk listing over mio_med_mesh_count/mio_med_mesh_name",
     "readProvenance": "shaped differently on C: mio_read_metadata_provenance_*",
     "sequenceEntries": "bulk listing convenience; C's sequence API is the stateful open/count/path/... handle",
     "openSequence": "composes mio_sequence_* (see _RAW_ONLY)",
@@ -78,6 +86,8 @@ _JS_TO_C = {
     "provenanceEnd": "provenance_scope_end",
     "runPipeline": "pipeline_run_json",
     "resampleSequence": "sequence_resample",
+    "readMedNamed": "med_read_named",
+    "writeMedMulti": "med_write_multi",
 }
 
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no

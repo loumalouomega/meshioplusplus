@@ -1,5 +1,23 @@
 # C API
 
+## Exodus series and pipeline Version 2
+
+`mio_exodus_series_create(path)` returns an owning handle or NULL; `mio_exodus_series_write_points_cells(series, mesh)` fixes geometry, node/side sets and attributes, then `mio_exodus_series_write_data(series, time, mesh)` appends a stable point/cell field schema. Flush/finalize return status and are idempotent; `num_steps` returns -1 on error, `finalized` returns 0/1 or -1, and `free` is NULL-safe. No option layout changed. Without netCDF the constructor names the missing dependency through `mio_last_error`. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+The existing `mio_pipeline_run_*` and report counterparts accept [Version 2 spatial documents](./pipeline.md#version-2-spatial-multi-mesh-steps): per-step `Inputs` and terminal `Output.Pattern`. Their signatures and ownership rules are unchanged. Sequence entry points still require transient Version 1 documents; spatial branches and time fan-out are not implicitly combined.
+
+## Pipeline reports
+
+Pipeline reports are available through new owning `mio_pipeline_run_*_report` and `mio_sequence_pipeline_run_*_report` handles. Read JSON with caller-buffer `mio_pipeline_report_json` (length excludes NUL; -1 on error), then free with `mio_pipeline_report_free`. Size queries and repeated reads do not rerun the pipeline. Existing status-only functions remain unchanged. See [structured pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+With HDF5 enabled, `mio_med_mesh_count(path)` and `mio_med_mesh_name(path, index, buf, buflen)` enumerate meshes in file link order without materializing geometry (zero-based index; string accessor rule 5). `mio_med_read_named(path, name, opts)` returns an owning `mio_mesh*`, freed with `mio_mesh_free`. `mio_med_write_multi(path, meshes, names, count, version)` borrows mesh/name arrays for the call; names must be unique/nonempty with no `/` or `@`, and NULL version selects `4.1.0`. Named nodal/element profiles expand with NaN fill. Count/name return -1, reads return NULL and writes return an error status on failure; `mio_last_error()` explains it, including builds without HDF5. Existing option structs are unchanged. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
+The existing XDMF series `mio_xdmf_series_write_points_cells` call persists the mesh's fixed point/cell/side regions once with the shared topology. All steps, including raw-array and appended steps, reuse them; no ABI additions are needed. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
+Native serial VTK XML reads (`vtu`, `vtp`, `vts`, `vtr`, `vti`) support multiple pieces without welding, appended raw/base64 arrays, UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI write inline arrays; codec availability follows the configured native build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary. No new ABI options are required. See [formats](formats.md).
+
 The C++ core also ships as an installable shared library, `libmeshioplusplus`, with a stable pure-C99 header — the natural entry point for HPC codes written in C (and the foundation of the [Fortran interface](/fortran)). Like the [WebAssembly binding](/wasm), it is a flat, whole-mesh API over the same C++ core, built exclusively on the uniform mesh API, so it works identically under every [mesh backend](/cpp_backends).
 
 ## Building and installing
@@ -134,11 +152,17 @@ The interface/contact API adds `mio_region_adjacency`, `mio_find_interface`, `mi
 
 ## Format support
 
+`mio_read(path, "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 files natively; 4.0 supports ASCII and binary with 4- or 8-byte producer counts. Periodic files require `mio_read_with_info` / `mio_write_with_info`, supporting output 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` instead of discarding it. 4.0 and periodic metadata summaries fall back to a full read. See [Gmsh](formats/gmsh.md).
+
+MDPA side-channel membership: `mio_mdpa_info_array(info, MIO_MDPA_SUBMODELPARTS, index, field, ...)` exposes table ids at field 0, geometry ids at field 1 and constraint ids at field 2. These borrowed Int64 lists retain raw file ids, order and duplicates; `mio_write_with_info` restores them in nested parts. They are not remapped by mesh operations, and constraints remain opaque. The C ABI signatures and existing fields are unchanged; the underlying C++ layout uses ABI 21.
+
 `mio_write` writes OpenRadioss starter decks (`radioss`, `.rad`) and MSC Marc decks (`marc`, by name) since v16.17.0; `radioss`'s placeholder materials and properties (`stubs`) are Python and C++ only.
 
 `mio_write_ex` takes a `mio_write_opts*` whose `encoding` is `MIO_ENCODING_DEFAULT`, `_ASCII`, `_BINARY` or, since v16.21.0, `MIO_ENCODING_RAW_APPENDED` (`vtu` only: raw binary arrays in one `<AppendedData>` section; any other format fails by name).
 
-`mio_write` reaches the write-only `gltf` format (`.glb` binary, `.gltf` plus `.bin`) with its default options, like `svg` and `tikz`; the colour, split-angle and up-axis options are Python, C++, CLI and MCP only.
+`mio_write` reaches the write-only `gltf` format (`.glb` binary, `.gltf` plus `.bin`) with default options. For parameterized export, initialize `mio_gltf_opts` with `mio_gltf_opts_init` and call `mio_write_gltf(path, mesh, &opts)`: colour field/colormap/range, split angle, axis, scale and all native flags are available. Components are 0-based; `component_set`, `vmin_set` and `vmax_set` control optional values. String pointers are borrowed only for the call; `NULL` opts selects defaults. The new struct has its own reserved tail and leaves `mio_write_opts` unchanged.
+
+PCD compressed binary uses `mio_write_opts.codec = MIO_CODEC_LZF` with `mio_write_ex`; it needs no optional library and rejects ASCII or non-PCD output. Native XDMF reads accept XDMF2/3 and absolute DataItem references; Netgen reads/writes carry names and periodic arrays (in native `field_data`) and support `.vol.gz` with zlib. See [XDMF](formats/xdmf.md), [Netgen](formats/netgen.md) and [PCD](formats/pcd.md).
 
 All formats with a C++ implementation are available — the same set as the [WASM binding](/wasm#format-support) **plus**, when the build found the dependencies, the HDF5-backed formats (`cgns`, `h5m`, `hmf`, `med`, `vtkhdf`, XDMF's HDF heavy-data path) and the netCDF-backed `exodus`. Two read-only formats need a library that is never on by default (v16.13.0): `vtx` (DOLFINx's ADIOS2 `.bp` directories) with `-DMESHIOPLUSPLUS_WITH_ADIOS2=ON`, and `szplt` (Tecplot SZL) with `-DMESHIOPLUSPLUS_WITH_TECIO=ON` and a TecIO you supply; without them `mio_read` names the missing library, as for HDF5. This includes the write-only visualization formats `svg` and `tikz` (writable, not readable; emitted with the fixed default styling — 3D meshes render their projected boundary skin with the default isometric camera). Probe at runtime with `mio_format_readable()`/`mio_format_writable()`; requesting a compiled-out format fails with a message naming the missing dependency. Formats that only exist in Python (`neuroglancer`, …) are not reachable from C. `mdpa` **is** reachable (since v9.0.0), but only its mesh-level blocks — the C++ reader declines an MDPA file using `Tables`/`Geometries`/`Mesh` blocks or non-empty `Properties`/`ModelPartData` metadata, naming the construct, since the C++ `Mesh` cannot carry them; see [MDPA](/formats/mdpa#c-core).
 
@@ -172,7 +196,9 @@ meshioplusplus diff a.vtu b.vtu          # nonzero exit if different
 meshioplusplus merge a.vtu b.vtu out.vtu
 ```
 
-Format dispatch reuses the shared registry (with a content-sniff fallback on read); ASCII/binary/compress variants call the per-format writers directly. Because it links only the C++ core it inherits this C API's remaining flat-surface limitation: the `convert -s/-d` sets↔data conversions are unavailable (they live only in the Python `Mesh`). Named **sets** are no longer on that list — since v8.1.0 they are [regions](./regions.md) in the core, so `info` prints point/cell/side sets and `diff` compares them. There is also no Python fallback, so a file whose C++ reader raises is not readable by the native CLI — use the Python CLI for those. (Gmsh 4.1's `$Entities` used to be the headline example; since v9.7.0 the C++ reader handles it, and `$Periodic` is what remains.) It works under any [mesh backend](/cpp_backends) and any optional-dependency configuration; verbs that touch a compiled-out HDF5/netCDF format report the missing dependency by name.
+Format dispatch reuses the shared registry (with a content-sniff fallback on read); ASCII/binary/compress variants call the per-format writers directly. Named sets are [regions](./regions.md) in the core: `info` prints point/cell/side sets, `diff` compares them, and single-mesh `convert -s/-d` now converts point/cell membership to/from scalar integer data. There is no Python fallback, so a file whose C++ reader raises is not readable by the native CLI. It works under any [mesh backend](/cpp_backends) and any optional-dependency configuration; verbs that touch a compiled-out HDF5/netCDF format report the missing dependency by name.
+
+`mio_sets_to_data(mesh, location, data_name, join_char, order, count)` returns a new mesh with labels and removes the converted regions. `NULL` names join set names with `join_char` (`NULL` means `-`); `count=0` chooses native region-name order, otherwise the list must name every set once. `mio_data_to_sets(mesh, location, key)` converts a scalar integer field into regions and removes the field. Only `MIO_DATA_POINT` / `MIO_DATA_CELL` are accepted; errors return `NULL` with `mio_last_error()`. Free results with `mio_mesh_free`. See [sets/data semantics](data_manage.md#sets--integer-data).
 
 ## Limitations (v1)
 
@@ -217,6 +243,8 @@ A `NULL` `opts.arrays` means *every* array; a non-`NULL` pointer with `num_array
 Conan gains `with_zstd` / `with_lz4` and vcpkg gains `zstd` / `lz4` features, both **off by default** (unlike `with_hdf5`/`with_netcdf`/`with_zlib`). zlib remains the default codec, so existing package IDs and consumers are unaffected. See [Compression codecs](codecs.md).
 
 ## v9.1.0 additions
+
+**Gmsh metadata.** `mio_read_with_info` returns a `"gmsh"` handle containing 4.1 bounding-entity tags and 2.2/4.0/4.1 periodic links. `mio_gmsh_info_count(info, section)` accepts `MIO_GMSH_BOUNDING_ENTITIES` (per cell block) and `MIO_GMSH_PERIODIC` (per link); `mio_gmsh_info_array(info, section, index, field, ...)` borrows from the handle until it is freed. Bounding field 0 is Int32 signed entity tags. Periodic fields are 0 = Int32 `[dimension, slave entity tag, master entity tag]`, 1 = Float64 affine coefficients (0 or 16), 2 = Int64 `(N, 2)` slave/master **0-based point rows**. Entity tags stay file ids; ordering and duplicates survive I/O. The handle outlives its mesh, but operations do not remap the rows; rebuild the info after point/topology changes. `mio_write_with_info` accepts `gmsh` or `gmsh22` for a Gmsh handle, writing binary with the usual defaults. Existing C signatures and option-struct layouts are unchanged.
 
 - `mio_read_opts.lenient` — downgrade "this reader cannot represent construct X" to a warning plus a skip (currently mdpa, and vtkhdf's poly-vertex/poly-line/strip cells). It took a second former `reserved` slot, so `sizeof(mio_read_opts)` and every preceding offset are unchanged. See [`doc/selective_read.md`](selective_read.md).
 - `mio_read_opts.piece` / `mio_read_opts.piece_set` — keep one piece of a partitioned file (VTKHDF partitions or composite blocks): `piece` is 0 for the first and negative from the end, and is honoured only when `piece_set` is nonzero (zero — including a hand-zeroed struct — merges every piece into one mesh with one cell region per piece). Out of range fails the call naming the piece count. They took the third and fourth former `reserved` slots (`reserved[4]` → `reserved[2]`), so `sizeof(mio_read_opts)` and every preceding offset are unchanged. See [`doc/selective_read.md`](selective_read.md#picking-a-piece).

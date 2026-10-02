@@ -574,7 +574,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": False,
-        "regions": ["cell", "point"],
+        "regions": ["cell", "point", "side"],
     },
     "febio": {
         "cells": {
@@ -961,8 +961,9 @@ SPEC: dict[str, dict] = {
         "points": "exact",
         "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
-        "field_data": False,
+        "field_data": True,
         "regions": [],
+        "note": "Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.",
     },
     "neuroglancer": {
         "cells": {"triangle": "exact"},

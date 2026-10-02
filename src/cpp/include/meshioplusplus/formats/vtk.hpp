@@ -18,13 +18,13 @@
 
 /**
  * @file vtk.hpp
- * @brief Legacy VTK (.vtk) `UNSTRUCTURED_GRID` C++ reader/writer, versions
+ * @brief Legacy VTK (.vtk) C++ reader/writer, versions
  *        4.2 and 5.1, ascii and binary.
  *
- * Only `DATASET UNSTRUCTURED_GRID` is handled by the C++ core; any other
- * dataset type (`STRUCTURED_POINTS`, `STRUCTURED_GRID`, `RECTILINEAR_GRID`)
- * always falls back to Python, which converts those into unstructured
- * line/quad/hex cells in Fortran (column-major) order. Binary numeric data
+ * The core reads `UNSTRUCTURED_GRID`, `STRUCTURED_POINTS`, `STRUCTURED_GRID`
+ * and `RECTILINEAR_GRID`; writers emit `UNSTRUCTURED_GRID`. Structured
+ * geometry becomes vertex/line/quad/hex cells in x-fastest (Fortran) order,
+ * with scalar/vector/tensor/field arrays retained. Binary numeric data
  * is **always big-endian on disk** regardless of host platform — an
  * explicit VTK-wiki convention, not a meshio++ choice — so binary I/O
  * byte-swaps through `detail/byteswap.hpp` intrinsics whenever the host is
@@ -87,7 +87,8 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `SCALARS`/`VECTORS`/
  *       `TENSORS`/`FIELD` blocks; no reserved key names.
  */
-MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51);
+MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                  bool v51);
 
 /**
  * @brief Read a VTK legacy file.
@@ -101,9 +102,8 @@ MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, b
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if `DATASET` is anything other than
- *         `UNSTRUCTURED_GRID` (structured points/grid, rectilinear grid all
- *         fall back to Python), on a truncated binary section, an ascii
+ * @throws ReadError on an unsupported dataset, invalid structured dimensions
+ *         or mismatched point/axis/attribute counts, a truncated binary section, an ascii
  *         parse failure, an unknown VTK data-type token, or an unrecognized
  *         section keyword
  * @note point_data/cell_data map generically from `SCALARS`/`VECTORS`/

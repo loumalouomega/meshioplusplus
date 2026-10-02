@@ -50,7 +50,102 @@ program test_fortran_api
     call check(mio_format_writable('openfoam'), 'openfoam is writable since v9.20.0')
     call check(.not. mio_format_readable('nonexistent'), 'unknown format is not readable')
 
+    block
+        type(mio_mesh) :: cloud, back
+        real(real64) :: xyz(3, 2)
+        xyz(:, 1) = [1.0_real64, 2.0_real64, 3.0_real64]
+        xyz(:, 2) = [4.0_real64, 5.0_real64, 6.0_real64]
+        call cloud%create()
+        call cloud%set_points(xyz)
+        call cloud%write(prefix//'_lzf.pcd', codec='lzf', stat=ierr)
+        call check(ierr == 0, 'PCD LZF write')
+        call back%read(prefix//'_lzf.pcd', stat=ierr)
+        call check(ierr == 0, 'PCD LZF read')
+        call check(back%num_points() == 2, 'PCD LZF point count')
+        call cloud%write(prefix//'_bad_lzf.pcd', encoding='ascii', codec='lzf', stat=ierr)
+        call check(ierr /= 0, 'PCD LZF rejects ASCII')
+        call cloud%free()
+        call back%free()
+    end block
+
+    ! ---- native Gmsh 4.0 read, with sparse/out-of-order node tags --------
+    block
+        type(mio_mesh) :: legacy
+        integer :: unit
+        integer(int64), allocatable :: ids(:, :)
+        character(:), allocatable :: legacy_path
+
+        legacy_path = prefix//'_legacy40.msh'
+        open (newunit=unit, file=legacy_path, status='replace')
+        write (unit, '(a)') '$MeshFormat', '4.0 0 8', '$EndMeshFormat', &
+            '$Nodes', '1 3', '22 2 0 3', '30 1 0 0', '10 0 0 0', '20 0 1 0', &
+            '$EndNodes', '$Elements', '1 1', '22 2 2 1', '90 10 30 20', '$EndElements'
+        close (unit)
+        call legacy%read(legacy_path, 'gmsh', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'Gmsh 4.0 native read succeeds')
+        if (ierr == 0) then
+            call check(legacy%num_points() == 3_int64, 'Gmsh 4.0 node count')
+            call legacy%get_cell_block(1, ids)
+            call check(all(ids(:, 1) == [2_int64, 1_int64, 3_int64]), 'Gmsh 4.0 remap is 1-based')
+        end if
+        call legacy%free()
+        open (newunit=unit, file=legacy_path, status='old')
+        close (unit, status='delete')
+    end block
+
     ! ---- build a small tet mesh from arrays ----------------------------
+    block
+        type(mio_mesh) :: periodic_mesh, back
+        type(mio_format_info) :: info, back_info
+        integer :: unit, target
+        integer(int64), allocatable :: pairs(:, :)
+        real(real64), allocatable :: affine(:)
+        character(:), allocatable :: input_path, output_path
+
+        input_path = prefix//'_periodic.msh'
+        output_path = prefix//'_periodic_out.msh'
+        open (newunit=unit, file=input_path, status='replace')
+        write (unit, '(a)') '$MeshFormat', '4.0 0 8', '$EndMeshFormat', &
+            '$Nodes', '1 3', '22 2 0 3', '30 1 0 0', '10 0 0 0', '20 0 1 0', &
+            '$EndNodes', '$Elements', '1 1', '22 2 2 1', '90 10 30 20', '$EndElements', &
+            '$Periodic', '1', '1 12 33', '3', '30 10', '20 10', '30 10', '$EndPeriodic'
+        close (unit)
+        call periodic_mesh%read(input_path, 'gmsh', stat=ierr)
+        call check(ierr /= 0, 'periodic info-less read refuses to lose pairs')
+        call periodic_mesh%read_with_info(input_path, info, 'gmsh', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'periodic read_with_info succeeds')
+        if (ierr == 0) then
+            call check(info%format() == 'gmsh', 'periodic format name')
+            call check(info%gmsh_count(MIO_GMSH_PERIODIC) == 1, 'periodic link count')
+            call check(all(info%gmsh_tags(MIO_GMSH_PERIODIC, 1) == [1, 12, 33]), 'periodic raw tags')
+            affine = info%gmsh_affine(1)
+            call check(size(affine) == 0, 'periodic absent affine')
+            pairs = info%gmsh_pairs(1)
+            call check(all(shape(pairs) == [2, 3]), 'periodic pair shape')
+            call check(all(pairs == reshape([1_int64, 2_int64, 3_int64, 2_int64, &
+                                             1_int64, 2_int64], [2, 3])), 'periodic 1-based rows')
+            do target = 1, 2
+                if (target == 1) then
+                    call periodic_mesh%write_with_info(output_path, info, 'gmsh', stat=ierr)
+                else
+                    call periodic_mesh%write_with_info(output_path, info, 'gmsh22', stat=ierr)
+                end if
+                call check(ierr == 0, 'periodic write_with_info succeeds')
+                call back%read_with_info(output_path, back_info, 'gmsh', stat=ierr)
+                call check(ierr == 0, 'periodic reread succeeds')
+                call check(all(back_info%gmsh_pairs(1) == pairs), 'periodic pairs round trip')
+                call back%free()
+                call back_info%free()
+            end do
+            open (newunit=unit, file=output_path, status='old')
+            close (unit, status='delete')
+        end if
+        call periodic_mesh%free()
+        call info%free()
+        open (newunit=unit, file=input_path, status='old')
+        close (unit, status='delete')
+    end block
+
     points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
                       1.1_real64, 0.2_real64, 0.3_real64, &
                       0.4_real64, 1.2_real64, 0.5_real64, &
@@ -65,6 +160,17 @@ program test_fortran_api
     end do
 
     call m%set_points(points)
+
+    block
+        type(mio_gltf_options) :: opts
+        opts%up_axis = 3
+        opts%scale = 0.001_real64
+        call m%write_gltf(prefix//'_options.glb', options=opts, stat=ierr)
+        call check(ierr == 0, 'glTF parameterized point cloud')
+        opts%scale = -1
+        call m%write_gltf(prefix//'_bad_options.glb', options=opts, stat=ierr)
+        call check(ierr /= 0, 'glTF rejects invalid scale')
+    end block
     call m%add_cell_block('tetra', conn)
     call m%add_point_data('temperature', [1.0_real64, 2.0_real64, 3.0_real64, 4.0_real64, &
                                           5.0_real64])
@@ -252,6 +358,69 @@ program test_fortran_api
     call check(len(msg) > 0, 'unknown explicit format sets errmsg')
 
     ! ---- data operations -----------------------------------------------
+    block
+        type(mio_exodus_series) :: exodus
+        call exodus%create(prefix//'_series.e', stat=ierr, errmsg=msg)
+        if (mio_format_writable('exodus')) then
+            call check(ierr == 0, 'Exodus series create')
+            call exodus%write_points_cells(m, stat=ierr)
+            call check(ierr == 0, 'Exodus series fixed grid')
+            call exodus%write_data(0.25_real64, m, stat=ierr)
+            call check(ierr == 0, 'Exodus series first step')
+            call exodus%write_data(1.25_real64, m, stat=ierr)
+            call check(ierr == 0, 'Exodus series second step')
+            call check(exodus%num_steps() == 2_int64, 'Exodus series step count')
+            call exodus%flush(stat=ierr)
+            call check(ierr == 0, 'Exodus series flush')
+            call exodus%finalize(stat=ierr)
+            call check(ierr == 0 .and. exodus%finalized(), 'Exodus series finalize')
+            call exodus%finalize(stat=ierr)
+            call check(ierr == 0, 'Exodus series finalize idempotent')
+        else
+            call check(ierr /= 0, 'Exodus series missing dependency errors')
+            call check(index(msg, 'MESHIOPLUSPLUS_WITH_NETCDF') > 0, 'Exodus series dependency name')
+        end if
+        call exodus%free()
+        call exodus%free()
+        call check(.not. exodus%is_valid(), 'Exodus series released')
+    end block
+    if (mio_format_writable('med')) then
+        block
+            type(mio_mesh) :: named
+            character(:), allocatable :: names(:)
+            call mio_med_write_multi(prefix//'_multi.med', [m, m], ['z_mesh', 'a_mesh'], stat=ierr)
+            call check(ierr == 0, 'MED multi-mesh write')
+            call mio_med_mesh_names(prefix//'_multi.med', names, stat=ierr)
+            call check(ierr == 0, 'MED enumerate names')
+            if (ierr == 0) then
+                call check(size(names) == 2, 'MED mesh count')
+                call check(names(1) == 'z_mesh' .and. names(2) == 'a_mesh', 'MED link order')
+            end if
+            call mio_med_read_named(prefix//'_multi.med', 'a_mesh', named, stat=ierr)
+            call check(ierr == 0, 'MED named read')
+            if (ierr == 0) call check(named%num_points() == m%num_points(), 'MED named geometry')
+            call mio_med_read_named(prefix//'_multi.med', 'missing', named, stat=ierr)
+            call check(ierr /= 0, 'MED missing name error')
+            call check(named%is_valid(), 'MED failed named read preserves previous mesh')
+            call named%free()
+        end block
+    end if
+
+    block
+        type(mio_mesh) :: source, labels, restored
+        source = m%data_keep(MIO_DATA_POINT, ['temperature'], stat=ierr)
+        call source%add_region('a', MIO_REGION_POINT, [1_int64, 2_int64])
+        call source%add_region('b', MIO_REGION_POINT, [2_int64, 3_int64])
+        labels = source%sets_to_data(MIO_DATA_POINT, order=['b', 'a'], stat=ierr)
+        call check(ierr == 0, 'sets_to_data succeeds with explicit order')
+        call check(size(labels%regions()) == size(source%regions()) - 2, 'sets_to_data removes point sets')
+        restored = labels%data_to_sets(MIO_DATA_POINT, 'b-a', stat=ierr)
+        call check(ierr == 0, 'data_to_sets succeeds')
+        call check(restored%num_points() == source%num_points(), 'sets/data preserves geometry')
+        call restored%free()
+        call labels%free()
+        call source%free()
+    end block
     ! These act on the data arrays only; the geometry must come through
     ! untouched. `m` carries point_data temperature/velocity and cell_data
     ! quality.
@@ -1198,6 +1367,9 @@ program test_fortran_api
         real(real64) :: t, values(5)
         real(real64), allocatable :: got(:)
         character(:), allocatable :: series_path
+        type(mio_region_info), allocatable :: shared_regions(:)
+        character(len=STRBUF_LEN), allocatable :: shared_keys(:)
+        integer(int64), allocatable :: shared_entries(:)
         integer :: st, k
 
         series_path = prefix//'_series.xdmf'
@@ -1262,6 +1434,15 @@ program test_fortran_api
             call check(st == 0, 'read series step')
             if (st /= 0) cycle
             call check(back%num_points() == 5_int64, 'series step has the shared grid')
+            shared_regions = back%regions(keys=shared_keys, entries=shared_entries, stat=st)
+            call check(st == 0, 'series shared regions read')
+            call check(size(shared_regions) == 2, 'series retains both shared regions')
+            if (size(shared_regions) == 2) then
+                call check(trim(shared_keys(1)) == 'fixed', 'series point region name')
+                call check(all(shared_entries(1:2) == [1_int64, 4_int64]), &
+                           'series point region entries are one-based')
+                call check(shared_regions(2)%tag == 42_int64, 'series cell region tag')
+            end if
             call back%get_point_data('temperature', got, stat=st)
             call check(st == 0, 'series step point_data')
             if (st /= 0) cycle
@@ -1287,6 +1468,7 @@ program test_fortran_api
     ! ------------------------------------------------------------------
     block
         character(:), allocatable :: msg
+        character(:), allocatable :: report, text
         integer :: st
         call mio_pipeline_run_json('{"Input": {"Path": "a"}, "Output": {"Path": "b"}, '// &
                                    '"Operations": [{"Op": "Nope"}]}', stat=st, errmsg=msg)
@@ -1296,6 +1478,18 @@ program test_fortran_api
         else
             call check(index(msg, 'MESHIOPLUSPLUS_WITH_JSON') > 0, &
                        'compiled-out pipeline names the flag')
+        end if
+        text = '{"Input":{"Path":"'//vtu_path// &
+            '"},"Output":{"Path":"'//prefix//'_report.vtu"},"Operations":[{"Op":"Quality"}]}'
+        call mio_pipeline_run_json_report(text, report, stat=st, errmsg=msg)
+        if (mio_pipeline_has_json()) then
+            call check(st == 0, 'pipeline report succeeds')
+            call check(index(report, '"steps"') > 0, 'pipeline report has steps')
+            call check(index(report, '"op":"Quality"') > 0, 'pipeline report names step')
+            call check(index(report, '"warnings":[]') > 0, 'pipeline report has warnings')
+        else
+            call check(st /= 0, 'compiled-out pipeline report fails')
+            call check(len(report) == 0, 'failed pipeline report is empty')
         end if
     end block
 
@@ -1933,6 +2127,10 @@ contains
         write (u, '(a)') 'Begin Nodes', '1 0 0 0', '2 1 0 0', '3 0 1 0', '4 0 0 1', 'End Nodes'
         write (u, '(a)') 'Begin Elements Element3D4N', '1 0 1 2 3 4', 'End Elements'
         write (u, '(a)') 'Begin Geometries Triangle3D3', '7 2 3 4', 'End Geometries'
+        write (u, '(a)') 'Begin SubModelPart Part', '    Begin SubModelPart Inner', &
+            '        Begin SubModelPartGeometries', '            7', '        End SubModelPartGeometries', &
+            '        Begin SubModelPartConstraints', '            1', '        End SubModelPartConstraints', &
+            '    End SubModelPart', 'End SubModelPart'
         write (u, '(a)') 'Begin Mesh 5', '    Begin MeshNodes', '        4', &
             '    End MeshNodes', 'End Mesh'
         write (u, '(a)') 'Begin Constraints LinearMasterSlaveConstraint', &
@@ -1960,6 +2158,11 @@ contains
         call check(gconn(1, 1) == 2 .and. gconn(3, 1) == 4, 'geometry conn is 1-based points')
         ids = info%mdpa_ids(MIO_MDPA_GEOMETRIES, 1, 1)
         call check(size(ids) == 1 .and. ids(1) == 7, 'geometry ids are the file ids')
+        call check(info%mdpa_string(MIO_MDPA_SUBMODELPARTS, 1, 0) == 'Part/Inner', 'nested part name')
+        ids = info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 1)
+        call check(size(ids) == 1 .and. ids(1) == 7, 'geometry membership is raw ids, not 1-based rows')
+        ids = info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 2)
+        call check(size(ids) == 1 .and. ids(1) == 1, 'constraint membership is raw ids')
         call check(info%mdpa_int(MIO_MDPA_MESH_BLOCKS, 1, 0) == 5_int64, 'Mesh block id')
         ids = info%mdpa_ids(MIO_MDPA_MESH_BLOCKS, 1, 0)
         call check(size(ids) == 1 .and. ids(1) == 4, 'Mesh block nodes are 1-based points')
@@ -1974,6 +2177,10 @@ contains
         call check(ierr == 0, 'the written deck reads back')
         call check(info2%mdpa_count(MIO_MDPA_RAW_BLOCKS) == 1, 'the raw block survived')
         call check(info2%mdpa_count(MIO_MDPA_GEOMETRIES) == 1, 'the geometry survived')
+        ids = info2%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 1)
+        call check(size(ids) == 1 .and. ids(1) == 7, 'geometry membership survived')
+        ids = info2%mdpa_ids(MIO_MDPA_SUBMODELPARTS, 1, 2)
+        call check(size(ids) == 1 .and. ids(1) == 1, 'constraint membership survived')
         call dm%write_with_info(prefix//'_side_out.vtu', info, stat=ierr)
         call check(ierr /= 0, 'an mdpa side channel is refused for vtu')
 

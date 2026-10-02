@@ -7,14 +7,13 @@ The same VTK-XML container as VTU with a <PolyData> grid holding
 cells are representable: ``vertex`` (Verts), ``line`` (Lines) and
 ``triangle``/``quad``/``polygon`` (Polys). Cell data follows VTK's canonical
 PolyData cell order — Verts, Lines, Polys, Strips — in both directions.
-Triangle strips, poly-vertex/poly-line rows and multiple pieces are not
-supported.
+Multiple pieces concatenate in document order without welding. Triangle
+strips and poly-vertex/poly-line rows are not supported.
 """
 
 import base64
 import lzma
 import zlib
-from xml.etree import ElementTree as ET
 
 import numpy as np
 
@@ -35,97 +34,20 @@ from ..vtu._vtu import numpy_to_vtu_type, vtu_to_numpy_type
 _SECTION_TAGS = ("Verts", "Lines", "Polys", "Strips")
 
 
-def _read_binary_data(data, dtype, byte_order, header_type, compression):
-    header_dtype = vtu_to_numpy_type[header_type]
-    if byte_order is not None:
-        bo = "<" if byte_order == "LittleEndian" else ">"
-        header_dtype = header_dtype.newbyteorder(bo)
-        dtype = dtype.newbyteorder(bo)
-
-    if compression is None:
-        byte_string = base64.b64decode(data)
-        num_header_bytes = np.dtype(header_dtype).itemsize
-        total_num_bytes = np.frombuffer(byte_string[:num_header_bytes], header_dtype)[0]
-        # The header may have been base64-encoded separately (padding).
-        if len(byte_string) == num_header_bytes:
-            header_len = len(base64.b64encode(byte_string))
-            byte_string = base64.b64decode(data[header_len:])
-        else:
-            byte_string = byte_string[num_header_bytes:]
-        return np.frombuffer(byte_string[:total_num_bytes], dtype=dtype)
-
-    # compressed: header = [num_blocks, max_block_size, last_block_size, sizes...]
-    num_bytes_per_item = np.dtype(header_dtype).itemsize
-    num_chars = -(-num_bytes_per_item // 3) * 4  # base64 chars for the first item
-    byte_string = base64.b64decode(data[:num_chars])[:num_bytes_per_item]
-    num_blocks = int(np.frombuffer(byte_string, header_dtype)[0])
-
-    num_header_bytes = num_bytes_per_item * (3 + num_blocks)
-    num_header_chars = -(-num_header_bytes // 3) * 4
-    header = np.frombuffer(base64.b64decode(data[:num_header_chars]), header_dtype)
-    block_sizes = header[3:]
-
-    byte_array = base64.b64decode(data[num_header_chars:])
-    byte_offsets = np.concatenate([[0], np.cumsum(block_sizes)]).astype(np.int64)
-
-    c = {"vtkLZMADataCompressor": lzma, "vtkZLibDataCompressor": zlib}[compression]
-    return np.concatenate(
-        [
-            np.frombuffer(
-                c.decompress(byte_array[byte_offsets[k] : byte_offsets[k + 1]]),
-                dtype=dtype,
-            )
-            for k in range(num_blocks)
-        ]
-    )
-
-
-def _read_data_array(elem, byte_order, header_type, compression):
-    fmt = elem.get("format", "ascii")
-    dtype = vtu_to_numpy_type[elem.get("type")]
-    num_components = int(elem.get("NumberOfComponents", 0))
-
-    if fmt == "ascii":
-        data = np.array((elem.text or "").split(), dtype=dtype)
-    elif fmt == "binary":
-        data = _read_binary_data(
-            (elem.text or "").strip(), dtype, byte_order, header_type, compression
-        )
-    else:
-        raise ReadError(f"VTP '{fmt}' data is not supported")
-
-    if num_components > 1:
-        data = data.reshape(-1, num_components)
-    return data
-
-
 def read(filename):
-    tree = ET.parse(filename)
-    root = tree.getroot()
-    if root.tag != "VTKFile":
-        raise ReadError("Expected tag 'VTKFile'")
-    if root.get("type") != "PolyData":
-        raise ReadError("Expected type PolyData")
+    from .._vtk_xml_read import load, read_pieces
 
-    byte_order = root.get("byte_order")
-    compression = root.get("compressor")
-    if compression not in (None, "vtkZLibDataCompressor", "vtkLZMADataCompressor"):
-        raise ReadError(f"Unknown VTP compressor '{compression}'")
-    header_type = root.get("header_type", "UInt32")
+    root, reader = load(filename, "PolyData", "VTP")
+    return read_pieces(root, reader, "PolyData", "VTP", _read_piece)
 
-    if root.find("AppendedData") is not None:
-        raise ReadError("appended VTP data is not supported")
 
-    grid = root.find("PolyData")
-    if grid is None:
-        raise ReadError("No PolyData found")
-    pieces = grid.findall("Piece")
-    if len(pieces) != 1:
-        raise ReadError("Only single-piece PolyData is supported")
-    piece = pieces[0]
-
+def _read_piece(grid, piece, reader):
     def read_data(elem):
-        return _read_data_array(elem, byte_order, header_type, compression)
+        data = reader.read_data(elem)
+        # PolyData historically exposes scalar arrays as one-dimensional.
+        if elem.get("NumberOfComponents", "0") == "1":
+            data = data.reshape(-1)
+        return data
 
     points = None
     point_data = {}
@@ -137,7 +59,7 @@ def read(filename):
     # <Piece>, and also accepts it inside one (the piece's overriding the grid's).
     # A non-numeric array (`type="String"`) has no numpy dtype here: skipped with
     # a warning rather than failing a file whose field data used to be ignored.
-    for holder in (grid, piece):
+    for holder in (piece,):
         for fd in holder.findall("FieldData"):
             for da in fd.findall("DataArray"):
                 if da.get("type") not in vtu_to_numpy_type:
@@ -171,6 +93,26 @@ def read(filename):
     if "Strips" in sections and sections["Strips"][1].size > 0:
         raise ReadError("triangle-strip VTP cells are not supported")
 
+    def count(name):
+        text = piece.get(name, "")
+        if not text or any(ch not in "0123456789" for ch in text):
+            raise ReadError(f"VTP: invalid {name}")
+        value = int(text)
+        if value > np.iinfo(np.int64).max:
+            raise ReadError(f"VTP: invalid {name}")
+        return value
+
+    num_points = count("NumberOfPoints")
+    for tag in _SECTION_TAGS:
+        name = "NumberOf" + tag
+        actual = sections[tag][1].size if tag in sections else 0
+        if piece.get(name) is not None and count(name) != actual:
+            raise ReadError("VTP: cell count differs from section offsets")
+    if points is not None and len(points) != num_points:
+        raise ReadError("VTP Points length differs from NumberOfPoints")
+    if any(len(arr) != num_points for arr in point_data.values()):
+        raise ReadError("VTP PointData length differs from NumberOfPoints")
+
     # Concatenate sections in VTK's canonical PolyData cell order (Verts,
     # Lines, Polys), synthesizing a VTK type id per row so the shared VTK
     # reconstruction can build the blocks and split cell_data.
@@ -182,7 +124,16 @@ def read(filename):
         if tag not in sections:
             continue
         conn, offsets = sections[tag]
+        if offsets.size and (
+            np.any(np.diff(np.concatenate([[0], offsets])) <= 0)
+            or offsets[-1] != conn.size
+        ):
+            raise ReadError("VTP: offsets do not span connectivity")
+        if conn.size and (np.min(conn) < 0 or np.max(conn) >= num_points):
+            raise ReadError("VTP: point index out of range")
         if offsets.size == 0:
+            if conn.size:
+                raise ReadError("VTP: offsets do not span connectivity")
             continue
         sizes = np.diff(np.concatenate([[0], offsets]))
         if kind == 0:
@@ -194,11 +145,19 @@ def read(filename):
                 raise ReadError("poly-line VTP cells are not supported")
             types = np.full(sizes.shape, 3, dtype=np.int64)  # VTK_LINE
         else:
+            if np.any(sizes < 3):
+                raise ReadError("VTP: polygon has fewer than three points")
             types = np.where(sizes == 3, 5, np.where(sizes == 4, 9, 7))
         conn_parts.append(conn)
         offset_parts.append(offsets + conn_base)
         type_parts.append(types)
         conn_base += conn.size
+
+    num_cells = sum(len(types) for types in type_parts)
+    if any(len(arr) != num_cells for arr in cell_data_raw.values()):
+        raise ReadError("VTP CellData length differs from cell count")
+    if points is None and num_points:
+        raise ReadError("VTP Piece has no Points")
 
     file_to_global = None
     if conn_parts:
@@ -231,6 +190,9 @@ def read(filename):
     )
     if regions:
         mesh.regions = regions
+    mesh._vtk_file_to_global = (
+        file_to_global if file_to_global is not None else np.empty(0, np.int64)
+    )
     return mesh
 
 

@@ -18,15 +18,16 @@ unchanged -- there is nothing to recompute, unlike ``vti``'s Origin/Spacing.
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
-
 import numpy as np
 
 from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
-from ..vti._vti import _COMPRESSION_TO_ATTR, _ArrayReader, _encode_binary, _parse_n
+from .._vtk_xml_read import field_arrays
+from .._vtk_xml_read import load as _load_xml
+from .._vtk_xml_read import piece_extent, read_pieces
+from ..vti._vti import _COMPRESSION_TO_ATTR, _encode_binary
 from ..vtu._vtu import numpy_to_vtu_type
 
 
@@ -41,55 +42,20 @@ def _hex_conn(dims):
 
 
 def read(filename):
-    tree = ET.parse(str(filename))
-    root = tree.getroot()
-    if root.tag != "VTKFile":
-        raise ReadError("Expected tag 'VTKFile'")
-    if root.get("type") != "StructuredGrid":
-        raise ReadError("Expected type StructuredGrid")
+    root, reader = _load_xml(filename, "StructuredGrid", "VTS")
+    return read_pieces(root, reader, "StructuredGrid", "VTS", _read_piece)
 
-    compression = root.get("compressor")
-    if compression == "vtkLZMADataCompressor":
-        raise ReadError("lzma-compressed VTS is not supported")
-    header_type = root.get("header_type", "UInt32")
-    byte_order = root.get("byte_order")
 
-    appended = root.find("AppendedData")
-    appended_data = None
-    if appended is not None:
-        encoding = appended.get("encoding", "base64")
-        if encoding != "base64":
-            raise ReadError(f"VTS appended data encoding '{encoding}' is not supported")
-        text = appended.text or ""
-        appended_data = text.strip().lstrip("_")
-
-    grid = root.find("StructuredGrid")
-    if grid is None:
-        raise ReadError("No StructuredGrid found")
-    whole = _parse_n(grid.get("WholeExtent"), 6, int)
-    if whole is None:
-        raise ReadError("StructuredGrid has no readable WholeExtent")
-
-    pieces = grid.findall("Piece")
-    if not pieces:
-        raise ReadError("No Piece found")
-    if len(pieces) > 1:
-        raise ReadError("multi-piece VTS is not supported")
-    piece = pieces[0]
-    piece_extent = _parse_n(piece.get("Extent"), 6, int)
-    if piece_extent is not None and not np.array_equal(piece_extent, whole):
-        raise ReadError(
-            "VTS Piece Extent differs from WholeExtent; a partial piece "
-            "is not supported"
-        )
-
+def _read_piece(grid, piece, reader):
+    whole = piece_extent(grid, piece)
     dims = np.array([whole[2 * k + 1] - whole[2 * k] for k in range(3)], dtype=np.int64)
-    if np.any(dims < 0):
+    if np.any(dims < 0) and not np.all(dims == -1):
         raise ReadError("VTS WholeExtent is inverted")
     num_points = int(np.prod(dims + 1))
     num_cells = int(np.prod(dims)) if np.all(dims > 0) else 0
+    if num_points == 0:
+        return Mesh(np.empty((0, 3)), [], field_data=field_arrays(piece, reader, "VTS"))
 
-    reader = _ArrayReader(header_type, byte_order, compression, appended_data)
     points_node = piece.find("Points")
     if points_node is None:
         raise ReadError("VTS Piece has no Points")
@@ -117,7 +83,7 @@ def read(filename):
         for da in node.findall("DataArray"):
             name = da.get("Name")
             arr = reader.read_data(da)
-            if arr.size and arr.shape[0] != expected:
+            if arr.shape[0] != expected:
                 raise ReadError(
                     f"VTS {what} array '{name}' has {arr.shape[0]} rows, but the "
                     f"extent has {expected} {what}s"
@@ -129,7 +95,13 @@ def read(filename):
             else:
                 sink[name] = arr
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_arrays(piece, reader, "VTS"),
+    )
 
 
 def write(filename, mesh, binary=True, compression="zlib", header_type=None):

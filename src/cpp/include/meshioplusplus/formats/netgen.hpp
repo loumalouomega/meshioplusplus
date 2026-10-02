@@ -42,15 +42,12 @@
  * `[0,3,2,1,4,7,6,5,10,9,11,8,16,19,18,17,14,13,15,12]`
  * (`line`/`triangle`/`quad`/`vertex` use natural order).
  *
- * **Deferred to Python** (the reader throws when it meets any of these
- * tokens, and the writer is gated off by the shim when the mesh carries
- * the corresponding data): the `identifications`/`identificationtypes`
- * periodic node-pair tables (stored in `mesh.info`, which has no C++-core
- * representation), `materials`/`bcnames`/`cd2names`/`cd3names` codimension
- * name tables (-> non-empty `field_data`), the two-physical-line
- * `edgesegmentsgi2` variant, `face_colours`/`singular_*` sections, and the
- * gzip `.vol.gz` container (the C++ reader/writer explicitly refuse the
- * `.gz` suffix; Python handles it via `gzip.open`).
+ * Periodic tables use numeric `field_data` under `netgen:identifications`
+ * and `netgen:identificationtypes`; the Python binding moves these to its
+ * historical `mesh.info` representation. Codimension name tables map to
+ * `[id, dimension]` field data. Two-line `edgesegmentsgi2` is supported;
+ * auxiliary face-colour/singular sections are skipped. `.vol.gz` reads and
+ * writes require zlib, with a named error when it is compiled out.
  */
 
 // System includes
@@ -64,7 +61,7 @@ namespace meshioplusplus {
 
 /**
  * @brief Write a Mesh to a Netgen neutral mesh (.vol) file, ascii,
- *        common-path only.
+ *        including name/periodic tables and optional gzip storage.
  *
  * Emits `mesh3d`, `dimension`, `points`, and per-dimension element blocks
  * (`pointelements`/edge/`surfaceelements`/`volumeelements` as applicable)
@@ -72,21 +69,21 @@ namespace meshioplusplus {
  * permutation. The single per-cell region/material marker is taken from
  * `cell_data["netgen:index"]` if present, else the first integer-dtype
  * cell_data array found (Netgen has no way to store the array's name).
- * Refuses (via the shim) meshes carrying `mesh.info` entries or non-empty
- * `field_data`, and never handles the `.vol.gz` suffix.
+ * Name and periodic tables use field data; the Python binding supplies its
+ * periodic side channel explicitly. Gzip storage requires zlib.
  *
  * @param rPath filesystem path to the .vol file to create/overwrite
  * @param rMesh the mesh to write
  * @param rFloatFmt coordinate format string (e.g. `".16e"`)
  * @throws WriteError on an unsupported cell type, mixed content this path
- *         doesn't implement, or a `.gz` path
+ *         doesn't implement, or gzip storage without zlib
  * @note reads `cell_data["netgen:index"]` if present
  */
 MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read a Netgen neutral mesh (.vol) file into a Mesh, ascii,
- *        common-path only.
+ *        including name/periodic tables and optional gzip storage.
  *
  * Parses `dimension`, `geomtype` (unexpected values only warn),
  * `points`, and the point/edge/surface/volume element blocks, inferring
@@ -97,11 +94,8 @@ MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh
  *
  * @param rPath filesystem path to the .vol file to read
  * @return the read Mesh, with `cell_data["netgen:index"]` populated
- * @throws ReadError on `identifications`/`identificationtypes`,
- *         `materials`/`bcnames`/`cd2names`/`cd3names`, the two-line
- *         `edgesegmentsgi2` variant, `face_colours`/`singular_*` sections,
- *         a `.gz` path, or a malformed file — all of which route to the
- *         Python fallback
+ * @throws ReadError on malformed files, unsupported sections or gzip storage
+ *         in a build without zlib.
  */
 MESHIOPLUSPLUS_API Mesh read_netgen(const std::string& rPath);
 

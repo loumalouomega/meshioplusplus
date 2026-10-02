@@ -217,17 +217,6 @@ TEST(Vti, RefusesAMeshThatIsNotALattice) {
 
 TEST(Vti, DeclinesTheConstructsItDoesNotImplement) {
     const char* cases[] = {
-        // appended data
-        "<VTKFile type=\"ImageData\"><AppendedData encoding=\"raw\">_</AppendedData>"
-        "<ImageData WholeExtent=\"0 1 0 1 0 1\"><Piece Extent=\"0 1 0 1 0 1\"/>"
-        "</ImageData></VTKFile>",
-        // two pieces
-        "<VTKFile type=\"ImageData\"><ImageData WholeExtent=\"0 1 0 1 0 1\">"
-        "<Piece Extent=\"0 1 0 1 0 1\"/><Piece Extent=\"0 1 0 1 0 1\"/>"
-        "</ImageData></VTKFile>",
-        // a piece that is not the whole extent
-        "<VTKFile type=\"ImageData\"><ImageData WholeExtent=\"0 2 0 1 0 1\">"
-        "<Piece Extent=\"0 1 0 1 0 1\"/></ImageData></VTKFile>",
         // a rotated lattice
         "<VTKFile type=\"ImageData\"><ImageData WholeExtent=\"0 1 0 1 0 1\" "
         "Direction=\"0 1 0 -1 0 0 0 0 1\"><Piece Extent=\"0 1 0 1 0 1\"/>"

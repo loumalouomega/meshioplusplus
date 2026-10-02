@@ -17,8 +17,11 @@ from .common import (
     _gmsh_to_meshio_type,
     _meshio_to_gmsh_order,
     _meshio_to_gmsh_type,
+    _periodic_count,
+    _periodic_end,
     _read_data,
     _read_physical_names,
+    _remap_periodic,
     _write_data,
     _write_physical_names,
 )
@@ -61,6 +64,8 @@ def read_buffer(f, is_ascii, data_size):
                 f, cells, point_tags, is_ascii
             )
         elif environ == "Periodic":
+            if periodic is not None:
+                raise ReadError("Gmsh: duplicate $Periodic section")
             periodic = _read_periodic(f)
         elif environ == "NodeData":
             _read_data(f, "NodeData", point_data, data_size, is_ascii)
@@ -87,6 +92,7 @@ def read_buffer(f, is_ascii, data_size):
             tags = np.array(tags[start:end], dtype=c_int)
             cell_data[tag_name].append(tags)
 
+    periodic = _remap_periodic(periodic, point_tags)
     return Mesh(
         points,
         cells,
@@ -110,8 +116,6 @@ def _read_nodes(f, is_ascii):
         # binary
         dtype = [("index", c_int), ("x", c_double, (3,))]
         data = np.fromfile(f, count=num_nodes, dtype=dtype)
-        if not (data["index"] == range(1, num_nodes + 1)).all():
-            raise ReadError()
         points = np.ascontiguousarray(data["x"])
         point_tags = data["index"]
 
@@ -238,7 +242,7 @@ def _read_cells_binary(f, cells, cell_tags, total_num_cells):
 
 def _read_periodic(f):
     periodic = []
-    num_periodic = int(f.readline().decode())
+    num_periodic = _periodic_count(f, int(f.readline().decode()))
     for _ in range(num_periodic):
         line = f.readline().decode()
         edim, stag, mtag = (int(s) for s in line.split())
@@ -250,15 +254,15 @@ def _read_periodic(f):
         else:
             affine = None
             num_nodes = int(line)
+        num_nodes = _periodic_count(f, num_nodes, 2)
         slave_master = []
         for _ in range(num_nodes):
             line = f.readline().decode()
             snode, mnode = (int(s) for s in line.split())
             slave_master.append([snode, mnode])
         slave_master = np.array(slave_master, dtype=c_int).reshape(-1, 2)
-        slave_master -= 1  # Subtract one, Python is 0-based
         periodic.append([edim, (stag, mtag), affine, slave_master])
-    _fast_forward_to_end_block(f, "Periodic")
+    _periodic_end(f)
     return periodic
 
 
@@ -398,7 +402,7 @@ def _write_periodic(fh, periodic, float_fmt):
     fh.write(f"{len(periodic)}\n".encode())
     for dim, (stag, mtag), affine, slave_master in periodic:
         fh.write(f"{dim} {stag} {mtag}\n".encode())
-        if affine is not None:
+        if affine is not None and len(affine) > 0:
             fh.write(b"Affine ")
             affine = np.array(affine, dtype=float)
             affine = np.atleast_2d(affine.ravel())

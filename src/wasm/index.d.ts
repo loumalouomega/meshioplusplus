@@ -265,8 +265,14 @@ export interface MdpaInfo {
     elementIds: number[];
     conditionIds: number[];
   }>;
-  /** `SubModelPartData`/`SubModelPartTables` content, by hierarchical part name. */
-  subModelParts?: Array<{ name: string; data: PropertyValue[]; tables: number[] }>;
+  /** Data and membership, by hierarchical part name; ids stay raw and are not remapped by operations. */
+  subModelParts?: Array<{
+    name: string;
+    data: PropertyValue[];
+    tables: number[];
+    geometryIds?: number[];
+    constraintIds?: number[];
+  }>;
   /** Every other top-level block (`Constraints`, ...), kept verbatim. */
   rawBlocks?: Array<{ header: string; body: string; end: string }>;
 }
@@ -294,6 +300,9 @@ export interface UnvInfo extends AnsysUnvInfoShape {
 export interface GmshInfo {
   format: 'gmsh';
   boundingEntities: number[][];
+  /** Entity tags are raw ids; nodePairs is flattened (N,2), 0-based point rows.
+   * Ordering/duplicates survive I/O; mesh operations do not remap these rows. */
+  periodic?: { entity: number[]; affine: number[]; nodePairs: BigInt64Array | number[] }[];
 }
 
 /** Exodus's side channel: info/QA records. Read-only -- there is no Info-bearing Exodus writer. */
@@ -385,11 +394,31 @@ export interface RegionSummary {
  * `WriteOptions` field on the C++ side (gzip level 4 is a fixed registry
  * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
  */
+/** glTF writer parameters. Components are 0-based; omitted selects magnitude. */
+export interface GltfWriteOptions {
+  colorBy?: string;
+  cmap?: "viridis" | "coolwarm" | "turbo";
+  component?: number;
+  vmin?: number;
+  vmax?: number;
+  splitAngle?: number;
+  upAxis?: "auto" | "x" | "y" | "z";
+  scale?: number;
+  container?: "auto" | "glb" | "gltf";
+  normalWeight?: "angle" | "area";
+  normals?: boolean;
+  fields?: boolean;
+  recenter?: boolean;
+  byRegion?: boolean;
+  unlit?: boolean;
+  nanColor?: string;
+}
+
 export interface MeshWriteOptions {
   /** ASCII vs binary. Errors for a format with only one variant. */
   encoding?: "ascii" | "binary";
-  /** Block-compression codec, for the VTK-XML formats (vtu/vtp) only. */
-  codec?: "none" | "zlib" | "lz4" | "zstd";
+  /** VTK block codec, or `lzf` for PCD binary_compressed (not ASCII). */
+  codec?: "none" | "zlib" | "lz4" | "zstd" | "lzf";
   /** `printf`-style float format for ASCII writers that take one (e.g. `".16e"`, the default). */
   floatFormat?: string;
 }
@@ -913,9 +942,21 @@ export type XdmfDataFormat = 'HDF' | 'XML' | 'Binary';
  * `'XML'` writes one self-contained file and needs no companion; `'Binary'`
  * writes the `.xdmf` plus one `<path minus extension><n>.bin` per array.
  */
+/** Fixed Exodus geometry, sets and attributes; step fields have a stable schema.
+ * Available in netCDF-enabled builds, including the shipped WASM artifacts. */
+export interface ExodusTimeSeriesWriter {
+  writePointsCells(mesh: Mesh): void;
+  writeData(time: number, mesh: Mesh): void;
+  flush(): void;
+  finalize(): void;
+  numSteps(): number;
+  finalized(): boolean;
+  close(): void;
+}
+
 export interface XdmfTimeSeriesWriter {
   /**
-   * Write the static grid -- the points and cell blocks every step shares.
+    * Write the static grid -- points, cell blocks and fixed regions shared by every step.
    * Only geometry and connectivity are used; any data on `mesh` is ignored,
    * because in a series data belongs to a step. Call exactly once, before the
    * first `writeData`.
@@ -1039,6 +1080,10 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on an unknown/unsupported format or a malformed file.
    */
   readMesh(path: string, format?: string): Mesh;
+  /** MED named meshes require an HDF5-enabled build. Profiles expand with NaN fill. */
+  medMeshNames(path: string): string[];
+  readMedNamed(path: string, name: string, options?: { timeStep?: number; lenient?: boolean }): Mesh;
+  writeMedMulti(path: string, meshes: Mesh[], names: string[], options?: { version?: string }): void;
 
   /**
    * Read only part of a file: geometry alone, or a named subset of data arrays.
@@ -1118,6 +1163,8 @@ export interface MeshioPlusPlusModule {
   writeMesh(
     path: string, mesh: Mesh, format?: string, options?: MeshWriteOptionsWithInfo
   ): string[];
+  /** Export a parameterized glTF surface and return every written MEMFS path. */
+  writeGltf(path: string, mesh: Mesh, options?: GltfWriteOptions): string[];
 
   /**
    * Read `inPath` and write it to `outPath` directly (no intermediate JS
@@ -1181,6 +1228,11 @@ export interface MeshioPlusPlusModule {
    * {@link convertSurfaceOps}' pre-existing camelCase op specs — the two
    * dispatch through the same core engine, differing only in spelling. The
    * returned report's counter keys are PascalCase too.
+   * Version 2 adds per-step `Inputs` for Merge/Interpolate/UndoGreen and
+   * terminal Split/Partition with `Output.Pattern` (`{key}`/`{part}`).
+   * Auxiliary inputs and generated outputs are MEMFS paths. Version 1 and
+   * label-only Partition remain unchanged; spatial v2 steps are not a
+   * transient sequence schema.
    *
    * Unlike {@link convertSurfaceOps} there is no surface-extraction tail:
    * what the pipeline produces is what is written.
@@ -2564,6 +2616,13 @@ export interface MeshioPlusPlusModule {
 
   /** Rename one array, preserving its values and dtype. */
   dataRename(mesh: Mesh, location: DataLocation, from: string, to: string): Mesh;
+  /** Convert region-backed sets to zero-based labels; overlaps use the later
+   * set and uncovered entities use -1. Removes converted regions. */
+  setsToData(mesh: Mesh, location: 'point' | 'cell', options?: {
+    dataName?: string | null; joinChar?: string; order?: string[];
+  }): Mesh;
+  /** Convert a scalar integer field to sets and remove that field. */
+  dataToSets(mesh: Mesh, location: 'point' | 'cell', key: string): Mesh;
 
   /** Average point_data onto the cells (mean over each cell's own nodes). */
   dataPointToCell(mesh: Mesh, names?: string[], suffix?: string): Mesh;
@@ -2655,6 +2714,8 @@ export interface MeshioPlusPlusModule {
       autoFlush?: boolean;
     },
   ): XdmfTimeSeriesWriter;
+  /** Requires netCDF; custom builds without it throw naming the dependency. */
+  createExodusTimeSeriesWriter(path: string): ExodusTimeSeriesWriter;
 }
 
 /**

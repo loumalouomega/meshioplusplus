@@ -1,5 +1,25 @@
 # Fortran
 
+## Exodus series and pipeline Version 2
+
+`type(mio_exodus_series)` owns a netCDF-enabled series. Call `%create(path)`, `%write_points_cells(mesh)`, then `%write_data(time, mesh)` per step; `%flush()`, `%finalize()`, `%finalized()` and `%num_steps()` expose the lifecycle. `%free()` is explicit and idempotent, like mesh handles. Mutators accept optional `stat`/`errmsg`; missing netCDF is a named failure. Point/side sets and attributes belong to the fixed grid, not a step. See [Exodus](./formats/exodus.md#stateful-series-writing).
+
+Existing pipeline status/report routines accept [Version 2](./pipeline.md#version-2-spatial-multi-mesh-steps) JSON with per-step `Inputs` and terminal `{key}`/`{part}` outputs. No bind(C) layout changed; transient sequence documents remain Version 1.
+
+## Pipeline reports
+
+Structured pipeline reports use `call mio_pipeline_run_file_report(path, report, stat, errmsg)` or `mio_pipeline_run_json_report(text, report, ...)`, plus the corresponding `mio_sequence_pipeline_run_*_report` routines. The allocatable `report` string is JSON with `steps` and `warnings`; the native handle is released automatically. Failure returns an empty string and follows the existing `stat`/`errmsg` convention. See [pipeline reports](./pipeline.md#structured-reports-on-the-flat-abi).
+
+## MED named meshes
+
+`call mio_med_mesh_names(path, names, stat, errmsg)` returns an allocatable character array in file link order. `call mio_med_read_named(path, name, mesh, time_step=0, lenient=.false., stat=stat, errmsg=errmsg)` replaces the output mesh only after success; free it with `call mesh%free()`. `call mio_med_write_multi(path, meshes, names, version='4.1.0', stat=stat, errmsg=errmsg)` writes an array of borrowed meshes with one unique name per mesh. These APIs require HDF5 and expand ordinary nodal/element profiles with NaN fill. See [MED](./formats/med.md#native-named-meshes-and-profiles).
+
+`call m%write('cloud.pcd', codec='lzf')` selects PCD compressed binary without an optional codec library; explicit ASCII or non-PCD combinations fail. `encoding`, `codec` and `float_format` are optional keyword arguments appended after the existing status arguments. Parameterized glTF uses `type(mio_gltf_options) :: opts` and `call m%write_gltf('colored.glb', options=opts)`; set `opts%color_by`, `%cmap`, `%up_axis` (0 auto, 1 Z, 2 Y, 3 X) and `%scale` as needed. `%component` is 1-based and only used with `%component_set=.true.`; `%vmin_set`/`%vmax_set` control optional bounds. Native reads also support XDMF2/3 DataItem references and Netgen names/periodic arrays; Netgen periodic arrays are numeric field data with 1-based file node ids, and `.vol.gz` requires zlib.
+
+XDMF series `write_points_cells(mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
+
+The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
+
 meshio++ ships a modern object-oriented Fortran 2008 module, `meshioplusplus`, layered on the [C API](/c_api) via `ISO_C_BINDING` — in the HDF5/PETSc style, aimed at Fortran HPC codes:
 
 ```fortran
@@ -93,7 +113,11 @@ Format inference is the shared registry's, the C API's: the extension picks the 
 
 The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/fortran_example.f90); format support and the remaining limitations (side-channel metadata) are identical to the [C API](/c_api#format-support), which this module wraps; ragged blocks are no longer among them (see the table above). Copy-getters deliver `real(real64)` regardless of the stored dtype (float32/int32/int64 are converted); Fortran on Windows/MSVC is untested in v1.
 
+`m%read(path, 'gmsh')` accepts non-periodic 4.0 files as well as 2.2/4.1, in ASCII or binary (4- or 8-byte producer counts). For periodic files use `read_with_info` / `write_with_info`; writes stay 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
+
 ## Selective reads and file summaries
+
+Sets↔data conversions return a new mesh through `m%sets_to_data(MIO_DATA_POINT [, data_name, join_char, order, stat, errmsg])` and `m%data_to_sets(MIO_DATA_CELL, key [, stat, errmsg])`. Only point/cell locations are accepted. Set order defaults to native region-name order; an explicit `order` lists every set name once. Labels are scalar integer values, not indices: they stay zero-based with -1 for uncovered entities. See [sets/data semantics](data_manage.md#sets--integer-data).
 
 `read` takes optional `points_only`, `arrays`, `time_step`, `lenient` and (last, so positional `stat`/`errmsg` callers keep working) `piece` and `drop_ghosts`, and the module-level `mio_read_metadata` returns a `type(mio_metadata)`:
 
@@ -161,6 +185,10 @@ Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finaliz
 **Gap, deliberate:** four Python-only formats — `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) — are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them; see [formats](/formats). And there is no Fortran counterpart to the solver-array `write_data` overload. An array of derived types holding interop pointers is a poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it can `add_point_data` into before `write_data`. `MdpaInfo` is reached through `mio_format_info` (below).
 
 ## Format side channels
+
+Gmsh `read_with_info` keeps periodic links and 4.1 bounding-entity tags. `info%gmsh_count(MIO_GMSH_PERIODIC)` counts links; `gmsh_tags(section, i)` copies bounding tags (`MIO_GMSH_BOUNDING_ENTITIES`) or `[dimension, slave entity tag, master entity tag]` (`MIO_GMSH_PERIODIC`). `gmsh_affine(i)` copies 0 or 16 coefficients; `gmsh_pairs(i)` copies `(2, N)` slave/master **1-based point rows**, keeping ordering and duplicates. Item indices are 1-based, entity tags stay raw file ids. `write_with_info(path, info, 'gmsh')` or `'gmsh22'` restores the links; mesh operations do not remap them, so rebuild info after point/topology edits.
+
+MDPA sub-model-part membership is available through `info%mdpa_ids(MIO_MDPA_SUBMODELPARTS, i, field)`: field 0 is tables, field 1 geometry ids and field 2 constraint ids. The item index `i` is 1-based, but these values are raw file ids (no index shift), retain ordering and duplicates and are not remapped by mesh operations. `write_with_info` restores nested membership-only parts; constraints remain opaque.
 
 `call m%read_with_info(path, info [, format, lenient, stat, errmsg])` fills a `type(mio_format_info)` for a format with a side channel (MDPA: tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`); `call m%write_with_info(path, info)` writes it back and `call info%free()` releases it. Accessors take a `MIO_MDPA_*` section and a 1-based item index: `info%mdpa_count`, `mdpa_string`, `mdpa_int`, `mdpa_ids`, `mdpa_table(i)` (a `(rows, cols)` array), `mdpa_geometry(i)` (`conn(nodes, n)`, 1-based points) and `mdpa_data_*` for key/value entries. See [MDPA](formats/mdpa.md#the-blocks-the-mesh-cannot-hold-v16-26-0).
 
