@@ -161655,7 +161655,8 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series in this build; "
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap' "
+           "and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
