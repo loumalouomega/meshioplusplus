@@ -295,6 +295,11 @@ export class MeshioPlusPlusLoadError extends Error {
  *   dataInfo: (mesh: Mesh) => object[],
  *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
+ *   createExodusTimeSeriesWriter: (path: string) => ExodusTimeSeriesWriter,
+ *   medMeshNames: (path: string) => string[],
+ *   readMedNamed: (path: string, name: string, options?: object) => Mesh,
+ *   writeMedMulti: (path: string, meshes: Mesh[], names: string[], options?: object) => void,
+ *   writeGltf: (path: string, mesh: Mesh, options?: object) => string[],
  *   openSequence: (source: string|string[], options?: object) => SequenceReader,
  * }>}
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
