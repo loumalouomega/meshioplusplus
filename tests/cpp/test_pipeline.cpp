@@ -81,6 +81,31 @@ TEST(Pipeline, TransformRotatesAboutZ) {
     EXPECT_NEAR(p[1 * dim + 1], 1.0, 1e-12);
 }
 
+TEST(Pipeline, SetsDataStepsAndReports) {
+    PipelineReport report;
+    Mesh in = mt::data_mesh();
+    in.AddRegion(
+        meshioplusplus::Region("a", meshioplusplus::RegionKind::Point, mt::int_data_array({0, 1})));
+    in.AddRegion(
+        meshioplusplus::Region("b", meshioplusplus::RegionKind::Point, mt::int_data_array({1, 2})));
+    auto labels = meshioplusplus::apply_pipeline_step(
+        std::move(in),
+        step("SetsToData",
+             {{"Location", std::string("point")}, {"Order", std::vector<std::string>{"b", "a"}}}),
+        report);
+    EXPECT_EQ(labels.PointData("b-a").As<std::int64_t>()[1], 1);
+    EXPECT_EQ(labels.NumRegions(), 0u);
+    auto restored = meshioplusplus::apply_pipeline_step(
+        std::move(labels),
+        step("DataToSets", {{"Location", std::string("point")}, {"Key", std::string("b-a")}}),
+        report);
+    EXPECT_EQ(restored.NumRegions(), 3u);
+    EXPECT_FALSE(restored.HasPointData("b-a"));
+    ASSERT_EQ(report.mSteps.size(), 2u);
+    EXPECT_EQ(report.mSteps[0].mOp, "SetsToData");
+    EXPECT_EQ(report.mSteps[1].mOp, "DataToSets");
+}
+
 TEST(Pipeline, TransformRequiresExactlyOneSource) {
     PipelineReport report;
     EXPECT_THROW(

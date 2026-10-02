@@ -311,6 +311,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataDrop", {"Point", "Cell", "Field", "IgnoreMissing"}},
         {"DataKeep", {"Point", "Cell", "Field"}},
         {"DataRename", {"Point", "Cell", "Field"}},
+        {"SetsToData", {"Location", "Name", "Join", "Order"}},
+        {"DataToSets", {"Location", "Key"}},
         {"DataCalc", {"Expr", "Location", "Overwrite"}},
         {"DataCondition",
          {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
@@ -1231,6 +1233,23 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
     }
     if (op == "DataDrop" || op == "DataKeep" || op == "DataRename")
         return pipe_apply_data_manage(std::move(mesh), rStep, rReport);
+    if (op == "SetsToData" || op == "DataToSets") {
+        const auto location = data_location_from_name(pipe_text(rStep, "Location", "cell"));
+        Mesh out;
+        if (op == "SetsToData") {
+            std::optional<std::string> name;
+            if (pipe_find(rStep, "Name"))
+                name = pipe_text(rStep, "Name", "");
+            out = sets_to_data(mesh, location, name, pipe_text(rStep, "Join", "-"),
+                               pipe_svec(rStep, "Order"));
+        } else {
+            if (!pipe_find(rStep, "Key"))
+                throw std::invalid_argument(pipe_err(rStep, "'DataToSets' requires 'Key'"));
+            out = data_to_sets(mesh, location, pipe_text(rStep, "Key", ""));
+        }
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
     if (op == "DataCalc") {
         const std::string spec = pipe_text(rStep, "Expr", "");
         // "NAME = EXPR" splits on the FIRST '=' (the CLI's documented rule):
@@ -1269,7 +1288,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
         opts.names = pipe_svec(rStep, "Names");
         const std::string outputs_str = pipe_text(rStep, "Outputs", "");
-        opts.outputs = outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
+        opts.outputs =
+            outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
         opts.prefix = pipe_text(rStep, "Prefix", "");
         opts.suffix = pipe_text(rStep, "Suffix", "");
         opts.overwrite = pipe_flag(rStep, "Overwrite", true);
@@ -1389,9 +1409,11 @@ detail::VtkCodec pipeline_codec_from_name(const std::string& rName) {
         return detail::VtkCodec::LZ4;
     if (rName == "zstd")
         return detail::VtkCodec::ZSTD;
+    if (rName == "lzf")
+        return detail::VtkCodec::LZF;
     throw std::invalid_argument(
         "meshio++: pipeline: Output.Codec must be 'none', 'zlib', "
-        "'lz4' or 'zstd', not '" +
+        "'lz4', 'zstd' or 'lzf', not '" +
         rName + "'");
 }
 

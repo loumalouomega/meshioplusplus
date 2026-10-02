@@ -1,5 +1,7 @@
 # MCP server
 
+The `pipeline` tool accepts `Output.Codec: "lzf"` for PCD compressed binary, matching `convert`'s existing `compression: "lzf"`. LZF is rejected for non-PCD formats and explicit ASCII encoding. Native XDMF2/reference and Netgen extras support is also available through the existing path-based tools; tool signatures and report fields are unchanged.
+
 XDMF series reads and conversions preserve fixed shared point/cell/side regions, and `sequence` fan-in to XDMF writes the first input mesh's regions alongside the static topology. Later step regions do not change that fixed membership. See [shared named regions](xdmf_time_series.md#shared-named-regions).
 
 Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 80+ mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
@@ -136,6 +138,7 @@ MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint membe
 |---|---|
 | `data_manage` | keep/drop/rename arrays: `keep`/`drop` are `[location, name]` pairs, `rename` is `[location, old, new]` triples |
 | `data_convert` | average between locations (`direction: point_to_cell \| cell_to_point`) |
+| `sets_data` | region-backed sets ↔ scalar integer data (`direction: sets_to_data \| data_to_sets`, `location: point \| cell`); `key` required for data→sets; sets→data accepts `data_name`, `join_char` and explicit `order` |
 | `data_calc` | expression evaluator; accepts the CLI's `"NAME = EXPR"` spelling |
 | `data_condition` | clamp / normalize / standardize |
 | `tensor_invariants` | von Mises / principal / hydrostatic / deviatoric of a symmetric (6-component) or general 3x3 (9-component) tensor array; `outputs` selects any of `mises`/`principal`/`hydrostatic`/`deviatoric` (default: all four) |

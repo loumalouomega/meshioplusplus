@@ -4995,15 +4995,56 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfm(path));
           }));
 
-    // Netgen writer / reader (.vol, common path).
+    // Region-backed sets/data conversions accept ragged geometry unchanged.
+    m.def(
+        "sets_to_data",
+        [](py::object mesh, const std::string& location, const std::optional<std::string>& name,
+           const std::string& join, const std::vector<std::string>& order) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs, true, true);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::sets_to_data(
+                cpp, meshioplusplus::data_location_from_name(location), name, join, order));
+        },
+        py::arg("mesh"), py::arg("location"), py::arg("name") = py::none(), py::arg("join") = "-",
+        py::arg("order") = std::vector<std::string>{});
+    m.def(
+        "data_to_sets",
+        [](py::object mesh, const std::string& location, const std::string& key) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs, true, true);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::data_to_sets(
+                cpp, meshioplusplus::data_location_from_name(location), key));
+        },
+        py::arg("mesh"), py::arg("location"), py::arg("key"));
+    // Netgen's periodic arrays are numeric field data in the native Mesh. The
+    // Python API keeps its historical mesh.info representation at this boundary.
     m.def("netgen_write",
           [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
               meshioplusplus_py::PyMeshRefs refs;
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+              const py::object info_obj = pymesh.attr("info");
+              if (py::isinstance<py::dict>(info_obj)) {
+                  const py::dict info = info_obj.cast<py::dict>();
+                  for (const char* key : {"netgen:identifications", "netgen:identificationtypes"})
+                      if (info.contains(key) && !info[key].is_none())
+                          cpp.AddFieldData(
+                              key, meshioplusplus_py::view_from_numpy(
+                                       meshioplusplus_py::ensure_contiguous(info[key], refs)));
+              }
               meshioplusplus::write_netgen(path, cpp, float_fmt);
           });
     m.def("netgen_read", guard_read("netgen", [](const std::string& path) {
-              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
+              py::object mesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
+              py::dict fields = mesh.attr("field_data").cast<py::dict>();
+              py::dict info;
+              for (const char* key : {"netgen:identifications", "netgen:identificationtypes"})
+                  if (fields.contains(key)) {
+                      info[key] = fields[key];
+                      fields.attr("pop")(key);
+                  }
+              if (!info.empty())
+                  mesh.attr("info") = info;
+              return mesh;
           }));
 
     // Provenance bridge (v10.16.0): keeps Python's `_provenance.scope` and the

@@ -211,10 +211,57 @@ mio_read <- function(path, format = NULL, points_only = FALSE, metadata_only = F
 #' @param mesh A `mio_mesh` object.
 #' @param path Destination path.
 #' @param format Explicit format name, or `NULL` to infer it from the extension.
+#' @param encoding One of `default`, `ascii`, `binary`, or `raw_appended`.
+#' @param codec One of `default`, `none`, `zlib`, `lz4`, `zstd`, or `lzf` (PCD only).
+#' @param float_format Optional printf-style format for supported ASCII writers.
 #' @return `NULL`, invisibly.
 #' @export
-mio_write <- function(mesh, path, format = NULL) {
-  invisible(.Call(R_mio_write, mesh, as.character(path), format))
+mio_write <- function(mesh, path, format = NULL, encoding = "default",
+                      codec = "default", float_format = NULL) {
+  encoding <- match.arg(encoding, c("default", "ascii", "binary", "raw_appended"))
+  codec <- match.arg(codec, c("default", "none", "zlib", "lz4", "zstd", "lzf"))
+  invisible(.Call(R_mio_write, mesh, as.character(path), format,
+    as.integer(match(encoding, c("default", "ascii", "binary", "raw_appended")) - 1L),
+    as.integer(match(codec, c("default", "none", "zlib", "lz4", "zstd", "lzf")) - 1L),
+    float_format))
+}
+
+#' Export a coloured glTF surface
+#'
+#' @param mesh A `mio_mesh` object.
+#' @param path Destination `.glb` or `.gltf` path.
+#' @param color_by Point or cell field to colour by; `NULL` disables colouring.
+#' @param cmap Colormap: `viridis`, `coolwarm`, or `turbo`.
+#' @param component 1-based component, or `NULL` for magnitude.
+#' @param vmin,vmax Optional colour range limits.
+#' @param split_angle Smooth-normal split angle in degrees.
+#' @param up_axis Source up axis (`auto`, `z`, `y`, `x`).
+#' @param scale Source units to metres.
+#' @param container `auto`, `glb`, or `gltf`.
+#' @param normal_weight `angle` or `area`.
+#' @param normals,fields,recenter,by_region,unlit Native export flags.
+#' @param nan_color Colour for non-finite field values, as `#rrggbb`.
+#' @return `NULL`, invisibly.
+#' @export
+mio_write_gltf <- function(mesh, path, color_by = NULL, cmap = "viridis", component = NULL,
+                           vmin = NULL, vmax = NULL, split_angle = 30, up_axis = "auto",
+                           scale = 1, container = "auto", normal_weight = "angle",
+                           normals = TRUE, fields = TRUE, recenter = TRUE,
+                           by_region = TRUE, unlit = TRUE, nan_color = "#808080") {
+  container <- match.arg(container, c("auto", "glb", "gltf"))
+  up_axis <- match.arg(up_axis, c("auto", "z", "y", "x"))
+  normal_weight <- match.arg(normal_weight, c("angle", "area"))
+  options <- list(
+    as.integer(match(container, c("auto", "glb", "gltf")) - 1L),
+    as.integer(match(up_axis, c("auto", "z", "y", "x")) - 1L),
+    as.integer(match(normal_weight, c("angle", "area")) - 1L),
+    normals, fields, recenter, by_region, unlit,
+    if (is.null(component)) 1L else as.integer(component), !is.null(component),
+    !is.null(vmin), !is.null(vmax), as.double(split_angle), as.double(scale),
+    if (is.null(vmin)) 0 else as.double(vmin), if (is.null(vmax)) 0 else as.double(vmax),
+    color_by, as.character(cmap), as.character(nan_color)
+  )
+  invisible(.Call(R_mio_write_gltf, mesh, as.character(path), options))
 }
 
 #' Convert a mesh file without materializing it
@@ -1692,6 +1739,31 @@ mio_data_rename <- function(mesh, location, from, to) {
     R_mio_data_rename, mesh, .mio_location(location), as.character(from),
     as.character(to)
   )
+}
+
+#' Convert sets and integer data
+#'
+#' Convert point/cell region-backed sets into scalar integer labels, or one
+#' scalar integer field into sets. Both return a new mesh. Labels are zero-based
+#' (not indices): later overlapping sets win; uncovered entities have label -1.
+#' Side regions, geometry, unrelated data and property sets are preserved.
+#' @param mesh A `mio_mesh` object.
+#' @param location One of `"point"`, `"cell"`.
+#' @param data_name Output field name, or `NULL` to join set names.
+#' @param join_char Separator used when joining set names.
+#' @param order Every set name exactly once, or `NULL` for native region-name order.
+#' @param key Source scalar integer field to convert and remove.
+#' @return A new `mio_mesh`.
+#' @export
+mio_sets_to_data <- function(mesh, location, data_name = NULL, join_char = "-", order = NULL) {
+  .Call(R_mio_sets_to_data, mesh, .mio_location(location), data_name,
+        as.character(join_char), if (is.null(order)) NULL else as.character(order))
+}
+
+#' @rdname mio_sets_to_data
+#' @export
+mio_data_to_sets <- function(mesh, location, key) {
+  .Call(R_mio_data_to_sets, mesh, .mio_location(location), as.character(key))
 }
 
 #' @rdname mio_data_drop

@@ -1,6 +1,6 @@
 # XDMF (`.xdmf`, `.xmf`)
 
-The [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) format: an XML "light data" description of topology/geometry/attributes, whose "heavy data" lives inline in the XML, in external raw binary files, or in a companion HDF5 file. Both XDMF2 and XDMF3 variants exist in the wild; meshio++ reads both, but the C++ core only handles XDMF3.
+The [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) format: an XML "light data" description of topology/geometry/attributes, whose "heavy data" lives inline in the XML, in external raw binary files, or in a companion HDF5 file. Both XDMF2 and XDMF3 are read natively, including absolute DataItem references and embedded Information field data; writing emits XDMF3.
 
 | | |
 |---|---|
@@ -77,9 +77,9 @@ Time-series writers use the same encoding for regions on the shared static mesh,
 
 ## Quirks & limitations
 
-- **XDMF2 vs XDMF3**: dispatched by the major version digit in the root `Version` attribute. **The C++ core only implements version 3** — any XDMF2 file (`Version="2.x"`) always falls back to Python.
+- **XDMF2 vs XDMF3**: the native reader accepts both major versions through the same topology, geometry and array decoder, including selective reads and metadata summaries. Unsupported major versions fail by name.
 - XDMF2 uses `TopologyType`/`GeometryType`; XDMF3 accepts either that or the shorter `Type`, but errors if both are given on the same element simultaneously.
-- A `Reference="XML"` / `Reference="<xpath>"` attribute on a `DataItem` supports XInclude-like references to another `DataItem` elsewhere in the document (only absolute `/`-rooted XPaths are resolved) — not implemented in the C++ core at all; any file using it would throw inside the C++ path and transparently fall back to Python.
+- A `Reference="XML"` / `Reference="<xpath>"` attribute on a `DataItem` resolves another `DataItem` in the same document. `XML` takes the absolute XPath from element text; the other spelling takes it from the attribute. Native full, selective and metadata reads share target validation: relative paths, missing/ambiguous targets, non-DataItem targets and cycles raise `ReadError`. General XInclude expansion and cross-document references are not implemented.
 - The **only** supported node count for a Mixed-topology `line` (`Polyline`) entry is exactly 2 — anything else raises `ReadError`.
 - **The C++ core's type table is a strict subset** of the Python one — it covers up through `hexahedron27` but omits `hexahedron64` through `hexahedron1331`; files using those higher-order types fall back to Python.
 - `data_format="HDF"` is handled by the C++ core only when built with `MESHIO_WITH_HDF5` and `compression in (None, "gzip")`; otherwise Python handles it via `h5py`.

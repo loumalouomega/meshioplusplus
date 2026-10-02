@@ -114,9 +114,14 @@ SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SE
     return mio_r_wrap_mesh(m);
 }
 
-SEXP R_mio_write(SEXP mesh, SEXP path, SEXP format) {
-    mio_r_check(mio_write(mio_r_string(path, "path"), mio_r_mesh(mesh),
-                          mio_r_opt_string(format)),
+SEXP R_mio_write(SEXP mesh, SEXP path, SEXP format, SEXP encoding, SEXP codec, SEXP float_format) {
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.encoding = mio_r_int(encoding, "encoding");
+    opts.codec = mio_r_int(codec, "codec");
+    opts.float_format = mio_r_opt_string(float_format);
+    mio_r_check(mio_write_ex(mio_r_string(path, "path"), mio_r_mesh(mesh),
+                          mio_r_opt_string(format), &opts),
                 "write");
     return R_NilValue;
 }
@@ -126,6 +131,34 @@ SEXP R_mio_convert(SEXP in_path, SEXP in_format, SEXP out_path, SEXP out_format)
                             mio_r_string(out_path, "out_path"),
                             mio_r_opt_string(out_format)),
                 "convert");
+    return R_NilValue;
+}
+
+SEXP R_mio_write_gltf(SEXP mesh, SEXP path, SEXP options) {
+    if (TYPEOF(options) != VECSXP || XLENGTH(options) != 19)
+        Rf_error("invalid glTF option list");
+    mio_gltf_opts opts;
+    mio_gltf_opts_init(&opts);
+    opts.container = mio_r_int(VECTOR_ELT(options, 0), "container");
+    opts.up_axis = mio_r_int(VECTOR_ELT(options, 1), "up_axis");
+    opts.normal_weight = mio_r_int(VECTOR_ELT(options, 2), "normal_weight");
+    opts.normals = mio_r_bool(VECTOR_ELT(options, 3), "normals");
+    opts.fields = mio_r_bool(VECTOR_ELT(options, 4), "fields");
+    opts.recenter = mio_r_bool(VECTOR_ELT(options, 5), "recenter");
+    opts.by_region = mio_r_bool(VECTOR_ELT(options, 6), "by_region");
+    opts.unlit = mio_r_bool(VECTOR_ELT(options, 7), "unlit");
+    opts.component = mio_r_int(VECTOR_ELT(options, 8), "component") - 1;
+    opts.component_set = mio_r_bool(VECTOR_ELT(options, 9), "component_set");
+    opts.vmin_set = mio_r_bool(VECTOR_ELT(options, 10), "vmin_set");
+    opts.vmax_set = mio_r_bool(VECTOR_ELT(options, 11), "vmax_set");
+    opts.split_angle = mio_r_double(VECTOR_ELT(options, 12), "split_angle");
+    opts.scale = mio_r_double(VECTOR_ELT(options, 13), "scale");
+    opts.vmin = mio_r_double(VECTOR_ELT(options, 14), "vmin");
+    opts.vmax = mio_r_double(VECTOR_ELT(options, 15), "vmax");
+    opts.color_by = mio_r_opt_string(VECTOR_ELT(options, 16));
+    opts.cmap = mio_r_opt_string(VECTOR_ELT(options, 17));
+    opts.nan_color = mio_r_opt_string(VECTOR_ELT(options, 18));
+    mio_r_check(mio_write_gltf(mio_r_string(path, "path"), mio_r_mesh(mesh), &opts), "write_gltf");
     return R_NilValue;
 }
 

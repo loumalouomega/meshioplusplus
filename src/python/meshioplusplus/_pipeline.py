@@ -26,6 +26,8 @@ import json
 import os
 import pathlib
 
+import numpy as np
+
 from ._agglomerate import agglomerate
 from ._clean import clean
 from ._convert_cells import convert_cells
@@ -270,6 +272,8 @@ _OP_TABLE = {
     "DataDrop": ("Point", "Cell", "Field", "IgnoreMissing"),
     "DataKeep": ("Point", "Cell", "Field"),
     "DataRename": ("Point", "Cell", "Field"),
+    "SetsToData": ("Location", "Name", "Join", "Order"),
+    "DataToSets": ("Location", "Key"),
     "DataCalc": ("Expr", "Location", "Overwrite"),
     "DataCondition": (
         "Mode",
@@ -372,6 +376,49 @@ def _vec3(step, key):
     if v is None or len(v) != 3:
         raise _err(step["Op"], f"parameter '{key}' must be an array of 3 numbers")
     return v
+
+
+def _apply_sets_data(mesh, step):
+    """Python reference for the region-backed sets/data pipeline steps."""
+    location = _text(step, "Location", "cell")
+    if location not in ("point", "cell"):
+        raise _err(step["Op"], "Location must be 'point' or 'cell'")
+    mesh = mesh.copy()
+    if step["Op"] == "DataToSets":
+        if "Key" not in step:
+            raise _err(step["Op"], "'DataToSets' requires 'Key'")
+        getattr(mesh, f"{location}_data_to_sets")(_text(step, "Key", ""))
+        return mesh
+    sets = getattr(mesh, f"{location}_sets")
+    names = _svec(step, "Order") or list(sets)
+    if (
+        len(names) != len(sets)
+        or len(set(names)) != len(names)
+        or set(names) != set(sets)
+    ):
+        raise _err(step["Op"], "Order must name every set exactly once")
+    if not names:
+        return mesh
+    name = _text(step, "Name", _text(step, "Join", "-").join(names))
+    if mesh._sets_data_core(
+        "sets_to_data", location, name=name, join=_text(step, "Join", "-"), order=names
+    ):
+        return mesh
+    if location == "point":
+        labels = np.full(len(mesh.points), -1, dtype=np.int64)
+        for label, set_name in enumerate(names):
+            labels[sets[set_name]] = label
+        mesh.point_data[name] = labels
+        mesh.point_sets = {}
+    else:
+        blocks = [np.full(len(cb), -1, dtype=np.int64) for cb in mesh.cells]
+        for label, set_name in enumerate(names):
+            for b, entries in enumerate(sets[set_name]):
+                if entries is not None:
+                    blocks[b][entries] = label
+        mesh.cell_data[name] = blocks
+        mesh.cell_sets = {}
+    return mesh
 
 
 def _total_cells(mesh):
@@ -1047,6 +1094,8 @@ def _apply_step(mesh, step, steps, warnings):
         mesh = reorder(mesh, method=_text(step, "Method", "rcm"))
     elif op in ("DataDrop", "DataKeep", "DataRename"):
         mesh = _apply_data_manage(mesh, op, step)
+    elif op in ("SetsToData", "DataToSets"):
+        mesh = _apply_sets_data(mesh, step)
     elif op == "DataCalc":
         spec = _text(step, "Expr", "")
         # "NAME = EXPR" splits on the FIRST '=' (the CLI's documented rule).
@@ -1167,9 +1216,9 @@ def _write_kwargs_from(out, out_path):
             "'raw_appended'"
         )
     codec = out.get("Codec")
-    if codec is not None and codec not in ("none", "zlib", "lz4", "zstd"):
+    if codec is not None and codec not in ("none", "zlib", "lz4", "zstd", "lzf"):
         raise ValueError(
-            "meshio++: pipeline: Output.Codec must be 'none', 'zlib', 'lz4' or 'zstd'"
+            "meshio++: pipeline: Output.Codec must be 'none', 'zlib', 'lz4', 'zstd' or 'lzf'"
         )
     write_kwargs = {}
     if encoding != "default" or codec is not None:

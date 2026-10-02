@@ -70,11 +70,11 @@ struct WriteOptions {
     WriteEncoding mEncoding = WriteEncoding::Default;
 
     /**
-     * @brief Block compression codec for the VTK-XML formats (vtu/vtp).
+     * @brief Compression codec for VTK-XML, or LZF for PCD binary_compressed.
      *
      * `Zlib` is the default those formats already use when binary; `None`
-     * disables compression. Errors for any other format -- no other format in
-     * meshio++ has a block codec, so naming one is a mistake.
+     * disables compression. LZF selects PCD's compressed binary encoding and
+     * is rejected for VTK; VTK codecs are rejected for PCD.
      */
     detail::VtkCodec mCodec = detail::VtkCodec::Zlib;
     bool mCodecSet = false;  ///< whether mCodec was chosen explicitly

@@ -311,16 +311,98 @@ function read(path::AbstractString; format::AbstractString="",
     Mesh(_check_ptr(ptr))
 end
 
+# Shared C write-option layout for ordinary writes and transient sequences.
+struct _WriteOpts
+    encoding::Cint
+    codec::Cint
+    float_format::Cstring
+    reserved::NTuple{5,Int64}
+end
+
 """
-    write(mesh, path; format="")
+    write(mesh, path; format="", encoding="default", codec="default", float_format="")
 
 Write a mesh. `format` empty infers from the extension.
 
 Not exported (it would shadow `Base.write`): call it qualified.
 """
-function write(m::Mesh, path::AbstractString; format::AbstractString="")
-    _check(ccall(_sym(:mio_write), Cint, (Cstring, Ptr{Cvoid}, Cstring),
-                 path, _handle(m), format))
+function write(m::Mesh, path::AbstractString; format::AbstractString="",
+               encoding::AbstractString="default", codec::AbstractString="default",
+               float_format::AbstractString="")
+    encodings = ("default", "ascii", "binary", "raw_appended")
+    codecs = ("default", "none", "zlib", "lz4", "zstd", "lzf")
+    e = findfirst(==(encoding), encodings)
+    c = findfirst(==(codec), codecs)
+    isnothing(e) && throw(ArgumentError("unknown write encoding: $encoding"))
+    isnothing(c) && throw(ArgumentError("unknown write codec: $codec"))
+    ff = String(float_format)
+    GC.@preserve ff begin
+        opts = _WriteOpts(Cint(e - 1), Cint(c - 1),
+                          isempty(ff) ? Ptr{Cchar}(C_NULL) : pointer(ff), ntuple(_ -> Int64(0), 5))
+        _check(ccall(_sym(:mio_write_ex), Cint,
+                     (Cstring, Ptr{Cvoid}, Cstring, Ref{_WriteOpts}),
+                     path, _handle(m), format, opts))
+    end
+    nothing
+end
+
+struct _GltfOpts
+    container::Cint
+    up_axis::Cint
+    normal_weight::Cint
+    normals::Cint
+    fields::Cint
+    recenter::Cint
+    by_region::Cint
+    unlit::Cint
+    component::Cint
+    component_set::Cint
+    vmin_set::Cint
+    vmax_set::Cint
+    split_angle::Cdouble
+    scale::Cdouble
+    vmin::Cdouble
+    vmax::Cdouble
+    color_by::Cstring
+    cmap::Cstring
+    nan_color::Cstring
+    reserved::NTuple{8,Int64}
+end
+
+"""
+    write_gltf(mesh, path; color_by="", cmap="viridis", component=nothing,
+               vmin=nothing, vmax=nothing, split_angle=30, up_axis="auto", scale=1, ...)
+
+Export a coloured surface as GLB or glTF. Component indices are 1-based;
+`nothing` selects vector magnitude. All options mirror the native glTF writer.
+"""
+function write_gltf(m::Mesh, path::AbstractString; color_by::AbstractString="",
+                    cmap::AbstractString="viridis", nan_color::AbstractString="#808080",
+                    component::Union{Nothing,Integer}=nothing, vmin=nothing, vmax=nothing,
+                    split_angle::Real=30, scale::Real=1, container::AbstractString="auto",
+                    up_axis::AbstractString="auto", normal_weight::AbstractString="angle",
+                    normals::Bool=true, fields::Bool=true, recenter::Bool=true,
+                    by_region::Bool=true, unlit::Bool=true)
+    sizeof(_GltfOpts) == 168 || error("glTF options ABI layout mismatch")
+    co = findfirst(==(container), ("auto", "glb", "gltf"))
+    ax = findfirst(==(up_axis), ("auto", "z", "y", "x"))
+    nw = findfirst(==(normal_weight), ("angle", "area"))
+    isnothing(co) && throw(ArgumentError("invalid glTF container: $container"))
+    isnothing(ax) && throw(ArgumentError("invalid glTF up_axis: $up_axis"))
+    isnothing(nw) && throw(ArgumentError("invalid glTF normal_weight: $normal_weight"))
+    color, cm, nan = String(color_by), String(cmap), String(nan_color)
+    GC.@preserve color cm nan begin
+        opts = _GltfOpts(Cint(co - 1), Cint(ax - 1), Cint(nw - 1), Cint(normals), Cint(fields),
+                         Cint(recenter), Cint(by_region), Cint(unlit),
+                         isnothing(component) ? Cint(0) : Cint(component - 1),
+                         Cint(!isnothing(component)), Cint(!isnothing(vmin)), Cint(!isnothing(vmax)),
+                         Cdouble(split_angle), Cdouble(scale),
+                         isnothing(vmin) ? 0.0 : Cdouble(vmin), isnothing(vmax) ? 0.0 : Cdouble(vmax),
+                         pointer(color), pointer(cm), pointer(nan), ntuple(_ -> Int64(0), 8))
+        _check(ccall(_sym(:mio_write_gltf), Cint, (Cstring, Ptr{Cvoid}, Ref{_GltfOpts}),
+                     path, _handle(m), opts))
+    end
+    nothing
 end
 
 """

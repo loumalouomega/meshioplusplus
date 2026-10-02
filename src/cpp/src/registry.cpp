@@ -574,6 +574,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".fem", "nastran"},
         {".op2", "nastran_op2"},
         {".vol", "netgen"},
+        {".vol.gz", "netgen"},
         {".obj", "obj"},
         // OpenFOAM: the `.foam` marker file. A case *directory* has no
         // extension at all, so that form still needs an explicit format.

@@ -112,6 +112,13 @@ inline std::ifstream make_classic_ifstream(const std::filesystem::path& rPath,
 }
 
 /// An output file stream over @p rPath; on failure `fail()` is set, as with the constructor.
+inline std::ofstream make_classic_ofstream() {
+    std::ofstream stream;
+    imbue_classic(stream);
+    return stream;
+}
+
+/// An output file stream over @p rPath; on failure `fail()` is set, as with the constructor.
 inline std::ofstream make_classic_ofstream(const std::filesystem::path& rPath,
                                            std::ios_base::openmode Mode = std::ios_base::out) {
     std::ofstream stream;

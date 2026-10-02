@@ -399,8 +399,11 @@ class Mesh:
         return read(path_or_buf, file_format)
 
     def cell_sets_to_data(self, data_name: Union[str, None] = None):
-        # If possible, convert cell sets to integer cell data. This is possible if all
-        # cells appear exactly in one group.
+        # Later overlapping sets win; uncovered cells receive -1.
+        if not self._extra_cell_sets and self._sets_data_core(
+            "sets_to_data", "cell", name=data_name, order=list(self.cell_sets)
+        ):
+            return
         default_value = -1
         if len(self.cell_sets) > 0:
             intfun = []
@@ -428,6 +431,10 @@ class Mesh:
             self.cell_sets = {}
 
     def point_sets_to_data(self, join_char: str = "-") -> None:
+        if self._sets_data_core(
+            "sets_to_data", "point", join=join_char, order=list(self.point_sets)
+        ):
+            return
         # now for the point sets
         # Go for -1 as the default value. (NaN is not int.)
         default_value = -1
@@ -450,12 +457,15 @@ class Mesh:
     # This is not useful in many cases, as one usually only wants one
     # particular data array (e.g., "MaterialIDs") converted to sets.
     def cell_data_to_sets(self, key: str):
-        """Convert point_data to cell_sets."""
+        """Convert scalar integer cell_data to cell_sets."""
         data = self.cell_data[key]
 
         # handle all int and uint data
         if not all(v.dtype.kind in ["i", "u"] for v in data):
             raise RuntimeError(f"cell_data['{key}'] is not int data.")
+
+        if self._sets_data_core("data_to_sets", "cell", key=key):
+            return
 
         tags = np.unique(np.concatenate(data))
 
@@ -485,6 +495,9 @@ class Mesh:
         if not all(v.dtype.kind in ["i", "u"] for v in data):
             raise RuntimeError(f"point_data['{key}'] is not int data.")
 
+        if self._sets_data_core("data_to_sets", "point", key=key):
+            return
+
         tags = np.unique(data)
 
         # try and get the names by splitting the key along "-" (this is how
@@ -504,3 +517,52 @@ class Mesh:
 
         # remove the cell data
         del self.point_data[key]
+
+    def _sets_data_core(self, operation, location, **kwargs):
+        """Use the native data-only kernel without replacing Python metadata."""
+        if operation == "sets_to_data" and not kwargs.get("order"):
+            return True  # An empty set collection is a no-op, without a mesh clone.
+        if location == "cell" and self._extra_cell_sets:
+            # The reference view knows how to resolve metadata-name collisions.
+            return False
+        try:
+            from . import _core
+        except ImportError:
+            return False
+        if _core is None or not hasattr(_core, operation):
+            return False
+        from ._fallback import core_op_declined
+
+        try:
+            result = getattr(_core, operation)(self, location, **kwargs)
+        except Exception as exc:
+            if not core_op_declined(exc, operation):
+                raise
+            return False
+        # Do not replace geometry, info, field_data, property sets, or the
+        # non-membership metadata stored in _extra_cell_sets. Native conversion
+        # may not represent those, and these methods must not touch them.
+        if location == "point":
+            self.point_data = result.point_data
+        else:
+            self.cell_data = result.cell_data
+        if operation == "sets_to_data" and kwargs.get("order"):
+            # Preserve the historical Python warning channel and wording.
+            key = kwargs.get("name")
+            if key is None:
+                key = kwargs.get("join", "-").join(kwargs["order"])
+            if location == "point":
+                if np.any(result.point_data[key] == -1):
+                    warn(
+                        "Not all points are part of a point set. Using default value -1."
+                    )
+            else:
+                for values in result.cell_data[key]:
+                    count = np.sum(values == -1)
+                    if count:
+                        warn(
+                            f"{count} cells are not part of any cell set. Using default value -1."
+                        )
+                        break
+        self.regions[:] = result.regions
+        return True

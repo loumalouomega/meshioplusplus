@@ -235,6 +235,8 @@ const char* vtk_codec_name(VtkCodec codec) {
             return "zstd";
         case VtkCodec::LZMA:
             return "lzma";
+        case VtkCodec::LZF:
+            return "lzf";
         default:
             return "none";
     }

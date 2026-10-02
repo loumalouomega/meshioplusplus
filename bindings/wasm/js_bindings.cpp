@@ -135,6 +135,7 @@
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -1831,6 +1832,62 @@ val effective_write_info(const val& rMeshObj, const val& rOptions, const std::st
  *   an option the format cannot honour, `info` given for a format with no
  *   Info-bearing writer, or malformed input.
  */
+val write_gltf_mesh(const std::string& rPath, const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::GltfWriteOptions opts;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "glTF options",
+                                {"colorBy", "cmap", "component", "vmin", "vmax", "splitAngle",
+                                 "upAxis", "scale", "container", "normalWeight", "normals",
+                                 "fields", "recenter", "byRegion", "unlit", "nanColor"});
+            const auto present = [&](const char* pKey) {
+                return !rOptions[pKey].isUndefined() && !rOptions[pKey].isNull();
+            };
+            if (present("colorBy"))
+                opts.mColorBy = settings_string(rOptions, "colorBy", "glTF options");
+            if (present("cmap"))
+                opts.mCmap = settings_string(rOptions, "cmap", "glTF options");
+            if (present("nanColor"))
+                opts.mNanColor = settings_string(rOptions, "nanColor", "glTF options");
+            if (present("upAxis"))
+                opts.mUpAxis = meshioplusplus::gltf_up_axis_from_name(
+                    settings_string(rOptions, "upAxis", "glTF options"));
+            if (present("container"))
+                opts.mContainer = meshioplusplus::gltf_container_from_name(
+                    settings_string(rOptions, "container", "glTF options"));
+            if (present("normalWeight"))
+                opts.mNormalWeight = meshioplusplus::sdf_weight_from_name(
+                    settings_string(rOptions, "normalWeight", "glTF options"));
+            if (present("component"))
+                opts.mComponent = rOptions["component"].as<int>();
+            if (present("vmin"))
+                opts.mVMin = rOptions["vmin"].as<double>();
+            if (present("vmax"))
+                opts.mVMax = rOptions["vmax"].as<double>();
+            if (present("splitAngle"))
+                opts.mSplitAngle = rOptions["splitAngle"].as<double>();
+            if (present("scale"))
+                opts.mScale = rOptions["scale"].as<double>();
+            if (present("normals"))
+                opts.mNormals = rOptions["normals"].as<bool>();
+            if (present("fields"))
+                opts.mFields = rOptions["fields"].as<bool>();
+            if (present("recenter"))
+                opts.mRecenter = rOptions["recenter"].as<bool>();
+            if (present("byRegion"))
+                opts.mByRegion = rOptions["byRegion"].as<bool>();
+            if (present("unlit"))
+                opts.mUnlit = rOptions["unlit"].as<bool>();
+        }
+        const auto dir = memfs_dir_of(rPath);
+        const DirSnapshot before = snapshot_dir(dir);
+        ensure_new_write_tick(before);
+        meshioplusplus::detail::provenance_begin_write();
+        meshioplusplus::write_gltf(rPath, val_to_mesh(rMeshObj), opts);
+        return string_array_from(written_paths_since(dir, before));
+    });
+}
+
 val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat,
                const val& rOptions) {
     return with_js_errors([&]() -> val {
@@ -4423,6 +4480,25 @@ val data_rename_js(const val& rMeshObj, const std::string& rLocation, const std:
     });
 }
 
+val sets_to_data_js(const val& rMeshObj, const std::string& rLocation, const val& rName,
+                    const std::string& rJoin, const val& rOrder) {
+    return with_js_errors([&]() -> val {
+        std::optional<std::string> name;
+        if (!rName.isNull() && !rName.isUndefined())
+            name = rName.as<std::string>();
+        return mesh_to_val(meshioplusplus::sets_to_data(
+            val_to_mesh(rMeshObj), meshioplusplus::data_location_from_name(rLocation), name, rJoin,
+            val_to_string_vector(rOrder)));
+    });
+}
+
+val data_to_sets_js(const val& rMeshObj, const std::string& rLocation, const std::string& rKey) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::data_to_sets(
+            val_to_mesh(rMeshObj), meshioplusplus::data_location_from_name(rLocation), rKey));
+    });
+}
+
 /** @brief Average point_data onto the cells (mean over each cell's nodes).
  *  An empty `names` converts every point_data array. Output is Float64. */
 val data_point_to_cell_js(const val& rMeshObj, const val& rNames, const std::string& rSuffix) {
@@ -5044,6 +5120,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("readMetadata", &read_metadata_js);
     emscripten::function("readerSupportsOptions", &reader_supports_options_js);
     emscripten::function("writeMesh", &write_mesh);
+    emscripten::function("writeGltf", &write_gltf_mesh);
     emscripten::function("convert", &convert);
     emscripten::function("convertSurface", &convert_surface);
     emscripten::function("convertSurfaceOps", &convert_surface_ops);
@@ -5126,6 +5203,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("dataDrop", &data_drop_js);
     emscripten::function("dataKeep", &data_keep_js);
     emscripten::function("dataRename", &data_rename_js);
+    emscripten::function("setsToData", &sets_to_data_js);
+    emscripten::function("dataToSets", &data_to_sets_js);
     emscripten::function("dataPointToCell", &data_point_to_cell_js);
     emscripten::function("dataCellToPoint", &data_cell_to_point_js);
     emscripten::function("dataCalc", &data_calc_js);

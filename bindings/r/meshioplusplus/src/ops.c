@@ -1430,6 +1430,28 @@ SEXP R_mio_partition_labels(SEXP mesh, SEXP nparts, SEXP method, SEXP imbalance,
 
 /* --- data operations ---------------------------------------------------- */
 
+SEXP R_mio_sets_to_data(SEXP mesh, SEXP location, SEXP data_name, SEXP join_char, SEXP order) {
+    SEXP shelter;
+    int64_t count = 0;
+    const char* const* nm = mio_r_names(order, &count, &shelter);
+    mio_mesh* out =
+        mio_sets_to_data(mio_r_mesh(mesh), (mio_data_location)mio_r_int(location, "location"),
+                         mio_r_opt_string(data_name), mio_r_opt_string(join_char), nm, count);
+    UNPROTECT(1);
+    if (out == NULL)
+        mio_r_fail("sets_to_data");
+    return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_data_to_sets(SEXP mesh, SEXP location, SEXP key) {
+    mio_mesh* out =
+        mio_data_to_sets(mio_r_mesh(mesh), (mio_data_location)mio_r_int(location, "location"),
+                         mio_r_string(key, "key"));
+    if (out == NULL)
+        mio_r_fail("data_to_sets");
+    return mio_r_wrap_mesh(out);
+}
+
 SEXP R_mio_data_drop(SEXP mesh, SEXP location, SEXP names, SEXP ignore_missing) {
     SEXP shelter;
     int64_t count = 0;

@@ -26,6 +26,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // External includes
@@ -118,10 +119,42 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
     return p == 4 ? DType::Float32 : DType::Float64;
 }
 
-NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
+// References are document-local. Resolve iteratively so cycles never recurse
+// into the parser, and share this with metadata reads (which need the target's
+// Dimensions rather than the reference node's usually absent attributes).
+pugi::xml_node xdmf_resolve_data_item(pugi::xml_node node) {
+    std::unordered_set<const void*> visited;
+    while (node.attribute("Reference")) {
+        if (!visited.insert(node.internal_object()).second)
+            throw ReadError("XDMF: cyclic DataItem reference");
+        const std::string ref = node.attribute("Reference").value();
+        std::string xpath = ref == "XML" ? node.text().get() : ref;
+        const std::size_t first = xpath.find_first_not_of(" \t\r\n");
+        const std::size_t last = xpath.find_last_not_of(" \t\r\n");
+        xpath = first == std::string::npos ? "" : xpath.substr(first, last - first + 1);
+        if (xpath.empty() || xpath[0] != '/')
+            throw ReadError("XDMF: DataItem reference must be an absolute XPath");
+        try {
+            const auto targets = node.root().select_nodes(xpath.c_str());
+            if (targets.size() != 1 || std::string(targets[0].node().name()) != "DataItem")
+                throw ReadError("XDMF: reference must select exactly one DataItem: " + xpath);
+            node = targets[0].node();
+        } catch (const pugi::xpath_exception& exc) {
+            throw ReadError("XDMF: invalid reference XPath '" + xpath + "': " + exc.what());
+        }
+    }
+    if (!node || std::string(node.name()) != "DataItem")
+        throw ReadError("XDMF: missing DataItem");
+    return node;
+}
+
+NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
+    const pugi::xml_node rDi = xdmf_resolve_data_item(rItem);
     std::vector<std::size_t> dims = parse_dims(rDi.attribute("Dimensions").value());
 
     std::string data_type = "Float";
+    if (rDi.attribute("DataType") && rDi.attribute("NumberType"))
+        throw ReadError("XDMF: DataItem has both DataType and NumberType");
     if (rDi.attribute("DataType"))
         data_type = rDi.attribute("DataType").value();
     else if (rDi.attribute("NumberType"))
@@ -408,6 +441,30 @@ void xdmf_attach_regions(Mesh& rMesh, std::vector<Region>& rRegions) {
     for (Region& r_region : rRegions)
         rMesh.AddRegion(std::move(r_region));
 }
+
+void xdmf_read_information(const pugi::xml_node& rNode, Mesh& rMesh, const ReadOptions& rOpts) {
+    pugi::xml_document info;
+    if (!info.load_string(rNode.text().get()))
+        throw ReadError("XDMF: malformed Information payload");
+    for (pugi::xml_node entry : info.document_element().children()) {
+        if (!entry.attribute("key") || !entry.attribute("dim"))
+            throw ReadError("XDMF: Information entry needs key and dim");
+        if (!rOpts.WantsArray(entry.attribute("key").value()))
+            continue;
+        std::int64_t tag = 0, dim = 0;
+        detail::TextStream tag_stream(entry.text().get());
+        detail::TextStream dim_stream(entry.attribute("dim").value());
+        if (!(tag_stream >> tag) || !(dim_stream >> dim))
+            throw ReadError("XDMF: invalid Information tag or dimension");
+        std::string extra;
+        if ((tag_stream >> extra) || (dim_stream >> extra))
+            throw ReadError("XDMF: invalid Information tag or dimension");
+        NDArray data(DType::Int64, {2});
+        data.As<std::int64_t>()[0] = tag;
+        data.As<std::int64_t>()[1] = dim;
+        rMesh.AddFieldData(entry.attribute("key").value(), std::move(data));
+    }
+}
 }  // namespace
 
 Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
@@ -488,8 +545,8 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
         } else if (tag == "Set") {
             xdmf_read_set(c, base_dir, regions);
         } else if (tag == "Information") {
-            // field_data not handled by the C++ core
-            throw ReadError("XDMF: Information section handled by Python fallback");
+            if (want_data)
+                xdmf_read_information(c, mesh, rOpts);
         } else {
             throw ReadError("XDMF: unknown section " + tag);
         }
@@ -504,7 +561,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
 
 MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
-    if (!doc.load_file(rPath.c_str(), pugi::parse_minimal))
+    if (!doc.load_file(rPath.c_str()))
         throw ReadError("XDMF: could not parse " + rPath);
     XdmfDoc parsed = xdmf_resolve(doc);
 
@@ -541,16 +598,16 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                                                           : c.attribute("TopologyType").value();
             if (ctype == "Mixed")
                 throw ReadError("XDMF: Mixed topology needs the full reader to be summarized");
-            const std::vector<std::size_t> dims =
-                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            const std::vector<std::size_t> dims = parse_dims(
+                xdmf_resolve_data_item(c.child("DataItem")).attribute("Dimensions").value());
             CellBlockInfo info;
             info.mType = xdmf_to_meshio(ctype);
             info.mNumCells = dims.empty() ? 0 : dims[0];
             info.mNodesPerCell = dims.size() >= 2 ? dims[1] : 0;
             meta.mCellBlocks.push_back(std::move(info));
         } else if (tag == "Geometry") {
-            const std::vector<std::size_t> dims =
-                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            const std::vector<std::size_t> dims = parse_dims(
+                xdmf_resolve_data_item(c.child("DataItem")).attribute("Dimensions").value());
             meta.mNumPoints = dims.empty() ? 0 : dims[0];
             meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
         } else if (!parsed.mSteps.empty() && tag != "Set") {
@@ -577,8 +634,8 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
             rs.mName = c.attribute("Name").value();
             rs.mKind = kind;
             xdmf_set_dim_tag(c, rs.mDim, rs.mTag);
-            const std::vector<std::size_t> dims =
-                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            const std::vector<std::size_t> dims = parse_dims(
+                xdmf_resolve_data_item(c.child("DataItem")).attribute("Dimensions").value());
             rs.mNumEntries = dims.empty() ? 0 : dims[0];
             bool merged = false;
             for (RegionSummary& r_prev : meta.mRegions)
@@ -589,7 +646,9 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
             if (!merged)
                 meta.mRegions.push_back(std::move(rs));
         } else if (tag == "Information") {
-            throw ReadError("XDMF: Information section handled by Python fallback");
+            Mesh fields;
+            xdmf_read_information(c, fields, {});
+            meta.mFieldDataNames = fields.FieldDataNames();
         } else {
             throw ReadError("XDMF: unknown section " + tag);
         }
@@ -597,6 +656,7 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
     // Match the uniform API's sorted-name guarantee.
     std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
     std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+    std::sort(meta.mFieldDataNames.begin(), meta.mFieldDataNames.end());
 
     meta.mHasBBox = false;  // would require reading the Geometry payload
     return meta;

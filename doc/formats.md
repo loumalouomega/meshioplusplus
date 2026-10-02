@@ -1,5 +1,7 @@
 # Supported Formats
 
+The shared native readers now accept XDMF2/3 with absolute DataItem references and Netgen name tables, periodic arrays and two-line edges (`.vol.gz` requires zlib). Flat writers expose PCD `binary_compressed` through LZF write options and all glTF colour/axis/scale options. See [XDMF](formats/xdmf.md), [Netgen](formats/netgen.md), [PCD](formats/pcd.md) and [glTF](formats/gltf.md).
+
 XDMF time-series writers preserve fixed point/cell/side regions as `<Set>` elements in the shared mesh grid, in XML, Binary and HDF storage. Native reads return those regions at every step; Python's `TimeSeriesReader` exposes them as `reader.regions`. See [XDMF time series](xdmf_time_series.md#shared-named-regions).
 
 Gmsh 2.2/4.0/4.1 periodic links read natively via the format metadata channel and write natively in 2.2/4.1. Python carries them automatically; flat bindings need info-bearing reads/writes, and info-less native reads refuse them instead of dropping node pairs. See [Gmsh periodic metadata](formats/gmsh.md#periodic-metadata-across-bindings).

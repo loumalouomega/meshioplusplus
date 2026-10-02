@@ -29,9 +29,9 @@
  * <Attribute Name=".." AttributeType="Scalar|Vector|Tensor|Tensor6|Matrix"
  * Center="Node|Cell|Grid"><DataItem .../></Attribute></Grid></Domain>
  * </Xdmf>`. Both XDMF2 and XDMF3 exist in the wild (dispatched by the major
- * version digit in the root `Version` attribute), but **the C++ core only
- * implements version 3** — any `Version="2.x"` file throws ReadError and
- * falls back to Python. XDMF3 accepts either `Type=` or `TopologyType=`/
+ * version digit in the root `Version` attribute). The native reader accepts
+ * both versions, including absolute DataItem references and embedded
+ * Information field data. It accepts either `Type=` or `TopologyType=`/
  * `GeometryType=` but errors if both are given on the same element.
  *
  * `Format="XML"` DataItem text is whitespace-separated inline numbers;
@@ -50,10 +50,10 @@
  * extra "point count" field that **must equal exactly 2** — anything else
  * throws ReadError. The C++ type table is a strict subset of the Python
  * one: it covers through `hexahedron27` but omits the higher-order
- * `hexahedron64`..`hexahedron1331` types, and does not implement
- * `Reference="XML"`/XPath DataItem references or the XDMF2-only
- * `Information`-based `field_data` — all of these throw and fall back to
- * Python. Points are restricted to dimension <=3 on write.
+ * `hexahedron64`..`hexahedron1331` types, which fall back to Python.
+ * Absolute DataItem references and embedded Information field data are read
+ * natively; cycles and invalid reference targets raise ReadError.
+ * Points are restricted to dimension <=3 on write.
  *
  * Temporal XDMF (a `GridType="Collection" CollectionType="Temporal"` grid) is
  * *written* by `formats/xdmf_time_series.hpp`, which is a stateful multi-call
@@ -96,8 +96,8 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `<Attribute Center="Node"|
  *       "Cell">` elements, keyed by the raw attribute name.
  */
-MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
-                int gzip_level = -1);
+MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh,
+                                   const std::string& rDataFormat, int gzip_level = -1);
 
 /**
  * @brief Read an XDMF3 file's first `<Grid>`.
@@ -109,9 +109,8 @@ MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh, 
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if the file is XDMF2 (`Version="2.x"`), uses a
- *         `Reference` DataItem attribute, an XDMF2 `Information` field-data
- *         block, a Mixed `Polyline` entry with a point count other than 2, a
+ * @throws ReadError on an invalid reference/Information payload,
+ *         a Mixed `Polyline` entry with a point count other than 2, a
  *         cell type outside the C++ type table (e.g. `hexahedron64`+), or a
  *         `Format="HDF"` DataItem on a build without HDF5 support — the shim
  *         then falls back to the Python/`h5py` reader.
@@ -132,6 +131,7 @@ MESHIOPLUSPLUS_API Mesh read_xdmf(const std::string& rPath, const ReadOptions& r
  * @throws ReadError on Mixed topology (which needs the full reader to resolve
  *         per-block counts) and on everything `read_xdmf` rejects
  */
-MESHIOPLUSPLUS_API MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_xdmf_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

@@ -350,6 +350,7 @@ def _register_conversion(server: FastMCP) -> None:
         """Run a settings.json operation pipeline: read Input.Path, apply the
         Operations chain (Transform/Gradient/Refine/Clean/... -- PascalCase
         ops and keys, see doc/pipeline.md), write Output.Path.
+        Output.Codec='lzf' selects PCD compressed binary; ASCII is incompatible.
         input_path/output_path override the paths in the settings file; both
         the settings file and the paths inside it stay inside the sandbox
         root when one is configured."""
@@ -2282,6 +2283,38 @@ def _register_operations(server: FastMCP) -> None:
 # Data operations                                                             #
 # --------------------------------------------------------------------------- #
 def _register_data(server: FastMCP) -> None:
+    @server.tool()
+    def sets_data(
+        input_path: str,
+        output_path: str,
+        direction: str = "sets_to_data",
+        location: str = "cell",
+        key: Optional[str] = None,
+        data_name: Optional[str] = None,
+        join_char: str = "-",
+        order: Optional[List[str]] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Convert point/cell sets and scalar integer labels. direction is
+        sets_to_data|data_to_sets; location is point|cell. Labels are zero-based,
+        later overlaps win, uncovered rows are -1. data_to_sets requires key;
+        sets_to_data can choose data_name, join_char and explicit set order.
+        The converted sets or source field are removed; side regions survive."""
+        return _guard(
+            _tools.tool_sets_data,
+            input_path=input_path,
+            output_path=output_path,
+            direction=direction,
+            location=location,
+            key=key,
+            data_name=data_name,
+            join_char=join_char,
+            order=order,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
     @server.tool()
     def data_manage(
         input_path: str,

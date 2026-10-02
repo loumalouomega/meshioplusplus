@@ -26,9 +26,8 @@
  * single default per format and cannot express those flags); operation verbs use
  * the backend-agnostic operations layer (`operations/*.hpp`).
  *
- * Point/cell *sets* and the `convert -s/-d` sets<->data conversions never cross
- * into the C++ core (they live only in the Python `Mesh`), so those are reported
- * as unsupported here -- matching the documented C-API/WASM limitations.
+ * Point/cell sets use region-backed membership; `convert -s/-d` converts
+ * between those memberships and scalar integer data through the uniform API.
  */
 
 // System includes
@@ -471,11 +470,11 @@ void print_usage(std::ostream& os) {
           "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
-           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
-           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
-           "  find-interface         Match boundary facets of two Cell regions\n"
-           "  contact-pairs          Project slave Point regions onto master facets\n"
-           "  split-interface        Split point fans along a Side region\n"
+          "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
+          "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
+          "  find-interface         Match boundary facets of two Cell regions\n"
+          "  contact-pairs          Project slave Point regions onto master facets\n"
+          "  split-interface        Split point fans along a Side region\n"
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
@@ -551,8 +550,7 @@ void print_usage(std::ostream& os) {
           "                          whole transient dataset (see doc/sequences.md)\n\n"
           "  -v, --version           Display version information\n"
           "  -h, --help              Show this message\n\n"
-          "notes: point/cell sets and 'convert -s/-d' are unavailable in the native\n"
-          "       CLI (they live only in the Python Mesh); use the Python CLI for those.\n"
+          "notes: convert -s/-d converts region-backed point/cell sets and integer data.\n"
           "       view/screenshot need a build with -DMESHIOPLUSPLUS_WITH_POLYSCOPE=ON;\n"
           "       they are listed in every build but otherwise report that.\n";
 }
@@ -806,11 +804,6 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert requires exactly INFILE and OUTFILE");
-    if (has_flag(p, "sets-to-int-data") || has_flag(p, "int-data-to-sets"))
-        throw std::runtime_error(
-            "the -s/--sets-to-int-data and -d/--int-data-to-sets options are not "
-            "supported by the native CLI (sets live only in the Python Mesh); use the "
-            "Python CLI for these");
 
     const std::string& infile = p.positionals[0];
     const std::string& outfile = p.positionals[1];
@@ -827,6 +820,9 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     // usable mesh -- only the data is narrowed.
     meshioplusplus::ReadOptions opts;
     opts.mPointsOnly = has_flag(p, "points-only");
+    if ((opts.mPointsOnly || has_opt(p, "arrays")) &&
+        (has_flag(p, "sets-to-int-data") || has_flag(p, "int-data-to-sets")))
+        throw std::invalid_argument("--points-only/--arrays cannot be combined with -s/-d");
     if (has_opt(p, "arrays")) {
         if (opts.mPointsOnly)
             throw std::runtime_error("--points-only and --arrays are mutually exclusive");
@@ -871,6 +867,9 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         if (!sequence && !has_opt(p, "time-step"))
             sequence = meshioplusplus::sequence_num_steps(infile, in_fmt) > 1;
     }
+    if (sequence && (has_flag(p, "sets-to-int-data") || has_flag(p, "int-data-to-sets")))
+        throw std::invalid_argument(
+            "-s/-d are not available for a sequence; use the pipeline's Operations chain");
     if (sequence)
         return convert_sequence(p, infile, outfile, in_fmt, out_fmt, opts, ascii, appended,
                                 float_fmt, extra_inputs);
@@ -904,6 +903,18 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     }
 
     Mesh mesh = read_mesh_cli(infile, in_fmt, opts);
+    if (has_flag(p, "sets-to-int-data")) {
+        mesh = meshioplusplus::sets_to_data(mesh, meshioplusplus::DataLocation::Point);
+        mesh = meshioplusplus::sets_to_data(mesh, meshioplusplus::DataLocation::Cell);
+    }
+    if (has_flag(p, "int-data-to-sets")) {
+        const auto points = mesh.PointDataNames();
+        const auto cells = mesh.CellDataNames();
+        for (const auto& key : points)
+            mesh = meshioplusplus::data_to_sets(mesh, meshioplusplus::DataLocation::Point, key);
+        for (const auto& key : cells)
+            mesh = meshioplusplus::data_to_sets(mesh, meshioplusplus::DataLocation::Cell, key);
+    }
 
     std::optional<int> component;
     std::optional<double> vmin;

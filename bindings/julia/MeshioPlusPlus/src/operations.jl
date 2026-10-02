@@ -1271,6 +1271,34 @@ function data_drop(m::Mesh, location::Symbol, names; ignore_missing::Bool=false)
 end
 
 """
+    sets_to_data(mesh, location; data_name=nothing, join_char="-", order=String[]) -> Mesh
+
+Convert point/cell region-backed sets to scalar integer labels on a new mesh.
+Labels are zero-based, later overlapping sets win, and uncovered rows are -1.
+`order` must name every set once, or be empty to use native region-name order.
+"""
+function sets_to_data(m::Mesh, location::Symbol; data_name=nothing,
+                      join_char::AbstractString="-", order=String[])
+    h = _handle(m); loc = _location(location)
+    ptr = _with_names(order) do p, c
+        ccall(_sym(:mio_sets_to_data), Ptr{Cvoid},
+              (Ptr{Cvoid}, Cint, Cstring, Cstring, Ptr{Cstring}, Int64),
+              h, loc, isnothing(data_name) ? C_NULL : data_name, join_char, p, c)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_to_sets(mesh, location, key) -> Mesh
+
+Convert a scalar integer point/cell field into region-backed sets, removing
+the source field on the returned mesh. Geometry and unrelated metadata survive.
+"""
+data_to_sets(m::Mesh, location::Symbol, key::AbstractString) =
+    Mesh(_check_ptr(ccall(_sym(:mio_data_to_sets), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Cint, Cstring), _handle(m), _location(location), key)))
+
+"""
     data_keep(mesh, location, names; ignore_missing=false) -> Mesh
 
 Keep only the named arrays at one location, dropping the rest **there**; the

@@ -1242,6 +1242,38 @@ TEST(CApi, DataDropAndKeep) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SetsDataConversionsAndErrorGuards) {
+    mio_mesh* mesh = build_data_mesh();
+    const std::int64_t a[] = {0, 1}, b[] = {1, 2};
+    ASSERT_EQ(mio_mesh_add_region(mesh, "a", MIO_REGION_POINT, 0, 7, a, 2), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_region(mesh, "b", MIO_REGION_POINT, -1, -1, b, 2), MIO_OK);
+    const char* order[] = {"b", "a"};
+    mio_mesh* out = mio_sets_to_data(mesh, MIO_DATA_POINT, nullptr, "-", order, 2);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_regions(out), 0);
+    const void* data = nullptr;
+    mio_dtype dtype{};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "b-a", &data, &dtype, nullptr, nullptr), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    const auto* labels = static_cast<const std::int64_t*>(data);
+    EXPECT_EQ(labels[0], 1);
+    EXPECT_EQ(labels[1], 1);
+    EXPECT_EQ(labels[2], 0);
+    EXPECT_EQ(labels[4], -1);
+    mio_mesh* back = mio_data_to_sets(out, MIO_DATA_POINT, "b-a");
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_regions(back), 3);  // -1 is a tag, not discarded.
+    mio_mesh_free(back);
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_sets_to_data(nullptr, MIO_DATA_POINT, nullptr, nullptr, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_sets_to_data(mesh, MIO_DATA_FIELD, nullptr, nullptr, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_sets_to_data(mesh, MIO_DATA_POINT, nullptr, nullptr, order, -1), nullptr);
+    EXPECT_EQ(mio_data_to_sets(mesh, MIO_DATA_POINT, nullptr), nullptr);
+    EXPECT_EQ(mio_data_to_sets(mesh, MIO_DATA_POINT, "T"), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    mio_mesh_free(mesh);
+}
+
 TEST(CApi, DataDropUnknownKeyFails) {
     mio_mesh* m = build_data_mesh();
     const char* names[] = {"nope"};
@@ -1637,6 +1669,63 @@ TEST(CApi, WriteExHonoursEncodingAndCodec) {
     std::remove(ascii_path.c_str());
     std::remove(binary_path.c_str());
     mio_mesh_free(m);
+}
+
+TEST(CApi, WriteExPcdLzfIsReachableAndRejectsIncompatibleOptions) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_wex_lzf.pcd");
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.codec = MIO_CODEC_LZF;
+    ASSERT_EQ(mio_write_ex(path.c_str(), m, "pcd", &opts), MIO_OK) << mio_last_error();
+    mio_mesh* back = mio_read(path.c_str(), "pcd");
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(back), mio_mesh_num_points(m));
+    mio_mesh_free(back);
+    opts.encoding = MIO_ENCODING_ASCII;
+    EXPECT_NE(mio_write_ex(path.c_str(), m, "pcd", &opts), MIO_OK);
+    opts.encoding = MIO_ENCODING_BINARY;
+    EXPECT_NE(mio_write_ex(path.c_str(), m, "vtu", &opts), MIO_OK);
+    mio_mesh_free(m);
+    std::remove(path.c_str());
+}
+
+TEST(CApi, GltfOptionsExposeColourAxisAndScale) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_opts.gltf");
+    mio_gltf_opts opts;
+    mio_gltf_opts_init(&opts);
+    EXPECT_EQ(opts.normals, 1);
+    EXPECT_EQ(opts.scale, 1.0);
+    const double temperature[] = {0, 1, 2, 3, 4};
+    const int64_t shape[] = {5};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "temperature", MIO_FLOAT64, 1, shape, temperature),
+              MIO_OK);
+    opts.color_by = "temperature";
+    opts.cmap = "turbo";
+    opts.up_axis = 3;
+    opts.scale = 0.001;
+    opts.split_angle = 45;
+    opts.vmin_set = opts.vmax_set = 1;
+    opts.vmin = 0;
+    opts.vmax = 3;
+    ASSERT_EQ(mio_write_gltf(path.c_str(), m, &opts), MIO_OK) << mio_last_error();
+    std::ifstream in(path);
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_NE(text.find("COLOR_0"), std::string::npos);
+    EXPECT_NE(text.find("KHR_materials_unlit"), std::string::npos);
+    EXPECT_NE(text.find("0.001"), std::string::npos);
+    opts.up_axis = 4;
+    EXPECT_EQ(mio_write_gltf(path.c_str(), m, &opts), MIO_ERR_INVALID_ARG);
+    opts.up_axis = 0;
+    opts.scale = -1;
+    EXPECT_NE(mio_write_gltf(path.c_str(), m, &opts), MIO_OK);
+    EXPECT_EQ(mio_write_gltf(path.c_str(), nullptr, nullptr), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(m);
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path).replace_extension(".bin"));
 }
 
 TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {

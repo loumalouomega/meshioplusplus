@@ -71,6 +71,7 @@ end
 # Handles, errors, borrows
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
 export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info
+export write_gltf
 export ReadOptions, MeshMetadata, DiffReport
 
 # Introspection
@@ -111,6 +112,7 @@ export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
+export sets_to_data, data_to_sets
 export data_calc, data_condition, data_info, data_integrate, tensor_invariants
 export run_pipeline_file, run_pipeline_json, pipeline_has_json
 # Sequences (multi-file / transient datasets). `read`/`step`/`time`/`path` and

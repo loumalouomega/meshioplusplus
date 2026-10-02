@@ -37,6 +37,7 @@
 
 // System includes
 #include <string>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -134,5 +135,24 @@ MESHIOPLUSPLUS_API Mesh data_keep(const Mesh& rMesh, DataLocation Location, cons
  */
 MESHIOPLUSPLUS_API Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rFrom,
                  const std::string& rTo);
+
+/** Convert point/cell region-backed sets to scalar Int64 labels on a new mesh.
+ * Labels follow rOrder, or native region-name order when it is empty. rOrder
+ * must name every set exactly once. Later overlapping sets win; uncovered rows
+ * are -1. All converted regions are removed; side regions remain. An unset
+ * rName joins set names with rJoin; an explicit name (even empty) is used as-is.
+ * Geometry, unrelated data and property sets remain bit-identical. */
+MESHIOPLUSPLUS_API Mesh sets_to_data(const Mesh& rMesh, DataLocation Location,
+                                     const std::optional<std::string>& rName = std::nullopt,
+                                     const std::string& rJoin = "-",
+                                     const std::vector<std::string>& rOrder = {});
+
+/** Convert one scalar integer field into point/cell region-backed sets on a
+ * new mesh, then remove that field. Tags are sorted numerically; unique names
+ * from splitting rKey on '-' are used when their count matches the tags.
+ * Otherwise names are set-<key>-<tag> for cells and set-key-<tag> for points,
+ * matching the Python Mesh methods. Same-name regions retain dim/tag. */
+MESHIOPLUSPLUS_API Mesh data_to_sets(const Mesh& rMesh, DataLocation Location,
+                                     const std::string& rKey);
 
 }  // namespace meshioplusplus

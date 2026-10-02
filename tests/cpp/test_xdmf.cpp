@@ -66,3 +66,27 @@ TEST(Xdmf, ReadRejectsMissingRoot) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+TEST(Xdmf, VersionTwoReferencesAndInformationAreNative) {
+    const std::string path = mt::temp_path("_v2_reference.xdmf");
+    {
+        std::ofstream out(path);
+        out << R"(<Xdmf Version="2.0"><Domain><Grid>
+<Topology TopologyType="Triangle"><DataItem NumberType="Int" Dimensions="1 3" Format="XML">0 1 2</DataItem></Topology>
+<Geometry GeometryType="XYZ"><DataItem Reference="XML">/Xdmf/Domain/Grid/Attribute/DataItem</DataItem></Geometry>
+<Attribute Name="coords" Center="Node"><DataItem NumberType="Float" Precision="8" Dimensions="3 3" Format="XML">0 0 0 1 0 0 0 1 0</DataItem></Attribute>
+<Information><![CDATA[<main><map key="wall" dim="2">7</map></main>]]></Information>
+</Grid></Domain></Xdmf>)";
+    }
+    const auto mesh = meshioplusplus::read_xdmf(path);
+    EXPECT_EQ(mesh.NumPoints(), 3);
+    EXPECT_EQ(mesh.Cells(0).NumCells(), 1);
+    ASSERT_TRUE(mesh.HasFieldData("wall"));
+    EXPECT_EQ(mesh.FieldData("wall").As<std::int64_t>()[0], 7);
+    const auto meta = meshioplusplus::read_xdmf_metadata(path);
+    EXPECT_EQ(meta.mNumPoints, 3);
+    ASSERT_EQ(meta.mCellBlocks.size(), 1);
+    EXPECT_EQ(meta.mCellBlocks[0].mNumCells, 1);
+    EXPECT_EQ(meta.mFieldDataNames, std::vector<std::string>{"wall"});
+    std::filesystem::remove(path);
+}

@@ -123,6 +123,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/skin.hpp"
 
 struct mio_mesh {
@@ -957,6 +958,57 @@ void mio_write_opts_init(mio_write_opts* opts) {
     *opts = mio_write_opts{};  // value-initialized: all zero == mio_write()
 }
 
+void mio_gltf_opts_init(mio_gltf_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_gltf_opts{};
+    opts->normals = opts->fields = opts->recenter = opts->by_region = opts->unlit = 1;
+    opts->split_angle = 30.0;
+    opts->scale = 1.0;
+}
+
+mio_status mio_write_gltf(const char* path, const mio_mesh* mesh, const mio_gltf_opts* opts) {
+    return guarded([&]() -> mio_status {
+        if (!path || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        meshioplusplus::GltfWriteOptions out;
+        if (opts) {
+            if (opts->container < 0 || opts->container > 2 || opts->up_axis < 0 ||
+                opts->up_axis > 3 || opts->normal_weight < 0 || opts->normal_weight > 1)
+                return fail(MIO_ERR_INVALID_ARG,
+                            "meshio++: invalid glTF container, axis or weight");
+            out.mContainer = static_cast<meshioplusplus::GltfContainer>(opts->container);
+            out.mUpAxis = static_cast<meshioplusplus::GltfUpAxis>(opts->up_axis);
+            out.mNormalWeight =
+                static_cast<meshioplusplus::SdfPseudonormalWeight>(opts->normal_weight);
+            out.mNormals = opts->normals != 0;
+            out.mFields = opts->fields != 0;
+            out.mRecenter = opts->recenter != 0;
+            out.mByRegion = opts->by_region != 0;
+            out.mUnlit = opts->unlit != 0;
+            out.mSplitAngle = opts->split_angle;
+            out.mScale = opts->scale;
+            if (opts->component_set)
+                out.mComponent = opts->component;
+            if (opts->vmin_set)
+                out.mVMin = opts->vmin;
+            if (opts->vmax_set)
+                out.mVMax = opts->vmax;
+            if (opts->color_by)
+                out.mColorBy = opts->color_by;
+            if (opts->cmap)
+                out.mCmap = opts->cmap;
+            if (opts->nan_color)
+                out.mNanColor = opts->nan_color;
+        }
+        meshioplusplus::detail::provenance_begin_write();
+        meshioplusplus::write_gltf(path, mesh->mMesh, out);
+        return MIO_OK;
+    });
+}
+
+static_assert(sizeof(mio_gltf_opts) == 168, "mio_gltf_opts layout changed");
+
 namespace {
 
 /// mio_write_opts -> WriteOptions, shared by mio_write_ex and
@@ -995,6 +1047,10 @@ mio_status write_opts_to_cxx(const mio_write_opts& rOpts, meshioplusplus::WriteO
             break;
         case MIO_CODEC_ZSTD:
             rOut.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_LZF:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::LZF;
             rOut.mCodecSet = true;
             break;
         default:
@@ -3091,6 +3147,27 @@ mio_mesh* mio_data_rename(const mio_mesh* mesh, mio_data_location location, cons
             throw meshioplusplus::ReadError("meshio++: mesh/from_name/to_name is NULL");
         return new mio_mesh{meshioplusplus::data_rename(mesh->mMesh, data_location_of(location),
                                                         from_name, to_name)};
+    });
+}
+
+mio_mesh* mio_sets_to_data(const mio_mesh* mesh, mio_data_location location, const char* data_name,
+                           const char* join_char, const char* const* order, int64_t count) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: sets_to_data: mesh is NULL");
+        return new mio_mesh{meshioplusplus::sets_to_data(
+            mesh->mMesh, data_location_of(location),
+            data_name ? std::optional<std::string>(data_name) : std::nullopt,
+            join_char ? join_char : "-", data_name_list(order, count))};
+    });
+}
+
+mio_mesh* mio_data_to_sets(const mio_mesh* mesh, mio_data_location location, const char* key) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !key)
+            throw std::invalid_argument("meshio++: data_to_sets: mesh/key is NULL");
+        return new mio_mesh{
+            meshioplusplus::data_to_sets(mesh->mMesh, data_location_of(location), key)};
     });
 }
 

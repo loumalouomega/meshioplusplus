@@ -18,6 +18,10 @@
 
 There are various mesh formats available for representing unstructured meshes. meshio++ can read and write all of the following and smoothly converts between them:
 
+Native parity additions: XDMF2/3 and absolute DataItem references; Netgen name/periodic tables, two-line edges and zlib-enabled `.vol.gz`; PCD compressed writes via `MIO_CODEC_LZF` / `codec="lzf"`; and parameterized glTF export in C, Fortran, Julia, R and WASM. See [formats](doc/formats.md), [C API](doc/c_api.md) and [WASM](doc/wasm.md) for options and indexing conventions.
+
+Region-backed point/cell sets now convert to and from scalar integer data in the native core, C/Fortran/Julia/R/WASM bindings and native CLI `convert -s/-d`. Python's mutating `Mesh` methods preserve their ordering and metadata contract; pipelines expose `SetsToData` / `DataToSets`, and MCP exposes `sets_data`. See [sets/data conversions](doc/data_manage.md#sets--integer-data).
+
 XDMF time-series writers preserve fixed point, cell and side regions alongside the shared topology. Python's array-based writer accepts `regions=` and its series reader exposes `reader.regions`; native writers use the regions already on the mesh. See [XDMF time series](doc/xdmf_time_series.md).
 
 Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple pieces and appended raw/base64 arrays in both the native core and Python reference, with UInt32/UInt64 headers and either byte order. Pieces concatenate without welding; VTP/VTS/VTR/VTI writers remain inline. Native legacy `.vtk` reads also support structured points, structured grids and rectilinear grids in ASCII and big-endian binary; see the [format documentation](doc/formats.md).

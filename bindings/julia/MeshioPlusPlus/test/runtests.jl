@@ -70,6 +70,36 @@ end
     close(m)
 end
 
+@testset "PCD LZF write options" begin
+    mktempdir() do dir
+        m = Mesh()
+        set_points!(m, Float64[1 4; 2 5; 3 6])
+        path = joinpath(dir, "cloud.pcd")
+        mio.write(m, path; codec="lzf")
+        @test occursin("DATA binary_compressed\n", String(Base.read(path)))
+        back = mio.read(path)
+        @test points(back) == points(m)
+        @test_throws Exception mio.write(m, path; codec="lzf", encoding="ascii")
+        @test_throws Exception mio.write(m, joinpath(dir, "bad.vtu"); codec="lzf")
+        close(back)
+        close(m)
+    end
+end
+
+@testset "glTF options" begin
+    mktempdir() do dir
+        m = fixture()
+        path = joinpath(dir, "colored.gltf")
+        write_gltf(m, path; color_by="temperature", cmap="turbo", up_axis="x",
+                   scale=0.001, vmin=1, vmax=5)
+        @test occursin("COLOR_0", Base.read(path, String))
+        @test isfile(joinpath(dir, "colored.bin"))
+        @test_throws Exception write_gltf(m, path; scale=-1)
+        @test_throws Exception write_gltf(m, path; color_by="temperature", component=0)
+        close(m)
+    end
+end
+
 @testset "native Gmsh 4.0 read" begin
     mktempdir() do dir
         path = joinpath(dir, "legacy40.msh")
@@ -1000,6 +1030,23 @@ end
 
     @test_throws Exception tensor_invariants(m, :field)
     close(m)
+end
+
+@testset "region-backed sets/data conversions" begin
+    m = fixture()
+    add_region!(m, "a", :point, [1, 2])
+    add_region!(m, "b", :point, [2, 3])
+    labels = sets_to_data(m, :point; order=["b", "a"])
+    @test point_data(labels, "b-a") == [1, 1, 0, -1, -1]
+    @test isempty(regions(labels))
+    @test points(labels) == points(m)
+    @test connectivity(labels, 1) == connectivity(m, 1)
+    back = data_to_sets(labels, :point, "b-a")
+    @test !("b-a" in point_data_names(back))
+    @test length(regions(back)) == 3
+    @test_throws MeshioError sets_to_data(m, :field)
+    @test_throws MeshioError data_to_sets(m, :point, "temperature")
+    close(back); close(labels); close(m)
 end
 
 @testset "field integration (data_integrate)" begin

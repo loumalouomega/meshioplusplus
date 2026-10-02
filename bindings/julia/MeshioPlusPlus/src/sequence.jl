@@ -205,19 +205,12 @@ Base.iterate(s::Sequence, i::Int=1) = i > length(s) ? nothing : (read_step(s, i)
 Base.eltype(::Type{Sequence}) = Mesh
 Base.IteratorSize(::Type{Sequence}) = Base.HasLength()
 
-# Mirror of C `mio_write_opts`; field order and types are ABI. `to_timeseries`
-# is the transient writer's only consumer of this on the Julia side -- it
+# `_WriteOpts` in mesh.jl mirrors C `mio_write_opts`. `to_timeseries`
+# uses it to select transient encoding; it
 # drives `XdmfTimeSeriesWriter` directly rather than the registry, so `ascii`
 # is the one option with anywhere to go (selects the XDMF "XML" data format,
 # needing no HDF5, over the default "HDF"). `codec`/`float_format` have no
 # effect there and are left at their MIO_*_DEFAULT / null values.
-struct _WriteOpts
-    encoding::Cint
-    codec::Cint
-    float_format::Cstring
-    reserved::NTuple{5,Int64}
-end
-
 const _MIO_ENCODING_ASCII = Cint(1)
 
 """

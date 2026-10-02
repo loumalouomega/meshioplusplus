@@ -52,6 +52,7 @@ module meshioplusplus
     public :: mio_mesh
     public :: mio_xdmf_series
     public :: mio_format_info
+    public :: mio_gltf_options
     public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
     public :: MIO_MDPA_MODEL_PART_DATA, MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES
     public :: MIO_MDPA_MESH_BLOCKS, MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS
@@ -94,6 +95,33 @@ module meshioplusplus
     public :: mio_region_info
     public :: MIO_TINV_MISES, MIO_TINV_PRINCIPAL, MIO_TINV_HYDROSTATIC, MIO_TINV_DEVIATORIC
     public :: MIO_TINV_ALL
+
+    ! Mirror of mio_write_opts; keep its size and reserved tail unchanged.
+    type, bind(c) :: mio_write_opts_c
+        integer(c_int) :: encoding = 0, codec = 0
+        type(c_ptr) :: float_format = c_null_ptr
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    ! Public owning options; strings never have to be passed as C pointers.
+    type :: mio_gltf_options
+        integer :: container = 0, up_axis = 0, normal_weight = 0
+        logical :: normals = .true., fields = .true., recenter = .true.
+        logical :: by_region = .true., unlit = .true.
+        integer :: component = 1 ! Fortran component indices are 1-based.
+        logical :: component_set = .false., vmin_set = .false., vmax_set = .false.
+        real(c_double) :: split_angle = 30, scale = 1, vmin = 0, vmax = 0
+        character(:), allocatable :: color_by, cmap, nan_color
+    end type
+
+    type, bind(c) :: mio_gltf_opts_c
+        integer(c_int) :: container = 0, up_axis = 0, normal_weight = 0
+        integer(c_int) :: normals = 1, fields = 1, recenter = 1, by_region = 1, unlit = 1
+        integer(c_int) :: component = 0, component_set = 0, vmin_set = 0, vmax_set = 0
+        real(c_double) :: split_angle = 30, scale = 1, vmin = 0, vmax = 0
+        type(c_ptr) :: color_by = c_null_ptr, cmap = c_null_ptr, nan_color = c_null_ptr
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
 
     ! What is wrong with a surface (bind(c); layout must match
     ! mio_surface_quality in meshioplusplus.h). The four counts are separate
@@ -769,6 +797,7 @@ module meshioplusplus
         procedure :: is_valid => mesh_is_valid
         procedure :: read => mesh_read
         procedure :: write => mesh_write
+        procedure :: write_gltf => mesh_write_gltf
         procedure :: read_with_info => mesh_read_with_info
         procedure :: write_with_info => mesh_write_with_info
         ! -- operations --
@@ -831,6 +860,8 @@ module meshioplusplus
         procedure :: data_drop => mesh_data_drop
         procedure :: data_keep => mesh_data_keep
         procedure :: data_rename => mesh_data_rename
+        procedure :: sets_to_data => mesh_sets_to_data
+        procedure :: data_to_sets => mesh_data_to_sets
         procedure :: data_point_to_cell => mesh_data_point_to_cell
         procedure :: data_cell_to_point => mesh_data_cell_to_point
         procedure :: data_calc => mesh_data_calc
@@ -1219,6 +1250,22 @@ module meshioplusplus
             import :: c_ptr, c_char, c_int
             character(kind=c_char), dimension(*), intent(in) :: path, format
             type(c_ptr), value :: h
+            integer(c_int) :: s
+        end function
+
+        function c_mio_write_ex(path, h, format, opts) bind(c, name="mio_write_ex") result(s)
+            import :: c_ptr, c_char, c_int, mio_write_opts_c
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr), value :: h
+            type(mio_write_opts_c), intent(in) :: opts
+            integer(c_int) :: s
+        end function
+
+        function c_mio_write_gltf(path, h, opts) bind(c, name="mio_write_gltf") result(s)
+            import :: c_ptr, c_char, c_int, mio_gltf_opts_c
+            character(kind=c_char), dimension(*), intent(in) :: path
+            type(c_ptr), value :: h
+            type(mio_gltf_opts_c), intent(in) :: opts
             integer(c_int) :: s
         end function
 
@@ -2389,6 +2436,23 @@ module meshioplusplus
             type(c_ptr), value :: h
             integer(c_int), value :: location
             character(kind=c_char), dimension(*), intent(in) :: from_name, to_name
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_sets_to_data(h, location, data_name, join_char, names, count) &
+                bind(c, name="mio_sets_to_data") result(m)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h, data_name, join_char, names
+            integer(c_int), value :: location
+            integer(c_int64_t), value :: count
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_to_sets(h, location, key) bind(c, name="mio_data_to_sets") result(m)
+            import :: c_ptr, c_int, c_char
+            type(c_ptr), value :: h
+            integer(c_int), value :: location
+            character(kind=c_char), dimension(*), intent(in) :: key
             type(c_ptr) :: m
         end function
 
@@ -3609,16 +3673,92 @@ contains
     end subroutine
 
     !> Write the mesh to a file.
-    subroutine mesh_write(self, path, format, stat, errmsg)
+    subroutine mesh_write(self, path, format, stat, errmsg, encoding, codec, float_format)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: encoding, codec, float_format
         character(:), allocatable :: fmt
+        character(kind=c_char), allocatable, target :: ff(:)
+        type(mio_write_opts_c) :: opts
         fmt = ''; if (present(format)) fmt = format
-        call handle_status(c_mio_write(c_str(path), self%handle, c_str(fmt)), 'write', &
+        if (present(encoding)) then
+            select case (encoding)
+            case ('default'); opts%encoding = 0
+            case ('ascii'); opts%encoding = 1
+            case ('binary'); opts%encoding = 2
+            case ('raw_appended'); opts%encoding = 3
+            case default
+                call handle_failure('write', 'invalid write encoding: '//encoding, stat, errmsg)
+                return
+            end select
+        end if
+        if (present(codec)) then
+            select case (codec)
+            case ('default'); opts%codec = 0
+            case ('none'); opts%codec = 1
+            case ('zlib'); opts%codec = 2
+            case ('lz4'); opts%codec = 3
+            case ('zstd'); opts%codec = 4
+            case ('lzf'); opts%codec = 5
+            case default
+                call handle_failure('write', 'invalid write codec: '//codec, stat, errmsg)
+                return
+            end select
+        end if
+        if (present(float_format)) then
+            ff = c_str(float_format)
+            opts%float_format = c_loc(ff(1))
+        end if
+        call handle_status(c_mio_write_ex(c_str(path), self%handle, c_str(fmt), opts), 'write', &
                            stat, errmsg)
+    end subroutine
+
+    subroutine mesh_write_gltf(self, path, options, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: path
+        type(mio_gltf_options), intent(in), optional :: options
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_gltf_opts_c) :: opts
+        character(kind=c_char), allocatable, target :: color(:), cmap(:), nan_color(:)
+        if (present(options)) then
+            opts%container = options%container
+            opts%up_axis = options%up_axis
+            opts%normal_weight = options%normal_weight
+            opts%normals = merge(1_c_int, 0_c_int, options%normals)
+            opts%fields = merge(1_c_int, 0_c_int, options%fields)
+            opts%recenter = merge(1_c_int, 0_c_int, options%recenter)
+            opts%by_region = merge(1_c_int, 0_c_int, options%by_region)
+            opts%unlit = merge(1_c_int, 0_c_int, options%unlit)
+            opts%component = options%component - 1
+            opts%component_set = merge(1_c_int, 0_c_int, options%component_set)
+            opts%vmin_set = merge(1_c_int, 0_c_int, options%vmin_set)
+            opts%vmax_set = merge(1_c_int, 0_c_int, options%vmax_set)
+            opts%split_angle = options%split_angle
+            opts%scale = options%scale
+            opts%vmin = options%vmin
+            opts%vmax = options%vmax
+            if (allocated(options%color_by)) then
+                color = c_str(options%color_by)
+                opts%color_by = c_loc(color(1))
+            end if
+            if (allocated(options%cmap)) then
+                cmap = c_str(options%cmap)
+                opts%cmap = c_loc(cmap(1))
+            end if
+            if (allocated(options%nan_color)) then
+                nan_color = c_str(options%nan_color)
+                opts%nan_color = c_loc(nan_color(1))
+            end if
+        end if
+        if (c_sizeof(opts) /= 168_c_size_t) then
+            call handle_failure('write_gltf', 'glTF option layout mismatch', stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_write_gltf(c_str(path), self%handle, opts), 'write_gltf', stat, errmsg)
     end subroutine
 
     !> Extract the boundary of the mesh's highest-dimension cells as a new mesh
@@ -6623,6 +6763,55 @@ contains
     ! never modified. Each returns a NEW mesh which the caller must free.
     ! `location` is one of MIO_DATA_POINT / _CELL / _FIELD.
     ! ------------------------------------------------------------------
+
+    !> Convert point/cell sets into scalar labels (labels remain zero-based).
+    function mesh_sets_to_data(self, location, data_name, join_char, order, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in), optional :: data_name, join_char, order(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: cname(:), cjoin(:), storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: pname, pjoin, arr
+        integer(c_int64_t) :: count
+        pname = c_null_ptr
+        pjoin = c_null_ptr
+        arr = c_null_ptr
+        count = 0_c_int64_t
+        if (present(data_name)) then
+            cname = c_str(data_name)
+            pname = c_loc(cname(1))
+        end if
+        if (present(join_char)) then
+            cjoin = c_str(join_char)
+            pjoin = c_loc(cjoin(1))
+        end if
+        if (present(order)) call c_str_array(order, storage, cptrs, arr, count)
+        out%handle = c_mio_sets_to_data(self%handle, location, pname, pjoin, arr, count)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('sets_to_data', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Convert one scalar integer point/cell field to sets on a new mesh.
+    function mesh_data_to_sets(self, location, key, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in) :: key
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out%handle = c_mio_data_to_sets(self%handle, location, c_str(key))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_to_sets', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
 
     !> Drop the named data arrays at `location`.
     function mesh_data_drop(self, location, names, ignore_missing, stat, errmsg) result(out)

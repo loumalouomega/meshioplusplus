@@ -1,5 +1,7 @@
 # Julia
 
+Parameterized writes support `mio.write(mesh, path; encoding="binary", codec="lzf")` for PCD compressed binary (no optional dependency; ASCII/non-PCD combinations fail). `write_gltf(mesh, path; color_by="temperature", cmap="turbo", up_axis="z", scale=0.001)` exposes all native glTF options; `component` is 1-based or `nothing` for magnitude, and unset `vmin`/`vmax` selects automatic bounds. Native reads accept XDMF2/3 and absolute DataItem references and carry Netgen names/periodic arrays; Netgen periodic arrays use `field_data` and keep file node ids 1-based, while `.vol.gz` requires native zlib.
+
 XDMF series `write_points_cells!(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
 
 The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
@@ -200,13 +202,16 @@ Two things worth knowing before reading the result back:
 
 Like `Mesh`, the handle is released by a GC finalizer and `close` is the deterministic, idempotent form. The name is `finalize!` rather than `finalize` because `Base.finalize` runs an object's GC finalizer and means something quite different. Reading a finished series back is the ordinary `MeshioPlusPlus.read(path; options = ReadOptions(time_step = k))`.
 
+## Sets ↔ integer data
+
+`sets_to_data(mesh, :point; data_name=nothing, join_char="-", order=String[])` and `data_to_sets(mesh, :cell, "material")` operate on region-backed memberships and return a new mesh. Labels remain zero-based (uncovered rows are -1), even though region accessors are 1-based. See [sets/data conversions](data_manage.md#sets--integer-data).
+
 ## Documented gaps
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r) bindings; the Julia package invents no workaround for any of them:
 
 - **Four Python-only formats.** `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them. They are export targets for a training pipeline rather than interchange formats; see [formats](/formats).
 
-- **point / cell sets beyond regions** never reach the C++ core at all;
 - the **`frozen` pin mask** of `smooth` and `decimate`;
 - **per-cell-type counts** in `stats` — use `cell_block_types` with `cell_block_info`;
 - ~~ragged block connectivity~~ — **closed in v9.15.0**: `polygon_block` / `polyhedron_block` read them as nested 1-based vectors and `add_polygon_block!` / `add_polyhedron_block!` build them. `connectivity` still throws, since a ragged block has no matrix. See [Polyhedra and ragged cells](/polyhedra);

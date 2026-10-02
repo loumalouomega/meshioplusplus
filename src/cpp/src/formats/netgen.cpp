@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -36,7 +37,12 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "../detail/text_cursor.hpp"
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 namespace meshioplusplus {
 
@@ -128,11 +134,14 @@ std::string netgen_strip(const std::string& rS) {
 struct LineCursor {
     std::vector<std::string> mLines;
     std::size_t mPos = 0;
+    std::size_t mBytes = 0;
 
     explicit LineCursor(std::istream& rIn) {
         std::string line;
-        while (std::getline(rIn, line))
+        while (std::getline(rIn, line)) {
+            mBytes += line.size() + 1;
             mLines.push_back(line);
+        }
     }
 
     bool Eof() const { return mPos >= mLines.size(); }
@@ -164,7 +173,15 @@ struct NetgenRawBlock {
     std::vector<std::int64_t> mIndex;
 };
 
-void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenRawBlock>& rBlocks) {
+std::int64_t netgen_integer(const std::string& rToken) {
+    std::int64_t value = 0;
+    if (!detail::parse_int_token(rToken, value))
+        throw ReadError("Netgen: invalid integer '" + rToken + "'");
+    return value;
+}
+
+void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenRawBlock>& rBlocks,
+                bool TwoLines) {
     int dim, pi0, i_index, fixed_nump = -1;
     if (rSection == "pointelements") {
         dim = 0;
@@ -188,10 +205,11 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         throw ReadError("Netgen: unknown cell section '" + rSection + "'");
     }
 
-    std::int64_t num_cells = std::strtoll(rC.NextCount().c_str(), nullptr, 10);
+    const std::size_t num_cells =
+        detail::checked_count(netgen_integer(rC.NextCount()), rC.mBytes, "Netgen", "cell");
     const auto& tmap = netgen_type(dim);
 
-    for (std::int64_t k = 0; k < num_cells; ++k) {
+    for (std::size_t k = 0; k < num_cells; ++k) {
         bool eof = false;
         std::string line = rC.NextReal(eof);
         if (eof)
@@ -200,44 +218,61 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
         // The node count sits at a fixed column; check the row reaches it.
         detail::need_tokens(data, dim == 2 ? 5 : (dim == 3 ? 2 : 0), "Netgen");
 
-        int nump = fixed_nump;
+        std::int64_t nump = fixed_nump;
         if (dim == 2)
-            nump = static_cast<int>(std::strtoll(data[4].c_str(), nullptr, 10));
+            nump = netgen_integer(data[4]);
         else if (dim == 3)
-            nump = static_cast<int>(std::strtoll(data[1].c_str(), nullptr, 10));
+            nump = netgen_integer(data[1]);
 
-        auto tit = tmap.find(nump);
+        auto tit = nump >= 1 && nump <= 20 ? tmap.find(static_cast<int>(nump)) : tmap.end();
         if (tit != tmap.end())
-            detail::need_tokens(data, static_cast<std::size_t>(std::max(i_index + 1, pi0 + nump)),
-                                "Netgen");
-        std::int64_t index =
-            tit == tmap.end() ? 0 : std::strtoll(data[i_index].c_str(), nullptr, 10);
+            detail::need_tokens(
+                data, static_cast<std::size_t>(std::max<std::int64_t>(i_index + 1, pi0 + nump)),
+                "Netgen");
+        std::int64_t index = tit == tmap.end() ? 0 : netgen_integer(data[i_index]);
         if (tit == tmap.end())
             throw ReadError("Netgen: unsupported element with " + std::to_string(nump) + " nodes");
         const std::string& type = tit->second;
 
         std::vector<std::int64_t> pi(nump);
         for (int j = 0; j < nump; ++j)
-            pi[j] = std::strtoll(data[pi0 + j].c_str(), nullptr, 10);
+            pi[j] = netgen_integer(data[pi0 + j]);
 
         if (rBlocks.empty() || rBlocks.back().mType != type) {
             rBlocks.push_back(NetgenRawBlock{type, {}, {}});
         }
         rBlocks.back().mRows.push_back(std::move(pi));
         rBlocks.back().mIndex.push_back(index);
+        if (TwoLines && rSection == "edgesegmentsgi2") {
+            rC.NextReal(eof);
+            if (eof)
+                throw ReadError("Netgen: unexpected end of file in two-line edge data");
+        }
     }
 }
 
 }  // namespace
 
 Mesh read_netgen(const std::string& rPath) {
-    if (rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0)
-        throw ReadError("Netgen: gzip container handled by Python fallback");
-
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
-    LineCursor c(in);
+    std::string bytes;
+    auto unpacked = detail::make_classic_istringstream("");
+    const bool gzip = rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0;
+    if (gzip) {
+        const std::string compressed{std::istreambuf_iterator<char>(in),
+                                     std::istreambuf_iterator<char>()};
+        std::size_t pos = 0;
+        do {
+            std::size_t consumed = 0;
+            bytes += detail::zlib_inflate(std::string_view(compressed).substr(pos), 31, &consumed,
+                                          "Netgen");
+            pos += consumed;
+        } while (pos < compressed.size());
+        unpacked.str(bytes);
+    }
+    LineCursor c(gzip ? static_cast<std::istream&>(unpacked) : static_cast<std::istream&>(in));
 
     bool eof = false;
     std::string line = c.NextReal(eof);
@@ -248,6 +283,13 @@ Mesh read_netgen(const std::string& rPath) {
     std::vector<double> raw_points;  // flat, 3 per point
     std::int64_t num_points = 0;
     std::vector<NetgenRawBlock> blocks;
+    std::map<std::string, NDArray> fields;
+    bool two_lines = false;
+    const std::map<std::string, int> codims = {
+        {"materials", 0}, {"bcnames", 1}, {"cd2names", 2}, {"cd3names", 3}};
+    auto count = [&]() {
+        return detail::checked_count(netgen_integer(c.NextCount()), c.mBytes, "Netgen", "section");
+    };
 
     while (true) {
         line = c.NextReal(eof);
@@ -261,9 +303,8 @@ Mesh read_netgen(const std::string& rPath) {
             c.NextCount();  // value; ignored
         } else if (line == "points") {
             // A point row is at least a few bytes: bound the count by the file.
-            num_points = static_cast<std::int64_t>(
-                detail::checked_count(std::strtoll(c.NextCount().c_str(), nullptr, 10),
-                                      detail::file_bytes(rPath), "Netgen", "point"));
+            num_points = static_cast<std::int64_t>(detail::checked_count(
+                std::strtoll(c.NextCount().c_str(), nullptr, 10), c.mBytes, "Netgen", "point"));
             raw_points.resize(static_cast<std::size_t>(num_points) * 3, 0.0);
             for (std::int64_t i = 0; i < num_points; ++i) {
                 std::string pl = c.NextReal(eof);
@@ -276,17 +317,59 @@ Mesh read_netgen(const std::string& rPath) {
         } else if (line == "pointelements" || line == "edgesegments" || line == "edgesegmentsgi" ||
                    line == "surfaceelements" || line == "surfaceelementsgi" ||
                    line == "surfaceelementsuv" || line == "volumeelements") {
-            read_cells(c, line, blocks);
+            read_cells(c, line, blocks, two_lines);
         } else if (line == "edgesegmentsgi2") {
-            // Single-line variant (meshio's own output). The two-line variant
-            // is signalled by a "surf1 surf2 p1 p2" header, handled below.
-            read_cells(c, line, blocks);
+            read_cells(c, line, blocks, two_lines);
+        } else if (netgen_split_ws(line) ==
+                   std::vector<std::string>{"surf1", "surf2", "p1", "p2"}) {
+            two_lines = true;
+        } else if (codims.count(line)) {
+            const int edim = dimension - codims.at(line);
+            const std::size_t n = count();
+            for (std::size_t i = 0; i < n; ++i) {
+                if (c.Eof())
+                    throw ReadError("Netgen: unexpected EOF in name table");
+                const auto tokens = netgen_split_ws(c.mLines[c.mPos++]);
+                if (tokens.size() != 2)
+                    continue;  // an unnamed slot, as in the Python reference
+                NDArray data(DType::Int64, {2});
+                if (!detail::parse_int_token(tokens[0], data.As<std::int64_t>()[0]))
+                    throw ReadError("Netgen: invalid name-table index");
+                data.As<std::int64_t>()[1] = edim;
+                fields.insert_or_assign(tokens[1], std::move(data));
+            }
+        } else if (line == "identifications" || line == "identificationtypes") {
+            const std::string key = "netgen:" + line;
+            const std::size_t n = count();
+            const bool pairs = line == "identifications";
+            NDArray data(DType::Int64,
+                         pairs ? std::vector<std::size_t>{n, 3} : std::vector<std::size_t>{1, n});
+            if (n) {
+                for (std::size_t i = 0; i < (pairs ? n : 1); ++i) {
+                    const auto tokens = netgen_split_ws(c.NextReal(eof));
+                    const std::size_t width = pairs ? 3 : n;
+                    if (eof || tokens.size() != width)
+                        throw ReadError("Netgen: malformed periodic table");
+                    for (std::size_t j = 0; j < width; ++j)
+                        if (!detail::parse_int_token(tokens[j],
+                                                     data.As<std::int64_t>()[i * width + j]))
+                            throw ReadError("Netgen: invalid periodic-table integer");
+                }
+            }
+            fields.insert_or_assign(key, std::move(data));
+        } else if (line == "face_colours" || line == "singular_edge_left" ||
+                   line == "singular_edge_right" || line == "singular_face_inside" ||
+                   line == "singular_face_outside" || line == "singular_points") {
+            const std::size_t n = count();
+            for (std::size_t i = 0; i < n; ++i) {
+                if (c.Eof())
+                    throw ReadError("Netgen: unexpected EOF in auxiliary section");
+                ++c.mPos;
+            }
         } else if (line == "endmesh") {
             break;
         } else {
-            // identifications, materials/bcnames/cd*names, face_colours,
-            // singular_*, the two-line edgesegmentsgi2 header, etc.
-            throw ReadError("Netgen: token '" + line + "' handled by Python fallback");
+            throw ReadError("Netgen: unknown token '" + line + "'");
         }
     }
 
@@ -317,6 +400,8 @@ Mesh read_netgen(const std::string& rPath) {
         index_blocks.push_back(std::move(idx));
     }
     mesh.AddCellData("netgen:index", std::move(index_blocks));
+    for (auto& [name, data] : fields)
+        mesh.AddFieldData(name, std::move(data));
 
     return mesh;
 }
@@ -367,9 +452,16 @@ void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
 }  // namespace
 
 void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt) {
-    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!f)
+    const bool gzip = rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0;
+    if (gzip && !detail::zlib_available())
+        throw WriteError("Netgen: gzip needs -DMESHIOPLUSPLUS_WITH_ZLIB=ON");
+    auto file = detail::make_classic_ofstream();
+    auto buffer = detail::make_classic_ostringstream();
+    if (!gzip)
+        file.open(rPath, std::ios::binary);
+    if (!gzip && !file)
         throw WriteError("Could not open file for writing: " + rPath);
+    std::ostream& f = gzip ? static_cast<std::ostream&>(buffer) : static_cast<std::ostream&>(file);
 
     const NDArray& points = rMesh.Points();
     const int dimension = points.Shape().size() >= 2 ? static_cast<int>(points.Shape()[1]) : 3;
@@ -437,7 +529,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
     for (std::size_t i = 0; i < npts; ++i) {
         for (int j = 0; j < 3; ++j) {
             double v = (j < dimension) ? detail::read_double(points, i * dimension + j) : 0.0;
-            std::snprintf(buf, sizeof(buf), fmt.c_str(), v);
+            detail::snprintf_c(buf, sizeof(buf), fmt.c_str(), v);
             f << buf << (j == 2 ? '\n' : ' ');
         }
     }
@@ -448,7 +540,77 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
         if (topo_dim(rMesh.Cells(ci).Type()) == 0)
             write_block(f, rMesh.Cells(ci), index_for(ci));
 
+    for (const char* key : {"netgen:identifications", "netgen:identificationtypes"}) {
+        if (!rMesh.HasFieldData(key))
+            continue;
+        const NDArray& data = rMesh.FieldData(key);
+        const bool pairs = std::string(key) == "netgen:identifications";
+        if (pairs && (data.Ndim() != 2 || data.Shape()[1] != 3))
+            throw WriteError("Netgen: identifications must have shape (n,3)");
+        const std::size_t n = pairs ? data.Shape()[0] : data.Size();
+        f << '\n' << (pairs ? "identifications" : "identificationtypes") << '\n' << n << '\n';
+        for (std::size_t i = 0; i < data.Size(); ++i)
+            f << detail::read_int(data, i) << ((pairs ? (i % 3 == 2) : (i + 1 == n)) ? '\n' : ' ');
+    }
+    const char* codim_names[] = {"materials", "bcnames", "cd2names", "cd3names"};
+    for (int codim = 0; codim <= dimension; ++codim) {
+        std::map<std::int64_t, std::string> names;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            if (name == "netgen:identifications" || name == "netgen:identificationtypes")
+                continue;
+            const NDArray& data = rMesh.FieldData(name);
+            if (data.Size() != 2)
+                throw WriteError("Netgen: name-table field '" + name +
+                                 "' must hold [id, dimension]");
+            if (detail::read_int(data, 1) == dimension - codim)
+                names[detail::read_int(data, 0)] = name;
+        }
+        if (names.empty()) {
+            for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+                if (topo_dim(rMesh.Cells(ci).Type()) != dimension - codim)
+                    continue;
+                const NDArray* idx = index_for(ci);
+                if (idx)
+                    for (std::size_t i = 0; i < idx->Size(); ++i) {
+                        const auto id = detail::read_int(*idx, i);
+                        names[id] = "cd" + std::to_string(codim) + "_" + std::to_string(id);
+                    }
+            }
+        }
+        if (names.empty())
+            continue;
+        const std::int64_t max_id = names.rbegin()->first;
+        if (max_id > 10000000)
+            throw WriteError("Netgen: name-table id exceeds the 10000000-entry budget");
+        f << '\n' << codim_names[codim] << '\n' << max_id << '\n';
+        for (std::int64_t id = 1; id <= max_id; ++id) {
+            const auto it = names.find(id);
+            f << id << ' ' << (it == names.end() ? "" : it->second) << '\n';
+        }
+    }
     f << "\nendmesh\n";
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    if (gzip) {
+        const std::string text = buffer.str();
+        gzFile out = gzopen(rPath.c_str(), "wb");
+        if (!out)
+            throw WriteError("Netgen: could not open gzip output " + rPath);
+        bool ok = true;
+        for (std::size_t pos = 0; pos < text.size();) {
+            const unsigned n =
+                static_cast<unsigned>(std::min<std::size_t>(text.size() - pos, 1 << 20));
+            if (gzwrite(out, text.data() + pos, n) != static_cast<int>(n)) {
+                ok = false;
+                break;
+            }
+            pos += n;
+        }
+        if (gzclose(out) != Z_OK || !ok)
+            throw WriteError("Netgen: failed writing gzip output " + rPath);
+    }
+#endif
+    if (!f)
+        throw WriteError("Netgen: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus

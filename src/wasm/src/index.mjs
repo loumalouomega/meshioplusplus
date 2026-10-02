@@ -285,6 +285,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataRename: (mesh: Mesh, location: string, from: string, to: string) => Mesh,
+ *   setsToData: (mesh: Mesh, location: string, options?: object) => Mesh,
+ *   dataToSets: (mesh: Mesh, location: string, key: string) => Mesh,
  *   dataPointToCell: (mesh: Mesh, names?: string[], suffix?: string) => Mesh,
  *   dataCellToPoint: (mesh: Mesh, names?: string[], weight?: string, suffix?: string) => Mesh,
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
@@ -419,6 +421,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // an OpenFOAM `polyMesh` directory's files, ...).
         writeMesh: (path, mesh, format = '', options = undefined) =>
             Module.writeMesh(path, mesh, format, options),
+        writeGltf: (path, mesh, options = undefined) => Module.writeGltf(path, mesh, options),
         // `options` adds `encoding`/`codec`/`floatFormat` to `inFormat`/
         // `outFormat` (see `writeMesh`). Returns the written paths, as
         // `writeMesh` does.
@@ -1002,6 +1005,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         dataKeep: (mesh, location, names = [], ignoreMissing = false) =>
             Module.dataKeep(mesh, location, names, ignoreMissing),
         dataRename: (mesh, location, from, to) => Module.dataRename(mesh, location, from, to),
+        setsToData: (mesh, location, {dataName = null, joinChar = '-', order = []} = {}) =>
+            Module.setsToData(mesh, location, dataName, joinChar, order),
+        dataToSets: (mesh, location, key) => Module.dataToSets(mesh, location, key),
         dataPointToCell: (mesh, names = [], suffix = '') =>
             Module.dataPointToCell(mesh, names, suffix),
         dataCellToPoint: (mesh, names = [], weight = 'uniform', suffix = '') =>

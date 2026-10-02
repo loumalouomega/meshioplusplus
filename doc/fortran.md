@@ -1,5 +1,7 @@
 # Fortran
 
+`call m%write('cloud.pcd', codec='lzf')` selects PCD compressed binary without an optional codec library; explicit ASCII or non-PCD combinations fail. `encoding`, `codec` and `float_format` are optional keyword arguments appended after the existing status arguments. Parameterized glTF uses `type(mio_gltf_options) :: opts` and `call m%write_gltf('colored.glb', options=opts)`; set `opts%color_by`, `%cmap`, `%up_axis` (0 auto, 1 Z, 2 Y, 3 X) and `%scale` as needed. `%component` is 1-based and only used with `%component_set=.true.`; `%vmin_set`/`%vmax_set` control optional bounds. Native reads also support XDMF2/3 DataItem references and Netgen names/periodic arrays; Netgen periodic arrays are numeric field data with 1-based file node ids, and `.vol.gz` requires zlib.
+
 XDMF series `write_points_cells(mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
 
 The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
@@ -100,6 +102,8 @@ The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](htt
 `m%read(path, 'gmsh')` accepts non-periodic 4.0 files as well as 2.2/4.1, in ASCII or binary (4- or 8-byte producer counts). For periodic files use `read_with_info` / `write_with_info`; writes stay 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
 ## Selective reads and file summaries
+
+Sets↔data conversions return a new mesh through `m%sets_to_data(MIO_DATA_POINT [, data_name, join_char, order, stat, errmsg])` and `m%data_to_sets(MIO_DATA_CELL, key [, stat, errmsg])`. Only point/cell locations are accepted. Set order defaults to native region-name order; an explicit `order` lists every set name once. Labels are scalar integer values, not indices: they stay zero-based with -1 for uncovered entities. See [sets/data semantics](data_manage.md#sets--integer-data).
 
 `read` takes optional `points_only`, `arrays`, `time_step`, `lenient` and (last, so positional `stat`/`errmsg` callers keep working) `piece` and `drop_ghosts`, and the module-level `mio_read_metadata` returns a `type(mio_metadata)`:
 

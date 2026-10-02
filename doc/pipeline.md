@@ -81,6 +81,8 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 | `DataDrop` | `Point`/`Cell`/`Field` (string arrays), `IgnoreMissing` (false) | |
 | `DataKeep` | `Point`/`Cell`/`Field` — only locations mentioned are touched; `[]` drops all there | |
 | `DataRename` | `Point`/`Cell`/`Field`, entries `"OLD:NEW"` (split on the **last** colon — names carry colons: `gmsh:physical`) | |
+| `SetsToData` | `Location` (`cell`; `point` or `cell`), optional `Name`, `Join` (`-`), `Order` (all distinct set names once; omitted/empty uses mesh set order) | Scalar Int64 labels; later overlaps win, uncovered rows are -1; removes converted regions |
+| `DataToSets` | `Location` (`cell`; `point` or `cell`), required `Key` | Scalar integer field → region-backed sets; removes source field |
 | `DataCalc` | `Expr` (`"NAME = EXPRESSION"`, split on the **first** `=`), `Location` ("point"), `Overwrite` (false) | |
 | `DataCondition` | `Mode` ("clamp" \| "normalize" \| "standardize"), `Location` ("point"), `Names`, `Scope` ("component" \| "magnitude"), `Lo` (0), `Hi` (1), `NanPolicy` ("ignore"), `NanReplacement` (0), `Suffix` | |
 | `TensorInvariants` | `Location` ("point"), `Names` (every 6- or 9-component array by default), `Outputs` ("mises,principal,hydrostatic,deviatoric" by default), `Prefix`, `Suffix`, `Overwrite` (true) | |

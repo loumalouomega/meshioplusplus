@@ -1,5 +1,7 @@
 # R
 
+`mio_write(mesh, 'cloud.pcd', codec='lzf')` selects PCD compressed binary without an optional codec library; explicit ASCII or non-PCD combinations fail. Generic writes also accept `encoding` and `float_format`. `mio_write_gltf(mesh, 'colored.glb', color_by='temperature', cmap='turbo', up_axis='z', scale=0.001)` exposes all native glTF options; `component` is 1-based or `NULL` for magnitude, and unset `vmin`/`vmax` select automatic bounds. Native reads also support XDMF2/3 with absolute DataItem references and Netgen names/periodic arrays; Netgen periodic arrays live in `field_data` and keep file node ids 1-based, while `.vol.gz` requires zlib.
+
 XDMF series `mio_xdmf_series_write_points_cells(series, mesh)` now stores the mesh's fixed point/cell/side regions once with the shared topology. Existing step, flush and append calls retain them without new arguments. See [shared named regions](xdmf_time_series.md#shared-named-regions).
 
 The shared native reader supports multiple pieces without welding and appended raw/base64 arrays in `vtu`, `vtp`, `vts`, `vtr` and `vti`, with UInt32/UInt64 headers and either byte order. VTP/VTS/VTR/VTI writers remain inline; optional codecs follow the C library build. Legacy `vtk` also reads structured points, structured grids and rectilinear grids in ASCII and big-endian binary through the existing read API. See [formats](formats.md).
@@ -184,6 +186,8 @@ Two things worth knowing before reading the result back:
 The handle is an external pointer with its **own** tag, so a `mio_mesh` and a `mio_xdmf_series` are never accepted for one another; `mio_xdmf_series_release()` is the idempotent deterministic free, and `mio_xdmf_series_is_open()` the predicate. Reading a finished series back is the ordinary `mio_read(path, time_step = k)`.
 
 ## Documented gaps
+
+Sets↔data conversions are available as `mio_sets_to_data(mesh, location, data_name=NULL, join_char="-", order=NULL)` and `mio_data_to_sets(mesh, location, key)` for `location="point"` or `"cell"`. Both return a new mesh. Labels are values, not indices: zero-based labels and -1 for uncovered rows are not shifted. Omit `order` for native region-name order, or list every set name once. See [sets/data semantics](data_manage.md#sets--integer-data).
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia](/julia) bindings; the R package invents no workaround for any of them:
 

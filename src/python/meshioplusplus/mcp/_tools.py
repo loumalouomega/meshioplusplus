@@ -105,9 +105,7 @@ from .. import (
     scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
-from .. import (
-    shrinkwrap,
-)
+from .. import shrinkwrap
 from .. import slice as _slice_op
 from .. import (
     smooth,
@@ -1091,7 +1089,7 @@ def tool_blend_steps(
 
 
 def tool_pipeline(settings_path, input_path=None, output_path=None):
-    """Run a settings.json operation pipeline (read -> ops chain -> write)."""
+    """Run a settings.json pipeline; Output.Codec='lzf' writes compressed PCD."""
     with open(_resolve(settings_path, must_exist=True), "r", encoding="utf-8") as f:
         doc = json.load(f)
     if not isinstance(doc, dict):
@@ -2820,6 +2818,45 @@ def tool_data_manage(
     )
 
 
+def tool_sets_data(
+    input_path,
+    output_path,
+    direction="sets_to_data",
+    location="cell",
+    key=None,
+    data_name=None,
+    join_char="-",
+    order=None,
+    input_format=None,
+    output_format=None,
+):
+    """Convert region-backed sets and scalar integer data without changing geometry."""
+    from .._pipeline import _apply_sets_data
+
+    if direction not in ("sets_to_data", "data_to_sets"):
+        raise ValueError("direction must be 'sets_to_data' or 'data_to_sets'")
+    step = {
+        "Op": "SetsToData" if direction == "sets_to_data" else "DataToSets",
+        "Location": location,
+    }
+    if direction == "sets_to_data":
+        if key is not None:
+            raise ValueError("key is only used with data_to_sets")
+        step.update(Join=join_char, Order=order)
+        if data_name is not None:
+            step["Name"] = data_name
+    else:
+        if key is None:
+            raise ValueError("data_to_sets requires key")
+        if data_name is not None or order is not None or join_char != "-":
+            raise ValueError(
+                "data_name, join_char and order are only used with sets_to_data"
+            )
+        step["Key"] = key
+    mesh = _apply_sets_data(_load(input_path, input_format), step)
+    return _result(_store(mesh, output_path, output_format), mesh)
+
+
 def tool_data_convert(
     input_path,
     output_path,
@@ -4181,6 +4218,7 @@ TOOL_REGISTRY = OrderedDict(
                 "gated": None,
             },
         ),
+        ("sets_data", {"fn": tool_sets_data, "wraps": (), "gated": None}),
         ("data_calc", {"fn": tool_data_calc, "wraps": ("data_calc",), "gated": None}),
         (
             "data_condition",

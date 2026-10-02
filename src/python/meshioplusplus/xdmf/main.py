@@ -99,6 +99,7 @@ class XdmfReader:
         parser = ET.XMLParser()
         tree = ET.parse(self.filename, parser)
         root = tree.getroot()
+        self._root = root
 
         if root.tag != "Xdmf":
             raise ReadError()
@@ -116,14 +117,28 @@ class XdmfReader:
     def _read_data_item(self, data_item, root=None):
         import h5py
 
-        if "Reference" in data_item.attrib:
+        root = root if root is not None else getattr(self, "_root", None)
+        visited = set()
+        while data_item is not None and "Reference" in data_item.attrib:
+            if id(data_item) in visited:
+                raise ReadError("XDMF: cyclic DataItem reference")
+            visited.add(id(data_item))
             reference = data_item.attrib["Reference"]
-            xpath = (data_item.text if reference == "XML" else reference).strip()
-            if xpath.startswith("/"):
-                return self._read_data_item(
-                    root.find(".//" + "/".join(xpath.split("/")[2:])), root
-                )
-            raise ValueError(f"Can't read XPath {xpath}.")
+            xpath = (
+                (data_item.text or "") if reference == "XML" else reference
+            ).strip()
+            if not xpath.startswith("/") or root is None:
+                raise ReadError("XDMF: DataItem reference must be an absolute XPath")
+            try:
+                targets = root.findall("/".join(xpath.split("/")[2:]))
+            except (SyntaxError, KeyError) as exc:
+                raise ReadError(f"XDMF: invalid reference XPath {xpath!r}") from exc
+            if len(targets) != 1 or targets[0].tag != "DataItem":
+                raise ReadError("XDMF: reference must select exactly one DataItem")
+            data_item = targets[0]
+
+        if data_item is None:
+            raise ReadError("XDMF: missing DataItem")
 
         dims = [int(d) for d in data_item.get("Dimensions").split()]
 
@@ -241,7 +256,7 @@ class XdmfReader:
                         )
                     )
                 else:
-                    data = self._read_data_item(data_items[0])
+                    data = self._read_data_item(data_items[0], root)
                     cells.append(CellBlock(xdmf_to_meshio_type[topology_type], data))
 
             elif c.tag == "Geometry":
@@ -252,7 +267,7 @@ class XdmfReader:
                 data_items = list(c)
                 if len(data_items) != 1:
                     raise ReadError()
-                points = self._read_data_item(data_items[0])
+                points = self._read_data_item(data_items[0], root)
 
             elif c.tag == "Information":
                 c_data = c.text
@@ -268,7 +283,7 @@ class XdmfReader:
                 if len(data_items) != 1:
                     raise ReadError()
 
-                data = self._read_data_item(data_items[0])
+                data = self._read_data_item(data_items[0], root)
 
                 name = c.attrib["Name"]
                 if c.attrib["Center"] == "Node":

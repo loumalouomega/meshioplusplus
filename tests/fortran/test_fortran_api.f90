@@ -50,6 +50,24 @@ program test_fortran_api
     call check(mio_format_writable('openfoam'), 'openfoam is writable since v9.20.0')
     call check(.not. mio_format_readable('nonexistent'), 'unknown format is not readable')
 
+    block
+        type(mio_mesh) :: cloud, back
+        real(real64) :: xyz(3, 2)
+        xyz(:, 1) = [1.0_real64, 2.0_real64, 3.0_real64]
+        xyz(:, 2) = [4.0_real64, 5.0_real64, 6.0_real64]
+        call cloud%create()
+        call cloud%set_points(xyz)
+        call cloud%write(prefix//'_lzf.pcd', codec='lzf', stat=ierr)
+        call check(ierr == 0, 'PCD LZF write')
+        call back%read(prefix//'_lzf.pcd', stat=ierr)
+        call check(ierr == 0, 'PCD LZF read')
+        call check(back%num_points() == 2, 'PCD LZF point count')
+        call cloud%write(prefix//'_bad_lzf.pcd', encoding='ascii', codec='lzf', stat=ierr)
+        call check(ierr /= 0, 'PCD LZF rejects ASCII')
+        call cloud%free()
+        call back%free()
+    end block
+
     ! ---- native Gmsh 4.0 read, with sparse/out-of-order node tags --------
     block
         type(mio_mesh) :: legacy
@@ -142,6 +160,17 @@ program test_fortran_api
     end do
 
     call m%set_points(points)
+
+    block
+        type(mio_gltf_options) :: opts
+        opts%up_axis = 3
+        opts%scale = 0.001_real64
+        call m%write_gltf(prefix//'_options.glb', options=opts, stat=ierr)
+        call check(ierr == 0, 'glTF parameterized point cloud')
+        opts%scale = -1
+        call m%write_gltf(prefix//'_bad_options.glb', options=opts, stat=ierr)
+        call check(ierr /= 0, 'glTF rejects invalid scale')
+    end block
     call m%add_cell_block('tetra', conn)
     call m%add_point_data('temperature', [1.0_real64, 2.0_real64, 3.0_real64, 4.0_real64, &
                                           5.0_real64])
@@ -329,6 +358,21 @@ program test_fortran_api
     call check(len(msg) > 0, 'unknown explicit format sets errmsg')
 
     ! ---- data operations -----------------------------------------------
+    block
+        type(mio_mesh) :: source, labels, restored
+        source = m%data_keep(MIO_DATA_POINT, ['temperature'], stat=ierr)
+        call source%add_region('a', MIO_REGION_POINT, [1_int64, 2_int64])
+        call source%add_region('b', MIO_REGION_POINT, [2_int64, 3_int64])
+        labels = source%sets_to_data(MIO_DATA_POINT, order=['b', 'a'], stat=ierr)
+        call check(ierr == 0, 'sets_to_data succeeds with explicit order')
+        call check(labels%num_regions() == source%num_regions() - 2_int64, 'sets_to_data removes point sets')
+        restored = labels%data_to_sets(MIO_DATA_POINT, 'b-a', stat=ierr)
+        call check(ierr == 0, 'data_to_sets succeeds')
+        call check(restored%num_points() == source%num_points(), 'sets/data preserves geometry')
+        call restored%free()
+        call labels%free()
+        call source%free()
+    end block
     ! These act on the data arrays only; the geometry must come through
     ! untouched. `m` carries point_data temperature/velocity and cell_data
     ! quality.

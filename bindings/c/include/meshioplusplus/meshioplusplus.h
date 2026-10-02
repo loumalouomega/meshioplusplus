@@ -173,19 +173,21 @@ typedef enum mio_dtype {
 #define MIO_CELL_TYPES(X)                                                                          \
     X(Vertex)                                                                                      \
     X(Line)                                                                                        \
-    X(Line3) X(Line4) X(Line5) X(Line6) X(Line7) X(Line8) X(Line9) X(Line10) X(Line11) X(Triangle) \
-        X(Triangle6) X(Triangle10) X(Triangle15) X(Triangle21) X(Triangle28) X(Triangle36)         \
-            X(Triangle45) X(Triangle55) X(Triangle66) X(Quad) X(Quad8) X(Quad9) X(Quad16)          \
-                X(Quad25) X(Quad36) X(Quad49) X(Quad64) X(Quad81) X(Quad100) X(Quad121) X(Tetra)   \
-                    X(Tetra10) X(Tetra20) X(Tetra35) X(Tetra56) X(Tetra84) X(Tetra120) X(Tetra165) \
-                        X(Tetra220) X(Tetra286) X(Hexahedron) X(Hexahedron20) X(Hexahedron24)      \
-                            X(Hexahedron27) X(Hexahedron64) X(Hexahedron125) X(Hexahedron216)      \
-                                X(Hexahedron343) X(Hexahedron512) X(Hexahedron729)                 \
-                                    X(Hexahedron1000) X(Hexahedron1331) X(Wedge) X(Wedge15)        \
-                                        X(Wedge18) X(Wedge40) X(Wedge75) X(Wedge126) X(Wedge196)   \
-                                            X(Wedge288) X(Wedge405) X(Wedge550) X(Pyramid)         \
-                                                X(Pyramid13) X(Pyramid14) X(Polygon) X(Polyhedron) \
-                                                    X(VtkLagrangeCurve) X(VtkLagrangeTriangle)     \
+    X(Line3)                                                                                       \
+    X(Line4)                                                                                       \
+    X(Line5) X(Line6) X(Line7) X(Line8) X(Line9) X(Line10) X(Line11) X(Triangle) X(Triangle6)      \
+        X(Triangle10) X(Triangle15) X(Triangle21) X(Triangle28) X(Triangle36) X(Triangle45)        \
+            X(Triangle55) X(Triangle66) X(Quad) X(Quad8) X(Quad9) X(Quad16) X(Quad25) X(Quad36)    \
+                X(Quad49) X(Quad64) X(Quad81) X(Quad100) X(Quad121) X(Tetra) X(Tetra10) X(Tetra20) \
+                    X(Tetra35) X(Tetra56) X(Tetra84) X(Tetra120) X(Tetra165) X(Tetra220)           \
+                        X(Tetra286) X(Hexahedron) X(Hexahedron20) X(Hexahedron24) X(Hexahedron27)  \
+                            X(Hexahedron64) X(Hexahedron125) X(Hexahedron216) X(Hexahedron343)     \
+                                X(Hexahedron512) X(Hexahedron729) X(Hexahedron1000)                \
+                                    X(Hexahedron1331) X(Wedge) X(Wedge15) X(Wedge18) X(Wedge40)    \
+                                        X(Wedge75) X(Wedge126) X(Wedge196) X(Wedge288) X(Wedge405) \
+                                            X(Wedge550) X(Pyramid) X(Pyramid13) X(Pyramid14)       \
+                                                X(Polygon) X(Polyhedron) X(VtkLagrangeCurve)       \
+                                                    X(VtkLagrangeTriangle)                         \
                                                         X(VtkLagrangeQuadrilateral)                \
                                                             X(VtkLagrangeTetrahedron)              \
                                                                 X(VtkLagrangeHexahedron)           \
@@ -535,13 +537,14 @@ typedef enum mio_write_encoding {
                                        no base64 (since v16.21.0) */
 } mio_write_encoding;
 
-/** Block compression codec for mio_write_opts.codec (vti/vtu/vtp only). */
+/** Compression codec for mio_write_opts.codec (VTK block codecs, or PCD LZF). */
 typedef enum mio_write_codec {
     MIO_CODEC_DEFAULT = 0, /**< leave the format's default in place */
     MIO_CODEC_NONE = 1,
     MIO_CODEC_ZLIB = 2,
-    MIO_CODEC_LZ4 = 3, /**< vtkLZ4DataCompressor; ParaView-readable */
-    MIO_CODEC_ZSTD = 4 /**< a meshio++ extension; ParaView cannot read it */
+    MIO_CODEC_LZ4 = 3,  /**< vtkLZ4DataCompressor; ParaView-readable */
+    MIO_CODEC_ZSTD = 4, /**< a meshio++ extension; ParaView cannot read it */
+    MIO_CODEC_LZF = 5   /**< pcd only: binary_compressed; incompatible with ASCII */
 } mio_write_codec;
 
 /**
@@ -557,7 +560,7 @@ typedef enum mio_write_codec {
  */
 typedef struct mio_write_opts {
     int encoding; /**< a mio_write_encoding value */
-    int codec;    /**< a mio_write_codec value; vti/vtu/vtp only */
+    int codec;    /**< a mio_write_codec value; VTK codecs or PCD LZF */
     /** printf-style float format for the ASCII writers that take one (e.g.
      *  ".16e"). NULL or empty keeps the writer's own default. Copied during
      *  the call. Currently honoured by flac3d and xyz. */
@@ -575,6 +578,37 @@ MIO_API void mio_write_opts_init(mio_write_opts* opts);
  */
 MIO_API mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                                 const mio_write_opts* opts);
+
+/** glTF/GLB export options. Initialize with mio_gltf_opts_init; strings are
+ * borrowed for the call only. Unset component/range selects magnitude/auto.
+ * This is a new layout; future fields consume reserved capacity only. */
+typedef struct mio_gltf_opts {
+    int container;     /**< 0 auto, 1 GLB, 2 glTF + bin */
+    int up_axis;       /**< 0 auto, 1 Z, 2 Y, 3 X */
+    int normal_weight; /**< 0 angle, 1 area */
+    int normals;
+    int fields;
+    int recenter;
+    int by_region;
+    int unlit;
+    int component; /**< 0-based; only used when component_set is nonzero */
+    int component_set;
+    int vmin_set;
+    int vmax_set;
+    double split_angle; /**< degrees, default 30 */
+    double scale;       /**< source units to metres, default 1 */
+    double vmin;
+    double vmax;
+    const char* color_by;
+    const char* cmap;      /**< NULL keeps viridis */
+    const char* nan_color; /**< NULL keeps #808080 */
+    int64_t reserved[8];
+} mio_gltf_opts;
+
+MIO_API void mio_gltf_opts_init(mio_gltf_opts* opts);
+/** NULL opts selects the existing glTF writer's defaults. */
+MIO_API mio_status mio_write_gltf(const char* path, const mio_mesh* mesh,
+                                  const mio_gltf_opts* opts);
 
 /* ---------------------------------------------------------------------
  * Format side channels (v16.27.0)
@@ -3131,6 +3165,20 @@ MIO_API mio_mesh* mio_data_keep(const mio_mesh* mesh, mio_data_location location
  */
 MIO_API mio_mesh* mio_data_rename(const mio_mesh* mesh, mio_data_location location,
                                   const char* from_name, const char* to_name);
+
+/** Point/cell region-backed sets -> scalar Int64 data on a new mesh. NULL
+ * data_name joins set names with join_char (NULL means "-"). order/count may
+ * specify every set name exactly once; count=0 uses native region-name order.
+ * Later overlapping sets win, uncovered rows are -1; side regions remain.
+ * Free the result with mio_mesh_free; NULL indicates failure. */
+MIO_API mio_mesh* mio_sets_to_data(const mio_mesh* mesh, mio_data_location location,
+                                   const char* data_name, const char* join_char,
+                                   const char* const* order, int64_t count);
+/** Scalar integer point/cell data -> region-backed sets on a new mesh.
+ * Removes key; geometry, unrelated data and property sets survive.
+ * Free the result with mio_mesh_free; NULL indicates failure. */
+MIO_API mio_mesh* mio_data_to_sets(const mio_mesh* mesh, mio_data_location location,
+                                   const char* key);
 
 /**
  * Average point_data onto the cells: each cell's value is the mean over its own

@@ -89,6 +89,29 @@ TEST(WriteOptions, EncodingSelectsAsciiOrBinary) {
     std::remove(b.c_str());
 }
 
+TEST(WriteOptions, PcdLzfSelectsCompressedBinaryWithoutAnEncodingOverride) {
+    const Mesh m = mt::tet_mesh();
+    const std::string path = mt::temp_path("_wo_lzf.pcd");
+    WriteOptions opts;
+    opts.mCodecSet = true;
+    opts.mCodec = meshioplusplus::detail::VtkCodec::LZF;
+    std::string why;
+    EXPECT_TRUE(registry_write_supports("pcd", opts, why)) << why;
+    registry_write_ex(path, m, "pcd", opts);
+    EXPECT_NE(read_all(path).find("DATA binary_compressed\n"), std::string::npos);
+    EXPECT_EQ(meshioplusplus::registry_read(path, "pcd", {}).NumPoints(), m.NumPoints());
+    for (const char* fmt : {"vti", "vtu", "vtp", "gmsh"})
+        EXPECT_FALSE(registry_write_supports(fmt, opts, why)) << fmt;
+    opts.mEncoding = WriteEncoding::Ascii;
+    EXPECT_FALSE(registry_write_supports("pcd", opts, why));
+    EXPECT_THROW(registry_write_ex(path, m, "pcd", opts), meshioplusplus::WriteError);
+    opts.mEncoding = WriteEncoding::Binary;
+    EXPECT_TRUE(registry_write_supports("pcd", opts, why));
+    opts.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+    EXPECT_FALSE(registry_write_supports("pcd", opts, why));
+    std::remove(path.c_str());
+}
+
 TEST(WriteOptions, RawAppendedIsVtuOnly) {
     const Mesh m = mt::tet_mesh();
     WriteOptions appended;

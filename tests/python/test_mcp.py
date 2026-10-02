@@ -904,6 +904,23 @@ def test_pipeline_tool(mesh_file, tmp_path):
     assert os.path.isfile(other)
 
 
+def test_pipeline_tool_pcd_lzf(mesh_file, tmp_path):
+    path = tmp_path / "cloud.pcd"
+    settings = tmp_path / "lzf.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Input": {"Path": mesh_file},
+                "Operations": [],
+                "Output": {"Path": str(path), "Codec": "lzf"},
+            }
+        )
+    )
+    result = _dump(_tools.tool_pipeline(str(settings)))
+    assert result["output_path"] == str(path)
+    assert b"DATA binary_compressed\n" in path.read_bytes()
+
+
 def test_pipeline_tool_sandboxes_the_inner_paths(mesh_file, tmp_path, monkeypatch):
     # A settings document naming a path outside the root must fail exactly the
     # way a path argument would -- the sandbox covers the document's insides.
@@ -1563,6 +1580,36 @@ def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
         assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo"), name
+
+
+def test_sets_data_tool_and_cache_isolation(mesh_file, tmp_path):
+    mesh = _tools._load(mesh_file)
+    mesh.point_sets["a"] = [0, 1]
+    mesh.point_sets["b"] = [1, 2, 3, 4]
+    source = tmp_path / "sets.vtu"
+    meshioplusplus.write(source, mesh)
+    output = tmp_path / "labels.vtu"
+    report = _dump(_tools.tool_sets_data(str(source), str(output), location="point"))
+    assert "error" not in report
+    labels = meshioplusplus.read(output)
+    np.testing.assert_array_equal(labels.point_data["a-b"], [0, 1, 1, 1, 1])
+    assert not labels.point_sets
+    assert _tools._load(str(source)).point_sets
+    restored = tmp_path / "restored.vtu"
+    _dump(
+        _tools.tool_sets_data(
+            str(output),
+            str(restored),
+            direction="data_to_sets",
+            location="point",
+            key="a-b",
+        )
+    )
+    back = meshioplusplus.read(restored)
+    assert "a-b" not in back.point_data
+    np.testing.assert_array_equal(back.point_sets["b"], [1, 2, 3, 4])
+    with pytest.raises(ValueError, match="requires key"):
+        _tools.tool_sets_data(str(source), str(output), direction="data_to_sets")
 
 
 def test_every_tool_function_is_callable():

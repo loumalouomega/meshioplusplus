@@ -44,7 +44,7 @@ meshioplusplus.gltf.write(
 - **`up_axis`** / **`recenter`** / **`scale`** — see [Conventions](#conventions).
 - **`by_region`** — one node per cell region (default) or a single node named `mesh`.
 
-`meshioplusplus convert in.vtu out.glb` writes the defaults. The colour flags of `convert` (`--color-by`, `--component`, `--cmap`, `--vmin`, `--vmax`, `--nan-color`) apply to glTF output too, plus `--split-angle` and `--up-axis`; `--colorbar` is svg/tikz only. The MCP server exposes every option as `export_gltf`. The flat bindings (C, Fortran, Julia, R, WASM) write the defaults through `mio_write("x.glb")`/`writeMesh`; there is no options struct on the flat ABI.
+`meshioplusplus convert in.vtu out.glb` writes the defaults. The colour flags of `convert` (`--color-by`, `--component`, `--cmap`, `--vmin`, `--vmax`, `--nan-color`) apply to glTF output too, plus `--split-angle` and `--up-axis`; `--colorbar` is svg/tikz only. The MCP server exposes every option as `export_gltf`. Flat bindings retain the default `mio_write`/`writeMesh` path and also expose every `GltfWriteOptions` field through `mio_gltf_opts_init` + `mio_write_gltf` (C), `m%write_gltf(..., options=...)` (Fortran), `write_gltf` (Julia), `mio_write_gltf` (R) and `writeGltf` (WASM). Components are 0-based in C/WASM and 1-based in Fortran/Julia/R; unset selects magnitude. Unset range endpoints select the native automatic range.
 
 ## What is exported
 

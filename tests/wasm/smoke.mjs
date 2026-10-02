@@ -633,6 +633,23 @@ step('dataPointToCell / dataCellToPoint', () => {
     assert.ok(Math.abs(toPoint.point_data.material[0] - 7) < 1e-12);
 });
 
+step('setsToData / dataToSets keep labels, geometry and region semantics', () => {
+    const mesh = {...tetv, regions: [
+        {name: 'a', kind: 'point', dim: 0, tag: 7, entries: Int32Array.from([0, 1])},
+        {name: 'b', kind: 'point', dim: -1, tag: -1, entries: Int32Array.from([1, 2])},
+    ]};
+    const labels = m.setsToData(mesh, 'point', {order: ['b', 'a']});
+    assert.deepEqual(Array.from(labels.point_data['b-a'], Number), [1, 1, 0, -1]);
+    assert.equal(labels.regions.length, 0);
+    assert.deepEqual(labels.points, mesh.points);
+    assert.deepEqual(labels.cells[0].data, mesh.cells[0].data);
+    const back = m.dataToSets(labels, 'point', 'b-a');
+    assert.ok(!('b-a' in back.point_data));
+    assert.equal(back.regions.length, 3);
+    assert.throws(() => m.setsToData(mesh, 'field'));
+    assert.throws(() => m.dataToSets(mesh, 'point', 'temperature'));
+});
+
 step('dataCondition normalizes to [0, 1]', () => {
     const out = m.dataCondition(
         tetv, 'point', ['temperature'], 'normalize', 0, 1,
@@ -2559,6 +2576,31 @@ step('.vtm writes an index plus one .vtu piece per cell block, and reads two blo
     const piece0 = m.readMesh('/blocks/blocks_0.vtu');
     const piece1 = m.readMesh('/blocks/blocks_1.vtu');
     assert.deepEqual([piece0.cells[0].type, piece1.cells[0].type], ['tetra', 'triangle']);
+});
+
+step('.pcd LZF write options select binary_compressed', () => {
+    const cloud = {points: new Float64Array([1, 2, 3, 4, 5, 6]), cells: []};
+    m.writeMesh('/lzf.pcd', cloud, 'pcd', {codec: 'lzf'});
+    const bytes = m.FS.readFile('/lzf.pcd');
+    assert.ok(new TextDecoder().decode(bytes).includes('DATA binary_compressed\n'));
+    assert.deepEqual(Array.from(m.readMesh('/lzf.pcd').points), Array.from(cloud.points));
+    assert.throws(() => m.writeMesh('/bad-lzf.pcd', cloud, 'pcd', {codec: 'lzf', encoding: 'ascii'}));
+    assert.throws(() => m.writeMesh('/bad-lzf.vtu', cloud, 'vtu', {codec: 'lzf'}));
+});
+
+step('parameterized glTF writes colour and preserves the written-paths contract', () => {
+    const mesh = {points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        cells: [{type: 'triangle', data: new Int32Array([0, 1, 2])}],
+        point_data: {temperature: new Float64Array([0, 1, 2])}};
+    const paths = m.writeGltf('/colored.gltf', mesh,
+        {colorBy: 'temperature', cmap: 'turbo', vmin: 0, vmax: 2, upAxis: 'x', scale: 0.001});
+    assert.ok(paths.includes('/colored.gltf'));
+    assert.ok(paths.includes('/colored.bin'));
+    const json = JSON.parse(m.FS.readFile('/colored.gltf', {encoding: 'utf8'}));
+    assert.ok(json.meshes[0].primitives[0].attributes.COLOR_0 !== undefined);
+    assert.throws(() => m.writeGltf('/bad.gltf', mesh, {scale: -1}));
+    assert.throws(() => m.writeGltf('/bad.gltf', mesh, {upAxis: 'bad'}));
+    assert.throws(() => m.writeGltf('/bad.gltf', mesh, {unknown: true}));
 });
 
 step('.pcd round-trips a point cloud through MEMFS and the format is picked by extension', () => {
