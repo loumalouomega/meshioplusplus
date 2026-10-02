@@ -151,7 +151,7 @@ def read_pieces(root, reader, dataset_type, fmt, read_piece):
     for mesh, piece in zip(meshes, pieces):
         if not len(mesh.points):
             section = piece.find("PointData")
-            for da in ([] if section is None else section.findall("DataArray")):
+            for da in [] if section is None else section.findall("DataArray"):
                 arr = reader.read_data(da)
                 if arr.size:
                     raise ReadError("VTK: PointData length differs from piece count")
@@ -161,7 +161,7 @@ def read_pieces(root, reader, dataset_type, fmt, read_piece):
         if not mesh.cells:
             data = {}
             section = piece.find("CellData")
-            for da in ([] if section is None else section.findall("DataArray")):
+            for da in [] if section is None else section.findall("DataArray"):
                 arr = reader.read_data(da)
                 if arr.size:
                     raise ReadError("VTK: CellData length differs from piece count")
