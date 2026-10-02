@@ -83,7 +83,7 @@ The readers:
 
 The sanitizer leg, the reader fuzzing, the format conformance matrix, the property tests, the benchmark harness, the ParaView plugin test and the fallback narrowing all shipped in v16.14.0 ([fuzzing and sanitizers](./fuzzing.md), [format conformance](./conformance.md), [benchmarks](./benchmarks.md)). What remains:
 
-- **2.1 OSS-Fuzz submission.** The harness takes its format from its binary's name; `tools/fuzz/oss-fuzz/` now supplies a Dockerfile, an external-engine CMake build (`MESHIOPLUSPLUS_FUZZING_ENGINE` honors `LIB_FUZZING_ENGINE` without adding local sanitizer/coverage flags) and per-target positive/regression seed archives. A local external-engine ASan build passes; remaining: confirmed Google-account maintainer contact, helper-container build/check/run validation for both declared sanitizers, and submission/review in `google/oss-fuzz` ([checklist](./fuzzing.md#oss-fuzz)). Calendar-bound, like the registries in [§5](#_5-ecosystem-reach). **S**
+- **2.1 OSS-Fuzz submission.** The maintainer's Google-account contact is confirmed, the submission files pass OSS-Fuzz's presubmit checks, and the helper-container image and external-engine ASan build pass. The integration temporarily tracks the public `tier-2` branch until its CMake/seed-generator prerequisites merge into `master`. Remaining: helper-container check/run validation for address, build/check/run validation for undefined, coverage inspection, and submission/review in `google/oss-fuzz` ([checklist](./fuzzing.md#oss-fuzz)). Calendar-bound, like the registries in [§5](#_5-ecosystem-reach). **S**
 
 ---
 

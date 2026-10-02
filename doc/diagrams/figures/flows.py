@@ -953,8 +953,6 @@ def roadmap_map():
             "§2 quality",
             [
                 ("OSS-Fuzz submission", "S"),
-                ("fuzz the HDF5/netCDF readers", "M"),
-                ("benchmark trend store", "S"),
             ],
             [],
         ),

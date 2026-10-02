@@ -3,6 +3,7 @@
 import importlib.util
 import os
 import pathlib
+import shutil
 import subprocess
 import zipfile
 
@@ -43,6 +44,95 @@ def test_lfs_pointer_is_not_packaged(tmp_path):
     (output / "meshioplusplus_fuzz_read_vtk").touch()
     with pytest.raises(ValueError, match="LFS pointer"):
         seeds.package(source, output)
+
+
+def test_packages_generated_and_regression_seeds(tmp_path):
+    source, generated, output = [
+        tmp_path / name for name in ("regressions", "generated", "out")
+    ]
+    for root in (source, generated):
+        (root / "vtu").mkdir(parents=True)
+    output.mkdir()
+    (source / "vtu/regression").write_bytes(b"malformed input")
+    (generated / "vtu/positive.vtu").write_bytes(b"valid input")
+    (generated / "vtu/empty").touch()
+    (generated / "vtu/subdirectory").mkdir()
+    (output / "meshioplusplus_fuzz_read_vtu").touch()
+    (output / "meshioplusplus_fuzz_read_vtu.dict").touch()
+    (output / "meshioplusplus_fuzz_read_off").touch()
+    seeds.package(source, output, generated=generated)
+    with zipfile.ZipFile(
+        output / "meshioplusplus_fuzz_read_vtu_seed_corpus.zip"
+    ) as archive:
+        assert archive.namelist() == ["regression", "positive.vtu"]
+        assert archive.read("positive.vtu") == b"valid input"
+    assert not (output / "meshioplusplus_fuzz_read_off_seed_corpus.zip").exists()
+
+
+@pytest.mark.parametrize("list_fails", [False, True])
+def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails):
+    tools, work, output = [tmp_path / name for name in ("bin", "work", "out")]
+    for directory in (tools, work, output):
+        directory.mkdir()
+    cmake = tools / "cmake"
+    cmake.write_text("#!/bin/sh\nexit 0\n")
+    cmake.chmod(0o755)
+    build = work / "meshioplusplus-build"
+    build.mkdir()
+    scripts = {
+        "meshioplusplus_fuzz_read": "#!/bin/sh\nexit 0\n",
+        "meshioplusplus_fuzz_replay": (
+            "#!/bin/sh\nexit 1\n"
+            if list_fails
+            else "#!/bin/sh\nprintf 'vtu\\nno_dictionary\\nelmer\\ncgns\\n'\n"
+        ),
+        "meshioplusplus_fuzz_seeds": (
+            '#!/bin/sh\nmkdir -p "$1/vtu"\nprintf positive > "$1/vtu/seed.vtu"\n'
+        ),
+    }
+    for name, text in scripts.items():
+        executable = build / name
+        executable.write_text(text)
+        executable.chmod(0o755)
+    source = tmp_path / "src"
+    fuzz = source / "meshioplusplus/tools/fuzz"
+    (fuzz / "dicts").mkdir(parents=True)
+    (fuzz / "dicts/vtu.dict").write_text('"VTKFile"\n')
+    (fuzz / "not_fuzzed.txt").write_text("elmer\ncgns\n")
+    (fuzz / "oss-fuzz").mkdir()
+    shutil.copyfile(
+        REPO / "tools/fuzz/oss-fuzz/package_seeds.py",
+        fuzz / "oss-fuzz/package_seeds.py",
+    )
+    env = dict(
+        os.environ,
+        PATH=f"{tools}{os.pathsep}{os.environ['PATH']}",
+        SRC=str(source),
+        WORK=str(work),
+        OUT=str(output),
+        LIB_FUZZING_ENGINE="-fsanitize=fuzzer",
+    )
+    result = subprocess.run(
+        ["bash", "-eu", str(REPO / "tools/fuzz/oss-fuzz/build.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if list_fails:
+        assert result.returncode != 0
+        assert not list(output.iterdir())
+    else:
+        assert result.returncode == 0, result.stderr
+        for fmt in ("vtu", "no_dictionary"):
+            assert (output / f"meshioplusplus_fuzz_read_{fmt}").exists()
+        for fmt in ("elmer", "cgns"):
+            assert not (output / f"meshioplusplus_fuzz_read_{fmt}").exists()
+        assert (output / "meshioplusplus_fuzz_read_vtu.dict").exists()
+        assert not (output / "meshioplusplus_fuzz_read_no_dictionary.dict").exists()
+        with zipfile.ZipFile(
+            output / "meshioplusplus_fuzz_read_vtu_seed_corpus.zip"
+        ) as archive:
+            assert archive.read("seed.vtu") == b"positive"
 
 
 @pytest.mark.parametrize("libraries", [False, True])

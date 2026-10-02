@@ -62,8 +62,26 @@ Known library limitations remain, distinct from meshio defects: HDF5 aborts on s
 
 ## OSS-Fuzz
 
-`tools/fuzz/oss-fuzz/` supplies `Dockerfile`, `build.sh`, seed packaging and a draft `project.yaml`. CMake's `MESHIOPLUSPLUS_FUZZING_ENGINE` accepts OSS-Fuzz's `LIB_FUZZING_ENGINE`; the normal target retains transitive libraries and feature definitions rather than hand-linking object-file globs. With an external engine the project does not add its own sanitizer defaults or coverage flags: OSS-Fuzz's compiler environment controls them. The integration currently disables HDF5/netCDF; the library campaign is separate.
+`tools/fuzz/oss-fuzz/` supplies `Dockerfile`, `build.sh`, seed packaging and `project.yaml` with the maintainer's confirmed Google-account contact. The three upstream integration files carry Apache-2.0 license headers as OSS-Fuzz requires; the meshio++ core and project-owned seeds remain MIT. The image temporarily builds the public `tier-2` branch because the external-engine and seed-generator changes have not yet landed on `master`; switch it to the default branch after they merge, before deleting `tier-2`. It checks out only the Eigen and JSON submodules needed by the core, not the interactive viewer. CMake's `MESHIOPLUSPLUS_FUZZING_ENGINE` accepts OSS-Fuzz's `LIB_FUZZING_ENGINE`; the normal target retains transitive libraries and feature definitions rather than hand-linking object-file globs. With an external engine the project does not add its own sanitizer defaults or coverage flags: OSS-Fuzz's compiler environment controls them. The integration currently disables HDF5/netCDF; the library campaign is separate.
 
 `meshioplusplus_fuzz_seeds` writes small project-generated meshes and validates them through native readers before packaging. `package_seeds.py` combines these with committed regression inputs into per-target `_seed_corpus.zip` archives, rejecting LFS pointers and excluding empty/oversized files. Some read-only or specialised formats have only regression seeds; directory/companion formats are not made meaningful by packaging their files separately.
 
-Before submission, confirm the established maintainer's Google-associated `primary_contact` (the placeholder must not be submitted), copy the integration into `projects/meshioplusplus/` in a checkout of `google/oss-fuzz`, and run `infra/helper.py build_image meshioplusplus`, `build_fuzzers --sanitizer address meshioplusplus`, `check_build meshioplusplus` and `run_fuzzer meshioplusplus meshioplusplus_fuzz_read_vtu`. Repeat build/check for `undefined`, and inspect a coverage build with the generated seeds. A local external-engine build is useful but is not a substitute for these container checks. Docker is required for that validation. No upstream submission or acceptance is implied by these files; eligibility and onboarding remain OSS-Fuzz's review decision.
+For container validation, copy `Dockerfile`, `build.sh` and `project.yaml` into `projects/meshioplusplus/` in a checkout of [google/oss-fuzz](https://github.com/google/oss-fuzz). Run the following from that checkout with Docker available. Use `--clean` when changing sanitizers: CMake caches compiler flags, and reusing an address build for an undefined check is not validation of both configurations. Pass the matching sanitizer to `check_build` and `run_fuzzer` too, rather than letting them default to address.
+
+```sh
+python3 infra/helper.py build_image meshioplusplus
+for sanitizer in address undefined; do
+    python3 infra/helper.py build_fuzzers --clean --sanitizer "$sanitizer" meshioplusplus
+    python3 infra/helper.py check_build --sanitizer "$sanitizer" meshioplusplus
+    python3 infra/helper.py run_fuzzer --sanitizer "$sanitizer" meshioplusplus \
+        meshioplusplus_fuzz_read_vtu -- -max_total_time=30
+done
+python3 infra/helper.py build_fuzzers --clean --sanitizer coverage meshioplusplus
+python3 -m zipfile -e \
+    build/out/meshioplusplus/meshioplusplus_fuzz_read_vtu_seed_corpus.zip \
+    build/corpus/meshioplusplus/meshioplusplus_fuzz_read_vtu
+python3 infra/helper.py coverage --no-corpus-download --no-serve \
+    --fuzz-target=meshioplusplus_fuzz_read_vtu meshioplusplus
+```
+
+The smoke run consumes the packaged positive and regression seeds. For coverage, extract the matching `_seed_corpus.zip` into the target's local `build/corpus/meshioplusplus/<target>/` directory first, or pass that directory through `--corpus-dir`. Inspect the report to confirm that the production reader is reached, not just the harness's input checks. A local external-engine build is useful but is not a substitute for these container checks. No upstream acceptance is implied by the integration files; eligibility and onboarding remain OSS-Fuzz's review decision.
