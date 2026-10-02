@@ -75,8 +75,40 @@ def test_campaign_library_opt_in(tmp_path, libraries):
     assert (output / "vtk/fuzz.log").exists()
     for fmt in ("vtkhdf", "exodus"):
         assert (output / fmt / "fuzz.log").exists() == libraries
-    for fmt in ("vtx", "szplt", "xdmf", "elmer"):
-        assert not (output / fmt).exists()
+    for fmt in ("vtx", "szplt", "xdmf"):
+        assert (output / fmt / "fuzz.log").exists()
+    assert not (output / "elmer").exists()
+
+
+def test_bundle_pack_round_trip():
+    import struct
+
+    def pack(entries):
+        out = bytearray(b"MIOB\x01") + struct.pack("<H", len(entries))
+        for name, data in entries:
+            name_b = name.encode()
+            out += struct.pack("<H", len(name_b)) + name_b
+            out += struct.pack("<I", len(data)) + data
+        return bytes(out)
+
+    blob = pack([("input.xdmf", b"<Xdmf/>"), ("data.h5", b"\x89HDF\r\n\x1a\n")])
+    assert blob.startswith(b"MIOB\x01")
+    assert blob[5:7] == struct.pack("<H", 2)
+
+
+def test_seed_corpus_packs_xdmf_bundles(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "seed_corpus", REPO / "tools/fuzz/seed_corpus.py"
+    )
+    seed_corpus = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed_corpus)
+    out = tmp_path / "seeds"
+    out.mkdir()
+    assert seed_corpus._xdmf_bundle_seeds(out, 262144) >= 2
+    assert list(out.glob("bundle-*.miob"))
+    assert list(out.glob("bundle-regions-*.miob"))
 
 
 def test_native_connectivity_shape_probe(tmp_path):

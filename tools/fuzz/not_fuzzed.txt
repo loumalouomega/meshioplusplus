@@ -12,9 +12,9 @@ med
 nastran_h5
 vtkhdf
 exodus
-# Still excluded: ADIOS2's directory input and the optional TecIO runtime.
-vtx
-szplt
-# Still excluded: needs an XML/heavy-data bundle. VTU's shared XML parser
-# coverage is not coverage of XDMF's DataItem/reference interpretation.
-xdmf
+# Bundle and optional-runtime readers below run through the production-path
+# harness (fuzz_bundle.hpp): XDMF XML/heavy-data bundles and ADIOS2 `.bp`
+# directories reconstruct companions from one bundle input, and the CGNS MLL
+# and TecIO SZL routes call their production decoders when built with
+# MESHIOPLUSPLUS_HAS_CGNSLIB / ADIOS2 / TECIO. They are absent here because
+# they are covered, not because they are skipped.

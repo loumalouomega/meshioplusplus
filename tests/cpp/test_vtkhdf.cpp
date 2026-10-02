@@ -463,7 +463,10 @@ TEST(Vtkhdf, ReadRejectsANonHdf5File) {
         meshioplusplus::read_vtkhdf(f.mPath);
         FAIL();
     } catch (const meshioplusplus::ReadError& e) {
-        EXPECT_NE(std::string(e.what()).find("cannot open"), std::string::npos);
+        const std::string what = e.what();
+        EXPECT_TRUE(what.find("cannot open") != std::string::npos ||
+                    what.find("HDF5 container") != std::string::npos)
+            << what;
     }
 }
 

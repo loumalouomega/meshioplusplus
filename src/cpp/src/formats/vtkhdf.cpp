@@ -46,6 +46,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
+#include "library_preflight.hpp"
 
 namespace meshioplusplus {
 
@@ -455,8 +456,7 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
     for (I64 e : t.mEnds) {
         if (e < prev || e > static_cast<I64>(t.mConn.size()))
             throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree (" +
-                            std::to_string(e) + " vs " + std::to_string(t.mConn.size()) +
-                            " ids)");
+                            std::to_string(e) + " vs " + std::to_string(t.mConn.size()) + " ids)");
         prev = e;
     }
     return t;
@@ -1121,6 +1121,7 @@ void vtkhdf_check_version(hid_t Root) {
 }
 
 Hid vtkhdf_open(const std::string& rPath, Hid& rRoot, std::string& rKind) {
+    detail::library_preflight_hdf5(rPath, "vtkhdf");
     Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.Valid())
         throw ReadError("meshio++: vtkhdf: cannot open '" + rPath + "' as an HDF5 file");

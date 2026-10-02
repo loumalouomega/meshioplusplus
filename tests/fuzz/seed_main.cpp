@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "fuzz_bundle.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/registry.hpp"
 
@@ -63,6 +65,41 @@ int main(int argc, char** argv) {
                                 ((surface ? "surface-" : "volume-") +
                                  entry.path().filename().string()),
                             std::filesystem::copy_options::overwrite_existing);
+                }
+                // Companion-file readers need one bundle input, not separate
+                // files: pack what the writer left (an XDMF `.xdmf` plus its
+                // `.h5`/`.bin`, or a VTX `.bp` directory) so OSS-Fuzz and the
+                // campaign start from a valid reconstruction.
+                if (format == "xdmf" || format == "vtx") {
+                    std::vector<meshioplusplus::FuzzBundleEntry> bundle;
+                    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
+                        if (!entry.is_regular_file())
+                            continue;
+                        const auto rel = std::filesystem::relative(entry.path(), dir);
+                        if (std::filesystem::file_size(entry.path()) > 262144)
+                            continue;
+                        std::ifstream in(entry.path(), std::ios::binary);
+                        std::vector<std::uint8_t> data((std::istreambuf_iterator<char>(in)),
+                                                       std::istreambuf_iterator<char>());
+                        std::string name = rel.string();
+                        if (format == "vtx" && name.rfind("seed.bp", 0) == 0)
+                            name = "input.bp" + name.substr(7);
+                        if (meshioplusplus::fuzz_bundle_name_ok(name))
+                            bundle.emplace_back(name, std::move(data));
+                        if (bundle.size() >= meshioplusplus::kFuzzBundleMaxEntries)
+                            break;
+                    }
+                    if (!bundle.empty()) {
+                        const auto blob = meshioplusplus::fuzz_bundle_encode(bundle);
+                        if (blob.size() <= 262144) {
+                            const auto out =
+                                root / format /
+                                ((surface ? "surface-" : "volume-") + std::string("bundle.miob"));
+                            std::ofstream f(out, std::ios::binary);
+                            f.write(reinterpret_cast<const char*>(blob.data()),
+                                    static_cast<std::streamsize>(blob.size()));
+                        }
+                    }
                 }
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "seed %s (%s): %s\n", format.c_str(),

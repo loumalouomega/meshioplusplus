@@ -32,11 +32,13 @@
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../formats/library_preflight.hpp"
 
 namespace meshioplusplus {
 namespace h5 {
 
 Hid open_file_read(const std::string& rPath) {
+    detail::library_preflight_hdf5(rPath, "HDF5");
     Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.Valid())
         throw ReadError("HDF5: could not open file " + rPath);

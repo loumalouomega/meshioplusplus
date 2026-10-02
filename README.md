@@ -1036,7 +1036,7 @@ The speedup is per-element: text/parallel formats climb out of the small-mesh re
 
 <img alt="speedup vs mesh size" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/benchmark/plots/benchmark_scaling.svg" width="85%">
 
-Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/master/benchmark/01_benchmark.ipynb)). The [benchmark trends page](https://loumalouomega.github.io/meshioplusplus/benchmark_trends) keeps weekly history with raw measurements and environment metadata; timings remain informational. See [fuzzing and sanitizers](https://loumalouomega.github.io/meshioplusplus/fuzzing) for the separate instrumented HDF5/netCDF reader campaign and OSS-Fuzz integration.
+Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/master/benchmark/01_benchmark.ipynb)). The [benchmark trends page](https://loumalouomega.github.io/meshioplusplus/benchmark_trends) keeps weekly history with raw measurements and environment metadata; timings remain informational. See [fuzzing and sanitizers](https://loumalouomega.github.io/meshioplusplus/fuzzing) for the instrumented HDF5/netCDF campaign, the XDMF-bundle and optional-runtime (ADIOS2, CGNS MLL, TecIO) production-path campaigns, and OSS-Fuzz integration.
 
 </details>
 

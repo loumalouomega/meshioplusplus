@@ -47,6 +47,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 #include "../detail/typed_view.hpp"
+#include "library_preflight.hpp"
 
 namespace meshioplusplus {
 
@@ -640,6 +641,7 @@ NDArray column_stack(const std::vector<const NDArray*>& rCols) {
 }  // namespace
 
 Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions) {
+    detail::library_preflight_netcdf(rPath);
     int ncid;
     check(nc_open(rPath.c_str(), NC_NOWRITE, &ncid), "open");
     struct Closer {
