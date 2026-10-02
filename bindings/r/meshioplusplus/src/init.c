@@ -161,6 +161,15 @@ extern SEXP R_mio_gmsh_info(SEXP);
 extern SEXP R_mio_mdpa_info(SEXP);
 
 /* xdmf_series.c */
+extern SEXP R_mio_exodus_series_create(SEXP);
+extern SEXP R_mio_exodus_series_write_points_cells(SEXP, SEXP);
+extern SEXP R_mio_exodus_series_write_data(SEXP, SEXP, SEXP);
+extern SEXP R_mio_exodus_series_flush(SEXP);
+extern SEXP R_mio_exodus_series_finalize(SEXP);
+extern SEXP R_mio_exodus_series_num_steps(SEXP);
+extern SEXP R_mio_exodus_series_finalized(SEXP);
+extern SEXP R_mio_exodus_series_release(SEXP);
+extern SEXP R_mio_exodus_series_is_open(SEXP);
 extern SEXP R_mio_xdmf_series_create(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_xdmf_series_flush(SEXP);
 extern SEXP R_mio_xdmf_series_finalized(SEXP);
@@ -321,6 +330,15 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_format_info_format, 1),
                                               CALLDEF(R_mio_gmsh_info, 1),
                                               CALLDEF(R_mio_mdpa_info, 1),
+                                              CALLDEF(R_mio_exodus_series_create, 1),
+                                              CALLDEF(R_mio_exodus_series_write_points_cells, 2),
+                                              CALLDEF(R_mio_exodus_series_write_data, 3),
+                                              CALLDEF(R_mio_exodus_series_flush, 1),
+                                              CALLDEF(R_mio_exodus_series_finalize, 1),
+                                              CALLDEF(R_mio_exodus_series_num_steps, 1),
+                                              CALLDEF(R_mio_exodus_series_finalized, 1),
+                                              CALLDEF(R_mio_exodus_series_release, 1),
+                                              CALLDEF(R_mio_exodus_series_is_open, 1),
                                               CALLDEF(R_mio_xdmf_series_create, 5),
                                               CALLDEF(R_mio_xdmf_series_flush, 1),
                                               CALLDEF(R_mio_xdmf_series_finalized, 1),

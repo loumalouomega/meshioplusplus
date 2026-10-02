@@ -25,6 +25,7 @@ so the twins cannot drift silently. See ``doc/pipeline.md`` for the schema.
 import json
 import os
 import pathlib
+from contextvars import ContextVar
 
 import numpy as np
 
@@ -46,9 +47,11 @@ from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
 from ._hessian import hessian
 from ._interfaces import find_interface, region_adjacency, split_interface
 from ._isosurface import isosurface
+from ._interpolate import interpolate
+from ._merge import merge
 from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
-from ._partition import partition_labels
+from ._partition import partition, partition_labels
 from ._provenance import add_operation as _prov_add_operation
 from ._provenance import set_source as _prov_set_source
 from ._provenance import set_target as _prov_set_target
@@ -64,14 +67,20 @@ from ._sdf import compute_sdf
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
+from ._split import split
 from ._sobolev_deform import sobolev_deform
 from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._tensor_invariants import tensor_invariants
 from ._transform import transform
+from ._undo_green import undo_green
 from ._voxelize import voxelize
 
 __all__ = ["run_pipeline"]
+
+# MCP resolves every expanded output before any writer runs, including existing
+# file symlinks. Context-local, so concurrent non-MCP runs inherit no sandbox.
+_OUTPUT_PATH_GUARD = ContextVar("pipeline_output_path_guard", default=None)
 
 # The step vocabulary: op name -> allowed parameter keys. A transcription of
 # pipe_op_table() in src/cpp/src/operations/pipeline.cpp, pinned against
@@ -298,6 +307,29 @@ _OP_TABLE = {
     "ToPoint": ("Names", "Weight"),
 }
 
+_V2_OP_TABLE = {
+    **_OP_TABLE,
+    "Merge": (
+        "Inputs",
+        "Weld",
+        "Atol",
+        "SourceTag",
+        "DataPolicy",
+        "DropDuplicateCells",
+    ),
+    "Interpolate": (
+        "Inputs",
+        "Method",
+        "Arrays",
+        "Extrapolate",
+        "DefaultValue",
+        "OnConflict",
+    ),
+    "UndoGreen": ("Inputs",),
+    "Split": ("By", "Tag"),
+    "Partition": _OP_TABLE["Partition"] + ("RecordIds", "GhostLayers"),
+}
+
 # Ops that exist in meshio++ but cannot be a single-mesh pipeline step; the
 # error names where to go instead (the C++ engine's exact rule).
 _EXCLUDED_OPS = {
@@ -425,25 +457,36 @@ def _total_cells(mesh):
     return int(sum(len(block.data) for block in mesh.cells))
 
 
-def _validate_step(step):
+def _validate_step(step, version=1):
     if not isinstance(step, dict):
         raise ValueError("meshio++: pipeline: every operation must be an object")
     op = step.get("Op")
     if not isinstance(op, str) or not op:
         raise ValueError("meshio++: pipeline: every operation needs a string 'Op'")
-    if op not in _OP_TABLE:
+    table = _V2_OP_TABLE if version == 2 else _OP_TABLE
+    if op not in table:
         if op in _EXCLUDED_OPS:
             raise ValueError(f"meshio++: pipeline: {_EXCLUDED_OPS[op]}")
-        known = ", ".join(_OP_TABLE)
+        known = ", ".join(table)
         raise ValueError(
             f"meshio++: pipeline: unknown operation '{op}' (known: {known})"
         )
-    allowed = _OP_TABLE[op]
+    allowed = table[op]
     for key in step:
         if key != "Op" and key not in allowed:
             keys = ", ".join(allowed)
             hint = f" (known: {keys})" if keys else " (the op takes no parameters)"
             raise _err(op, f"unknown parameter '{key}'{hint}")
+    if version == 2 and op in ("Merge", "Interpolate", "UndoGreen"):
+        paths = _svec(step, "Inputs") or []
+        if not paths or (op != "Merge" and len(paths) != 1):
+            raise _err(
+                op,
+                "Inputs requires "
+                + ("at least one path" if op == "Merge" else "exactly one path"),
+            )
+        if not all(paths):
+            raise _err(op, "Inputs paths must not be empty")
 
 
 def _apply_data_manage(mesh, op, step):
@@ -1261,6 +1304,109 @@ def _resolve_settings(settings):
         return json.load(handle)
 
 
+def _apply_v2(mesh, step, steps, warnings):
+    op = step["Op"]
+    entry = {"op": op}
+    if op == "Merge":
+        extras = [read(path) for path in step["Inputs"]]
+        mesh = merge(
+            [mesh] + extras,
+            weld=_flag(step, "Weld", False),
+            atol=_number(step, "Atol", 1e-8),
+            source_tag=_flag(step, "SourceTag", True),
+            data_policy=_text(step, "DataPolicy", "intersection"),
+            drop_duplicate_cells=_flag(step, "DropDuplicateCells", False),
+        )
+        entry["NumInputs"] = float(1 + len(extras))
+    elif op == "Interpolate":
+        mesh = interpolate(
+            read(step["Inputs"][0]),
+            mesh,
+            method=_text(step, "Method", "nearest"),
+            arrays=_svec(step, "Arrays") or None,
+            extrapolate=_flag(step, "Extrapolate", False),
+            default_value=_number(step, "DefaultValue", 0.0),
+            on_conflict=_text(step, "OnConflict", "error"),
+        )
+    elif op == "UndoGreen":
+        mesh, report = undo_green(read(step["Inputs"][0]), mesh, return_report=True)
+        entry.update(
+            NumGroupsUndone=float(report["num_groups_undone"]),
+            NumCellsRemoved=float(report["num_cells_removed"]),
+        )
+    else:
+        return _apply_step(mesh, step, steps, warnings)
+    steps.append(entry)
+    _prov_add_operation(_render_op(step))
+    return mesh
+
+
+def _piece_path(pattern, key, part=False):
+    token = "{part}" if part else "{key}"
+    key = "".join(
+        (
+            chr(c)
+            if (65 <= c <= 90 or 97 <= c <= 122 or 48 <= c <= 57 or c in (45, 46, 95))
+            else "_"
+        )
+        for c in str(key).encode("utf-8")
+    )
+    if key in ("", ".", ".."):
+        key = "_"
+    path = str(pattern).replace(token, key)
+    if "{" in path or "}" in path:
+        raise ValueError("meshio++: pipeline: unsupported Output.Pattern token")
+    return path
+
+
+def _fanout(mesh, step, pattern, out, inp, steps_spec):
+    part = step["Op"] == "Partition"
+    if part:
+        pieces = list(
+            enumerate(
+                partition(
+                    mesh,
+                    int(_number(step, "Nparts", 2)),
+                    method=_text(step, "Method", "auto"),
+                    imbalance=_number(step, "Imbalance", 0.03),
+                    mode=_text(step, "Mode", "eco"),
+                    seed=int(_number(step, "Seed", 0)),
+                    weights=_text(step, "WeightsKey", "") or None,
+                    record_ids=_flag(step, "RecordIds", False),
+                    ghost_layers=int(_number(step, "GhostLayers", 0)),
+                )
+            )
+        )
+    else:
+        pieces = list(
+            split(
+                mesh, by=_text(step, "By", "type"), tag=_text(step, "Tag", "") or None
+            ).items()
+        )
+    inputs = {pathlib.Path(inp).resolve()}
+    for spec in steps_spec:
+        if spec["Op"] in ("Merge", "Interpolate", "UndoGreen"):
+            inputs.update(pathlib.Path(p).resolve() for p in spec["Inputs"])
+    paths, unique, kwargs = [], set(), []
+    for key, _ in pieces:
+        path = _piece_path(pattern, key, part)
+        guard = _OUTPUT_PATH_GUARD.get()
+        if guard is not None:
+            path = guard(path)
+        canonical = pathlib.Path(path).resolve()
+        if canonical in unique or canonical in inputs:
+            raise ValueError(
+                f"meshio++: pipeline: Output.Pattern collides with another output or an input: {path}"
+            )
+        unique.add(canonical)
+        paths.append(path)
+        kwargs.append(_write_kwargs_from(out, path))
+    for path, (_, piece), options in zip(paths, pieces, kwargs):
+        write(path, piece, file_format=out.get("Format") or None, **options)
+    _prov_add_operation(_render_op(step))
+    return {"op": step["Op"], "NumPieces": float(len(pieces))}
+
+
 def run_pipeline(settings, input_path=None, output_path=None):
     """Run a whole settings pipeline: read ``Input.Path``, apply
     ``Operations`` in order, write ``Output.Path``.
@@ -1297,9 +1443,13 @@ def run_pipeline(settings, input_path=None, output_path=None):
         doc, "the settings document", ("Version", "Input", "Operations", "Output")
     )
     version = doc.get("Version", 1)
-    if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in (1, 2)
+    ):
         raise ValueError(
-            f"meshio++: pipeline: unsupported Version {version!r} (this build knows 1)"
+            f"meshio++: pipeline: unsupported Version {version!r} (this build knows 1 and 2)"
         )
 
     if "Input" not in doc or not isinstance(doc["Input"], dict):
@@ -1308,10 +1458,23 @@ def run_pipeline(settings, input_path=None, output_path=None):
         raise ValueError("meshio++: pipeline: Output is required and must be an object")
     inp, out = doc["Input"], doc["Output"]
     _check_keys(inp, "Input", ("Path", "Format", "Options"))
-    _check_keys(out, "Output", ("Path", "Format", "Encoding", "Codec", "FloatFormat"))
+    _check_keys(
+        out,
+        "Output",
+        ("Path", "Format", "Encoding", "Codec", "FloatFormat")
+        + (("Pattern",) if version == 2 else ()),
+    )
+    if "Path" in out and "Pattern" in out:
+        raise ValueError(
+            "meshio++: pipeline: Output.Path and Output.Pattern are mutually exclusive"
+        )
+    if "Pattern" in out and not any(t in out["Pattern"] for t in ("{key}", "{part}")):
+        raise ValueError("meshio++: pipeline: Output.Pattern requires {key} or {part}")
 
     in_path = input_path if input_path is not None else inp.get("Path")
-    out_path = output_path if output_path is not None else out.get("Path")
+    out_path = (
+        output_path if output_path is not None else out.get("Pattern", out.get("Path"))
+    )
     if not in_path:
         raise ValueError("meshio++: pipeline: Input.Path is required")
     if not out_path:
@@ -1323,8 +1486,36 @@ def run_pipeline(settings, input_path=None, output_path=None):
     steps_spec = doc.get("Operations", [])
     if not isinstance(steps_spec, list):
         raise ValueError("meshio++: pipeline: Operations must be an array of steps")
-    for step in steps_spec:
-        _validate_step(step)
+    fanout = any(t in str(out_path) for t in ("{key}", "{part}"))
+    for i, step in enumerate(steps_spec):
+        _validate_step(step, version)
+        if step["Op"] == "Split" and (not fanout or i + 1 != len(steps_spec)):
+            raise ValueError(
+                "meshio++: pipeline: Split must be terminal and requires Output.Pattern with {key}"
+            )
+        if (
+            step["Op"] == "Partition"
+            and not fanout
+            and ("RecordIds" in step or "GhostLayers" in step)
+        ):
+            raise ValueError(
+                "meshio++: pipeline: RecordIds/GhostLayers require partition fan-out"
+            )
+    if fanout:
+        if (
+            version != 2
+            or not steps_spec
+            or steps_spec[-1]["Op"] not in ("Split", "Partition")
+        ):
+            raise ValueError(
+                "meshio++: pipeline: Output.Pattern requires Version 2 and a terminal Split/Partition"
+            )
+        part = steps_spec[-1]["Op"] == "Partition"
+        if ("{part}" if part else "{key}") not in str(out_path):
+            raise ValueError(
+                "meshio++: pipeline: Output.Pattern needs {key} for Split or {part} for Partition"
+            )
+        _piece_path(out_path, "probe", part)
 
     write_kwargs = _write_kwargs_from(out, out_path)
 
@@ -1340,8 +1531,11 @@ def run_pipeline(settings, input_path=None, output_path=None):
     mesh = read(in_path, file_format=inp.get("Format") or None, **read_kwargs)
 
     steps = []
-    for step in steps_spec:
-        mesh = _apply_step(mesh, step, steps, warnings)
+    for i, step in enumerate(steps_spec):
+        if fanout and i + 1 == len(steps_spec):
+            steps.append(_fanout(mesh, step, out_path, out, in_path, steps_spec))
+            return {"steps": steps, "warnings": warnings}
+        mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
 
     out_fmt = out.get("Format") or _write_format_for_path(pathlib.Path(str(out_path)))
     out_encoding = out.get("Encoding", "default")

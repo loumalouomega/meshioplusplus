@@ -375,7 +375,10 @@ def _register_conversion(server: FastMCP) -> None:
     ) -> dict:
         """Run a settings.json operation pipeline: read Input.Path, apply the
         Operations chain (Transform/Gradient/Refine/Clean/... -- PascalCase
-        ops and keys, see doc/pipeline.md), write Output.Path.
+        ops and keys, see doc/pipeline.md), write Output.Path. Version 2 adds
+        Merge/Interpolate/UndoGreen Inputs and terminal Split/Partition outputs
+        through Output.Pattern ({key}/{part}); all auxiliary inputs and every
+        expanded output, including symlinks, are checked against the sandbox.
         Output.Codec='lzf' selects PCD compressed binary; ASCII is incompatible.
         input_path/output_path override the paths in the settings file; both
         the settings file and the paths inside it stay inside the sandbox

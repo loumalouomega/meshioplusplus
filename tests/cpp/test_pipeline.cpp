@@ -476,7 +476,7 @@ TEST(PipelineJson, ParsesAFullDocument) {
 TEST(PipelineJson, StrictSchemaErrorsNameTheOffender) {
     const char* cases[][2] = {
         {R"({"Input": {"Path": "a"}, "Output": {"Path": "b"}, "Bogus": 1})", "Bogus"},
-        {R"({"Version": 2, "Input": {"Path": "a"}, "Output": {"Path": "b"}})", "Version"},
+        {R"({"Version": 99, "Input": {"Path": "a"}, "Output": {"Path": "b"}})", "Version"},
         {R"({"Output": {"Path": "b"}})", "Input is required"},
         {R"({"Input": {"Path": "a"}, "Output": {}})", "Output.Path"},
         {R"({"Input": {"Path": "a"}, "Output": {"Path": "b"},

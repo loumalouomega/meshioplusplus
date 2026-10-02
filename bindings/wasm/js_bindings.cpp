@@ -98,6 +98,7 @@
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/properties.hpp"
@@ -4857,6 +4858,51 @@ xdmf_series_table() {
     return table;
 }
 
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+std::unordered_map<int, std::unique_ptr<meshioplusplus::ExodusTimeSeriesWriter>>& exodus_series_table() {
+    static std::unordered_map<int, std::unique_ptr<meshioplusplus::ExodusTimeSeriesWriter>> table;
+    return table;
+}
+#endif
+
+int exodus_series_create_js(const std::string& rPath) {
+    return with_js_errors([&]() -> int {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        static int next_handle = 1;
+        auto writer = std::make_unique<meshioplusplus::ExodusTimeSeriesWriter>(rPath);
+        const int handle = next_handle++;
+        exodus_series_table().emplace(handle, std::move(writer));
+        return handle;
+#else
+        (void)rPath;
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON; the shipped WASM builds have no netCDF");
+#endif
+    });
+}
+
+val exodus_series_action_js(int handle, const std::string& rAction, double time, const val& rMesh) {
+    return with_js_errors([&]() -> val {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        auto it = exodus_series_table().find(handle);
+        if (it == exodus_series_table().end())
+            throw meshioplusplus::WriteError("invalid or closed Exodus series handle");
+        auto& writer = *it->second;
+        if (rAction == "grid") writer.WritePointsCells(val_to_mesh(rMesh));
+        else if (rAction == "data") writer.WriteData(time, val_to_mesh(rMesh));
+        else if (rAction == "flush") writer.Flush();
+        else if (rAction == "finalize") writer.Finalize();
+        else if (rAction == "steps") return val(static_cast<double>(writer.NumSteps()));
+        else if (rAction == "finalized") return val(writer.Finalized());
+        else if (rAction == "free") exodus_series_table().erase(it);
+        else throw meshioplusplus::WriteError("unknown Exodus series action");
+        return val::undefined();
+#else
+        (void)handle; (void)rAction; (void)time; (void)rMesh;
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
 /// Resolve a handle or throw. Never returns null.
 meshioplusplus::XdmfTimeSeriesWriter& xdmf_series_lookup(int handle) {
     auto it = xdmf_series_table().find(handle);
@@ -5275,6 +5321,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     // seven calls (see the block comment above their definitions for why it is
     // not an embind class_).
     emscripten::function("xdmfSeriesCreate", &xdmf_series_create_js);
+    emscripten::function("exodusSeriesCreate", &exodus_series_create_js);
+    emscripten::function("exodusSeriesAction", &exodus_series_action_js);
     emscripten::function("xdmfSeriesWritePointsCells", &xdmf_series_write_points_cells_js);
     emscripten::function("xdmfSeriesWriteData", &xdmf_series_write_data_js);
     emscripten::function("xdmfSeriesWriteDataArrays", &xdmf_series_write_data_arrays_js);

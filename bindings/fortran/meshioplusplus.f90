@@ -51,6 +51,7 @@ module meshioplusplus
 
     public :: mio_mesh
     public :: mio_xdmf_series
+    public :: mio_exodus_series
     public :: mio_format_info
     public :: mio_gltf_options
     public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
@@ -1023,6 +1024,22 @@ module meshioplusplus
         procedure :: finalized => xdmf_series_finalized
         procedure :: num_steps => xdmf_series_num_steps
     end type mio_xdmf_series
+
+    !> Fixed Exodus grid/sets/attributes with time-dependent fields. Requires netCDF.
+    type :: mio_exodus_series
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: create => exodus_series_create
+        procedure :: free => exodus_series_free
+        procedure :: is_valid => exodus_series_is_valid
+        procedure :: write_points_cells => exodus_series_write_points_cells
+        procedure :: write_data => exodus_series_write_data
+        procedure :: flush => exodus_series_flush
+        procedure :: finalize => exodus_series_finalize
+        procedure :: finalized => exodus_series_finalized
+        procedure :: num_steps => exodus_series_num_steps
+    end type mio_exodus_series
 
     !> A format's side channel: what `m%read_with_info` kept that a mesh
     !> cannot hold (MDPA's tables, geometries, Mesh blocks, constraints, ...),
@@ -3096,6 +3113,49 @@ module meshioplusplus
         end function
 
         ! -- transient XDMF series --
+
+        function c_mio_exodus_series_create(path) bind(c, name="mio_exodus_series_create") result(h)
+            import :: c_char, c_ptr
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr) :: h
+        end function
+        function c_mio_exodus_series_write_points_cells(s, mesh) &
+                bind(c, name="mio_exodus_series_write_points_cells") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s, mesh
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_write_data(s, time, mesh) &
+                bind(c, name="mio_exodus_series_write_data") result(st)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: s, mesh
+            real(c_double), value :: time
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_flush(s) bind(c, name="mio_exodus_series_flush") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_finalize(s) bind(c, name="mio_exodus_series_finalize") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s
+            integer(c_int) :: st
+        end function
+        function c_mio_exodus_series_finalized(s) bind(c, name="mio_exodus_series_finalized") result(f)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: s
+            integer(c_int32_t) :: f
+        end function
+        function c_mio_exodus_series_num_steps(s) bind(c, name="mio_exodus_series_num_steps") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: s
+            integer(c_int64_t) :: n
+        end function
+        subroutine c_mio_exodus_series_free(s) bind(c, name="mio_exodus_series_free")
+            import :: c_ptr
+            type(c_ptr), value :: s
+        end subroutine
 
         function c_mio_xdmf_series_create(path, data_format, gzip_level) &
                 bind(c, name="mio_xdmf_series_create") result(h)
@@ -8479,6 +8539,78 @@ contains
     !> `"XML"` (inline) or `"Binary"`. `gzip_level` applies to `"HDF"` datasets
     !> only; negative (the default) means no compression. An unknown format, or
     !> `"HDF"` without HDF5 support, fails through `stat`/`errmsg`.
+    subroutine exodus_series_create(self, path, stat, errmsg)
+        class(mio_exodus_series), intent(inout) :: self
+        character(*), intent(in) :: path
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call self%free()
+        self%handle = c_mio_exodus_series_create(c_str(path))
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('exodus_series create', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_free(self)
+        class(mio_exodus_series), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_exodus_series_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    logical function exodus_series_is_valid(self)
+        class(mio_exodus_series), intent(in) :: self
+        exodus_series_is_valid = c_associated(self%handle)
+    end function
+
+    subroutine exodus_series_write_points_cells(self, mesh, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        class(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_write_points_cells(self%handle, mesh%handle), &
+                           'exodus_series write_points_cells', stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_write_data(self, time, mesh, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        real(real64), intent(in) :: time
+        class(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_write_data(self%handle, real(time, c_double), mesh%handle), &
+                           'exodus_series write_data', stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_flush(self, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_flush(self%handle), 'exodus_series flush', stat, errmsg)
+    end subroutine
+
+    subroutine exodus_series_finalize(self, stat, errmsg)
+        class(mio_exodus_series), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_exodus_series_finalize(self%handle), 'exodus_series finalize', stat, errmsg)
+    end subroutine
+
+    function exodus_series_finalized(self) result(f)
+        class(mio_exodus_series), intent(in) :: self
+        logical :: f
+        f = .true.
+        if (c_associated(self%handle)) f = c_mio_exodus_series_finalized(self%handle) == 1_c_int32_t
+    end function
+
+    function exodus_series_num_steps(self) result(n)
+        class(mio_exodus_series), intent(in) :: self
+        integer(int64) :: n
+        n = 0_int64
+        if (c_associated(self%handle)) n = int(c_mio_exodus_series_num_steps(self%handle), int64)
+    end function
+
     subroutine xdmf_series_create(self, path, data_format, gzip_level, mode, auto_flush, &
                                   stat, errmsg)
         class(mio_xdmf_series), intent(inout) :: self

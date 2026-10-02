@@ -3868,6 +3868,20 @@ MIO_API mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_reg
 /** Opaque transient XDMF writer. Destroy with mio_xdmf_series_free(). */
 typedef struct mio_xdmf_series mio_xdmf_series;
 
+/** Owning Exodus series handle. Geometry, Point/Side sets and exodus:attr:*
+ * arrays are fixed by write_points_cells. The first step fixes field names,
+ * dtypes and shapes. Requires a netCDF-enabled library; absent support fails
+ * by name through mio_last_error. Free is NULL-safe; finalize/flush are idempotent. */
+typedef struct mio_exodus_series mio_exodus_series;
+MIO_API mio_exodus_series* mio_exodus_series_create(const char* path);
+MIO_API mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const mio_mesh* mesh);
+MIO_API mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time, const mio_mesh* mesh);
+MIO_API mio_status mio_exodus_series_flush(mio_exodus_series* series);
+MIO_API mio_status mio_exodus_series_finalize(mio_exodus_series* series);
+MIO_API int64_t mio_exodus_series_num_steps(const mio_exodus_series* series);
+MIO_API int32_t mio_exodus_series_finalized(const mio_exodus_series* series);
+MIO_API void mio_exodus_series_free(mio_exodus_series* series);
+
 /**
  * Open a transient XDMF series for writing. Nothing is written yet.
  * @param path        the .xdmf/.xmf light-data file to write.

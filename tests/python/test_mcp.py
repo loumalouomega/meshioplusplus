@@ -965,6 +965,39 @@ def test_pipeline_tool_sandboxes_the_inner_paths(mesh_file, tmp_path, monkeypatc
         _tools.tool_pipeline(settings_path)
 
 
+def test_pipeline_v2_sandboxes_auxiliary_inputs(mesh_file, tmp_path, monkeypatch):
+    settings = tmp_path / "v2.json"
+    settings.write_text(json.dumps({
+        "Version": 2, "Input": {"Path": mesh_file},
+        "Output": {"Path": str(tmp_path / "out.vtu")},
+        "Operations": [{"Op": "Merge", "Inputs": ["/etc/passwd"]}],
+    }))
+    monkeypatch.setattr(_tools, "_ROOT", str(tmp_path))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_pipeline(str(settings))
+
+
+def test_pipeline_v2_sandboxes_expanded_output_symlinks(mesh_file, tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "in.vtu"
+    source.write_bytes(pathlib.Path(mesh_file).read_bytes())
+    victim = tmp_path / "keep.vtu"
+    victim.write_bytes(b"keep")
+    # The template itself is in the root, but the generated tetra file is not.
+    (root / "piece_tetra.vtu").symlink_to(victim)
+    settings = root / "v2.json"
+    settings.write_text(json.dumps({
+        "Version": 2, "Input": {"Path": str(source)},
+        "Output": {"Pattern": str(root / "piece_{key}.vtu")},
+        "Operations": [{"Op": "Split", "By": "type"}],
+    }))
+    monkeypatch.setattr(_tools, "_ROOT", str(root))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_pipeline(str(settings))
+    assert victim.read_bytes() == b"keep"
+
+
 # --------------------------------------------------------------------------- #
 # Pure half: mesh operations                                                  #
 # --------------------------------------------------------------------------- #

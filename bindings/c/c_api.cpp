@@ -63,6 +63,7 @@
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -184,6 +185,13 @@ struct mio_xdmf_series {
     // Held by value: the writer is already move-only and owns its open
     // heavy-data container, so the handle is just the C-side name for it.
     meshioplusplus::XdmfTimeSeriesWriter mWriter;
+};
+
+struct mio_exodus_series {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    meshioplusplus::ExodusTimeSeriesWriter mWriter;
+    explicit mio_exodus_series(const std::string& rPath) : mWriter(rPath) {}
+#endif
 };
 
 /// The PLAN for a sequence -- paths, per-file step indices and times. It owns
@@ -4314,6 +4322,91 @@ mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind
 }
 
 // ---- transient (time-series) XDMF ----------------------------------------
+
+mio_exodus_series* mio_exodus_series_create(const char* path) {
+    return guarded_ptr(static_cast<mio_exodus_series*>(nullptr), [&]() -> mio_exodus_series* {
+        if (!path)
+            throw std::invalid_argument("meshio++: Exodus series path is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return new mio_exodus_series(path);
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const mio_mesh* mesh) {
+    return guarded([&]() -> mio_status {
+        if (!series || !mesh) return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.WritePointsCells(mesh->mMesh);
+        return MIO_OK;
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time, const mio_mesh* mesh) {
+    return guarded([&]() -> mio_status {
+        if (!series || !mesh) return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.WriteData(time, mesh->mMesh);
+        return MIO_OK;
+#else
+        (void)time;
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_flush(mio_exodus_series* series) {
+    return guarded([&]() -> mio_status {
+        if (!series) return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.Flush();
+        return MIO_OK;
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+mio_status mio_exodus_series_finalize(mio_exodus_series* series) {
+    return guarded([&]() -> mio_status {
+        if (!series) return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        series->mWriter.Finalize();
+        return MIO_OK;
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+int64_t mio_exodus_series_num_steps(const mio_exodus_series* series) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!series) throw std::invalid_argument("meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return static_cast<std::int64_t>(series->mWriter.NumSteps());
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+int32_t mio_exodus_series_finalized(const mio_exodus_series* series) {
+    return guarded_ptr(std::int32_t(-1), [&]() -> std::int32_t {
+        if (!series) throw std::invalid_argument("meshio++: series is NULL");
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        return series->mWriter.Finalized();
+#else
+        throw meshioplusplus::WriteError("Exodus series requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
+#endif
+    });
+}
+
+void mio_exodus_series_free(mio_exodus_series* series) { delete series; }
 //
 // The one writer that is a handle rather than a (path, mesh) call: the mesh is
 // written once and each step appended, so there is no single call for mio_write

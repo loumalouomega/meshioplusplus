@@ -1056,6 +1056,24 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // dataFormat 'HDF' the series is TWO files in the virtual FS: `<path>`
         // and its sibling `<path minus extension>.h5`. Copy BOTH out of
         // Module.FS. `mode: 'append'` continues a series already at `path`.
+        createExodusTimeSeriesWriter: (path) => {
+            const handle = Module.exodusSeriesCreate(path);
+            let open = true;
+            const action = (name, time = 0, mesh = null) => Module.exodusSeriesAction(handle, name, time, mesh);
+            return {
+                writePointsCells: (mesh) => action('grid', 0, mesh),
+                writeData: (time, mesh) => action('data', time, mesh),
+                flush: () => action('flush'),
+                finalize: () => action('finalize'),
+                numSteps: () => action('steps'),
+                finalized: () => action('finalized'),
+                close: () => {
+                    if (!open) return;
+                    open = false;
+                    try { action('finalize'); } finally { action('free'); }
+                },
+            };
+        },
         createXdmfTimeSeriesWriter: (
             path,
             { dataFormat = 'HDF', gzipLevel = -1, mode = 'truncate', autoFlush = false } = {},

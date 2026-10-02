@@ -1741,6 +1741,7 @@ TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {
     mio_write_opts opts;
     mio_write_opts_init(&opts);
     opts.encoding = MIO_ENCODING_RAW_APPENDED;
+    opts.codec = MIO_CODEC_NONE;
     ASSERT_EQ(mio_write_ex(path.c_str(), m, "vtu", &opts), MIO_OK) << mio_last_error();
     mio_mesh* back = mio_read(path.c_str(), "vtu");
     ASSERT_NE(back, nullptr) << mio_last_error();
@@ -1754,6 +1755,36 @@ TEST(CApi, WriteExRawAppendedWritesVtuAndRefusesOthers) {
         << mio_last_error();
     std::remove(bad.c_str());
     mio_mesh_free(m);
+}
+
+TEST(CApi, ExodusSeriesLifecycleOrExplicitMissingDependency) {
+    const auto path = mt::temp_path("_c_series.e");
+    EXPECT_EQ(mio_exodus_series_create(nullptr), nullptr);
+    EXPECT_EQ(mio_exodus_series_num_steps(nullptr), -1);
+    EXPECT_EQ(mio_exodus_series_flush(nullptr), MIO_ERR_INVALID_ARG);
+    mio_exodus_series_free(nullptr);
+    auto* series = mio_exodus_series_create(path.c_str());
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    ASSERT_NE(series, nullptr) << mio_last_error();
+    auto* mesh = build_tet_mesh();
+    ASSERT_NE(mesh, nullptr);
+    EXPECT_NE(mio_exodus_series_write_data(series, 0.0, mesh), MIO_OK);
+    ASSERT_EQ(mio_exodus_series_write_points_cells(series, mesh), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_exodus_series_write_data(series, 0.25, mesh), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_exodus_series_write_data(series, 1.25, mesh), MIO_OK) << mio_last_error();
+    EXPECT_EQ(mio_exodus_series_num_steps(series), 2);
+    EXPECT_EQ(mio_exodus_series_flush(series), MIO_OK);
+    EXPECT_EQ(mio_exodus_series_finalize(series), MIO_OK);
+    EXPECT_EQ(mio_exodus_series_finalize(series), MIO_OK);
+    EXPECT_EQ(mio_exodus_series_finalized(series), 1);
+    EXPECT_NE(mio_exodus_series_write_data(series, 2.0, mesh), MIO_OK);
+    mio_exodus_series_free(series);
+    mio_mesh_free(mesh);
+    std::filesystem::remove(path);
+#else
+    EXPECT_EQ(series, nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_NETCDF"), std::string::npos);
+#endif
 }
 
 TEST(CApi, WriteExRejectsAnOptionTheFormatCannotHonour) {

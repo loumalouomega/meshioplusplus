@@ -2955,6 +2955,12 @@ PYBIND11_MODULE(_core, m) {
             }
             return out;
         });
+        m.def("pipeline_v2_op_table", []() {
+            py::dict out;
+            for (const auto& entry : meshioplusplus::pipeline_v2_op_table())
+                out[py::str(entry.first)] = py::cast(entry.second);
+            return out;
+        });
 
         // The sequence document (a whole transient run: glob/list input, the
         // chain applied per step, fan-out/fan-in output). Same relationship to
@@ -4207,6 +4213,29 @@ PYBIND11_MODULE(_core, m) {
     // and `"HDF"` on a build without HDF5 throws `WriteError` from the
     // constructor, which the translator above turns into a clean
     // `meshioplusplus.WriteError` rather than a missing symbol or a crash.
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    py::class_<meshioplusplus::ExodusTimeSeriesWriter>(m, "ExodusTimeSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def("write_points_cells", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+            rSelf.WritePointsCells(cpp);
+        }, py::arg("mesh"))
+        .def("write_data", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+            rSelf.WriteData(time, cpp);
+        }, py::arg("time"), py::arg("mesh"))
+        .def("flush", &meshioplusplus::ExodusTimeSeriesWriter::Flush)
+        .def("finalize", &meshioplusplus::ExodusTimeSeriesWriter::Finalize)
+        .def_property_readonly("num_steps", &meshioplusplus::ExodusTimeSeriesWriter::NumSteps)
+        .def_property_readonly("finalized", &meshioplusplus::ExodusTimeSeriesWriter::Finalized)
+        .def("__enter__", [](py::object self) { return self; })
+        .def("__exit__", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, const py::object&, const py::object&, const py::object&) {
+            rSelf.Finalize();
+            return false;
+        });
+#endif
     py::class_<meshioplusplus::XdmfTimeSeriesWriter>(m, "XdmfTimeSeriesWriter",
                                                      R"doc(
 Transient XDMF3 writer: one static grid plus one <Grid> per time step.

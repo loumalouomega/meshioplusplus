@@ -1504,7 +1504,7 @@ test_that("glTF options colour the exported surface", {
   on.exit(unlink(c(path, bin)), add = TRUE)
   mio_write_gltf(m, path, color_by = "temperature", cmap = "turbo",
     up_axis = "x", scale = 0.001, vmin = 1, vmax = 5)
-  expect_true(grepl("COLOR_0", paste(readLines(path), collapse = "")))
+  expect_true(grepl("COLOR_0", paste(readLines(path, warn = FALSE), collapse = "")))
   expect_true(file.exists(bin))
   expect_error(mio_write_gltf(m, path, scale = -1))
   expect_error(mio_write_gltf(m, path, component = 0, color_by = "temperature"))

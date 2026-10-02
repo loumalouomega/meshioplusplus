@@ -942,6 +942,18 @@ export type XdmfDataFormat = 'HDF' | 'XML' | 'Binary';
  * `'XML'` writes one self-contained file and needs no companion; `'Binary'`
  * writes the `.xdmf` plus one `<path minus extension><n>.bin` per array.
  */
+/** Fixed Exodus geometry, sets and attributes; step fields have a stable schema.
+ * Available only in netCDF-enabled builds (not the shipped WASM artifacts). */
+export interface ExodusTimeSeriesWriter {
+  writePointsCells(mesh: Mesh): void;
+  writeData(time: number, mesh: Mesh): void;
+  flush(): void;
+  finalize(): void;
+  numSteps(): number;
+  finalized(): boolean;
+  close(): void;
+}
+
 export interface XdmfTimeSeriesWriter {
   /**
     * Write the static grid -- points, cell blocks and fixed regions shared by every step.
@@ -1216,6 +1228,11 @@ export interface MeshioPlusPlusModule {
    * {@link convertSurfaceOps}' pre-existing camelCase op specs — the two
    * dispatch through the same core engine, differing only in spelling. The
    * returned report's counter keys are PascalCase too.
+   * Version 2 adds per-step `Inputs` for Merge/Interpolate/UndoGreen and
+   * terminal Split/Partition with `Output.Pattern` (`{key}`/`{part}`).
+   * Auxiliary inputs and generated outputs are MEMFS paths. Version 1 and
+   * label-only Partition remain unchanged; spatial v2 steps are not a
+   * transient sequence schema.
    *
    * Unlike {@link convertSurfaceOps} there is no surface-extraction tail:
    * what the pipeline produces is what is written.
@@ -2697,6 +2714,8 @@ export interface MeshioPlusPlusModule {
       autoFlush?: boolean;
     },
   ): XdmfTimeSeriesWriter;
+  /** Requires netCDF; shipped WASM builds throw naming the missing dependency. */
+  createExodusTimeSeriesWriter(path: string): ExodusTimeSeriesWriter;
 }
 
 /**

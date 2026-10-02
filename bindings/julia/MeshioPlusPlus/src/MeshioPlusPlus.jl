@@ -59,6 +59,7 @@ include("regions.jl")
 include("operations.jl")
 include("sequence.jl")
 include("xdmf_series.jl")
+include("exodus_series.jl")
 include("format_info.jl")
 include("provenance.jl")
 
@@ -126,6 +127,7 @@ export run_sequence_file, run_sequence_json
 
 # Transient (time-series) XDMF writing
 export XdmfSeries, write_points_cells!, write_data!, flush!, finalize!, finalized,
+       ExodusSeries,
     num_steps
 
 end # module

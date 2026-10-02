@@ -378,6 +378,10 @@ TEST(XdmfTimeSeries, HdfThrowsWithoutHdf5) {
 
 TEST(XdmfTimeSeries, FlushMakesAPartialSeriesReadable) {
     for (const char* p_format : {"XML", "Binary", "HDF"}) {
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+        if (std::string(p_format) == "HDF")
+            continue;
+#endif
         const std::string path = mt::temp_path(".xdmf");
         {
             meshioplusplus::XdmfTimeSeriesWriter w(path, p_format);
@@ -420,6 +424,10 @@ TEST(XdmfTimeSeries, KilledRunLeavesAReadableSeriesAndAppendContinuesIt) {
     // openable .xdmf, and a restart must continue that same collection rather
     // than overwrite it.
     for (const char* p_format : {"XML", "Binary", "HDF"}) {
+#ifndef MESHIOPLUSPLUS_HAS_HDF5
+        if (std::string(p_format) == "HDF")
+            continue;
+#endif
         const std::string path = mt::temp_path(".xdmf");
         const pid_t pid = fork();
         ASSERT_NE(pid, -1) << "fork failed";
