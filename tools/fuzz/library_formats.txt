@@ -1,0 +1,8 @@
+# Readers enabled only in the instrumented-library campaign.
+cgns
+h5m
+hmf
+med
+nastran_h5
+vtkhdf
+exodus

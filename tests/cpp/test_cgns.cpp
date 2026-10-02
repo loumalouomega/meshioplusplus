@@ -621,6 +621,26 @@ TEST(Cgns, BadConnectivitySizeThrows) {
     std::filesystem::remove(p, ec);
 }
 
+TEST(Cgns, MismatchedCoordinateLengthsThrow) {
+    // Fuzzing found a null dereference when GridCoordinates axes had
+    // different lengths (one axis reshaped to a 2-D empty shape).
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::write_cgns(p, mt::tet_mesh(), -1);
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f = h5::open_file_rw(p);
+        h5::Hid cy = h5::open_group(f, "Base/Zone1/GridCoordinates/CoordinateY");
+        H5Ldelete(cy, " data", H5P_DEFAULT);
+        meshioplusplus::NDArray short_y(meshioplusplus::DType::Float64, {2});
+        short_y.As<double>()[0] = 0.0;
+        short_y.As<double>()[1] = 1.0;
+        h5::write_dataset(cy, " data", short_y);
+    }
+    EXPECT_THROW(meshioplusplus::read_cgns(p), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
 // ---- geometric ordering verification --------------------------------------
 //
 // A round trip through OUR OWN reader and writer cannot prove the CGNS

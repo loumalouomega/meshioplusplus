@@ -9,6 +9,8 @@
 # findings land in OUT_DIR/<format>/ (crash-*, leak-*, timeout-*, oom-*) and a
 # one-line verdict per format in OUT_DIR/summary.txt. FORMATS (space-separated)
 # narrows the list; SHARD/NSHARDS (0-based) split it for a CI matrix.
+# MIO_FUZZ_LIBRARY_READERS=1 admits library_formats.txt (instrumented deps only);
+# FUZZ_BINARY selects the structure-aware meshioplusplus_fuzz_hdf5 target.
 # Exit status: 1 when any format produced a finding.
 set -u
 BUILD=$1
@@ -29,16 +31,19 @@ for fmt in $ALL; do
     i=$((i + 1))
     [ $((idx % NSHARDS)) -eq "$SHARD" ] || continue
     if echo "$SKIP" | grep -qx "$fmt"; then
-        continue
+        if [ "${MIO_FUZZ_LIBRARY_READERS:-0}" != 1 ] ||
+           ! grep -qx "$fmt" "$HERE/library_formats.txt"; then
+            continue
+        fi
     fi
     dir="$OUT/$fmt"
     mkdir -p "$dir/corpus"
     [ -d "$SEEDS/$fmt" ] && cp -n "$SEEDS/$fmt"/* "$dir/corpus/" 2>/dev/null
     dict=()
     [ -f "$HERE/dicts/$fmt.dict" ] && dict=(-dict="$HERE/dicts/$fmt.dict")
-    MIO_FUZZ_FORMAT=$fmt "$BUILD/meshioplusplus_fuzz_read" "${dict[@]}" \
+    MIO_FUZZ_FORMAT=$fmt "$BUILD/${FUZZ_BINARY:-meshioplusplus_fuzz_read}" "${dict[@]}" \
         -max_total_time="$SECS" -rss_limit_mb=2048 -malloc_limit_mb=2048 -timeout=10 \
-        -max_len=65536 -print_final_stats=1 -artifact_prefix="$dir/" \
+        -max_len="${MAX_LEN:-65536}" -print_final_stats=1 -artifact_prefix="$dir/" \
         "$dir/corpus" > "$dir/fuzz.log" 2>&1
     rc=$?
     found=$(ls "$dir" | grep -E '^(crash|leak|timeout|oom|slow-unit)-' | head -1)

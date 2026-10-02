@@ -8,6 +8,12 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased (2026-10-02)
+
+- Viewer dependency security: raised the `brace-expansion` override to `^5.0.12` and `fast-uri` to `^3.1.8`, regenerating the npm lockfile to address Dependabot alerts #49–#52 (brace-expansion denial of service and fast-uri host case normalization). No mesh API or ABI change.
+- Quality infrastructure: added an immutable `benchmark-data` run store with preserved raw CSV bytes, checksums, actual build metadata and location validation, plus a VitePress trend page integrated with the existing Pages deployment. Added an OSS-Fuzz Dockerfile, external-engine CMake linkage and project-generated/regression seed archives; upstream submission still requires a confirmed maintainer contact and container validation. Added a separate instrumented HDF5/netCDF campaign with structure-aware dataset/attribute/link mutations (forked isolation, HDF5-magic gating, patch-hash reuse checks).
+- Fixed five mesh-reader robustness defects found by the instrumented campaign, each with native coverage and a minimized `tests/fuzz/regressions/` input: CGNS GridCoordinates rank/length validation, MED family `NOM` size against `NBR`, VTKHDF connectivity/offset agreement, HDF5 link-count/name-length caps, and XDMF cell-data size validation. HDF5/netCDF library aborts, leaks and hangs on corrupted containers, plus companion-file (XDMF bundles, ADIOS2 directories) and optional-runtime (CGNS MLL, TecIO SZL) routes, remain open.
+
 ## v16.29.0 (2026-10-02)
 
 - **Fixed (CI runs 37036493738 and 37017115520):** training progress updates retry transient Windows sharing violations during atomic JSON replacement, so concurrent manager polling does not abort the trainer before it writes its final checkpoint. Permanent errors remain bounded and propagate. Native and reference d3plot readers reject `INT64_MIN` one-based node/element/part indices before conversion, avoiding signed overflow or Python integer conversion errors; airbag particle ranges are bounded before iteration. A minimized d3plot regression and direct native/reference tests cover the failure.

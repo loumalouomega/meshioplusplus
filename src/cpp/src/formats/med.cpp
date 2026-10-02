@@ -550,6 +550,11 @@ void read_families(hid_t fas_group, std::map<std::int64_t, std::vector<std::stri
         h5::Hid gro = h5::open_group(fam, "GRO");
         std::int64_t n_subsets = h5::read_attr_int(gro, "NBR");
         NDArray nom = h5::read_dataset(gro, "NOM");  // (n_subsets, 80) int8
+        if (n_subsets < 0)
+            throw ReadError("MED: GRO/NBR is negative");
+        if (static_cast<std::uint64_t>(n_subsets) > nom.Size() / 80)
+            throw ReadError("MED: GRO/NOM holds " + std::to_string(nom.Size()) +
+                            " values; NBR requires " + std::to_string(n_subsets) + "x80");
         std::vector<std::string> names;
         for (std::int64_t i = 0; i < n_subsets; ++i) {
             std::string s;

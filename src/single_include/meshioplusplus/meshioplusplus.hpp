@@ -52862,11 +52862,17 @@ std::vector<std::string> link_names(hid_t loc) {
     std::vector<std::string> out;
     if (H5Gget_info(loc, &info) < 0)
         return out;
+    // info.nlinks comes from the file: cap it before looping, and cap each
+    // name length before allocating (a corrupted header can claim billions).
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         const ssize_t len =
             H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
         if (len <= 0)
             continue;
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -53552,11 +53558,19 @@ std::string soft_link_target(hid_t loc, const std::string& rName) {
 std::vector<std::string> group_links(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     std::vector<std::string> names;
-    names.reserve(info.nlinks);
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         ssize_t len =
             H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
+        if (len < 0)
+            throw ReadError("HDF5: could not list group links");
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
+        // Empty names cannot be opened later; skip rather than allocate.
+        if (len == 0)
+            continue;
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -53568,13 +53582,18 @@ std::vector<std::string> group_links(hid_t loc) {
 std::vector<std::string> group_links_crt(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     std::vector<std::string> names;
-    names.reserve(info.nlinks);
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         ssize_t len = H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, nullptr, 0,
                                          H5P_DEFAULT);
         if (len < 0)
             return group_links(loc);  // creation order not indexed
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
+        if (len == 0)
+            continue;
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -61358,6 +61377,16 @@ NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
 std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
                                          const std::vector<std::size_t>& rSizes) {
     std::size_t ncols = rRaw.Ndim() >= 2 ? rRaw.Shape()[1] : 1;
+    std::size_t total = 0;
+    for (std::size_t bs : rSizes) {
+        if (bs > rRaw.Size() || total > rRaw.Size() - bs)
+            throw ReadError("XDMF: cell data rows disagree with cell blocks");
+        total += bs;
+    }
+    if (ncols == 0 || total * ncols != rRaw.Size())
+        throw ReadError("XDMF: cell data holds " + std::to_string(rRaw.Size()) +
+                        " values; cell blocks need " + std::to_string(total) + "x" +
+                        std::to_string(ncols));
     std::size_t off = 0;
     std::vector<NDArray> blocks;
     for (std::size_t bs : rSizes) {
@@ -68658,7 +68687,16 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         for (const std::string& ax : axes) {
             h5::Hid g = h5::open_group(coords, ax);
             NDArray c = h5::read_dataset(g, " data");
-            n_zone_points = c.Shape().empty() ? 0 : c.Shape()[0];
+            if (c.Ndim() != 1)
+                throw ReadError(detail::format_compat(
+                    "CGNS: zone '{}' coordinate '{}' must be 1-D, found {}-D", zname, ax,
+                    c.Ndim()));
+            if (cols.empty())
+                n_zone_points = c.Size();
+            else if (c.Size() != n_zone_points)
+                throw ReadError(detail::format_compat(
+                    "CGNS: zone '{}' GridCoordinates lengths differ ({} vs {})", zname,
+                    n_zone_points, c.Size()));
             cols.push_back(std::move(c));
         }
         NDArray zpts(DType::Float64, {n_zone_points, point_dim_out});
@@ -97639,6 +97677,11 @@ void read_families(hid_t fas_group, std::map<std::int64_t, std::vector<std::stri
         h5::Hid gro = h5::open_group(fam, "GRO");
         std::int64_t n_subsets = h5::read_attr_int(gro, "NBR");
         NDArray nom = h5::read_dataset(gro, "NOM");  // (n_subsets, 80) int8
+        if (n_subsets < 0)
+            throw ReadError("MED: GRO/NBR is negative");
+        if (static_cast<std::uint64_t>(n_subsets) > nom.Size() / 80)
+            throw ReadError("MED: GRO/NOM holds " + std::to_string(nom.Size()) +
+                            " values; NBR requires " + std::to_string(n_subsets) + "x80");
         std::vector<std::string> names;
         for (std::int64_t i = 0; i < n_subsets; ++i) {
             std::string s;
@@ -128804,10 +128847,18 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
                        nconn_all.begin() + static_cast<std::ptrdiff_t>(hi));
     t.mC0 = c_step + vtkhdf_sum(ncells_all, Part0, lo);
     const I64 n0 = n_step + vtkhdf_sum(nconn_all, Part0, lo);
+    for (I64 v : t.mCounts)
+        if (v < 0)
+            throw ReadError("meshio++: vtkhdf: negative cell count");
+    for (I64 v : nconn)
+        if (v < 0)
+            throw ReadError("meshio++: vtkhdf: negative connectivity count");
     const I64 c_total = vtkhdf_sum(t.mCounts, 0, t.mCounts.size());
     const I64 n_total = vtkhdf_sum(nconn, 0, nconn.size());
     if (t.mC0 < 0 || n0 < 0)
         throw ReadError("meshio++: vtkhdf: negative offset in the Steps tables");
+    if (c_total < 0 || n_total < 0)
+        throw ReadError("meshio++: vtkhdf: negative topology total");
     t.mConn = vtkhdf_int_rows(Grp, "Connectivity", static_cast<std::size_t>(n0),
                               static_cast<std::size_t>(n_total));
     const I64Vec offs = vtkhdf_int_rows(Grp, "Offsets", static_cast<std::size_t>(t.mC0) + lo,
@@ -128818,6 +128869,16 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
         for (I64 i = 0; i < nconn[j]; ++i)
             t.mConn[at++] += rPtStarts[j];
     t.mEnds = vtkhdf_join_offsets(offs, t.mCounts, nconn);
+    if (t.mEnds.size() != static_cast<std::size_t>(c_total))
+        throw ReadError("meshio++: vtkhdf: topology offsets disagree with cell count");
+    I64 prev = 0;
+    for (I64 e : t.mEnds) {
+        if (e < prev || e > static_cast<I64>(t.mConn.size()))
+            throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree (" +
+                            std::to_string(e) + " vs " + std::to_string(t.mConn.size()) +
+                            " ids)");
+        prev = e;
+    }
     return t;
 }
 
@@ -129103,6 +129164,17 @@ I64Vec vtkhdf_build_cells(Mesh& rMesh, const VtkhdfLeaf& rLeaf, bool Lenient) {
     const auto& vmap = vtk_to_meshio_type();
     const auto& nmap = num_nodes_per_cell();
     const std::size_t n = rLeaf.mTypes.size();
+    if (rLeaf.mEnds.size() != n)
+        throw ReadError("meshio++: vtkhdf: cell offsets disagree with cell types (" +
+                        std::to_string(rLeaf.mEnds.size()) + " vs " + std::to_string(n) + ")");
+    if (rLeaf.mPieceOfCell.size() != n)
+        throw ReadError("meshio++: vtkhdf: cell pieces disagree with cell types");
+    I64 prev_end = 0;
+    for (I64 e : rLeaf.mEnds) {
+        if (e < prev_end || e > static_cast<I64>(rLeaf.mConn.size()))
+            throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree");
+        prev_end = e;
+    }
     I64Vec perm(n, 0);
     std::size_t at = 0;
     std::size_t a = 0;

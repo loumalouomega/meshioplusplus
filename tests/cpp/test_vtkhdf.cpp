@@ -410,6 +410,34 @@ TEST(Vtkhdf, PinnedVersions) {
 // ---------------------------------------------------------------------------
 // reading refusals
 // ---------------------------------------------------------------------------
+TEST(Vtkhdf, RefusesConnectivityShapeDisagreeingWithDeclaredCount) {
+    // Roadmap §2.2 probe: a valid container with only three connectivity ids,
+    // while the unchanged topology tables declare eight for two tetrahedra.
+    VtkhdfTempFile f;
+    meshioplusplus::write_vtkhdf(f.mPath, vtkhdf_test_tets());
+    {
+        h5::Hid file = h5::open_file_rw(f.mPath);
+        h5::Hid group = h5::open_group(file, "VTKHDF");
+        ASSERT_GE(H5Ldelete(group, "Connectivity", H5P_DEFAULT), 0);
+        h5::write_dataset(group, "Connectivity", vtkhdf_test_i64({0, 1, 2}));
+    }
+    EXPECT_THROW(meshioplusplus::read_vtkhdf(f.mPath), meshioplusplus::ReadError);
+}
+
+TEST(Vtkhdf, RefusesConnectivityCountDisagreeingWithIds) {
+    // Fuzzing found a null-pointer dereference when NumberOfConnectivityIds
+    // claimed zero ids while Connectivity still held ten.
+    VtkhdfTempFile f;
+    meshioplusplus::write_vtkhdf(f.mPath, vtkhdf_test_tets());
+    {
+        h5::Hid file = h5::open_file_rw(f.mPath);
+        h5::Hid group = h5::open_group(file, "VTKHDF");
+        ASSERT_GE(H5Ldelete(group, "NumberOfConnectivityIds", H5P_DEFAULT), 0);
+        h5::write_dataset(group, "NumberOfConnectivityIds", vtkhdf_test_i64({0}));
+    }
+    EXPECT_THROW(meshioplusplus::read_vtkhdf(f.mPath), meshioplusplus::ReadError);
+}
+
 TEST(Vtkhdf, RefusesAnHdf5FileWithoutTheVtkhdfGroup) {
     VtkhdfTempFile f(".hdf");
     {

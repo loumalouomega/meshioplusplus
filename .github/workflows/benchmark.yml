@@ -3,8 +3,8 @@ name: benchmark
 # Records performance; never gates (roadmap §2/§3). Every read/write format at
 # the M size through benchmark/bench.py, and the operations over a size sweep
 # for the SEQ, OpenMP and TBB backends through tools/bench_ops.sh. CSVs are
-# uploaded as artifacts and summarised in the job summary; comparing two runs
-# is a download away. A hosted runner is noisy: read trends, not single rows.
+# uploaded as artifacts and published to benchmark-data for the docs trend
+# page. A hosted runner is noisy: read trends, not single rows.
 on:
   schedule:
     - cron: "41 4 * * 0"  # weekly, Sunday 04:41 UTC
@@ -18,8 +18,11 @@ on:
         default: "S M L"
 
 concurrency:
-  group: benchmark-${{ github.ref }}
-  cancel-in-progress: true
+  group: benchmark-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   formats:
@@ -40,9 +43,19 @@ jobs:
       - name: Install meshio++
         run: python -m pip install ".[all]"
       - name: Time every format
+        env:
+          BENCH_SIZES: ${{ inputs.sizes || 'M' }}
+          OMP_NUM_THREADS: "4"
         run: |
           cd benchmark
-          python bench.py --sizes "${{ github.event.inputs.sizes || 'M' }}" --out results_all.csv
+          python bench.py --sizes "$BENCH_SIZES" --out results_all.csv
+      - name: Record run metadata
+        env:
+          BENCH_SIZES: ${{ inputs.sizes || 'M' }}
+          OMP_NUM_THREADS: "4"
+        run: |
+          python tools/bench_trends.py capture formats benchmark/results_all.csv trend-records \
+            --parameters "$(python -c 'import json,os; print(json.dumps({"sizes": os.environ["BENCH_SIZES"], "repeats": 3, "build_type": "Release"}))')"
       - name: Job summary
         run: |
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -58,7 +71,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bench-formats
-          path: benchmark/results_all.csv
+          path: |
+            benchmark/results_all.csv
+            trend-records/*
 
   operations:
     name: Operations, per parallel backend
@@ -73,12 +88,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libtbb-dev ninja-build
       - name: Time the operations
+        env:
+          BENCH_TIERS: ${{ inputs.tiers || 'S M L' }}
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
         run: |
-          args=""
-          for t in ${{ github.event.inputs.tiers || 'S M L' }}; do args="$args --tier $t"; done
+          args=()
+          for t in $BENCH_TIERS; do
+            case "$t" in S|M|L|XL) ;; *) echo "Invalid tier: $t" >&2; exit 1 ;; esac
+            args+=(--tier "$t")
+          done
           # --hash: the sweep also fails if any row's output differs between
           # backends or thread counts (roadmap §3's determinism check).
-          tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4" -- --hash $args
+          tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4" -- --hash "${args[@]}"
+      - name: Record run metadata
+        env:
+          BENCH_TIERS: ${{ inputs.tiers || 'S M L' }}
+        run: |
+          python3 tools/bench_trends.py capture operations benchmark/results_ops.csv trend-records \
+            --build-root build \
+            --parameters "$(python3 -c 'import json,os; print(json.dumps({"tiers": os.environ["BENCH_TIERS"], "runs": 3, "hash": True}))')"
       - name: Job summary
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -93,4 +121,44 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bench-operations
-          path: benchmark/results_ops.csv
+          path: |
+            benchmark/results_ops.csv
+            trend-records/*
+
+  publish:
+    name: Publish immutable trend records
+    needs: [formats, operations]
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          path: incoming
+      - name: Update benchmark-data
+        env:
+          DATA_DIR: ${{ runner.temp }}/benchmark-data
+        run: |
+          git init "$DATA_DIR"
+          git -C "$DATA_DIR" remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          header=$(git config --get "http.${GITHUB_SERVER_URL}/.extraheader")
+          git -C "$DATA_DIR" config "http.${GITHUB_SERVER_URL}/.extraheader" "$header"
+          if git ls-remote --exit-code origin refs/heads/benchmark-data > /dev/null; then
+            git -C "$DATA_DIR" fetch --depth=1 origin benchmark-data
+            git -C "$DATA_DIR" switch -c benchmark-data FETCH_HEAD
+          else
+            rc=$?
+            [ "$rc" = 2 ] || exit "$rc"
+            git -C "$DATA_DIR" switch --orphan benchmark-data
+          fi
+          python3 tools/bench_trends.py ingest incoming "$DATA_DIR"
+          git -C "$DATA_DIR" config user.name github-actions[bot]
+          git -C "$DATA_DIR" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C "$DATA_DIR" add runs
+          if ! git -C "$DATA_DIR" diff --cached --quiet; then
+            git -C "$DATA_DIR" commit -m "Benchmark run ${GITHUB_RUN_ID}, attempt ${GITHUB_RUN_ATTEMPT}"
+            git -C "$DATA_DIR" push origin HEAD:benchmark-data
+          fi

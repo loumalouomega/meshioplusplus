@@ -114,6 +114,11 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--formats", default="", help="comma-separated subset")
     ap.add_argument("--max-bytes", type=int, default=256 * 1024)
+    ap.add_argument(
+        "--library-readers",
+        action="store_true",
+        help="include library_formats.txt for an instrumented-library build",
+    )
     args = ap.parse_args(argv)
 
     import meshioplusplus
@@ -121,8 +126,17 @@ def main(argv=None) -> int:
     readers = native_readers(args.replay)
     wanted = [f for f in args.formats.split(",") if f] or readers
     written = meshioplusplus.formats()["writable"]
+    skip = SKIP.copy()
+    if args.library_readers:
+        skip -= {
+            line.strip()
+            for line in (pathlib.Path(__file__).parent / "library_formats.txt")
+            .read_text()
+            .splitlines()
+            if line.strip() and not line.startswith("#")
+        }
     for fmt in wanted:
-        if fmt in SKIP or fmt not in readers:
+        if fmt in skip or fmt not in readers:
             continue
         dst = args.out / fmt
         dst.mkdir(parents=True, exist_ok=True)
@@ -137,7 +151,13 @@ def main(argv=None) -> int:
                 :20
             ]
         for f in found:
-            if f.is_file() and 0 < f.stat().st_size <= args.max_bytes:
+            if (
+                f.is_file()
+                and 0 < f.stat().st_size <= args.max_bytes
+                and not f.read_bytes().startswith(
+                    b"version https://git-lfs.github.com/spec/v1"
+                )
+            ):
                 digest = hashlib.sha1(f.read_bytes()).hexdigest()[:12]
                 shutil.copyfile(f, dst / f"{digest}-{f.name}")
                 n += 1

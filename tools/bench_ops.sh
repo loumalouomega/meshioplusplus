@@ -27,6 +27,7 @@ header=""
 for b in $BACKENDS; do
     tree="$ROOT/build/bench-ops-$(echo "$b" | tr '[:upper:]' '[:lower:]')"
     if ! cmake -S "$ROOT" -B "$tree" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF -DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON \
         -DMESHIOPLUSPLUS_PARALLEL_BACKEND="$b" -DMESHIOPLUSPLUS_WITH_HDF5=OFF \
         -DMESHIOPLUSPLUS_WITH_NETCDF=OFF > "$tree.configure.log" 2>&1; then

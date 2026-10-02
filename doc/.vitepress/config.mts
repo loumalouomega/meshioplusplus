@@ -259,6 +259,7 @@ export default defineConfig({
         text: "Project",
         items: [
           { text: "Benchmarks", link: "/benchmarks" },
+          { text: "Benchmark trends", link: "/benchmark_trends" },
           { text: "Fuzzing and sanitizers", link: "/fuzzing" },
           { text: "Roadmap", link: "/roadmap" },
         ],
