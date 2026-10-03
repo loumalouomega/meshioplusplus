@@ -32,6 +32,8 @@ the original pure-Python **meshio**, on the formats both libraries support.
 | `text_io_batch10_seq_confirmation.csv` | Both SEQ orders confirm reader gains; see [scope, allocations and writer noise](../doc/benchmarks.md#remaining-deck-token-views). |
 | `text_io_batch11.csv` | DEX normalization/source-copy removal and temporary ownership guards; PLY uses its default binary timing path. |
 | `text_io_batch11_seq_confirmation.csv` | Both SEQ orders, including the retained OBJ writer observation; see [ownership classification and scope](../doc/benchmarks.md#source-copy-removal-and-temporary-ownership-guards). |
+| `text_io_batch12_float64_int64.csv` | OFF, IP, FLUX and PERMAS writers read each array through one typed view: full before/after matrix on canonical float64/int64 inputs. |
+| `text_io_batch12_float64_int64_seq_confirmation.csv` | Two SEQ rounds; see [neutral timings and dtype scope](../doc/benchmarks.md#dtype-hoisted-off-ip-flux-and-permas-writers). |
 | `plots/` | Generated figures (also copied to `doc/public/benchmarks/`). |
 
 The sweep explicitly includes Gmsh 4.1 on its supported single-type tetrahedral volume input, alongside MFM's single-type exception. This does not change either format's mixed-cell conformance declaration. Gmsh ASCII and binary geometry round trips are tested directly; reader-cursor measurements select ASCII explicitly.

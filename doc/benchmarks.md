@@ -218,6 +218,21 @@ DEX gains reproduce in both SEQ orders (M 8.57→6.99 and 8.46→7.00 ms, L 35.2
 
 The focused gates pass 615 Python tests with one optional skip per SEQ/OpenMP/TBB module, 78 selected native cases per MESHIO/NATIVE/KRATOS backend (one external `checkMesh` test skipped), and 201 source-ownership cases on the archived baseline SEQ module. Seven standalone cursor parity/lifetime tests pass AddressSanitizer and UndefinedBehaviorSanitizer. DEX long exponents, signed zero and embedded-NUL prefixes preserve native semantics; source replacement checks both mapped and buffered reads in fresh processes.
 
+### Dtype-hoisted OFF, IP, FLUX and PERMAS writers
+
+Roadmap §3.1.2's first writer batch. The OFF, IP, FLUX and PERMAS writers build one core-private `detail::DoubleView`/`detail::Int64View` per point, connectivity or reference array before the row loop, instead of calling `read_double`/`read_int` (a `dispatch_dtype` switch) per element. The view points into the array when its dtype already is float64/int64 and otherwise makes one converted copy, element for element as `read_double`/`read_int` convert it, so the written bytes cannot change. Readers are untouched. The change lives in non-inline `.cpp` bodies and a private header: no installed header, signature or layout changes, and C++ ABI 22 is unchanged.
+
+The [112-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch12_float64_int64.csv) and [32-row two-round confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch12_float64_int64_seq_confirmation.csv) use the harness's canonical float64/int64 inputs, the zero-copy case, through strict Python dispatch. File and full-mesh digests agree across stages and all seven configurations. Reader and writer allocation calls and requested bytes are identical before and after in every configuration: canonical inputs allocate no view storage.
+
+| SEQ writer | M write, round 1 | M write, round 2 | L write, round 1 | L write, round 2 |
+| --- | ---: | ---: | ---: | ---: |
+| OFF | 6.64 → 6.29 ms | 6.98 → 6.88 ms | 13.07 → 13.87 ms | 14.23 → 13.21 ms |
+| IP | 4.09 → 4.25 ms | 4.60 → 4.51 ms | 9.92 → 10.50 ms | 10.56 → 9.87 ms |
+| FLUX | 229.32 → 224.40 ms | 231.05 → 225.72 ms | 850.81 → 860.19 ms | 895.45 → 863.10 ms |
+| PERMAS | 73.23 → 74.44 ms | 81.27 → 74.05 ms | 287.84 → 300.61 ms | 302.76 → 275.20 ms |
+
+These timings are **neutral**: every L row changes direction between rounds, and the writers spend their time formatting numbers, not dispatching on the dtype. No writer speedup is claimed for canonical inputs. The unchanged readers fluctuate the same way (PERMAS L 150.38→158.57 and 153.02→155.99 ms; FLUX L 293.26→301.37 and 389.78→287.40 ms), and all rows remain published. The hoist pays off for non-canonical inputs (float32 points, int32 connectivity), where the per-element switch is replaced by one parallel conversion. `test_text_io_dtypes.cpp` and `test_text_io_dtypes.py` pin byte identity across all ten dtypes and in 2-D and 3-D, and check that a caller's arrays are not modified.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
