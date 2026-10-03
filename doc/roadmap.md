@@ -91,6 +91,8 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 
 *Admission: a measured or code-verified slowdown in a path a user hits, with the shape of the fix named. Every item shows its before/after on the benchmark harness (`benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations; [benchmarks](./benchmarks.md)).*
 
+Use the [Clang-Tidy performance audit](./benchmarks.md#clang-tidy-performance-audit) to discover candidates; its findings are advisory and must satisfy the landing gates below.
+
 Two findings frame the section. First, **the serial phases below are deliberate**: each is documented in the code as a determinism pin, not an oversight — output is byte-identical across parallel backends and thread counts, which repeated-run tests and the C++-versus-numpy byte comparisons enforce — so every fix must keep that guarantee and prove it with a SEQ-versus-OpenMP diff, not assert it. Second, **every parallel item is conditional on the backend**: a SEQ build (and the `stl` fallback without TBB) runs `parallel_for` sequentially, so each change must also show that SEQ does not get slower — a parallel sort is O(n log n) where the hash map it replaces is O(n). SEQ is not a corner case: the Linux wheels and the native CLI release binaries are built SEQ, and WASM ships a SEQ build beside the threaded one, so an algorithmic win reaches every user while a parallel one reaches source, conda and threaded-WASM builds.
 
 **Landing an item.** Each item names only what is particular to it. All of them:
@@ -100,8 +102,6 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 3. Show SEQ is not slower.
 4. Classify the change by the [ABI policy](./abi.md): the body of an exported, non-inline function is free; an inline or template body in an installed header is Tier B; a new function in an installed header is additive and goes in the [ABI review](./abi_reviews.md); a changed signature, or the layout of an installed type, is Tier A. Regenerate the single header.
 5. Correct every code comment that describes the old algorithm (the items name the stale ones already found), and update the numbers in [benchmarks](./benchmarks.md).
-
-**3.0 Clang-Tidy performance findings.** The advisory `performance-*` runner and initial SEQ inventories across MESHIO/NATIVE/KRATOS, the C API and native CLI, plus Python on MESHIO, are in place ([workflow and coverage](./benchmarks.md#clang-tidy-performance-audit)). Remaining: review the implementation candidates in small measured batches, separately review installed-header/pybind11 ownership suggestions, and cover the optional-library, OpenMP/TBB and WASM paths not enabled by those inventories. No bulk automatic fixes or zero-warning target; the landing gates above apply to every accepted change. **L**
 
 **3.1 Text I/O.**
 
