@@ -68,12 +68,28 @@ The notebook records the machine, library versions, and the inputs (the bundled 
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
 
+Explicitly tested single-type exceptions also participate: MFM rejects the mixed conformance mesh but round-trips the harness's tetrahedral cube. This does not change its conformance declaration or imply mixed-cell support. Use `--formats mfm` to measure that reader and writer before a text-tokenizer change.
+
 ```sh
 python benchmark/bench.py --sizes S,M --out results_all.csv            # every format
 python benchmark/bench.py --sizes L --formats vtu,gmsh22,xdmf,med      # a subset
+python benchmark/bench.py --sizes M,L --formats mfm --repeats 7      # single-type MFM
 ```
 
 The sizes are 6·(n−1)³ tetrahedra for n = 16, 36 and 56 points per edge (about 20k, 250k and 1M). Legacy meshio is optional here: with `MESHIO_LEGACY_SRC` pointing at a source checkout's `src`, or `meshio` installed, the curated comparison above fills its legacy columns; without it only the meshio++ columns are written.
+
+### Text I/O: MFM baseline
+
+The first prerequisite for roadmap §3.1.1 is MFM benchmark coverage, not a reader optimization. Its unchanged native reader stores the remaining file in owning token strings, including the discarded reference arrays. The [baseline evidence](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_mfm.csv) records 14 M/L rows on MESHIO: SEQ at one thread and OpenMP/TBB at 1/4/8 threads. Written-file SHA-256 values and parsed-mesh SHA-256 values (points, block types/connectivity and `mfm:ref`, including array shapes and dtypes) agree across all configurations; parsed arrays also match the generated input, with the writer's default subdomain value of one.
+
+Recorded on 2026-10-03 against native source commit `3b0791205bd68cdd50d3127d1aa9d08047ba9900`, AMD Ryzen 7 255, Release/MESHIO, HDF5/netCDF/zlib enabled. SEQ/TBB use Clang 23.1.1 and OpenMP uses GCC 16.2.1, all with `-O3 -DNDEBUG -ffp-contract=off`. Timings use the harness's one warmup and median of seven runs, without an allocation interposer or concurrent project builds/tests. TBB is explicitly capped with `tbb::global_control`; OpenMP uses `OMP_NUM_THREADS` with dynamic adjustment disabled. Compare each configuration with its own later result, not compiler-to-compiler timings.
+
+| SEQ input | Cells | Read median | Write median | Reader allocation calls | Cumulative requested bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| M tetrahedral grid | 257,250 | 166.6 ms | 188.2 ms | 140,031 | 551,509,791 (525.96 MiB) |
+| L tetrahedral grid | 998,250 | 576.3 ms | 523.6 ms | 526,913 | 2,203,755,809 (2101.67 MiB) |
+
+Allocation counting is separate: ordinary global `operator new` requests around a warmed-up direct native read, with three identical count/byte results per configuration and size. These are cumulative requests, **not peak RSS**; pathname lengths can affect small allocations, so retain the same input path before and after. The local `build/text-io-mfm/before/` archive preserves copied native modules with SHA-256 checks, source/helper snapshots, actual compile commands, CMake caches and raw JSON/logs; editable auto-rebuilding is disabled and each measurement explicitly loads its archived module. No reader/writer implementation, API, ABI or single-header change has been made at this baseline stage, and no speedup is claimed.
 
 ## Operations
 

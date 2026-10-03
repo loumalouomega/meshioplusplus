@@ -83,19 +83,28 @@ FORMATS = [
 # (6 (n-1)^3 tetrahedra: about 20k, 250k and 1M).
 SIZES = {"S": 16, "M": 36, "L": 56}
 
+# These formats reject the mixed conformance mesh, but accept the harness's
+# single-type input. Keep this explicit rather than treating unknown ("?")
+# conformance cells as proven round trips.
+SINGLE_TYPE_INPUTS = {"mfm": "volume"}
+
 
 def all_formats():
     """One spec per format meshio++ both writes and reads back, by input kind.
 
     Returns ``[(format, kind)]`` with kind ``"volume"``, ``"surface"`` or
     ``"points"`` -- the largest thing the format's conformance declaration
-    says survives a round trip. Formats it records as failing, write-only or
-    lossy on every cell are left out.
+    says survives a round trip, plus explicitly tested single-type exceptions
+    in ``SINGLE_TYPE_INPUTS``. Other failing, write-only or entirely lossy
+    formats are left out.
     """
     import conformance_spec as cs
 
     out = []
     for fmt, spec in sorted(cs.SPEC.items()):
+        if fmt in SINGLE_TYPE_INPUTS:
+            out.append((fmt, SINGLE_TYPE_INPUTS[fmt]))
+            continue
         if "points" not in spec:
             continue
         kept = {t for t, o in spec["cells"].items() if o in ("exact", "reordered")}

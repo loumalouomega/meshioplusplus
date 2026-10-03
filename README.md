@@ -1045,6 +1045,8 @@ Full methodology and a reproducible notebook are on the [Benchmarks](https://lou
 
 Contributors can audit the native core with `tools/performance-tidy.sh --jobs 4`: it runs Clang-Tidy's built-in `performance-*` checks separately from the include-hygiene gate, records deduplicated findings and actual build capabilities, and fails on incomplete scans without applying fixes. See the [performance-audit workflow](doc/benchmarks.md#clang-tidy-performance-audit) for ABI review and before/after validation.
 
+The I/O sweep includes the single-type MFM tetrahedral input: `python benchmark/bench.py --sizes M,L --formats mfm --repeats 7`. See [benchmark coverage](doc/benchmarks.md#every-format); MFM's mixed-cell conformance rejection is unchanged.
+
 ### Reading only what you need
 
 ```python
