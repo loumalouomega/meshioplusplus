@@ -64905,7 +64905,7 @@ public:
     }
 
     RstRecord Record(std::uint64_t Ptr) const {
-        if (Ptr + 2 > mWords)
+        if (Ptr > mWords || mWords - Ptr < 2)
             rst_fail("record pointer " + std::to_string(Ptr) + " is outside the file");
         const std::int32_t n = Word(Ptr);
         const unsigned flags = (static_cast<std::uint32_t>(Word(Ptr + 1)) >> 24) & 0xFFu;

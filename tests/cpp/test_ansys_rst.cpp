@@ -392,6 +392,25 @@ TEST(AnsysRst, Refusals) {
     remove_file(junk);
 }
 
+TEST(AnsysRst, RefusesWrappingRecordPointers) {
+    for (const std::int64_t low : {-1, -2}) {
+        RstWriter w;
+        w.Ints({12}, 100);
+        const std::size_t header = w.Ints({12}, 80);
+        w.Patch(header, 15, low);
+        w.Patch(header, 46, -1);
+        const std::string path = mt::temp_path(".rst");
+        w.Save(path);
+        try {
+            (void)meshioplusplus::read_ansys_rst(path);
+            FAIL() << "A wrapping record pointer must be refused";
+        } catch (const meshioplusplus::ReadError& e) {
+            EXPECT_NE(std::string(e.what()).find("record pointer "), std::string::npos);
+        }
+        remove_file(path);
+    }
+}
+
 TEST(AnsysRst, ElementCategories) {
     using meshioplusplus::detail::AnsysCategory;
     EXPECT_EQ(meshioplusplus::detail::ansys_category(186), AnsysCategory::Brick);
