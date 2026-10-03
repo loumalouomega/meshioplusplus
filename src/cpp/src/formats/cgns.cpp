@@ -18,7 +18,7 @@
 
 // System includes
 #include <algorithm>
-#include <deque>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -1204,12 +1204,13 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         }
         NDArray zpts(DType::Float64, {n_zone_points, point_dim_out});
         double* pp = zpts.As<double>();
-        std::deque<detail::DoubleView> col_values;  // views are not movable
-        for (const NDArray& col : cols)
-            col_values.emplace_back(col);
+        // At most the three of CoordinateX/Y/Z, so no container to allocate.
+        std::array<std::optional<detail::DoubleView>, 3> col_values;
+        for (std::size_t d = 0; d < cols.size(); ++d)
+            col_values[d].emplace(cols[d]);
         for (std::size_t i = 0; i < n_zone_points; ++i)
             for (std::size_t d = 0; d < point_dim_out; ++d)
-                pp[i * point_dim_out + d] = d < cols.size() ? col_values[d][i] : 0.0;
+                pp[i * point_dim_out + d] = d < cols.size() ? (*col_values[d])[i] : 0.0;
         point_chunks.push_back(std::move(zpts));
 
         // Elements_t sections found by label (never by name), ordered

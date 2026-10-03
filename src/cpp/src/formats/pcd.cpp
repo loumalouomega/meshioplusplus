@@ -591,6 +591,17 @@ NDArray pcd_unpack_colour(const NDArray& rColumn, char type, bool alpha) {
     return out;
 }
 
+/// Column @p Axis of the (n, 3) array @p rOut from the one-value-per-point
+/// @p rColumn, converted as `read_double` converts, with the dtype switch taken
+/// once and no converted copy of a column that is already float32.
+void pcd_copy_column(NDArray& rOut, int Axis, const NDArray& rColumn, std::size_t n) {
+    detail::dispatch_dtype(rColumn.Dtype(), [&]<class T>() {
+        const T* src = rColumn.As<T>();
+        for (std::size_t i = 0; i < n; ++i)
+            pcd_store(rOut, i * 3 + static_cast<std::size_t>(Axis), static_cast<double>(src[i]), 0);
+    });
+}
+
 Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid) {
     const std::size_t npoints = static_cast<std::size_t>(rH.mPoints);
     std::unordered_map<std::string, std::size_t> by_name;  // a repeated name: the last wins
@@ -608,11 +619,8 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
         single = single && rColumns[it->second].Dtype() == DType::Float32;
     }
     NDArray points(single ? DType::Float32 : DType::Float64, {npoints, std::size_t(3)});
-    for (int a = 0; a < 3; ++a) {
-        const detail::DoubleView column(rColumns[axis_field[a]]);
-        for (std::size_t i = 0; i < npoints; ++i)
-            pcd_store(points, i * 3 + a, column[i], 0);
-    }
+    for (int a = 0; a < 3; ++a)
+        pcd_copy_column(points, a, rColumns[axis_field[a]], npoints);
 
     std::unordered_map<std::string, NDArray> point_data;
     std::unordered_set<std::string> consumed = {"x", "y", "z"};
@@ -627,11 +635,8 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
         for (const char* name : normal_axes)
             single_n = single_n && rColumns[by_name[name]].Dtype() == DType::Float32;
         NDArray normals(single_n ? DType::Float32 : DType::Float64, {npoints, std::size_t(3)});
-        for (int a = 0; a < 3; ++a) {
-            const detail::DoubleView column(rColumns[by_name[normal_axes[a]]]);
-            for (std::size_t i = 0; i < npoints; ++i)
-                pcd_store(normals, i * 3 + a, column[i], 0);
-        }
+        for (int a = 0; a < 3; ++a)
+            pcd_copy_column(normals, a, rColumns[by_name[normal_axes[a]]], npoints);
         point_data.emplace("normals", std::move(normals));
         for (const char* name : normal_axes)
             consumed.insert(name);
