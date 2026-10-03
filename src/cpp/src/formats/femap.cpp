@@ -26,6 +26,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <deque>
 #include <optional>
 #include <set>
 #include <string>
@@ -47,6 +48,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -904,12 +906,16 @@ FnPlan fn_plan(const Mesh& rMesh) {
     plan.mType.assign(plan.mNumCells, 0);
     plan.mLabel.assign(plan.mNumCells, 0);
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        std::optional<detail::Int64View> props, types;
+        if (has_prop)
+            props.emplace(rMesh.CellData("femap:property", b));
+        if (has_type)
+            types.emplace(rMesh.CellData("femap:type", b));
         for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
             const std::size_t g = plan.mStart[b] + r;
-            if (has_prop)
-                plan.mProp[g] = detail::read_int(rMesh.CellData("femap:property", b), r);
-            plan.mType[g] = has_type ? detail::read_int(rMesh.CellData("femap:type", b), r)
-                                     : (plan.mTops[b] ? plan.mTops[b]->mDefaultType : 0);
+            if (props)
+                plan.mProp[g] = (*props)[r];
+            plan.mType[g] = types ? (*types)[r] : (plan.mTops[b] ? plan.mTops[b]->mDefaultType : 0);
             if (plan.mTops[b])
                 plan.mLabel[g] = ++plan.mWritten;
         }
@@ -953,10 +959,11 @@ std::vector<FnOutVector> fn_vectors(const Mesh& rMesh, const FnPlan& rPlan,
             continue;
         }
         const std::size_t nc = a.Shape().size() == 2 ? a.Shape()[1] : 1;
+        const detail::DoubleView values(a);
         for (std::size_t c = 0; c < nc; ++c) {
             FnOutVector v{nc == 1 ? name : name + "_" + std::to_string(c), 7, {}};
             for (std::size_t p = 0; p < npts; ++p) {
-                const double x = detail::read_double(a, p * nc + c);
+                const double x = values[p * nc + c];
                 if (!std::isnan(x))
                     v.mValues.emplace_back(static_cast<std::int64_t>(p + 1), x);
             }
@@ -979,13 +986,17 @@ std::vector<FnOutVector> fn_vectors(const Mesh& rMesh, const FnPlan& rPlan,
             rUnwritable.push_back(name);
             continue;
         }
+        // One view per block, shared by every component.
+        std::deque<detail::DoubleView> values;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            values.emplace_back(rMesh.CellData(name, b));
         for (std::size_t c = 0; c < nc; ++c) {
             FnOutVector v{nc == 1 ? name : name + "_" + std::to_string(c), 8, {}};
             for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-                const NDArray& a = rMesh.CellData(name, b);
+                const detail::DoubleView& a = values[b];
                 for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
                     const std::size_t g = rPlan.mStart[b] + r;
-                    const double x = detail::read_double(a, r * nc + c);
+                    const double x = a[r * nc + c];
                     if (rPlan.mLabel[g] && !std::isnan(x))
                         v.mValues.emplace_back(rPlan.mLabel[g], x);
                 }
@@ -1076,11 +1087,11 @@ void fn_write_mesh_blocks(std::ostream& rOs, const Mesh& rMesh, const FnPlan& rP
     }
 
     fn_block_open(out, 403);
-    const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(rMesh.Points());
     for (std::size_t p = 0; p < npts; ++p) {
         out += std::to_string(p + 1) + ",0,0,1,46,0,0,0,0,0,0,";
         for (std::size_t d = 0; d < 3; ++d) {
-            fn_append_real(out, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+            fn_append_real(out, d < pdim ? point_values[p * pdim + d] : 0.0);
             out += ',';
         }
         out += "0,\n";
@@ -1096,14 +1107,13 @@ void fn_write_mesh_blocks(std::ostream& rOs, const Mesh& rMesh, const FnPlan& rP
             if (!t)
                 continue;
             const auto cb = rMesh.Cells(b);
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t k = t->mSlots.size();
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 const std::size_t g = rPlan.mStart[b] + r;
                 std::array<std::int64_t, 20> slots{};
                 for (std::size_t j = 0; j < k; ++j)
-                    slots[static_cast<std::size_t>(t->mSlots[j])] =
-                        detail::read_int(conn, r * k + j) + 1;
+                    slots[static_cast<std::size_t>(t->mSlots[j])] = conn[r * k + j] + 1;
                 out += std::to_string(label[g]) + ",124," + std::to_string(prop[g]) + "," +
                        std::to_string(etype[g]) + "," + std::to_string(t->mCode) +
                        ",1,0,0,0,0,0,0,0,\n";
@@ -1262,16 +1272,18 @@ std::pair<std::uint64_t, std::uint64_t> fn_fingerprint(const Mesh& rMesh) {
         cells = mix(cells, head.data(), head.size());
         if (cb.IsRagged())
             continue;
-        const NDArray& conn = cb.Conn();
-        for (std::size_t i = 0; i < conn.Size(); ++i) {
-            const std::int64_t v = detail::read_int(conn, i);
+        const std::size_t n = cb.Conn().Size();
+        const detail::Int64View conn(cb.Conn());
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::int64_t v = conn[i];
             cells = mix(cells, &v, sizeof v);
         }
     }
     std::uint64_t points = 14695981039346656037ull;
-    const NDArray& pts = rMesh.Points();
-    for (std::size_t i = 0; i < pts.Size(); ++i) {
-        const double v = detail::read_double(pts, i);
+    const std::size_t ncoords = rMesh.Points().Size();
+    const detail::DoubleView pts(rMesh.Points());
+    for (std::size_t i = 0; i < ncoords; ++i) {
+        const double v = pts[i];
         points = mix(points, &v, sizeof v);
     }
     return {cells, points};

@@ -26,6 +26,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -46,6 +47,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -1088,16 +1090,27 @@ std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
     if (u || f) {
         std::string rows;
         std::size_t count = 0;
-        const std::pair<int, const NDArray*> kinds[2] = {{2, u}, {1, f}};
+        std::optional<detail::DoubleView> u_values, f_values;
+        if (u)
+            u_values.emplace(*u);
+        if (f)
+            f_values.emplace(*f);
+        struct Z88BcKind {
+            int mFlag;
+            const NDArray* mpArray;
+            const detail::DoubleView* mpValues;
+        };
+        const Z88BcKind kinds[2] = {{2, u, u ? &*u_values : nullptr},
+                                    {1, f, f ? &*f_values : nullptr}};
         for (std::size_t p = 0; p < npts; ++p)
             for (int d = 0; d < rDof[p]; ++d)
-                for (const auto& [flag, pA] : kinds) {
+                for (const auto& [flag, pA, pValues] : kinds) {
                     if (!pA || !npts)
                         continue;
                     const std::size_t w = pA->Size() / npts;
                     if (static_cast<std::size_t>(d) >= w)
                         continue;
-                    const double v = detail::read_double(*pA, p * w + static_cast<std::size_t>(d));
+                    const double v = (*pValues)[p * w + static_cast<std::size_t>(d)];
                     if (std::isnan(v))
                         continue;
                     detail::snprintf_c(buf, sizeof(buf), "%9zu %2d %2d %+.16E\n", p + 1, d + 1,
@@ -1115,12 +1128,13 @@ std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
             const NDArray& a = rMesh.CellData(rName, b);
             const std::size_t n = rCodes[b].size();
             const std::size_t w = n ? a.Size() / n : 0;
+            const detail::DoubleView values(a);
             for (std::size_t r = 0; r < n; ++r) {
                 if (!rCodes[b][r])
                     continue;
                 std::vector<double> row(w);
                 for (std::size_t k = 0; k < w; ++k)
-                    row[k] = detail::read_double(a, r * w + k);
+                    row[k] = values[r * w + k];
                 out.push_back(std::move(row));
             }
         }
@@ -1249,19 +1263,20 @@ std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
     for (const auto& block : rCodes)
         code_of.insert(code_of.end(), block.begin(), block.end());
     if (rMesh.HasFieldData("z88:surface_load") && rMesh.HasFieldData("z88:surface_load:cells")) {
-        const NDArray& values = rMesh.FieldData("z88:surface_load");
-        const NDArray& refs = rMesh.FieldData("z88:surface_load:cells");
-        const std::size_t n = std::min(values.Size() / 3, refs.Size() / 9);
+        const detail::DoubleView values(rMesh.FieldData("z88:surface_load"));
+        const detail::Int64View refs(rMesh.FieldData("z88:surface_load:cells"));
+        const std::size_t n = std::min(rMesh.FieldData("z88:surface_load").Size() / 3,
+                                       rMesh.FieldData("z88:surface_load:cells").Size() / 9);
         std::string body;
         std::size_t rows = 0, skipped = 0;
         for (std::size_t r = 0; r < n; ++r) {
-            const std::int64_t cell = detail::read_int(refs, 9 * r);
+            const std::int64_t cell = refs[9 * r];
             const int code = cell >= 0 && static_cast<std::size_t>(cell) < written_id.size()
                                  ? code_of[static_cast<std::size_t>(cell)]
                                  : 0;
             const auto [nv, nn] = z88_load_layout(code);
             int given = 0;
-            while (given < 8 && detail::read_int(refs, 9 * r + 1 + given) >= 0)
+            while (given < 8 && refs[9 * r + 1 + static_cast<std::size_t>(given)] >= 0)
                 ++given;
             if (!code || nv == 0 || given != nn) {
                 ++skipped;
@@ -1269,12 +1284,12 @@ std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
             }
             body += std::to_string(written_id[static_cast<std::size_t>(cell)]);
             for (int k = 0; k < nv; ++k) {
-                const double v = detail::read_double(values, 3 * r + k);
+                const double v = values[3 * r + static_cast<std::size_t>(k)];
                 detail::snprintf_c(buf, sizeof(buf), " %+.16E", std::isnan(v) ? 0.0 : v);
                 body += buf;
             }
             for (int k = 0; k < nn; ++k)
-                body += " " + std::to_string(detail::read_int(refs, 9 * r + 1 + k) + 1);
+                body += " " + std::to_string(refs[9 * r + 1 + static_cast<std::size_t>(k)] + 1);
             body += '\n';
             ++rows;
         }
@@ -1305,8 +1320,9 @@ std::map<std::string, std::string> z88_deck_files(const Mesh& rMesh,
             continue;
         }
         std::vector<std::int64_t> ids;
+        const detail::Int64View entries(region.mEntries);
         for (std::size_t e = 0; e < region.NumEntries(); ++e) {
-            const std::int64_t k = detail::read_int(region.mEntries, e);
+            const std::int64_t k = entries[e];
             if (cells) {
                 if (k >= 0 && static_cast<std::size_t>(k) < written_id.size() &&
                     written_id[static_cast<std::size_t>(k)])
@@ -1350,6 +1366,7 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t npts = rMesh.NumPoints();
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
     bool any_3d_cell = false;
     for (const auto cb : rMesh.CellRange())
         if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
@@ -1358,7 +1375,7 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
     if (!flat) {
         flat = true;
         for (std::size_t p = 0; p < npts && flat; ++p)
-            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+            flat = point_values[p * pdim + 2] == 0.0;
     }
     // Types that only exist in a 3-D file (solids, 3-D beams, trusses and the
     // shaft, shells) make it 3-D even when every z is 0.
@@ -1368,8 +1385,9 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         const auto cb = rMesh.Cells(b);
         if (cb.IsRagged())
             continue;
+        const detail::Int64View types(rMesh.CellData("z88:type", b));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int64_t want = detail::read_int(rMesh.CellData("z88:type", b), r);
+            const std::int64_t want = types[r];
             const Z88Type* t = z88_type(want);
             needs_3d = needs_3d || (t && t->mKeep == t->mNodes && cb.Type() == t->mCell &&
                                     cb.NodesPerCell() == static_cast<std::size_t>(t->mNodes) &&
@@ -1390,10 +1408,13 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
                              : cell == "VTK_LAGRANGE_QUADRILATERAL"
                                  ? (cb.NodesPerCell() == 16 && ndim == 2 ? 19 : 0)
                                  : z88_default_code(cell, ndim);
+        std::optional<detail::Int64View> types;
+        if (has_type && !cb.IsRagged())
+            types.emplace(rMesh.CellData("z88:type", b));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             int code = fallback;
-            if (has_type && !cb.IsRagged()) {
-                const std::int64_t want = detail::read_int(rMesh.CellData("z88:type", b), r);
+            if (types) {
+                const std::int64_t want = (*types)[r];
                 const Z88Type* t = z88_type(want);
                 if (t && t->mKeep == t->mNodes && cell == t->mCell &&
                     cb.NodesPerCell() == static_cast<std::size_t>(t->mNodes))
@@ -1435,14 +1456,14 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         const auto cb = rMesh.Cells(b);
         if (cb.IsRagged())
             continue;
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             if (!codes[b][r])
                 continue;
             const int d = z88_type(codes[b][r])->mDof;
             for (std::size_t j = 0; j < k; ++j) {
-                const std::size_t p = static_cast<std::size_t>(detail::read_int(conn, r * k + j));
+                const std::size_t p = static_cast<std::size_t>(conn[r * k + j]);
                 dof[p] = seen[p] ? std::max(dof[p], d) : d;
                 seen[p] = true;
             }
@@ -1466,10 +1487,9 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         detail::snprintf_c(buf, sizeof(buf), "%9zu %2d", p + 1, dof[p]);
         out += buf;
         for (int d = 0; d < ndim; ++d) {
-            const double v =
-                static_cast<std::size_t>(d) < pdim
-                    ? detail::read_double(points, p * pdim + static_cast<std::size_t>(d))
-                    : 0.0;
+            const double v = static_cast<std::size_t>(d) < pdim
+                                 ? point_values[p * pdim + static_cast<std::size_t>(d)]
+                                 : 0.0;
             detail::snprintf_c(buf, sizeof(buf), " %+.16E", v);
             out += buf;
         }
@@ -1484,7 +1504,7 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         const auto cb = rMesh.Cells(b);
         if (cb.IsRagged())
             continue;
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         const detail::NodeOrder* order = detail::node_order("z88", std::string(cb.Type()));
         // Type 19's lattice slot j holds the cell's node lattice[j].
@@ -1502,7 +1522,7 @@ void write_z88(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
                                         : order ? static_cast<std::size_t>(order->mFromMeshio[j])
                                                 : j;
                 detail::snprintf_c(buf, sizeof(buf), "%s%lld", j ? " " : "",
-                                   static_cast<long long>(detail::read_int(conn, r * k + src) + 1));
+                                   static_cast<long long>(conn[r * k + src] + 1));
                 out += buf;
             }
             out += '\n';

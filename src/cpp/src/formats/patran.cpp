@@ -25,6 +25,7 @@
 #include <ios>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -48,6 +49,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -912,20 +914,22 @@ void pat_append_loads(std::string& rOut, const Mesh& rMesh, const PatLoadArrays&
         const NDArray& f = *rLoads.mDistFlags;
         const NDArray& v = *rLoads.mDistValues;
         const std::size_t width = v.Shape()[1];
+        const detail::Int64View flag_values(f);
+        const detail::DoubleView values(v);
         for (std::size_t r = 0; r < f.Shape()[0]; ++r) {
-            const std::int64_t cell = detail::read_int(f, r * 20);
+            const std::int64_t cell = flag_values[r * 20];
             if (cell < 0 || static_cast<std::size_t>(cell) >= rCellLabel.size() ||
                 !rCellLabel[static_cast<std::size_t>(cell)])
                 continue;
             std::vector<std::int64_t> flags(18);
             for (std::size_t k = 0; k < 18; ++k)
-                flags[k] = detail::read_int(f, r * 20 + 2 + k);
+                flags[k] = flag_values[r * 20 + 2 + k];
             const std::size_t npv = std::min(pat_distributed_count(flags), width);
             std::vector<double> vals(npv);
             for (std::size_t k = 0; k < npv; ++k)
-                vals[k] = detail::read_double(v, r * width + k);
+                vals[k] = values[r * width + k];
             pat_append_header(rOut, 6, rCellLabel[static_cast<std::size_t>(cell)],
-                              detail::read_int(f, r * 20 + 1),
+                              flag_values[r * 20 + 1],
                               1 + static_cast<std::int64_t>((npv + 4) / 5));
             for (std::size_t k = 0; k < 17; ++k)
                 rOut += static_cast<char>('0' + (flags[k] % 10 + 10) % 10);
@@ -941,11 +945,15 @@ void pat_append_loads(std::string& rOut, const Mesh& rMesh, const PatLoadArrays&
                 continue;
             const auto fr = rLoads.mFrame.find(key);
             const NDArray* frame = fr == rLoads.mFrame.end() ? nullptr : fr->second;
+            const detail::DoubleView values(*a);
+            std::optional<detail::Int64View> frames;
+            if (frame)
+                frames.emplace(*frame);
             for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
                 std::vector<double> vals;
                 std::string flags;
                 for (std::size_t c = 0; c < 6; ++c) {
-                    const double x = detail::read_double(*a, p * 6 + c);
+                    const double x = values[p * 6 + c];
                     flags += std::isnan(x) ? '0' : '1';
                     if (!std::isnan(x))
                         vals.push_back(x);
@@ -955,7 +963,7 @@ void pat_append_loads(std::string& rOut, const Mesh& rMesh, const PatLoadArrays&
                 pat_append_header(rOut, packet, static_cast<std::int64_t>(p + 1), key.second,
                                   1 + static_cast<std::int64_t>((vals.size() + 4) / 5));
                 detail::snprintf_c(buf, sizeof(buf), "%8lld",
-                                   static_cast<long long>(frame ? detail::read_int(*frame, p) : 0));
+                                   static_cast<long long>(frames ? (*frames)[p] : 0));
                 rOut += buf + flags + "\n";
                 pat_append_reals(rOut, vals);
             }
@@ -964,8 +972,9 @@ void pat_append_loads(std::string& rOut, const Mesh& rMesh, const PatLoadArrays&
     for (const auto& [key, a] : rLoads.mPoint) {
         if (key.first != "temperature")
             continue;
+        const detail::DoubleView values(*a);
         for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
-            const double x = detail::read_double(*a, p);
+            const double x = values[p];
             if (std::isnan(x))
                 continue;
             pat_append_header(rOut, 10, static_cast<std::int64_t>(p + 1), key.second, 1, 1);
@@ -976,9 +985,9 @@ void pat_append_loads(std::string& rOut, const Mesh& rMesh, const PatLoadArrays&
     for (const auto& [set, name] : rLoads.mCell) {
         std::size_t g = 0;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const NDArray& a = rMesh.CellData(name, b);
+            const detail::DoubleView values(rMesh.CellData(name, b));
             for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r, ++g) {
-                const double x = detail::read_double(a, r);
+                const double x = values[r];
                 if (std::isnan(x) || g >= rCellLabel.size() || !rCellLabel[g])
                     continue;
                 pat_append_header(rOut, 11, rCellLabel[g], set, 1, 1);
@@ -1061,9 +1070,9 @@ void write_patran(const std::string& rPath, const Mesh& rMesh) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             if (!shapes[b])
                 continue;
-            const NDArray& a = rMesh.CellData("patran:property", b);
+            const detail::Int64View properties(rMesh.CellData("patran:property", b));
             for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r)
-                pids.insert(detail::read_int(a, r));
+                pids.insert(properties[r]);
         }
     } else if (written) {
         pids.insert(1);
@@ -1073,11 +1082,11 @@ void write_patran(const std::string& rPath, const Mesh& rMesh) {
                       0);
     out += "                                        3.0\n";
 
-    const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(rMesh.Points());
     for (std::size_t p = 0; p < npts; ++p) {
         pat_append_header(out, 1, static_cast<std::int64_t>(p + 1), 0, 2);
         for (std::size_t d = 0; d < 3; ++d)
-            pat_append_real(out, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+            pat_append_real(out, d < pdim ? point_values[p * pdim + d] : 0.0);
         out += "\n1G       6       0       0  000000\n";
         if (out.size() > (1u << 20)) {
             f << out;
@@ -1093,24 +1102,26 @@ void write_patran(const std::string& rPath, const Mesh& rMesh) {
             global += cb.NumCells();
             continue;
         }
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = shape->mNodes;
         const detail::NodeOrder* order = detail::node_order("patran", shape->mType);
-        const NDArray* pid = has_pid ? &rMesh.CellData("patran:property", b) : nullptr;
+        std::optional<detail::Int64View> pid;
+        if (has_pid)
+            pid.emplace(rMesh.CellData("patran:property", b));
         const std::int64_t kc = 1 + static_cast<std::int64_t>((k + 9) / 10);
         std::vector<std::int64_t> ids(k);
         char buf[64];
         for (std::size_t r = 0; r < cb.NumCells(); ++r, ++global) {
             pat_append_header(out, 2, cell_label[global], shape->mShape, kc);
             detail::snprintf_c(buf, sizeof(buf), "%8zu%8d%8lld%8d", k, 0,
-                               static_cast<long long>(pid ? detail::read_int(*pid, r) : 1), 0);
+                               static_cast<long long>(pid ? (*pid)[r] : 1), 0);
             out += buf;
             for (int t = 0; t < 3; ++t)
                 pat_append_real(out, 0.0);
             out += '\n';
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
-                ids[j] = detail::read_int(conn, r * k + src) + 1;
+                ids[j] = conn[r * k + src] + 1;
             }
             pat_append_ints(out, ids);
             if (out.size() > (1u << 20)) {

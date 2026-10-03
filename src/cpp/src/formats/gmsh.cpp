@@ -28,6 +28,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <ostream>
 #include <string>
@@ -56,6 +57,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -400,10 +402,11 @@ void gmsh_attach_regions(Mesh& rMesh) {
             auto it = topological_dimension().find(std::string(cb.Type()));
             dim = it != topological_dimension().end() ? it->second : -1;
         }
-        if (tags.Size() >= ncells)
+        if (tags.Size() >= ncells) {
+            const detail::Int64View tag_values(tags);
             for (std::size_t c = 0; c < ncells; ++c)
-                members[{detail::read_int(tags, c), dim}].push_back(base +
-                                                                    static_cast<std::int64_t>(c));
+                members[{tag_values[c], dim}].push_back(base + static_cast<std::int64_t>(c));
+        }
         base += static_cast<std::int64_t>(ncells);
         ++b;
     }
@@ -1862,20 +1865,20 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
     for (std::size_t k = 0; k < nblocks; ++k) {
         const NDArray& b = rMesh.CellData(rName, k);
         std::size_t rows = b.Shape().empty() ? 0 : b.Shape()[0];
+        const detail::DoubleView values(b);
         for (std::size_t r = 0; r < rows; ++r) {
             if (binary) {
                 std::int32_t id = static_cast<std::int32_t>(idx);
                 rOs.write(reinterpret_cast<const char*>(&id), 4);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    double v = detail::read_double(b, r * ncomp + c);
+                    double v = values[r * ncomp + c];
                     rOs.write(reinterpret_cast<const char*>(&v), 8);
                 }
             } else {
                 rOs << idx;
                 char buf[32];
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
-                                       detail::read_double(b, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
                     rOs << buf;
                 }
                 rOs << '\n';
@@ -1955,9 +1958,10 @@ std::vector<GmshWriteEntity41> gmsh_entity_blocks_41(
     // Unique (dim, tag) pairs, sorted. Serial: the entity count is tiny next to
     // the node count, and a deterministic order is the whole point.
     std::vector<std::pair<int, std::int32_t>> keys(n);
+    const detail::Int64View dim_tags(dt);
     for (std::size_t i = 0; i < n; ++i)
-        keys[i] = {static_cast<int>(detail::read_int(dt, i * stride + 0)),
-                   static_cast<std::int32_t>(detail::read_int(dt, i * stride + 1))};
+        keys[i] = {static_cast<int>(dim_tags[i * stride + 0]),
+                   static_cast<std::int32_t>(dim_tags[i * stride + 1])};
     std::vector<std::pair<int, std::int32_t>> uniq = keys;
     uniq.insert(uniq.end(), cell_keys.begin(), cell_keys.end());
     std::sort(uniq.begin(), uniq.end());
@@ -2058,11 +2062,14 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
         const int dim = block_dim[b];
         const std::size_t nc = cb.NumCells();
         const std::size_t npc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        std::optional<detail::Int64View> indices;
+        if (!cb.IsRagged())
+            indices.emplace(cb.Conn());
         for (std::size_t i = 0; i < nc; ++i) {
             const std::size_t rowsize = cb.IsRagged() ? cb.RowSize(i) : npc;
             const std::int64_t* row = cb.IsRagged() ? cb.Row(i) : nullptr;
             for (std::size_t k = 0; k < rowsize; ++k) {
-                const std::int64_t p = row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
+                const std::int64_t p = row ? row[k] : (*indices)[i * npc + k];
                 if (p < 0 || static_cast<std::size_t>(p) >= npts)
                     continue;
                 if (dim > point_dim[static_cast<std::size_t>(p)]) {
@@ -2146,12 +2153,13 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
 
     // Nodes.
     os << "$Nodes\n" << num_points << "\n";
+    const detail::DoubleView point_values(points);
     if (binary) {
         for (std::size_t i = 0; i < num_points; ++i) {
             std::int32_t id = static_cast<std::int32_t>(i + 1);
             os.write(reinterpret_cast<const char*>(&id), 4);
             for (std::size_t c = 0; c < 3; ++c) {
-                double v = (c < dim) ? detail::read_double(points, i * dim + c) : 0.0;
+                double v = (c < dim) ? point_values[i * dim + c] : 0.0;
                 os.write(reinterpret_cast<const char*>(&v), 8);
             }
         }
@@ -2160,9 +2168,9 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
         // %zu (up to 20 digits) + 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
         char buf[128];
         for (std::size_t i = 0; i < num_points; ++i) {
-            double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
-            double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
-            double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
+            double x = (0 < dim) ? point_values[i * dim + 0] : 0.0;
+            double y = (1 < dim) ? point_values[i * dim + 1] : 0.0;
+            double z = (2 < dim) ? point_values[i * dim + 2] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
             os << buf;
         }
@@ -2188,31 +2196,33 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
         std::size_t count = cb.NumCells();
         const NDArray& ph = has_physical ? rMesh.CellData("gmsh:physical", k) : zeros_phys[k];
         const NDArray& ge = has_geometrical ? rMesh.CellData("gmsh:geometrical", k) : zeros_geom[k];
+        const detail::Int64View physical(ph);
+        const detail::Int64View geometrical(ge);
+        const detail::Int64View indices(conn);
 
         if (binary) {
             std::int32_t hdr[3] = {gtype, static_cast<std::int32_t>(count), 2};
             os.write(reinterpret_cast<const char*>(hdr), 12);
             for (std::size_t r = 0; r < count; ++r) {
                 std::int32_t id = static_cast<std::int32_t>(consecutive + r + 1);
-                std::int32_t t0 = static_cast<std::int32_t>(detail::read_int(ph, r));
-                std::int32_t t1 = static_cast<std::int32_t>(detail::read_int(ge, r));
+                std::int32_t t0 = static_cast<std::int32_t>(physical[r]);
+                std::int32_t t1 = static_cast<std::int32_t>(geometrical[r]);
                 os.write(reinterpret_cast<const char*>(&id), 4);
                 os.write(reinterpret_cast<const char*>(&t0), 4);
                 os.write(reinterpret_cast<const char*>(&t1), 4);
                 for (std::size_t j = 0; j < n; ++j) {
                     std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                    std::int32_t node =
-                        static_cast<std::int32_t>(detail::read_int(conn, r * n + src) + 1);
+                    std::int32_t node = static_cast<std::int32_t>(indices[r * n + src] + 1);
                     os.write(reinterpret_cast<const char*>(&node), 4);
                 }
             }
         } else {
             for (std::size_t r = 0; r < count; ++r) {
-                os << (consecutive + r + 1) << ' ' << gtype << " 2 " << detail::read_int(ph, r)
-                   << ' ' << detail::read_int(ge, r);
+                os << (consecutive + r + 1) << ' ' << gtype << " 2 " << physical[r] << ' '
+                   << geometrical[r];
                 for (std::size_t j = 0; j < n; ++j) {
                     std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                    os << ' ' << (detail::read_int(conn, r * n + src) + 1);
+                    os << ' ' << (indices[r * n + src] + 1);
                 }
                 os << '\n';
             }
@@ -2232,20 +2242,20 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
         std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
         os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        const detail::DoubleView values(d);
         char buf[32];
         for (std::size_t r = 0; r < rows; ++r) {
             if (binary) {
                 std::int32_t id = static_cast<std::int32_t>(r + 1);
                 os.write(reinterpret_cast<const char*>(&id), 4);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    double v = detail::read_double(d, r * ncomp + c);
+                    double v = values[r * ncomp + c];
                     os.write(reinterpret_cast<const char*>(&v), 8);
                 }
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
-                                       detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
                     os << buf;
                 }
                 os << '\n';
@@ -2329,11 +2339,12 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
     // The 3-padded coordinates of one point, formatted the one way both the
     // single-block and per-entity paths use.
+    const detail::DoubleView point_values(points);
     auto put_coords_ascii = [&](std::size_t i) {
         char buf[128];  // 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
-        double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
-        double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
-        double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
+        double x = (0 < dim) ? point_values[i * dim + 0] : 0.0;
+        double y = (1 < dim) ? point_values[i * dim + 1] : 0.0;
+        double z = (2 < dim) ? point_values[i * dim + 2] : 0.0;
         detail::snprintf_c(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
         os << buf;
     };
@@ -2564,11 +2575,12 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                      static_cast<std::streamsize>(ebuf.size() * 8));
         } else {
             os << bdim << " " << entity_tag << " " << gtype << " " << count << "\n";
+            const detail::Int64View indices(conn);
             for (std::size_t r = 0; r < count; ++r) {
                 os << (tag0 + r);
                 for (std::size_t j = 0; j < n; ++j) {
                     std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                    os << " " << (detail::read_int(conn, r * n + src) + 1);
+                    os << " " << (indices[r * n + src] + 1);
                 }
                 os << "\n";
             }
@@ -2587,18 +2599,18 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
         std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
         os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        const detail::DoubleView values(d);
         char buf[32];
         for (std::size_t r = 0; r < rows; ++r) {
             if (binary) {
                 std::int32_t id = static_cast<std::int32_t>(r + 1);
                 os.write(reinterpret_cast<const char*>(&id), 4);
                 for (std::size_t c = 0; c < ncomp; ++c)
-                    put_f64(detail::read_double(d, r * ncomp + c));
+                    put_f64(values[r * ncomp + c]);
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
-                                       detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
                     os << buf;
                 }
                 os << '\n';
