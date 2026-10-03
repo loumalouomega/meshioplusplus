@@ -1579,6 +1579,13 @@ if(MESHIOPLUSPLUS_BUILD_FUZZERS)
     else()
       target_compile_options(meshioplusplus_fuzz_hdf5 PRIVATE -fsanitize=fuzzer)
       target_link_options(meshioplusplus_fuzz_hdf5 PRIVATE -fsanitize=fuzzer)
+      # Fault-inject into the real mutator under libFuzzer's signal/death
+      # handlers, independently of reader defects or library versions.
+      add_executable(meshioplusplus_fuzz_mutator_probe
+        tests/fuzz/mutator_isolation_probe.cpp tests/fuzz/hdf5_mutator.cpp)
+      target_link_libraries(meshioplusplus_fuzz_mutator_probe PRIVATE meshioplusplus_core_obj)
+      target_compile_options(meshioplusplus_fuzz_mutator_probe PRIVATE -fsanitize=fuzzer)
+      target_link_options(meshioplusplus_fuzz_mutator_probe PRIVATE -fsanitize=fuzzer)
     endif()
   endif()
 endif()

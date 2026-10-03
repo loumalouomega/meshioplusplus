@@ -17,6 +17,16 @@ seeds = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seeds)
 
 
+@pytest.fixture
+def fuzz_shell():
+    if os.name == "nt":
+        pytest.skip("native fuzz scripts require a POSIX environment")
+    shell = shutil.which("bash")
+    if shell is None:
+        pytest.skip("native fuzz scripts require Bash")
+    return shell
+
+
 def test_packages_only_matching_small_seed_files(tmp_path):
     source, output = tmp_path / "seeds", tmp_path / "out"
     (source / "vtk").mkdir(parents=True)
@@ -70,7 +80,7 @@ def test_packages_generated_and_regression_seeds(tmp_path):
 
 
 @pytest.mark.parametrize("list_fails", [False, True])
-def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails):
+def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails, fuzz_shell):
     tools, work, output = [tmp_path / name for name in ("bin", "work", "out")]
     for directory in (tools, work, output):
         directory.mkdir()
@@ -113,7 +123,7 @@ def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails):
         LIB_FUZZING_ENGINE="-fsanitize=fuzzer",
     )
     result = subprocess.run(
-        ["bash", "-eu", str(REPO / "tools/fuzz/oss-fuzz/build.sh")],
+        [fuzz_shell, "-eu", str(REPO / "tools/fuzz/oss-fuzz/build.sh")],
         env=env,
         capture_output=True,
         text=True,
@@ -136,7 +146,7 @@ def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails):
 
 
 @pytest.mark.parametrize("libraries", [False, True])
-def test_campaign_library_opt_in(tmp_path, libraries):
+def test_campaign_library_opt_in(tmp_path, libraries, fuzz_shell):
     build, corpus, output = [tmp_path / name for name in ("build", "seeds", "out")]
     build.mkdir()
     corpus.mkdir()
@@ -152,7 +162,7 @@ def test_campaign_library_opt_in(tmp_path, libraries):
         env["FUZZ_BINARY"] = "meshioplusplus_fuzz_read"
     subprocess.run(
         [
-            "bash",
+            fuzz_shell,
             str(REPO / "tools/fuzz/run_campaign.sh"),
             str(build),
             str(corpus),
@@ -226,3 +236,35 @@ def test_native_connectivity_shape_probe(tmp_path):
         }.items():
             group[name] = np.array(values, dtype="int64")
     subprocess.run([executable, "-format=vtkhdf", str(path)], check=True, timeout=20)
+
+
+@pytest.mark.parametrize("failure", ["abort", "sanitizer"])
+def test_native_mutator_isolation(tmp_path, failure):
+    executable = os.environ.get("MIO_FUZZ_MUTATOR_PROBE")
+    if not executable:
+        pytest.skip("set MIO_FUZZ_MUTATOR_PROBE to test native mutator isolation")
+    h5py = pytest.importorskip("h5py")
+    corpus, artifacts = tmp_path / "corpus", tmp_path / "artifacts"
+    corpus.mkdir()
+    artifacts.mkdir()
+    with h5py.File(corpus / "seed.h5", "w") as file:
+        file["values"] = [1, 2, 3]
+    result = subprocess.run(
+        [
+            executable,
+            "-runs=100",
+            "-seed=42",
+            "-mutation_depth=1",
+            f"-artifact_prefix={artifacts}/",
+            str(corpus),
+        ],
+        env=dict(os.environ, MIO_MUTATOR_PROBE_FAILURE=failure),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "mutator probe: injected failure" in result.stderr
+    if failure == "sanitizer":
+        assert "AddressSanitizer: heap-use-after-free" in result.stderr
+    assert not list(artifacts.iterdir()), result.stderr

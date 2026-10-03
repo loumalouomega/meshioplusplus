@@ -3,6 +3,7 @@
 // ordinary file bytes, so findings replay with the unmodified replay harness.
 // netCDF-4/Exodus is HDF5 too; classic netCDF falls back to byte mutation.
 #include <algorithm>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include <hdf5.h>
+#include <sanitizer/common_interface_defs.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -150,6 +152,12 @@ extern "C" std::size_t LLVMFuzzerCustomMutator(std::uint8_t* pData, std::size_t 
         return LLVMFuzzerMutate(pData, Size, MaxSize);
     }
     if (pid == 0) {
+        // libFuzzer's inherited death callback writes the parent's current
+        // input, which is empty while mutating. A mutator failure should only
+        // trigger the byte-mutation fallback; reader failures still report.
+        __sanitizer_set_death_callback(nullptr);
+        std::signal(SIGABRT, SIG_DFL);
+        std::signal(SIGALRM, SIG_DFL);
         H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
         hid_t file = H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
         bool changed = false;

@@ -127994,6 +127994,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -128165,8 +128166,13 @@ std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
     // Hoist the per-element dtype switch out of the loop, then bulk-convert.
     detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
-        parallel_for_bw(rA.Size(),
-                        [&](std::size_t i) { dst[i] = static_cast<std::int64_t>(src[i]); });
+        if constexpr (std::is_floating_point_v<T>) {
+            for (std::size_t i = 0; i < rA.Size(); ++i)
+                dst[i] = detail::checked_integer<std::int64_t>(src[i], "VTK");
+        } else {
+            parallel_for_bw(rA.Size(),
+                            [&](std::size_t i) { dst[i] = static_cast<std::int64_t>(src[i]); });
+        }
     });
     return v;
 }

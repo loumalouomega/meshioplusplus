@@ -53,6 +53,7 @@ Generic `SCALARS`/`VECTORS`/`TENSORS`/`FIELD` blocks map 1:1 to `point_data`/`ce
 
 ## Quirks & limitations
 
+- Native VTK 5.1 reads reject NaN, infinity and floating-point offsets or connectivity outside the signed 64-bit range with `ReadError`, before converting topology arrays to integers.
 - Native structured reads require positive `DIMENSIONS`, matching explicit point/axis counts, and correctly sized point/cell attributes. `STRUCTURED_POINTS` accepts `SPACING` or the historical `ASPECT_RATIO`. Active axes determine line/quad/hexahedron connectivity, including grids in any coordinate plane; native scalar/vector/tensor/field arrays preserve their shapes and big-endian binary `int` is 32-bit. Python's 5.1 reference now converts its generated structured cells into offset-based connectivity too.
 - The 4.2 and 5.1 sub-readers use two genuinely different cell-reconstruction algorithms (4.2: list-based per-block append; 5.1: shared offset-diff/ vectorized helper also used by VTU) — this is historical rather than deliberate, but means bugs in one don't necessarily affect the other.
 - `_cpp_ok(mesh)` gate: the C++ path is skipped for meshes with polyhedron cells, or with any 2-component vector data — because the Python writer pads 2-component vectors to 3 components (**mutating the input mesh in place**), which the C++ writer deliberately does not replicate.

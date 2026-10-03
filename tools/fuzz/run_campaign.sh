@@ -39,9 +39,10 @@ for fmt in $ALL; do
     dir="$OUT/$fmt"
     mkdir -p "$dir/corpus"
     [ -d "$SEEDS/$fmt" ] && cp -n "$SEEDS/$fmt"/* "$dir/corpus/" 2>/dev/null
-    dict=()
-    [ -f "$HERE/dicts/$fmt.dict" ] && dict=(-dict="$HERE/dicts/$fmt.dict")
-    MIO_FUZZ_FORMAT=$fmt "$BUILD/${FUZZ_BINARY:-meshioplusplus_fuzz_read}" "${dict[@]}" \
+    # Bash 3.2 (macOS) treats an empty array as unset under `set -u`.
+    set --
+    [ -f "$HERE/dicts/$fmt.dict" ] && set -- "-dict=$HERE/dicts/$fmt.dict"
+    MIO_FUZZ_FORMAT=$fmt "$BUILD/${FUZZ_BINARY:-meshioplusplus_fuzz_read}" "$@" \
         -max_total_time="$SECS" -rss_limit_mb=2048 -malloc_limit_mb=2048 -timeout=10 \
         -max_len="${MAX_LEN:-65536}" -print_final_stats=1 -artifact_prefix="$dir/" \
         "$dir/corpus" > "$dir/fuzz.log" 2>&1

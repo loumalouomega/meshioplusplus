@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
 
+#if defined(MESHIOPLUSPLUS_HAS_HDF5) || defined(MESHIOPLUSPLUS_HAS_NETCDF)
 namespace {
 
 std::string preflight_tmp(const std::string& rName) {
@@ -45,14 +46,11 @@ void preflight_write(const std::string& rPath, const std::string& rBytes) {
 
 }  // namespace
 
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
 TEST(LibraryPreflight, WrongMagicRefused) {
     const std::string path = preflight_tmp("mio-preflight-magic.vtkhdf");
     preflight_write(path, "not an hdf5 container at all........");
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
     EXPECT_THROW(meshioplusplus::read_vtkhdf(path), meshioplusplus::ReadError);
-#else
-    EXPECT_THROW(meshioplusplus::read_vtkhdf(path), meshioplusplus::ReadError);
-#endif
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
@@ -67,6 +65,7 @@ TEST(LibraryPreflight, BadSuperblockRefused) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+#endif
 
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 TEST(LibraryPreflight, ExodusWrongMagicRefused) {
@@ -76,4 +75,5 @@ TEST(LibraryPreflight, ExodusWrongMagicRefused) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+#endif
 #endif
