@@ -3,9 +3,8 @@
 #
 # A directory, not a file: the harness feeds one file.
 elmer
-# Bytes parsed by a third-party library (HDF5, netCDF, ADIOS2, TecIO) that is
-# neither instrumented in this build nor ours to fix; meshio++'s own code only
-# walks the objects the library returns.
+# HDF5/netCDF readers below are covered in the separate instrumented-library
+# campaign (library_formats.txt), not against the system libraries here.
 cgns
 h5m
 hmf
@@ -13,8 +12,9 @@ med
 nastran_h5
 vtkhdf
 exodus
-vtx
-szplt
-# XDMF's heavy data lives in an HDF5 sibling; the XML is fuzzed through vtu's
-# shared pugixml path.
-xdmf
+# Bundle and optional-runtime readers below run through the production-path
+# harness (fuzz_bundle.hpp): XDMF XML/heavy-data bundles and ADIOS2 `.bp`
+# directories reconstruct companions from one bundle input, and the CGNS MLL
+# and TecIO SZL routes call their production decoders when built with
+# MESHIOPLUSPLUS_HAS_CGNSLIB / ADIOS2 / TECIO. They are absent here because
+# they are covered, not because they are skipped.

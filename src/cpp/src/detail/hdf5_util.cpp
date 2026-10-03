@@ -32,11 +32,13 @@
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../formats/library_preflight.hpp"
 
 namespace meshioplusplus {
 namespace h5 {
 
 Hid open_file_read(const std::string& rPath) {
+    detail::library_preflight_hdf5(rPath, "HDF5");
     Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.Valid())
         throw ReadError("HDF5: could not open file " + rPath);
@@ -69,11 +71,17 @@ std::vector<std::string> link_names(hid_t loc) {
     std::vector<std::string> out;
     if (H5Gget_info(loc, &info) < 0)
         return out;
+    // info.nlinks comes from the file: cap it before looping, and cap each
+    // name length before allocating (a corrupted header can claim billions).
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         const ssize_t len =
             H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
         if (len <= 0)
             continue;
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -759,11 +767,19 @@ std::string soft_link_target(hid_t loc, const std::string& rName) {
 std::vector<std::string> group_links(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     std::vector<std::string> names;
-    names.reserve(info.nlinks);
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         ssize_t len =
             H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
+        if (len < 0)
+            throw ReadError("HDF5: could not list group links");
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
+        // Empty names cannot be opened later; skip rather than allocate.
+        if (len == 0)
+            continue;
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -775,13 +791,18 @@ std::vector<std::string> group_links(hid_t loc) {
 std::vector<std::string> group_links_crt(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     std::vector<std::string> names;
-    names.reserve(info.nlinks);
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         ssize_t len = H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, nullptr, 0,
                                          H5P_DEFAULT);
         if (len < 0)
             return group_links(loc);  // creation order not indexed
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
+        if (len == 0)
+            continue;
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);

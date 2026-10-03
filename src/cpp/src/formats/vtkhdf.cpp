@@ -46,6 +46,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
+#include "library_preflight.hpp"
 
 namespace meshioplusplus {
 
@@ -427,10 +428,18 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
                        nconn_all.begin() + static_cast<std::ptrdiff_t>(hi));
     t.mC0 = c_step + vtkhdf_sum(ncells_all, Part0, lo);
     const I64 n0 = n_step + vtkhdf_sum(nconn_all, Part0, lo);
+    for (I64 v : t.mCounts)
+        if (v < 0)
+            throw ReadError("meshio++: vtkhdf: negative cell count");
+    for (I64 v : nconn)
+        if (v < 0)
+            throw ReadError("meshio++: vtkhdf: negative connectivity count");
     const I64 c_total = vtkhdf_sum(t.mCounts, 0, t.mCounts.size());
     const I64 n_total = vtkhdf_sum(nconn, 0, nconn.size());
     if (t.mC0 < 0 || n0 < 0)
         throw ReadError("meshio++: vtkhdf: negative offset in the Steps tables");
+    if (c_total < 0 || n_total < 0)
+        throw ReadError("meshio++: vtkhdf: negative topology total");
     t.mConn = vtkhdf_int_rows(Grp, "Connectivity", static_cast<std::size_t>(n0),
                               static_cast<std::size_t>(n_total));
     const I64Vec offs = vtkhdf_int_rows(Grp, "Offsets", static_cast<std::size_t>(t.mC0) + lo,
@@ -441,6 +450,15 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
         for (I64 i = 0; i < nconn[j]; ++i)
             t.mConn[at++] += rPtStarts[j];
     t.mEnds = vtkhdf_join_offsets(offs, t.mCounts, nconn);
+    if (t.mEnds.size() != static_cast<std::size_t>(c_total))
+        throw ReadError("meshio++: vtkhdf: topology offsets disagree with cell count");
+    I64 prev = 0;
+    for (I64 e : t.mEnds) {
+        if (e < prev || e > static_cast<I64>(t.mConn.size()))
+            throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree (" +
+                            std::to_string(e) + " vs " + std::to_string(t.mConn.size()) + " ids)");
+        prev = e;
+    }
     return t;
 }
 
@@ -726,6 +744,17 @@ I64Vec vtkhdf_build_cells(Mesh& rMesh, const VtkhdfLeaf& rLeaf, bool Lenient) {
     const auto& vmap = vtk_to_meshio_type();
     const auto& nmap = num_nodes_per_cell();
     const std::size_t n = rLeaf.mTypes.size();
+    if (rLeaf.mEnds.size() != n)
+        throw ReadError("meshio++: vtkhdf: cell offsets disagree with cell types (" +
+                        std::to_string(rLeaf.mEnds.size()) + " vs " + std::to_string(n) + ")");
+    if (rLeaf.mPieceOfCell.size() != n)
+        throw ReadError("meshio++: vtkhdf: cell pieces disagree with cell types");
+    I64 prev_end = 0;
+    for (I64 e : rLeaf.mEnds) {
+        if (e < prev_end || e > static_cast<I64>(rLeaf.mConn.size()))
+            throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree");
+        prev_end = e;
+    }
     I64Vec perm(n, 0);
     std::size_t at = 0;
     std::size_t a = 0;
@@ -1092,6 +1121,7 @@ void vtkhdf_check_version(hid_t Root) {
 }
 
 Hid vtkhdf_open(const std::string& rPath, Hid& rRoot, std::string& rKind) {
+    detail::library_preflight_hdf5(rPath, "vtkhdf");
     Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.Valid())
         throw ReadError("meshio++: vtkhdf: cannot open '" + rPath + "' as an HDF5 file");

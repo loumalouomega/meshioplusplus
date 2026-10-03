@@ -17,6 +17,7 @@ on:
     paths:
       - "tests/fuzz/**"
       - "tools/fuzz/**"
+      - "CMakeLists.txt"
       - ".github/workflows/fuzz.yml"
 
 concurrency:
@@ -24,6 +25,82 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  libraries:
+    name: Fuzz instrumented HDF5 and netCDF readers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang ninja-build
+      - name: Build instrumented dependencies and fuzz targets
+        env:
+          CC: clang
+          CXX: clang++
+          JOBS: "4"
+        run: |
+          prefix="$RUNNER_TEMP/fuzz-deps"
+          bash tools/fuzz/build_library_deps.sh "$prefix"
+          cmake -S . -B build-library-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$prefix" -DHDF5_ROOT="$prefix" -DZLIB_ROOT="$prefix" \
+            -DMESHIOPLUSPLUS_BUILD_FUZZERS=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_WITH_GIDPOST=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
+          cmake --build build-library-fuzz --parallel 4 \
+            --target meshioplusplus_fuzz_hdf5 meshioplusplus_fuzz_replay meshioplusplus_fuzz_mutator_probe
+          # Do not silently fall back to uninstrumented distribution libraries.
+          ldd build-library-fuzz/meshioplusplus_fuzz_hdf5 > linked-libraries.txt
+          for lib in libhdf5 libnetcdf libz.so; do
+            grep "$lib" linked-libraries.txt | grep -F "$prefix/"
+          done
+      - name: Generate seeds
+        run: |
+          python -m pip install '.[all]' pytest
+          formats=$(grep -v '^#' tools/fuzz/library_formats.txt | paste -sd,)
+          python tools/fuzz/seed_corpus.py library-seeds --library-readers --formats "$formats" \
+            --replay build-library-fuzz/meshioplusplus_fuzz_replay
+      - name: Verify mutator child failures stay isolated
+        env:
+          MIO_FUZZ_MUTATOR_PROBE: build-library-fuzz/meshioplusplus_fuzz_mutator_probe
+          ASAN_OPTIONS: detect_leaks=1:allocator_may_return_null=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: python -m pytest tests/python/test_fuzz_tools.py -k native_mutator_isolation -v
+      - name: Replay seeds and fuzz library objects
+        env:
+          MIO_FUZZ_LIBRARY_READERS: "1"
+          FUZZ_BINARY: meshioplusplus_fuzz_hdf5
+          MAX_LEN: "262144"
+          SECONDS_PER_FORMAT: ${{ inputs.seconds || '60' }}
+          ASAN_OPTIONS: detect_leaks=1:allocator_may_return_null=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          export FORMATS="$(grep -v '^#' tools/fuzz/library_formats.txt)"
+          for fmt in $FORMATS; do
+            build-library-fuzz/meshioplusplus_fuzz_replay -format="$fmt" "library-seeds/$fmt"
+          done
+          secs="$SECONDS_PER_FORMAT"
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && secs=10
+          bash tools/fuzz/run_campaign.sh build-library-fuzz library-seeds library-findings "$secs"
+      - name: Upload coverage logs and findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-libraries
+          path: |
+            linked-libraries.txt
+            library-findings/**/fuzz.log
+            library-findings/**/crash-*
+            library-findings/**/leak-*
+            library-findings/**/timeout-*
+            library-findings/**/oom-*
+            library-findings/summary.txt
+
   fuzz:
     name: Fuzz readers (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest

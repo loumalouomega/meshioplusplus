@@ -1173,7 +1173,16 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         for (const std::string& ax : axes) {
             h5::Hid g = h5::open_group(coords, ax);
             NDArray c = h5::read_dataset(g, " data");
-            n_zone_points = c.Shape().empty() ? 0 : c.Shape()[0];
+            if (c.Ndim() != 1)
+                throw ReadError(detail::format_compat(
+                    "CGNS: zone '{}' coordinate '{}' must be 1-D, found {}-D", zname, ax,
+                    c.Ndim()));
+            if (cols.empty())
+                n_zone_points = c.Size();
+            else if (c.Size() != n_zone_points)
+                throw ReadError(detail::format_compat(
+                    "CGNS: zone '{}' GridCoordinates lengths differ ({} vs {})", zname,
+                    n_zone_points, c.Size()));
             cols.push_back(std::move(c));
         }
         NDArray zpts(DType::Float64, {n_zone_points, point_dim_out});

@@ -35873,6 +35873,103 @@ inline std::vector<double> interpolation_matrix(
 }  // namespace lagrange
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/lagrange_common.hpp =====
+// ===== begin src/cpp/src/formats/library_preflight.hpp =====
+/**
+ * @file library_preflight.hpp
+ * @brief Refuse obviously-corrupt containers before the library sees them.
+ *
+ * A **core-private** header beside the formats (the `vtk_preflight.hpp`
+ * precedent): it adds nothing to the installed headers or the ABI.
+ *
+ * HDF5's own container parser aborts on some corrupted inputs (dense link
+ * tables, huge object headers) instead of returning an error, and netCDF-4
+ * inherits the dense-link abort through `nc_open`. The fuzzer's fork isolation
+ * (tests/fuzz/fuzz_read.cpp) keeps such an abort from corrupting the campaign,
+ * but production readers should still refuse what they can recognize without
+ * the library: a missing file, an empty one, a wrong magic, or an HDF5
+ * superblock version the library never wrote. The checks stay loose on
+ * purpose: anything they cannot decide is left for the library and the
+ * reader's own validation, whose `ReadError` remains the verdict.
+ */
+
+#include <cstdint>
+#include <cstdio>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// HDF5's eight-byte magic starting every HDF5 container (including netCDF-4).
+inline constexpr char kLibraryPreflightHdf5Magic[] = "\x89HDF\r\n\x1a\n";
+
+/// netCDF classic magic (`CDF\x01`, `CDF\x02`, `CDF\x05` for 64-bit variants).
+inline constexpr char kLibraryPreflightCdfMagic[] = "CDF";
+
+/**
+ * @brief Throws `ReadError` when `rPath` cannot be an HDF5 container.
+ * @param rPath File to inspect.
+ * @param pFormat Format name for the message.
+ *
+ * Checks the file opens, holds at least the eight magic bytes, starts with
+ * the HDF5 magic, and names a superblock version 0, 2 or 3 (the versions
+ * HDF5 1.8 through 1.14 write). Anything else is left for the library.
+ */
+inline void library_preflight_hdf5(const std::string& rPath, const char* pFormat) {
+    auto in = make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError(std::string("meshio++: ") + pFormat + ": cannot open '" + rPath + "'");
+    char head[16] = {0};
+    in.read(head, sizeof head);
+    const std::streamsize got = in.gcount();
+    if (got < 8)
+        throw ReadError(std::string("meshio++: ") + pFormat + ": '" + rPath +
+                        "' is too short for an HDF5 container");
+    for (int i = 0; i < 8; ++i)
+        if (head[i] != kLibraryPreflightHdf5Magic[i])
+            throw ReadError(std::string("meshio++: ") + pFormat + ": '" + rPath +
+                            "' is not an HDF5 container");
+    if (got >= 9) {
+        const unsigned version = static_cast<unsigned char>(head[8]);
+        if (version != 0 && version != 2 && version != 3)
+            throw ReadError(std::string("meshio++: ") + pFormat + ": '" + rPath +
+                            "' names HDF5 superblock version " + std::to_string(version));
+    }
+}
+
+/**
+ * @brief Throws `ReadError` when `rPath` cannot be a netCDF/Exodus container.
+ * @param rPath File to inspect.
+ *
+ * Accepts either the netCDF classic magic (`CDF\x01`/`\x02`/`\x05`) or the
+ * HDF5 magic (netCDF-4, which is an HDF5 container and gets the HDF5
+ * superblock check too). Anything else is refused before `nc_open` runs.
+ */
+inline void library_preflight_netcdf(const std::string& rPath) {
+    auto in = make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError(std::string("meshio++: exodus: cannot open '") + rPath + "'");
+    char head[16] = {0};
+    in.read(head, sizeof head);
+    const std::streamsize got = in.gcount();
+    if (got < 4)
+        throw ReadError(std::string("meshio++: exodus: '") + rPath +
+                        "' is too short for a netCDF container");
+    const bool is_cdf = head[0] == 'C' && head[1] == 'D' && head[2] == 'F';
+    bool is_hdf5 = got >= 8;
+    for (int i = 0; is_hdf5 && i < 8; ++i)
+        is_hdf5 = head[i] == kLibraryPreflightHdf5Magic[i];
+    if (!is_cdf && !is_hdf5)
+        throw ReadError(std::string("meshio++: exodus: '") + rPath +
+                        "' is neither netCDF classic nor HDF5 (netCDF-4)");
+    if (is_hdf5)
+        library_preflight_hdf5(rPath, "exodus");
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/library_preflight.hpp =====
 // ===== begin src/cpp/src/formats/pindex_common.hpp =====
 /**
  * @file formats/pindex_common.hpp
@@ -52830,6 +52927,7 @@ namespace meshioplusplus {
 namespace h5 {
 
 Hid open_file_read(const std::string& rPath) {
+    detail::library_preflight_hdf5(rPath, "HDF5");
     Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.Valid())
         throw ReadError("HDF5: could not open file " + rPath);
@@ -52862,11 +52960,17 @@ std::vector<std::string> link_names(hid_t loc) {
     std::vector<std::string> out;
     if (H5Gget_info(loc, &info) < 0)
         return out;
+    // info.nlinks comes from the file: cap it before looping, and cap each
+    // name length before allocating (a corrupted header can claim billions).
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         const ssize_t len =
             H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
         if (len <= 0)
             continue;
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -53552,11 +53656,19 @@ std::string soft_link_target(hid_t loc, const std::string& rName) {
 std::vector<std::string> group_links(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     std::vector<std::string> names;
-    names.reserve(info.nlinks);
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         ssize_t len =
             H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
+        if (len < 0)
+            throw ReadError("HDF5: could not list group links");
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
+        // Empty names cannot be opened later; skip rather than allocate.
+        if (len == 0)
+            continue;
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -53568,13 +53680,18 @@ std::vector<std::string> group_links(hid_t loc) {
 std::vector<std::string> group_links_crt(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
+    if (info.nlinks > 1048576)
+        throw ReadError("HDF5: group claims too many links");
     std::vector<std::string> names;
-    names.reserve(info.nlinks);
     for (hsize_t i = 0; i < info.nlinks; ++i) {
         ssize_t len = H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, nullptr, 0,
                                          H5P_DEFAULT);
         if (len < 0)
             return group_links(loc);  // creation order not indexed
+        if (len > 4096)
+            throw ReadError("HDF5: link name too long");
+        if (len == 0)
+            continue;
         std::string name(static_cast<std::size_t>(len), '\0');
         H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, name.data(),
                            static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
@@ -61358,6 +61475,16 @@ NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
 std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
                                          const std::vector<std::size_t>& rSizes) {
     std::size_t ncols = rRaw.Ndim() >= 2 ? rRaw.Shape()[1] : 1;
+    std::size_t total = 0;
+    for (std::size_t bs : rSizes) {
+        if (bs > rRaw.Size() || total > rRaw.Size() - bs)
+            throw ReadError("XDMF: cell data rows disagree with cell blocks");
+        total += bs;
+    }
+    if (ncols == 0 || total * ncols != rRaw.Size())
+        throw ReadError("XDMF: cell data holds " + std::to_string(rRaw.Size()) +
+                        " values; cell blocks need " + std::to_string(total) + "x" +
+                        std::to_string(ncols));
     std::size_t off = 0;
     std::vector<NDArray> blocks;
     for (std::size_t bs : rSizes) {
@@ -68658,7 +68785,16 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         for (const std::string& ax : axes) {
             h5::Hid g = h5::open_group(coords, ax);
             NDArray c = h5::read_dataset(g, " data");
-            n_zone_points = c.Shape().empty() ? 0 : c.Shape()[0];
+            if (c.Ndim() != 1)
+                throw ReadError(detail::format_compat(
+                    "CGNS: zone '{}' coordinate '{}' must be 1-D, found {}-D", zname, ax,
+                    c.Ndim()));
+            if (cols.empty())
+                n_zone_points = c.Size();
+            else if (c.Size() != n_zone_points)
+                throw ReadError(detail::format_compat(
+                    "CGNS: zone '{}' GridCoordinates lengths differ ({} vs {})", zname,
+                    n_zone_points, c.Size()));
             cols.push_back(std::move(c));
         }
         NDArray zpts(DType::Float64, {n_zone_points, point_dim_out});
@@ -74730,6 +74866,7 @@ NDArray column_stack(const std::vector<const NDArray*>& rCols) {
 }  // namespace
 
 Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions) {
+    detail::library_preflight_netcdf(rPath);
     int ncid;
     check(nc_open(rPath.c_str(), NC_NOWRITE, &ncid), "open");
     struct Closer {
@@ -97639,6 +97776,11 @@ void read_families(hid_t fas_group, std::map<std::int64_t, std::vector<std::stri
         h5::Hid gro = h5::open_group(fam, "GRO");
         std::int64_t n_subsets = h5::read_attr_int(gro, "NBR");
         NDArray nom = h5::read_dataset(gro, "NOM");  // (n_subsets, 80) int8
+        if (n_subsets < 0)
+            throw ReadError("MED: GRO/NBR is negative");
+        if (static_cast<std::uint64_t>(n_subsets) > nom.Size() / 80)
+            throw ReadError("MED: GRO/NOM holds " + std::to_string(nom.Size()) +
+                            " values; NBR requires " + std::to_string(n_subsets) + "x80");
         std::vector<std::string> names;
         for (std::int64_t i = 0; i < n_subsets; ++i) {
             std::string s;
@@ -127852,6 +127994,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -128023,8 +128166,13 @@ std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
     // Hoist the per-element dtype switch out of the loop, then bulk-convert.
     detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
-        parallel_for_bw(rA.Size(),
-                        [&](std::size_t i) { dst[i] = static_cast<std::int64_t>(src[i]); });
+        if constexpr (std::is_floating_point_v<T>) {
+            for (std::size_t i = 0; i < rA.Size(); ++i)
+                dst[i] = detail::checked_integer<std::int64_t>(src[i], "VTK");
+        } else {
+            parallel_for_bw(rA.Size(),
+                            [&](std::size_t i) { dst[i] = static_cast<std::int64_t>(src[i]); });
+        }
     });
     return v;
 }
@@ -128804,10 +128952,18 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
                        nconn_all.begin() + static_cast<std::ptrdiff_t>(hi));
     t.mC0 = c_step + vtkhdf_sum(ncells_all, Part0, lo);
     const I64 n0 = n_step + vtkhdf_sum(nconn_all, Part0, lo);
+    for (I64 v : t.mCounts)
+        if (v < 0)
+            throw ReadError("meshio++: vtkhdf: negative cell count");
+    for (I64 v : nconn)
+        if (v < 0)
+            throw ReadError("meshio++: vtkhdf: negative connectivity count");
     const I64 c_total = vtkhdf_sum(t.mCounts, 0, t.mCounts.size());
     const I64 n_total = vtkhdf_sum(nconn, 0, nconn.size());
     if (t.mC0 < 0 || n0 < 0)
         throw ReadError("meshio++: vtkhdf: negative offset in the Steps tables");
+    if (c_total < 0 || n_total < 0)
+        throw ReadError("meshio++: vtkhdf: negative topology total");
     t.mConn = vtkhdf_int_rows(Grp, "Connectivity", static_cast<std::size_t>(n0),
                               static_cast<std::size_t>(n_total));
     const I64Vec offs = vtkhdf_int_rows(Grp, "Offsets", static_cast<std::size_t>(t.mC0) + lo,
@@ -128818,6 +128974,15 @@ VtkhdfTopology vtkhdf_gather_topology(hid_t Grp, const VtkhdfSteps& rSteps, std:
         for (I64 i = 0; i < nconn[j]; ++i)
             t.mConn[at++] += rPtStarts[j];
     t.mEnds = vtkhdf_join_offsets(offs, t.mCounts, nconn);
+    if (t.mEnds.size() != static_cast<std::size_t>(c_total))
+        throw ReadError("meshio++: vtkhdf: topology offsets disagree with cell count");
+    I64 prev = 0;
+    for (I64 e : t.mEnds) {
+        if (e < prev || e > static_cast<I64>(t.mConn.size()))
+            throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree (" +
+                            std::to_string(e) + " vs " + std::to_string(t.mConn.size()) + " ids)");
+        prev = e;
+    }
     return t;
 }
 
@@ -129103,6 +129268,17 @@ I64Vec vtkhdf_build_cells(Mesh& rMesh, const VtkhdfLeaf& rLeaf, bool Lenient) {
     const auto& vmap = vtk_to_meshio_type();
     const auto& nmap = num_nodes_per_cell();
     const std::size_t n = rLeaf.mTypes.size();
+    if (rLeaf.mEnds.size() != n)
+        throw ReadError("meshio++: vtkhdf: cell offsets disagree with cell types (" +
+                        std::to_string(rLeaf.mEnds.size()) + " vs " + std::to_string(n) + ")");
+    if (rLeaf.mPieceOfCell.size() != n)
+        throw ReadError("meshio++: vtkhdf: cell pieces disagree with cell types");
+    I64 prev_end = 0;
+    for (I64 e : rLeaf.mEnds) {
+        if (e < prev_end || e > static_cast<I64>(rLeaf.mConn.size()))
+            throw ReadError("meshio++: vtkhdf: Connectivity/Offsets disagree");
+        prev_end = e;
+    }
     I64Vec perm(n, 0);
     std::size_t at = 0;
     std::size_t a = 0;
@@ -129469,6 +129645,7 @@ void vtkhdf_check_version(hid_t Root) {
 }
 
 Hid vtkhdf_open(const std::string& rPath, Hid& rRoot, std::string& rKind) {
+    detail::library_preflight_hdf5(rPath, "vtkhdf");
     Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.Valid())
         throw ReadError("meshio++: vtkhdf: cannot open '" + rPath + "' as an HDF5 file");

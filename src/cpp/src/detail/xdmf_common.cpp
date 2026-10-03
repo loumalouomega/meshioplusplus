@@ -125,6 +125,16 @@ NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
 std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
                                          const std::vector<std::size_t>& rSizes) {
     std::size_t ncols = rRaw.Ndim() >= 2 ? rRaw.Shape()[1] : 1;
+    std::size_t total = 0;
+    for (std::size_t bs : rSizes) {
+        if (bs > rRaw.Size() || total > rRaw.Size() - bs)
+            throw ReadError("XDMF: cell data rows disagree with cell blocks");
+        total += bs;
+    }
+    if (ncols == 0 || total * ncols != rRaw.Size())
+        throw ReadError("XDMF: cell data holds " + std::to_string(rRaw.Size()) +
+                        " values; cell blocks need " + std::to_string(total) + "x" +
+                        std::to_string(ncols));
     std::size_t off = 0;
     std::vector<NDArray> blocks;
     for (std::size_t bs : rSizes) {

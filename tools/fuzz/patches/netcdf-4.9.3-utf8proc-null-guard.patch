@@ -1,0 +1,36 @@
+Backport of upstream netcdf-c commit 193cf061f523be52a21926a995bcdf510ab109d2
+("Fixed UBSan warnings about offsetting a NULL pointer", 2025-11-15).
+
+The bundled Unicode helper computes a length with a NULL buffer before
+allocating it. Forming buffer + offset on a NULL base is undefined
+behaviour even when the pointer is not dereferenced, so the check build
+reports it during valid Exodus reads. The upstream fix passes NULL
+through in the measuring pass and only adds the offset once a buffer
+exists. No behaviour change; measuring and filling paths return the
+same lengths.
+
+--- a/libdispatch/utf8proc.c
++++ b/libdispatch/utf8proc.c
+@@ -388,7 +388,9 @@ static nc_utf8proc_ssize_t nc_seqindex_write_char_decomposed(nc_utf8proc_uint16_
+   for (; len >= 0; entry++, len--) {
+     nc_utf8proc_int32_t entry_cp = nc_seqindex_decode_entry(&entry);
+ 
+-    written += nc_utf8proc_decompose_char(entry_cp, dst+written,
++    nc_utf8proc_int32_t *dest = NULL;
++    if (dst) dest = dst + written;
++    written += nc_utf8proc_decompose_char(entry_cp, dest,
+       (bufsize > written) ? (bufsize - written) : 0, options,
+     last_boundclass);
+     if (written < 0) return UTF8PROC_ERROR_OVERFLOW;
+@@ -573,8 +575,10 @@ nc_utf8proc_ssize_t nc_utf8proc_decompose_custom(
+       if (custom_func != NULL) {
+         uc = custom_func(uc, custom_data);   /* user-specified custom mapping */
+       }
++      nc_utf8proc_int32_t *dest = NULL;
++      if (buffer) dest = buffer + wpos;
+       decomp_result = nc_utf8proc_decompose_char(
+-        uc, buffer + wpos, (bufsize > wpos) ? (bufsize - wpos) : 0, options,
++        uc, dest, (bufsize > wpos) ? (bufsize - wpos) : 0, options,
+         &boundclass
+       );
+       if (decomp_result < 0) return decomp_result;

@@ -21,6 +21,7 @@
 // System includes
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 // Project includes
 #include "mesh_fixtures.hpp"
@@ -68,4 +69,33 @@ TEST(Vtk, ReadRejectsStructuredGridWithoutDimensions) {
     EXPECT_THROW(meshioplusplus::read_vtk(path), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+TEST(Vtk, RefusesOutOfRangeFloatingTopology) {
+    for (const char* dtype : {"float", "double"}) {
+        for (const char* value : {"nan", "inf", "-inf", "9223372036854775808", "-1e30"}) {
+            for (bool bad_offset : {false, true}) {
+                SCOPED_TRACE(std::string(dtype) + " " + value +
+                             (bad_offset ? " offsets" : " connectivity"));
+                const std::string path = mt::temp_path(".vtk");
+                {
+                    std::ofstream f(path);
+                    f << "# vtk DataFile Version 5.1\n"
+                      << "invalid floating topology\nASCII\nDATASET UNSTRUCTURED_GRID\n"
+                      << "POINTS 1 float\n0 0 0\nCELLS 2 1\nOFFSETS " << dtype << "\n0 "
+                      << (bad_offset ? value : "1") << "\nCONNECTIVITY " << dtype << "\n"
+                      << (bad_offset ? "0" : value) << "\nCELL_TYPES 1\n1\n";
+                }
+                try {
+                    (void)meshioplusplus::read_vtk(path);
+                    FAIL() << "An out-of-range topology value must be refused";
+                } catch (const meshioplusplus::ReadError& e) {
+                    EXPECT_NE(std::string(e.what()).find("integer field out of range"),
+                              std::string::npos);
+                }
+                std::error_code ec;
+                std::filesystem::remove(path, ec);
+            }
+        }
+    }
 }

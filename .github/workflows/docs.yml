@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+  workflow_run:
+    workflows: [benchmark]
+    types: [completed]
 
 # Allow the GITHUB_TOKEN to deploy to GitHub Pages.
 permissions:
@@ -18,12 +21,29 @@ concurrency:
 
 jobs:
   build:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Export benchmark trends
+        run: |
+          if git ls-remote --exit-code origin refs/heads/benchmark-data > /dev/null; then
+            git fetch --depth=1 origin benchmark-data
+            mkdir -p "$RUNNER_TEMP/benchmark-data"
+            git archive FETCH_HEAD runs | tar -x -C "$RUNNER_TEMP/benchmark-data"
+            python3 tools/bench_trends.py export "$RUNNER_TEMP/benchmark-data" doc/public/benchmark-trends
+          else
+            rc=$?
+            [ "$rc" = 2 ] || exit "$rc"
+            echo "No benchmark history yet; showing the empty-state page."
+          fi
       - name: Install Doxygen
         # packages.microsoft.com ships preinstalled on the runner image and is
         # unrelated to this repo; strip it first so its occasional 403/

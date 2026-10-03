@@ -1,0 +1,12 @@
+# Readers enabled only in the instrumented-library campaign.
+cgns
+h5m
+hmf
+med
+nastran_h5
+vtkhdf
+exodus
+# XDMF bundles (XML/heavy-data/DataItem/reference reconstruction) run in the
+# default campaign too, but the HDF-backed bundles need the instrumented HDF5
+# here to catch library-side defects behind `Format="HDF"` DataItems.
+xdmf
