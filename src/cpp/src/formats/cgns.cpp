@@ -18,8 +18,10 @@
 
 // System includes
 #include <algorithm>
+#include <deque>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -41,6 +43,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -272,10 +275,11 @@ Mesh cgns_read_legacy(hid_t f) {
     Mesh mesh;
     NDArray pts(DType::Float64, {n, 3});
     double* pp = pts.As<double>();
+    const detail::DoubleView xs(x), ys(y), zs(z);
     for (std::size_t i = 0; i < n; ++i) {
-        pp[i * 3 + 0] = detail::read_double(x, i);
-        pp[i * 3 + 1] = detail::read_double(y, i);
-        pp[i * 3 + 2] = detail::read_double(z, i);
+        pp[i * 3 + 0] = xs[i];
+        pp[i * 3 + 1] = ys[i];
+        pp[i * 3 + 2] = zs[i];
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -287,7 +291,7 @@ Mesh cgns_read_legacy(hid_t f) {
 
     if (range.Size() < 2)
         throw ReadError("CGNS: malformed ElementRange");
-    std::int64_t idx_max = detail::read_int(range, 1);
+    std::int64_t idx_max = detail::read_int(range, 1);  // one header value
     if (idx_max <= 0 || flat.Size() % static_cast<std::size_t>(idx_max) != 0)
         throw ReadError("CGNS: malformed ElementConnectivity");
     std::size_t k = flat.Size() / static_cast<std::size_t>(idx_max);
@@ -295,8 +299,9 @@ Mesh cgns_read_legacy(hid_t f) {
         throw ReadError("Can only read tetrahedra.");
 
     NDArray cells(flat.Dtype(), {static_cast<std::size_t>(idx_max), k});
+    const detail::Int64View flat_values(flat);
     for (std::size_t i = 0; i < flat.Size(); ++i) {
-        std::int64_t v = detail::read_int(flat, i) - 1;
+        std::int64_t v = flat_values[i] - 1;
         switch (cells.Dtype()) {
             case DType::Int32:
                 cells.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
@@ -395,8 +400,9 @@ CgnsPolySection cgns_read_poly_section(h5::Hid& rSect, const std::string& rName,
             "(expected {})",
             rName, n, off.Size(), n + 1));
     out.mOffsets.resize(off.Size());
+    const detail::Int64View off_values(off);
     for (std::size_t i = 0; i < off.Size(); ++i) {
-        out.mOffsets[i] = detail::read_int(off, i);
+        out.mOffsets[i] = off_values[i];
         if (out.mOffsets[i] < 0 || (i > 0 && out.mOffsets[i] < out.mOffsets[i - 1]))
             throw ReadError(detail::format_compat(
                 "CGNS: section '{}' has an ElementStartOffset that is negative or decreasing",
@@ -412,8 +418,9 @@ CgnsPolySection cgns_read_poly_section(h5::Hid& rSect, const std::string& rName,
             "{} entries",
             rName, out.mOffsets.back(), conn.Size()));
     out.mData.resize(conn.Size());
+    const detail::Int64View conn_values(conn);
     for (std::size_t i = 0; i < conn.Size(); ++i)
-        out.mData[i] = detail::read_int(conn, i);
+        out.mData[i] = conn_values[i];
     return out;
 }
 
@@ -500,8 +507,9 @@ void cgns_write_solution_array(hid_t sol, const std::string& rName, const NDArra
                                std::size_t rows, std::size_t k, std::size_t i, int gzip_level) {
     NDArray col(DType::Float64, {rows});
     double* dst = col.As<double>();
+    const detail::DoubleView values(rArr);
     for (std::size_t r = 0; r < rows; ++r)
-        dst[r] = detail::read_double(rArr, r * k + i);
+        dst[r] = values[r * k + i];
     h5::Hid g = cgns_create_group(sol, rName);
     cgns_write_node_attrs(g, rName, "DataArray_t", "R8");
     h5::write_dataset(g, " data", col, gzip_level);
@@ -600,9 +608,11 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
         NDArray joined(DType::Float64, k > 1 ? std::vector<std::size_t>{expected_rows, k}
                                              : std::vector<std::size_t>{expected_rows});
         double* dst = joined.As<double>();
-        for (std::size_t i = 0; i < k; ++i)
+        for (std::size_t i = 0; i < k; ++i) {
+            const detail::DoubleView column(cols[i]);
             for (std::size_t r = 0; r < expected_rows; ++r)
-                dst[r * k + i] = detail::read_double(cols[i], r);
+                dst[r * k + i] = column[r];
+        }
         out.emplace_back(base, std::move(joined));
     }
     return out;
@@ -747,6 +757,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     cgns_write_node_attrs(coords, "GridCoordinates", "GridCoordinates_t", "MT");
     {
         const NDArray& points = rMesh.Points();
+        const detail::DoubleView point_values(points);
         const DType coord_dt = points.Dtype() == DType::Float32 ? DType::Float32 : DType::Float64;
         const char* names[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
         const std::size_t n_coords = phys_dim >= 3 ? 3 : 2;
@@ -756,8 +767,8 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
             detail::dispatch_dtype(coord_dt, [&]<class T>() {
                 T* dst = col.As<T>();
                 parallel_for_bw(n_points, [&](std::size_t i) {
-                    dst[i] = static_cast<T>(
-                        (c < point_dim) ? detail::read_double(points, i * point_dim + c) : 0.0);
+                    dst[i] =
+                        static_cast<T>((c < point_dim) ? point_values[i * point_dim + c] : 0.0);
                 });
             });
             cgns_write_node_attrs(g, names[c], "DataArray_t", cgns_type_code(coord_dt));
@@ -839,6 +850,9 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
             if (nc == 0)
                 continue;
             std::vector<std::int64_t> off{0}, data;
+            std::optional<detail::Int64View> block_conn;
+            if (!cb.IsRagged())
+                block_conn.emplace(cb.Conn());
             for (std::size_t i = 0; i < nc; ++i) {
                 if (cb.IsRagged()) {
                     const std::int64_t* row = cb.Row(i);
@@ -847,7 +861,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
                 } else {
                     const std::size_t npc = cb.NodesPerCell();
                     for (std::size_t j = 0; j < npc; ++j)
-                        data.push_back(detail::read_int(cb.Conn(), i * npc + j) + 1);
+                        data.push_back((*block_conn)[i * npc + j] + 1);
                 }
                 off.push_back(static_cast<std::int64_t>(data.size()));
             }
@@ -906,10 +920,11 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         // Widen to the section's chosen dtype if it disagrees with Conn()'s.
         if (conn.Dtype() != out_dt) {
             NDArray widened(out_dt, {nc, npc});
+            const detail::Int64View conn_values(conn);
             detail::dispatch_dtype(out_dt, [&]<class T>() {
                 T* dst = widened.As<T>();
                 for (std::size_t i = 0; i < nc * npc; ++i)
-                    dst[i] = static_cast<T>(detail::read_int(conn, i));
+                    dst[i] = static_cast<T>(conn_values[i]);
             });
             conn = std::move(widened);
         }
@@ -1003,9 +1018,10 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
                 for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
                     const NDArray& d = rMesh.CellData(name, b);
                     const std::size_t nb = detail::rows(d);
+                    const detail::DoubleView values(d);
                     for (std::size_t r = 0; r < nb; ++r)
                         for (std::size_t i = 0; i < k; ++i)
-                            dst[(row + r) * k + i] = detail::read_double(d, r * k + i);
+                            dst[(row + r) * k + i] = values[r * k + i];
                     row += nb;
                 }
                 for (std::size_t i = 0; i < k; ++i)
@@ -1056,8 +1072,9 @@ CgnsIterativeData cgns_read_iterative_data(hid_t base, hid_t zone) {
             if (h5::exists(tv, " data")) {
                 NDArray raw = h5::read_dataset(tv, " data");
                 out.mTimeValues.reserve(raw.Size());
+                const detail::DoubleView time_values(raw);
                 for (std::size_t i = 0; i < raw.Size(); ++i)
-                    out.mTimeValues.push_back(detail::read_double(raw, i));
+                    out.mTimeValues.push_back(time_values[i]);
             }
         }
     }
@@ -1187,9 +1204,12 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         }
         NDArray zpts(DType::Float64, {n_zone_points, point_dim_out});
         double* pp = zpts.As<double>();
+        std::deque<detail::DoubleView> col_values;  // views are not movable
+        for (const NDArray& col : cols)
+            col_values.emplace_back(col);
         for (std::size_t i = 0; i < n_zone_points; ++i)
             for (std::size_t d = 0; d < point_dim_out; ++d)
-                pp[i * point_dim_out + d] = d < cols.size() ? detail::read_double(cols[d], i) : 0.0;
+                pp[i * point_dim_out + d] = d < cols.size() ? col_values[d][i] : 0.0;
         point_chunks.push_back(std::move(zpts));
 
         // Elements_t sections found by label (never by name), ordered
@@ -1537,6 +1557,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                         const std::size_t k = detail::cols(arr);
                         std::vector<NDArray> blocks;
                         blocks.reserve(zone_block_cells.size());
+                        const detail::DoubleView arr_values(arr);
                         std::size_t row = 0;
                         for (std::size_t nb : zone_block_cells) {
                             NDArray b(DType::Float64, k > 1 ? std::vector<std::size_t>{nb, k}
@@ -1544,7 +1565,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                             double* dst = b.As<double>();
                             for (std::size_t r = 0; r < nb; ++r)
                                 for (std::size_t i = 0; i < k; ++i)
-                                    dst[r * k + i] = detail::read_double(arr, (row + r) * k + i);
+                                    dst[r * k + i] = arr_values[(row + r) * k + i];
                             row += nb;
                             blocks.push_back(std::move(b));
                         }
@@ -1707,8 +1728,9 @@ MeshMetadata cgns_read_metadata_impl(const std::string& rPath, const ReadOptions
             if (h5::exists(tv, " data")) {
                 NDArray raw = h5::read_dataset(tv, " data");
                 meta.mTimeValues.reserve(raw.Size());
+                const detail::DoubleView time_values(raw);
                 for (std::size_t i = 0; i < raw.Size(); ++i)
-                    meta.mTimeValues.push_back(detail::read_double(raw, i));
+                    meta.mTimeValues.push_back(time_values[i]);
             }
         }
     }

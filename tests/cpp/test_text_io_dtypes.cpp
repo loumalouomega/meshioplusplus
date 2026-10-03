@@ -13,14 +13,20 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/flux.hpp"
+#include "meshioplusplus/formats/gid.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/ip.hpp"
+#include "meshioplusplus/formats/libmesh.hpp"
+#include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/patran.hpp"
+#include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/permas.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
@@ -73,15 +79,37 @@ tid::Mesh tid_mesh(const std::string& rFormat, tid::DType RealType, tid::DType I
     return mesh;
 }
 
-std::string tid_bytes(const std::string& rPath) {
+std::string tid_file_bytes(const std::string& rPath) {
     auto in = tid::detail::make_classic_ifstream(rPath, std::ios::binary);
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+/// The file, plus GiD's `.post.res` sibling (where its point data goes).
+std::string tid_bytes(const std::string& rPath) {
+    std::string bytes = tid_file_bytes(rPath);
+    const std::string mesh_suffix = ".post.msh";
+    if (rPath.size() > mesh_suffix.size() &&
+        rPath.compare(rPath.size() - mesh_suffix.size(), mesh_suffix.size(), mesh_suffix) == 0)
+        bytes += tid_file_bytes(rPath.substr(0, rPath.size() - 4) + ".res");
+    return bytes;
+}
+
 using TidWriter = std::function<void(const std::string&, const tid::Mesh&)>;
 
-const std::vector<std::pair<std::string, TidWriter>>& tid_writers() {
-    static const std::vector<std::pair<std::string, TidWriter>> writers = {
+/// A writer under test. Formats that record each array's dtype in the file
+/// (PCD, the HDF5 formats) or a file name inside it (glTF's .bin) cannot be
+/// compared byte for byte with canonical storage; their values are compared
+/// through a read-back in the Python tests, and here they must only leave the
+/// caller's arrays untouched.
+struct TidFormat {
+    std::string mName;
+    TidWriter mWrite;
+    bool mExact = true;
+    std::string mSuffix = ".data";
+};
+
+const std::vector<TidFormat>& tid_writers() {
+    static const std::vector<TidFormat> writers = {
         {"off", tid::write_off},
         {"ip", tid::write_ip},
         {"flux", tid::write_flux},
@@ -101,13 +129,46 @@ const std::vector<std::pair<std::string, TidWriter>>& tid_writers() {
         {"femap", tid::write_femap},
         {"mdpa",
          [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_mdpa(rPath, rMesh); }},
+        {"libmesh", tid::write_libmesh},
+        {"gid",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_gid(rPath, rMesh, tid::GidMode::Ascii);
+         },
+         true, ".post.msh"},
+        {"pcd-ascii",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_pcd(rPath, rMesh, tid::PcdData::Ascii);
+         },
+         false},
+        {"pcd-binary",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_pcd(rPath, rMesh, tid::PcdData::Binary);
+         },
+         false},
+        {"gltf",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_gltf(rPath, rMesh); },
+         false, ".gltf"},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        {"cgns",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_cgns(rPath, rMesh, 0); },
+         false, ".cgns"},
+        {"med",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_med(rPath, rMesh, tid::MedInfo{});
+         },
+         false, ".med"},
+#endif
     };
     return writers;
 }
 }  // namespace
 
 TEST(TextIoDtypes, HoistedWritersMatchCanonicalStorageOnAllDtypes) {
-    for (const auto& [format, writer] : tid_writers()) {
+    for (const auto& fmt : tid_writers()) {
+        if (!fmt.mExact)
+            continue;
+        const std::string& format = fmt.mName;
+        const auto& writer = fmt.mWrite;
         SCOPED_TRACE(format);
         for (const auto dtype : tid_dtypes) {
             SCOPED_TRACE(static_cast<int>(dtype));
@@ -115,20 +176,24 @@ TEST(TextIoDtypes, HoistedWritersMatchCanonicalStorageOnAllDtypes) {
                 SCOPED_TRACE(dim);
                 const auto input = tid_mesh(format, dtype, dtype, dim);
                 const auto expected = tid_mesh(format, tid::DType::Float64, tid::DType::Int64, dim);
-                const std::string first = mt::temp_path(".data");
-                const std::string second = mt::temp_path(".data");
+                const std::string first = mt::temp_path(fmt.mSuffix);
+                const std::string second = mt::temp_path(fmt.mSuffix);
                 writer(first, input);
                 writer(second, expected);
                 EXPECT_EQ(tid_bytes(first), tid_bytes(second));
-                std::filesystem::remove(first);
-                std::filesystem::remove(second);
+                for (const std::string& path : {first, second}) {
+                    std::filesystem::remove(path);
+                    std::filesystem::remove(path.substr(0, path.size() - 4) + ".res");
+                }
             }
         }
     }
 }
 
 TEST(TextIoDtypes, HoistedWritersLeaveCallerArraysUntouched) {
-    for (const auto& [format, writer] : tid_writers()) {
+    for (const auto& fmt : tid_writers()) {
+        const std::string& format = fmt.mName;
+        const auto& writer = fmt.mWrite;
         SCOPED_TRACE(format);
         for (const auto dtype : {tid::DType::Float32, tid::DType::Int32, tid::DType::UInt16}) {
             SCOPED_TRACE(static_cast<int>(dtype));
@@ -138,7 +203,7 @@ TEST(TextIoDtypes, HoistedWritersLeaveCallerArraysUntouched) {
             const std::vector<std::byte> points_before(points.Data(),
                                                        points.Data() + points.Nbytes());
             const std::vector<std::byte> conn_before(conn.Data(), conn.Data() + conn.Nbytes());
-            const std::string path = mt::temp_path(".data");
+            const std::string path = mt::temp_path(fmt.mSuffix);
             writer(path, input);
             std::filesystem::remove(path);
             EXPECT_EQ(std::vector<std::byte>(points.Data(), points.Data() + points.Nbytes()),

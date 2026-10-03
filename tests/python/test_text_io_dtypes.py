@@ -17,7 +17,17 @@ FORMATS = (
     "patran",
     "femap",
     "mdpa",
+    "libmesh",
+    "gid",
+    "gltf",
 )
+# Formats that record each array's dtype in the file (PCD SIZE/TYPE, HDF5
+# datasets), so their bytes legitimately differ from canonical storage: the
+# values must still round-trip.
+STORED_DTYPE_FORMATS = ("pcd", "cgns", "med")
+# A writer may embed its own file name (glTF's .bin) or pick its extension
+# (GiD), so every output is `<dir>/m<suffix>` in a directory of its own.
+SUFFIX = {"gid": ".post.msh", "gltf": ".gltf"}
 # The integer cell data each format reads per cell, as (name, value).
 TAGS = {
     "gmsh22": (("gmsh:physical", 3), ("gmsh:geometrical", 5)),
@@ -76,11 +86,41 @@ def test_hoisted_writer_all_dtypes_match_default_storage(
     mesh, inputs = _mesh(fmt, dtype, dtype, dimension)
     expected, _ = _mesh(fmt, "float64", "int64", dimension)
     before = [a.tobytes() for a in inputs]
-    native, canonical = tmp_path / "native", tmp_path / "canonical"
+    name = "m" + SUFFIX.get(fmt, "")
+    native, canonical = tmp_path / "native" / name, tmp_path / "canonical" / name
+    native.parent.mkdir()
+    canonical.parent.mkdir()
     pp.write(native, mesh, file_format=fmt)
     pp.write(canonical, expected, file_format=fmt)
     assert native.read_bytes() == canonical.read_bytes()
+    if fmt == "gid":  # point data goes to the sibling results file
+        results = [p.with_name("m.post.res") for p in (native, canonical)]
+        assert results[0].read_bytes() == results[1].read_bytes()
     assert before == [a.tobytes() for a in inputs]
+
+
+@pytest.mark.parametrize("fmt", STORED_DTYPE_FORMATS)
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_stored_dtype_writer_round_trips_values_from_all_dtypes(
+    tmp_path, monkeypatch, fmt, dtype
+):
+    monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+    mesh, inputs = _mesh(fmt, dtype, dtype, 3)
+    expected, _ = _mesh(fmt, "float64", "int64", 3)
+    before = [a.tobytes() for a in inputs]
+    suffix = {"pcd": ".pcd", "cgns": ".cgns", "med": ".med"}[fmt]
+    back = {}
+    for label, source in (("native", mesh), ("canonical", expected)):
+        path = tmp_path / (label + suffix)
+        pp.write(path, source, file_format=fmt)
+        back[label] = pp.read(path, file_format=fmt)
+    assert before == [a.tobytes() for a in inputs]
+    assert np.array_equal(back["native"].points, back["canonical"].points)
+    assert len(back["native"].cells) == len(back["canonical"].cells)
+    for a, b in zip(back["native"].cells, back["canonical"].cells):
+        assert a.type == b.type and np.array_equal(a.data, b.data)
+    for name, values in back["canonical"].point_data.items():
+        assert np.array_equal(back["native"].point_data[name], values)
 
 
 @pytest.mark.parametrize("fmt", ("off", "ip", "flux", "permas"))

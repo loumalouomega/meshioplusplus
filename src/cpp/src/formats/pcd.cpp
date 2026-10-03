@@ -26,6 +26,8 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <deque>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -44,6 +46,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -569,12 +572,15 @@ NDArray pcd_unpack_colour(const NDArray& rColumn, char type, bool alpha) {
     const std::size_t n = rColumn.Shape()[0];
     NDArray out(DType::UInt8, {n, alpha ? std::size_t(4) : std::size_t(3)});
     std::uint8_t* dst = out.As<std::uint8_t>();
+    std::optional<detail::Int64View> integers;
+    if (type != 'F')
+        integers.emplace(rColumn);
     for (std::size_t i = 0; i < n; ++i) {
         std::uint32_t packed = 0;
         if (type == 'F')
             std::memcpy(&packed, rColumn.Data() + i * sizeof(float), sizeof(packed));
         else
-            packed = static_cast<std::uint32_t>(detail::read_int(rColumn, i));
+            packed = static_cast<std::uint32_t>((*integers)[i]);
         std::uint8_t* row = dst + i * (alpha ? 4 : 3);
         row[0] = static_cast<std::uint8_t>((packed >> 16) & 255);
         row[1] = static_cast<std::uint8_t>((packed >> 8) & 255);
@@ -602,9 +608,11 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
         single = single && rColumns[it->second].Dtype() == DType::Float32;
     }
     NDArray points(single ? DType::Float32 : DType::Float64, {npoints, std::size_t(3)});
-    for (int a = 0; a < 3; ++a)
+    for (int a = 0; a < 3; ++a) {
+        const detail::DoubleView column(rColumns[axis_field[a]]);
         for (std::size_t i = 0; i < npoints; ++i)
-            pcd_store(points, i * 3 + a, detail::read_double(rColumns[axis_field[a]], i), 0);
+            pcd_store(points, i * 3 + a, column[i], 0);
+    }
 
     std::unordered_map<std::string, NDArray> point_data;
     std::unordered_set<std::string> consumed = {"x", "y", "z"};
@@ -619,10 +627,11 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
         for (const char* name : normal_axes)
             single_n = single_n && rColumns[by_name[name]].Dtype() == DType::Float32;
         NDArray normals(single_n ? DType::Float32 : DType::Float64, {npoints, std::size_t(3)});
-        for (int a = 0; a < 3; ++a)
+        for (int a = 0; a < 3; ++a) {
+            const detail::DoubleView column(rColumns[by_name[normal_axes[a]]]);
             for (std::size_t i = 0; i < npoints; ++i)
-                pcd_store(normals, i * 3 + a,
-                          detail::read_double(rColumns[by_name[normal_axes[a]]], i), 0);
+                pcd_store(normals, i * 3 + a, column[i], 0);
+        }
         point_data.emplace("normals", std::move(normals));
         for (const char* name : normal_axes)
             consumed.insert(name);
@@ -647,10 +656,11 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
     if (drop_invalid) {
         std::vector<std::size_t> keep;
         keep.reserve(npoints);
+        const detail::DoubleView coordinates(points);
         for (std::size_t i = 0; i < npoints; ++i) {
             bool ok = true;
             for (int a = 0; a < 3; ++a)
-                ok = ok && std::isfinite(detail::read_double(points, i * 3 + a));
+                ok = ok && std::isfinite(coordinates[i * 3 + a]);
             if (ok)
                 keep.push_back(i);
         }
@@ -718,24 +728,27 @@ std::string pcd_unique(std::string name, std::unordered_set<std::string>& rUsed)
 NDArray pcd_extract(const NDArray& rSrc, std::size_t n, std::size_t stride, std::size_t first,
                     std::size_t count, DType target) {
     NDArray out(target, {n, count});
-    const bool to_float = pcd_is_float(target);
-    for (std::size_t r = 0; r < n; ++r)
-        for (std::size_t j = 0; j < count; ++j) {
-            const std::size_t at = r * stride + first + j;
-            if (to_float)
-                pcd_store(out, r * count + j, detail::read_double(rSrc, at), 0);
-            else
-                pcd_store(out, r * count + j, 0.0, detail::read_int(rSrc, at));
-        }
+    if (pcd_is_float(target)) {
+        const detail::DoubleView values(rSrc);
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t j = 0; j < count; ++j)
+                pcd_store(out, r * count + j, values[r * stride + first + j], 0);
+    } else {
+        const detail::Int64View values(rSrc);
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t j = 0; j < count; ++j)
+                pcd_store(out, r * count + j, 0.0, values[r * stride + first + j]);
+    }
     return out;
 }
 
 NDArray pcd_pack_colour(const NDArray& rSrc, std::size_t n, std::size_t width, bool as_float) {
     NDArray out(as_float ? DType::Float32 : DType::UInt32, {n, std::size_t(1)});
+    const detail::DoubleView values(rSrc);
     for (std::size_t r = 0; r < n; ++r) {
         std::uint32_t channel[4] = {0, 0, 0, 0};
         for (std::size_t j = 0; j < width; ++j) {
-            double v = std::nearbyint(detail::read_double(rSrc, r * width + j));
+            double v = std::nearbyint(values[r * width + j]);
             v = std::isnan(v) ? 0.0 : std::min(255.0, std::max(0.0, v));
             channel[j] = static_cast<std::uint32_t>(v);
         }
@@ -747,19 +760,37 @@ NDArray pcd_pack_colour(const NDArray& rSrc, std::size_t n, std::size_t width, b
     return out;
 }
 
-std::string pcd_ascii_value(const NDArray& rData, std::size_t index, char type) {
-    char buf[64];
-    if (type == 'F') {
-        const double v = detail::read_double(rData, index);
-        if (std::isnan(v))
-            return "nan";
-        detail::snprintf_c(buf, sizeof(buf), rData.Dtype() == DType::Float32 ? "%.9g" : "%.17g", v);
-        return buf;
+/// One output column's values as text, with the dtype switch taken once.
+class PcdAsciiColumn {
+public:
+    PcdAsciiColumn(const NDArray& rData, char type) : mpData(&rData), mType(type) {
+        if (type == 'F')
+            mDoubles.emplace(rData);
+        else if (rData.Dtype() != DType::UInt64)
+            mInts.emplace(rData);
     }
-    if (rData.Dtype() == DType::UInt64)
-        return std::to_string(rData.As<std::uint64_t>()[index]);
-    return std::to_string(detail::read_int(rData, index));
-}
+
+    std::string Value(std::size_t index) const {
+        char buf[64];
+        if (mType == 'F') {
+            const double v = (*mDoubles)[index];
+            if (std::isnan(v))
+                return "nan";
+            detail::snprintf_c(buf, sizeof(buf),
+                               mpData->Dtype() == DType::Float32 ? "%.9g" : "%.17g", v);
+            return buf;
+        }
+        if (mpData->Dtype() == DType::UInt64)
+            return std::to_string(mpData->As<std::uint64_t>()[index]);
+        return std::to_string((*mInts)[index]);
+    }
+
+private:
+    const NDArray* mpData;
+    char mType;
+    std::optional<detail::DoubleView> mDoubles;
+    std::optional<detail::Int64View> mInts;
+};
 
 }  // namespace
 
@@ -786,8 +817,9 @@ void write_pcd(const std::string& rPath, const Mesh& rMesh, PcdData data, bool f
     }
     if (!float64_points && points.Dtype() != DType::Float32) {
         bool changed = false;
+        const detail::DoubleView coordinates(points);
         for (std::size_t i = 0; i < n * dim && !changed; ++i) {
-            const double v = detail::read_double(points, i);
+            const double v = coordinates[i];
             if (std::isnan(v))
                 continue;
             changed = static_cast<double>(pcd_to_float(v)) != v;
@@ -909,14 +941,17 @@ void write_pcd(const std::string& rPath, const Mesh& rMesh, PcdData data, bool f
 
     std::string body;
     if (data == PcdData::Ascii) {
+        std::deque<PcdAsciiColumn> columns;  // views are not movable
+        for (const auto& f : fields)
+            columns.emplace_back(f.mData, f.mType);
         for (std::size_t i = 0; i < n; ++i) {
             bool first = true;
-            for (const auto& f : fields)
-                for (std::size_t e = 0; e < f.mCount; ++e) {
+            for (std::size_t k = 0; k < fields.size(); ++k)
+                for (std::size_t e = 0; e < fields[k].mCount; ++e) {
                     if (!first)
                         body += ' ';
                     first = false;
-                    body += pcd_ascii_value(f.mData, i * f.mCount + e, f.mType);
+                    body += columns[k].Value(i * fields[k].mCount + e);
                 }
             body += '\n';
         }

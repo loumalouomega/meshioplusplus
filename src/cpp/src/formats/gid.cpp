@@ -65,6 +65,7 @@ GidMode gid_mode_from_name(const std::string& rName) {
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "../detail/typed_view.hpp"
 
 extern "C" {
 #include "gidpost.h"
@@ -250,9 +251,10 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
     const std::size_t np = rMesh.NumPoints();
 
     std::vector<double> xyz(np * 3);
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < np; ++i)
         for (std::size_t c = 0; c < 3; ++c)
-            xyz[i * 3 + c] = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
+            xyz[i * 3 + c] = c < dim ? point_values[i * dim + c] : 0.0;
 
     std::int64_t elem_base = 1;  // next 1-based global element id, across every block
     bool wrote_coords = false;
@@ -262,7 +264,7 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         const GidTypeEntry* entry = rEntries[bi];
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t ne = cb.NumCells();
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
 
         gid_check(
             GiD_fBeginMesh(fd, rMeshNames[bi].c_str(), GiD_3D, entry->mType, static_cast<int>(npc)),
@@ -298,16 +300,15 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
             ids[r] = static_cast<int>(elem_base + static_cast<std::int64_t>(r));
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
-                flat_conn[r * npc + j] =
-                    static_cast<int>(detail::read_int(conn, r * npc + src_j)) + 1;
+                flat_conn[r * npc + j] = static_cast<int>(conn[r * npc + src_j]) + 1;
             }
         }
 
         if (pMatName != nullptr) {
-            const NDArray& mat_arr = rMesh.CellData(*pMatName, bi);
+            const detail::Int64View mat_values(rMesh.CellData(*pMatName, bi));
             std::vector<int> mat(ne);
             for (std::size_t r = 0; r < ne; ++r)
-                mat[r] = static_cast<int>(detail::read_int(mat_arr, r));
+                mat[r] = static_cast<int>(mat_values[r]);
             gid_check(GiD_fWriteElementsIdMatBlock(fd, static_cast<int>(ne), ids.data(),
                                                    flat_conn.data(), mat.data()),
                       "WriteElementsIdMatBlock('" + rMeshNames[bi] + "')");
@@ -460,16 +461,15 @@ void gid_declare_gauss_set(GiD_FILE fd, const Mesh& rMesh, const std::string& rG
                                    /*InternalCoord=*/has_coords ? 0 : 1),
               "BeginGaussPoint('" + rGaussName + "')");
     if (has_coords) {
-        const NDArray& coords = rMesh.FieldData(coords_key);
+        const detail::DoubleView coords(rMesh.FieldData(coords_key));
         for (std::size_t i = 0; i < g; ++i) {
-            const double a = detail::read_double(coords, i * dim + 0);
-            const double b = detail::read_double(coords, i * dim + 1);
+            const double a = coords[i * dim + 0];
+            const double b = coords[i * dim + 1];
             if (dim == 2)
                 gid_check(GiD_fWriteGaussPoint2D(fd, a, b), "WriteGaussPoint2D");
             else
-                gid_check(
-                    GiD_fWriteGaussPoint3D(fd, a, b, detail::read_double(coords, i * dim + 2)),
-                    "WriteGaussPoint3D");
+                gid_check(GiD_fWriteGaussPoint3D(fd, a, b, coords[i * dim + 2]),
+                          "WriteGaussPoint3D");
         }
     }
     gid_check(GiD_fEndGaussPoint(fd), "EndGaussPoint('" + rGaussName + "')");
@@ -530,8 +530,9 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
         // is a straight copy for any G -- the (r, gp, c) index is r*cols +
         // p*k + c on both sides.
         std::vector<double> vals(out_rows * k);
+        const detail::DoubleView values(rArr);
         for (std::size_t i = 0; i < out_rows * k; ++i)
-            vals[i] = detail::read_double(rArr, i);
+            vals[i] = values[i];
         gid_check(
             GiD_fWriteResultBlock(fd, rName.c_str(), rAnalysis.c_str(), step, rtype, loc, gauss,
                                   nullptr, 0, nullptr, nullptr, static_cast<int>(out_rows),
@@ -544,9 +545,10 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
                                                 " has no GiD result type; written as " +
                                                 std::to_string(k) + " scalars");
     std::vector<double> col(out_rows);
+    const detail::DoubleView values(rArr);
     for (std::size_t c = 0; c < k; ++c) {
         for (std::size_t i = 0; i < out_rows; ++i)
-            col[i] = detail::read_double(rArr, i * k + c);
+            col[i] = values[i * k + c];
         const std::string cname = rName + "_" + std::to_string(c + 1);
         gid_check(GiD_fWriteResultBlock(fd, cname.c_str(), rAnalysis.c_str(), step, GiD_Scalar, loc,
                                         gauss, nullptr, 0, nullptr, nullptr,
@@ -734,8 +736,10 @@ bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
     const NDArray& pb = rB.Points();
     if (pa.Size() != pb.Size())
         return false;
+    const detail::DoubleView values_a(pa);
+    const detail::DoubleView values_b(pb);
     for (std::size_t i = 0; i < pa.Size(); ++i)
-        if (detail::read_double(pa, i) != detail::read_double(pb, i))
+        if (values_a[i] != values_b[i])
             return false;
     for (std::size_t bi = 0; bi < rA.NumCellBlocks(); ++bi) {
         const auto ca = rA.Cells(bi);
@@ -747,8 +751,10 @@ bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
         const NDArray& nb2 = cb.Conn();
         if (na.Size() != nb2.Size())
             return false;
+        const detail::Int64View ids_a(na);
+        const detail::Int64View ids_b(nb2);
         for (std::size_t i = 0; i < na.Size(); ++i)
-            if (detail::read_int(na, i) != detail::read_int(nb2, i))
+            if (ids_a[i] != ids_b[i])
                 return false;
     }
     return true;

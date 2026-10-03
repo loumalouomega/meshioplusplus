@@ -51,6 +51,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "../detail/typed_view.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/region.hpp"
@@ -387,14 +388,14 @@ GltfSurface gltf_collect(const Mesh& rMesh, const std::vector<std::int64_t>& rBa
                 source.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
             vol.AddPointData(kGltfSourcePoint, std::move(source));
             const Mesh skin = detail::surface_extract(vol, true, true, true, "gltf");
-            const NDArray& src = skin.PointData(kGltfSourcePoint);
+            const detail::Int64View src(skin.PointData(kGltfSourcePoint));
 
             std::vector<std::int64_t> parents;
             const std::string parent_key = "surface:parent_cell";
             for (std::size_t b = 0; b < skin.CellDataNumBlocks(parent_key); ++b) {
-                const NDArray& a = skin.CellData(parent_key, b);
+                const detail::Int64View parent_ids(skin.CellData(parent_key, b));
                 for (std::size_t r = 0; r < skin.Cells(b).NumCells(); ++r)
-                    parents.push_back(detail::read_int(a, r));
+                    parents.push_back(parent_ids[r]);
             }
 
             std::size_t cell_index = 0;
@@ -407,12 +408,11 @@ GltfSurface gltf_collect(const Mesh& rMesh, const std::vector<std::int64_t>& rBa
                     continue;
                 }
                 const std::size_t npc = type == "quad" ? 4 : 3;
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 std::array<std::int64_t, 4> corner{};
                 for (std::size_t c = 0; c < ncells; ++c) {
                     for (std::size_t k = 0; k < npc; ++k)
-                        corner[k] = detail::read_int(
-                            src, static_cast<std::size_t>(detail::read_int(conn, c * npc + k)));
+                        corner[k] = src[static_cast<std::size_t>(conn[c * npc + k])];
                     const std::int64_t parent = parents[cell_index++];
                     const std::int64_t this_facet = facet++;
                     const GltfKey4 key = gltf_sorted_key(corner.data(), npc);
@@ -493,8 +493,9 @@ GltfNodes gltf_assign_nodes(const Mesh& rMesh, std::size_t TotalCells, bool ByRe
     for (std::size_t r = 0; r < regions.size(); ++r) {
         const meshioplusplus::Region& reg = rMesh.Region(regions[r]);
         const std::size_t size = reg.NumEntries();
+        const detail::Int64View entries(reg.mEntries);
         for (std::size_t e = 0; e < size; ++e) {
-            const std::int64_t g = detail::read_int(reg.mEntries, e);
+            const std::int64_t g = entries[e];
             if (g < 0 || static_cast<std::size_t>(g) >= TotalCells)
                 continue;
             const std::size_t gi = static_cast<std::size_t>(g);
@@ -588,7 +589,7 @@ struct GltfNodeBuilders {
 
 // Reduce one row to a scalar: the requested component, or the magnitude, summed
 // left to right with one sqrt at the end -- what the Python reference does.
-double gltf_scalarize(const NDArray& rArray, std::size_t Row, std::size_t NumComponents,
+double gltf_scalarize(const detail::DoubleView& rArray, std::size_t Row, std::size_t NumComponents,
                       const std::optional<int>& rComponent) {
     if (NumComponents == 0)
         return std::nan("");
@@ -599,13 +600,13 @@ double gltf_scalarize(const NDArray& rArray, std::size_t Row, std::size_t NumCom
             throw std::invalid_argument(std::string(kGltfPrefix) + "component " +
                                         std::to_string(c) + " is out of range for an array with " +
                                         std::to_string(NumComponents) + " component(s)");
-        return detail::read_double(rArray, base + static_cast<std::size_t>(c));
+        return rArray[base + static_cast<std::size_t>(c)];
     }
     if (NumComponents == 1)
-        return detail::read_double(rArray, base);
+        return rArray[base];
     double sum = 0.0;
     for (std::size_t k = 0; k < NumComponents; ++k) {
-        const double v = detail::read_double(rArray, base + k);
+        const double v = rArray[base + k];
         sum += v * v;
     }
     return std::sqrt(sum);
@@ -860,9 +861,10 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
             const NDArray& arr = rMesh.PointData(rOpt.mColorBy);
             const std::size_t ncomp = n == 0 ? 0 : arr.Size() / n;
             color.mValues.assign(n, std::nan(""));
+            const detail::DoubleView values(arr);
             for (std::size_t p = 0; p < n; ++p)
                 if (used[p])
-                    color.mValues[p] = gltf_scalarize(arr, p, ncomp, rOpt.mComponent);
+                    color.mValues[p] = gltf_scalarize(values, p, ncomp, rOpt.mComponent);
         } else {
             const std::size_t blocks = rMesh.NumCellBlocks();
             if (rMesh.CellDataNumBlocks(rOpt.mColorBy) != blocks)
@@ -874,8 +876,9 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
                 const std::size_t nc = rMesh.Cells(b).NumCells();
                 const NDArray& arr = rMesh.CellData(rOpt.mColorBy, b);
                 const std::size_t ncomp = nc == 0 ? 0 : arr.Size() / nc;
+                const detail::DoubleView values(arr);
                 for (std::size_t r = 0; r < nc; ++r)
-                    color.mValues.push_back(gltf_scalarize(arr, r, ncomp, rOpt.mComponent));
+                    color.mValues.push_back(gltf_scalarize(values, r, ncomp, rOpt.mComponent));
             }
         }
         bool seen = false;
@@ -929,9 +932,10 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
             f.mNumComp = ncomp;
             f.mData.resize(n * ncomp);
             bool finite = true;
+            const detail::DoubleView values(arr);
             for (std::size_t p = 0; p < n; ++p)
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    const float v = static_cast<float>(detail::read_double(arr, p * ncomp + c));
+                    const float v = static_cast<float>(values[p * ncomp + c]);
                     f.mData[p * ncomp + c] = v;
                     if (used[p] && !std::isfinite(v))
                         finite = false;
@@ -959,9 +963,9 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         if (n > 0 && shape.size() == 2 && shape[0] == n && shape[1] == 3) {
             point_normals.resize(n);
             point_normal_ok.assign(n, 0);
+            const detail::DoubleView values(arr);
             for (std::size_t p = 0; p < n; ++p) {
-                const Vec3 v{detail::read_double(arr, p * 3), detail::read_double(arr, p * 3 + 1),
-                             detail::read_double(arr, p * 3 + 2)};
+                const Vec3 v{values[p * 3], values[p * 3 + 1], values[p * 3 + 2]};
                 const double len = detail::vec3_norm(v);
                 if (std::isfinite(len) && len > 0.0) {
                     point_normals[p] = detail::vec3_scale(v, 1.0 / len);
