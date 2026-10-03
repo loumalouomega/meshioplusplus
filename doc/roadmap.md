@@ -101,7 +101,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 4. Classify the change by the [ABI policy](./abi.md): the body of an exported, non-inline function is free; an inline or template body in an installed header is Tier B; a new function in an installed header is additive and goes in the [ABI review](./abi_reviews.md); a changed signature, or the layout of an installed type, is Tier A. Regenerate the single header.
 5. Correct every code comment that describes the old algorithm (the items name the stale ones already found), and update the numbers in [benchmarks](./benchmarks.md).
 
-**3.0 Clang Tidy.**: Use Clang Tidy (or clangd-tidy) optimizations commands to find potential improvements. **L**
+**3.0 Clang-Tidy performance findings.** The advisory `performance-*` runner and initial SEQ inventories across MESHIO/NATIVE/KRATOS, the C API and native CLI, plus Python on MESHIO, are in place ([workflow and coverage](./benchmarks.md#clang-tidy-performance-audit)). Remaining: review the implementation candidates in small measured batches, separately review installed-header/pybind11 ownership suggestions, and cover the optional-library, OpenMP/TBB and WASM paths not enabled by those inventories. No bulk automatic fixes or zero-warning target; the landing gates above apply to every accepted change. **L**
 
 **3.1 Text I/O.**
 

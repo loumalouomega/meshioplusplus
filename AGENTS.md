@@ -36,6 +36,7 @@ Run from the repository root unless specified otherwise.
 | WASM | `build/configure-wasm.sh --build`; requires Emscripten; see [doc/wasm.md](doc/wasm.md) |
 | Single header | `tools/amalgamate.sh` to regenerate; `--check` to check freshness; `--smoke` to regenerate and compile |
 | C++ includes | `tools/include-cleanup.sh --check` with HDF5/netCDF installed; unused includes fail, missing-include suggestions are advisory |
+| C++ performance audit | `tools/performance-tidy.sh --jobs 4`; advisory `performance-*` findings, fatal parsing/tool failures; see [benchmarks](doc/benchmarks.md#clang-tidy-performance-audit) for coverage and ABI review |
 | Docs (VitePress) | In `doc/`: `npm install`, then `npm run docs:build` (or `npm run docs:dev`) |
 | Doxygen reference | In `doc/`: `doxygen Doxyfile`; after the VitePress build, copy `doxygen-build/html` to `.vitepress/dist/api` |
 | Python notebook outputs | `PYVISTA_OFF_SCREEN=true jupyter nbconvert --to notebook --execute --inplace example/python/*.ipynb` |

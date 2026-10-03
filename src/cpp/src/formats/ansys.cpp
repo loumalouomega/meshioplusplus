@@ -1096,6 +1096,8 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
     std::int64_t first = 1;
     for (const FlZone& z : cell_zones) {
         std::vector<int> types;
+        // Membership comes from the in-memory mesh, not an unchecked file count.
+        types.reserve(z.mMembers.size());
         for (std::size_t c : z.mMembers)
             types.push_back(fl_element_type(rMesh.Cells(cell_block[c]).Type()));
         const bool mixed =
@@ -1107,6 +1109,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
             fh << "(12 (" << head << "))\n";
         } else {
             std::vector<std::vector<std::int64_t>> rows;
+            rows.reserve(types.size());
             for (int t : types)
                 rows.push_back({t});
             write_ints("12", head, rows);

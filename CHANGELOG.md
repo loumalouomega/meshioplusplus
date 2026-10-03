@@ -8,6 +8,11 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- Performance audit (2026-10-03, roadmap §3.0): added a separate advisory Clang-Tidy `performance-*` runner with deduplicated JSON reports, per-TU logs, actual configuration/feature coverage and fatal incomplete-scan handling. Initial SEQ scans cover all three mesh backends, C/native CLI boundaries and Python/pybind11 on MESHIO. The existing include-hygiene gate is unchanged; installed-header and ownership-sensitive findings remain reviewed rather than automatically fixed.
+- First allocation batch: reserve the Fluent writer's mesh-sized cell-type and mixed-zone row lists, with native tests across mesh backends and Python/reference byte comparisons for mixed triangle/quad zones. SEQ timings are essentially unchanged; this is capacity planning, not a claimed throughput speedup. C++ ABI 22 and public APIs are unchanged; the single header is regenerated.
+
 ## v16.30.0 (2026-10-03)
 
 - Fixed native Ansys `.rst` record-pointer validation to reject offsets whose header-length addition would wrap, with direct C++ regression tests. Valid results files retain their existing behavior.

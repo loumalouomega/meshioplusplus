@@ -215,6 +215,46 @@ TEST(Ansys, AsciiAndBinary) {
     }
 }
 
+TEST(Ansys, MixedCellTypesInOneZone) {
+    // Explicitly join the triangle and quad blocks into one Fluent cell zone.
+    // The default writer gives each block its own uniform-type zone instead.
+    mt::Mesh src = mt::tri_quad_mesh();
+    std::vector<meshioplusplus::NDArray> zones;
+    for (const auto cb : src.CellRange()) {
+        meshioplusplus::NDArray tags(meshioplusplus::DType::Int64, {cb.NumCells()});
+        std::fill_n(tags.As<std::int64_t>(), cb.NumCells(), 7);
+        zones.push_back(std::move(tags));
+    }
+    src.AddCellData("ansys:zone", std::move(zones));
+    for (bool binary : {false, true}) {
+        const std::string path = mt::temp_path(".msh");
+        meshioplusplus::write_ansys(path, src, binary);
+        const mt::Mesh out = meshioplusplus::read_ansys(path);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        ASSERT_TRUE(out.HasCellData("ansys:zone"));
+        for (const auto expected : src.CellRange()) {
+            // The reader coalesces repeated blocks of the same cell type.
+            std::size_t expected_count = 0;
+            for (const auto cb : src.CellRange())
+                if (cb.Type() == expected.Type())
+                    expected_count += cb.NumCells();
+            bool found = false;
+            for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+                const auto actual = out.Cells(b);
+                if (actual.Type() != expected.Type())
+                    continue;
+                found = true;
+                EXPECT_EQ(actual.NumCells(), expected_count);
+                const auto& tags = out.CellData("ansys:zone", b);
+                for (std::size_t c = 0; c < actual.NumCells(); ++c)
+                    EXPECT_EQ(meshioplusplus::detail::read_int(tags, c), 7);
+            }
+            EXPECT_TRUE(found) << expected.Type();
+        }
+    }
+}
+
 TEST(Dolfin, TriangleTetra) {
     auto w = [](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_dolfin(p, m); };
     auto r = [](const std::string& p) { return meshioplusplus::read_dolfin(p); };

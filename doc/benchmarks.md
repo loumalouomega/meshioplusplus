@@ -97,6 +97,82 @@ BASELINE=before.csv CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh after.csv "S
 
 The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and 4 threads on every pull request. The digest is also available to the C++ tests (`src/cpp/benchmark/mesh_digest.hpp`), where golden digests pin an operation's output across a rewrite.
 
+## Clang-Tidy performance audit
+
+`tools/performance-tidy.sh` runs the installed Clang-Tidy's built-in [`performance-*` checks](https://clang.llvm.org/extra/clang-tidy/checks/list.html) as an advisory audit, independently of `.clang-tidy`'s include-hygiene gate. It never applies fixes. Findings are candidates, not measured speedups: a cheap `CellView` value is intentional, clones must retain their ownership semantics, and changing a public enum's width, signature or installed inline body needs the [ABI policy](./abi.md), even when the tool offers a replacement.
+
+```sh
+# Configure a separate Clang/SEQ tree, then audit its core, C API and native CLI.
+tools/performance-tidy.sh --jobs 4
+tools/performance-tidy.sh --mesh-backend NATIVE --jobs 4
+tools/performance-tidy.sh --mesh-backend KRATOS --jobs 4
+
+# Reuse a configured tree (including Python or optional libraries when enabled).
+tools/performance-tidy.sh --build-dir build/performance-tidy-meshio --out build/performance-tidy-meshio/before.json
+
+# A selected-TU scan is explicitly marked as selected, not whole-tree coverage.
+tools/performance-tidy.sh --build-dir build/performance-tidy-meshio --file src/cpp/src/formats/ansys.cpp
+```
+
+The default build tree is `build/performance-tidy-<mesh-backend>`; CMake module scanning is disabled so GCC-only dependency-scanner flags cannot contaminate Clang-Tidy's command line. Set `CLANG_TIDY`, `CC`, `CXX` or `PYTHON` to choose executables. To cover Python, OpenMP/TBB, WASM or optional dependencies, configure their real compilation databases separately with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF`, and pass `--build-dir`; the default configuration does not enable Python, WASM or opt-in libraries. Check the report's actual `compile_defines`, not just `WITH_*=ON` requests, to see which conditional paths were included.
+
+The JSON report records the tool version, enabled checks, explicit Clang-Tidy profile, database hash, CMake settings, actual compile definitions for the scanned commands, scanned translation units and deduplicated source-location/check findings, with the TUs that reported each one. Installed-header findings are labelled for ABI review rather than automatically rejected or accepted. Each TU also has a raw log beside the report. A non-zero tool exit or parsing error makes the scan fail and marks its report incomplete; a new scan invalidates an earlier successful report before configuration or tool startup. A database containing no first-party sources, a stale command or a requested source without a compile command is an error, never an invitation to guess flags. Third-party and generated single-header sources are excluded.
+
+For clangd's editing feedback, opt in locally through a matching fragment in your user `clangd/config.yaml` (for example, `~/.config/clangd/config.yaml` on Linux), substituting your checkout and build paths. This does not change the repository's include-only `.clang-tidy`; clangd's default fast-check filter may skip expensive checks, so use the standalone runner for the exhaustive inventory.
+
+```yaml
+If:
+  PathMatch: '/path/to/meshioplusplus/(src/cpp|bindings)/.*'
+CompileFlags:
+  CompilationDatabase: /path/to/meshioplusplus/build/performance-tidy-meshio
+Diagnostics:
+  ClangTidy:
+    Add: 'performance-*'
+```
+
+The initial audit (2026-10-03, Clang-Tidy 23.1.1, 22 checks, SEQ, HDF5/netCDF/zlib enabled) completed without parsing failures:
+
+| Mesh backend | First-party TUs | Unique findings | Additional boundary coverage |
+| --- | ---: | ---: | --- |
+| MESHIO | 189 | 522 | C API, native CLI, Python/pybind11 |
+| NATIVE | 188 | 285 | C API, native CLI |
+| KRATOS | 188 | 286 | C API, native CLI |
+
+The MESHIO inventory groups as follows; a location can have more than one check, so these are diagnostic counts rather than distinct edits:
+
+| Candidate class | Diagnostics | Triage |
+| --- | ---: | --- |
+| Value parameters, copied initializations and moves | 287 | Review ownership first; many are pybind11 refcount suggestions, small metadata copies or necessary owned clones. |
+| Vector capacity planning | 59 | First batch: the Fluent writer's two mesh-sized lists; small metadata lists and unchecked reader counts are deferred. |
+| String concatenation, find/character overloads and view conversion | 91 | Many are error paths or header parsing; no reader throughput win established yet. |
+| Enum width | 85 | Installed enum widths are ABI-sensitive; private enums still need evidence before narrowing. |
+
+These counts are a baseline for triage, not a zero-warning target. Public enum-width and nested-vector ingestion-signature suggestions require a separate ABI decision; pybind11 value-parameter suggestions require lifetime/refcount review. Many remaining reservations concern small metadata vectors or untrusted reader counts, and many string-concatenation suggestions are error paths. Prioritize measured hot paths and do not reserve directly from an unchecked file count. Optional CGNS MLL, ADIOS2, TecIO, KaHIP, bzip2, zstd/lz4 and viewer paths, other parallel configurations and WASM remain separate coverage work. For each accepted implementation-only batch, preserve the before report, record timing/allocation evidence, run native and Python parity tests, and apply the [determinism check](#determinism-check) to operation changes. The include-hygiene CI policy remains unchanged.
+
+### First batch: Fluent cell-zone list capacity
+
+`write_ansys` now reserves the mesh-derived size of its cell-type list and, for a mixed-type cell zone, the outer row list. This removes repeated capacity growth without changing ingestion, traversal order or serial/parallel work. The two `performance-inefficient-vector-operation` findings disappear on every mesh backend; complete post-change SEQ scans report 520/283/284 findings for MESHIO/NATIVE/KRATOS, with no new diagnostics. This is an exported non-inline function-body change, with no installed declaration, inline body, signature or layout changes: C++ ABI 22 is unchanged, and the single header is regenerated.
+
+On an AMD Ryzen 7 255 (16 logical CPUs), Clang 23.1.1 Release/SEQ, `benchmark/bench.py --sizes M,L --formats ansys --repeats 7` gives the following binary-writer medians. These differences are small enough that the change is treated as an allocation reduction, not an established throughput speedup; no material SEQ slowdown was observed.
+
+| Input | Cells | Before | After |
+| --- | ---: | ---: | ---: |
+| M tetrahedral grid | 257,250 | 288.8 ms | 288.6 ms |
+| L tetrahedral grid | 998,250 | 1123.0 ms | 1104.1 ms |
+
+Counting ordinary global `operator new` requests around a warmed-up direct native write, with the same output pathname before and after, gives the following reductions on SEQ/libstdc++; ASCII and binary have identical reductions. These are cumulative allocation requests saved per write, **not peak RSS measurements**. The mixed inputs split alternate squares of 420×420 and 816×816 grids into triangles, keep the other squares as quads, and join both types into zone 7.
+
+| Input | Cells | Allocation calls eliminated | Requested bytes eliminated |
+| --- | ---: | ---: | ---: |
+| M uniform zone | 257,250 | 18 | 1,068,148 (1.02 MiB) |
+| L uniform zone | 998,250 | 20 | 4,395,604 (4.19 MiB) |
+| M mixed zone | 264,600 | 38 | 21,951,300 (20.93 MiB) |
+| L mixed zone | 998,784 | 40 | 30,754,276 (29.33 MiB) |
+
+The [raw auxiliary sweep](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/performance_tidy_fluent.csv) preserves 112 before/after rows: both M/L inputs, both zone shapes, ASCII/binary, SEQ at 1 thread, and OpenMP/TBB at 1/4/8 threads. Every SHA-256 agrees across backends, thread counts, repeats and the pre-change baseline (`5726a4a2`). SEQ/TBB use Clang 23.1.1, OpenMP uses GCC 16.2.1; TBB is capped with `tbb::global_control`, not merely `OMP_NUM_THREADS`. Its three-repeat writer timings had background build/test activity and the allocation interposer loaded (counting disabled during timing), so they are retained for transparency, not used to claim a speedup; the seven-repeat uninstrumented harness timings above are the primary SEQ comparison.
+
+Native C++ tests cover ASCII/binary output and an explicit triangle/quad zone on MESHIO, NATIVE and KRATOS; Python tests compare that mixed zone byte-for-byte with the reference writer and retain the existing I/O byte baselines. The new test joins cell blocks using `ansys:zone`, because default block-per-zone inputs do not exercise the mixed-type row list. Run backend CTest suites serially or give them separate temporary directories: `mt::temp_path` is process-local, so concurrent suites sharing one `TMPDIR` can overwrite each other's fixtures.
+
 ## In CI
 
 The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Successful default-branch runs also publish immutable records with commit, run/attempt, machine, compiler, dependencies and benchmark parameters to `benchmark-data`; the [benchmark trends page](./benchmark_trends.md) plots that history through the existing Pages deployment. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every [performance](./roadmap.md#_3-performance) item on the roadmap is expected to show its before and after with these tools.
