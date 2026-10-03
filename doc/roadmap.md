@@ -101,6 +101,8 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 4. Classify the change by the [ABI policy](./abi.md): the body of an exported, non-inline function is free; an inline or template body in an installed header is Tier B; a new function in an installed header is additive and goes in the [ABI review](./abi_reviews.md); a changed signature, or the layout of an installed type, is Tier A. Regenerate the single header.
 5. Correct every code comment that describes the old algorithm (the items name the stale ones already found), and update the numbers in [benchmarks](./benchmarks.md).
 
+**3.0 Clang Tidy.**: Use Clang Tidy (or clangd-tidy) optimizations commands to find potential improvements. **L**
+
 **3.1 Text I/O.**
 
 - **3.1.1 The tokenizer's remaining readers.** The tool exists: the core-private `detail/text_cursor.hpp` splits a mapped file into `string_view` lines and blank-separated tokens, parses bounded tokens (`parse_double_token`, `parse_int_token`, and `strtoll_token`/`strtoull_token`/`parse_double_prefix` for the lenient C-library semantics), and offers `TextStream`, a drop-in for a classic-locale `istringstream >>` that `test_text_cursor.cpp` pins against it token for token; the readers not yet on it are listed below. What remains is performance only: every stream is pinned to the classic locale. **S per reader**
