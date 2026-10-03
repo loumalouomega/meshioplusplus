@@ -8,7 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased (2026-10-02)
+## v16.30.0 (2026-10-03)
+
+- Fixed native Ansys `.rst` record-pointer validation to reject offsets whose header-length addition would wrap, with direct C++ regression tests. Valid results files retain their existing behavior.
+- Released the benchmark, fuzzing and reader-robustness work below with C++ ABI 22 unchanged. Synchronized all ten release-version files, C++ package pins, the viewer lockfile, single header and version-dependent byte baselines; verified the old hashes with the old version substituted back in.
 
 - CI fixes (2026-10-03): native VTK topology conversion rejects non-finite and out-of-range floating values, with direct tests and a minimized fuzz regression. Library preflight tests respect optional HDF5 support. Fuzz shell tests require POSIX, the campaign supports Bash 3.2 without dictionaries, and mutator child failures no longer publish empty libFuzzer artifacts; fault-injection tests cover aborts and sanitizer reports.
 - Viewer dependency security: raised the `brace-expansion` override to `^5.0.12` and `fast-uri` to `^3.1.8`, regenerating the npm lockfile to address Dependabot alerts #49–#52 (brace-expansion denial of service and fast-uri host case normalization). No mesh API or ABI change.

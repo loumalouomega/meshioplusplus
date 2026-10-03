@@ -47,6 +47,8 @@ The file is a sequence of Fortran-style records: an `i32` length in 4-byte words
 
 Integer, `int16`, `float32` and `float64` records are read, dense or bit- and windowed-sparse. zlib-compressed records (written with `/FCOMP,RST,1` or higher) are refused, naming `/FCOMP,RST,0`. A file must be little-endian, as MAPDL writes on every current platform.
 
+Record pointers are checked against the file's word count before reading a record header, including offsets whose header-length addition would wrap. Invalid pointers raise a read error rather than being accepted as in-file offsets.
+
 ## Mapping
 
 | `.rst` | meshio++ |
