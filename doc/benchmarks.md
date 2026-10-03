@@ -233,6 +233,27 @@ The [112-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/b
 
 These timings are **neutral**: every L row changes direction between rounds, and the writers spend their time formatting numbers, not dispatching on the dtype. No writer speedup is claimed for canonical inputs. The unchanged readers fluctuate the same way (PERMAS L 150.38→158.57 and 153.02→155.99 ms; FLUX L 293.26→301.37 and 389.78→287.40 ms), and all rows remain published. The hoist pays off for non-canonical inputs (float32 points, int32 connectivity), where the per-element switch is replaced by one parallel conversion. `test_text_io_dtypes.cpp` and `test_text_io_dtypes.py` pin byte identity across all ten dtypes and in 2-D and 3-D, and check that a caller's arrays are not modified.
 
+### Dtype-hoisted Gmsh, FEBio, Z88, Patran, Femap and MDPA writers
+
+Roadmap §3.1.2's second writer batch, in the same shape as the [first](#dtype-hoisted-off-ip-flux-and-permas-writers): the Gmsh 2.2/4.1 (ASCII and binary), FEBio, Z88, Patran, Femap and MDPA writers read their points, connectivity, per-cell tags/types/properties and data arrays through one private `detail::DoubleView`/`detail::Int64View` per array, instead of a `read_double`/`read_int` dtype switch per element. Z88's constraint and surface-load arrays, MDPA's per-value formatter (now a small array-level helper) and Femap's mesh fingerprint use views too. Readers are untouched. The change is in non-inline `.cpp` bodies and a private header, so installed headers and C++ ABI 22 are unchanged.
+
+The [168-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch13_float64_int64.csv) (SEQ at one thread; OpenMP and TBB at 1/4/8) and the [48-row two-round confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch13_float64_int64_seq_confirmation.csv) use the canonical float64/int64 benchmark inputs, where a view is zero-copy. Gmsh timing selects its ASCII 4.1 path; the binary paths and the 2.2 writer are covered by the dtype tests. Written-file and parsed-mesh SHA-256 values agree across stages, backends and thread counts, and reader and writer allocation calls and requested bytes are identical before and after in every configuration: canonical inputs allocate no view storage.
+
+| SEQ writer | M write, round 1 | M write, round 2 | L write, round 1 | L write, round 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Gmsh 4.1 ASCII | 101.3 → 99.9 ms | 100.3 → 91.7 ms | 387.5 → 386.1 ms | 383.9 → 384.4 ms |
+| FEBio | 79.4 → 75.7 ms | 81.3 → 76.4 ms | 312.2 → 300.6 ms | 310.0 → 305.2 ms |
+| Z88 | 170.1 → 175.6 ms | 172.0 → 172.7 ms | 703.3 → 687.6 ms | 674.2 → 675.6 ms |
+| Patran | 472.5 → 482.2 ms | 480.7 → 479.4 ms | 1859.0 → 1892.4 ms | 1873.5 → 1831.7 ms |
+| Femap | 201.4 → 224.2 ms | 208.3 → 210.5 ms | 799.4 → 846.0 ms | 862.7 → 833.0 ms |
+| MDPA | 136.9 → 138.2 ms | 133.6 → 127.4 ms | 514.7 → 525.9 ms | 486.3 → 514.2 ms |
+
+These timings are **neutral**: FEBio writes are the only ones that improve in all four cells (about 1.5–5%); the others change direction between rounds, and Femap's and MDPA's first-round increases are not reproduced in round 2 but are retained. The writers spend their time formatting numbers, so no canonical-input speedup is claimed. The unchanged readers fluctuate by more than the writers do (Femap L 1850.3 → 1472.8 and 1805.0 → 1784.9 ms; Z88 L 639.2 → 761.4 and 750.1 → 764.5 ms), which bounds how much any one cell can be trusted. All rows remain published. The hoist matters for non-canonical inputs (float32 points, int32 connectivity), where the per-element switch becomes one parallel conversion.
+
+`test_text_io_dtypes.cpp` and `test_text_io_dtypes.py` now pin byte identity against canonical storage across all ten dtypes, in 2-D and 3-D, for every writer in both batches, and check that the caller's arrays are not modified. NATIVE and KRATOS ingest arrays as canonical float64/int64, so on those backends the check exercises the same path through converted copies.
+
+Measured on this session's container (4 cores, GCC 13.3 with `-O3 -DNDEBUG -ffp-contract=off`, SEQ/OpenMP/TBB modules built from the same tree), seven repeats after one warmup, TBB capped with `tbb::global_control` and OpenMP with `OMP_NUM_THREADS`; absolute times are not comparable with the earlier batches' machine. The first matrix hashed MDPA's parsed `properties_0` dictionary through its pointer bytes, which varied between processes while every written file was identical; the digest now hashes the dictionary's text and MDPA was re-measured, so the published MDPA rows come from that second run and the other formats from the first.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.

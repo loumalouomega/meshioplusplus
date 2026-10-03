@@ -245,6 +245,11 @@ def test_mfm_seq_confirmation_keeps_both_measurement_orders():
             ("obj", "dex"),
         ),
         ("batch12_float64_int64", ("off", "ip", "flux", "permas"), ()),
+        (
+            "batch13_float64_int64",
+            ("gmsh", "febio", "z88", "patran", "femap", "mdpa"),
+            (),
+        ),
     ],
 )
 def test_text_io_evidence_is_complete_and_bit_identical(batch, formats, decreases):
