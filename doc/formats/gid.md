@@ -34,6 +34,10 @@ A build without gidpost (`-DMESHIOPLUSPLUS_WITH_GIDPOST=OFF`, or gidpost on but 
 
 ## Reading
 
+Quoted and unquoted record tokens are views; short numeric fields use terminated stack buffers, with an owned fallback for unusually long tokens. Names/results remain owned, and numeric-prefix handling, quotes, leading-space result rows and writer bytes are unchanged. See the [token-view evidence](../benchmarks.md#ls-dyna-radioss-card-fields-and-gid-quoted-tokens).
+
+ASCII/gzip line traversal shares a private bounded byte cursor while preserving the leading-space result-row rule and blank/comment filtering. The [cursor consolidation evidence](../benchmarks.md#shared-byte-and-record-cursors) retains neutral/fluctuating results with unchanged allocations rather than claiming a further GiD speedup.
+
 ```python
 mesh = meshioplusplus.read("out.post.msh")              # any of the four spellings
 mesh = meshioplusplus.gid.read("out.post.msh", time_step=1)

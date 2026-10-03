@@ -11,6 +11,8 @@
 
 ## Reading & writing
 
+The native lexer shares bounded source-line and token-record positioning while preserving comment, header, quoting and escape behavior; normalized token text remains deliberately owned. Its temporary source strings do not escape into returned arrays/names. The [cursor comparison](../benchmarks.md#shared-byte-and-record-cursors) is a consolidation result with unchanged allocation evidence, not a tokenizer speedup claim.
+
 ```python
 import meshioplusplus
 

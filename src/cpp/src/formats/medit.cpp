@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/row_writer.hpp"
@@ -88,15 +89,15 @@ struct Tokenizer {
             }
         }
     }
-    std::string next() {
+    std::string_view next() {
         skip_ws();
         std::size_t start = mPos;
         while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
                mBuf[mPos] != '#')
             ++mPos;
-        return std::string(mBuf.substr(start, mPos - start));
+        return mBuf.substr(start, mPos - start);
     }
-    std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
+    std::int64_t next_int() { return detail::strtoll_token(next()); }
     // A section's entry count: every entry takes at least a byte of the file,
     // so a count beyond its size (or a negative one) is corruption rather than
     // something to allocate or loop over.
@@ -104,7 +105,7 @@ struct Tokenizer {
         return static_cast<std::int64_t>(
             detail::checked_count(next_int(), mBuf.size(), "Medit", "entry"));
     }
-    double next_double() { return detail::parse_double(next()); }
+    double next_double() { return detail::parse_double_prefix(next()); }
     // Tokens on the line of the next token, without consuming anything.
     std::size_t tokens_on_next_line() {
         const std::size_t saved = mPos;
@@ -181,7 +182,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
     const auto& e2m = medit_to_meshio();
 
     while (!tok.eof()) {
-        std::string kw = tok.next();
+        std::string kw(tok.next());
         if (kw.empty())
             break;
         if (kw == "MeshVersionFormatted") {

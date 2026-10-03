@@ -1045,7 +1045,17 @@ Full methodology and a reproducible notebook are on the [Benchmarks](https://lou
 
 Contributors can audit the native core with `tools/performance-tidy.sh --jobs 4`: it runs Clang-Tidy's built-in `performance-*` checks separately from the include-hygiene gate, records deduplicated findings and actual build capabilities, and fails on incomplete scans without applying fixes. See the [performance-audit workflow](doc/benchmarks.md#clang-tidy-performance-audit) for ABI review and before/after validation.
 
-The I/O sweep includes the single-type MFM tetrahedral input: `python benchmark/bench.py --sizes M,L --formats mfm --repeats 7`. See [benchmark coverage](doc/benchmarks.md#every-format); MFM's mixed-cell conformance rejection is unchanged.
+The I/O sweep includes the single-type MFM tetrahedral input: `python benchmark/bench.py --sizes M,L --formats mfm --repeats 7`. Its native reader now uses bounded token views, with matching before/after file and mesh digests and substantially fewer allocation requests; see the [measured comparison](doc/benchmarks.md#mfm-bounded-token-views). MFM's mixed-cell conformance rejection and writer bytes are unchanged.
+
+The [measured text-I/O batches](doc/benchmarks.md#off-medit-xyz-and-unv-second-reader-batch) extend bounded token/source-line views across point clouds, scientific mesh formats and solver decks, preserving writer bytes and parsed data across SEQ/OpenMP/TBB. Evidence includes separate timing/allocation measurements, both SEQ measurement orders and retained unfavorable observations. Ownership tests cover source replacement, nested Marc includes and mapped/buffered paths. DEX's sweep input supplies its required scalar nodal field without mutating the shared input; Tecplot's removed unused helper has no runtime-speedup claim.
+
+The [shared-card pass](doc/benchmarks.md#shared-card-views-and-bounded-fortran-numbers) retains the installed owning API while native readers use private views and bounded Fortran-number parsing. Fixed/free-record scope and neutral results are documented alongside the improvements; C++ ABI 22 is unchanged.
+
+Eight format-private adapters also [share bounded byte/record cursors](doc/benchmarks.md#shared-byte-and-record-cursors), preserving grammar and binary positioning. Evidence explicitly exercises native MDPA (whose public Python reader remains the reference) and Gmsh 4.1's tested single-type input, without changing mixed-cell conformance.
+
+The [remaining deck-token pass](doc/benchmarks.md#remaining-deck-token-views) extends views to Abaqus comma/data rows, Nastran logical cards, Netgen whitespace fields and FLAC3D ASCII tokens, with stable ownership for noncontiguous joins and include/gzip sources. Both SEQ orders confirm reader gains; writer bytes and ABI 22 are unchanged.
+
+[DEX normalization and source-copy removal](doc/benchmarks.md#source-copy-removal-and-temporary-ownership-guards) preserve temporary-string ownership and add sanitizer-tested cursor guards. The evidence distinguishes measured text paths from PLY's binary timing input and retains unfavorable writer observations rather than claiming universal speedups.
 
 ### Reading only what you need
 

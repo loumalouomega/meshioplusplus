@@ -24,7 +24,6 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -112,27 +111,12 @@ void store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
     }
 }
 
-struct VtkCursor {
-    // A view, not a reference to a std::string: the buffer may be a memory
-    // mapping rather than an owned string (see detail/file_source.hpp).
-    std::string_view mBuf;
-    std::size_t mPos = 0;
+struct VtkCursor : detail::TextCursor {
+    explicit VtkCursor(std::string_view b) : detail::TextCursor(b) {}
 
-    explicit VtkCursor(std::string_view b) : mBuf(b) {}
+    bool Eof() const { return AtEnd(); }
 
-    bool Eof() const { return mPos >= mBuf.size(); }
-
-    std::string ReadLine() {
-        std::size_t start = mPos;
-        while (mPos < mBuf.size() && mBuf[mPos] != '\n')
-            ++mPos;
-        std::string line(mBuf.substr(start, mPos - start));
-        if (mPos < mBuf.size())
-            ++mPos;  // skip '\n'
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        return line;
-    }
+    std::string ReadLine() { return std::string(Line(true)); }
 
     void ConsumeEol() {
         while (mPos < mBuf.size() && mBuf[mPos] != '\n' &&
@@ -154,27 +138,19 @@ struct VtkCursor {
         NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
-            // strtod/strtoll scan for a terminator: a buffered source is a
-            // std::string, and a mapping relies on the kernel's zero-filled
-            // final page -- which is why FileSource declines page-multiple
-            // sized files.
-            const char* base = mBuf.data();
+            // Shared bounded prefix parsing retains the C-library semantics.
             for (std::size_t i = 0; i < count; ++i) {
-                char* endp = nullptr;
                 if (flt) {
-                    const char* fend = nullptr;
-                    double x = detail::parse_double(base + mPos, fend);
-                    if (fend == base + mPos)
+                    double x = 0.0;
+                    if (!DoublePrefix(x))
                         throw ReadError("VTK ascii parse error");
                     store(a, i, x, 0);
-                    endp = const_cast<char*>(fend);
                 } else {
-                    long long x = std::strtoll(base + mPos, &endp, 10);
-                    if (endp == base + mPos)
+                    std::int64_t x = 0;
+                    if (!IntPrefix(x))
                         throw ReadError("VTK ascii parse error");
-                    store(a, i, 0.0, static_cast<std::int64_t>(x));
+                    store(a, i, 0.0, x);
                 }
-                mPos = static_cast<std::size_t>(endp - base);
             }
         } else {
             if (mPos + count * isz > mBuf.size())
@@ -194,7 +170,7 @@ struct VtkCursor {
 
 std::vector<std::string> split(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);

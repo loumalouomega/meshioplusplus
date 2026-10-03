@@ -20,6 +20,8 @@ meshioplusplus.off.write("out.off", mesh)
 
 `write` takes no keyword arguments.
 
+The native reader uses `TextStream` over a mapped or buffered [`FileSource`](../mmap.md), preserving classic-locale stream extraction and returning owned arrays. Writer bytes are unchanged; see the [text-I/O measurements](../benchmarks.md#off-medit-xyz-and-unv-second-reader-batch).
+
 ## File structure
 
 ```

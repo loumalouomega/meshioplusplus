@@ -183,13 +183,7 @@ struct MdpaDataRow {
 };
 
 /// A cursor over the file's lines, so every block parser advances one index.
-struct MdpaCursor {
-    const std::vector<std::string_view>* mpLines = nullptr;
-    std::size_t mIndex = 0;
-
-    bool Done() const { return mIndex >= mpLines->size(); }
-    std::string_view Next() { return (*mpLines)[mIndex++]; }
-};
+using MdpaCursor = detail::RecordCursor<std::string_view>;
 
 /// The refusal's tail when the caller could have kept the construct in an MdpaInfo.
 constexpr const char* kMdpaNeedsInfo =
@@ -564,7 +558,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
-    MdpaCursor cur{&lines, 0};
+    MdpaCursor cur{lines};
 
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
@@ -727,7 +721,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             // cheap to look ahead over) bound it, and size the coordinates.
             {
                 std::size_t rows = 0;
-                for (std::size_t k = cur.mIndex; k < lines.size(); ++k) {
+                for (std::size_t k = cur.Pos(); k < lines.size(); ++k) {
                     const std::string_view ahead = mdpa_clean(lines[k]);
                     if (ahead == "End Nodes")
                         break;

@@ -83,6 +83,8 @@ MDPA has an unusually rich set of data keys, several structured differently from
 
 ## C++ core
 
+The native block parser uses the shared private record cursor with unchanged grammar, diagnostics and owned mesh/side-channel data. The [cursor evidence](../benchmarks.md#shared-byte-and-record-cursors) explicitly measures `_core.mdpa_read`; the public Python reader deliberately remains the reference implementation described above.
+
 `meshioplusplus::read_mdpa` / `write_mdpa` (`src/cpp/src/formats/mdpa.cpp`) implement the mesh-level part of the format against the uniform mesh API, and are registered in the shared dispatch registry — so `.mdpa` now works from the [C API](../c_api.md), [Fortran](../fortran.md), [Julia](../julia.md), [R](../r.md), [WebAssembly](../wasm.md) and the native CLI. The Kratos entity-name tables are the ones already shared with the [KRATOS mesh backend](../cpp_backends.md) (`backends/kratos_names.hpp`), extended with a longest-suffix fallback so application-specific names such as `SmallDisplacementElement3D4N` resolve through their `Element3D4N` suffix.
 
 What the C++ core maps:

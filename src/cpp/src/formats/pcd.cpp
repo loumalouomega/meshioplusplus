@@ -258,7 +258,7 @@ std::string pcd_upper(std::string s) {
     return s;
 }
 
-std::string pcd_strip(const std::string& rS) {
+std::string_view pcd_strip(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
         ++b;
@@ -267,8 +267,8 @@ std::string pcd_strip(const std::string& rS) {
     return rS.substr(b, e - b);
 }
 
-std::vector<std::string> pcd_words(const std::string& rS) {
-    std::vector<std::string> out;
+std::vector<std::string_view> pcd_words(std::string_view rS) {
+    std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rS.size()) {
         while (i < rS.size() && std::isspace(static_cast<unsigned char>(rS[i])))
@@ -283,12 +283,33 @@ std::vector<std::string> pcd_words(const std::string& rS) {
     return out;
 }
 
-bool pcd_parse_int(const std::string& rTok, long long& rOut) {
+// Bounded, terminated numeric token for the existing errno-sensitive C parses.
+// Keep long-token and embedded-NUL behavior without storing every token as a string.
+class PcdNumberToken {
+public:
+    explicit PcdNumberToken(std::string_view Token) : mSize(Token.size()) {
+        if (mSize < sizeof mSmall) {
+            Token.copy(mSmall, mSize);
+            mSmall[mSize] = '\0';
+        } else {
+            mLarge.assign(Token);
+        }
+    }
+    const char* Data() const { return mSize < sizeof mSmall ? mSmall : mLarge.c_str(); }
+
+private:
+    std::size_t mSize;
+    char mSmall[64];
+    std::string mLarge;
+};
+
+bool pcd_parse_int(std::string_view rTok, long long& rOut) {
     if (rTok.empty())
         return false;
+    const PcdNumberToken tok(rTok);
     errno = 0;
     char* end = nullptr;
-    rOut = std::strtoll(rTok.c_str(), &end, 10);
+    rOut = std::strtoll(tok.Data(), &end, 10);
     return errno == 0 && *end == '\0';
 }
 
@@ -309,18 +330,18 @@ struct PcdHeader {
 };
 
 PcdHeader pcd_parse_header(std::string_view rRaw) {
-    std::unordered_map<std::string, std::vector<std::string>> header;
+    std::unordered_map<std::string, std::vector<std::string_view>> header;
     std::size_t pos = 0;
     for (;;) {
         const std::size_t end = rRaw.find('\n', pos);
         if (end == std::string::npos)
             throw ReadError("PCD: no DATA line found in the header");
-        const std::string line = pcd_strip(std::string(rRaw.substr(pos, end - pos)));
+        const std::string_view line = pcd_strip(rRaw.substr(pos, end - pos));
         pos = end + 1;
         if (line.empty() || line[0] == '#')
             continue;
-        std::vector<std::string> words = pcd_words(line);
-        const std::string key = pcd_upper(words[0]);
+        auto words = pcd_words(line);
+        const std::string key = pcd_upper(std::string(words[0]));
         words.erase(words.begin());
         header[key] = std::move(words);
         if (key == "DATA")
@@ -331,18 +352,18 @@ PcdHeader pcd_parse_header(std::string_view rRaw) {
     h.mBody = pos;
     if (!header.count("FIELDS"))
         throw ReadError("PCD: the header has no FIELDS line");
-    h.mFields = header["FIELDS"];
+    h.mFields.assign(header["FIELDS"].begin(), header["FIELDS"].end());
     const std::size_t nfields = h.mFields.size();
-    const std::vector<std::string> sizes = header["SIZE"], types = header["TYPE"];
-    const std::vector<std::string> counts =
-        header.count("COUNT") ? header["COUNT"] : std::vector<std::string>(nfields, "1");
+    const auto sizes = header["SIZE"], types = header["TYPE"];
+    const auto counts =
+        header.count("COUNT") ? header["COUNT"] : std::vector<std::string_view>(nfields, "1");
     if (!(sizes.size() == nfields && types.size() == nfields && counts.size() == nfields))
         throw ReadError("PCD: FIELDS, SIZE, TYPE and COUNT disagree on the field count");
     for (std::size_t i = 0; i < nfields; ++i) {
         long long s = 0, c = 0;
         if (!pcd_parse_int(sizes[i], s) || !pcd_parse_int(counts[i], c) || s < 0 || c < 0)
             throw ReadError("PCD: malformed SIZE/COUNT in the header");
-        const std::string t = pcd_upper(types[i]);
+        const std::string t = pcd_upper(std::string(types[i]));
         h.mTypes.push_back(t.empty() ? '?' : t[0]);
         h.mSizes.push_back(static_cast<std::size_t>(s));
         h.mCounts.push_back(static_cast<std::size_t>(c));
@@ -380,14 +401,15 @@ PcdHeader pcd_parse_header(std::string_view rRaw) {
         if (vp->second.size() != 7)
             throw ReadError("PCD: VIEWPOINT needs 7 values (tx ty tz qw qx qy qz)");
         for (std::size_t i = 0; i < 7; ++i) {
+            const PcdNumberToken tok(vp->second[i]);
             const char* end = nullptr;
-            h.mViewpoint[i] = detail::parse_double(vp->second[i].c_str(), end);
-            if (end == vp->second[i].c_str() || *end != '\0')
+            h.mViewpoint[i] = detail::parse_double(tok.Data(), end);
+            if (end == tok.Data() || *end != '\0')
                 throw ReadError("PCD: malformed VIEWPOINT");
         }
     }
 
-    std::string mode = header["DATA"].empty() ? "" : header["DATA"][0];
+    std::string mode(header["DATA"].empty() ? std::string_view() : header["DATA"][0]);
     for (char& c : mode)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (mode != "ascii" && mode != "binary" && mode != "binary_compressed")
@@ -440,7 +462,6 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                         std::to_string(found));
 
     PcdColumns columns = pcd_make_columns(rH, npoints);
-    std::string tok;
     for (std::size_t i = 0; i < npoints; ++i) {
         for (std::size_t f = 0; f < columns.size(); ++f) {
             const DType dt = columns[f].Dtype();
@@ -450,13 +471,13 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                 const char* q = p;
                 while (q < end && !std::isspace(static_cast<unsigned char>(*q)))
                     ++q;
-                tok.assign(p, static_cast<std::size_t>(q - p));
+                const PcdNumberToken tok(std::string_view(p, static_cast<std::size_t>(q - p)));
                 p = q;
                 const std::size_t index = i * rH.mCounts[f] + e;
                 const char* stop = nullptr;
                 if (pcd_is_float(dt)) {
-                    const double v = detail::parse_double(tok.c_str(), stop);
-                    if (stop == tok.c_str() || *stop != '\0')
+                    const double v = detail::parse_double(tok.Data(), stop);
+                    if (stop == tok.Data() || *stop != '\0')
                         throw ReadError("PCD: non-numeric value in the ASCII data");
                     pcd_store(columns[f], index, v, 0);
                 } else {
@@ -464,9 +485,9 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                     char* istop = nullptr;
                     const long long v =
                         pcd_is_signed(dt)
-                            ? std::strtoll(tok.c_str(), &istop, 10)
-                            : static_cast<long long>(std::strtoull(tok.c_str(), &istop, 10));
-                    if (errno != 0 || istop == tok.c_str() || *istop != '\0')
+                            ? std::strtoll(tok.Data(), &istop, 10)
+                            : static_cast<long long>(std::strtoull(tok.Data(), &istop, 10));
+                    if (errno != 0 || istop == tok.Data() || *istop != '\0')
                         throw ReadError("PCD: non-numeric value in the ASCII data");
                     pcd_store(columns[f], index, 0.0, v);
                 }

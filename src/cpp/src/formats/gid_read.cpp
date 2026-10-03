@@ -39,6 +39,7 @@
 // Project includes
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "../detail/text_cursor.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -90,7 +91,7 @@ using gid_detail::gid_resolve_mode;
  * every keyword in the grammar is ASCII, and a locale-sensitive fold would be
  * both wrong and non-deterministic here.
  */
-bool gid_keyword_is(const std::string& rTok, const char* pKeyword) {
+bool gid_keyword_is(std::string_view rTok, const char* pKeyword) {
     std::size_t i = 0;
     for (; i < rTok.size() && pKeyword[i] != '\0'; ++i) {
         const auto a = static_cast<unsigned char>(rTok[i]);
@@ -153,23 +154,43 @@ std::string gid_meshio_type(const std::string& rGidName, int nnode) {
 // reasoning; integers still go straight through std::strtoll, which has no
 // such hazard and is not locale-sensitive.
 
-double gid_to_double(const std::string& rTok, const char* pWhat) {
-    const char* start = rTok.c_str();
+class GidNumberToken {
+public:
+    explicit GidNumberToken(std::string_view Token) : mSize(Token.size()) {
+        if (mSize < sizeof mSmall) {
+            Token.copy(mSmall, mSize);
+            mSmall[mSize] = '\0';
+        } else {
+            mLarge.assign(Token);
+        }
+    }
+    const char* Data() const { return mSize < sizeof mSmall ? mSmall : mLarge.c_str(); }
+
+private:
+    std::size_t mSize;
+    char mSmall[64];
+    std::string mLarge;
+};
+
+double gid_to_double(std::string_view rTok, const char* pWhat) {
+    const GidNumberToken token(rTok);
+    const char* start = token.Data();
     const char* end = nullptr;
     const double v = detail::parse_double(start, end);
     if (end == start)
-        throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" + rTok +
-                        "'");
+        throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" +
+                        std::string(rTok) + "'");
     return v;
 }
 
-std::int64_t gid_to_int(const std::string& rTok, const char* pWhat) {
-    const char* start = rTok.c_str();
+std::int64_t gid_to_int(std::string_view rTok, const char* pWhat) {
+    const GidNumberToken token(rTok);
+    const char* start = token.Data();
     char* end = nullptr;
     const long long v = std::strtoll(start, &end, 10);
     if (end == start)
-        throw ReadError(std::string("GiD: expected an integer for ") + pWhat + ", got '" + rTok +
-                        "'");
+        throw ReadError(std::string("GiD: expected an integer for ") + pWhat + ", got '" +
+                        std::string(rTok) + "'");
     return static_cast<std::int64_t>(v);
 }
 
@@ -177,8 +198,8 @@ std::int64_t gid_to_int(const std::string& rTok, const char* pWhat) {
 /// contain no embedded quote: change_quotes() rewrites any `"` inside a user
 /// string to `'` BEFORE embedding it, so "up to the next quote" is exact, not
 /// a heuristic). The quotes themselves are stripped from the returned token.
-std::vector<std::string> gid_split(const std::string& rLine) {
-    std::vector<std::string> out;
+std::vector<std::string_view> gid_split(std::string_view rLine) {
+    std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rLine.size()) {
         while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
@@ -188,7 +209,7 @@ std::vector<std::string> gid_split(const std::string& rLine) {
         if (rLine[i] == '"') {
             const std::size_t close = rLine.find('"', i + 1);
             if (close == std::string::npos)
-                throw ReadError("GiD: unterminated quoted string: " + rLine);
+                throw ReadError("GiD: unterminated quoted string: " + std::string(rLine));
             out.push_back(rLine.substr(i + 1, close - i - 1));
             i = close + 1;
         } else {
@@ -215,7 +236,7 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
                                  std::tolower(static_cast<unsigned char>(pFirst[0])))
         return false;
 
-    const std::vector<std::string> tok = gid_split(rLine);
+    const auto tok = gid_split(rLine);
     if (tok.size() < 2)
         return false;
     return gid_keyword_is(tok[0], pFirst) && gid_keyword_is(tok[1], pSecond);
@@ -249,20 +270,14 @@ bool gid_is_blank(const std::string& rLine) {
 // The line cursor. ASCII and gzip-inflated-ASCII share it verbatim -- the
 // gzipped flavour (gidpost's GiD_PostAsciiZipped) is the SAME text, so
 // inflating up front is the whole of its support.
-class GidLineCursor {
+class GidLineCursor : private detail::TextCursor {
 public:
-    explicit GidLineCursor(std::string_view text) : mText(text) {}
+    explicit GidLineCursor(std::string_view text) : detail::TextCursor(text) {}
 
     /// Next line that is neither blank nor a comment; empty when exhausted.
     bool Next(std::string& rOut) {
-        while (mPos < mText.size()) {
-            std::size_t nl = mText.find('\n', mPos);
-            if (nl == std::string_view::npos)
-                nl = mText.size();
-            std::string_view raw = mText.substr(mPos, nl - mPos);
-            mPos = nl + 1;
-            if (!raw.empty() && raw.back() == '\r')
-                raw.remove_suffix(1);
+        while (!AtEnd()) {
+            const std::string_view raw = Line(true);
             // A Values row may legitimately begin with whitespace -- see the
             // id-suppression rule in gid_read_values -- so leading space must
             // NOT disqualify a line here; only blank and comment lines are
@@ -282,8 +297,6 @@ public:
     bool LastStartedWithSpace() const { return mRawStartedWithSpace; }
 
 private:
-    std::string_view mText;
-    std::size_t mPos = 0;
     bool mRawStartedWithSpace = false;
 };
 
@@ -348,7 +361,7 @@ void gid_read_coordinates(GidLineCursor& rCur, GidStaged& rStaged) {
     while (rCur.Next(line)) {
         if (gid_line_starts_with(line, "End", "Coordinates"))
             return;
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         // gidpost's block writer always emits 3 coordinates, but the per-node
         // GiD_WriteCoordinates2D ASCII path emits only 2 -- so count, never
         // assume 4 tokens.
@@ -377,7 +390,7 @@ void gid_read_elements(GidLineCursor& rCur, GidBlock& rBlock) {
                 rBlock.mMaterial.clear();
             return;
         }
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         // THE material-column ambiguity. There is no separator between the
         // connectivity and an optional trailing material id, so Nnode -- from
         // this block's own MESH header -- is the only disambiguator:
@@ -419,7 +432,7 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
     std::string line;
     std::string group;  // the Group currently open, empty when ungrouped
     while (cur.Next(line)) {
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         if (tok.empty())
             continue;
 
@@ -588,7 +601,7 @@ void gid_read_values(GidLineCursor& rCur, GidResult& rResult, std::size_t knownW
     while (rCur.Next(line)) {
         if (gid_line_starts_with(line, "End", "Values"))
             return;
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         if (tok.empty())
             continue;
 
@@ -706,7 +719,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
     std::string line;
     std::string group;  // the OnGroup currently open, empty when ungrouped
     while (cur.Next(line)) {
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         if (tok.empty())
             continue;
 
@@ -715,14 +728,14 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             // There is NO OnMeshName keyword -- the mesh name is a bare
             // trailing quoted string, which is why it is found positionally.
             GidGaussSet set;
-            const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
+            const std::string gp_name(tok.size() > 1 ? tok[1] : std::string_view());
             if (tok.size() >= 5)
                 set.mMeshName = tok[4];
             std::string inner;
             while (cur.Next(inner)) {
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (it.empty())
                     continue;
                 if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
@@ -741,7 +754,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 if (gid_keyword_is(it[0], "Nodes"))
                     continue;  // line-element only; GiD's own default is what we emit
                 if (set.mGivenCoords)
-                    for (const std::string& v : it)
+                    for (const auto v : it)
                         set.mCoords.push_back(gid_to_double(v, "a Gauss-point coordinate"));
             }
             rGauss[gp_name] = set;
@@ -764,7 +777,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             // between the header and Values, in that fixed order.
             std::string inner;
             while (cur.Next(inner)) {
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (!it.empty() && gid_keyword_is(it[0], "Values")) {
                     gid_read_values(cur, res);
                     break;
@@ -799,22 +812,22 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             // -- then applies unchanged, with no second apply path to drift.
             if (tok.size() < 4)
                 throw ReadError("GiD: malformed ResultGroup header: " + line);
-            const std::string analysis = tok[1];
+            const std::string analysis(tok[1]);
             const double step = gid_to_double(tok[2], "a ResultGroup step");
-            const std::string location = tok[3];
-            const std::string gauss_name = tok.size() >= 5 ? tok[4] : std::string();
+            const std::string location(tok[3]);
+            const std::string gauss_name(tok.size() >= 5 ? tok[4] : std::string_view());
 
             std::vector<GidGroupMember> members;
             bool saw_values = false;
             std::string inner;
             while (cur.Next(inner)) {
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (it.empty())
                     continue;
                 if (gid_keyword_is(it[0], "ResultDescription")) {
                     if (it.size() < 3)
                         throw ReadError("GiD: malformed ResultDescription: " + inner);
-                    members.push_back(gid_group_member(it[1], it[2]));
+                    members.push_back(gid_group_member(std::string(it[1]), std::string(it[2])));
                     continue;
                 }
                 if (gid_keyword_is(it[0], "ResultRangesTable") ||
@@ -1486,7 +1499,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
         } catch (const ReadError&) {
             break;  // trailing padding: a clean end of stream
         }
-        const std::vector<std::string> tok = gid_split(rec);
+        const auto tok = gid_split(rec);
         if (tok.empty())
             continue;
 
@@ -1548,7 +1561,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
 
         if (gid_keyword_is(tok[0], "GaussPoints")) {
             GidGaussSet set;
-            const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
+            const std::string gp_name(tok.size() > 1 ? tok[1] : std::string_view());
             if (tok.size() >= 5)
                 set.mMeshName = tok[4];
             while (!cur.AtEnd()) {
@@ -1561,7 +1574,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
                 }
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
                     gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
@@ -1817,7 +1830,7 @@ std::vector<double> gid_scan_step_values(std::string_view text) {
     std::vector<double> steps;
     std::string line;
     while (cur.Next(line)) {
-        std::vector<std::string> tok;
+        std::vector<std::string_view> tok;
         try {
             tok = gid_split(line);
         } catch (const ReadError&) {

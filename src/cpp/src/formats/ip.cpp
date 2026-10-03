@@ -29,6 +29,8 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -43,19 +45,14 @@ std::string ip_strip(const std::string& s) {
 }  // namespace
 
 Mesh read_ip(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        lines.push_back(line);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const auto lines = detail::split_lines(source.View());
 
     // header: first four non-empty lines -> version, dim, npoint, ncomp
     std::vector<int> ints;
     std::size_t idx = 0;
     while (ints.size() < 4 && idx < lines.size()) {
-        std::string s = ip_strip(lines[idx++]);
+        std::string s = ip_strip(std::string(lines[idx++]));
         if (!s.empty()) {
             detail::TextStream iss(s);
             int v;
@@ -74,7 +71,7 @@ Mesh read_ip(const std::string& rPath) {
 
     std::vector<std::string> names;
     while (static_cast<int>(names.size()) < ncomp && idx < lines.size()) {
-        std::string s = ip_strip(lines[idx++]);
+        std::string s = ip_strip(std::string(lines[idx++]));
         if (!s.empty())
             names.push_back(s);
     }
@@ -83,7 +80,7 @@ Mesh read_ip(const std::string& rPath) {
     // column-major sections of npoint reals each.
     std::vector<double> flat;
     for (; idx < lines.size(); ++idx) {
-        std::string s = lines[idx];
+        std::string s(lines[idx]);
         for (char& c : s)
             if (c == '(' || c == ')')
                 c = ' ';
@@ -137,19 +134,20 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
     std::vector<std::vector<double>> columns;
     for (const auto& name : rMesh.PointDataNames()) {
         const NDArray& arr = rMesh.PointData(name);
+        const detail::DoubleView values(arr);
         std::size_t nc = n ? arr.Size() / n : 0;
         if (nc <= 1) {
             names.push_back(name);
             std::vector<double> col(n);
             for (std::size_t i = 0; i < n; ++i)
-                col[i] = detail::read_double(arr, i);
+                col[i] = values[i];
             columns.push_back(std::move(col));
         } else {
             for (std::size_t c = 0; c < nc; ++c) {
                 names.push_back(name + "_" + std::to_string(c));
                 std::vector<double> col(n);
                 for (std::size_t i = 0; i < n; ++i)
-                    col[i] = detail::read_double(arr, i * nc + c);
+                    col[i] = values[i * nc + c];
                 columns.push_back(std::move(col));
             }
         }
@@ -167,10 +165,11 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
         }
         f << "\n)\n";
     };
+    const detail::DoubleView point_values(points);
     for (std::size_t d = 0; d < dim; ++d) {
         std::vector<double> col(n);
         for (std::size_t i = 0; i < n; ++i)
-            col[i] = detail::read_double(points, i * dim + d);
+            col[i] = point_values[i * dim + d];
         write_section(col);
     }
     for (const auto& col : columns)

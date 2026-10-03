@@ -20,8 +20,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <map>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -31,6 +33,9 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/keyword_card_view.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -155,7 +160,7 @@ bool nas_is_quietly_skipped(const std::string& rKeyword) {
     return false;
 }
 
-std::string nas_strip(const std::string& rS) {
+std::string_view nas_strip_view(std::string_view rS) {
     const std::size_t b = rS.find_first_not_of(" \t");
     if (b == std::string::npos)
         return "";
@@ -163,25 +168,29 @@ std::string nas_strip(const std::string& rS) {
     return rS.substr(b, e - b + 1);
 }
 
-bool nas_is_comment(const std::string& rLine) {
+std::string nas_strip(std::string_view rS) {
+    return std::string(nas_strip_view(rS));
+}
+
+bool nas_is_comment(std::string_view rLine) {
     return rLine.size() < 3 || rLine[0] == '$' || rLine[0] == '#' || rLine.rfind("//", 0) == 0;
 }
 
 // One raw field of a card line; `mNone` marks a continuation marker, which is
 // dropped when the card's fields are flattened.
 struct NasChunk {
-    std::string mText;
+    std::string_view mText;
     bool mNone = false;
 };
 using NasChunks = std::vector<NasChunk>;
 
-bool nas_is_free(const std::string& rLine) {
+bool nas_is_free(std::string_view rLine) {
     return rLine.find(',') != std::string::npos;
 }
 
 // A free-field line splits on commas; a fixed-field line into (at most ten)
 // 8-column fields, the tenth being the continuation marker.
-NasChunks nas_chunk_line(const std::string& rLine) {
+NasChunks nas_chunk_line(std::string_view rLine) {
     NasChunks out;
     if (nas_is_free(rLine)) {
         std::size_t start = 0;
@@ -203,13 +212,23 @@ NasChunks nas_chunk_line(const std::string& rLine) {
 
 // Large-field lines hold 8 + 4x16 + 8 columns: re-merge each pair of 8-column
 // chunks into one 16-column field.
-NasChunks nas_merge_large(const NasChunks& rC) {
+NasChunks nas_merge_large(const NasChunks& rC, std::deque<std::string>& rJoined) {
     NasChunks d;
     d.push_back(rC[0]);
     for (std::size_t k = 1; k <= 7 && k < rC.size(); k += 2) {
         NasChunk f = rC[k];
-        if (k + 1 < rC.size() && !rC[k + 1].mNone)
-            f.mText += rC[k + 1].mText;
+        if (k + 1 < rC.size() && !rC[k + 1].mNone) {
+            const auto next = rC[k + 1].mText;
+            if (f.mText.data() + f.mText.size() == next.data()) {
+                f.mText = std::string_view(f.mText.data(), f.mText.size() + next.size());
+            } else {
+                // A tolerated mixed free/fixed continuation has commas between
+                // chunks. Its concatenation is owned in stable storage rather
+                // than extending a view across those commas or a temporary.
+                rJoined.emplace_back(std::string(f.mText) + std::string(next));
+                f.mText = rJoined.back();
+            }
+        }
         d.push_back(f);
     }
     if (rC.size() > 9)
@@ -219,8 +238,18 @@ NasChunks nas_merge_large(const NasChunks& rC) {
 
 // The logical cards of the bulk section: each is the flattened, stripped list
 // of its fields, continuation lines merged in.
-std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& rLines) {
-    std::vector<std::vector<std::string>> cards;
+struct NasCards {
+    std::deque<std::string> mJoined;
+    std::vector<std::vector<std::string_view>> mFields;
+    NasCards() = default;
+    NasCards(const NasCards&) = delete;
+    NasCards& operator=(const NasCards&) = delete;
+    NasCards(NasCards&&) = default;
+    NasCards& operator=(NasCards&&) = default;
+};
+
+NasCards nas_cards(const std::vector<std::string_view>& rLines) {
+    NasCards cards;
     const std::string blank8(8, ' ');
     std::size_t i = 0;
     while (i < rLines.size()) {
@@ -229,7 +258,7 @@ std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& 
         const bool free = nas_is_free(rLines[i]);
         ++i;
         while (i < rLines.size()) {
-            const std::string& next = rLines[i];
+            const std::string_view next = rLines[i];
             if (next[0] == '+' || next[0] == '*') {
                 if (chunks.back().size() == 10)
                     chunks.back().back().mNone = true;
@@ -254,39 +283,38 @@ std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& 
                 break;
             }
         }
-        const std::string head = nas_strip(chunks[0][0].mText);
+        const auto head = nas_strip_view(chunks[0][0].mText);
         if (!free && !head.empty() && head.back() == '*')
             for (NasChunks& c : chunks)
-                c = nas_merge_large(c);
-        std::vector<std::string> fields;
+                c = nas_merge_large(c, cards.mJoined);
+        std::vector<std::string_view> fields;
         for (const NasChunks& c : chunks)
             for (const NasChunk& f : c)
                 if (!f.mNone)
-                    fields.push_back(nas_strip(f.mText));
-        cards.push_back(std::move(fields));
+                    fields.push_back(nas_strip_view(f.mText));
+        cards.mFields.push_back(std::move(fields));
     }
     return cards;
 }
 
-const std::string& nas_field(const std::vector<std::string>& rFields, std::size_t k) {
-    static const std::string empty;
-    return k < rFields.size() ? rFields[k] : empty;
+std::string_view nas_field(const std::vector<std::string_view>& rFields, std::size_t k) {
+    return k < rFields.size() ? rFields[k] : std::string_view();
 }
 
-std::int64_t nas_int(const std::string& rText, const std::string& rCard) {
-    return detail::card_to_int(rText, " in a " + rCard + " card", "Nastran");
+std::int64_t nas_int(std::string_view rText, const std::string& rCard) {
+    return detail::card_to_int_view(rText, " in a " + rCard + " card", "Nastran");
 }
 
-double nas_real(const std::string& rText, const std::string& rCard) {
-    return detail::card_to_real(rText, " in a " + rCard + " card", "Nastran");
+double nas_real(std::string_view rText, const std::string& rCard) {
+    return detail::card_to_real_view(rText, " in a " + rCard + " card", "Nastran");
 }
 
 // A list of ids with `a THRU b` ranges, as $HMMOVE lines and SET cards hold them.
 // Explicit ids land in `rIds`; each range in `rRanges`.
-void nas_parse_id_list(const std::vector<std::string>& rTokens, std::size_t First,
+void nas_parse_id_list(const std::vector<std::string_view>& rTokens, std::size_t First,
                        const std::string& rCard, std::vector<std::int64_t>& rIds,
                        std::vector<std::pair<std::int64_t, std::int64_t>>& rRanges) {
-    std::vector<std::string> t;
+    std::vector<std::string_view> t;
     for (std::size_t k = First; k < rTokens.size(); ++k)
         if (!rTokens[k].empty())
             t.push_back(rTokens[k]);
@@ -343,7 +371,7 @@ struct NasHyperMesh {
     }
 
     // `$` followed by blanks, then 8-column fields of ids and THRU.
-    static bool IdLine(const std::string& rLine, std::vector<std::string>& rTokens) {
+    static bool IdLine(const std::string& rLine, std::vector<std::string_view>& rTokens) {
         if (rLine.empty() || rLine[0] != '$')
             return false;
         for (std::size_t k = 1; k < 8 && k < rLine.size(); ++k)
@@ -351,7 +379,7 @@ struct NasHyperMesh {
                 return false;
         bool any = false;
         for (std::size_t k = 8; k < rLine.size(); k += 8) {
-            const std::string f = nas_strip(rLine.substr(k, 8));
+            const auto f = nas_strip_view(std::string_view(rLine).substr(k, 8));
             if (f.empty())
                 continue;
             if (f != "THRU" && f.find_first_not_of("0123456789") != std::string::npos)
@@ -372,7 +400,7 @@ struct NasHyperMesh {
             }
             return;
         }
-        std::vector<std::string> tokens;
+        std::vector<std::string_view> tokens;
         if (mHasActive && IdLine(rLine, tokens)) {
             NasGroup& g = mComponents[mActive];
             nas_parse_id_list(tokens, 0, "$HMMOVE", g.mIds, g.mRanges);
@@ -677,27 +705,24 @@ namespace {
 // element ids (global cell order) when asked.
 Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
               std::vector<std::int64_t>* pCellIds) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
 
     // Everything before BEGIN BULK (executive and case control, I/O options) is
     // skipped; comment lines feed the HyperMesh parser; ENDDATA ends the deck.
-    std::vector<std::string> lines;
+    std::vector<std::string_view> lines;
     NasHyperMesh hm;
-    std::string l;
     bool bulk = false;
-    while (std::getline(in, l)) {
+    for (auto l : detail::split_lines(source.View())) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
+            l.remove_suffix(1);
         if (!bulk) {
-            bulk = nas_strip(l).rfind("BEGIN BULK", 0) == 0;
+            bulk = nas_strip_view(l).rfind("BEGIN BULK", 0) == 0;
             continue;
         }
         if (l.rfind("ENDDATA", 0) == 0)
             break;
         if (!l.empty() && l[0] == '$')
-            hm.Feed(l);
+            hm.Feed(std::string(l));
         else
             hm.mHasActive = false;
         if (!nas_is_comment(l))
@@ -724,13 +749,14 @@ Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
     std::map<std::string, std::size_t> skipped;
     const auto& elements = nas_elements();
 
-    for (const std::vector<std::string>& f : nas_cards(lines)) {
-        std::string kw = f.empty() ? std::string() : f[0];
+    const auto cards = nas_cards(lines);
+    for (const auto& f : cards.mFields) {
+        std::string kw(f.empty() ? std::string_view() : f[0]);
         if (!kw.empty() && kw.back() == '*')
             kw.pop_back();
         if (kw == "GRID") {
             const std::int64_t id = nas_int(nas_field(f, 1), kw);
-            const std::string& ref = nas_field(f, 2);
+            const auto ref = nas_field(f, 2);
             any_point_ref = any_point_ref || !ref.empty();
             point_refs.push_back(nas_int(ref, kw));
             point_index[id] = static_cast<std::int64_t>(point_refs.size() - 1);
@@ -743,12 +769,12 @@ Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
         auto el = elements.find(kw);
         if (el != elements.end()) {
             const std::int64_t id = nas_int(nas_field(f, 1), kw);
-            const std::string& ref = nas_field(f, 2);
+            const auto ref = nas_field(f, 2);
             std::string type = el->second.mType;
             std::vector<std::int64_t> nodes;
             if (el->second.mNodes > 0) {
                 for (int j = 0; j < el->second.mNodes; ++j) {
-                    const std::string& t = nas_field(f, 3 + static_cast<std::size_t>(j));
+                    const auto t = nas_field(f, 3 + static_cast<std::size_t>(j));
                     if (t.empty())
                         throw ReadError("Nastran: " + kw + " " + std::to_string(id) +
                                         " is missing node " + std::to_string(j + 1));
@@ -793,8 +819,8 @@ Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
         if (kw == "SET") {
             // OptiStruct: SET, id, GRID|ELEM, LIST, ids (with THRU ranges).
             const std::int64_t id = nas_int(nas_field(f, 1), kw);
-            const std::string& kind = nas_field(f, 2);
-            const std::string& sub = nas_field(f, 3);
+            const auto kind = nas_field(f, 2);
+            const auto sub = nas_field(f, 3);
             if ((kind != "GRID" && kind != "ELEM") || sub != "LIST") {
                 log::warn("Nastran: SET {} of type '{} {}' is not read; skipped", id, kind, sub);
                 continue;

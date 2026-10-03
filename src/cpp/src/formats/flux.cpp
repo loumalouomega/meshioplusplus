@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -37,6 +38,8 @@
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/log.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -67,11 +70,11 @@ bool meshio_to_desc(const std::string& rT, std::array<int, 3>& rOut) {
     return true;
 }
 
-bool contains(const std::string& rHay, const char* pNeedle) {
+bool contains(std::string_view rHay, const char* pNeedle) {
     return rHay.find(pNeedle) != std::string::npos;
 }
 
-long long leading_int(const std::string& rLine) {
+long long leading_int(std::string_view rLine) {
     detail::TextStream iss(rLine);
     long long v = 0;
     iss >> v;
@@ -81,18 +84,13 @@ long long leading_int(const std::string& rLine) {
 }  // namespace
 
 Mesh read_flux(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        lines.push_back(line);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const auto lines = detail::split_lines(source.View());
 
     long long dim = 0, nel = 0, nnod = 0;
     std::size_t di = lines.size(), ci = lines.size();
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        const std::string& L = lines[i];
+        const std::string_view L = lines[i];
         if (contains(L, "NOMBRE DE DIMENSIONS"))
             dim = leading_int(L);
         else if (contains(L, "D'ELEMENTS") && !contains(L, "VOLUMIQUES") &&
@@ -110,12 +108,11 @@ Mesh read_flux(const std::string& rPath) {
         throw ReadError("pf3: missing element/coordinate section");
 
     // element tokens
-    std::vector<std::string> etok;
+    std::vector<std::string_view> etok;
+    std::vector<std::string_view> record_tokens;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        detail::TextStream iss(lines[i]);
-        std::string w;
-        while (iss >> w)
-            etok.push_back(w);
+        detail::split_blanks(lines[i], record_tokens);
+        etok.insert(etok.end(), record_tokens.begin(), record_tokens.end());
     }
 
     struct Group {
@@ -132,9 +129,9 @@ Mesh read_flux(const std::string& rPath) {
             log::warn("pf3: {} elements declared, {} present; reading those", nel, e);
             break;
         }
-        long long ref = std::strtoll(etok[pos + 3].c_str(), nullptr, 10);
-        int desc3 = std::atoi(etok[pos + 6].c_str());
-        int lnn = std::atoi(etok[pos + 7].c_str());
+        long long ref = detail::strtoll_token(etok[pos + 3]);
+        int desc3 = std::atoi(std::string(etok[pos + 6]).c_str());
+        int lnn = std::atoi(std::string(etok[pos + 7]).c_str());
         pos += 12;
         if (lnn < 0 || pos + static_cast<std::size_t>(lnn) > etok.size())
             throw ReadError("pf3: truncated element connectivity");
@@ -143,7 +140,7 @@ Mesh read_flux(const std::string& rPath) {
             throw ReadError("pf3: unknown element descriptor " + std::to_string(desc3));
         std::vector<std::int64_t> nodes(lnn);
         for (int j = 0; j < lnn; ++j)
-            nodes[j] = std::strtoll(etok[pos + j].c_str(), nullptr, 10);
+            nodes[j] = detail::strtoll_token(etok[pos + j]);
         pos += lnn;
         auto it = gindex.find(mtype);
         if (it == gindex.end()) {
@@ -159,20 +156,18 @@ Mesh read_flux(const std::string& rPath) {
     }
 
     // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
-    std::vector<std::string> ctok;
+    std::vector<std::string_view> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        detail::TextStream iss(lines[i]);
-        std::string w;
-        while (iss >> w)
-            ctok.push_back(w);
+        detail::split_blanks(lines[i], record_tokens);
+        ctok.insert(ctok.end(), record_tokens.begin(), record_tokens.end());
     }
     std::vector<long long> ids;
     std::vector<double> coords;
     const std::size_t udim = static_cast<std::size_t>(dim < 0 ? 0 : dim);
     for (std::size_t cp = 0; cp + udim < ctok.size() && ctok[cp][0] != '=';) {
-        ids.push_back(std::strtoll(ctok[cp].c_str(), nullptr, 10));
+        ids.push_back(detail::strtoll_token(ctok[cp]));
         for (std::size_t j = 0; j < udim; ++j)
-            coords.push_back(detail::parse_double(ctok[cp + 1 + j]));
+            coords.push_back(detail::parse_double_prefix(ctok[cp + 1 + j]));
         cp += 1 + udim;
     }
     if (static_cast<long long>(ids.size()) != nnod)
@@ -282,6 +277,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
         std::array<int, 3> d;
         meshio_to_desc(cb.Type(), d);
         const NDArray& conn = cb.Conn();
+        const detail::Int64View indices(conn);
         int lnn = static_cast<int>(detail::cols(conn));
         const detail::NodeOrder* order = detail::node_order("flux", cb.Type());
         if (order && order->mFromMeshio.size() != static_cast<std::size_t>(lnn))
@@ -289,9 +285,12 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
         const NDArray* ref = (has_ref && k < rMesh.CellDataNumBlocks("pf3:ref"))
                                  ? &rMesh.CellData("pf3:ref", k)
                                  : nullptr;
+        std::optional<detail::Int64View> ref_values;
+        if (ref)
+            ref_values.emplace(*ref);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             ++eid;
-            long long rv = ref ? detail::read_int(*ref, r) : 0;
+            long long rv = ref ? (*ref_values)[r] : 0;
             std::snprintf(buf, sizeof(buf), "%8lld%8d%8d%8lld%8d%8d%8d%8d%8d%8d%8d%8d\n", eid, d[0],
                           d[1], rv, lnn, 0, d[2], lnn, 0, 0, 0, 0);
             f << buf;
@@ -299,7 +298,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
                 const std::size_t src =
                     order ? static_cast<std::size_t>(order->mFromMeshio[j]) : std::size_t(j);
                 std::snprintf(buf, sizeof(buf), "%8lld",
-                              static_cast<long long>(detail::read_int(conn, r * lnn + src) + 1));
+                              static_cast<long long>(indices[r * lnn + src] + 1));
                 f << buf;
             }
             f << "\n";
@@ -308,12 +307,12 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
 
     f << " COORDONNEES DES NOEUDS\n";
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
         std::snprintf(buf, sizeof(buf), "%8zu", i + 1);
         f << buf;
         for (int j = 0; j < dim; ++j) {
-            detail::snprintf_c(buf, sizeof(buf), " %.16g",
-                               detail::read_double(points, i * dim + j));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g", point_values[i * dim + j]);
             f << buf;
         }
         f << "\n";

@@ -49,6 +49,8 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/keyword_card_view.hpp"
 
 namespace meshioplusplus {
 
@@ -63,12 +65,16 @@ struct RadLine {
     std::string mWhere;  // "file:line"
 };
 
-std::string rad_trim(std::string_view s) {
+std::string_view rad_trim_view(std::string_view s) {
     const std::size_t b = s.find_first_not_of(" \t\r");
     if (b == std::string_view::npos)
         return {};
     const std::size_t e = s.find_last_not_of(" \t\r");
-    return std::string(s.substr(b, e - b + 1));
+    return s.substr(b, e - b + 1);
+}
+
+std::string rad_trim(std::string_view s) {
+    return std::string(rad_trim_view(s));
 }
 
 std::string rad_upper(std::string s) {
@@ -132,14 +138,14 @@ void rad_collect(const fs::path& rPath, int Depth, std::vector<RadLine>& rOut, b
 }
 
 // Fixed fields of `Width` columns, or comma-separated values.
-std::vector<std::string> rad_fields(const std::string& rLine, int Width, std::size_t Count) {
-    std::vector<std::string> out;
+std::vector<std::string_view> rad_fields(std::string_view rLine, int Width, std::size_t Count) {
+    std::vector<std::string_view> out;
     if (rLine.find(',') != std::string::npos) {
         std::size_t start = 0;
         while (true) {
             const std::size_t k = rLine.find(',', start);
-            out.push_back(rad_trim(std::string_view(rLine).substr(
-                start, k == std::string::npos ? std::string::npos : k - start)));
+            out.push_back(rad_trim_view(
+                rLine.substr(start, k == std::string::npos ? std::string::npos : k - start)));
             if (k == std::string::npos)
                 break;
             start = k + 1;
@@ -149,18 +155,17 @@ std::vector<std::string> rad_fields(const std::string& rLine, int Width, std::si
     const std::size_t w = static_cast<std::size_t>(Width);
     for (std::size_t f = 0; f < Count; ++f) {
         const std::size_t at = f * w;
-        out.push_back(at < rLine.size() ? rad_trim(std::string_view(rLine).substr(at, w))
-                                        : std::string());
+        out.push_back(at < rLine.size() ? rad_trim_view(rLine.substr(at, w)) : std::string_view());
     }
     return out;
 }
 
-std::int64_t rad_int(const std::string& rText, const RadLine& rLine) {
-    return detail::card_to_int(rText, " (" + rLine.mWhere + ")", "Radioss");
+std::int64_t rad_int(std::string_view rText, const RadLine& rLine) {
+    return detail::card_to_int_view(rText, " (" + rLine.mWhere + ")", "Radioss");
 }
 
-double rad_real(const std::string& rText, const RadLine& rLine) {
-    return detail::card_to_real(rText, " (" + rLine.mWhere + ")", "Radioss");
+double rad_real(std::string_view rText, const RadLine& rLine) {
+    return detail::card_to_real_view(rText, " (" + rLine.mWhere + ")", "Radioss");
 }
 
 // Element keywords: their group family, node count, lines per element and the
@@ -305,8 +310,8 @@ double rad_length_unit(const std::string& rUnit) {
 std::string rad_slice(const std::string& rLine, std::size_t At, std::size_t Width,
                       std::size_t CommaField) {
     if (rLine.find(',') != std::string::npos) {
-        const std::vector<std::string> f = rad_fields(rLine, 1, 0);
-        return CommaField < f.size() ? f[CommaField] : std::string();
+        const auto f = rad_fields(rLine, 1, 0);
+        return CommaField < f.size() ? std::string(f[CommaField]) : std::string();
     }
     return At < rLine.size() ? rad_trim(std::string_view(rLine).substr(At, Width)) : std::string();
 }
@@ -356,12 +361,9 @@ std::vector<std::pair<std::string, std::vector<double>>> rad_engine_fields(
         }
         if (out.empty())
             continue;
-        auto iss = detail::make_classic_istringstream(t);
-        std::string tok;
-        while (iss >> tok) {
-            const char* e = nullptr;
-            const double v = detail::parse_double(tok.c_str(), e);
-            if (e == tok.c_str() + tok.size())
+        for (const std::string_view tok : detail::split_blanks(t)) {
+            double v = 0.0;
+            if (detail::parse_double_token(tok, v))
                 out.back().second.push_back(v);
         }
     }
@@ -447,8 +449,8 @@ Mesh read_radioss(const std::string& rPath) {
         const std::string id = rad_trim(std::string_view(t).substr(6));
         if (id.empty() || id.find_first_not_of("0123456789") != std::string::npos)
             continue;
-        const std::vector<std::string> f = rad_fields(lines[k + 2].mText, 20, 3);
-        const double len = f.size() > 1 ? rad_length_unit(f[1]) : 0.0;
+        const auto f = rad_fields(lines[k + 2].mText, 20, 3);
+        const double len = f.size() > 1 ? rad_length_unit(std::string(f[1])) : 0.0;
         if (len > 0.0)
             unit_length[std::stoll(id)] = len;
         else
@@ -544,7 +546,7 @@ Mesh read_radioss(const std::string& rPath) {
             // titles on lines of their own, whatever its input version.
             titles_in_path = false;
             if (body + 1 < end) {
-                const std::vector<std::string> f = rad_fields(lines[body + 1].mText, 10, 2);
+                const auto f = rad_fields(lines[body + 1].mText, 10, 2);
                 if (!f.empty() && !f[0].empty())
                     version = static_cast<int>(rad_int(f[0], lines[body + 1]));
             }
@@ -553,12 +555,12 @@ Mesh read_radioss(const std::string& rPath) {
             // Input and work units (mass, length, time; 20 columns each): the
             // solver works in the work units, so lengths are converted.
             if (body + 2 < end) {
-                const std::vector<std::string> in = rad_fields(lines[body + 2].mText, 20, 3);
-                const std::vector<std::string> work = body + 3 < end
-                                                          ? rad_fields(lines[body + 3].mText, 20, 3)
-                                                          : std::vector<std::string>{};
-                const std::string li = in.size() > 1 ? in[1] : std::string();
-                const std::string lw = work.size() > 1 && !work[1].empty() ? work[1] : li;
+                const auto in = rad_fields(lines[body + 2].mText, 20, 3);
+                const auto work = body + 3 < end ? rad_fields(lines[body + 3].mText, 20, 3)
+                                                 : std::vector<std::string_view>{};
+                const std::string li(in.size() > 1 ? in[1] : std::string_view());
+                const std::string lw(work.size() > 1 && !work[1].empty() ? work[1]
+                                                                         : std::string_view(li));
                 const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
                 work_length = fw;
                 if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
@@ -579,7 +581,7 @@ Mesh read_radioss(const std::string& rPath) {
                 std::array<double, 3> p{};
                 if (Line >= end)
                     return p;
-                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                const auto f = rad_fields(lines[Line].mText, rw, 3);
                 for (std::size_t d = 0; d < 3; ++d)
                     p[d] = d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * box_scale
                                                          : 0.0;
@@ -619,7 +621,7 @@ Mesh read_radioss(const std::string& rPath) {
                 b.mP1 = real3(k + 1);
             } else if (b.mKind == "BOX") {
                 for (; k < end; ++k)
-                    for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                    for (const auto f : rad_fields(lines[k].mText, iw, 10))
                         if (!f.empty())
                             b.mChildren.push_back(rad_int(f, lines[k]));
             } else {
@@ -636,7 +638,7 @@ Mesh read_radioss(const std::string& rPath) {
                 std::array<double, 3> v{};
                 if (Line >= end)
                     return v;
-                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                const auto f = rad_fields(lines[Line].mText, rw, 3);
                 for (std::size_t d = 0; d < 3; ++d)
                     v[d] =
                         d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * Scale : 0.0;
@@ -658,7 +660,7 @@ Mesh read_radioss(const std::string& rPath) {
                 std::vector<double> v(Count, 0.0);
                 if (Line >= end)
                     return v;
-                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, Count);
+                const auto f = rad_fields(lines[Line].mText, rw, Count);
                 for (std::size_t d = 0; d < Count; ++d)
                     v[d] = d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * sc : 0.0;
                 return v;
@@ -669,8 +671,8 @@ Mesh read_radioss(const std::string& rPath) {
                 v.insert(v.end(), m1.begin(), m1.end());
                 analytic.emplace_back("radioss:surf_plane:" + std::to_string(id), std::move(v));
             } else {
-                const std::vector<std::string> f =
-                    k < end ? rad_fields(lines[k].mText, iw, 2) : std::vector<std::string>{};
+                const auto f =
+                    k < end ? rad_fields(lines[k].mText, iw, 2) : std::vector<std::string_view>{};
                 const std::int64_t skew = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
                 const std::int64_t degree =
                     f.size() > 1 && !f[1].empty() ? rad_int(f[1], lines[k]) : 2;
@@ -685,19 +687,19 @@ Mesh read_radioss(const std::string& rPath) {
             const double node_scale = scale_of(unit_of(false));
             for (std::size_t k = body; k < end; ++k) {
                 const RadLine& ln = lines[k];
-                std::vector<std::string> f;
+                std::vector<std::string_view> f;
                 if (ln.mText.find(',') != std::string::npos) {
                     f = rad_fields(ln.mText, iw, 4);
                 } else {
-                    f.push_back(rad_trim(ln.mText.substr(
+                    f.push_back(rad_trim_view(std::string_view(ln.mText).substr(
                         0, std::min<std::size_t>(ln.mText.size(), static_cast<std::size_t>(iw)))));
                     for (std::size_t d = 0; d < 3; ++d) {
                         const std::size_t at =
                             static_cast<std::size_t>(iw + rw * static_cast<int>(d));
                         f.push_back(at < ln.mText.size()
-                                        ? rad_trim(std::string_view(ln.mText).substr(
+                                        ? rad_trim_view(std::string_view(ln.mText).substr(
                                               at, static_cast<std::size_t>(rw)))
-                                        : std::string());
+                                        : std::string_view());
                     }
                 }
                 if (f.empty() || f[0].empty())
@@ -764,7 +766,7 @@ Mesh read_radioss(const std::string& rPath) {
                     take = values.empty() ? 9 : (values.size() == 9 ? 8 : 4);
                 else
                     take = per_record;
-                const std::vector<std::string> f = rad_fields(ln.mText, iw, take);
+                const auto f = rad_fields(ln.mText, iw, take);
                 if (values.empty())
                     where = ln.mWhere;
                 for (std::size_t j = 0; j < take && values.size() < per_record; ++j)
@@ -781,7 +783,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             part.mTitle = title_of(k);
             if (k < end) {
-                const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 3);
+                const auto f = rad_fields(lines[k].mText, iw, 3);
                 part.mProperty = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
                 part.mMaterial = f.size() > 1 && !f[1].empty() ? rad_int(f[1], lines[k]) : 0;
                 part.mSubset = f.size() > 2 && !f[2].empty() ? rad_int(f[2], lines[k]) : 0;
@@ -793,7 +795,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             g.mTitle = title_of(k);
             for (; k < end; ++k)
-                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                for (const auto f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
                         g.mIds.push_back(rad_int(f, lines[k]));
             groups.push_back(std::move(g));
@@ -803,7 +805,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             s.mTitle = title_of(k);
             for (; k < end; ++k) {
-                const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 5);
+                const auto f = rad_fields(lines[k].mText, iw, 5);
                 std::array<std::int64_t, 4> seg{0, 0, 0, 0};
                 for (std::size_t j = 0; j < 4; ++j)
                     seg[j] =
@@ -825,7 +827,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             s.mTitle = title_of(k);
             for (; k < end; ++k)
-                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                for (const auto f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
                         s.mIds.push_back(rad_int(f, lines[k]));
             surfaces.push_back(std::move(s));
@@ -836,7 +838,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             s.mTitle = title_of(k);
             for (; k < end; ++k)
-                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                for (const auto f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
                         s.mChildren.push_back(rad_int(f, lines[k]));
             subsets[last_id(head)] = std::move(s);

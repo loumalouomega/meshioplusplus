@@ -11,6 +11,8 @@ The [Polygon File Format](https://en.wikipedia.org/wiki/PLY_(file_format)) (aka 
 
 ## Reading & writing
 
+The native ASCII face parser explicitly retains its row owner during shared-stream extraction. Temporary strings were already owned by the shared stream, so this is not a reader-crash fix. ASCII/binary fixtures and source replacement pin the behavior; the [source-copy evidence](../benchmarks.md#source-copy-removal-and-temporary-ownership-guards) times the default **binary** path and makes no ASCII speedup claim.
+
 ```python
 import meshioplusplus
 

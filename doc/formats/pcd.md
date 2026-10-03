@@ -11,6 +11,8 @@ The [Point Cloud Library format](https://pointclouds.org/documentation/tutorials
 
 ## Reading & writing
 
+Native header tokens view the source, and numeric tokens are parsed from bounded terminated stack buffers with an owned fallback for long tokens. Range/errno handling, organization, color bit interpretation and writer bytes are unchanged. See the [text-I/O comparison](../benchmarks.md#femap-pcd-and-radioss-engine-records-fourth-batch), a small allocation cleanup rather than a claimed speedup.
+
 ```python
 import meshioplusplus
 

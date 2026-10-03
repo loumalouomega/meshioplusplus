@@ -46,6 +46,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -140,17 +141,17 @@ const char* fn_topology_name(std::int64_t Code) {
     }
 }
 
-std::string fn_trim(std::string_view Text) {
+std::string_view fn_trim(std::string_view Text) {
     const std::size_t b = Text.find_first_not_of(" \t");
     if (b == std::string_view::npos)
         return {};
     const std::size_t e = Text.find_last_not_of(" \t");
-    return std::string(Text.substr(b, e - b + 1));
+    return Text.substr(b, e - b + 1);
 }
 
 // The comma-separated fields of a record line; a trailing comma adds none.
-std::vector<std::string> fn_fields(std::string_view Line) {
-    std::vector<std::string> out;
+std::vector<std::string_view> fn_fields(std::string_view Line) {
+    std::vector<std::string_view> out;
     std::size_t pos = 0;
     while (pos <= Line.size()) {
         std::size_t comma = Line.find(',', pos);
@@ -164,7 +165,7 @@ std::vector<std::string> fn_fields(std::string_view Line) {
     return out;
 }
 
-bool fn_parse_int(const std::string& rText, std::int64_t& rValue) {
+bool fn_parse_int(std::string_view rText, std::int64_t& rValue) {
     if (rText.empty())
         return false;
     std::size_t i = rText[0] == '-' || rText[0] == '+' ? 1 : 0;
@@ -182,12 +183,8 @@ bool fn_parse_int(const std::string& rText, std::int64_t& rValue) {
     return true;
 }
 
-bool fn_parse_real(const std::string& rText, double& rValue) {
-    if (rText.empty())
-        return false;
-    const char* end = nullptr;
-    rValue = detail::parse_double(rText.c_str(), end);
-    return end == rText.c_str() + rText.size();
+bool fn_parse_real(std::string_view rText, double& rValue) {
+    return detail::parse_double_token(rText, rValue);
 }
 
 struct FnBlock {
@@ -197,50 +194,51 @@ struct FnBlock {
 };
 
 // A cursor over one block's record lines.
-class FnCursor {
+class FnCursor : private detail::RecordCursor<std::string_view> {
 public:
-    explicit FnCursor(const FnBlock& rBlock) : mBlock(rBlock) {}
+    explicit FnCursor(const FnBlock& rBlock)
+        : detail::RecordCursor<std::string_view>(rBlock.mLines), mBlock(rBlock) {}
 
-    bool AtEnd() const { return mPos >= mBlock.mLines.size(); }
-    std::size_t Remaining() const { return mBlock.mLines.size() - mPos; }
-    std::size_t Line() const { return mBlock.mFirstLine + mPos; }
-    std::string_view Peek(std::size_t Ahead = 0) const { return mBlock.mLines[mPos + Ahead]; }
+    bool AtEnd() const { return Done(); }
+    using detail::RecordCursor<std::string_view>::Remaining;
+    using detail::RecordCursor<std::string_view>::Peek;
+    std::size_t Line() const { return mBlock.mFirstLine + Pos(); }
 
     std::string_view Next(const char* pWhat) {
         if (AtEnd())
             Fail(std::string("block ") + std::to_string(mBlock.mId) + " ends inside " + pWhat);
-        return mBlock.mLines[mPos++];
+        return detail::RecordCursor<std::string_view>::Next();
     }
 
-    std::vector<std::string> Fields(const char* pWhat) { return fn_fields(Next(pWhat)); }
+    std::vector<std::string_view> Fields(const char* pWhat) { return fn_fields(Next(pWhat)); }
 
     [[noreturn]] void Fail(const std::string& rWhy) const {
         throw ReadError("Femap neutral: " + rWhy + " (line " + std::to_string(Line()) + ")");
     }
 
-    std::int64_t Int(const std::vector<std::string>& rF, std::size_t K, const char* pWhat) const {
+    std::int64_t Int(const std::vector<std::string_view>& rF, std::size_t K,
+                     const char* pWhat) const {
         std::int64_t v = 0;
         if (K >= rF.size() || !fn_parse_int(rF[K], v))
             Fail(std::string("bad ") + pWhat +
-                 (K < rF.size() ? " '" + rF[K] + "'" : std::string()));
+                 (K < rF.size() ? " '" + std::string(rF[K]) + "'" : std::string()));
         return v;
     }
 
-    double Real(const std::vector<std::string>& rF, std::size_t K, const char* pWhat) const {
+    double Real(const std::vector<std::string_view>& rF, std::size_t K, const char* pWhat) const {
         double v = 0;
         if (K >= rF.size() || !fn_parse_real(rF[K], v))
             Fail(std::string("bad ") + pWhat +
-                 (K < rF.size() ? " '" + rF[K] + "'" : std::string()));
+                 (K < rF.size() ? " '" + std::string(rF[K]) + "'" : std::string()));
         return v;
     }
 
 private:
     const FnBlock& mBlock;
-    std::size_t mPos = 0;
 };
 
 std::string fn_title(std::string_view Line) {
-    std::string t = fn_trim(Line);
+    std::string t(fn_trim(Line));
     return t == "<NULL>" ? std::string() : t;
 }
 
@@ -306,7 +304,8 @@ std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_v
         std::int64_t id = 0;
         if (!fn_parse_int(fn_trim(rLines[i + 1]), id))
             throw ReadError("Femap neutral: expected a block id after '-1', found '" +
-                            fn_trim(rLines[i + 1]) + "' (line " + std::to_string(i + 2) + ")");
+                            std::string(fn_trim(rLines[i + 1])) + "' (line " +
+                            std::to_string(i + 2) + ")");
         FnBlock block{id, i + 3, {}};
         std::size_t j = i + 2;
         while (j < n && fn_trim(rLines[j]) != "-1") {
@@ -325,7 +324,7 @@ std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_v
 void fn_read_nodes(const FnBlock& rBlock, FnFile& rFile) {
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
-        const std::vector<std::string> f = c.Fields("a node");
+        const auto f = c.Fields("a node");
         if (f.size() < 14)
             c.Fail("a node record with " + std::to_string(f.size()) +
                    " fields (x, y, z are 11-13)");
@@ -338,7 +337,7 @@ void fn_read_nodes(const FnBlock& rBlock, FnFile& rFile) {
 // Skips one node list of an element record: lines up to one whose first field is -1.
 void fn_skip_list(FnCursor& rC) {
     while (true) {
-        const std::vector<std::string> f = rC.Fields("an element node list");
+        const auto f = rC.Fields("an element node list");
         if (!f.empty() && f[0] == "-1")
             return;
     }
@@ -348,7 +347,7 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
         const std::size_t line = c.Line();
-        const std::vector<std::string> head = c.Fields("an element");
+        const auto head = c.Fields("an element");
         FnElement el{};
         el.mId = c.Int(head, 0, "element id");
         el.mProperty = c.Int(head, 2, "element property");
@@ -356,17 +355,17 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
         const std::int64_t topology = c.Int(head, 4, "element topology");
         el.mLine = line;
         for (int part = 0; part < 2; ++part) {
-            const std::vector<std::string> f = c.Fields("an element's nodes");
+            const auto f = c.Fields("an element's nodes");
             for (std::size_t k = 0; k < 10; ++k) {
                 std::int64_t v = 0;
                 if (k < f.size() && !fn_parse_int(f[k], v))
-                    c.Fail("bad node id '" + f[k] + "'");
+                    c.Fail("bad node id '" + std::string(f[k]) + "'");
                 el.mSlots[static_cast<std::size_t>(part) * 10 + k] = v;
             }
         }
         for (int k = 0; k < 3; ++k)
             c.Next("an element record");  // orientation, offsets
-        const std::vector<std::string> last = c.Fields("an element record");
+        const auto last = c.Fields("an element record");
         // From 4.5, each non-zero list flag (fields 12-15) is followed by a node list.
         for (std::size_t k = 12; k < 16 && k < last.size(); ++k) {
             std::int64_t flag = 0;
@@ -387,12 +386,12 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
 void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
-        const std::vector<std::string> head = c.Fields("a property");
+        const auto head = c.Fields("a property");
         const std::int64_t id = c.Int(head, 0, "property id");
         rFile.mProperties[id] = fn_title(c.Next("a property title"));
         c.Next("property flags");
         auto skip_counted = [&](std::size_t PerLine, const char* pWhat) {
-            const std::vector<std::string> f = c.Fields(pWhat);
+            const auto f = c.Fields(pWhat);
             const std::int64_t count = c.Int(f, 0, pWhat);
             if (count < 0)
                 c.Fail(std::string("negative ") + pWhat);
@@ -408,11 +407,11 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
         // (function references): a repeat of the value count before a line of
         // several integers.
         if (c.Remaining() >= 2 && values > 0) {
-            const std::vector<std::string> f = fn_fields(c.Peek());
-            const std::vector<std::string> next = fn_fields(c.Peek(1));
+            const auto f = fn_fields(c.Peek());
+            const auto next = fn_fields(c.Peek(1));
             std::int64_t count = 0, v = 0;
             bool ints = next.size() > 1;
-            for (const std::string& t : next)
+            for (const std::string_view t : next)
                 ints = ints && fn_parse_int(t, v);
             if (f.size() == 1 && fn_parse_int(f[0], count) && count == values && ints) {
                 c.Next("a function count");
@@ -422,7 +421,7 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
         }
         // Outline counts (6.0 and 8.1 on): a line with one integer, then that many lines.
         while (!c.AtEnd()) {
-            const std::vector<std::string> f = fn_fields(c.Peek());
+            const auto f = fn_fields(c.Peek());
             std::int64_t count = 0;
             if (f.size() != 1 || !fn_parse_int(f[0], count) || count < 0)
                 break;
@@ -439,7 +438,7 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
     FnCursor c(rBlock);
     try {
         while (!c.AtEnd()) {
-            const std::vector<std::string> head = c.Fields("a group");
+            const auto head = c.Fields("a group");
             FnGroup g{c.Int(head, 0, "group id"), fn_title(c.Next("a group title")), {}, {}};
             // layers, coordinate clipping, plane clipping and six clipping planes
             for (int k = 0; k < 3 + 18; ++k)
@@ -448,11 +447,11 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
             // Rules: type, then start,stop,inc,include entries up to -1,-1,-1,-1;
             // the rule list ends with a lone -1.
             while (true) {
-                const std::vector<std::string> f = c.Fields("a group rule");
+                const auto f = c.Fields("a group rule");
                 if (c.Int(f, 0, "rule type") == -1)
                     break;
                 while (true) {
-                    const std::vector<std::string> e = c.Fields("a group rule entry");
+                    const auto e = c.Fields("a group rule entry");
                     if (c.Int(e, 0, "rule entry") == -1)
                         break;
                 }
@@ -461,12 +460,12 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
             // Lists: type (7 nodes, 8 elements), then one id per line up to -1;
             // the list of lists ends with a lone -1.
             while (true) {
-                const std::vector<std::string> f = c.Fields("a group list");
+                const auto f = c.Fields("a group list");
                 const std::int64_t type = c.Int(f, 0, "list type");
                 if (type == -1)
                     break;
                 while (true) {
-                    const std::vector<std::string> e = c.Fields("a group list entry");
+                    const auto e = c.Fields("a group list entry");
                     const std::int64_t id = c.Int(e, 0, "list entry");
                     if (id == -1)
                         break;
@@ -484,10 +483,10 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
 }
 
 bool fn_is_int_line(std::string_view Line, std::size_t Min, std::size_t Max, bool Positive) {
-    const std::vector<std::string> f = fn_fields(Line);
+    const auto f = fn_fields(Line);
     if (f.size() < Min || f.size() > Max)
         return false;
-    for (const std::string& s : f) {
+    for (const std::string_view s : f) {
         std::int64_t v = 0;
         if (!fn_parse_int(s, v))
             return false;
@@ -498,7 +497,7 @@ bool fn_is_int_line(std::string_view Line, std::size_t Min, std::size_t Max, boo
 }
 
 bool fn_is_real_line(std::string_view Line) {
-    const std::vector<std::string> f = fn_fields(Line);
+    const auto f = fn_fields(Line);
     double v = 0;
     return f.size() == 1 && fn_parse_real(f[0], v);
 }
@@ -537,7 +536,7 @@ void fn_read_sets(const FnBlock& rBlock, FnFile& rFile) {
 void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
-        const std::vector<std::string> head = c.Fields("an output vector");
+        const auto head = c.Fields("an output vector");
         FnVector v;
         v.mSet = c.Int(head, 0, "output set id");
         v.mId = c.Int(head, 1, "output vector id");
@@ -545,7 +544,7 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
         c.Next("an output vector range");
         c.Next("output vector components");
         c.Next("output vector components");
-        std::vector<std::string> f = c.Fields("an output vector record");
+        auto f = c.Fields("an output vector record");
         if (f.size() == 1)  // double-sided contour flag (10.0 on)
             f = c.Fields("an output vector record");
         v.mEntity = c.Int(f, 3, "output vector entity type");
@@ -553,7 +552,7 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
         // Data: `id,value` records (451, and some of 1051) or `start,end,value...`
         // ranges (1051), up to a line whose first field is -1.
         while (true) {
-            std::vector<std::string> d = c.Fields("output vector data");
+            auto d = c.Fields("output vector data");
             if (!d.empty() && d[0] == "-1")
                 break;
             // A 1051 record is a range when its second field is an integer (the

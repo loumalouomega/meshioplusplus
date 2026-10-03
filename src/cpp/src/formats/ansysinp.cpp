@@ -39,6 +39,9 @@
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/detail/ansys_model.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/keyword_card_view.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -64,21 +67,25 @@ std::string ans_upper(std::string_view Text) {
     return out;
 }
 
-std::string ans_strip(std::string_view Text) {
+std::string_view ans_strip_view(std::string_view Text) {
     const std::size_t a = Text.find_first_not_of(" \t\r\n");
     if (a == std::string_view::npos)
         return {};
     const std::size_t b = Text.find_last_not_of(" \t\r\n");
-    return std::string(Text.substr(a, b - a + 1));
+    return Text.substr(a, b - a + 1);
+}
+
+std::string ans_strip(std::string_view Text) {
+    return std::string(ans_strip_view(Text));
 }
 
 // Comma-separated fields of a command line, stripped (`ET, 4, 186`).
-std::vector<std::string> ans_commas(std::string_view Line) {
-    std::vector<std::string> out;
+std::vector<std::string_view> ans_commas(std::string_view Line) {
+    std::vector<std::string_view> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t comma = Line.find(',', start);
-        out.push_back(ans_strip(Line.substr(
+        out.push_back(ans_strip_view(Line.substr(
             start, comma == std::string_view::npos ? std::string_view::npos : comma - start)));
         if (comma == std::string_view::npos)
             return out;
@@ -86,19 +93,18 @@ std::vector<std::string> ans_commas(std::string_view Line) {
     }
 }
 
-std::optional<std::int64_t> ans_int(const std::string& rText) {
+std::optional<std::int64_t> ans_int(std::string_view rText) {
     if (rText.empty())
         return std::nullopt;
-    const char* end = nullptr;
-    const double v = detail::parse_double(rText.c_str(), end);
-    if (end != rText.c_str() + rText.size())
+    double v = 0.0;
+    if (!detail::parse_double_token(rText, v))
         return std::nullopt;
     return detail::checked_integer<std::int64_t>(v, "Ansys .cdb");
 }
 
 // The capacity a block's header count asks for, capped at one entry per line
 // left: a wrong count only sizes the reservation.
-std::size_t ans_count_hint(const std::vector<std::string>& rHeader, std::size_t Field,
+std::size_t ans_count_hint(const std::vector<std::string_view>& rHeader, std::size_t Field,
                            std::size_t LinesLeft) {
     if (rHeader.size() <= Field)
         return 0;
@@ -122,28 +128,28 @@ int ans_routine(const std::string& rText) {
     throw ReadError("Ansys .cdb: line " + std::to_string(Line + 1) + ": " + rWhat);
 }
 
-std::int64_t ans_field_int(const std::vector<std::string>& rFields, std::size_t K,
+std::int64_t ans_field_int(const std::vector<std::string_view>& rFields, std::size_t K,
                            std::size_t Line) {
     if (K >= rFields.size() || rFields[K].empty())
         return 0;
     const auto v = ans_int(rFields[K]);
     if (!v)
-        ans_fail(Line, "bad integer '" + rFields[K] + "'");
+        ans_fail(Line, "bad integer '" + std::string(rFields[K]) + "'");
     return *v;
 }
 
-double ans_field_real(const std::vector<std::string>& rFields, std::size_t K, std::size_t Line) {
+double ans_field_real(const std::vector<std::string_view>& rFields, std::size_t K,
+                      std::size_t Line) {
     if (K >= rFields.size() || rFields[K].empty())
         return 0.0;
-    const std::string& text = rFields[K];
-    const char* end = nullptr;
-    const double v = detail::parse_double(text.c_str(), end);
-    if (end != text.c_str() + text.size())
-        ans_fail(Line, "bad number '" + text + "'");
+    const std::string_view text = rFields[K];
+    double v = 0.0;
+    if (!detail::parse_double_token(text, v))
+        ans_fail(Line, "bad number '" + std::string(text) + "'");
     return v;
 }
 
-bool ans_is_terminator(const std::string& rLine) {
+bool ans_is_terminator(std::string_view rLine) {
     const std::string s = ans_strip(rLine);
     if (s == "-1")
         return true;
@@ -152,7 +158,7 @@ bool ans_is_terminator(const std::string& rLine) {
 }
 
 // A command line (`FINISH`, `CMBLOCK,...`) rather than a block's data line.
-bool ans_is_command(const std::string& rLine) {
+bool ans_is_command(std::string_view rLine) {
     const std::size_t a = rLine.find_first_not_of(" \t");
     if (a == std::string::npos)
         return false;
@@ -175,7 +181,8 @@ struct AnsDeck {
 };
 
 // The format line after a block header, parsed.
-std::vector<detail::CardField> ans_format(const std::vector<std::string>& rLines, std::size_t K) {
+std::vector<detail::CardField> ans_format(const std::vector<std::string_view>& rLines,
+                                          std::size_t K) {
     if (K >= rLines.size())
         ans_fail(K, "a block header is not followed by its format line");
     try {
@@ -185,7 +192,7 @@ std::vector<detail::CardField> ans_format(const std::vector<std::string>& rLines
     }
 }
 
-AnsDeck ans_parse(const std::vector<std::string>& rLines) {
+AnsDeck ans_parse(const std::vector<std::string_view>& rLines) {
     AnsDeck deck;
     bool saw_block = false;
     std::size_t i = 0;
@@ -218,7 +225,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             const auto fields = ans_format(rLines, i + 1);
             i += 2;
             while (i < n && !ans_is_terminator(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.size() >= 2) {
                     const int slot = static_cast<int>(ans_field_int(f, 0, i));
                     deck.mModel.mRoutine[slot] = static_cast<int>(ans_field_int(f, 1, i));
@@ -242,7 +249,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                 ++n_int;
             i += 2;
             while (i < n && !ans_is_terminator(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.empty() || f[0].empty()) {
                     ++i;
                     continue;
@@ -274,7 +281,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                 continue;
             }
             while (i < n && !ans_is_terminator(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.size() < 11) {
                     ++i;
                     continue;
@@ -291,7 +298,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                     e.mNodes.push_back(ans_field_int(f, k, i));
                 ++i;
                 while (e.mNodes.size() < count && i < n && !ans_is_terminator(rLines[i])) {
-                    const auto more = detail::split_fixed(rLines[i], fields);
+                    const auto more = detail::split_fixed_view(rLines[i], fields);
                     for (std::size_t k = 0; k < more.size() && e.mNodes.size() < count; ++k)
                         e.mNodes.push_back(ans_field_int(more, k, i));
                     ++i;
@@ -316,7 +323,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             std::vector<std::int64_t> raw;
             // A short block (a header count too large) ends at the next command.
             while (i < n && raw.size() < count && !ans_is_command(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.empty())
                     break;
                 for (std::size_t k = 0; k < f.size() && raw.size() < count; ++k)
@@ -348,16 +355,11 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
     return deck;
 }
 
-std::vector<std::string> ans_read_lines(const std::string& rPath) {
-    auto f = detail::make_classic_ifstream(rPath);
-    if (!f)
-        throw ReadError("Could not open ansysInp file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(f, line)) {
+std::vector<std::string_view> ans_read_lines(std::string_view Text) {
+    auto lines = detail::split_lines(Text);
+    for (auto& line : lines) {
         if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(line);
+            line.remove_suffix(1);
     }
     return lines;
 }
@@ -365,7 +367,9 @@ std::vector<std::string> ans_read_lines(const std::string& rPath) {
 }  // namespace
 
 Mesh read_ansysinp(const std::string& rPath, const ReadOptions& rOptions, AnsysInfo& rInfo) {
-    AnsDeck deck = ans_parse(ans_read_lines(rPath));
+    const detail::FileSource source =
+        detail::open_source(rPath, "Could not open ansysInp file: " + rPath);
+    AnsDeck deck = ans_parse(ans_read_lines(source.View()));
     if (deck.mNonSolidBlocks)
         log::warn(
             "Ansys .cdb: {} non-solid EBLOCK(s) (MAPDL writes only the SOLID layout) "

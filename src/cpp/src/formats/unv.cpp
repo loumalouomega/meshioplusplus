@@ -52,6 +52,8 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
+#include "../detail/keyword_card_view.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -335,14 +337,25 @@ std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTo
 }
 
 double unv_real(std::string_view t) {
-    std::string s(t);
-    for (char& c : s)
-        if (c == 'D' || c == 'd')
-            c = 'E';
+    // Normalize short Fortran fields on the stack, retaining a bounded terminator.
+    char small[64];
+    std::string large;
+    char* first;
+    if (t.size() < sizeof small) {
+        t.copy(small, t.size());
+        small[t.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(t);
+        first = large.data();
+    }
+    for (std::size_t i = 0; i < t.size(); ++i)
+        if (first[i] == 'D' || first[i] == 'd')
+            first[i] = 'E';
     const char* end = nullptr;
-    const double v = detail::parse_double(s.c_str(), end);
-    if (end == s.c_str())
-        throw ReadError("UNV: expected a real number, got '" + s + "'");
+    const double v = detail::parse_double(first, end);
+    if (end == first)
+        throw ReadError("UNV: expected a real number, got '" + std::string(first, t.size()) + "'");
     return v;
 }
 
@@ -392,7 +405,7 @@ bool unv_has_wide_token(const std::vector<std::string_view>& rTokens, std::size_
     return false;
 }
 
-bool unv_is_int_text(const std::string& rText) {
+bool unv_is_int_text(std::string_view rText) {
     std::size_t i = (!rText.empty() && (rText[0] == '+' || rText[0] == '-')) ? 1 : 0;
     if (i == rText.size())
         return false;
@@ -402,7 +415,7 @@ bool unv_is_int_text(const std::string& rText) {
     return true;
 }
 
-bool unv_is_real_text(const std::string& rText) {
+bool unv_is_real_text(std::string_view rText) {
     bool digit = false;
     for (const char c : rText) {
         if (std::isdigit(static_cast<unsigned char>(c)))
@@ -415,7 +428,7 @@ bool unv_is_real_text(const std::string& rText) {
 
 /// The fields `rLayout` cuts from `Line`, or nothing when the line runs past its
 /// columns or a numeric field does not hold one value. A blank field is `""`.
-std::optional<std::vector<std::string>> unv_fixed_fields(
+std::optional<std::vector<std::string_view>> unv_fixed_fields(
     std::string_view Line, const std::vector<detail::CardField>& rLayout) {
     std::size_t width = 0;
     std::vector<char> kinds;
@@ -426,12 +439,12 @@ std::optional<std::vector<std::string>> unv_fixed_fields(
     }
     const std::size_t last = Line.find_last_not_of(" \t\r\n");
     if (last == std::string_view::npos)
-        return std::vector<std::string>{};
+        return std::vector<std::string_view>{};
     if (last >= width)
         return std::nullopt;
-    std::vector<std::string> fields = detail::split_fixed(Line.substr(0, last + 1), rLayout);
+    auto fields = detail::split_fixed_view(Line.substr(0, last + 1), rLayout);
     for (std::size_t i = 0; i < fields.size(); ++i) {
-        const std::string& t = fields[i];
+        const std::string_view t = fields[i];
         if (t.empty() || kinds[i] == 'a')
             continue;
         if (kinds[i] == 'i' ? !unv_is_int_text(t) : !unv_is_real_text(t))
@@ -451,14 +464,14 @@ std::vector<std::int64_t> unv_ints(std::string_view line) {
         std::vector<std::int64_t> out;
         bool gap = false;
         bool ok = true;
-        for (const std::string& t : *fields) {
+        for (const auto t : *fields) {
             if (t.empty()) {
                 gap = true;
             } else if (gap) {
                 ok = false;
                 break;
             } else {
-                out.push_back(detail::card_to_int(t, " in a UNV record", "UNV"));
+                out.push_back(detail::card_to_int_view(t, " in a UNV record", "UNV"));
             }
         }
         if (ok)
@@ -478,14 +491,14 @@ std::vector<double> unv_reals_fixed(std::string_view line, int Width) {
         std::vector<double> out;
         bool gap = false;
         bool ok = true;
-        for (const std::string& t : *fields) {
+        for (const auto t : *fields) {
             if (t.empty()) {
                 gap = true;
             } else if (gap) {
                 ok = false;
                 break;
             } else {
-                out.push_back(detail::card_to_real(t, " in a UNV record", "UNV"));
+                out.push_back(detail::card_to_real_view(t, " in a UNV record", "UNV"));
             }
         }
         if (ok)
@@ -520,26 +533,10 @@ struct UnvDataset {
     std::string_view mBlob;
 };
 
-class UnvLineReader {
+class UnvLineReader : public detail::TextCursor {
 public:
-    explicit UnvLineReader(std::string_view data) : mData(data) {}
-    bool AtEnd() const { return mPos >= mData.size(); }
-    std::size_t Pos() const { return mPos; }
-    void Seek(std::size_t pos) { mPos = pos; }
-    std::string_view Next() {
-        const std::size_t eol = mData.find('\n', mPos);
-        const std::size_t end = eol == std::string_view::npos ? mData.size() : eol;
-        std::string_view line = mData.substr(mPos, end - mPos);
-        if (!line.empty() && line.back() == '\r')
-            line.remove_suffix(1);
-        mPos = eol == std::string_view::npos ? mData.size() : eol + 1;
-        return line;
-    }
-    std::string_view Data() const { return mData; }
-
-private:
-    std::string_view mData;
-    std::size_t mPos = 0;
+    explicit UnvLineReader(std::string_view data) : detail::TextCursor(data) {}
+    std::string_view Next() { return Line(true); }
 };
 
 // Bytes of a 58b data block, from record 7 (ordinate type, count, spacing); -1 when
@@ -1114,11 +1111,11 @@ void unv_parse_function(const UnvDataset& rDs, UnvFile& rFile) {
         detail::parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)");
     const std::string_view rec6 = lines[5];
     const auto rec6_fields = rec6.size() >= 80 ? unv_fixed_fields(rec6, kRec6)
-                                               : std::optional<std::vector<std::string>>();
+                                               : std::optional<std::vector<std::string_view>>();
     if (rec6_fields) {
-        const std::vector<std::string>& f = *rec6_fields;
+        const auto& f = *rec6_fields;
         auto int_field = [&](std::size_t i) {
-            return i < f.size() ? detail::card_to_int(f[i], " in dataset 58 record 6", "UNV")
+            return i < f.size() ? detail::card_to_int_view(f[i], " in dataset 58 record 6", "UNV")
                                 : std::int64_t{0};
         };
         fn.mType = static_cast<int>(int_field(0));

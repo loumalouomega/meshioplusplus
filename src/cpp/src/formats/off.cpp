@@ -21,7 +21,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -34,6 +33,9 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -62,24 +64,23 @@ std::string off_cell_type_from_count(std::size_t n) {
 }  // namespace
 
 Mesh read_off(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    detail::TextStream in(source.View());
 
     std::string line;
-    if (!std::getline(in, line) || off_strip(line) != "OFF")
+    if (!getline(in, line) || off_strip(line) != "OFF")
         throw ReadError("Expected the first line to be 'OFF'");
 
     // Skip comments / blank lines to the counts line.
     std::string counts;
-    while (std::getline(in, line)) {
+    while (getline(in, line)) {
         std::string s = off_strip(line);
         if (!s.empty() && s[0] != '#') {
             counts = s;
             break;
         }
     }
-    auto cs = detail::make_classic_istringstream(counts);
+    detail::TextStream cs(counts);
     long long num_verts = 0, num_faces = 0, num_edges = 0;
     cs >> num_verts >> num_faces >> num_edges;
     // Three coordinates and a face row each take at least a byte apiece.
@@ -179,10 +180,11 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
     os << num_points << ' ' << num_faces << " 0\n\n";
 
     char buf[96];
+    const detail::DoubleView point_values(points);
     for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
-        double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
-        double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
+        double x = (0 < dim) ? point_values[r * dim + 0] : 0.0;
+        double y = (1 < dim) ? point_values[r * dim + 1] : 0.0;
+        double z = (2 < dim) ? point_values[r * dim + 2] : 0.0;
         detail::snprintf_c(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
@@ -192,10 +194,11 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
             continue;
         const NDArray& conn = cb.Conn();
         const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const detail::Int64View indices(conn);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << k;
             for (std::size_t j = 0; j < k; ++j)
-                os << ' ' << detail::read_int(conn, r * k + j);
+                os << ' ' << indices[r * k + j];
             os << '\n';
         }
     }

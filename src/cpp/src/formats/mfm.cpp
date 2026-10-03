@@ -20,9 +20,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
-#include <iterator>
-#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -32,6 +31,8 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -56,15 +57,17 @@ std::string type_from_dims(int lnv, int lne, int lnf, int lnn) {
 }  // namespace
 
 Mesh read_mfm(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view text = source.View();
 
-    // First non-empty line: header.
-    std::string line;
+    // The first line yielding integers is the header, as with stream extraction.
+    std::size_t body_pos = 0;
     std::vector<long long> header;
-    while (std::getline(in, line)) {
-        auto iss = detail::make_classic_istringstream(line);
+    while (body_pos < text.size()) {
+        const std::size_t end = text.find('\n', body_pos);
+        const std::size_t stop = end == std::string_view::npos ? text.size() : end;
+        detail::TextStream iss(text.substr(body_pos, stop - body_pos));
+        body_pos = stop < text.size() ? stop + 1 : stop;
         long long v;
         while (iss >> v)
             header.push_back(v);
@@ -82,12 +85,11 @@ Mesh read_mfm(const std::string& rPath) {
     if (lnn != lnv || nnod != nver)
         throw ReadError("MFM: only linear (P1) elements are supported");
 
-    // Remaining tokens.
-    std::vector<std::string> tok((std::istream_iterator<std::string>(in)),
-                                 std::istream_iterator<std::string>());
+    // Views into the source; even discarded reference tokens need no owned string.
+    const std::vector<std::string_view> tok = detail::split_blanks(text.substr(body_pos));
     std::size_t pos = 0;
     auto need = [&](std::size_t n) {
-        if (pos + n > tok.size())
+        if (n > tok.size() - pos)
             throw ReadError("MFM: unexpected end of file");
     };
 
@@ -99,8 +101,7 @@ Mesh read_mfm(const std::string& rPath) {
     need(static_cast<std::size_t>(nel) * lnv);
     NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
     for (long long i = 0; i < nel * lnv; ++i)
-        data.As<std::int64_t>()[i] =
-            detail::zero_based(std::strtoll(tok[pos++].c_str(), nullptr, 10));
+        data.As<std::int64_t>()[i] = detail::zero_based(detail::strtoll_token(tok[pos++]));
 
     // reference arrays (discarded): nrc (dim==3), nra (dim>=2), nrv
     if (dim == 3) {
@@ -120,13 +121,13 @@ Mesh read_mfm(const std::string& rPath) {
     need(static_cast<std::size_t>(nver) * dim);
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     for (long long i = 0; i < nver * dim; ++i)
-        pts.As<double>()[i] = detail::parse_double(tok[pos++]);
+        pts.As<double>()[i] = detail::parse_double_prefix(tok[pos++]);
     mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
     need(static_cast<std::size_t>(nel));
     for (long long i = 0; i < nel; ++i)
-        ref.As<std::int64_t>()[i] = std::strtoll(tok[pos++].c_str(), nullptr, 10);
+        ref.As<std::int64_t>()[i] = detail::strtoll_token(tok[pos++]);
 
     mesh.AddCellBlock(cell_type, std::move(data));
     std::vector<NDArray> refs;

@@ -75,17 +75,7 @@ std::string tecplot_strip(const std::string& rS) {
     std::size_t e = rS.find_last_not_of(" \t\r\n");
     return rS.substr(b, e - b + 1);
 }
-/// Data tokens: Tecplot separates values by blanks or commas.
-std::vector<std::string> tecplot_tokens(std::string S) {
-    std::replace(S.begin(), S.end(), ',', ' ');
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(S);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
-}
-/// tecplot_tokens as views into @p Line (appended to @p rOut, cleared first):
+/// Data tokens as views into @p Line (appended to @p rOut, cleared first):
 /// blanks and commas separate values, as replacing the commas with blanks
 /// and splitting on whitespace did.
 void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& rOut) {
@@ -105,7 +95,7 @@ void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& r
     }
 }
 
-/// How many tokens tecplot_tokens gives for @p Line, without building them.
+/// How many tokens tecplot_tokens_view gives for @p Line, without building them.
 std::size_t tecplot_count_tokens(std::string_view Line) {
     std::size_t count = 0;
     bool in_token = false;

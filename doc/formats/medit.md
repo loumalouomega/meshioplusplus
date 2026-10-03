@@ -20,6 +20,8 @@ meshioplusplus.medit.write("out.mesh", mesh, float_fmt=".16e")
 
 - **`float_fmt`** (default `".16e"`) — coordinate format for the ASCII writer (the binary path's float width is dictated by the file's `MeshVersionFormatted` version, not by this kwarg).
 
+The native ASCII tokenizer reads bounded views over a [`FileSource`](../mmap.md), retaining comment skipping, numeric-prefix behavior and version-driven dtypes. Returned arrays are owned; the writer and binary fallback are unchanged. See the [text-I/O measurements](../benchmarks.md#off-medit-xyz-and-unv-second-reader-batch).
+
 ## File structure
 
 ### ASCII (`.mesh`)

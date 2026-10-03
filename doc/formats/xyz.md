@@ -23,6 +23,8 @@ mesh = meshioplusplus.xyz.read("odd.xyz", columns=["x", "y", "z", "_", "p"])
 - **`delimiter`** — column delimiter. Empty = detect (`;`, then `,`, else whitespace).
 - **`float_fmt`** (write) — a format spec such as `".16e"`; by default float32 columns use `.9g` and the rest `.17g`.
 
+The native reader views source lines and numeric tokens over a mapped or buffered [`FileSource`](../mmap.md). Column names and returned arrays remain owned, and delimiter/PTS/column-inference rules and writer bytes are unchanged; see the [text-I/O measurements](../benchmarks.md#off-medit-xyz-and-unv-second-reader-batch).
+
 ## Mesh mapping
 
 Float64 points plus one `vertex` block — what [`subsample_points`](../point_budgets.md) produces. Columns `nx ny nz` → `"normals"` (n, 3); `r g b [a]` → `"rgb"` / `"rgba"` `uint8` (byte values, or unit floats scaled by 255); every other named column is a float64 scalar under its own name.

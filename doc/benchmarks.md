@@ -64,11 +64,165 @@ cd benchmark
 
 The notebook records the machine, library versions, and the inputs (the bundled `example.msh` bracket plus a synthetic tetrahedral cube and a size sweep), runs the harness, writes `results.csv`, and regenerates the plots above. Numbers are single-machine and indicative — the *shape* of the result is the point, not the exact factors.
 
+### OFF, Medit, XYZ and UNV: second reader batch
+
+The [112-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch2.csv) covers these four readers on the same M/L harness inputs, compiler settings, SEQ/OpenMP/TBB modules and thread limits as the MFM experiment. Before modules come from the preserved original archive, with the four source files verified against its source commit; after modules and source snapshots are separately archived under `build/text-io-batch2/`. Timing medians use seven uninstrumented repeats after warmup. Allocation counts are three identical warmed native-dispatch reads in separate instrumented processes; they include Python dispatch/binding overhead and are cumulative ordinary `operator new` requests, not peak memory. Digests include geometry, point/cell/field data and regions and agree across both stages and all seven configurations for every format/size pair.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| OFF | 3.6 → 0.9 ms | 9.0 → 2.5 ms | 22,097 → 47 | 54,498 → 48 |
+| Medit ASCII | 38.0 → 33.8 ms | 148.7 → 132.5 ms | 140,017 → 49 | 526,889 → 41 |
+| XYZ | 1.8 → 1.0 ms | 4.5 → 2.5 ms | 58,455 → 29,487 | 144,621 → 72,693 |
+| UNV | 95.5 → 99.6 ms | 387.2 → 394.5 ms | 5,377,168 → 5,237,200 | 20,778,542 → 20,251,694 |
+
+OFF replaces both file extraction and its count-line stream with `TextStream` over a `FileSource`. Medit retains its comment-aware tokenizer but returns views and parses bounded prefixes. XYZ retains comment/column/delimiter/PTS and molecular-file rules while viewing its source lines and numeric tokens; header names remain owned and the output arrays are copied. UNV normalizes short Fortran real fields into a terminated stack buffer instead of an owned string; long fields still have an owned fallback. None changes writer code, public API or installed headers, so C++ ABI 22 is unchanged. The remaining private-cursor consolidation and dtype-switch work are not part of this batch.
+
+The [32-row SEQ confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch2_seq_confirmation.csv) records before→after and after→before orders rather than replacing the original sweep. OFF, Medit and XYZ retain read gains in both orders. UNV is an allocation-only result, not a speedup: M reads are 94.43→95.04 and 98.51→96.21 ms; L reads are 388.35→389.39 and 385.29→391.07 ms, with no material slowdown. Writer medians fluctuate despite identical implementations, notably UNV M (210.55→214.77 and 179.73→211.94 ms); no writer speedup is claimed. Keep those noisy observations in the evidence. Direct native suites run on MESHIO/NATIVE/KRATOS; fresh-process Python tests exercise both forced buffered and mmap-attempt paths, CRLF/no-final-newline and owned results after unlinking and replacing the source.
+
+### EnSight, VTK, Ansys, Patran and Tecplot: stream batch
+
+The [140-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch3.csv) and [40-row SEQ confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch3_seq_confirmation.csv) preserve matching file/mesh digests before and after on all seven configurations. The driver uses the harness's M/L inputs with `binary=False` for EnSight, VTK and Ansys, so it actually measures their ASCII paths; Tecplot and Patran use their usual text writers. Archived modules/source/compile commands and raw logs are in `build/text-io-batch3/`. The timing/count methodology is the same as the second batch, including separate instrumentation and both SEQ measurement orders.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| EnSight ASCII | 16.3 → 16.9 ms | 60.5 → 58.9 ms | 57 → 54 | 49 → 46 |
+| VTK ASCII | 20.0 → 20.7 ms | 76.2 → 75.1 ms | 67 → 61 | 59 → 53 |
+| Ansys ASCII | 408.2 → 416.4 ms | 2127.8 → 2164.5 ms | 6,615,646 → 6,615,645 | 25,592,351 → 25,592,350 |
+| Patran mesh | 292.3 → 287.7 ms | 1353.3 → 1330.9 ms | 5,611,802 → 5,611,802 | 21,721,422 → 21,721,422 |
+| Tecplot | 57.6 → 57.2 ms | 455.8 → 443.2 ms | 257,406 → 257,406 | 998,402 → 998,402 |
+
+These are small stream-overhead cleanups, not bulk-reader speedups. EnSight's case/time/id records, VTK's header-token splitter, Ansys's zone-name record and Patran's result header now use `TextStream`. Patran's mesh-only harness does **not** exercise result headers; its existing direct C++ and native/reference Python text/binary-result tests cover that migration, with no result-reader performance claim. Tecplot's allocating stream helper had no call sites: removing it has no runtime effect, and its counts remain identical. Confirmation SEQ read medians do not show a material slowdown; unchanged writer timings remain noisy (including EnSight and Patran L) and are retained rather than interpreted as a gain. All changes are core-private/non-inline implementations; API, installed headers and ABI 22 are unchanged. The remaining allocating tokenizers and private-cursor consolidation remain open.
+
+### Femap, PCD and Radioss engine records: fourth batch
+
+Femap's comma fields now view its source records, with bounded real parsing and owned titles/results. PCD's header fields view the source; ASCII data, header integers and viewpoint numbers use a terminated stack buffer for short tokens and an owned long-token fallback, retaining the existing C parser's range/errno and embedded-NUL semantics. Radioss engine records use shared blank-separated views and bounded whole-token floating parsing. Radioss fixed/comma fields and include-expanded source lines are **not** migrated in this batch. No writer, installed header or public API changes; ABI 22 remains unchanged.
+
+The [84-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch4.csv) measures Femap, **ASCII** PCD (`binary=False`) and Radioss **starter** meshes on the harness's M/L inputs, with the same seven configurations and separate timing/allocation instrumentation. All before/after file and full parsed-data digests agree. Archives are under `build/text-io-batch4-ascii/`. The starter harness does not exercise engine fields: Radioss's direct native/native-reference engine tests and the new long-token/ignored-nonnumeric test cover that path, but no engine performance gain is claimed.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Femap | 328.1 → 211.7 ms | 1482.7 → 968.5 ms | 8,480,531 → 6,197,003 | 32,859,077 → 24,013,789 |
+| PCD ASCII | 1.0 → 1.1 ms | 2.7 → 2.6 ms | 106 → 96 | 106 → 96 |
+| Radioss starter | 232.6 → 250.9 ms | 1140.5 → 1141.0 ms | 5,267,765 → 5,267,765 | 20,742,055 → 20,742,055 |
+
+Femap cumulative requested bytes drop from 1,713,613,273 to 973,491,843 for M and 6,683,154,139 to 3,808,758,163 for L (about 43%); these are not peak-memory measurements. The [24-row SEQ confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch4_seq_confirmation.csv) retains both orders: Femap M 328.75→193.21 and 319.86→190.42 ms, L 1506.31→978.33 and 1487.66→974.36 ms. Radioss's initial M slowdown does not reproduce (232.27→231.49 and 229.37→231.69 ms). PCD is a small allocation result, not a speedup claim: M 1.03→0.98 and 1.04→0.98 ms; L 2.51→2.69 and 2.59→2.55 ms, with the small one-order regression retained as timing variability rather than hidden. Native tests run on all three mesh backends, and the fresh-process ownership/prefix/error tests also pass on the original archived SEQ module, proving they pin existing behavior rather than broaden parsing.
+
+### DEX, IP, FLUX and PERMAS: line-view batch
+
+The [112-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch5.csv) and [32-row both-order confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch5_seq_confirmation.csv) retain identical before/after file and full mesh digests on all seven configurations. All four readers now view `FileSource` lines instead of owning every line; FLUX and PERMAS also view blank-separated body tokens. IP still owns each parenthesis-normalized record and its column names; DEX owns header metadata. Existing numeric-prefix and stream-extraction behavior, writer bytes, public API and installed headers are unchanged, leaving ABI 22 unchanged. DEX requires a nodal field: the harness now supplies `benchmark:field = arange(npoints)` only for that input, without mutating the shared meshes or changing conformance.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| DEX | 9.3 → 8.6 ms | 37.7 → 33.2 ms | 233,124 → 186,567 | 877,949 → 702,411 |
+| IP | 1.5 → 1.1 ms | 3.6 → 2.6 ms | 39,108 → 26,093 | 101,030 → 67,375 |
+| FLUX | 159.2 → 66.9 ms | 554.9 → 261.9 ms | 985,651 → 257,419 | 3,825,865 → 998,433 |
+| PERMAS | 66.7 → 37.7 ms | 268.7 → 153.6 ms | 2,470,195 → 1,987,474 | 9,547,803 → 7,690,314 |
+
+The first FLUX candidate allocated a temporary token vector per record, increasing M/L allocation calls to 2,455,382/9,511,276 despite a read gain. Its original raw matrix is preserved in `build/text-io-batch5/after/`; the published matrix uses `after-refined/`, which reuses that vector and reduces requested bytes to 217,824,419/868,814,051 from 433,964,810/1,728,718,042. This is cumulative allocation traffic, not peak RSS. Before source/settings and all archived modules remain in the same tree. Confirmation reproduces all four reader gains, including FLUX M 163.71→65.01 and 162.14→65.65 ms, L 545.95→259.36 and 553.04→262.12 ms. Writer timing fluctuations are retained, including FLUX L 830.57→885.25 ms in the reversed order; writer code is unchanged and no writer performance gain is claimed. Focused native tests cover MESHIO/NATIVE/KRATOS, and Python checks cover source ownership, CRLF/no-final-newline and forced buffered/mmap-attempt reads.
+
+### Abaqus, Ansys coded databases, Marc, Nastran and Netgen: deck-line batch
+
+These five readers now view their mapped/buffered source lines. Marc retains each included file in stable `deque<FileSource>` storage through deck parsing and keeps its formatted post-file source alive with the post reader; returned names, sets and arrays remain owned. Netgen views its inflated gzip buffer instead of copying it into a string stream, retaining concatenated-member handling and count bounds. Abaqus data-section rows and Nastran flattened logical cards remain owned; their tokenizers are not closed by this batch. No installed headers/API/writer changes; ABI 22 is unchanged.
+
+The [140-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch6.csv) has identical before/after file and mesh digests across all seven configurations. The source/module/settings archives are in `build/text-io-batch6-lines/`; the published after archive is `after-refined/`. The first Netgen candidate copied each view into a temporary string before stripping it, leaving M allocation calls essentially unchanged; its raw evidence remains in `after/`, and the refinement strips the view directly. The harness uses normal text/deck writers, not gzip, includes or Marc post results; those paths are covered by native/native-reference fixtures and fresh-process source-ownership tests, including a nested Marc include.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Abaqus | 93.3 → 89.5 ms | 369.1 → 322.9 ms | 2,711,303 → 2,407,418 | 10,444,757 → 9,270,901 |
+| Ansys coded database | 179.8 → 166.1 ms | 718.0 → 597.4 ms | 5,143,990 → 4,840,073 | 19,900,568 → 18,726,691 |
+| Marc deck | 156.2 → 154.9 ms | 628.8 → 567.4 ms | 4,242,675 → 3,938,765 | 16,405,217 → 15,231,347 |
+| Nastran | 212.8 → 206.4 ms | 871.7 → 798.6 ms | 7,338,703 → 6,988,158 | 28,345,645 → 26,996,182 |
+| Netgen | 67.6 → 56.9 ms | 267.9 → 213.3 ms | 2,220,753 → 1,916,854 | 8,568,399 → 7,394,529 |
+
+The [40-row confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch6_seq_confirmation.csv) retains both SEQ orders and reader gains. Netgen M reads are 65.47→55.38 and 65.70→54.95 ms, L 258.96→210.18 and 259.36→215.44 ms. All readers reduce cumulative requested bytes as well as allocation calls; these are not peak-memory measurements. Unchanged writer timings remain noisy, including Abaqus L 133.99→163.92 ms in the reversed order; no writer speedup is claimed. The five-format/ownership/gate tests pass on SEQ/OpenMP/TBB and direct native suites run on MESHIO/NATIVE/KRATOS.
+
+### LS-DYNA, Radioss card fields and GiD quoted tokens
+
+The [84-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch7.csv) and [24-row both-order confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch7_seq_confirmation.csv) match file/full-mesh digests across both stages and all seven configurations. This batch uses the immediately preceding rebuilt modules as its baseline, with source snapshots and implementation diffs at both stages in `build/text-io-batch7/`, because Radioss's engine fields were already migrated. Compiler commands and settings match. LS-DYNA views lines and block records over each include's source, explicitly retaining the original split's final empty record. Radioss fixed/comma fields view the stable expanded deck lines; numeric parsing still calls the existing owned card parser. GiD views quoted/unquoted tokens over each record and parses short numbers from terminated stack buffers; metadata names and long-number fallbacks remain owned. No writer, installed-header or API changes; ABI 22 is unchanged.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| LS-DYNA | 198.2 → 188.6 ms | 934.8 → 1000.3 ms | 3,449,240 → 2,841,425 | 13,372,224 → 11,024,489 |
+| Radioss starter | 230.3 → 241.3 ms | 1139.8 → 1098.1 ms | 5,267,759 → 5,267,759 | 20,742,052 → 20,742,052 |
+| GiD ASCII | 126.9 → 137.7 ms | 561.4 → 576.4 ms | 1,823,380 → 1,823,380 | 7,043,186 → 7,043,186 |
+
+The initial timing regressions are retained rather than replaced. Both-order confirmation reproduces no material reader slowdown: LS-DYNA M 192.61→173.98 and 193.61→172.06 ms, L 947.52→890.69 and 938.45→877.37 ms; Radioss M 231.70→220.86 and 233.06→219.69 ms, L 1158.20→1099.74 and 1144.19→1098.79 ms; GiD M 129.59→124.70 and 129.95→122.82 ms, L 610.72→556.40 and 605.44→555.03 ms. Cumulative requested bytes decrease for every reader/configuration, even where allocation call counts stay identical because the numeric strings used small-string storage. They are not peak-memory measurements. Unchanged writer timing noise is retained, with no writer gain claimed. Ownership/prefix tests also pass on the baseline SEQ module; direct native tests cover all three mesh backends, and Python suites include GiD ASCII/binary/HDF5 paths and LS-DYNA/Radioss include/metadata behavior.
+
+### Shared-card views and bounded Fortran numbers
+
+The [196-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch8.csv) and [56-row both-order confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch8_seq_confirmation.csv) preserve file/full-mesh digests across both stages and all seven configurations. Six readers (LS-DYNA, Ansys coded databases, Marc, Radioss, Patran and UNV) use core-private card/token views and short terminated number buffers; Nastran also uses the bounded numeric counterpart while keeping its reassembled logical cards owned. The installed `keyword_card.hpp` owning API is unchanged. Direct tests compare values, signed zero, error messages, D/implicit exponents, range limits, embedded NULs and stack/owned-buffer boundaries against that API. No writer/public-header/signature/default changes; ABI 22 is unchanged. Source/module/settings archives are in `build/text-io-batch8-cards/`, against the preceding rebuilt modules.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| LS-DYNA | 171.6 → 160.0 ms | 891.7 → 916.4 ms | 2,841,428 → 2,328,212 | 11,024,492 → 9,029,996 |
+| Ansys coded database | 152.4 → 146.6 ms | 603.5 → 563.7 ms | 4,840,073 → 4,700,105 | 18,726,691 → 18,199,843 |
+| Marc deck | 147.1 → 124.7 ms | 581.9 → 473.4 ms | 3,938,765 → 2,806,066 | 15,231,347 → 10,860,888 |
+| Radioss starter | 221.2 → 245.5 ms | 1210.2 → 1198.6 ms | 5,267,765 → 4,882,853 | 20,742,055 → 19,246,183 |
+| Patran neutral | 288.2 → 294.0 ms | 1414.9 → 1821.8 ms | 5,611,802 → 5,611,802 | 21,721,422 → 21,721,422 |
+| Nastran | 197.9 → 213.2 ms | 839.1 → 895.8 ms | 6,988,158 → 6,754,878 | 26,996,182 → 26,055,382 |
+| UNV | 91.2 → 103.1 ms | 374.7 → 400.9 ms | 5,237,200 → 5,237,200 | 20,251,694 → 20,251,694 |
+
+Initial regressions are retained, including Patran L's reader 1414.88→1821.78 ms and unchanged writer 1221.52→1413.31 ms. Confirmation reproduces reader gains for LS-DYNA, Ansys, Marc and Patran, with no material confirmed SEQ slowdown for the other three. Patran M reads are 293.46→263.01 and 289.81→264.15 ms, L 1330.39→1219.53 and 1274.99→1190.54 ms. Marc L reads are 582.27→457.77 and 566.54→465.27 ms. Nastran's small increases (M 193.94→197.97, L 784.05→796.93 ms in the reversed order) and all writer fluctuations remain in the confirmation; Nastran/Radioss/UNV have no speedup claim. UNV's benchmark takes the already migrated free-field mesh path, so unchanged allocation counts/bytes are expected; fixed-record fixtures cover its migrated paths. Patran's call counts stay identical while requested bytes fall from 703,906,827→457,390,491 (M) and 2,736,711,739→1,783,419,723 (L), primarily smaller token-vector storage. These are cumulative requests, not peak RSS. Marc post results and other non-mesh records are covered by fixtures, not those mesh timing rows.
+
+The initial confirmation launch accidentally permitted an editable-install rebuild, which failed on the full `/tmp` filesystem before any confirmation timing row was collected. Its failure log remains in the archive; recovery explicitly disables editable rebuilds and uses project-local temporary storage with the same archived modules and measurement paths. The focused gates passed 908 Python tests (four optional skips) per SEQ/OpenMP/TBB module and 118 native tests per MESHIO/NATIVE/KRATOS backend. The remaining allocating Abaqus/Netgen tokenizers and Nastran logical-card storage are separate work, not claimed as closed here.
+
+### Shared byte and record cursors
+
+Eight format-private adapters now share the core-private `TextCursor`/`RecordCursor` implementations: Gmsh, VTK legacy, EnSight ASCII, UNV, MFEM, MDPA, GiD and Femap. They retain comments, quoting, binary positioning, diagnostics and any deliberately owned normalized names/tokens. Gmsh still reads integer identifiers through the floating path (`2.0` and `1e3`), and tests cover hexadecimal coordinates, signed zero, prefix position/failure behavior, long fields, embedded NULs and source replacement. Installed headers, writer code/bytes and public APIs are unchanged; ABI 22 is unchanged. The [224-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch9.csv) and [64-row both-order confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch9_seq_confirmation.csv) match file/full exposed-mesh digests across both stages and all seven configurations, against the preceding rebuilt modules with matching compiler commands. Source/module/settings archives are in `build/text-io-batch9-cursors/`.
+
+| SEQ reader | M read before → after | L read before → after |
+| --- | ---: | ---: |
+| Gmsh 4.1 ASCII | 22.2 → 20.5 ms | 89.1 → 74.8 ms |
+| VTK legacy ASCII | 19.9 → 16.6 ms | 78.2 → 60.0 ms |
+| EnSight ASCII | 16.4 → 13.6 ms | 62.7 → 48.9 ms |
+| UNV | 95.4 → 102.8 ms | 404.9 → 407.1 ms |
+| MFEM | 113.5 → 129.1 ms | 854.5 → 861.9 ms |
+| MDPA native | 31.8 → 36.0 ms | 125.3 → 130.7 ms |
+| GiD ASCII | 126.4 → 140.9 ms | 694.5 → 662.1 ms |
+| Femap neutral | 204.7 → 215.2 ms | 1078.1 → 970.4 ms |
+
+Allocation calls and cumulative requested bytes are identical for every format/configuration: this is consolidation/bounded prefix parsing, not an allocation-cleanup claim. Both SEQ orders reproduce Gmsh, VTK and EnSight reader gains: Gmsh L 82.81→69.99 and 81.28→69.03 ms, VTK L 76.04→54.05 and 75.36→53.93 ms, EnSight L 58.35→44.40 and 58.66→44.82 ms. The other adapters are neutral within the retained fluctuations, not speedups; GiD's reversed-order increases (M 118.42→122.72, L 533.69→550.47 ms) oppose the first order's modest gains, while Femap L rises 915.60→922.10 and 918.92→923.10 ms. Initial regressions and unchanged-writer noise remain published, including Gmsh L writes 297.61→390.37 ms and VTK L confirmation writes 158.98→201.77 ms.
+
+Gmsh 4.1 uses a directly tested single-type tetrahedral input, without changing its mixed-cell conformance rejection. MDPA is explicitly read through `_core.mdpa_read` at both stages: its public Python shim deliberately uses the Python reference and would not measure the native cursor. The CSV identifies that reader; its digest covers the standard mesh exposed by the binding, while native MDPA tests cover property/side-channel behavior. The initial input-selection and Python-MDPA digest failures remain in the archive, before any complete matrix was recorded. ASCII selection is explicit for Gmsh, VTK and EnSight; binary/other grammar paths are covered by fixtures, not those timing rows. Focused gates passed 1,147 Python tests with one expected failure per SEQ/OpenMP/TBB module, 240 native tests per MESHIO/NATIVE/KRATOS backend and 174 ownership/compatibility tests on the archived baseline SEQ module.
+
+### Remaining deck-token views
+
+Abaqus comma fields/data-section rows, Netgen whitespace fields, Nastran logical-card chunks/fields and FLAC3D ASCII rows now use bounded views. Nested include sources and inflated gzip buffers remain live through parsing. Ordinary Nastran large fields are adjacent source views; tolerated mixed free/fixed continuations retain stable owned concatenations in a deque rather than extending a view across commas. Duplicates, trailing empty fields, numeric-prefix leniency, names/sets, connectivity and writers are unchanged. The [112-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch10.csv) and [32-row both-order confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch10_seq_confirmation.csv) preserve file/full-mesh digests across stages and all seven configurations. They compare the preceding rebuilt modules with matching compiler commands/settings; archives are in `build/text-io-batch10-tokens/`. No installed headers/public APIs changed; ABI 22 is unchanged.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Abaqus | 86.0 → 52.1 ms | 335.7 → 198.3 ms | 2,407,418 → 1,613,016 | 9,270,901 → 6,220,739 |
+| Nastran | 233.7 → 196.1 ms | 916.9 → 723.0 ms | 6,754,878 → 6,171,676 | 26,055,382 → 23,828,820 |
+| Netgen | 59.0 → 38.7 ms | 232.8 → 141.4 ms | 1,916,854 → 1,426,326 | 7,394,529 → 5,518,201 |
+| FLAC3D ASCII | 70.2 → 41.6 ms | 285.3 → 153.7 ms | 2,220,781 → 818,521 | 8,568,429 → 3,170,489 |
+
+Both SEQ orders reproduce reader gains: Abaqus L 320.06→179.13 and 314.77→177.55 ms, Nastran L 822.18→655.01 and 811.48→662.90 ms, Netgen L 219.87→136.29 and 219.46→136.82 ms, FLAC3D L 277.26→147.94 and 272.31→147.93 ms. All four reduce allocation calls and cumulative requested bytes in every configuration. SEQ L requested bytes fall from 1,068,508,549→657,547,999 (Abaqus), 2,432,190,351→1,703,386,391 (Nastran), 792,157,678→473,771,897 (Netgen) and 782,706,085→201,687,829 (FLAC3D); these are cumulative requests, not peak RSS. Unchanged-writer noise remains published, including reversed-order Abaqus L writes 131.75→164.42 ms and Netgen L 265.34→289.25 ms; no writer speedup is claimed.
+
+Focused tests pass 346 Python cases per SEQ/OpenMP/TBB module and 60 native cases per MESHIO/NATIVE/KRATOS backend. The archived baseline also passes 187 ownership/compatibility cases, including long native prefixes, source replacement, 300 mixed-format Nastran joins, nested Abaqus includes and Netgen gzip. The native Abaqus include-local/global id behavior predates this batch and differs from the Python reference for the cross-include set in that test; its expected data is pinned directly rather than claiming new reference compatibility. Gzip, binary FLAC3D and richer set/property paths are fixture-covered but not measured by the ASCII mesh rows.
+
+### Source-copy removal and temporary ownership guards
+
+DEX numeric tokens now view the source and use bounded prefix parsing; D/d-exponent normalization uses a short terminated stack buffer or an owned fallback for long tokens. Gmsh time/metadata headers, OBJ trimmed rows and OpenFOAM vector/field text retain existing source views rather than first constructing strings. PLY's ASCII face path names its row owner explicitly. This is **not a dangling-read crash fix**: the preceding `TextStream(std::string&&)` already moved temporary strings into `mOwned`. That owning overload is retained and directly tested with short and long temporaries. A const owning temporary, which cannot move into the owner, is now rejected; the genuinely borrowing `TextCursor` also rejects owning rvalues. Public APIs, installed headers, writer code/bytes and ABI 22 are unchanged.
+
+The [140-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch11.csv) and [40-row both-order confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch11_seq_confirmation.csv) preserve file/full-mesh digests against the preceding rebuilt modules and across all seven configurations, with matching compiler commands/settings. Archives, the corrected ownership audit and the retained test-key failure/recovery are in `build/text-io-batch11-lifetimes/`. Gmsh timings select ASCII; OBJ, OpenFOAM and DEX also use text paths. PLY timing uses its **default binary** writer/reader, not an ASCII performance claim; ASCII faces are exercised by its fixtures and source-replacement tests. OpenFOAM field-copy removal is fixture-covered, not timed by the geometry-only mesh input.
+
+| SEQ reader | M read before → after | L read before → after | M allocation calls before → after | L allocation calls before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Gmsh 4.1 ASCII | 18.4 → 21.4 ms | 70.2 → 76.6 ms | 56 → 56 | 45 → 45 |
+| OBJ | 2.60 → 2.60 ms | 6.33 → 6.39 ms | 64,100 → 44,180 | 161,286 → 108,986 |
+| PLY binary | 2.01 → 1.97 ms | 4.59 → 4.97 ms | 132,377 → 132,377 | 326,779 → 326,779 |
+| OpenFOAM geometry | 212.7 → 225.4 ms | 874.5 → 880.6 ms | 8,565,369 → 8,565,369 | 33,499,026 → 33,499,026 |
+| DEX | 8.98 → 7.89 ms | 36.75 → 30.09 ms | 186,570 → 140,042 | 702,414 → 526,926 |
+
+DEX gains reproduce in both SEQ orders (M 8.57→6.99 and 8.46→7.00 ms, L 35.21→29.82 and 34.89→29.30 ms). OBJ L reads are 6.07→5.77 and 6.07→5.74 ms; other copy-removal paths are neutral or fluctuating, not reader speedup claims. The initial Gmsh slowdown is much smaller in confirmation (M 19.47→20.20 and 19.34→19.72 ms, L 69.01→68.90 and 69.12→69.51 ms); PLY M changes direction between orders (2.02→1.85 and 1.99→2.28 ms). All observed timing rows remain published. In particular, unchanged OBJ M writes increase in both orders (6.14→6.52 and 5.78→6.64 ms), an unfavorable observation requiring follow-up rather than a broad no-writer-regression claim. DEX and OBJ reduce cumulative allocation requests in all configurations; SEQ L bytes fall 52,300,098→46,859,989 and 10,825,536→9,407,320 respectively. Gmsh, PLY binary and OpenFOAM geometry allocations/bytes are unchanged.
+
+The focused gates pass 615 Python tests with one optional skip per SEQ/OpenMP/TBB module, 78 selected native cases per MESHIO/NATIVE/KRATOS backend (one external `checkMesh` test skipped), and 201 source-ownership cases on the archived baseline SEQ module. Seven standalone cursor parity/lifetime tests pass AddressSanitizer and UndefinedBehaviorSanitizer. DEX long exponents, signed zero and embedded-NUL prefixes preserve native semantics; source replacement checks both mapped and buffered reads in fresh processes.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
 
-Explicitly tested single-type exceptions also participate: MFM rejects the mixed conformance mesh but round-trips the harness's tetrahedral cube. This does not change its conformance declaration or imply mixed-cell support. Use `--formats mfm` to measure that reader and writer before a text-tokenizer change.
+Explicitly tested single-type exceptions also participate: MFM and Gmsh 4.1 reject the mixed conformance mesh but round-trip the harness's tetrahedral cube. This does not change their conformance declarations or imply mixed-cell support. Use `--formats mfm,gmsh` to measure those supported reader/writer paths.
 
 ```sh
 python benchmark/bench.py --sizes S,M --out results_all.csv            # every format
@@ -80,7 +234,7 @@ The sizes are 6·(n−1)³ tetrahedra for n = 16, 36 and 56 points per edge (abo
 
 ### Text I/O: MFM baseline
 
-The first prerequisite for roadmap §3.1.1 is MFM benchmark coverage, not a reader optimization. Its unchanged native reader stores the remaining file in owning token strings, including the discarded reference arrays. The [baseline evidence](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_mfm.csv) records 14 M/L rows on MESHIO: SEQ at one thread and OpenMP/TBB at 1/4/8 threads. Written-file SHA-256 values and parsed-mesh SHA-256 values (points, block types/connectivity and `mfm:ref`, including array shapes and dtypes) agree across all configurations; parsed arrays also match the generated input, with the writer's default subdomain value of one.
+The first prerequisite for roadmap §3.1.1 was MFM benchmark coverage. Its original native reader stored the remaining file in owning token strings, including the discarded reference arrays. The [before/after evidence](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_mfm.csv) preserves all 14 baseline rows and adds 14 after rows on MESHIO: SEQ at one thread and OpenMP/TBB at 1/4/8 threads. Written-file SHA-256 values and parsed-mesh SHA-256 values (points, block types/connectivity and `mfm:ref`, including array shapes and dtypes) agree across stages and all configurations; parsed arrays also match the generated input, with the writer's default subdomain value of one.
 
 Recorded on 2026-10-03 against native source commit `3b0791205bd68cdd50d3127d1aa9d08047ba9900`, AMD Ryzen 7 255, Release/MESHIO, HDF5/netCDF/zlib enabled. SEQ/TBB use Clang 23.1.1 and OpenMP uses GCC 16.2.1, all with `-O3 -DNDEBUG -ffp-contract=off`. Timings use the harness's one warmup and median of seven runs, without an allocation interposer or concurrent project builds/tests. TBB is explicitly capped with `tbb::global_control`; OpenMP uses `OMP_NUM_THREADS` with dynamic adjustment disabled. Compare each configuration with its own later result, not compiler-to-compiler timings.
 
@@ -89,7 +243,20 @@ Recorded on 2026-10-03 against native source commit `3b0791205bd68cdd50d3127d1aa
 | M tetrahedral grid | 257,250 | 166.6 ms | 188.2 ms | 140,031 | 551,509,791 (525.96 MiB) |
 | L tetrahedral grid | 998,250 | 576.3 ms | 523.6 ms | 526,913 | 2,203,755,809 (2101.67 MiB) |
 
-Allocation counting is separate: ordinary global `operator new` requests around a warmed-up direct native read, with three identical count/byte results per configuration and size. These are cumulative requests, **not peak RSS**; pathname lengths can affect small allocations, so retain the same input path before and after. The local `build/text-io-mfm/before/` archive preserves copied native modules with SHA-256 checks, source/helper snapshots, actual compile commands, CMake caches and raw JSON/logs; editable auto-rebuilding is disabled and each measurement explicitly loads its archived module. No reader/writer implementation, API, ABI or single-header change has been made at this baseline stage, and no speedup is claimed.
+Allocation counting is separate: ordinary global `operator new` requests around a warmed-up direct native read, with three identical count/byte results per configuration and size. These are cumulative requests, **not peak RSS**; pathname lengths can affect small allocations, so the same input path is retained before and after. The local `build/text-io-mfm/{before,after}/` archives preserve copied native modules with SHA-256 checks, source/helper snapshots, actual compile commands, CMake caches and raw JSON/logs; editable auto-rebuilding is disabled and each measurement explicitly loads its archived module. The after source is anchored at `2d39e4020d2cac0a8372e170eb9ce92296741614` plus the preserved MFM implementation diff; compiler versions and actual MFM compile commands match the baseline.
+
+### MFM: bounded token views
+
+The reader now uses `FileSource`, `TextStream` for the header and blank-separated token views for the body. Bounded prefix helpers retain its lenient C-library number semantics; discarded reference tokens and trailing tokens remain ignored. Mesh arrays own their storage after the source is released. The writer is unchanged. This changes an exported non-inline implementation only: no installed headers, signatures, layouts or default arguments change, C++ ABI 22 stays unchanged, and the single header is regenerated.
+
+| SEQ input | Original read median | Token-view read median | Reader allocation calls after | Cumulative requested bytes after |
+| --- | ---: | ---: | ---: | ---: |
+| M tetrahedral grid | 166.6 ms | 39.1 ms (4.27×) | 57 | 279,846,415 (266.88 MiB) |
+| L tetrahedral grid | 576.3 ms | 248.7 ms (2.32×) | 59 | 1,117,887,823 (1066.10 MiB) |
+
+The unchanged writer showed noise in the initial sequential sweep (SEQ M/L 188.2/523.6 → 198.4/591.6 ms), so a separate [uninstrumented SEQ confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_mfm_seq_confirmation.csv) retains both measurement orders, before→after and after→before, with seven repetitions each. M writer medians are 192.1→195.8 and 193.3→194.1 ms; L medians are 536.0→533.9 and 540.9→534.9 ms. No material writer slowdown reproduces. Confirmation read medians are 166.6→38.5 and 171.1→38.6 ms for M, and 742.6→154.8 and 680.3→153.8 ms for L; the original sweep remains in the evidence rather than being replaced by more favorable timings. No parallel speedup or peak-RSS reduction is claimed.
+
+Direct native tests on MESHIO/NATIVE/KRATOS and Python tests cover every supported linear type, native/reference geometry parity, mixed-type write rejection, blank/CRLF input, missing final newline, empty meshes, section truncation, existing lenient prefixes and ownership after removing/overwriting the input. The shared tokenizer and locale guards, plus Gmsh's native/reference ASCII byte comparisons, remain the gate. MFM is removed from the roadmap's remaining stream-reader list; the other readers and dtype-hoisting work remain open.
 
 ## Operations
 

@@ -944,7 +944,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(rText.substr(lp + 1, rp - lp - 1));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -957,8 +957,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 /// buffer rather than a text view.
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
-    const std::string text_owned(rText);
-    detail::TextStream ss(text_owned);
+    detail::TextStream ss(rText);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;

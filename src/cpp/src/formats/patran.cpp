@@ -37,6 +37,8 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/keyword_card_view.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
@@ -113,12 +115,14 @@ std::vector<std::string_view> pat_lines(std::string_view rText) {
     return lines;
 }
 
-std::int64_t pat_int(const std::string& rText, std::size_t Line) {
-    return detail::card_to_int(rText, " (line " + std::to_string(Line) + ")", "Patran neutral");
+std::int64_t pat_int(std::string_view rText, std::size_t Line) {
+    return detail::card_to_int_view(rText, " (line " + std::to_string(Line) + ")",
+                                    "Patran neutral");
 }
 
-double pat_real(const std::string& rText, std::size_t Line) {
-    return detail::card_to_real(rText, " (line " + std::to_string(Line) + ")", "Patran neutral");
+double pat_real(std::string_view rText, std::size_t Line) {
+    return detail::card_to_real_view(rText, " (line " + std::to_string(Line) + ")",
+                                     "Patran neutral");
 }
 
 struct PatHeader {
@@ -128,7 +132,7 @@ struct PatHeader {
 
 PatHeader pat_header(std::string_view Line, std::size_t LineNo) {
     static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(I2,8I8)");
-    const std::vector<std::string> f = detail::split_fixed(Line, layout);
+    const auto f = detail::split_fixed_view(Line, layout);
     auto at = [&](std::size_t k) { return k < f.size() ? pat_int(f[k], LineNo) : 0; };
     PatHeader h{at(0), at(1), at(2), at(3), {at(4), at(5), at(6), at(7), at(8)}};
     if (h.mKc < 0)
@@ -142,7 +146,7 @@ std::vector<std::int64_t> pat_int_cards(const std::vector<std::string_view>& rLi
     static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(10I8)");
     std::vector<std::int64_t> out;
     for (std::size_t c = 0; c < Count; ++c) {
-        const std::vector<std::string> f = detail::split_fixed(rLines[First + c], layout);
+        const auto f = detail::split_fixed_view(rLines[First + c], layout);
         for (std::size_t k = 0; k < 10; ++k)
             out.push_back(k < f.size() ? pat_int(f[k], First + c + 1) : 0);
     }
@@ -187,8 +191,8 @@ std::vector<double> pat_real_cards(const std::vector<std::string_view>& rLines, 
     static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(5E16.9)");
     std::vector<double> out;
     for (std::size_t c = 0; c < Count; ++c) {
-        const std::vector<std::string> f = detail::split_fixed(rLines[First + c], layout);
-        for (const std::string& t : f)
+        const auto f = detail::split_fixed_view(rLines[First + c], layout);
+        for (const auto t : f)
             out.push_back(pat_real(t, First + c + 1));
     }
     if (out.size() < N)
@@ -201,7 +205,7 @@ std::vector<double> pat_real_cards(const std::vector<std::string_view>& rLines, 
 std::vector<std::int64_t> pat_int_fields(std::string_view Line, std::size_t LineNo,
                                          const std::vector<detail::CardField>& rLayout,
                                          std::size_t Count) {
-    const std::vector<std::string> f = detail::split_fixed(Line, rLayout);
+    const auto f = detail::split_fixed_view(Line, rLayout);
     std::vector<std::int64_t> out(Count, 0);
     for (std::size_t k = 0; k < Count && k < f.size(); ++k)
         out[k] = pat_int(f[k], LineNo);
@@ -318,7 +322,7 @@ PatResult pat_parse_result(const std::string& rPath) {
     PatResult r;
     std::vector<std::string> head;
     {
-        auto iss = detail::make_classic_istringstream(std::string(lines[1]));
+        detail::TextStream iss(lines[1]);
         std::string t;
         while (iss >> t)
             head.push_back(t);
@@ -442,7 +446,7 @@ Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& 
                 if (kc < 1)
                     pat_fail("node " + std::to_string(h.mId) + " has no coordinate card",
                              head_line);
-                const std::vector<std::string> f = detail::split_fixed(lines[i], xyz_layout);
+                const auto f = detail::split_fixed_view(lines[i], xyz_layout);
                 node_ids.push_back(h.mId);
                 for (std::size_t d = 0; d < 3; ++d)
                     coords.push_back(d < f.size() ? pat_real(f[d], i + 1) : 0.0);
@@ -451,7 +455,7 @@ Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& 
             case 2: {
                 if (kc < 1)
                     pat_fail("element " + std::to_string(h.mId) + " has no data card", head_line);
-                const std::vector<std::string> f = detail::split_fixed(lines[i], elem_layout);
+                const auto f = detail::split_fixed_view(lines[i], elem_layout);
                 const std::int64_t nodes = f.empty() ? 0 : pat_int(f[0], i + 1);
                 const std::int64_t pid = f.size() > 2 ? pat_int(f[2], i + 1) : 0;
                 if (nodes < 0)

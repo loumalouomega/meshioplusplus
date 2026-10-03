@@ -11,6 +11,8 @@ The [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/Online
 
 ## Reading & writing
 
+The native ASCII geometry adapter shares bounded line/prefix-number positioning while keeping its grammar, record skipping and owned names/results; binary adapters and writer code are unchanged. See the [cursor comparison](../benchmarks.md#shared-byte-and-record-cursors), which measures ASCII geometry rather than transient or binary fields.
+
 ```python
 import meshioplusplus
 
@@ -88,6 +90,8 @@ Since v15.5.0 (roadmap §1.1), `write` emits a `VARIABLE` section and one variab
 - The `.geo` extension is also used by Gmsh *script* files — those are not meshes and not claimed by meshio++'s gmsh reader, but a stray Gmsh `.geo` passed to `ensight` will simply fail to parse.
 
 ## Notes
+
+The native reader uses `TextStream` for case/time/id records over bounded source buffers, retaining classic-locale extraction. This is a small allocation cleanup, not a claimed bulk-read speedup; see the [stream-batch evidence](../benchmarks.md#ensight-vtk-ansys-patran-and-tecplot-stream-batch). Writer bytes are unchanged.
 
 - `tests/python/meshes/ensight/simple.case`/`simple.geo` — hand-authored two-part ASCII example (non-sequential `node id given` ids, `tetra4` + `tria3` + `nsided`) exercising part concatenation, positional connectivity, and `ensight:part` tagging.
 - Geometry (ASCII + binary, both endiannesses) is fully handled by the C++ core, with the pure-Python reference implementing the identical feature set for fallback platforms. `VARIABLE` reading and writing are C++-core-only; the Python reference reader/writer stay geometry-only, as they have since `VARIABLE` reading shipped in v11.3.0.

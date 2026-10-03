@@ -46,6 +46,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/fortran_records.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -198,25 +199,21 @@ public:
     }
 };
 
-class EnsightAsciiCursor final : public EnsightCursor {
+class EnsightAsciiCursor final : public EnsightCursor, private detail::TextCursor {
 public:
-    explicit EnsightAsciiCursor(std::string_view text) : mText(text) {}
+    explicit EnsightAsciiCursor(std::string_view text) : detail::TextCursor(text) {}
 
     bool AtEnd() override {
         std::size_t p = mPos;
-        while (p < mText.size() &&
-               (std::isspace(static_cast<unsigned char>(mText[p])) || mText[p] == '\0'))
+        while (p < mBuf.size() &&
+               (std::isspace(static_cast<unsigned char>(mBuf[p])) || mBuf[p] == '\0'))
             ++p;
-        return p >= mText.size();
+        return p >= mBuf.size();
     }
 
     std::string NextRecord() override {
-        while (mPos < mText.size()) {
-            std::size_t eol = mText.find('\n', mPos);
-            if (eol == std::string::npos)
-                eol = mText.size();
-            std::string line = ensight_trim(std::string(mText.substr(mPos, eol - mPos)));
-            mPos = eol < mText.size() ? eol + 1 : eol;
+        while (mPos < mBuf.size()) {
+            std::string line = ensight_trim(std::string(Line()));
             if (!line.empty())
                 return line;
         }
@@ -233,12 +230,9 @@ public:
     }
 
     std::int64_t NextInt() override {
-        const char* start = mText.data() + mPos;
-        char* end = nullptr;
-        const std::int64_t v = std::strtoll(start, &end, 10);
-        if (end == start)
+        std::int64_t v = 0;
+        if (!IntPrefix(v))
             throw ReadError("EnSight: expected an integer in geometry file");
-        mPos = static_cast<std::size_t>(end - mText.data());
         return v;
     }
 
@@ -249,12 +243,8 @@ public:
 
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
-            const char* start = mText.data() + mPos;
-            const char* end = nullptr;
-            pDst[i] = detail::parse_double(start, end);
-            if (end == start)
+            if (!DoublePrefix(pDst[i]))
                 throw ReadError("EnSight: expected a number in geometry file");
-            mPos = static_cast<std::size_t>(end - mText.data());
         }
     }
 
@@ -262,10 +252,6 @@ public:
         for (std::size_t i = 0; i < n; ++i)
             NextInt();
     }
-
-private:
-    std::string_view mText;
-    std::size_t mPos = 0;
 };
 
 class EnsightBinaryCursor final : public EnsightCursor {
@@ -443,7 +429,7 @@ struct EnsightCaseInfo {
 /// integer tokens (a `[ts] [fs]` prefix) -- the same rule `model:`/variable
 /// lines both use to make the leading timeset/fileset optional.
 std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rValue) {
-    auto toks = detail::make_classic_istringstream(rValue);
+    detail::TextStream toks(rValue);
     std::vector<std::string> tokens;
     std::string tok;
     while (toks >> tok)
@@ -464,7 +450,6 @@ std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rV
 /// VARIABLE, needed for `ReadOptions::mTimeStep` and variable-file reading.
 EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
     const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
-    const std::string data(source.View());  // small text file; parsed via istringstream
 
     std::string section;
     std::string format_type;
@@ -473,9 +458,9 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
     bool in_time_values = false;
     bool have_time_set = false;
     long num_steps = -1;
-    auto stream = detail::make_classic_istringstream(data);
+    detail::TextStream stream(source.View());
     std::string raw;
-    while (std::getline(stream, raw)) {
+    while (getline(stream, raw)) {
         std::string line = ensight_trim(raw);
         if (line.empty() || line[0] == '#') {
             in_time_values = false;
@@ -503,8 +488,8 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
             static const char* kKinds[] = {
-                "scalar per node:",       "vector per node:",       "tensor symm per node:",
-                "tensor asym per node:",  "scalar per element:",    "vector per element:",
+                "scalar per node:",         "vector per node:",        "tensor symm per node:",
+                "tensor asym per node:",    "scalar per element:",     "vector per element:",
                 "tensor symm per element:", "tensor asym per element:"};
             for (const char* kind : kKinds) {
                 if (!ensight_starts_with(line, kind))
@@ -547,12 +532,12 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             } else if (ensight_starts_with(line, "time values:")) {
                 in_time_values = true;
                 const std::string rest = ensight_trim(line.substr(std::strlen("time values:")));
-                auto iss = detail::make_classic_istringstream(rest);
+                detail::TextStream iss(rest);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
             } else if (in_time_values) {
-                auto iss = detail::make_classic_istringstream(line);
+                detail::TextStream iss(line);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
@@ -632,7 +617,7 @@ struct EnsightPartLayout {
 // matters — Gold connectivity is positional, so ids are always skipped.
 bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     // rRecord is e.g. "node id assign"; the mode is the last token.
-    auto iss = detail::make_classic_istringstream(rRecord);
+    detail::TextStream iss(rRecord);
     std::string tok, mode;
     while (iss >> tok)
         mode = tok;
@@ -1476,8 +1461,7 @@ struct EnsightVariableToWrite {
 
 // EnSight's kind word and written component count for a data array's actual
 // component count; `false` when the count has no EnSight representation.
-bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind,
-                            std::size_t& rWritten) {
+bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind, std::size_t& rWritten) {
     switch (NumComponents) {
         case 1:
             rKind = "scalar";
@@ -1531,14 +1515,12 @@ std::string ensight_variable_extension(const std::string& rKind, bool PerNode) {
  */
 std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVariableToWrite& rVar,
                                             std::size_t Comp, std::size_t BlockIndex) {
-    const std::size_t mio_comp = (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5))
-                                     ? (Comp == 4 ? 5 : 4)
-                                     : Comp;
+    const std::size_t mio_comp =
+        (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5)) ? (Comp == 4 ? 5 : 4) : Comp;
     const NDArray& arr =
         rVar.mPerNode ? rMesh.PointData(rVar.mName) : rMesh.CellData(rVar.mName, BlockIndex);
     const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
-    const std::size_t n =
-        rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
+    const std::size_t n = rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
     std::vector<double> col(n);
     for (std::size_t i = 0; i < n; ++i)
         col[i] =

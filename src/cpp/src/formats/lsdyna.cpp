@@ -54,6 +54,8 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/keyword_card_view.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -166,20 +168,20 @@ std::string lsd_upper(std::string Text) {
     return Text;
 }
 
-std::string lsd_strip(const std::string& rText, const char* pChars = " \t\r\n\f\v") {
+std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v") {
     const std::size_t b = rText.find_first_not_of(pChars);
     if (b == std::string::npos)
         return std::string();
     const std::size_t e = rText.find_last_not_of(pChars);
-    return rText.substr(b, e - b + 1);
+    return std::string(rText.substr(b, e - b + 1));
 }
 
-bool lsd_starts_with(const std::string& rText, const char* pPrefix) {
+bool lsd_starts_with(std::string_view rText, const char* pPrefix) {
     return rText.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> lsd_split(std::string_view rText, char Sep) {
-    std::vector<std::string> out;
+std::vector<std::string_view> lsd_split(std::string_view rText, char Sep) {
+    std::vector<std::string_view> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t k = rText.find(Sep, start);
@@ -263,7 +265,7 @@ struct LsdSet {
 
 struct LsdLine {
     std::size_t mLineNo;
-    std::string mText;
+    std::string_view mText;
 };
 
 struct LsdKeyword {
@@ -301,7 +303,7 @@ void lsd_warn_once(LsdDeck& rDeck, const std::string& rKey, const std::string& r
         log::warn("{}", rMessage);
 }
 
-LsdKeyword lsd_parse_keyword(const std::string& rLine) {
+LsdKeyword lsd_parse_keyword(std::string_view rLine) {
     const std::string body = lsd_strip(rLine.substr(1));
     std::size_t end = body.size();
     for (std::size_t k = 0; k < body.size(); ++k) {
@@ -352,7 +354,7 @@ CardMode lsd_keyword_mode(const std::string& rRest, CardMode Mode) {
     return Mode;
 }
 
-bool lsd_skip_param(LsdDeck& rDeck, const std::string& rLine) {
+bool lsd_skip_param(LsdDeck& rDeck, std::string_view rLine) {
     if (rLine.find('&') != std::string::npos) {
         ++rDeck.mParamSkips;
         return true;
@@ -360,20 +362,22 @@ bool lsd_skip_param(LsdDeck& rDeck, const std::string& rLine) {
     return false;
 }
 
-std::size_t lsd_skip_pgp(LsdDeck& rDeck, const std::vector<std::string>& rLines, std::size_t Pos) {
+std::size_t lsd_skip_pgp(LsdDeck& rDeck, const std::vector<std::string_view>& rLines,
+                         std::size_t Pos) {
     lsd_warn_once(rDeck, "pgp", "LS-DYNA: skipped a PGP-encrypted block");
     while (Pos < rLines.size() && !lsd_starts_with(rLines[Pos], "-----END PGP"))
         ++Pos;
     return Pos + 1;
 }
 
-std::int64_t lsd_int(const std::vector<std::string>& rFields, std::size_t I,
+std::int64_t lsd_int(const std::vector<std::string_view>& rFields, std::size_t I,
                      const std::string& rWhere) {
-    return detail::card_to_int(I < rFields.size() ? rFields[I] : std::string(), rWhere);
+    return detail::card_to_int_view(I < rFields.size() ? rFields[I] : std::string_view(), rWhere);
 }
 
-double lsd_real(const std::vector<std::string>& rFields, std::size_t I, const std::string& rWhere) {
-    return detail::card_to_real(I < rFields.size() ? rFields[I] : std::string(), rWhere);
+double lsd_real(const std::vector<std::string_view>& rFields, std::size_t I,
+                const std::string& rWhere) {
+    return detail::card_to_real_view(I < rFields.size() ? rFields[I] : std::string_view(), rWhere);
 }
 
 void lsd_read_nodes(LsdDeck& rDeck, const LsdBlock& rBlock, const LsdCtx& rCtx) {
@@ -381,7 +385,7 @@ void lsd_read_nodes(LsdDeck& rDeck, const LsdBlock& rBlock, const LsdCtx& rCtx) 
         if (lsd_strip(line.mText).empty() || lsd_skip_param(rDeck, line.mText))
             continue;
         const std::string where = lsd_where(line.mLineNo, rCtx.mLabel);
-        const auto f = detail::split_card(line.mText, lsd_layout_node(), rCtx.mMode);
+        const auto f = detail::split_card_view(line.mText, lsd_layout_node(), rCtx.mMode);
         const std::int64_t nid = lsd_int(f, 0, where);
         const std::int64_t index = static_cast<std::int64_t>(rDeck.mCoords.size() / 3);
         if (!rDeck.mNodeIndex.emplace(nid, index).second)
@@ -394,10 +398,10 @@ void lsd_read_nodes(LsdDeck& rDeck, const LsdBlock& rBlock, const LsdCtx& rCtx) 
 
 void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& rBlock,
                        const LsdCtx& rCtx) {
-    const std::vector<std::string> tokens = lsd_split(rKeyword, '_');  // ELEMENT, KIND, opts...
-    const std::string kind = tokens.size() > 1 ? tokens[1] : std::string();
-    const std::vector<std::string> opts(tokens.begin() + std::min<std::size_t>(2, tokens.size()),
-                                        tokens.end());
+    const auto tokens = lsd_split(rKeyword, '_');  // ELEMENT, KIND, opts...
+    const std::string_view kind = tokens.size() > 1 ? tokens[1] : std::string_view();
+    const std::vector<std::string_view> opts(
+        tokens.begin() + std::min<std::size_t>(2, tokens.size()), tokens.end());
     std::size_t extras = 0;
     if (kind == "SOLID" && opts.empty()) {
     } else if (kind == "SOLID" && opts.size() == 1 && opts[0] == "ORTHO") {
@@ -407,7 +411,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
         lsd_warn_once(rDeck, rKeyword,
                       "LS-DYNA: *" + rKeyword + " is a conversion directive and is not applied");
         return;
-    } else if (kind == "SHELL" && std::all_of(opts.begin(), opts.end(), [](const std::string& o) {
+    } else if (kind == "SHELL" && std::all_of(opts.begin(), opts.end(), [](std::string_view o) {
                    return o == "THICKNESS" || o == "BETA" || o == "MCID" || o == "OFFSET";
                })) {
         extras = opts.size();
@@ -448,7 +452,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
         el.mFamily = family;
         el.mGroup = rDeck.mGroup;
         if (family == LsdFamily::Mass) {
-            const auto f = detail::split_card(line.mText, lsd_layout_mass(), rCtx.mMode);
+            const auto f = detail::split_card_view(line.mText, lsd_layout_mass(), rCtx.mMode);
             el.mEid = lsd_int(f, 0, where);
             el.mPid = lsd_int(f, 3, where);
             el.mType = LsdType::Vertex;
@@ -456,7 +460,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
             rDeck.mElements.push_back(el);
             continue;
         }
-        auto f = detail::split_card(line.mText, lsd_layout_element(), rCtx.mMode);
+        auto f = detail::split_card_view(line.mText, lsd_layout_element(), rCtx.mMode);
         el.mEid = lsd_int(f, 0, where);
         el.mPid = lsd_int(f, 1, where);
         if (family == LsdFamily::Solid || family == LsdFamily::TShell) {
@@ -473,7 +477,8 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
                     throw ReadError("LS-DYNA: truncated element card" + where);
                 const LsdLine& line2 = rBlock[j];
                 ++j;
-                const auto g = detail::split_card(line2.mText, lsd_layout_element(), rCtx.mMode);
+                const auto g =
+                    detail::split_card_view(line2.mText, lsd_layout_element(), rCtx.mMode);
                 std::vector<std::int64_t> nodes;
                 for (std::size_t k = 0; k < 10; ++k)
                     nodes.push_back(lsd_int(g, k, where));
@@ -541,7 +546,7 @@ void lsd_read_parts(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock&
         if (lsd_strip(card.mText).empty())
             break;
         const std::string where = lsd_where(card.mLineNo, rCtx.mLabel);
-        const auto f = detail::split_card(card.mText, lsd_layout_ids(), rCtx.mMode);
+        const auto f = detail::split_card_view(card.mText, lsd_layout_ids(), rCtx.mMode);
         const std::int64_t pid = lsd_int(f, 0, where);
         auto slot = rDeck.mPartSlot.find(pid);
         if (slot == rDeck.mPartSlot.end()) {
@@ -556,7 +561,7 @@ void lsd_read_parts(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock&
     }
 }
 
-std::optional<LsdFamily> lsd_set_family(const std::string& rName) {
+std::optional<LsdFamily> lsd_set_family(std::string_view rName) {
     if (rName == "NODE")
         return LsdFamily::Node;
     if (rName == "SOLID")
@@ -578,14 +583,14 @@ std::optional<LsdFamily> lsd_set_family(const std::string& rName) {
 
 void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& rBlock,
                   const LsdCtx& rCtx) {
-    const std::vector<std::string> tokens = lsd_split(rKeyword, '_');  // SET, FAMILY, opts...
-    const auto family = lsd_set_family(tokens.size() > 1 ? tokens[1] : std::string());
+    const auto tokens = lsd_split(rKeyword, '_');  // SET, FAMILY, opts...
+    const auto family = lsd_set_family(tokens.size() > 1 ? tokens[1] : std::string_view());
     if (!family)
         return;
-    std::set<std::string> opts;
+    std::set<std::string_view> opts;
     for (std::size_t k = 2; k < tokens.size(); ++k)
         opts.insert(tokens[k]);
-    for (const std::string& o : opts) {
+    for (const auto o : opts) {
         if (o != "LIST" && o != "GENERATE" && o != "TITLE") {
             lsd_warn_once(rDeck, rKeyword, "LS-DYNA: *" + rKeyword + " is not supported; skipped");
             return;
@@ -604,8 +609,8 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
         return;
     {
         const std::string where = lsd_where(rBlock[j].mLineNo, rCtx.mLabel);
-        set.mSid =
-            lsd_int(detail::split_card(rBlock[j].mText, lsd_layout_ids(), rCtx.mMode), 0, where);
+        set.mSid = lsd_int(detail::split_card_view(rBlock[j].mText, lsd_layout_ids(), rCtx.mMode),
+                           0, where);
         ++j;
     }
     const bool generate = opts.count("GENERATE") > 0;
@@ -615,7 +620,7 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
             continue;
         const std::string where = lsd_where(line.mLineNo, rCtx.mLabel);
         if (*family == LsdFamily::Segment) {
-            const auto f = detail::split_card(line.mText, lsd_layout_segment(), rCtx.mMode);
+            const auto f = detail::split_card_view(line.mText, lsd_layout_segment(), rCtx.mMode);
             std::array<std::int64_t, 4> seg;
             for (std::size_t k = 0; k < 4; ++k)
                 seg[k] = lsd_int(f, k, where);
@@ -624,7 +629,7 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
             set.mSegments.push_back(seg);
             continue;
         }
-        const auto fields = detail::split_card(line.mText, lsd_layout_ids(), rCtx.mMode);
+        const auto fields = detail::split_card_view(line.mText, lsd_layout_ids(), rCtx.mMode);
         std::vector<std::int64_t> f;
         for (std::size_t k = 0; k < fields.size(); ++k)
             f.push_back(lsd_int(fields, k, where));
@@ -730,14 +735,17 @@ void lsd_read_includes(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
 
 void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode) {
-    std::vector<std::string> lines = lsd_split(rText, '\n');
-    for (std::string& ln : lines)
+    auto lines = detail::split_lines(rText);
+    // The original delimiter split retained one final empty record, unlike getline.
+    if (rText.empty() || rText.back() == '\n')
+        lines.emplace_back();
+    for (auto& ln : lines)
         if (!ln.empty() && ln.back() == '\r')
-            ln.pop_back();
+            ln.remove_suffix(1);
     std::size_t pos = 0;
     const std::size_t n = lines.size();
     while (pos < n) {
-        const std::string& line = lines[pos];
+        const std::string_view line = lines[pos];
         ++pos;
         if (!lsd_starts_with(line, "*")) {
             if (lsd_starts_with(line, "-----BEGIN PGP"))
@@ -747,7 +755,7 @@ void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBase
         const LsdKeyword kw = lsd_parse_keyword(line);
         LsdBlock block;
         while (pos < n && !lsd_starts_with(lines[pos], "*")) {
-            const std::string& raw = lines[pos];
+            const std::string_view raw = lines[pos];
             ++pos;
             if (lsd_starts_with(raw, "$"))
                 continue;

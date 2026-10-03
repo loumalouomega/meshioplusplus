@@ -175,7 +175,27 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII by default; `binary=True` (v15.5.0) writes little-endian binary at a chosen `label_bits`/`scalar_bits` width, Python/C++ only. Polyhedral cells are native here.
 
-**Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
+**Note on `mfm`:** Single element type per file (non-hybrid), linear elements only. The native reader parses bounded token views over a mapped or buffered `FileSource`; see [MFM](./formats/mfm.md) and its [benchmark](./benchmarks.md#mfm-bounded-token-views).
+
+The native OFF, Medit ASCII and XYZ readers also use bounded source views; UNV's short Fortran real fields use a stack buffer. Format behavior and writer bytes are unchanged; see the [text-I/O comparison](./benchmarks.md#off-medit-xyz-and-unv-second-reader-batch).
+
+EnSight, VTK, Ansys and Patran replace their remaining header/record string streams with `TextStream`; this is a small allocation cleanup, not a bulk-reader speedup claim. See the [scope and evidence](./benchmarks.md#ensight-vtk-ansys-patran-and-tecplot-stream-batch).
+
+Femap's native comma fields and PCD headers now use views, with bounded numeric buffers; Radioss engine fields use bounded tokens while its fixed/comma card fields remain unchanged. See the [fourth batch](./benchmarks.md#femap-pcd-and-radioss-engine-records-fourth-batch).
+
+DEX, IP, FLUX and PERMAS use mapped/buffered source-line views; FLUX and PERMAS also view body tokens. See the [line-view batch](./benchmarks.md#dex-ip-flux-and-permas-line-view-batch); format behavior and writer bytes are unchanged.
+
+Source-line views also cover Abaqus, Ansys coded databases, Marc, Nastran and Netgen, with included/inflated buffer lifetimes retained; see the [deck-line batch](./benchmarks.md#abaqus-ansys-coded-databases-marc-nastran-and-netgen-deck-line-batch).
+
+LS-DYNA source/block records, Radioss fixed/comma fields and GiD quoted tokens use views while metadata stays owned; see the [seventh batch](./benchmarks.md#ls-dyna-radioss-card-fields-and-gid-quoted-tokens).
+
+The [shared-card batch](./benchmarks.md#shared-card-views-and-bounded-fortran-numbers) supplies private view/bounded-number counterparts to the installed owning card API, covering six readers and Nastran's numeric parsing without changing format behavior or writer bytes.
+
+Eight native format-private adapters [share bounded byte/record cursors](./benchmarks.md#shared-byte-and-record-cursors), retaining format grammar, Gmsh's floating-spelled identifiers and binary positioning; performance evidence identifies the direct native MDPA route rather than its deliberately Python-reference public shim.
+
+The [deck-token pass](./benchmarks.md#remaining-deck-token-views) completes measured source views for Abaqus, Nastran, Netgen and FLAC3D's ASCII mesh rows, retaining owned returned names/sets and bounded numeric-prefix behavior.
+
+[DEX normalization/source-copy evidence](./benchmarks.md#source-copy-removal-and-temporary-ownership-guards) distinguishes ordinary text timings from PLY's default binary timing path and OpenFOAM's geometry-only input; temporary-string ownership remains preserved and directly sanitizer-tested.
 
 **Note on `exodus`:** One-node `SPHERE`/particle meshes (peridynamics solvers such as [PeriLab](https://github.com/PeriHub/PeriLab.jl) write these) read as `vertex` cells, and per-element **attributes** — `attrib{k}`, where a sphere's radius or a shell's thickness lives — round-trip as `cell_data` under the `exodus:attr:` prefix, always float64 and NaN for a block the file gives no such attribute. Since v9.9.0 ordinary (non-attribute) `cell_data` round-trips too, as element variables (`name_elem_var`/`elem_var_tab`/`vals_elem_var{j}eb{k}`); element-block names round-trip through `Cell` regions (`eb_names`), and `field_data["exodus:time"]` labels the written step. See [`exodus.md`](./formats/exodus.md#element-attributes).
 

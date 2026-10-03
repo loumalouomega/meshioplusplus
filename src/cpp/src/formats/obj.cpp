@@ -23,6 +23,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -90,7 +91,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        detail::TextStream iss(line.substr(b, e - b));
+        detail::TextStream iss(std::string_view(line).substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {

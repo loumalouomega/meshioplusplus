@@ -27,7 +27,6 @@
 #include <limits>
 #include <map>
 #include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -47,6 +46,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_cursor.hpp"
 #include "face_cells_common.hpp"
 #include "../detail/open_source.hpp"
 
@@ -367,8 +367,7 @@ Mesh read_ansys(const std::string& rPath) {
             if (!rd.Eof() && rd.At() == '(') {
                 const std::size_t q = data.find_first_of("()", rd.mP + 1);
                 if (q != std::string::npos) {
-                    auto iss = detail::make_classic_istringstream(
-                        std::string(data.substr(rd.mP + 1, q - rd.mP - 1)));
+                    detail::TextStream iss(data.substr(rd.mP + 1, q - rd.mP - 1));
                     std::int64_t id = 0;
                     std::string type, name;
                     if (iss >> id >> type >> name)

@@ -48,6 +48,7 @@
 #include "meshioplusplus/region.hpp"
 #include "lagrange_common.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -318,18 +319,12 @@ struct MfToken {
 class MfLexer {
 public:
     MfLexer(const std::string& rWhat, const std::string& rText) : mWhat(rWhat) {
-        std::size_t pos = 0;
+        detail::TextCursor lines(rText);
         std::size_t line_no = 0;
         bool header_seen = false;
-        while (pos < rText.size()) {
-            std::size_t eol = rText.find('\n', pos);
-            if (eol == std::string::npos)
-                eol = rText.size();
-            std::string_view line(rText.data() + pos, eol - pos);
-            pos = eol + 1;
+        while (!lines.AtEnd()) {
+            std::string_view line = lines.Line(true);
             ++line_no;
-            if (!line.empty() && line.back() == '\r')
-                line.remove_suffix(1);
             const std::size_t first = line.find_first_not_of(" \t");
             if (first == std::string_view::npos || line[first] == '#')
                 continue;
@@ -382,21 +377,25 @@ public:
             }
         }
         mEndLine = line_no;
+        mCursor = detail::RecordCursor<MfToken>(mTokens);
     }
+
+    MfLexer(const MfLexer&) = delete;
+    MfLexer& operator=(const MfLexer&) = delete;
 
     [[noreturn]] void Fail(const std::string& rWhy, std::size_t Line) const {
         throw ReadError(mWhat + ": " + rWhy + " (line " + std::to_string(Line) + ")");
     }
 
-    bool AtEnd() const { return mPos >= mTokens.size(); }
-    std::size_t Remaining() const { return AtEnd() ? 0 : mTokens.size() - mPos; }
-    const MfToken& Peek() const { return mTokens[mPos]; }
-    std::size_t Line() const { return AtEnd() ? mEndLine : mTokens[mPos].mLine; }
+    bool AtEnd() const { return mCursor.Done(); }
+    std::size_t Remaining() const { return mCursor.Remaining(); }
+    const MfToken& Peek() const { return mCursor.Peek(); }
+    std::size_t Line() const { return AtEnd() ? mEndLine : Peek().mLine; }
 
     const MfToken& Next(const char* pExpected) {
         if (AtEnd())
             Fail(std::string("the file ends where ") + pExpected + " was expected", mEndLine);
-        return mTokens[mPos++];
+        return mCursor.Next();
     }
 
     std::int64_t Int(const char* pExpected) {
@@ -419,9 +418,9 @@ public:
     std::vector<double> Reals() {
         std::vector<double> out;
         double value = 0;
-        while (!AtEnd() && ParseReal(mTokens[mPos].mText, value)) {
+        while (!AtEnd() && ParseReal(Peek().mText, value)) {
             out.push_back(value);
-            ++mPos;
+            mCursor.Next();
         }
         return out;
     }
@@ -461,7 +460,7 @@ public:
 private:
     std::string mWhat;
     std::vector<MfToken> mTokens;
-    std::size_t mPos = 0;
+    detail::RecordCursor<MfToken> mCursor;
     std::string mHeader;
     std::size_t mHeaderLine = 0;
     std::size_t mEndLine = 0;

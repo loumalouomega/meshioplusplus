@@ -45,6 +45,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -75,7 +76,7 @@ std::string abaqus_upper(std::string s) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return s;
 }
-std::string abaqus_trim(const std::string& rS) {
+std::string_view abaqus_trim_view(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
         ++b;
@@ -83,12 +84,20 @@ std::string abaqus_trim(const std::string& rS) {
         --e;
     return rS.substr(b, e - b);
 }
-std::vector<std::string> split(const std::string& rS, char sep) {
-    std::vector<std::string> out;
-    std::string cur;
-    detail::TextStream iss(rS);
-    while (getline(iss, cur, sep))
-        out.push_back(abaqus_trim(cur));
+std::string abaqus_trim(std::string_view rS) {
+    return std::string(abaqus_trim_view(rS));
+}
+std::vector<std::string_view> split(std::string_view rS, char sep) {
+    std::vector<std::string_view> out;
+    std::size_t first = 0;
+    while (first < rS.size()) {
+        const auto last = rS.find(sep, first);
+        out.push_back(abaqus_trim_view(
+            rS.substr(first, last == std::string_view::npos ? last : last - first)));
+        if (last == std::string_view::npos)
+            break;
+        first = last + 1;
+    }
     return out;
 }
 
@@ -101,9 +110,9 @@ std::vector<std::string> split(const std::string& rS, char sep) {
 // The leading `*` on the keyword token is deliberately **kept**, exactly as the
 // Python reference does: `*ELSET, ELSET=solid` would otherwise put the bare
 // keyword and the real parameter under the same key, and the first one in wins.
-std::unordered_map<std::string, std::string> abq_param_map(const std::string& rLine) {
+std::unordered_map<std::string, std::string> abq_param_map(std::string_view rLine) {
     std::unordered_map<std::string, std::string> out;
-    for (const std::string& word : split(rLine, ',')) {
+    for (const auto word : split(rLine, ',')) {
         const std::size_t eq = word.find('=');
         if (eq == std::string::npos)
             out.insert_or_assign(abaqus_upper(abaqus_trim(word)), std::string());
@@ -150,10 +159,11 @@ struct AbqFile {
 void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth);
 
 /// The data lines following a keyword, up to the next `*` line.
-std::vector<std::string> abq_data_lines(const std::vector<std::string>& rLines, std::size_t& rI) {
-    std::vector<std::string> out;
+std::vector<std::string_view> abq_data_lines(const std::vector<std::string_view>& rLines,
+                                             std::size_t& rI) {
+    std::vector<std::string_view> out;
     while (rI < rLines.size() && (rLines[rI].empty() || rLines[rI][0] != '*')) {
-        const std::string row = abaqus_trim(rLines[rI]);
+        const auto row = abaqus_trim_view(rLines[rI]);
         ++rI;
         if (!row.empty())
             out.push_back(row);
@@ -167,18 +177,18 @@ std::vector<std::string> abq_data_lines(const std::vector<std::string>& rLines, 
  * `GENERATE` turns a `first, last, step` triple into the explicit range, which
  * is what Abaqus means by it.
  */
-void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
+void abq_read_set(const std::vector<std::string_view>& rRows, bool Generate,
                   std::vector<std::int64_t>& rIds, std::vector<std::string>& rNames) {
-    for (const std::string& row : rRows) {
-        for (const std::string& tok : split(row, ',')) {
+    for (const auto row : rRows) {
+        for (const auto tok : split(row, ',')) {
             if (tok.empty())
                 continue;
             const bool numeric =
                 std::isdigit(static_cast<unsigned char>(tok[0])) || tok[0] == '-' || tok[0] == '+';
             if (numeric)
-                rIds.push_back(std::strtoll(tok.c_str(), nullptr, 10));
+                rIds.push_back(detail::strtoll_token(tok));
             else
-                rNames.push_back(tok);
+                rNames.emplace_back(tok);
         }
     }
     if (Generate) {
@@ -207,17 +217,17 @@ void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
     }
 }
 
-void abq_read_lines(const std::vector<std::string>& rLines, const std::string& rPath, AbqFile& rOut,
-                    int Depth) {
+void abq_read_lines(const std::vector<std::string_view>& rLines, const std::string& rPath,
+                    AbqFile& rOut, int Depth) {
     const auto& a2m = abaqus_to_meshio();
     std::size_t i = 0;
     while (i < rLines.size()) {
-        const std::string& line = rLines[i];
+        const std::string_view line = rLines[i];
         if (line.rfind("**", 0) == 0) {  // comment
             ++i;
             continue;
         }
-        const std::vector<std::string> head = split(line, ',');
+        const auto head = split(line, ',');
         if (head.empty()) {  // a line of nothing but separators' whitespace
             ++i;
             continue;
@@ -229,15 +239,15 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 
         if (kw == "NODE") {
             ++i;
-            for (const std::string& row : abq_data_lines(rLines, i)) {
-                const std::vector<std::string> tok = split(row, ',');
+            for (const auto row : abq_data_lines(rLines, i)) {
+                const auto tok = split(row, ',');
                 detail::need_tokens(tok, 1, "Abaqus");
-                const std::int64_t id = std::strtoll(tok[0].c_str(), nullptr, 10);
+                const std::int64_t id = detail::strtoll_token(tok[0]);
                 rOut.mPointIds[id] = static_cast<std::int64_t>(rOut.mPoints.size());
                 std::vector<double> c;
                 for (std::size_t k = 1; k < tok.size(); ++k)
                     if (!tok[k].empty())
-                        c.push_back(detail::parse_double(tok[k]));
+                        c.push_back(detail::parse_double_prefix(tok[k]));
                 rOut.mPoints.push_back(std::move(c));
             }
         } else if (kw == "ELEMENT") {
@@ -256,10 +266,10 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 
             ++i;
             std::vector<std::int64_t> vals;
-            for (const std::string& row : abq_data_lines(rLines, i))
-                for (const std::string& t : split(row, ','))
+            for (const auto row : abq_data_lines(rLines, i))
+                for (const auto t : split(row, ','))
                     if (!t.empty())
-                        vals.push_back(std::strtoll(t.c_str(), nullptr, 10));
+                        vals.push_back(detail::strtoll_token(t));
 
             const std::size_t stride = static_cast<std::size_t>(n) + 1;
             if (vals.size() % stride != 0)
@@ -291,7 +301,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             if (name.empty())
                 throw ReadError("Abaqus " + kw + " without a name");
             ++i;
-            const std::vector<std::string> rows = abq_data_lines(rLines, i);
+            const auto rows = abq_data_lines(rLines, i);
             std::vector<std::int64_t> ids;
             std::vector<std::string> refs;
             abq_read_set(rows, params.count("GENERATE") > 0, ids, refs);
@@ -314,15 +324,15 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             const std::string name = abq_param(params, "NAME");
             const std::string type = abaqus_upper(abq_param(params, "TYPE"));
             ++i;
-            const std::vector<std::string> rows = abq_data_lines(rLines, i);
+            const auto rows = abq_data_lines(rLines, i);
             if (name.empty() || (!type.empty() && type != "ELEMENT"))
                 continue;  // node-based surfaces have no facets: skip, don't fail
             std::vector<std::pair<std::string, std::string>> members;
-            for (const std::string& row : rows) {
-                const std::vector<std::string> tok = split(row, ',');
+            for (const auto row : rows) {
+                const auto tok = split(row, ',');
                 if (tok.size() < 2 || tok[0].empty() || tok[1].empty())
                     continue;
-                members.emplace_back(tok[0], abaqus_upper(tok[1]));
+                members.emplace_back(tok[0], abaqus_upper(std::string(tok[1])));
             }
             rOut.mSurfaces.emplace_back(name, std::move(members));
         } else if (kw == "INCLUDE") {
@@ -347,15 +357,11 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 }
 
 void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    auto lines = detail::split_lines(source.View());
+    for (auto& l : lines) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
-        lines.push_back(l);
+            l.remove_suffix(1);
     }
     abq_read_lines(lines, rPath, rOut, Depth);
 }

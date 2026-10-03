@@ -31617,6 +31617,26 @@ void ring_unit_normal(const double* pXyz, const std::int64_t* pRing, std::size_t
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/crease_edges.hpp =====
+// ===== begin src/cpp/src/detail/keyword_card_view.hpp =====
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+
+namespace meshioplusplus::detail {
+
+std::vector<std::string_view> split_card_view(std::string_view Line,
+                                              const std::vector<CardField>& rLayout, CardMode Mode);
+std::vector<std::string_view> split_fixed_view(std::string_view Line,
+                                               const std::vector<CardField>& rFields);
+std::int64_t card_to_int_view(std::string_view Text, const std::string& rWhere,
+                              const std::string& rFormat = "LS-DYNA");
+double card_to_real_view(std::string_view Text, const std::string& rWhere,
+                         const std::string& rFormat = "LS-DYNA");
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/keyword_card_view.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -32361,8 +32381,10 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
  * and a token parses in place with the semantics the readers used before:
  * `parse_double_token` is `parse_double` over the whole token, and
  * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
- * accepted, an out-of-range value saturated. Roadmap §3, "A shared tokenizer
- * and number path".
+ * accepted, an out-of-range value saturated. `TextCursor` shares bounded line
+ * and prefix-number positioning; `RecordCursor` traverses split records while
+ * format adapters retain their comments, quoting and diagnostics. Roadmap §3,
+ * "A shared tokenizer and number path".
  */
 
 // System includes
@@ -32370,10 +32392,14 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cerrno>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <span>
 #include <system_error>
+#include <type_traits>
 #include <vector>
 
 // Project includes
@@ -32385,6 +32411,150 @@ namespace detail {
 inline bool text_is_blank(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
+
+/**
+ * @brief Core-private byte cursor shared by format-specific grammar adapters.
+ * Lines and prefix numbers stay bounded even when the source has no terminator.
+ * A prefix parse advances only through the accepted prefix, not the whole token.
+ */
+class TextCursor {
+public:
+    explicit TextCursor(std::string_view Text) : mBuf(Text) {}
+    template <class T>
+        requires(std::is_same_v<std::remove_cvref_t<T>, std::string> &&
+                 !std::is_lvalue_reference_v<T>)
+    explicit TextCursor(T&&) = delete;
+    bool AtEnd() const { return mPos >= mBuf.size(); }
+    std::size_t Pos() const { return mPos; }
+    void Seek(std::size_t Pos) { mPos = Pos; }
+    std::string_view Data() const { return mBuf; }
+
+    std::string_view Line(bool StripCr = false) {
+        if (AtEnd())
+            return {};
+        const auto eol = mBuf.find('\n', mPos);
+        const auto end = eol == std::string_view::npos ? mBuf.size() : eol;
+        auto line = mBuf.substr(mPos, end - mPos);
+        mPos = eol == std::string_view::npos ? end : end + 1;
+        if (StripCr && !line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        return line;
+    }
+
+    bool DoublePrefix(double& rValue) {
+#ifdef MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS
+        auto pos = NumberStart();
+        if (pos < mBuf.size() && mBuf[pos] == '+')
+            ++pos;
+        const auto hex = pos < mBuf.size() && mBuf[pos] == '-' ? pos + 1 : pos;
+        const bool hexadecimal = hex + 1 < mBuf.size() && mBuf[hex] == '0' &&
+                                 (mBuf[hex + 1] == 'x' || mBuf[hex + 1] == 'X');
+        if (pos < mBuf.size() && !hexadecimal) {
+            double value = 0.0;
+            const auto parsed =
+                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), value);
+            if (parsed.ec == std::errc{}) {
+                rValue = value;
+                mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
+                return true;
+            }
+        }
+#endif
+        // Hexadecimal, out-of-range and platform fallback paths use the exact
+        // locale-independent C parser over a bounded, terminated copy.
+        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
+            return parse_double(pFirst, rpEnd);
+        });
+    }
+    bool IntPrefix(std::int64_t& rValue) {
+        auto pos = NumberStart();
+        const bool negative = pos < mBuf.size() && mBuf[pos] == '-';
+        if (pos < mBuf.size() && (mBuf[pos] == '+' || negative))
+            ++pos;
+        if (pos < mBuf.size() && mBuf[pos] >= '0' && mBuf[pos] <= '9') {
+            std::uint64_t magnitude = 0;
+            const auto parsed =
+                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), magnitude);
+            constexpr auto maximum =
+                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+            if (parsed.ec == std::errc::result_out_of_range ||
+                magnitude > maximum + (negative ? 1u : 0u)) {
+                rValue = negative ? std::numeric_limits<std::int64_t>::min()
+                                  : std::numeric_limits<std::int64_t>::max();
+                errno = ERANGE;  // the saturating strtoll contract
+            } else {
+                rValue = negative ? static_cast<std::int64_t>(0 - magnitude)
+                                  : static_cast<std::int64_t>(magnitude);
+            }
+            mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
+            return true;
+        }
+        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
+            char* end = nullptr;
+            const auto value = std::strtoll(pFirst, &end, 10);
+            rpEnd = end;
+            return static_cast<std::int64_t>(value);
+        });
+    }
+
+    // Binary-aware adapters retain direct checked byte positioning.
+    std::string_view mBuf;
+    std::size_t mPos = 0;
+
+private:
+    std::size_t NumberStart() const {
+        auto first = mPos;
+        while (first < mBuf.size() && text_is_blank(mBuf[first]))
+            ++first;
+        return first;
+    }
+
+    template <class T, class Parser>
+    bool NumberPrefix(T& rValue, Parser Parse) {
+        const auto first = NumberStart();
+        if (first >= mBuf.size())
+            return false;
+        std::size_t last = first;
+        while (last < mBuf.size() && !text_is_blank(mBuf[last]))
+            ++last;
+        const auto token = mBuf.substr(first, last - first);
+        char small[64];
+        std::string large;
+        const char* start;
+        if (token.size() < sizeof small) {
+            token.copy(small, token.size());
+            small[token.size()] = '\0';
+            start = small;
+        } else {
+            large.assign(token);
+            start = large.c_str();
+        }
+        const char* end = nullptr;
+        const auto value = Parse(start, end);
+        if (end == start)
+            return false;
+        rValue = value;
+        mPos = first + static_cast<std::size_t>(end - start);
+        return true;
+    }
+};
+
+/// A non-owning cursor over already split records; grammar adapters check EOF.
+template <class T>
+class RecordCursor {
+public:
+    RecordCursor() = default;
+    explicit RecordCursor(std::span<const T> Records) : mRecords(Records) {}
+    bool Done() const { return mPos >= mRecords.size(); }
+    std::size_t Remaining() const { return Done() ? 0 : mRecords.size() - mPos; }
+    std::size_t Pos() const { return mPos; }
+    const T& Peek(std::size_t Ahead = 0) const { return mRecords[mPos + Ahead]; }
+    const T& Next() { return mRecords[mPos++]; }
+
+private:
+    std::span<const T> mRecords;
+    std::size_t mPos = 0;
+};
 
 /**
  * @brief The lines `std::getline` reads from @p Text, as views into it: split
@@ -32585,6 +32755,8 @@ inline double parse_double_prefix(std::string_view Token) {
 class TextStream {
 public:
     explicit TextStream(std::string_view Text) : mText(Text) {}
+    // A const temporary cannot be moved into mOwned; do not silently borrow it.
+    explicit TextStream(const std::string&&) = delete;
     explicit TextStream(const char* pText) : mText(pText ? pText : "") {}
     explicit TextStream(const std::string& rText) : mText(rText) {}
     /// A temporary is kept, so the view never outlives it.
@@ -53811,14 +53983,18 @@ namespace detail {
 
 namespace {
 
-std::string kwc_strip(std::string_view Text) {
+std::string_view kwc_strip_view(std::string_view Text) {
     std::size_t b = 0;
     std::size_t e = Text.size();
     while (b < e && std::isspace(static_cast<unsigned char>(Text[b])))
         ++b;
     while (e > b && std::isspace(static_cast<unsigned char>(Text[e - 1])))
         --e;
-    return std::string(Text.substr(b, e - b));
+    return Text.substr(b, e - b);
+}
+
+std::string kwc_strip(std::string_view Text) {
+    return std::string(kwc_strip_view(Text));
 }
 
 bool kwc_is_digit(char c) {
@@ -53826,10 +54002,10 @@ bool kwc_is_digit(char c) {
 }
 
 // "1.5-3" -> "1.5e-3": a Fortran exponent written without its letter.
-std::string kwc_add_exponent_letter(const std::string& rText) {
+std::size_t kwc_exponent_offset(std::string_view rText) {
     for (char c : rText)
         if (c == 'e' || c == 'E')
-            return rText;
+            return std::string_view::npos;
     std::size_t k = std::string::npos;
     for (std::size_t i = rText.size(); i-- > 1;) {
         if (rText[i] == '+' || rText[i] == '-') {
@@ -53838,10 +54014,10 @@ std::string kwc_add_exponent_letter(const std::string& rText) {
         }
     }
     if (k == std::string::npos || k + 1 >= rText.size())
-        return rText;
+        return std::string_view::npos;
     for (std::size_t i = k + 1; i < rText.size(); ++i)
         if (!kwc_is_digit(rText[i]))
-            return rText;
+            return std::string_view::npos;
     std::size_t b = (rText[0] == '+' || rText[0] == '-') ? 1 : 0;
     int digits = 0;
     int dots = 0;
@@ -53851,11 +54027,16 @@ std::string kwc_add_exponent_letter(const std::string& rText) {
         else if (rText[i] == '.')
             ++dots;
         else
-            return rText;
+            return std::string_view::npos;
     }
     if (digits == 0 || dots > 1)
-        return rText;
-    return rText.substr(0, k) + "e" + rText.substr(k);
+        return std::string_view::npos;
+    return k;
+}
+
+std::string kwc_add_exponent_letter(const std::string& rText) {
+    const auto k = kwc_exponent_offset(rText);
+    return k == std::string_view::npos ? rText : rText.substr(0, k) + "e" + rText.substr(k);
 }
 
 }  // namespace
@@ -53866,6 +54047,123 @@ int card_field_width(const CardField& rField, CardMode Mode) {
     if (Mode == CardMode::I10 && rField.mKind == 'i' && rField.mWidth == 8)
         return 10;
     return rField.mWidth;
+}
+
+std::vector<std::string_view> split_card_view(std::string_view Line,
+                                              const std::vector<CardField>& rLayout,
+                                              CardMode Mode) {
+    std::vector<std::string_view> out;
+    if (Line.find(',') != std::string_view::npos) {
+        std::size_t start = 0;
+        for (;;) {
+            const auto comma = Line.find(',', start);
+            out.push_back(kwc_strip_view(Line.substr(
+                start, comma == std::string_view::npos ? std::string_view::npos : comma - start)));
+            if (comma == std::string_view::npos)
+                break;
+            start = comma + 1;
+        }
+        while (out.size() < rLayout.size())
+            out.emplace_back();
+        return out;
+    }
+    std::size_t pos = 0;
+    out.reserve(rLayout.size());
+    for (const auto& field : rLayout) {
+        const auto width = static_cast<std::size_t>(card_field_width(field, Mode));
+        out.push_back(pos < Line.size() ? kwc_strip_view(Line.substr(pos, width))
+                                        : std::string_view());
+        pos += width;
+    }
+    return out;
+}
+
+std::vector<std::string_view> split_fixed_view(std::string_view Line,
+                                               const std::vector<CardField>& rFields) {
+    while (!Line.empty() && (Line.back() == '\r' || Line.back() == '\n'))
+        Line.remove_suffix(1);
+    std::vector<std::string_view> out;
+    std::size_t col = 0;
+    for (const auto& field : rFields) {
+        if (col >= Line.size())
+            break;
+        const auto width = static_cast<std::size_t>(field.mWidth);
+        if (field.mKind != 'x') {
+            const auto text = Line.substr(col, width);
+            const auto a = text.find_first_not_of(" \t");
+            const auto b = text.find_last_not_of(" \t");
+            out.push_back(a == std::string_view::npos ? std::string_view()
+                                                      : text.substr(a, b - a + 1));
+        }
+        col += width;
+    }
+    return out;
+}
+
+std::int64_t card_to_int_view(std::string_view Text, const std::string& rWhere,
+                              const std::string& rFormat) {
+    if (Text.empty())
+        return 0;
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Text.size() < sizeof small) {
+        Text.copy(small, Text.size());
+        small[Text.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Text);
+        first = large.c_str();
+    }
+    errno = 0;
+    char* end = nullptr;
+    const auto value = std::strtoll(first, &end, 10);
+    if (end == first || *end != '\0' || errno == ERANGE)
+        throw ReadError(rFormat + ": invalid integer field '" + std::string(Text) + "'" + rWhere);
+    return static_cast<std::int64_t>(value);
+}
+
+double card_to_real_view(std::string_view Text, const std::string& rWhere,
+                         const std::string& rFormat) {
+    if (Text.empty())
+        return 0.0;
+    char small[96];
+    std::string large;
+    const char* first;
+    if (Text.size() < sizeof small - 1) {
+        Text.copy(small, Text.size());
+        for (std::size_t i = 0; i < Text.size(); ++i) {
+            if (small[i] == 'D')
+                small[i] = 'E';
+            else if (small[i] == 'd')
+                small[i] = 'e';
+        }
+        const auto at = kwc_exponent_offset(std::string_view(small, Text.size()));
+        std::size_t size = Text.size();
+        if (at != std::string_view::npos) {
+            for (std::size_t i = size; i > at; --i)
+                small[i] = small[i - 1];
+            small[at] = 'e';
+            ++size;
+        }
+        small[size] = '\0';
+        first = small;
+    } else {
+        large.assign(Text);
+        for (char& c : large) {
+            if (c == 'D')
+                c = 'E';
+            else if (c == 'd')
+                c = 'e';
+        }
+        large = kwc_add_exponent_letter(large);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    const double value = parse_double(first, end);
+    if (end == first || *end != '\0')
+        throw ReadError(rFormat + ": invalid real field '" + std::string(Text) + "'" + rWhere);
+    return value;
 }
 
 std::vector<std::string> split_card(std::string_view Line, const std::vector<CardField>& rLayout,
@@ -62072,7 +62370,7 @@ std::string abaqus_upper(std::string s) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return s;
 }
-std::string abaqus_trim(const std::string& rS) {
+std::string_view abaqus_trim_view(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
         ++b;
@@ -62080,12 +62378,20 @@ std::string abaqus_trim(const std::string& rS) {
         --e;
     return rS.substr(b, e - b);
 }
-std::vector<std::string> split(const std::string& rS, char sep) {
-    std::vector<std::string> out;
-    std::string cur;
-    detail::TextStream iss(rS);
-    while (getline(iss, cur, sep))
-        out.push_back(abaqus_trim(cur));
+std::string abaqus_trim(std::string_view rS) {
+    return std::string(abaqus_trim_view(rS));
+}
+std::vector<std::string_view> split(std::string_view rS, char sep) {
+    std::vector<std::string_view> out;
+    std::size_t first = 0;
+    while (first < rS.size()) {
+        const auto last = rS.find(sep, first);
+        out.push_back(abaqus_trim_view(
+            rS.substr(first, last == std::string_view::npos ? last : last - first)));
+        if (last == std::string_view::npos)
+            break;
+        first = last + 1;
+    }
     return out;
 }
 
@@ -62098,9 +62404,9 @@ std::vector<std::string> split(const std::string& rS, char sep) {
 // The leading `*` on the keyword token is deliberately **kept**, exactly as the
 // Python reference does: `*ELSET, ELSET=solid` would otherwise put the bare
 // keyword and the real parameter under the same key, and the first one in wins.
-std::unordered_map<std::string, std::string> abq_param_map(const std::string& rLine) {
+std::unordered_map<std::string, std::string> abq_param_map(std::string_view rLine) {
     std::unordered_map<std::string, std::string> out;
-    for (const std::string& word : split(rLine, ',')) {
+    for (const auto word : split(rLine, ',')) {
         const std::size_t eq = word.find('=');
         if (eq == std::string::npos)
             out.insert_or_assign(abaqus_upper(abaqus_trim(word)), std::string());
@@ -62147,10 +62453,11 @@ struct AbqFile {
 void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth);
 
 /// The data lines following a keyword, up to the next `*` line.
-std::vector<std::string> abq_data_lines(const std::vector<std::string>& rLines, std::size_t& rI) {
-    std::vector<std::string> out;
+std::vector<std::string_view> abq_data_lines(const std::vector<std::string_view>& rLines,
+                                             std::size_t& rI) {
+    std::vector<std::string_view> out;
     while (rI < rLines.size() && (rLines[rI].empty() || rLines[rI][0] != '*')) {
-        const std::string row = abaqus_trim(rLines[rI]);
+        const auto row = abaqus_trim_view(rLines[rI]);
         ++rI;
         if (!row.empty())
             out.push_back(row);
@@ -62164,18 +62471,18 @@ std::vector<std::string> abq_data_lines(const std::vector<std::string>& rLines, 
  * `GENERATE` turns a `first, last, step` triple into the explicit range, which
  * is what Abaqus means by it.
  */
-void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
+void abq_read_set(const std::vector<std::string_view>& rRows, bool Generate,
                   std::vector<std::int64_t>& rIds, std::vector<std::string>& rNames) {
-    for (const std::string& row : rRows) {
-        for (const std::string& tok : split(row, ',')) {
+    for (const auto row : rRows) {
+        for (const auto tok : split(row, ',')) {
             if (tok.empty())
                 continue;
             const bool numeric =
                 std::isdigit(static_cast<unsigned char>(tok[0])) || tok[0] == '-' || tok[0] == '+';
             if (numeric)
-                rIds.push_back(std::strtoll(tok.c_str(), nullptr, 10));
+                rIds.push_back(detail::strtoll_token(tok));
             else
-                rNames.push_back(tok);
+                rNames.emplace_back(tok);
         }
     }
     if (Generate) {
@@ -62204,17 +62511,17 @@ void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
     }
 }
 
-void abq_read_lines(const std::vector<std::string>& rLines, const std::string& rPath, AbqFile& rOut,
-                    int Depth) {
+void abq_read_lines(const std::vector<std::string_view>& rLines, const std::string& rPath,
+                    AbqFile& rOut, int Depth) {
     const auto& a2m = abaqus_to_meshio();
     std::size_t i = 0;
     while (i < rLines.size()) {
-        const std::string& line = rLines[i];
+        const std::string_view line = rLines[i];
         if (line.rfind("**", 0) == 0) {  // comment
             ++i;
             continue;
         }
-        const std::vector<std::string> head = split(line, ',');
+        const auto head = split(line, ',');
         if (head.empty()) {  // a line of nothing but separators' whitespace
             ++i;
             continue;
@@ -62226,15 +62533,15 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 
         if (kw == "NODE") {
             ++i;
-            for (const std::string& row : abq_data_lines(rLines, i)) {
-                const std::vector<std::string> tok = split(row, ',');
+            for (const auto row : abq_data_lines(rLines, i)) {
+                const auto tok = split(row, ',');
                 detail::need_tokens(tok, 1, "Abaqus");
-                const std::int64_t id = std::strtoll(tok[0].c_str(), nullptr, 10);
+                const std::int64_t id = detail::strtoll_token(tok[0]);
                 rOut.mPointIds[id] = static_cast<std::int64_t>(rOut.mPoints.size());
                 std::vector<double> c;
                 for (std::size_t k = 1; k < tok.size(); ++k)
                     if (!tok[k].empty())
-                        c.push_back(detail::parse_double(tok[k]));
+                        c.push_back(detail::parse_double_prefix(tok[k]));
                 rOut.mPoints.push_back(std::move(c));
             }
         } else if (kw == "ELEMENT") {
@@ -62253,10 +62560,10 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 
             ++i;
             std::vector<std::int64_t> vals;
-            for (const std::string& row : abq_data_lines(rLines, i))
-                for (const std::string& t : split(row, ','))
+            for (const auto row : abq_data_lines(rLines, i))
+                for (const auto t : split(row, ','))
                     if (!t.empty())
-                        vals.push_back(std::strtoll(t.c_str(), nullptr, 10));
+                        vals.push_back(detail::strtoll_token(t));
 
             const std::size_t stride = static_cast<std::size_t>(n) + 1;
             if (vals.size() % stride != 0)
@@ -62288,7 +62595,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             if (name.empty())
                 throw ReadError("Abaqus " + kw + " without a name");
             ++i;
-            const std::vector<std::string> rows = abq_data_lines(rLines, i);
+            const auto rows = abq_data_lines(rLines, i);
             std::vector<std::int64_t> ids;
             std::vector<std::string> refs;
             abq_read_set(rows, params.count("GENERATE") > 0, ids, refs);
@@ -62311,15 +62618,15 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
             const std::string name = abq_param(params, "NAME");
             const std::string type = abaqus_upper(abq_param(params, "TYPE"));
             ++i;
-            const std::vector<std::string> rows = abq_data_lines(rLines, i);
+            const auto rows = abq_data_lines(rLines, i);
             if (name.empty() || (!type.empty() && type != "ELEMENT"))
                 continue;  // node-based surfaces have no facets: skip, don't fail
             std::vector<std::pair<std::string, std::string>> members;
-            for (const std::string& row : rows) {
-                const std::vector<std::string> tok = split(row, ',');
+            for (const auto row : rows) {
+                const auto tok = split(row, ',');
                 if (tok.size() < 2 || tok[0].empty() || tok[1].empty())
                     continue;
-                members.emplace_back(tok[0], abaqus_upper(tok[1]));
+                members.emplace_back(tok[0], abaqus_upper(std::string(tok[1])));
             }
             rOut.mSurfaces.emplace_back(name, std::move(members));
         } else if (kw == "INCLUDE") {
@@ -62344,15 +62651,11 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 }
 
 void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    auto lines = detail::split_lines(source.View());
+    for (auto& l : lines) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
-        lines.push_back(l);
+            l.remove_suffix(1);
     }
     abq_read_lines(lines, rPath, rOut, Depth);
 }
@@ -63720,7 +64023,6 @@ MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOption
 #include <limits>
 #include <map>
 #include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -64046,8 +64348,7 @@ Mesh read_ansys(const std::string& rPath) {
             if (!rd.Eof() && rd.At() == '(') {
                 const std::size_t q = data.find_first_of("()", rd.mP + 1);
                 if (q != std::string::npos) {
-                    auto iss = detail::make_classic_istringstream(
-                        std::string(data.substr(rd.mP + 1, q - rd.mP - 1)));
+                    detail::TextStream iss(data.substr(rd.mP + 1, q - rd.mP - 1));
                     std::int64_t id = 0;
                     std::string type, name;
                     if (iss >> id >> type >> name)
@@ -66602,21 +66903,25 @@ std::string ans_upper(std::string_view Text) {
     return out;
 }
 
-std::string ans_strip(std::string_view Text) {
+std::string_view ans_strip_view(std::string_view Text) {
     const std::size_t a = Text.find_first_not_of(" \t\r\n");
     if (a == std::string_view::npos)
         return {};
     const std::size_t b = Text.find_last_not_of(" \t\r\n");
-    return std::string(Text.substr(a, b - a + 1));
+    return Text.substr(a, b - a + 1);
+}
+
+std::string ans_strip(std::string_view Text) {
+    return std::string(ans_strip_view(Text));
 }
 
 // Comma-separated fields of a command line, stripped (`ET, 4, 186`).
-std::vector<std::string> ans_commas(std::string_view Line) {
-    std::vector<std::string> out;
+std::vector<std::string_view> ans_commas(std::string_view Line) {
+    std::vector<std::string_view> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t comma = Line.find(',', start);
-        out.push_back(ans_strip(Line.substr(
+        out.push_back(ans_strip_view(Line.substr(
             start, comma == std::string_view::npos ? std::string_view::npos : comma - start)));
         if (comma == std::string_view::npos)
             return out;
@@ -66624,19 +66929,18 @@ std::vector<std::string> ans_commas(std::string_view Line) {
     }
 }
 
-std::optional<std::int64_t> ans_int(const std::string& rText) {
+std::optional<std::int64_t> ans_int(std::string_view rText) {
     if (rText.empty())
         return std::nullopt;
-    const char* end = nullptr;
-    const double v = detail::parse_double(rText.c_str(), end);
-    if (end != rText.c_str() + rText.size())
+    double v = 0.0;
+    if (!detail::parse_double_token(rText, v))
         return std::nullopt;
     return detail::checked_integer<std::int64_t>(v, "Ansys .cdb");
 }
 
 // The capacity a block's header count asks for, capped at one entry per line
 // left: a wrong count only sizes the reservation.
-std::size_t ans_count_hint(const std::vector<std::string>& rHeader, std::size_t Field,
+std::size_t ans_count_hint(const std::vector<std::string_view>& rHeader, std::size_t Field,
                            std::size_t LinesLeft) {
     if (rHeader.size() <= Field)
         return 0;
@@ -66660,28 +66964,28 @@ int ans_routine(const std::string& rText) {
     throw ReadError("Ansys .cdb: line " + std::to_string(Line + 1) + ": " + rWhat);
 }
 
-std::int64_t ans_field_int(const std::vector<std::string>& rFields, std::size_t K,
+std::int64_t ans_field_int(const std::vector<std::string_view>& rFields, std::size_t K,
                            std::size_t Line) {
     if (K >= rFields.size() || rFields[K].empty())
         return 0;
     const auto v = ans_int(rFields[K]);
     if (!v)
-        ans_fail(Line, "bad integer '" + rFields[K] + "'");
+        ans_fail(Line, "bad integer '" + std::string(rFields[K]) + "'");
     return *v;
 }
 
-double ans_field_real(const std::vector<std::string>& rFields, std::size_t K, std::size_t Line) {
+double ans_field_real(const std::vector<std::string_view>& rFields, std::size_t K,
+                      std::size_t Line) {
     if (K >= rFields.size() || rFields[K].empty())
         return 0.0;
-    const std::string& text = rFields[K];
-    const char* end = nullptr;
-    const double v = detail::parse_double(text.c_str(), end);
-    if (end != text.c_str() + text.size())
-        ans_fail(Line, "bad number '" + text + "'");
+    const std::string_view text = rFields[K];
+    double v = 0.0;
+    if (!detail::parse_double_token(text, v))
+        ans_fail(Line, "bad number '" + std::string(text) + "'");
     return v;
 }
 
-bool ans_is_terminator(const std::string& rLine) {
+bool ans_is_terminator(std::string_view rLine) {
     const std::string s = ans_strip(rLine);
     if (s == "-1")
         return true;
@@ -66690,7 +66994,7 @@ bool ans_is_terminator(const std::string& rLine) {
 }
 
 // A command line (`FINISH`, `CMBLOCK,...`) rather than a block's data line.
-bool ans_is_command(const std::string& rLine) {
+bool ans_is_command(std::string_view rLine) {
     const std::size_t a = rLine.find_first_not_of(" \t");
     if (a == std::string::npos)
         return false;
@@ -66713,7 +67017,8 @@ struct AnsDeck {
 };
 
 // The format line after a block header, parsed.
-std::vector<detail::CardField> ans_format(const std::vector<std::string>& rLines, std::size_t K) {
+std::vector<detail::CardField> ans_format(const std::vector<std::string_view>& rLines,
+                                          std::size_t K) {
     if (K >= rLines.size())
         ans_fail(K, "a block header is not followed by its format line");
     try {
@@ -66723,7 +67028,7 @@ std::vector<detail::CardField> ans_format(const std::vector<std::string>& rLines
     }
 }
 
-AnsDeck ans_parse(const std::vector<std::string>& rLines) {
+AnsDeck ans_parse(const std::vector<std::string_view>& rLines) {
     AnsDeck deck;
     bool saw_block = false;
     std::size_t i = 0;
@@ -66756,7 +67061,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             const auto fields = ans_format(rLines, i + 1);
             i += 2;
             while (i < n && !ans_is_terminator(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.size() >= 2) {
                     const int slot = static_cast<int>(ans_field_int(f, 0, i));
                     deck.mModel.mRoutine[slot] = static_cast<int>(ans_field_int(f, 1, i));
@@ -66780,7 +67085,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                 ++n_int;
             i += 2;
             while (i < n && !ans_is_terminator(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.empty() || f[0].empty()) {
                     ++i;
                     continue;
@@ -66812,7 +67117,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                 continue;
             }
             while (i < n && !ans_is_terminator(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.size() < 11) {
                     ++i;
                     continue;
@@ -66829,7 +67134,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                     e.mNodes.push_back(ans_field_int(f, k, i));
                 ++i;
                 while (e.mNodes.size() < count && i < n && !ans_is_terminator(rLines[i])) {
-                    const auto more = detail::split_fixed(rLines[i], fields);
+                    const auto more = detail::split_fixed_view(rLines[i], fields);
                     for (std::size_t k = 0; k < more.size() && e.mNodes.size() < count; ++k)
                         e.mNodes.push_back(ans_field_int(more, k, i));
                     ++i;
@@ -66854,7 +67159,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             std::vector<std::int64_t> raw;
             // A short block (a header count too large) ends at the next command.
             while (i < n && raw.size() < count && !ans_is_command(rLines[i])) {
-                const auto f = detail::split_fixed(rLines[i], fields);
+                const auto f = detail::split_fixed_view(rLines[i], fields);
                 if (f.empty())
                     break;
                 for (std::size_t k = 0; k < f.size() && raw.size() < count; ++k)
@@ -66886,16 +67191,11 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
     return deck;
 }
 
-std::vector<std::string> ans_read_lines(const std::string& rPath) {
-    auto f = detail::make_classic_ifstream(rPath);
-    if (!f)
-        throw ReadError("Could not open ansysInp file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(f, line)) {
+std::vector<std::string_view> ans_read_lines(std::string_view Text) {
+    auto lines = detail::split_lines(Text);
+    for (auto& line : lines) {
         if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(line);
+            line.remove_suffix(1);
     }
     return lines;
 }
@@ -66903,7 +67203,9 @@ std::vector<std::string> ans_read_lines(const std::string& rPath) {
 }  // namespace
 
 Mesh read_ansysinp(const std::string& rPath, const ReadOptions& rOptions, AnsysInfo& rInfo) {
-    AnsDeck deck = ans_parse(ans_read_lines(rPath));
+    const detail::FileSource source =
+        detail::open_source(rPath, "Could not open ansysInp file: " + rPath);
+    AnsDeck deck = ans_parse(ans_read_lines(source.View()));
     if (deck.mNonSolidBlocks)
         log::warn(
             "Ansys .cdb: {} non-solid EBLOCK(s) (MAPDL writes only the SOLID layout) "
@@ -70736,6 +71038,7 @@ void write_code_aster(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -70764,25 +71067,44 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
     return rText.substr(p, e - p);
 }
 
+// Preserve the reader's lenient numeric prefix and D-exponent normalization
+// without copying each ordinary numeric token into an owning string.
+double dex_real_token(std::string_view Text) {
+    if (Text.find_first_of("Dd") == std::string_view::npos)
+        return detail::parse_double_prefix(Text);
+    char small[96];
+    std::string large;
+    char* first;
+    if (Text.size() < sizeof small) {
+        Text.copy(small, Text.size());
+        small[Text.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Text);
+        first = large.data();
+    }
+    for (std::size_t i = 0; i < Text.size(); ++i)
+        if (first[i] == 'D' || first[i] == 'd')
+            first[i] = 'E';
+    const char* end = nullptr;
+    return detail::parse_double(first, end);
+}
+
 }  // namespace
 
 Mesh read_dex(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    auto lines = detail::split_lines(source.View());
+    for (auto& line : lines) {
         // Files written in text mode on Windows use CRLF; the file is opened
         // in binary mode here (no newline translation) and std::getline only
         // splits on '\n', so strip a trailing '\r' explicitly.
         if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(line);
+            line.remove_suffix(1);
     }
 
     // header = first two non-empty lines
-    std::vector<std::string> header;
+    std::vector<std::string_view> header;
     std::size_t body_start = 0;
     for (std::size_t i = 0; i < lines.size(); ++i) {
         if (lines[i].find_first_not_of(" \t\r") != std::string::npos)
@@ -70792,9 +71114,9 @@ Mesh read_dex(const std::string& rPath) {
             break;
         }
     }
-    std::string head = header.empty() ? std::string() : header[0];
+    std::string head(header.empty() ? std::string_view() : header[0]);
     if (header.size() > 1)
-        head += " " + header[1];
+        head += " " + std::string(header[1]);
 
     std::string field = header_value(head, "FORMULA");
     if (field.empty())
@@ -70808,16 +71130,12 @@ Mesh read_dex(const std::string& rPath) {
         npoint_s.empty() ? 0 : static_cast<std::size_t>(std::atoll(npoint_s.c_str()));
 
     std::vector<std::vector<double>> rows;
+    std::vector<std::string_view> tokens;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        detail::TextStream iss(lines[i]);
+        detail::split_blanks(lines[i], tokens);
         std::vector<double> r;
-        std::string tok;
-        while (iss >> tok) {
-            for (char& c : tok)
-                if (c == 'D' || c == 'd')
-                    c = 'E';
-            r.push_back(detail::parse_double(tok));
-        }
+        for (const auto token : tokens)
+            r.push_back(dex_real_token(token));
         if (!r.empty())
             rows.push_back(std::move(r));
         if (npoint && rows.size() >= npoint)
@@ -72713,25 +73031,21 @@ public:
     }
 };
 
-class EnsightAsciiCursor final : public EnsightCursor {
+class EnsightAsciiCursor final : public EnsightCursor, private detail::TextCursor {
 public:
-    explicit EnsightAsciiCursor(std::string_view text) : mText(text) {}
+    explicit EnsightAsciiCursor(std::string_view text) : detail::TextCursor(text) {}
 
     bool AtEnd() override {
         std::size_t p = mPos;
-        while (p < mText.size() &&
-               (std::isspace(static_cast<unsigned char>(mText[p])) || mText[p] == '\0'))
+        while (p < mBuf.size() &&
+               (std::isspace(static_cast<unsigned char>(mBuf[p])) || mBuf[p] == '\0'))
             ++p;
-        return p >= mText.size();
+        return p >= mBuf.size();
     }
 
     std::string NextRecord() override {
-        while (mPos < mText.size()) {
-            std::size_t eol = mText.find('\n', mPos);
-            if (eol == std::string::npos)
-                eol = mText.size();
-            std::string line = ensight_trim(std::string(mText.substr(mPos, eol - mPos)));
-            mPos = eol < mText.size() ? eol + 1 : eol;
+        while (mPos < mBuf.size()) {
+            std::string line = ensight_trim(std::string(Line()));
             if (!line.empty())
                 return line;
         }
@@ -72748,12 +73062,9 @@ public:
     }
 
     std::int64_t NextInt() override {
-        const char* start = mText.data() + mPos;
-        char* end = nullptr;
-        const std::int64_t v = std::strtoll(start, &end, 10);
-        if (end == start)
+        std::int64_t v = 0;
+        if (!IntPrefix(v))
             throw ReadError("EnSight: expected an integer in geometry file");
-        mPos = static_cast<std::size_t>(end - mText.data());
         return v;
     }
 
@@ -72764,12 +73075,8 @@ public:
 
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
-            const char* start = mText.data() + mPos;
-            const char* end = nullptr;
-            pDst[i] = detail::parse_double(start, end);
-            if (end == start)
+            if (!DoublePrefix(pDst[i]))
                 throw ReadError("EnSight: expected a number in geometry file");
-            mPos = static_cast<std::size_t>(end - mText.data());
         }
     }
 
@@ -72777,10 +73084,6 @@ public:
         for (std::size_t i = 0; i < n; ++i)
             NextInt();
     }
-
-private:
-    std::string_view mText;
-    std::size_t mPos = 0;
 };
 
 class EnsightBinaryCursor final : public EnsightCursor {
@@ -72958,7 +73261,7 @@ struct EnsightCaseInfo {
 /// integer tokens (a `[ts] [fs]` prefix) -- the same rule `model:`/variable
 /// lines both use to make the leading timeset/fileset optional.
 std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rValue) {
-    auto toks = detail::make_classic_istringstream(rValue);
+    detail::TextStream toks(rValue);
     std::vector<std::string> tokens;
     std::string tok;
     while (toks >> tok)
@@ -72979,7 +73282,6 @@ std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rV
 /// VARIABLE, needed for `ReadOptions::mTimeStep` and variable-file reading.
 EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
     const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
-    const std::string data(source.View());  // small text file; parsed via istringstream
 
     std::string section;
     std::string format_type;
@@ -72988,9 +73290,9 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
     bool in_time_values = false;
     bool have_time_set = false;
     long num_steps = -1;
-    auto stream = detail::make_classic_istringstream(data);
+    detail::TextStream stream(source.View());
     std::string raw;
-    while (std::getline(stream, raw)) {
+    while (getline(stream, raw)) {
         std::string line = ensight_trim(raw);
         if (line.empty() || line[0] == '#') {
             in_time_values = false;
@@ -73018,8 +73320,8 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
             static const char* kKinds[] = {
-                "scalar per node:",       "vector per node:",       "tensor symm per node:",
-                "tensor asym per node:",  "scalar per element:",    "vector per element:",
+                "scalar per node:",         "vector per node:",        "tensor symm per node:",
+                "tensor asym per node:",    "scalar per element:",     "vector per element:",
                 "tensor symm per element:", "tensor asym per element:"};
             for (const char* kind : kKinds) {
                 if (!ensight_starts_with(line, kind))
@@ -73062,12 +73364,12 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             } else if (ensight_starts_with(line, "time values:")) {
                 in_time_values = true;
                 const std::string rest = ensight_trim(line.substr(std::strlen("time values:")));
-                auto iss = detail::make_classic_istringstream(rest);
+                detail::TextStream iss(rest);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
             } else if (in_time_values) {
-                auto iss = detail::make_classic_istringstream(line);
+                detail::TextStream iss(line);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
@@ -73147,7 +73449,7 @@ struct EnsightPartLayout {
 // matters — Gold connectivity is positional, so ids are always skipped.
 bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     // rRecord is e.g. "node id assign"; the mode is the last token.
-    auto iss = detail::make_classic_istringstream(rRecord);
+    detail::TextStream iss(rRecord);
     std::string tok, mode;
     while (iss >> tok)
         mode = tok;
@@ -73991,8 +74293,7 @@ struct EnsightVariableToWrite {
 
 // EnSight's kind word and written component count for a data array's actual
 // component count; `false` when the count has no EnSight representation.
-bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind,
-                            std::size_t& rWritten) {
+bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind, std::size_t& rWritten) {
     switch (NumComponents) {
         case 1:
             rKind = "scalar";
@@ -74046,14 +74347,12 @@ std::string ensight_variable_extension(const std::string& rKind, bool PerNode) {
  */
 std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVariableToWrite& rVar,
                                             std::size_t Comp, std::size_t BlockIndex) {
-    const std::size_t mio_comp = (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5))
-                                     ? (Comp == 4 ? 5 : 4)
-                                     : Comp;
+    const std::size_t mio_comp =
+        (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5)) ? (Comp == 4 ? 5 : 4) : Comp;
     const NDArray& arr =
         rVar.mPerNode ? rMesh.PointData(rVar.mName) : rMesh.CellData(rVar.mName, BlockIndex);
     const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
-    const std::size_t n =
-        rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
+    const std::size_t n = rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
     std::vector<double> col(n);
     for (std::size_t i = 0; i < n; ++i)
         col[i] =
@@ -77210,17 +77509,17 @@ const char* fn_topology_name(std::int64_t Code) {
     }
 }
 
-std::string fn_trim(std::string_view Text) {
+std::string_view fn_trim(std::string_view Text) {
     const std::size_t b = Text.find_first_not_of(" \t");
     if (b == std::string_view::npos)
         return {};
     const std::size_t e = Text.find_last_not_of(" \t");
-    return std::string(Text.substr(b, e - b + 1));
+    return Text.substr(b, e - b + 1);
 }
 
 // The comma-separated fields of a record line; a trailing comma adds none.
-std::vector<std::string> fn_fields(std::string_view Line) {
-    std::vector<std::string> out;
+std::vector<std::string_view> fn_fields(std::string_view Line) {
+    std::vector<std::string_view> out;
     std::size_t pos = 0;
     while (pos <= Line.size()) {
         std::size_t comma = Line.find(',', pos);
@@ -77234,7 +77533,7 @@ std::vector<std::string> fn_fields(std::string_view Line) {
     return out;
 }
 
-bool fn_parse_int(const std::string& rText, std::int64_t& rValue) {
+bool fn_parse_int(std::string_view rText, std::int64_t& rValue) {
     if (rText.empty())
         return false;
     std::size_t i = rText[0] == '-' || rText[0] == '+' ? 1 : 0;
@@ -77252,12 +77551,8 @@ bool fn_parse_int(const std::string& rText, std::int64_t& rValue) {
     return true;
 }
 
-bool fn_parse_real(const std::string& rText, double& rValue) {
-    if (rText.empty())
-        return false;
-    const char* end = nullptr;
-    rValue = detail::parse_double(rText.c_str(), end);
-    return end == rText.c_str() + rText.size();
+bool fn_parse_real(std::string_view rText, double& rValue) {
+    return detail::parse_double_token(rText, rValue);
 }
 
 struct FnBlock {
@@ -77267,50 +77562,51 @@ struct FnBlock {
 };
 
 // A cursor over one block's record lines.
-class FnCursor {
+class FnCursor : private detail::RecordCursor<std::string_view> {
 public:
-    explicit FnCursor(const FnBlock& rBlock) : mBlock(rBlock) {}
+    explicit FnCursor(const FnBlock& rBlock)
+        : detail::RecordCursor<std::string_view>(rBlock.mLines), mBlock(rBlock) {}
 
-    bool AtEnd() const { return mPos >= mBlock.mLines.size(); }
-    std::size_t Remaining() const { return mBlock.mLines.size() - mPos; }
-    std::size_t Line() const { return mBlock.mFirstLine + mPos; }
-    std::string_view Peek(std::size_t Ahead = 0) const { return mBlock.mLines[mPos + Ahead]; }
+    bool AtEnd() const { return Done(); }
+    using detail::RecordCursor<std::string_view>::Remaining;
+    using detail::RecordCursor<std::string_view>::Peek;
+    std::size_t Line() const { return mBlock.mFirstLine + Pos(); }
 
     std::string_view Next(const char* pWhat) {
         if (AtEnd())
             Fail(std::string("block ") + std::to_string(mBlock.mId) + " ends inside " + pWhat);
-        return mBlock.mLines[mPos++];
+        return detail::RecordCursor<std::string_view>::Next();
     }
 
-    std::vector<std::string> Fields(const char* pWhat) { return fn_fields(Next(pWhat)); }
+    std::vector<std::string_view> Fields(const char* pWhat) { return fn_fields(Next(pWhat)); }
 
     [[noreturn]] void Fail(const std::string& rWhy) const {
         throw ReadError("Femap neutral: " + rWhy + " (line " + std::to_string(Line()) + ")");
     }
 
-    std::int64_t Int(const std::vector<std::string>& rF, std::size_t K, const char* pWhat) const {
+    std::int64_t Int(const std::vector<std::string_view>& rF, std::size_t K,
+                     const char* pWhat) const {
         std::int64_t v = 0;
         if (K >= rF.size() || !fn_parse_int(rF[K], v))
             Fail(std::string("bad ") + pWhat +
-                 (K < rF.size() ? " '" + rF[K] + "'" : std::string()));
+                 (K < rF.size() ? " '" + std::string(rF[K]) + "'" : std::string()));
         return v;
     }
 
-    double Real(const std::vector<std::string>& rF, std::size_t K, const char* pWhat) const {
+    double Real(const std::vector<std::string_view>& rF, std::size_t K, const char* pWhat) const {
         double v = 0;
         if (K >= rF.size() || !fn_parse_real(rF[K], v))
             Fail(std::string("bad ") + pWhat +
-                 (K < rF.size() ? " '" + rF[K] + "'" : std::string()));
+                 (K < rF.size() ? " '" + std::string(rF[K]) + "'" : std::string()));
         return v;
     }
 
 private:
     const FnBlock& mBlock;
-    std::size_t mPos = 0;
 };
 
 std::string fn_title(std::string_view Line) {
-    std::string t = fn_trim(Line);
+    std::string t(fn_trim(Line));
     return t == "<NULL>" ? std::string() : t;
 }
 
@@ -77376,7 +77672,8 @@ std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_v
         std::int64_t id = 0;
         if (!fn_parse_int(fn_trim(rLines[i + 1]), id))
             throw ReadError("Femap neutral: expected a block id after '-1', found '" +
-                            fn_trim(rLines[i + 1]) + "' (line " + std::to_string(i + 2) + ")");
+                            std::string(fn_trim(rLines[i + 1])) + "' (line " +
+                            std::to_string(i + 2) + ")");
         FnBlock block{id, i + 3, {}};
         std::size_t j = i + 2;
         while (j < n && fn_trim(rLines[j]) != "-1") {
@@ -77395,7 +77692,7 @@ std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_v
 void fn_read_nodes(const FnBlock& rBlock, FnFile& rFile) {
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
-        const std::vector<std::string> f = c.Fields("a node");
+        const auto f = c.Fields("a node");
         if (f.size() < 14)
             c.Fail("a node record with " + std::to_string(f.size()) +
                    " fields (x, y, z are 11-13)");
@@ -77408,7 +77705,7 @@ void fn_read_nodes(const FnBlock& rBlock, FnFile& rFile) {
 // Skips one node list of an element record: lines up to one whose first field is -1.
 void fn_skip_list(FnCursor& rC) {
     while (true) {
-        const std::vector<std::string> f = rC.Fields("an element node list");
+        const auto f = rC.Fields("an element node list");
         if (!f.empty() && f[0] == "-1")
             return;
     }
@@ -77418,7 +77715,7 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
         const std::size_t line = c.Line();
-        const std::vector<std::string> head = c.Fields("an element");
+        const auto head = c.Fields("an element");
         FnElement el{};
         el.mId = c.Int(head, 0, "element id");
         el.mProperty = c.Int(head, 2, "element property");
@@ -77426,17 +77723,17 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
         const std::int64_t topology = c.Int(head, 4, "element topology");
         el.mLine = line;
         for (int part = 0; part < 2; ++part) {
-            const std::vector<std::string> f = c.Fields("an element's nodes");
+            const auto f = c.Fields("an element's nodes");
             for (std::size_t k = 0; k < 10; ++k) {
                 std::int64_t v = 0;
                 if (k < f.size() && !fn_parse_int(f[k], v))
-                    c.Fail("bad node id '" + f[k] + "'");
+                    c.Fail("bad node id '" + std::string(f[k]) + "'");
                 el.mSlots[static_cast<std::size_t>(part) * 10 + k] = v;
             }
         }
         for (int k = 0; k < 3; ++k)
             c.Next("an element record");  // orientation, offsets
-        const std::vector<std::string> last = c.Fields("an element record");
+        const auto last = c.Fields("an element record");
         // From 4.5, each non-zero list flag (fields 12-15) is followed by a node list.
         for (std::size_t k = 12; k < 16 && k < last.size(); ++k) {
             std::int64_t flag = 0;
@@ -77457,12 +77754,12 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
 void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
-        const std::vector<std::string> head = c.Fields("a property");
+        const auto head = c.Fields("a property");
         const std::int64_t id = c.Int(head, 0, "property id");
         rFile.mProperties[id] = fn_title(c.Next("a property title"));
         c.Next("property flags");
         auto skip_counted = [&](std::size_t PerLine, const char* pWhat) {
-            const std::vector<std::string> f = c.Fields(pWhat);
+            const auto f = c.Fields(pWhat);
             const std::int64_t count = c.Int(f, 0, pWhat);
             if (count < 0)
                 c.Fail(std::string("negative ") + pWhat);
@@ -77478,11 +77775,11 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
         // (function references): a repeat of the value count before a line of
         // several integers.
         if (c.Remaining() >= 2 && values > 0) {
-            const std::vector<std::string> f = fn_fields(c.Peek());
-            const std::vector<std::string> next = fn_fields(c.Peek(1));
+            const auto f = fn_fields(c.Peek());
+            const auto next = fn_fields(c.Peek(1));
             std::int64_t count = 0, v = 0;
             bool ints = next.size() > 1;
-            for (const std::string& t : next)
+            for (const std::string_view t : next)
                 ints = ints && fn_parse_int(t, v);
             if (f.size() == 1 && fn_parse_int(f[0], count) && count == values && ints) {
                 c.Next("a function count");
@@ -77492,7 +77789,7 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
         }
         // Outline counts (6.0 and 8.1 on): a line with one integer, then that many lines.
         while (!c.AtEnd()) {
-            const std::vector<std::string> f = fn_fields(c.Peek());
+            const auto f = fn_fields(c.Peek());
             std::int64_t count = 0;
             if (f.size() != 1 || !fn_parse_int(f[0], count) || count < 0)
                 break;
@@ -77509,7 +77806,7 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
     FnCursor c(rBlock);
     try {
         while (!c.AtEnd()) {
-            const std::vector<std::string> head = c.Fields("a group");
+            const auto head = c.Fields("a group");
             FnGroup g{c.Int(head, 0, "group id"), fn_title(c.Next("a group title")), {}, {}};
             // layers, coordinate clipping, plane clipping and six clipping planes
             for (int k = 0; k < 3 + 18; ++k)
@@ -77518,11 +77815,11 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
             // Rules: type, then start,stop,inc,include entries up to -1,-1,-1,-1;
             // the rule list ends with a lone -1.
             while (true) {
-                const std::vector<std::string> f = c.Fields("a group rule");
+                const auto f = c.Fields("a group rule");
                 if (c.Int(f, 0, "rule type") == -1)
                     break;
                 while (true) {
-                    const std::vector<std::string> e = c.Fields("a group rule entry");
+                    const auto e = c.Fields("a group rule entry");
                     if (c.Int(e, 0, "rule entry") == -1)
                         break;
                 }
@@ -77531,12 +77828,12 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
             // Lists: type (7 nodes, 8 elements), then one id per line up to -1;
             // the list of lists ends with a lone -1.
             while (true) {
-                const std::vector<std::string> f = c.Fields("a group list");
+                const auto f = c.Fields("a group list");
                 const std::int64_t type = c.Int(f, 0, "list type");
                 if (type == -1)
                     break;
                 while (true) {
-                    const std::vector<std::string> e = c.Fields("a group list entry");
+                    const auto e = c.Fields("a group list entry");
                     const std::int64_t id = c.Int(e, 0, "list entry");
                     if (id == -1)
                         break;
@@ -77554,10 +77851,10 @@ void fn_read_groups(const FnBlock& rBlock, FnFile& rFile) {
 }
 
 bool fn_is_int_line(std::string_view Line, std::size_t Min, std::size_t Max, bool Positive) {
-    const std::vector<std::string> f = fn_fields(Line);
+    const auto f = fn_fields(Line);
     if (f.size() < Min || f.size() > Max)
         return false;
-    for (const std::string& s : f) {
+    for (const std::string_view s : f) {
         std::int64_t v = 0;
         if (!fn_parse_int(s, v))
             return false;
@@ -77568,7 +77865,7 @@ bool fn_is_int_line(std::string_view Line, std::size_t Min, std::size_t Max, boo
 }
 
 bool fn_is_real_line(std::string_view Line) {
-    const std::vector<std::string> f = fn_fields(Line);
+    const auto f = fn_fields(Line);
     double v = 0;
     return f.size() == 1 && fn_parse_real(f[0], v);
 }
@@ -77607,7 +77904,7 @@ void fn_read_sets(const FnBlock& rBlock, FnFile& rFile) {
 void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
     FnCursor c(rBlock);
     while (!c.AtEnd()) {
-        const std::vector<std::string> head = c.Fields("an output vector");
+        const auto head = c.Fields("an output vector");
         FnVector v;
         v.mSet = c.Int(head, 0, "output set id");
         v.mId = c.Int(head, 1, "output vector id");
@@ -77615,7 +77912,7 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
         c.Next("an output vector range");
         c.Next("output vector components");
         c.Next("output vector components");
-        std::vector<std::string> f = c.Fields("an output vector record");
+        auto f = c.Fields("an output vector record");
         if (f.size() == 1)  // double-sided contour flag (10.0 on)
             f = c.Fields("an output vector record");
         v.mEntity = c.Int(f, 3, "output vector entity type");
@@ -77623,7 +77920,7 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
         // Data: `id,value` records (451, and some of 1051) or `start,end,value...`
         // ranges (1051), up to a line whose first field is -1.
         while (true) {
-            std::vector<std::string> d = c.Fields("output vector data");
+            auto d = c.Fields("output vector data");
             if (!d.empty() && d[0] == "-1")
                 break;
             // A 1051 record is a range when its second field is an integer (the
@@ -78476,6 +78773,7 @@ void FemapSeriesWriter::Finalize() {
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -78683,15 +78981,6 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
     return {rest.substr(0, colon), rest.substr(colon + 1)};
 }
 
-std::vector<std::string> flac3d_split_ws(const std::string& rS) {
-    std::vector<std::string> out;
-    detail::TextStream iss(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
-}
-
 }  // namespace
 
 Mesh read_flac3d(const std::string& rPath) {
@@ -78781,8 +79070,9 @@ Mesh read_flac3d(const std::string& rPath) {
         // id lines until anything that is not one -- a comment, a new group, a
         // cell record, a blank line or EOF.
         std::size_t active = std::string::npos;
+        std::vector<std::string_view> s;
         while (std::getline(in, line)) {
-            std::vector<std::string> s = flac3d_split_ws(line);
+            detail::split_blanks(line, s);
             if (s.empty()) {
                 active = std::string::npos;
                 continue;
@@ -78794,25 +79084,25 @@ Mesh read_flac3d(const std::string& rPath) {
             }
             if (active != std::string::npos && s[0][0] != '*' && s[0] != "G" && s[0] != "Z" &&
                 s[0] != "F") {
-                for (const std::string& t : s)
-                    groups[active].mIds.push_back(std::strtoll(t.c_str(), nullptr, 10));
+                for (const auto t : s)
+                    groups[active].mIds.push_back(detail::strtoll_token(t));
                 continue;
             }
             active = std::string::npos;
             if (s[0] == "G") {
                 detail::need_tokens(s, 2, "FLAC3D");
-                std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
+                std::int64_t pid = detail::strtoll_token(s[1]);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
                 for (std::size_t j = 2; j < s.size(); ++j)
-                    points.push_back(detail::parse_double(s[j]));
+                    points.push_back(detail::parse_double_prefix(s[j]));
             } else if (s[0] == "Z" || s[0] == "F") {
                 int dim = (s[0] == "Z") ? 3 : 2;
                 detail::need_tokens(s, 3, "FLAC3D");
-                std::int64_t cid = std::strtoll(s[2].c_str(), nullptr, 10);
+                std::int64_t cid = detail::strtoll_token(s[2]);
                 bool is_b7 = (s[1] == "B7");
                 std::vector<std::int64_t> cell;
                 for (std::size_t j = 3; j < s.size(); ++j)
-                    cell.push_back(point_ids.at(std::strtoll(s[j].c_str(), nullptr, 10)));
+                    cell.push_back(point_ids.at(detail::strtoll_token(s[j])));
                 if (is_b7)
                     cell.push_back(cell.back());
                 const auto& tmap = numnodes_type(dim);
@@ -79249,11 +79539,11 @@ bool meshio_to_desc(const std::string& rT, std::array<int, 3>& rOut) {
     return true;
 }
 
-bool contains(const std::string& rHay, const char* pNeedle) {
+bool contains(std::string_view rHay, const char* pNeedle) {
     return rHay.find(pNeedle) != std::string::npos;
 }
 
-long long leading_int(const std::string& rLine) {
+long long leading_int(std::string_view rLine) {
     detail::TextStream iss(rLine);
     long long v = 0;
     iss >> v;
@@ -79263,18 +79553,13 @@ long long leading_int(const std::string& rLine) {
 }  // namespace
 
 Mesh read_flux(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        lines.push_back(line);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const auto lines = detail::split_lines(source.View());
 
     long long dim = 0, nel = 0, nnod = 0;
     std::size_t di = lines.size(), ci = lines.size();
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        const std::string& L = lines[i];
+        const std::string_view L = lines[i];
         if (contains(L, "NOMBRE DE DIMENSIONS"))
             dim = leading_int(L);
         else if (contains(L, "D'ELEMENTS") && !contains(L, "VOLUMIQUES") &&
@@ -79292,12 +79577,11 @@ Mesh read_flux(const std::string& rPath) {
         throw ReadError("pf3: missing element/coordinate section");
 
     // element tokens
-    std::vector<std::string> etok;
+    std::vector<std::string_view> etok;
+    std::vector<std::string_view> record_tokens;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        detail::TextStream iss(lines[i]);
-        std::string w;
-        while (iss >> w)
-            etok.push_back(w);
+        detail::split_blanks(lines[i], record_tokens);
+        etok.insert(etok.end(), record_tokens.begin(), record_tokens.end());
     }
 
     struct Group {
@@ -79314,9 +79598,9 @@ Mesh read_flux(const std::string& rPath) {
             log::warn("pf3: {} elements declared, {} present; reading those", nel, e);
             break;
         }
-        long long ref = std::strtoll(etok[pos + 3].c_str(), nullptr, 10);
-        int desc3 = std::atoi(etok[pos + 6].c_str());
-        int lnn = std::atoi(etok[pos + 7].c_str());
+        long long ref = detail::strtoll_token(etok[pos + 3]);
+        int desc3 = std::atoi(std::string(etok[pos + 6]).c_str());
+        int lnn = std::atoi(std::string(etok[pos + 7]).c_str());
         pos += 12;
         if (lnn < 0 || pos + static_cast<std::size_t>(lnn) > etok.size())
             throw ReadError("pf3: truncated element connectivity");
@@ -79325,7 +79609,7 @@ Mesh read_flux(const std::string& rPath) {
             throw ReadError("pf3: unknown element descriptor " + std::to_string(desc3));
         std::vector<std::int64_t> nodes(lnn);
         for (int j = 0; j < lnn; ++j)
-            nodes[j] = std::strtoll(etok[pos + j].c_str(), nullptr, 10);
+            nodes[j] = detail::strtoll_token(etok[pos + j]);
         pos += lnn;
         auto it = gindex.find(mtype);
         if (it == gindex.end()) {
@@ -79341,20 +79625,18 @@ Mesh read_flux(const std::string& rPath) {
     }
 
     // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
-    std::vector<std::string> ctok;
+    std::vector<std::string_view> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        detail::TextStream iss(lines[i]);
-        std::string w;
-        while (iss >> w)
-            ctok.push_back(w);
+        detail::split_blanks(lines[i], record_tokens);
+        ctok.insert(ctok.end(), record_tokens.begin(), record_tokens.end());
     }
     std::vector<long long> ids;
     std::vector<double> coords;
     const std::size_t udim = static_cast<std::size_t>(dim < 0 ? 0 : dim);
     for (std::size_t cp = 0; cp + udim < ctok.size() && ctok[cp][0] != '=';) {
-        ids.push_back(std::strtoll(ctok[cp].c_str(), nullptr, 10));
+        ids.push_back(detail::strtoll_token(ctok[cp]));
         for (std::size_t j = 0; j < udim; ++j)
-            coords.push_back(detail::parse_double(ctok[cp + 1 + j]));
+            coords.push_back(detail::parse_double_prefix(ctok[cp + 1 + j]));
         cp += 1 + udim;
     }
     if (static_cast<long long>(ids.size()) != nnod)
@@ -81477,7 +81759,7 @@ using gid_detail::gid_resolve_mode;
  * every keyword in the grammar is ASCII, and a locale-sensitive fold would be
  * both wrong and non-deterministic here.
  */
-bool gid_keyword_is(const std::string& rTok, const char* pKeyword) {
+bool gid_keyword_is(std::string_view rTok, const char* pKeyword) {
     std::size_t i = 0;
     for (; i < rTok.size() && pKeyword[i] != '\0'; ++i) {
         const auto a = static_cast<unsigned char>(rTok[i]);
@@ -81540,23 +81822,43 @@ std::string gid_meshio_type(const std::string& rGidName, int nnode) {
 // reasoning; integers still go straight through std::strtoll, which has no
 // such hazard and is not locale-sensitive.
 
-double gid_to_double(const std::string& rTok, const char* pWhat) {
-    const char* start = rTok.c_str();
+class GidNumberToken {
+public:
+    explicit GidNumberToken(std::string_view Token) : mSize(Token.size()) {
+        if (mSize < sizeof mSmall) {
+            Token.copy(mSmall, mSize);
+            mSmall[mSize] = '\0';
+        } else {
+            mLarge.assign(Token);
+        }
+    }
+    const char* Data() const { return mSize < sizeof mSmall ? mSmall : mLarge.c_str(); }
+
+private:
+    std::size_t mSize;
+    char mSmall[64];
+    std::string mLarge;
+};
+
+double gid_to_double(std::string_view rTok, const char* pWhat) {
+    const GidNumberToken token(rTok);
+    const char* start = token.Data();
     const char* end = nullptr;
     const double v = detail::parse_double(start, end);
     if (end == start)
-        throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" + rTok +
-                        "'");
+        throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" +
+                        std::string(rTok) + "'");
     return v;
 }
 
-std::int64_t gid_to_int(const std::string& rTok, const char* pWhat) {
-    const char* start = rTok.c_str();
+std::int64_t gid_to_int(std::string_view rTok, const char* pWhat) {
+    const GidNumberToken token(rTok);
+    const char* start = token.Data();
     char* end = nullptr;
     const long long v = std::strtoll(start, &end, 10);
     if (end == start)
-        throw ReadError(std::string("GiD: expected an integer for ") + pWhat + ", got '" + rTok +
-                        "'");
+        throw ReadError(std::string("GiD: expected an integer for ") + pWhat + ", got '" +
+                        std::string(rTok) + "'");
     return static_cast<std::int64_t>(v);
 }
 
@@ -81564,8 +81866,8 @@ std::int64_t gid_to_int(const std::string& rTok, const char* pWhat) {
 /// contain no embedded quote: change_quotes() rewrites any `"` inside a user
 /// string to `'` BEFORE embedding it, so "up to the next quote" is exact, not
 /// a heuristic). The quotes themselves are stripped from the returned token.
-std::vector<std::string> gid_split(const std::string& rLine) {
-    std::vector<std::string> out;
+std::vector<std::string_view> gid_split(std::string_view rLine) {
+    std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rLine.size()) {
         while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
@@ -81575,7 +81877,7 @@ std::vector<std::string> gid_split(const std::string& rLine) {
         if (rLine[i] == '"') {
             const std::size_t close = rLine.find('"', i + 1);
             if (close == std::string::npos)
-                throw ReadError("GiD: unterminated quoted string: " + rLine);
+                throw ReadError("GiD: unterminated quoted string: " + std::string(rLine));
             out.push_back(rLine.substr(i + 1, close - i - 1));
             i = close + 1;
         } else {
@@ -81602,7 +81904,7 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
                                  std::tolower(static_cast<unsigned char>(pFirst[0])))
         return false;
 
-    const std::vector<std::string> tok = gid_split(rLine);
+    const auto tok = gid_split(rLine);
     if (tok.size() < 2)
         return false;
     return gid_keyword_is(tok[0], pFirst) && gid_keyword_is(tok[1], pSecond);
@@ -81636,20 +81938,14 @@ bool gid_is_blank(const std::string& rLine) {
 // The line cursor. ASCII and gzip-inflated-ASCII share it verbatim -- the
 // gzipped flavour (gidpost's GiD_PostAsciiZipped) is the SAME text, so
 // inflating up front is the whole of its support.
-class GidLineCursor {
+class GidLineCursor : private detail::TextCursor {
 public:
-    explicit GidLineCursor(std::string_view text) : mText(text) {}
+    explicit GidLineCursor(std::string_view text) : detail::TextCursor(text) {}
 
     /// Next line that is neither blank nor a comment; empty when exhausted.
     bool Next(std::string& rOut) {
-        while (mPos < mText.size()) {
-            std::size_t nl = mText.find('\n', mPos);
-            if (nl == std::string_view::npos)
-                nl = mText.size();
-            std::string_view raw = mText.substr(mPos, nl - mPos);
-            mPos = nl + 1;
-            if (!raw.empty() && raw.back() == '\r')
-                raw.remove_suffix(1);
+        while (!AtEnd()) {
+            const std::string_view raw = Line(true);
             // A Values row may legitimately begin with whitespace -- see the
             // id-suppression rule in gid_read_values -- so leading space must
             // NOT disqualify a line here; only blank and comment lines are
@@ -81669,8 +81965,6 @@ public:
     bool LastStartedWithSpace() const { return mRawStartedWithSpace; }
 
 private:
-    std::string_view mText;
-    std::size_t mPos = 0;
     bool mRawStartedWithSpace = false;
 };
 
@@ -81735,7 +82029,7 @@ void gid_read_coordinates(GidLineCursor& rCur, GidStaged& rStaged) {
     while (rCur.Next(line)) {
         if (gid_line_starts_with(line, "End", "Coordinates"))
             return;
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         // gidpost's block writer always emits 3 coordinates, but the per-node
         // GiD_WriteCoordinates2D ASCII path emits only 2 -- so count, never
         // assume 4 tokens.
@@ -81764,7 +82058,7 @@ void gid_read_elements(GidLineCursor& rCur, GidBlock& rBlock) {
                 rBlock.mMaterial.clear();
             return;
         }
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         // THE material-column ambiguity. There is no separator between the
         // connectivity and an optional trailing material id, so Nnode -- from
         // this block's own MESH header -- is the only disambiguator:
@@ -81806,7 +82100,7 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
     std::string line;
     std::string group;  // the Group currently open, empty when ungrouped
     while (cur.Next(line)) {
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         if (tok.empty())
             continue;
 
@@ -81975,7 +82269,7 @@ void gid_read_values(GidLineCursor& rCur, GidResult& rResult, std::size_t knownW
     while (rCur.Next(line)) {
         if (gid_line_starts_with(line, "End", "Values"))
             return;
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         if (tok.empty())
             continue;
 
@@ -82093,7 +82387,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
     std::string line;
     std::string group;  // the OnGroup currently open, empty when ungrouped
     while (cur.Next(line)) {
-        const std::vector<std::string> tok = gid_split(line);
+        const auto tok = gid_split(line);
         if (tok.empty())
             continue;
 
@@ -82102,14 +82396,14 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             // There is NO OnMeshName keyword -- the mesh name is a bare
             // trailing quoted string, which is why it is found positionally.
             GidGaussSet set;
-            const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
+            const std::string gp_name(tok.size() > 1 ? tok[1] : std::string_view());
             if (tok.size() >= 5)
                 set.mMeshName = tok[4];
             std::string inner;
             while (cur.Next(inner)) {
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (it.empty())
                     continue;
                 if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
@@ -82128,7 +82422,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 if (gid_keyword_is(it[0], "Nodes"))
                     continue;  // line-element only; GiD's own default is what we emit
                 if (set.mGivenCoords)
-                    for (const std::string& v : it)
+                    for (const auto v : it)
                         set.mCoords.push_back(gid_to_double(v, "a Gauss-point coordinate"));
             }
             rGauss[gp_name] = set;
@@ -82151,7 +82445,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             // between the header and Values, in that fixed order.
             std::string inner;
             while (cur.Next(inner)) {
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (!it.empty() && gid_keyword_is(it[0], "Values")) {
                     gid_read_values(cur, res);
                     break;
@@ -82186,22 +82480,22 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             // -- then applies unchanged, with no second apply path to drift.
             if (tok.size() < 4)
                 throw ReadError("GiD: malformed ResultGroup header: " + line);
-            const std::string analysis = tok[1];
+            const std::string analysis(tok[1]);
             const double step = gid_to_double(tok[2], "a ResultGroup step");
-            const std::string location = tok[3];
-            const std::string gauss_name = tok.size() >= 5 ? tok[4] : std::string();
+            const std::string location(tok[3]);
+            const std::string gauss_name(tok.size() >= 5 ? tok[4] : std::string_view());
 
             std::vector<GidGroupMember> members;
             bool saw_values = false;
             std::string inner;
             while (cur.Next(inner)) {
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (it.empty())
                     continue;
                 if (gid_keyword_is(it[0], "ResultDescription")) {
                     if (it.size() < 3)
                         throw ReadError("GiD: malformed ResultDescription: " + inner);
-                    members.push_back(gid_group_member(it[1], it[2]));
+                    members.push_back(gid_group_member(std::string(it[1]), std::string(it[2])));
                     continue;
                 }
                 if (gid_keyword_is(it[0], "ResultRangesTable") ||
@@ -82873,7 +83167,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
         } catch (const ReadError&) {
             break;  // trailing padding: a clean end of stream
         }
-        const std::vector<std::string> tok = gid_split(rec);
+        const auto tok = gid_split(rec);
         if (tok.empty())
             continue;
 
@@ -82935,7 +83229,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
 
         if (gid_keyword_is(tok[0], "GaussPoints")) {
             GidGaussSet set;
-            const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
+            const std::string gp_name(tok.size() > 1 ? tok[1] : std::string_view());
             if (tok.size() >= 5)
                 set.mMeshName = tok[4];
             while (!cur.AtEnd()) {
@@ -82948,7 +83242,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
                 }
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
-                const std::vector<std::string> it = gid_split(inner);
+                const auto it = gid_split(inner);
                 if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
                     gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
@@ -83204,7 +83498,7 @@ std::vector<double> gid_scan_step_values(std::string_view text) {
     std::vector<double> steps;
     std::string line;
     while (cur.Next(line)) {
-        std::vector<std::string> tok;
+        std::vector<std::string_view> tok;
         try {
             tok = gid_split(line);
         } catch (const ReadError&) {
@@ -84787,25 +85081,11 @@ std::string gmsh_trim(const std::string& rS) {
     return rS.substr(b, e - b);
 }
 
-struct GmshCursor {
-    // A view, not a reference to a std::string: the buffer may be a memory
-    // mapping rather than an owned string (see detail/file_source.hpp).
-    std::string_view mBuf;
-    std::size_t mPos = 0;
-    explicit GmshCursor(std::string_view b) : mBuf(b) {}
-    bool eof() const { return mPos >= mBuf.size(); }
+struct GmshCursor : detail::TextCursor {
+    explicit GmshCursor(std::string_view b) : detail::TextCursor(b) {}
+    bool eof() const { return AtEnd(); }
 
-    std::string read_line() {
-        std::size_t start = mPos;
-        while (mPos < mBuf.size() && mBuf[mPos] != '\n')
-            ++mPos;
-        std::string line(mBuf.substr(start, mPos - start));
-        if (mPos < mBuf.size())
-            ++mPos;
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        return line;
-    }
+    std::string read_line() { return std::string(Line(true)); }
     // Trimmed: some writers (FEconv's samples) indent every line.
     std::string next_nonblank() {
         while (!eof()) {
@@ -84823,18 +85103,9 @@ struct GmshCursor {
         }
     }
     double next_double() {
-        // parse_double stops at the first character that cannot continue the
-        // number, so one must follow the last. A buffered source is a
-        // std::string (NUL-terminated); a mapped one relies on the kernel
-        // zero-filling the final partial page -- which is exactly why
-        // FileSource declines to map files whose size is an exact page
-        // multiple.
-        const char* base = mBuf.data();
-        const char* endp = nullptr;
-        double v = detail::parse_double(base + mPos, endp);
-        if (endp == base + mPos)
+        double v = 0.0;
+        if (!DoublePrefix(v))
             throw ReadError("Gmsh: expected a number");
-        mPos = static_cast<std::size_t>(endp - base);
         return v;
     }
     std::int64_t next_int() { return detail::checked_integer<std::int64_t>(next_double(), "Gmsh"); }
@@ -86181,7 +86452,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    detail::TextStream fss(cur.read_line());
+    detail::TextStream fss(cur.Line(true));
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -87332,7 +87603,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    detail::TextStream fss(cur.read_line());
+    detail::TextStream fss(cur.Line(true));
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -87862,19 +88133,14 @@ std::string ip_strip(const std::string& s) {
 }  // namespace
 
 Mesh read_ip(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        lines.push_back(line);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const auto lines = detail::split_lines(source.View());
 
     // header: first four non-empty lines -> version, dim, npoint, ncomp
     std::vector<int> ints;
     std::size_t idx = 0;
     while (ints.size() < 4 && idx < lines.size()) {
-        std::string s = ip_strip(lines[idx++]);
+        std::string s = ip_strip(std::string(lines[idx++]));
         if (!s.empty()) {
             detail::TextStream iss(s);
             int v;
@@ -87893,7 +88159,7 @@ Mesh read_ip(const std::string& rPath) {
 
     std::vector<std::string> names;
     while (static_cast<int>(names.size()) < ncomp && idx < lines.size()) {
-        std::string s = ip_strip(lines[idx++]);
+        std::string s = ip_strip(std::string(lines[idx++]));
         if (!s.empty())
             names.push_back(s);
     }
@@ -87902,7 +88168,7 @@ Mesh read_ip(const std::string& rPath) {
     // column-major sections of npoint reals each.
     std::vector<double> flat;
     for (; idx < lines.size(); ++idx) {
-        std::string s = lines[idx];
+        std::string s(lines[idx]);
         for (char& c : s)
             if (c == '(' || c == ')')
                 c = ' ';
@@ -90026,20 +90292,20 @@ std::string lsd_upper(std::string Text) {
     return Text;
 }
 
-std::string lsd_strip(const std::string& rText, const char* pChars = " \t\r\n\f\v") {
+std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v") {
     const std::size_t b = rText.find_first_not_of(pChars);
     if (b == std::string::npos)
         return std::string();
     const std::size_t e = rText.find_last_not_of(pChars);
-    return rText.substr(b, e - b + 1);
+    return std::string(rText.substr(b, e - b + 1));
 }
 
-bool lsd_starts_with(const std::string& rText, const char* pPrefix) {
+bool lsd_starts_with(std::string_view rText, const char* pPrefix) {
     return rText.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> lsd_split(std::string_view rText, char Sep) {
-    std::vector<std::string> out;
+std::vector<std::string_view> lsd_split(std::string_view rText, char Sep) {
+    std::vector<std::string_view> out;
     std::size_t start = 0;
     while (true) {
         const std::size_t k = rText.find(Sep, start);
@@ -90123,7 +90389,7 @@ struct LsdSet {
 
 struct LsdLine {
     std::size_t mLineNo;
-    std::string mText;
+    std::string_view mText;
 };
 
 struct LsdKeyword {
@@ -90161,7 +90427,7 @@ void lsd_warn_once(LsdDeck& rDeck, const std::string& rKey, const std::string& r
         log::warn("{}", rMessage);
 }
 
-LsdKeyword lsd_parse_keyword(const std::string& rLine) {
+LsdKeyword lsd_parse_keyword(std::string_view rLine) {
     const std::string body = lsd_strip(rLine.substr(1));
     std::size_t end = body.size();
     for (std::size_t k = 0; k < body.size(); ++k) {
@@ -90212,7 +90478,7 @@ CardMode lsd_keyword_mode(const std::string& rRest, CardMode Mode) {
     return Mode;
 }
 
-bool lsd_skip_param(LsdDeck& rDeck, const std::string& rLine) {
+bool lsd_skip_param(LsdDeck& rDeck, std::string_view rLine) {
     if (rLine.find('&') != std::string::npos) {
         ++rDeck.mParamSkips;
         return true;
@@ -90220,20 +90486,22 @@ bool lsd_skip_param(LsdDeck& rDeck, const std::string& rLine) {
     return false;
 }
 
-std::size_t lsd_skip_pgp(LsdDeck& rDeck, const std::vector<std::string>& rLines, std::size_t Pos) {
+std::size_t lsd_skip_pgp(LsdDeck& rDeck, const std::vector<std::string_view>& rLines,
+                         std::size_t Pos) {
     lsd_warn_once(rDeck, "pgp", "LS-DYNA: skipped a PGP-encrypted block");
     while (Pos < rLines.size() && !lsd_starts_with(rLines[Pos], "-----END PGP"))
         ++Pos;
     return Pos + 1;
 }
 
-std::int64_t lsd_int(const std::vector<std::string>& rFields, std::size_t I,
+std::int64_t lsd_int(const std::vector<std::string_view>& rFields, std::size_t I,
                      const std::string& rWhere) {
-    return detail::card_to_int(I < rFields.size() ? rFields[I] : std::string(), rWhere);
+    return detail::card_to_int_view(I < rFields.size() ? rFields[I] : std::string_view(), rWhere);
 }
 
-double lsd_real(const std::vector<std::string>& rFields, std::size_t I, const std::string& rWhere) {
-    return detail::card_to_real(I < rFields.size() ? rFields[I] : std::string(), rWhere);
+double lsd_real(const std::vector<std::string_view>& rFields, std::size_t I,
+                const std::string& rWhere) {
+    return detail::card_to_real_view(I < rFields.size() ? rFields[I] : std::string_view(), rWhere);
 }
 
 void lsd_read_nodes(LsdDeck& rDeck, const LsdBlock& rBlock, const LsdCtx& rCtx) {
@@ -90241,7 +90509,7 @@ void lsd_read_nodes(LsdDeck& rDeck, const LsdBlock& rBlock, const LsdCtx& rCtx) 
         if (lsd_strip(line.mText).empty() || lsd_skip_param(rDeck, line.mText))
             continue;
         const std::string where = lsd_where(line.mLineNo, rCtx.mLabel);
-        const auto f = detail::split_card(line.mText, lsd_layout_node(), rCtx.mMode);
+        const auto f = detail::split_card_view(line.mText, lsd_layout_node(), rCtx.mMode);
         const std::int64_t nid = lsd_int(f, 0, where);
         const std::int64_t index = static_cast<std::int64_t>(rDeck.mCoords.size() / 3);
         if (!rDeck.mNodeIndex.emplace(nid, index).second)
@@ -90254,10 +90522,10 @@ void lsd_read_nodes(LsdDeck& rDeck, const LsdBlock& rBlock, const LsdCtx& rCtx) 
 
 void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& rBlock,
                        const LsdCtx& rCtx) {
-    const std::vector<std::string> tokens = lsd_split(rKeyword, '_');  // ELEMENT, KIND, opts...
-    const std::string kind = tokens.size() > 1 ? tokens[1] : std::string();
-    const std::vector<std::string> opts(tokens.begin() + std::min<std::size_t>(2, tokens.size()),
-                                        tokens.end());
+    const auto tokens = lsd_split(rKeyword, '_');  // ELEMENT, KIND, opts...
+    const std::string_view kind = tokens.size() > 1 ? tokens[1] : std::string_view();
+    const std::vector<std::string_view> opts(
+        tokens.begin() + std::min<std::size_t>(2, tokens.size()), tokens.end());
     std::size_t extras = 0;
     if (kind == "SOLID" && opts.empty()) {
     } else if (kind == "SOLID" && opts.size() == 1 && opts[0] == "ORTHO") {
@@ -90267,7 +90535,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
         lsd_warn_once(rDeck, rKeyword,
                       "LS-DYNA: *" + rKeyword + " is a conversion directive and is not applied");
         return;
-    } else if (kind == "SHELL" && std::all_of(opts.begin(), opts.end(), [](const std::string& o) {
+    } else if (kind == "SHELL" && std::all_of(opts.begin(), opts.end(), [](std::string_view o) {
                    return o == "THICKNESS" || o == "BETA" || o == "MCID" || o == "OFFSET";
                })) {
         extras = opts.size();
@@ -90308,7 +90576,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
         el.mFamily = family;
         el.mGroup = rDeck.mGroup;
         if (family == LsdFamily::Mass) {
-            const auto f = detail::split_card(line.mText, lsd_layout_mass(), rCtx.mMode);
+            const auto f = detail::split_card_view(line.mText, lsd_layout_mass(), rCtx.mMode);
             el.mEid = lsd_int(f, 0, where);
             el.mPid = lsd_int(f, 3, where);
             el.mType = LsdType::Vertex;
@@ -90316,7 +90584,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
             rDeck.mElements.push_back(el);
             continue;
         }
-        auto f = detail::split_card(line.mText, lsd_layout_element(), rCtx.mMode);
+        auto f = detail::split_card_view(line.mText, lsd_layout_element(), rCtx.mMode);
         el.mEid = lsd_int(f, 0, where);
         el.mPid = lsd_int(f, 1, where);
         if (family == LsdFamily::Solid || family == LsdFamily::TShell) {
@@ -90333,7 +90601,8 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
                     throw ReadError("LS-DYNA: truncated element card" + where);
                 const LsdLine& line2 = rBlock[j];
                 ++j;
-                const auto g = detail::split_card(line2.mText, lsd_layout_element(), rCtx.mMode);
+                const auto g =
+                    detail::split_card_view(line2.mText, lsd_layout_element(), rCtx.mMode);
                 std::vector<std::int64_t> nodes;
                 for (std::size_t k = 0; k < 10; ++k)
                     nodes.push_back(lsd_int(g, k, where));
@@ -90401,7 +90670,7 @@ void lsd_read_parts(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock&
         if (lsd_strip(card.mText).empty())
             break;
         const std::string where = lsd_where(card.mLineNo, rCtx.mLabel);
-        const auto f = detail::split_card(card.mText, lsd_layout_ids(), rCtx.mMode);
+        const auto f = detail::split_card_view(card.mText, lsd_layout_ids(), rCtx.mMode);
         const std::int64_t pid = lsd_int(f, 0, where);
         auto slot = rDeck.mPartSlot.find(pid);
         if (slot == rDeck.mPartSlot.end()) {
@@ -90416,7 +90685,7 @@ void lsd_read_parts(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock&
     }
 }
 
-std::optional<LsdFamily> lsd_set_family(const std::string& rName) {
+std::optional<LsdFamily> lsd_set_family(std::string_view rName) {
     if (rName == "NODE")
         return LsdFamily::Node;
     if (rName == "SOLID")
@@ -90438,14 +90707,14 @@ std::optional<LsdFamily> lsd_set_family(const std::string& rName) {
 
 void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& rBlock,
                   const LsdCtx& rCtx) {
-    const std::vector<std::string> tokens = lsd_split(rKeyword, '_');  // SET, FAMILY, opts...
-    const auto family = lsd_set_family(tokens.size() > 1 ? tokens[1] : std::string());
+    const auto tokens = lsd_split(rKeyword, '_');  // SET, FAMILY, opts...
+    const auto family = lsd_set_family(tokens.size() > 1 ? tokens[1] : std::string_view());
     if (!family)
         return;
-    std::set<std::string> opts;
+    std::set<std::string_view> opts;
     for (std::size_t k = 2; k < tokens.size(); ++k)
         opts.insert(tokens[k]);
-    for (const std::string& o : opts) {
+    for (const auto o : opts) {
         if (o != "LIST" && o != "GENERATE" && o != "TITLE") {
             lsd_warn_once(rDeck, rKeyword, "LS-DYNA: *" + rKeyword + " is not supported; skipped");
             return;
@@ -90464,8 +90733,8 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
         return;
     {
         const std::string where = lsd_where(rBlock[j].mLineNo, rCtx.mLabel);
-        set.mSid =
-            lsd_int(detail::split_card(rBlock[j].mText, lsd_layout_ids(), rCtx.mMode), 0, where);
+        set.mSid = lsd_int(detail::split_card_view(rBlock[j].mText, lsd_layout_ids(), rCtx.mMode),
+                           0, where);
         ++j;
     }
     const bool generate = opts.count("GENERATE") > 0;
@@ -90475,7 +90744,7 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
             continue;
         const std::string where = lsd_where(line.mLineNo, rCtx.mLabel);
         if (*family == LsdFamily::Segment) {
-            const auto f = detail::split_card(line.mText, lsd_layout_segment(), rCtx.mMode);
+            const auto f = detail::split_card_view(line.mText, lsd_layout_segment(), rCtx.mMode);
             std::array<std::int64_t, 4> seg;
             for (std::size_t k = 0; k < 4; ++k)
                 seg[k] = lsd_int(f, k, where);
@@ -90484,7 +90753,7 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
             set.mSegments.push_back(seg);
             continue;
         }
-        const auto fields = detail::split_card(line.mText, lsd_layout_ids(), rCtx.mMode);
+        const auto fields = detail::split_card_view(line.mText, lsd_layout_ids(), rCtx.mMode);
         std::vector<std::int64_t> f;
         for (std::size_t k = 0; k < fields.size(); ++k)
             f.push_back(lsd_int(fields, k, where));
@@ -90590,14 +90859,17 @@ void lsd_read_includes(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
 
 void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBaseDir,
                    const std::string& rLabel, int Depth, CardMode Mode) {
-    std::vector<std::string> lines = lsd_split(rText, '\n');
-    for (std::string& ln : lines)
+    auto lines = detail::split_lines(rText);
+    // The original delimiter split retained one final empty record, unlike getline.
+    if (rText.empty() || rText.back() == '\n')
+        lines.emplace_back();
+    for (auto& ln : lines)
         if (!ln.empty() && ln.back() == '\r')
-            ln.pop_back();
+            ln.remove_suffix(1);
     std::size_t pos = 0;
     const std::size_t n = lines.size();
     while (pos < n) {
-        const std::string& line = lines[pos];
+        const std::string_view line = lines[pos];
         ++pos;
         if (!lsd_starts_with(line, "*")) {
             if (lsd_starts_with(line, "-----BEGIN PGP"))
@@ -90607,7 +90879,7 @@ void lsd_read_text(LsdDeck& rDeck, std::string_view rText, const fs::path& rBase
         const LsdKeyword kw = lsd_parse_keyword(line);
         LsdBlock block;
         while (pos < n && !lsd_starts_with(lines[pos], "*")) {
-            const std::string& raw = lines[pos];
+            const std::string_view raw = lines[pos];
             ++pos;
             if (lsd_starts_with(raw, "$"))
                 continue;
@@ -93656,6 +93928,7 @@ MeshMetadata read_lsdyna_d3plot_metadata(const std::string& rPath, const ReadOpt
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <deque>
 
 // Project includes
 
@@ -93739,44 +94012,47 @@ std::string marc_lower(std::string_view Text) {
     return out;
 }
 
-std::string marc_trim(std::string_view Text) {
+std::string_view marc_trim_view(std::string_view Text) {
     const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
     std::size_t a = 0, b = Text.size();
     while (a < b && blank(Text[a]))
         ++a;
     while (b > a && blank(Text[b - 1]))
         --b;
-    return std::string(Text.substr(a, b - a));
+    return Text.substr(a, b - a);
 }
 
-std::string marc_rstrip(std::string_view Text) {
+std::string marc_trim(std::string_view Text) {
+    return std::string(marc_trim_view(Text));
+}
+
+std::string_view marc_rstrip(std::string_view Text) {
     std::size_t b = Text.size();
     while (b > 0 && (Text[b - 1] == ' ' || Text[b - 1] == '\t' || Text[b - 1] == '\r' ||
                      Text[b - 1] == '\n'))
         --b;
-    return std::string(Text.substr(0, b));
+    return Text.substr(0, b);
 }
 
 // Words split on blanks and commas.
-std::vector<std::string> marc_words(std::string_view Text) {
-    std::vector<std::string> out;
-    std::string word;
-    for (char c : Text) {
-        if (c == ' ' || c == '\t' || c == ',' || c == '\r' || c == '\n') {
-            if (!word.empty())
-                out.push_back(std::move(word));
-            word.clear();
-        } else {
-            word += c;
-        }
+std::vector<std::string_view> marc_words(std::string_view Text) {
+    std::vector<std::string_view> out;
+    std::size_t pos = 0;
+    for (;;) {
+        const auto first = Text.find_first_not_of(" \t,\r\n", pos);
+        if (first == std::string_view::npos)
+            break;
+        const auto last = Text.find_first_of(" \t,\r\n", first);
+        out.push_back(Text.substr(first, last == std::string_view::npos ? last : last - first));
+        if (last == std::string_view::npos)
+            break;
+        pos = last;
     }
-    if (!word.empty())
-        out.push_back(std::move(word));
     return out;
 }
 
 bool marc_is_comment(std::string_view Line) {
-    const std::string s = marc_trim(Line);
+    const std::string_view s = marc_trim_view(Line);
     return s.empty() || s[0] == '$';
 }
 
@@ -93789,32 +94065,24 @@ bool marc_is_data(std::string_view Line) {
     return std::isdigit(static_cast<unsigned char>(c)) || c == '+' || c == '-' || c == '.';
 }
 
-std::vector<std::string> marc_lines(const std::string& rPath, const char* pLabel) {
-    std::optional<detail::FileSource> source;
+std::vector<std::string_view> marc_lines(std::deque<detail::FileSource>& rSources,
+                                         const std::string& rPath, const char* pLabel) {
     try {
-        source.emplace(rPath);
+        rSources.emplace_back(rPath);
     } catch (const ReadError&) {
         marc_fail(pLabel, "cannot open " + rPath);
     }
-    const std::string_view text = source->View();
-    std::vector<std::string> lines;
-    std::size_t pos = 0;
-    while (pos < text.size()) {
-        std::size_t eol = text.find('\n', pos);
-        if (eol == std::string::npos)
-            eol = text.size();
-        std::string line(text.substr(pos, eol - pos));
+    auto lines = detail::split_lines(rSources.back().View());
+    for (auto& line : lines) {
         if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(std::move(line));
-        pos = eol + 1;
+            line.remove_suffix(1);
     }
     return lines;
 }
 
 // An `INCLUDE` option line (the keyword at the start of the line, then the
 // file name after a blank or comma): the file it names, else empty.
-std::string marc_include_target(const std::string& rLine) {
+std::string marc_include_target(std::string_view rLine) {
     if (rLine.size() < 7 || marc_lower(rLine.substr(0, 7)) != "include")
         return "";
     std::size_t k = 7;
@@ -93831,14 +94099,15 @@ std::string marc_include_target(const std::string& rLine) {
 
 // The deck's lines with every `INCLUDE` replaced by the lines of the file it
 // names (relative to the including file), recursively.
-std::vector<std::string> marc_deck_lines(const std::string& rPath, int Depth = 0) {
+std::vector<std::string_view> marc_deck_lines(std::deque<detail::FileSource>& rSources,
+                                              const std::string& rPath, int Depth = 0) {
     if (Depth > 16)
         marc_fail(kMarcDat, "INCLUDE files nest more than 16 deep (a cycle?) at " + rPath);
-    std::vector<std::string> out;
-    for (std::string& line : marc_lines(rPath, kMarcDat)) {
+    std::vector<std::string_view> out;
+    for (const auto line : marc_lines(rSources, rPath, kMarcDat)) {
         const std::string target = marc_include_target(line);
         if (target.empty()) {
-            out.push_back(std::move(line));
+            out.push_back(line);
             continue;
         }
         std::filesystem::path file(target);
@@ -93847,30 +94116,30 @@ std::vector<std::string> marc_deck_lines(const std::string& rPath, int Depth = 0
         std::error_code ec;
         if (!std::filesystem::is_regular_file(file, ec))
             marc_fail(kMarcDat, "INCLUDE names " + file.string() + ", which does not exist");
-        std::vector<std::string> inner = marc_deck_lines(file.string(), Depth + 1);
+        auto inner = marc_deck_lines(rSources, file.string(), Depth + 1);
         out.insert(out.end(), std::make_move_iterator(inner.begin()),
                    std::make_move_iterator(inner.end()));
     }
     return out;
 }
 
-std::int64_t marc_int(const std::string& rText, const char* pLabel, const std::string& rWhere) {
-    return detail::card_to_int(marc_trim(rText), " (" + rWhere + ")", pLabel);
+std::int64_t marc_int(std::string_view rText, const char* pLabel, const std::string& rWhere) {
+    return detail::card_to_int_view(marc_trim_view(rText), " (" + rWhere + ")", pLabel);
 }
 
-double marc_real(const std::string& rText, const char* pLabel, const std::string& rWhere) {
-    return detail::card_to_real(marc_trim(rText), " (" + rWhere + ")", pLabel);
+double marc_real(std::string_view rText, const char* pLabel, const std::string& rWhere) {
+    return detail::card_to_real_view(marc_trim_view(rText), " (" + rWhere + ")", pLabel);
 }
 
 // The fields of a deck's data line: comma-separated (free format), or fixed
 // columns of Width up to the last non-blank one.
-std::vector<std::string> marc_fields(std::string_view Line, std::size_t Width) {
-    std::vector<std::string> out;
+std::vector<std::string_view> marc_fields(std::string_view Line, std::size_t Width) {
+    std::vector<std::string_view> out;
     if (Line.find(',') != std::string_view::npos) {
         std::size_t pos = 0;
         for (;;) {
             const std::size_t comma = Line.find(',', pos);
-            out.push_back(marc_trim(Line.substr(
+            out.push_back(marc_trim_view(Line.substr(
                 pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos)));
             if (comma == std::string_view::npos)
                 break;
@@ -93880,9 +94149,9 @@ std::vector<std::string> marc_fields(std::string_view Line, std::size_t Width) {
             out.pop_back();  // a lone item is followed by a comma
         return out;
     }
-    const std::string body = marc_rstrip(Line);
+    const std::string_view body = marc_rstrip(Line);
     for (std::size_t k = 0; k < body.size(); k += Width)
-        out.push_back(marc_trim(std::string_view(body).substr(k, Width)));
+        out.push_back(marc_trim_view(body.substr(k, Width)));
     return out;
 }
 
@@ -93929,7 +94198,7 @@ struct MarcDeck {
     std::size_t RealWidth() const { return mExtended ? 20 : 10; }
 };
 
-std::size_t marc_next_data(const std::vector<std::string>& rLines, std::size_t I) {
+std::size_t marc_next_data(const std::vector<std::string_view>& rLines, std::size_t I) {
     while (I < rLines.size() && marc_is_comment(rLines[I]))
         ++I;
     return I;
@@ -93939,7 +94208,7 @@ std::string marc_where(std::size_t I) {
     return "line " + std::to_string(I + 1);
 }
 
-std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& rLines,
+std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string_view>& rLines,
                               std::size_t I) {
     I = marc_next_data(rLines, I);
     if (I < rLines.size() && marc_is_data(rLines[I]))
@@ -93976,7 +94245,7 @@ std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& r
                                         std::to_string(el.mNodes.size()) + " of its " +
                                         std::to_string(known->mNodes) + " nodes");
             where = marc_where(I);
-            for (const std::string& v : marc_fields(rLines[I], width))
+            for (const auto v : marc_fields(rLines[I], width))
                 el.mNodes.push_back(marc_int(v, kMarcDat, where));
             ++I;
         }
@@ -93985,15 +94254,15 @@ std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& r
     }
 }
 
-std::vector<std::string> marc_slices(std::string_view Body, std::size_t Width) {
-    std::vector<std::string> out;
-    const std::string body = marc_rstrip(Body);
+std::vector<std::string_view> marc_slices(std::string_view Body, std::size_t Width) {
+    std::vector<std::string_view> out;
+    const std::string_view body = marc_rstrip(Body);
     for (std::size_t k = 0; k < body.size(); k += Width)
         out.push_back(body.substr(k, Width));
     return out;
 }
 
-std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rLines,
+std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string_view>& rLines,
                              std::size_t I) {
     I = marc_next_data(rLines, I);
     if (I < rLines.size() && marc_is_data(rLines[I])) {
@@ -94009,9 +94278,9 @@ std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rL
         if (I >= rLines.size() || !marc_is_data(rLines[I]))
             return I;
         const std::string where = marc_where(I);
-        const std::string& line = rLines[I];
+        const std::string_view line = rLines[I];
         std::int64_t ident = 0;
-        std::vector<std::string> values;
+        std::vector<std::string_view> values;
         if (line.find(',') != std::string::npos) {
             const auto f = marc_fields(line, iw);
             ident = marc_int(f[0], kMarcDat, where);
@@ -94026,7 +94295,7 @@ std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rL
             I = marc_next_data(rLines, I);
             if (I >= rLines.size() || !marc_is_data(rLines[I]))
                 break;
-            const std::string& more = rLines[I];
+            const std::string_view more = rLines[I];
             const auto extra =
                 more.find(',') != std::string::npos ? marc_fields(more, rw) : marc_slices(more, rw);
             values.insert(values.end(), extra.begin(), extra.end());
@@ -94044,7 +94313,7 @@ std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rL
     }
 }
 
-bool marc_all_digits(const std::string& rText) {
+bool marc_all_digits(std::string_view rText) {
     return !rText.empty() && std::all_of(rText.begin(), rText.end(), [](char c) {
         return std::isdigit(static_cast<unsigned char>(c));
     });
@@ -94054,10 +94323,10 @@ bool marc_all_digits(const std::string& rText) {
 // integers split apart); `c` or `continue` last means more lines follow.
 std::vector<std::string> marc_set_tokens(std::string_view Text, std::size_t Width) {
     std::vector<std::string> out;
-    for (const std::string& tok : marc_words(Text)) {
+    for (const auto tok : marc_words(Text)) {
         if (marc_all_digits(tok) && tok.size() > Width && tok.size() % Width == 0) {
             for (std::size_t k = 0; k < tok.size(); k += Width)
-                out.push_back(tok.substr(k, Width));
+                out.emplace_back(tok.substr(k, Width));
         } else {
             out.push_back(marc_lower(tok));
         }
@@ -94072,14 +94341,15 @@ bool marc_is_integer(const std::string& rText) {
     return k < rText.size() && marc_all_digits(rText.substr(k));
 }
 
-std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines, std::size_t I) {
+std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string_view>& rLines,
+                        std::size_t I) {
     const std::string where = marc_where(I);
     const auto raw = marc_words(rLines[I]);
     const std::string kind = raw.size() > 1 ? marc_lower(raw[1]) : "";
     std::size_t k = 2;
     if (raw.size() > k && (marc_lower(raw[k]) == "set" || marc_lower(raw[k]) == "oset"))
         ++k;
-    const std::string name = raw.size() > k ? raw[k] : "";
+    const std::string name(raw.size() > k ? raw[k] : std::string_view());
     std::unordered_set<std::string> earlier;
     for (const MarcSet& s : rDeck.mSets)
         earlier.insert(marc_lower(s.mName));
@@ -94089,7 +94359,7 @@ std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines,
         I = marc_next_data(rLines, I);
         if (I >= rLines.size())
             break;
-        const std::string& line = rLines[I];
+        const std::string_view line = rLines[I];
         const auto items = marc_set_tokens(line, rDeck.IntWidth());
         // The first data line starts with a number or an earlier set's name;
         // later ones follow a line that ended in C (continue).
@@ -94138,19 +94408,20 @@ std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines,
     return I;
 }
 
-MarcDeck marc_parse_deck(const std::vector<std::string>& rLines) {
+MarcDeck marc_parse_deck(const std::vector<std::string_view>& rLines) {
     MarcDeck deck;
     std::size_t i = 0;
     bool in_parameters = true;
     while (i < rLines.size()) {
-        const std::string& line = rLines[i];
+        const std::string_view line = rLines[i];
         if (marc_is_comment(line) || marc_is_data(line) || line.empty() || line[0] == ' ' ||
             line[0] == '\t') {
             ++i;
             continue;
         }
-        const auto words = marc_words(marc_lower(line));
-        const std::string key = words.empty() ? "" : words[0];
+        const std::string lower = marc_lower(line);
+        const auto words = marc_words(lower);
+        const std::string key(words.empty() ? std::string_view() : words[0]);
         const bool end_option = key == "end" && words.size() > 1 && words[1] == "option";
         if (in_parameters) {
             if (key == "extended") {
@@ -94206,7 +94477,7 @@ std::vector<std::int64_t> marc_expand(
         }
     };
     const auto number = [&](const std::string& rText) {
-        return detail::card_to_int(rText, " (set '" + rName + "')", pLabel);
+        return detail::card_to_int_view(rText, " (set '" + rName + "')", pLabel);
     };
     std::size_t k = 0;
     while (k < rTokens.size()) {
@@ -94442,11 +94713,11 @@ Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
 
 constexpr std::size_t kMarcW = 13;  // the post file's column width (i13, e13.6)
 
-std::vector<std::int64_t> marc_ints_of(const std::string& rLine, const std::string& rWhere) {
+std::vector<std::int64_t> marc_ints_of(std::string_view rLine, const std::string& rWhere) {
     std::vector<std::int64_t> out;
-    const std::string body = marc_rstrip(rLine);
+    const std::string_view body = marc_rstrip(rLine);
     for (std::size_t k = 0; k < body.size(); k += kMarcW) {
-        const std::string field = marc_trim(std::string_view(body).substr(k, kMarcW));
+        const std::string_view field = marc_trim_view(body.substr(k, kMarcW));
         if (!field.empty())
             out.push_back(marc_int(field, kMarcT19, rWhere));
     }
@@ -94455,9 +94726,9 @@ std::vector<std::int64_t> marc_ints_of(const std::string& rLine, const std::stri
 
 std::vector<double> marc_reals_of(std::string_view Line, const std::string& rWhere) {
     std::vector<double> out;
-    const std::string body = marc_rstrip(Line);
+    const std::string_view body = marc_rstrip(Line);
     for (std::size_t k = 0; k < body.size(); k += kMarcW) {
-        const std::string field = marc_trim(std::string_view(body).substr(k, kMarcW));
+        const std::string_view field = marc_trim_view(body.substr(k, kMarcW));
         if (!field.empty())
             out.push_back(marc_real(field, kMarcT19, rWhere));
     }
@@ -94475,10 +94746,10 @@ struct MarcBlock {
 // Reads a block's lines as Fortran records: each record starts a line.
 class MarcRecords {
 public:
-    MarcRecords(const std::vector<std::string>& rLines, const MarcBlock& rBlock)
+    MarcRecords(const std::vector<std::string_view>& rLines, const MarcBlock& rBlock)
         : mrLines(rLines), mI(rBlock.mBegin), mEnd(rBlock.mEnd) {}
 
-    const std::string& Line() {
+    std::string_view Line() {
         if (mI >= mEnd)
             marc_fail(kMarcT19, "a block ends early (line " + std::to_string(mI + 1) + ")");
         return mrLines[mI++];
@@ -94506,7 +94777,7 @@ public:
     }
 
 private:
-    const std::vector<std::string>& mrLines;
+    const std::vector<std::string_view>& mrLines;
     std::size_t mI, mEnd;
 };
 
@@ -94518,7 +94789,7 @@ struct MarcIncrement {
 
 class MarcPost {
 public:
-    explicit MarcPost(const std::string& rPath) : mLines(marc_lines(rPath, kMarcT19)) {
+    explicit MarcPost(const std::string& rPath) : mLines(marc_lines(mSources, rPath, kMarcT19)) {
         if (mLines.empty() || mLines[0].rfind("=beg=501", 0) != 0)
             marc_fail(kMarcT19, "not a Marc formatted post file (no =beg=501 title block)");
         std::vector<MarcBlock> blocks;
@@ -94579,7 +94850,7 @@ public:
                 MarcRecords r = Reader(b);
                 for (std::int64_t k = 0; k < rLm[0]; ++k) {
                     const std::string where = r.Where();
-                    const std::string& line = r.Line();
+                    const std::string_view line = r.Line();
                     const std::int64_t code =
                         marc_int(line.substr(0, std::min(kMarcW, line.size())), kMarcT19, where);
                     const std::string label =
@@ -94614,7 +94885,7 @@ public:
             } else if (family == 508) {
                 for (std::int64_t k = 0; k < numnp; ++k) {
                     const std::string where = r.Where();
-                    const std::string& line = r.Line();
+                    const std::string_view line = r.Line();
                     const std::int64_t ident =
                         marc_int(line.substr(0, std::min(kMarcW, line.size())), kMarcT19, where);
                     std::vector<double> values =
@@ -94644,7 +94915,7 @@ public:
                     count = rLm[15];
                 }
                 for (std::int64_t s = 0; s < count; ++s) {
-                    const std::string& line = r.Line();
+                    const std::string_view line = r.Line();
                     const std::string name =
                         marc_trim(std::string_view(line).substr(0, std::min(width, line.size())));
                     const auto head = r.Ints(2);
@@ -94707,7 +94978,8 @@ public:
     const std::vector<std::vector<MarcBlock>>& Increments() const { return mIncrements; }
 
 private:
-    std::vector<std::string> mLines;
+    std::deque<detail::FileSource> mSources;
+    std::vector<std::string_view> mLines;
     std::vector<MarcBlock> mModel;
     std::vector<std::vector<MarcBlock>> mIncrements;
 };
@@ -94854,7 +95126,7 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
         if (family == 524) {
             const std::int64_t nnqnod = r.Ints(2)[0];
             for (std::int64_t q = 0; q < nnqnod; ++q) {
-                const std::string& line = r.Line();
+                const std::string_view line = r.Line();
                 const std::string name = marc_trim(
                     std::string_view(line).substr(0, std::min<std::size_t>(48, line.size())));
                 const auto ivec = r.Ints(12);
@@ -94938,8 +95210,9 @@ bool is_marc_deck(std::string_view Head) {
         pos = eol + 1;
         if (stripped.empty() || stripped[0] == '$')
             continue;
-        const auto words = marc_words(marc_lower(stripped));
-        const std::string word = words.empty() ? "" : words[0];
+        const std::string lower = marc_lower(stripped);
+        const auto words = marc_words(lower);
+        const std::string word(words.empty() ? std::string_view() : words[0]);
         if (first) {
             if (stripped.find('=') != std::string::npos || !marc_is_parameter(word))
                 return false;
@@ -94955,9 +95228,10 @@ bool is_marc_deck(std::string_view Head) {
 }
 
 Mesh read_marc(const std::string& rPath) {
-    const std::vector<std::string> lines = marc_deck_lines(rPath);
+    std::deque<detail::FileSource> sources;
+    const auto lines = marc_deck_lines(sources, rPath);
     std::string head;
-    for (const std::string& line : lines) {
+    for (const auto line : lines) {
         if (head.size() >= 65536)
             break;
         head += line;
@@ -95530,13 +95804,7 @@ struct MdpaDataRow {
 };
 
 /// A cursor over the file's lines, so every block parser advances one index.
-struct MdpaCursor {
-    const std::vector<std::string_view>* mpLines = nullptr;
-    std::size_t mIndex = 0;
-
-    bool Done() const { return mIndex >= mpLines->size(); }
-    std::string_view Next() { return (*mpLines)[mIndex++]; }
-};
+using MdpaCursor = detail::RecordCursor<std::string_view>;
 
 /// The refusal's tail when the caller could have kept the construct in an MdpaInfo.
 constexpr const char* kMdpaNeedsInfo =
@@ -95911,7 +96179,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
-    MdpaCursor cur{&lines, 0};
+    MdpaCursor cur{lines};
 
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
@@ -96074,7 +96342,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             // cheap to look ahead over) bound it, and size the coordinates.
             {
                 std::size_t rows = 0;
-                for (std::size_t k = cur.mIndex; k < lines.size(); ++k) {
+                for (std::size_t k = cur.Pos(); k < lines.size(); ++k) {
                     const std::string_view ahead = mdpa_clean(lines[k]);
                     if (ahead == "End Nodes")
                         break;
@@ -99399,15 +99667,15 @@ struct Tokenizer {
             }
         }
     }
-    std::string next() {
+    std::string_view next() {
         skip_ws();
         std::size_t start = mPos;
         while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
                mBuf[mPos] != '#')
             ++mPos;
-        return std::string(mBuf.substr(start, mPos - start));
+        return mBuf.substr(start, mPos - start);
     }
-    std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
+    std::int64_t next_int() { return detail::strtoll_token(next()); }
     // A section's entry count: every entry takes at least a byte of the file,
     // so a count beyond its size (or a negative one) is corruption rather than
     // something to allocate or loop over.
@@ -99415,7 +99683,7 @@ struct Tokenizer {
         return static_cast<std::int64_t>(
             detail::checked_count(next_int(), mBuf.size(), "Medit", "entry"));
     }
-    double next_double() { return detail::parse_double(next()); }
+    double next_double() { return detail::parse_double_prefix(next()); }
     // Tokens on the line of the next token, without consuming anything.
     std::size_t tokens_on_next_line() {
         const std::size_t saved = mPos;
@@ -99492,7 +99760,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
     const auto& e2m = medit_to_meshio();
 
     while (!tok.eof()) {
-        std::string kw = tok.next();
+        std::string kw(tok.next());
         if (kw.empty())
             break;
         if (kw == "MeshVersionFormatted") {
@@ -99951,18 +100219,12 @@ struct MfToken {
 class MfLexer {
 public:
     MfLexer(const std::string& rWhat, const std::string& rText) : mWhat(rWhat) {
-        std::size_t pos = 0;
+        detail::TextCursor lines(rText);
         std::size_t line_no = 0;
         bool header_seen = false;
-        while (pos < rText.size()) {
-            std::size_t eol = rText.find('\n', pos);
-            if (eol == std::string::npos)
-                eol = rText.size();
-            std::string_view line(rText.data() + pos, eol - pos);
-            pos = eol + 1;
+        while (!lines.AtEnd()) {
+            std::string_view line = lines.Line(true);
             ++line_no;
-            if (!line.empty() && line.back() == '\r')
-                line.remove_suffix(1);
             const std::size_t first = line.find_first_not_of(" \t");
             if (first == std::string_view::npos || line[first] == '#')
                 continue;
@@ -100015,21 +100277,25 @@ public:
             }
         }
         mEndLine = line_no;
+        mCursor = detail::RecordCursor<MfToken>(mTokens);
     }
+
+    MfLexer(const MfLexer&) = delete;
+    MfLexer& operator=(const MfLexer&) = delete;
 
     [[noreturn]] void Fail(const std::string& rWhy, std::size_t Line) const {
         throw ReadError(mWhat + ": " + rWhy + " (line " + std::to_string(Line) + ")");
     }
 
-    bool AtEnd() const { return mPos >= mTokens.size(); }
-    std::size_t Remaining() const { return AtEnd() ? 0 : mTokens.size() - mPos; }
-    const MfToken& Peek() const { return mTokens[mPos]; }
-    std::size_t Line() const { return AtEnd() ? mEndLine : mTokens[mPos].mLine; }
+    bool AtEnd() const { return mCursor.Done(); }
+    std::size_t Remaining() const { return mCursor.Remaining(); }
+    const MfToken& Peek() const { return mCursor.Peek(); }
+    std::size_t Line() const { return AtEnd() ? mEndLine : Peek().mLine; }
 
     const MfToken& Next(const char* pExpected) {
         if (AtEnd())
             Fail(std::string("the file ends where ") + pExpected + " was expected", mEndLine);
-        return mTokens[mPos++];
+        return mCursor.Next();
     }
 
     std::int64_t Int(const char* pExpected) {
@@ -100052,9 +100318,9 @@ public:
     std::vector<double> Reals() {
         std::vector<double> out;
         double value = 0;
-        while (!AtEnd() && ParseReal(mTokens[mPos].mText, value)) {
+        while (!AtEnd() && ParseReal(Peek().mText, value)) {
             out.push_back(value);
-            ++mPos;
+            mCursor.Next();
         }
         return out;
     }
@@ -100094,7 +100360,7 @@ public:
 private:
     std::string mWhat;
     std::vector<MfToken> mTokens;
-    std::size_t mPos = 0;
+    detail::RecordCursor<MfToken> mCursor;
     std::string mHeader;
     std::size_t mHeaderLine = 0;
     std::size_t mEndLine = 0;
@@ -104348,9 +104614,8 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
-#include <iterator>
-#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -104378,15 +104643,17 @@ std::string type_from_dims(int lnv, int lne, int lnf, int lnn) {
 }  // namespace
 
 Mesh read_mfm(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view text = source.View();
 
-    // First non-empty line: header.
-    std::string line;
+    // The first line yielding integers is the header, as with stream extraction.
+    std::size_t body_pos = 0;
     std::vector<long long> header;
-    while (std::getline(in, line)) {
-        auto iss = detail::make_classic_istringstream(line);
+    while (body_pos < text.size()) {
+        const std::size_t end = text.find('\n', body_pos);
+        const std::size_t stop = end == std::string_view::npos ? text.size() : end;
+        detail::TextStream iss(text.substr(body_pos, stop - body_pos));
+        body_pos = stop < text.size() ? stop + 1 : stop;
         long long v;
         while (iss >> v)
             header.push_back(v);
@@ -104404,12 +104671,11 @@ Mesh read_mfm(const std::string& rPath) {
     if (lnn != lnv || nnod != nver)
         throw ReadError("MFM: only linear (P1) elements are supported");
 
-    // Remaining tokens.
-    std::vector<std::string> tok((std::istream_iterator<std::string>(in)),
-                                 std::istream_iterator<std::string>());
+    // Views into the source; even discarded reference tokens need no owned string.
+    const std::vector<std::string_view> tok = detail::split_blanks(text.substr(body_pos));
     std::size_t pos = 0;
     auto need = [&](std::size_t n) {
-        if (pos + n > tok.size())
+        if (n > tok.size() - pos)
             throw ReadError("MFM: unexpected end of file");
     };
 
@@ -104421,8 +104687,7 @@ Mesh read_mfm(const std::string& rPath) {
     need(static_cast<std::size_t>(nel) * lnv);
     NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
     for (long long i = 0; i < nel * lnv; ++i)
-        data.As<std::int64_t>()[i] =
-            detail::zero_based(std::strtoll(tok[pos++].c_str(), nullptr, 10));
+        data.As<std::int64_t>()[i] = detail::zero_based(detail::strtoll_token(tok[pos++]));
 
     // reference arrays (discarded): nrc (dim==3), nra (dim>=2), nrv
     if (dim == 3) {
@@ -104442,13 +104707,13 @@ Mesh read_mfm(const std::string& rPath) {
     need(static_cast<std::size_t>(nver) * dim);
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     for (long long i = 0; i < nver * dim; ++i)
-        pts.As<double>()[i] = detail::parse_double(tok[pos++]);
+        pts.As<double>()[i] = detail::parse_double_prefix(tok[pos++]);
     mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
     need(static_cast<std::size_t>(nel));
     for (long long i = 0; i < nel; ++i)
-        ref.As<std::int64_t>()[i] = std::strtoll(tok[pos++].c_str(), nullptr, 10);
+        ref.As<std::int64_t>()[i] = detail::strtoll_token(tok[pos++]);
 
     mesh.AddCellBlock(cell_type, std::move(data));
     std::vector<NDArray> refs;
@@ -105448,8 +105713,10 @@ void write_mphbin(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <map>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -105571,7 +105838,7 @@ bool nas_is_quietly_skipped(const std::string& rKeyword) {
     return false;
 }
 
-std::string nas_strip(const std::string& rS) {
+std::string_view nas_strip_view(std::string_view rS) {
     const std::size_t b = rS.find_first_not_of(" \t");
     if (b == std::string::npos)
         return "";
@@ -105579,25 +105846,29 @@ std::string nas_strip(const std::string& rS) {
     return rS.substr(b, e - b + 1);
 }
 
-bool nas_is_comment(const std::string& rLine) {
+std::string nas_strip(std::string_view rS) {
+    return std::string(nas_strip_view(rS));
+}
+
+bool nas_is_comment(std::string_view rLine) {
     return rLine.size() < 3 || rLine[0] == '$' || rLine[0] == '#' || rLine.rfind("//", 0) == 0;
 }
 
 // One raw field of a card line; `mNone` marks a continuation marker, which is
 // dropped when the card's fields are flattened.
 struct NasChunk {
-    std::string mText;
+    std::string_view mText;
     bool mNone = false;
 };
 using NasChunks = std::vector<NasChunk>;
 
-bool nas_is_free(const std::string& rLine) {
+bool nas_is_free(std::string_view rLine) {
     return rLine.find(',') != std::string::npos;
 }
 
 // A free-field line splits on commas; a fixed-field line into (at most ten)
 // 8-column fields, the tenth being the continuation marker.
-NasChunks nas_chunk_line(const std::string& rLine) {
+NasChunks nas_chunk_line(std::string_view rLine) {
     NasChunks out;
     if (nas_is_free(rLine)) {
         std::size_t start = 0;
@@ -105619,13 +105890,23 @@ NasChunks nas_chunk_line(const std::string& rLine) {
 
 // Large-field lines hold 8 + 4x16 + 8 columns: re-merge each pair of 8-column
 // chunks into one 16-column field.
-NasChunks nas_merge_large(const NasChunks& rC) {
+NasChunks nas_merge_large(const NasChunks& rC, std::deque<std::string>& rJoined) {
     NasChunks d;
     d.push_back(rC[0]);
     for (std::size_t k = 1; k <= 7 && k < rC.size(); k += 2) {
         NasChunk f = rC[k];
-        if (k + 1 < rC.size() && !rC[k + 1].mNone)
-            f.mText += rC[k + 1].mText;
+        if (k + 1 < rC.size() && !rC[k + 1].mNone) {
+            const auto next = rC[k + 1].mText;
+            if (f.mText.data() + f.mText.size() == next.data()) {
+                f.mText = std::string_view(f.mText.data(), f.mText.size() + next.size());
+            } else {
+                // A tolerated mixed free/fixed continuation has commas between
+                // chunks. Its concatenation is owned in stable storage rather
+                // than extending a view across those commas or a temporary.
+                rJoined.emplace_back(std::string(f.mText) + std::string(next));
+                f.mText = rJoined.back();
+            }
+        }
         d.push_back(f);
     }
     if (rC.size() > 9)
@@ -105635,8 +105916,18 @@ NasChunks nas_merge_large(const NasChunks& rC) {
 
 // The logical cards of the bulk section: each is the flattened, stripped list
 // of its fields, continuation lines merged in.
-std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& rLines) {
-    std::vector<std::vector<std::string>> cards;
+struct NasCards {
+    std::deque<std::string> mJoined;
+    std::vector<std::vector<std::string_view>> mFields;
+    NasCards() = default;
+    NasCards(const NasCards&) = delete;
+    NasCards& operator=(const NasCards&) = delete;
+    NasCards(NasCards&&) = default;
+    NasCards& operator=(NasCards&&) = default;
+};
+
+NasCards nas_cards(const std::vector<std::string_view>& rLines) {
+    NasCards cards;
     const std::string blank8(8, ' ');
     std::size_t i = 0;
     while (i < rLines.size()) {
@@ -105645,7 +105936,7 @@ std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& 
         const bool free = nas_is_free(rLines[i]);
         ++i;
         while (i < rLines.size()) {
-            const std::string& next = rLines[i];
+            const std::string_view next = rLines[i];
             if (next[0] == '+' || next[0] == '*') {
                 if (chunks.back().size() == 10)
                     chunks.back().back().mNone = true;
@@ -105670,39 +105961,38 @@ std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& 
                 break;
             }
         }
-        const std::string head = nas_strip(chunks[0][0].mText);
+        const auto head = nas_strip_view(chunks[0][0].mText);
         if (!free && !head.empty() && head.back() == '*')
             for (NasChunks& c : chunks)
-                c = nas_merge_large(c);
-        std::vector<std::string> fields;
+                c = nas_merge_large(c, cards.mJoined);
+        std::vector<std::string_view> fields;
         for (const NasChunks& c : chunks)
             for (const NasChunk& f : c)
                 if (!f.mNone)
-                    fields.push_back(nas_strip(f.mText));
-        cards.push_back(std::move(fields));
+                    fields.push_back(nas_strip_view(f.mText));
+        cards.mFields.push_back(std::move(fields));
     }
     return cards;
 }
 
-const std::string& nas_field(const std::vector<std::string>& rFields, std::size_t k) {
-    static const std::string empty;
-    return k < rFields.size() ? rFields[k] : empty;
+std::string_view nas_field(const std::vector<std::string_view>& rFields, std::size_t k) {
+    return k < rFields.size() ? rFields[k] : std::string_view();
 }
 
-std::int64_t nas_int(const std::string& rText, const std::string& rCard) {
-    return detail::card_to_int(rText, " in a " + rCard + " card", "Nastran");
+std::int64_t nas_int(std::string_view rText, const std::string& rCard) {
+    return detail::card_to_int_view(rText, " in a " + rCard + " card", "Nastran");
 }
 
-double nas_real(const std::string& rText, const std::string& rCard) {
-    return detail::card_to_real(rText, " in a " + rCard + " card", "Nastran");
+double nas_real(std::string_view rText, const std::string& rCard) {
+    return detail::card_to_real_view(rText, " in a " + rCard + " card", "Nastran");
 }
 
 // A list of ids with `a THRU b` ranges, as $HMMOVE lines and SET cards hold them.
 // Explicit ids land in `rIds`; each range in `rRanges`.
-void nas_parse_id_list(const std::vector<std::string>& rTokens, std::size_t First,
+void nas_parse_id_list(const std::vector<std::string_view>& rTokens, std::size_t First,
                        const std::string& rCard, std::vector<std::int64_t>& rIds,
                        std::vector<std::pair<std::int64_t, std::int64_t>>& rRanges) {
-    std::vector<std::string> t;
+    std::vector<std::string_view> t;
     for (std::size_t k = First; k < rTokens.size(); ++k)
         if (!rTokens[k].empty())
             t.push_back(rTokens[k]);
@@ -105759,7 +106049,7 @@ struct NasHyperMesh {
     }
 
     // `$` followed by blanks, then 8-column fields of ids and THRU.
-    static bool IdLine(const std::string& rLine, std::vector<std::string>& rTokens) {
+    static bool IdLine(const std::string& rLine, std::vector<std::string_view>& rTokens) {
         if (rLine.empty() || rLine[0] != '$')
             return false;
         for (std::size_t k = 1; k < 8 && k < rLine.size(); ++k)
@@ -105767,7 +106057,7 @@ struct NasHyperMesh {
                 return false;
         bool any = false;
         for (std::size_t k = 8; k < rLine.size(); k += 8) {
-            const std::string f = nas_strip(rLine.substr(k, 8));
+            const auto f = nas_strip_view(std::string_view(rLine).substr(k, 8));
             if (f.empty())
                 continue;
             if (f != "THRU" && f.find_first_not_of("0123456789") != std::string::npos)
@@ -105788,7 +106078,7 @@ struct NasHyperMesh {
             }
             return;
         }
-        std::vector<std::string> tokens;
+        std::vector<std::string_view> tokens;
         if (mHasActive && IdLine(rLine, tokens)) {
             NasGroup& g = mComponents[mActive];
             nas_parse_id_list(tokens, 0, "$HMMOVE", g.mIds, g.mRanges);
@@ -106093,27 +106383,24 @@ namespace {
 // element ids (global cell order) when asked.
 Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
               std::vector<std::int64_t>* pCellIds) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
 
     // Everything before BEGIN BULK (executive and case control, I/O options) is
     // skipped; comment lines feed the HyperMesh parser; ENDDATA ends the deck.
-    std::vector<std::string> lines;
+    std::vector<std::string_view> lines;
     NasHyperMesh hm;
-    std::string l;
     bool bulk = false;
-    while (std::getline(in, l)) {
+    for (auto l : detail::split_lines(source.View())) {
         if (!l.empty() && l.back() == '\r')
-            l.pop_back();
+            l.remove_suffix(1);
         if (!bulk) {
-            bulk = nas_strip(l).rfind("BEGIN BULK", 0) == 0;
+            bulk = nas_strip_view(l).rfind("BEGIN BULK", 0) == 0;
             continue;
         }
         if (l.rfind("ENDDATA", 0) == 0)
             break;
         if (!l.empty() && l[0] == '$')
-            hm.Feed(l);
+            hm.Feed(std::string(l));
         else
             hm.mHasActive = false;
         if (!nas_is_comment(l))
@@ -106140,13 +106427,14 @@ Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
     std::map<std::string, std::size_t> skipped;
     const auto& elements = nas_elements();
 
-    for (const std::vector<std::string>& f : nas_cards(lines)) {
-        std::string kw = f.empty() ? std::string() : f[0];
+    const auto cards = nas_cards(lines);
+    for (const auto& f : cards.mFields) {
+        std::string kw(f.empty() ? std::string_view() : f[0]);
         if (!kw.empty() && kw.back() == '*')
             kw.pop_back();
         if (kw == "GRID") {
             const std::int64_t id = nas_int(nas_field(f, 1), kw);
-            const std::string& ref = nas_field(f, 2);
+            const auto ref = nas_field(f, 2);
             any_point_ref = any_point_ref || !ref.empty();
             point_refs.push_back(nas_int(ref, kw));
             point_index[id] = static_cast<std::int64_t>(point_refs.size() - 1);
@@ -106159,12 +106447,12 @@ Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
         auto el = elements.find(kw);
         if (el != elements.end()) {
             const std::int64_t id = nas_int(nas_field(f, 1), kw);
-            const std::string& ref = nas_field(f, 2);
+            const auto ref = nas_field(f, 2);
             std::string type = el->second.mType;
             std::vector<std::int64_t> nodes;
             if (el->second.mNodes > 0) {
                 for (int j = 0; j < el->second.mNodes; ++j) {
-                    const std::string& t = nas_field(f, 3 + static_cast<std::size_t>(j));
+                    const auto t = nas_field(f, 3 + static_cast<std::size_t>(j));
                     if (t.empty())
                         throw ReadError("Nastran: " + kw + " " + std::to_string(id) +
                                         " is missing node " + std::to_string(j + 1));
@@ -106209,8 +106497,8 @@ Mesh nas_read(const std::string& rPath, std::vector<std::int64_t>* pGridIds,
         if (kw == "SET") {
             // OptiStruct: SET, id, GRID|ELEM, LIST, ids (with THRU ranges).
             const std::int64_t id = nas_int(nas_field(f, 1), kw);
-            const std::string& kind = nas_field(f, 2);
-            const std::string& sub = nas_field(f, 3);
+            const auto kind = nas_field(f, 2);
+            const auto sub = nas_field(f, 3);
             if ((kind != "GRID" && kind != "ELEM") || sub != "LIST") {
                 log::warn("Nastran: SET {} of type '{} {}' is not read; skipped", id, kind, sub);
                 continue;
@@ -109404,16 +109692,11 @@ int topo_dim(const std::string& rType) {
     return it == topological_dimension().end() ? -1 : it->second;
 }
 
-std::vector<std::string> netgen_split_ws(const std::string& rS) {
-    std::vector<std::string> out;
-    detail::TextStream iss(rS);
-    std::string tok;
-    while (iss >> tok)
-        out.push_back(tok);
-    return out;
+std::vector<std::string_view> netgen_split_ws(std::string_view rS) {
+    return detail::split_blanks(rS);
 }
 
-std::string netgen_strip(const std::string& rS) {
+std::string_view netgen_strip(std::string_view rS) {
     std::size_t a = 0, b = rS.size();
     while (a < b && std::isspace(static_cast<unsigned char>(rS[a])))
         ++a;
@@ -109425,24 +109708,22 @@ std::string netgen_strip(const std::string& rS) {
 // Cursor over the file's lines, with comment/blank handling like the Python
 // reader's _fast_forward_over_blank_lines.
 struct LineCursor {
-    std::vector<std::string> mLines;
+    std::vector<std::string_view> mLines;
     std::size_t mPos = 0;
     std::size_t mBytes = 0;
 
-    explicit LineCursor(std::istream& rIn) {
-        std::string line;
-        while (std::getline(rIn, line)) {
+    explicit LineCursor(std::string_view Text) : mLines(detail::split_lines(Text)) {
+        for (const auto line : mLines) {
             mBytes += line.size() + 1;
-            mLines.push_back(line);
         }
     }
 
     bool Eof() const { return mPos >= mLines.size(); }
 
     // Next non-blank, non-comment line (stripped). Sets is_eof when exhausted.
-    std::string NextReal(bool& rIsEof) {
+    std::string_view NextReal(bool& rIsEof) {
         while (mPos < mLines.size()) {
-            std::string s = netgen_strip(mLines[mPos++]);
+            const auto s = netgen_strip(mLines[mPos++]);
             if (!s.empty() && s[0] != '#') {
                 rIsEof = false;
                 return s;
@@ -109454,7 +109735,7 @@ struct LineCursor {
 
     // Next line raw (stripped), used for count lines that directly follow a
     // keyword; skips any stray blank/comment lines defensively.
-    std::string NextCount() {
+    std::string_view NextCount() {
         bool eof = false;
         return NextReal(eof);
     }
@@ -109466,10 +109747,10 @@ struct NetgenRawBlock {
     std::vector<std::int64_t> mIndex;
 };
 
-std::int64_t netgen_integer(const std::string& rToken) {
+std::int64_t netgen_integer(std::string_view rToken) {
     std::int64_t value = 0;
     if (!detail::parse_int_token(rToken, value))
-        throw ReadError("Netgen: invalid integer '" + rToken + "'");
+        throw ReadError("Netgen: invalid integer '" + std::string(rToken) + "'");
     return value;
 }
 
@@ -109504,10 +109785,10 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
 
     for (std::size_t k = 0; k < num_cells; ++k) {
         bool eof = false;
-        std::string line = rC.NextReal(eof);
+        const auto line = rC.NextReal(eof);
         if (eof)
             throw ReadError("Netgen: unexpected end of file in " + rSection);
-        std::vector<std::string> data = netgen_split_ws(line);
+        const auto data = netgen_split_ws(line);
         // The node count sits at a fixed column; check the row reaches it.
         detail::need_tokens(data, dim == 2 ? 5 : (dim == 3 ? 2 : 0), "Netgen");
 
@@ -109547,15 +109828,11 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
 }  // namespace
 
 Mesh read_netgen(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     std::string bytes;
-    auto unpacked = detail::make_classic_istringstream("");
     const bool gzip = rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0;
     if (gzip) {
-        const std::string compressed{std::istreambuf_iterator<char>(in),
-                                     std::istreambuf_iterator<char>()};
+        const std::string_view compressed = source.View();
         std::size_t pos = 0;
         do {
             std::size_t consumed = 0;
@@ -109563,12 +109840,11 @@ Mesh read_netgen(const std::string& rPath) {
                                           "Netgen");
             pos += consumed;
         } while (pos < compressed.size());
-        unpacked.str(bytes);
     }
-    LineCursor c(gzip ? static_cast<std::istream&>(unpacked) : static_cast<std::istream&>(in));
+    LineCursor c(gzip ? std::string_view(bytes) : source.View());
 
     bool eof = false;
-    std::string line = c.NextReal(eof);
+    std::string line(c.NextReal(eof));
     if (line != "mesh3d")
         throw ReadError("Not a valid Netgen mesh");
 
@@ -109589,7 +109865,7 @@ Mesh read_netgen(const std::string& rPath) {
         if (eof)
             break;
         if (line == "dimension") {
-            dimension = static_cast<int>(std::strtoll(c.NextCount().c_str(), nullptr, 10));
+            dimension = static_cast<int>(detail::strtoll_token(c.NextCount()));
             if (dimension < 1 || dimension > 3)
                 throw ReadError("Netgen: dimension must be 1, 2 or 3");
         } else if (line == "geomtype") {
@@ -109597,15 +109873,15 @@ Mesh read_netgen(const std::string& rPath) {
         } else if (line == "points") {
             // A point row is at least a few bytes: bound the count by the file.
             num_points = static_cast<std::int64_t>(detail::checked_count(
-                std::strtoll(c.NextCount().c_str(), nullptr, 10), c.mBytes, "Netgen", "point"));
+                detail::strtoll_token(c.NextCount()), c.mBytes, "Netgen", "point"));
             raw_points.resize(static_cast<std::size_t>(num_points) * 3, 0.0);
             for (std::int64_t i = 0; i < num_points; ++i) {
-                std::string pl = c.NextReal(eof);
+                const auto pl = c.NextReal(eof);
                 if (eof)
                     throw ReadError("Netgen: unexpected EOF in points");
-                std::vector<std::string> toks = netgen_split_ws(pl);
+                const auto toks = netgen_split_ws(pl);
                 for (int j = 0; j < 3 && j < static_cast<int>(toks.size()); ++j)
-                    raw_points[i * 3 + j] = detail::parse_double(toks[j]);
+                    raw_points[i * 3 + j] = detail::parse_double_prefix(toks[j]);
             }
         } else if (line == "pointelements" || line == "edgesegments" || line == "edgesegmentsgi" ||
                    line == "surfaceelements" || line == "surfaceelementsgi" ||
@@ -109614,7 +109890,7 @@ Mesh read_netgen(const std::string& rPath) {
         } else if (line == "edgesegmentsgi2") {
             read_cells(c, line, blocks, two_lines);
         } else if (netgen_split_ws(line) ==
-                   std::vector<std::string>{"surf1", "surf2", "p1", "p2"}) {
+                   std::vector<std::string_view>{"surf1", "surf2", "p1", "p2"}) {
             two_lines = true;
         } else if (codims.count(line)) {
             const int edim = dimension - codims.at(line);
@@ -109629,7 +109905,7 @@ Mesh read_netgen(const std::string& rPath) {
                 if (!detail::parse_int_token(tokens[0], data.As<std::int64_t>()[0]))
                     throw ReadError("Netgen: invalid name-table index");
                 data.As<std::int64_t>()[1] = edim;
-                fields.insert_or_assign(tokens[1], std::move(data));
+                fields.insert_or_assign(std::string(tokens[1]), std::move(data));
             }
         } else if (line == "identifications" || line == "identificationtypes") {
             const std::string key = "netgen:" + line;
@@ -109916,6 +110192,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -109976,7 +110253,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        detail::TextStream iss(line.substr(b, e - b));
+        detail::TextStream iss(std::string_view(line).substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {
@@ -110125,7 +110402,6 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -110158,24 +110434,23 @@ std::string off_cell_type_from_count(std::size_t n) {
 }  // namespace
 
 Mesh read_off(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    detail::TextStream in(source.View());
 
     std::string line;
-    if (!std::getline(in, line) || off_strip(line) != "OFF")
+    if (!getline(in, line) || off_strip(line) != "OFF")
         throw ReadError("Expected the first line to be 'OFF'");
 
     // Skip comments / blank lines to the counts line.
     std::string counts;
-    while (std::getline(in, line)) {
+    while (getline(in, line)) {
         std::string s = off_strip(line);
         if (!s.empty() && s[0] != '#') {
             counts = s;
             break;
         }
     }
-    auto cs = detail::make_classic_istringstream(counts);
+    detail::TextStream cs(counts);
     long long num_verts = 0, num_faces = 0, num_edges = 0;
     cs >> num_verts >> num_faces >> num_edges;
     // Three coordinates and a face row each take at least a byte apiece.
@@ -111211,7 +111486,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(rText.substr(lp + 1, rp - lp - 1));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -111224,8 +111499,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 /// buffer rather than a text view.
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
-    const std::string text_owned(rText);
-    detail::TextStream ss(text_owned);
+    detail::TextStream ss(rText);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
@@ -112817,12 +113091,14 @@ std::vector<std::string_view> pat_lines(std::string_view rText) {
     return lines;
 }
 
-std::int64_t pat_int(const std::string& rText, std::size_t Line) {
-    return detail::card_to_int(rText, " (line " + std::to_string(Line) + ")", "Patran neutral");
+std::int64_t pat_int(std::string_view rText, std::size_t Line) {
+    return detail::card_to_int_view(rText, " (line " + std::to_string(Line) + ")",
+                                    "Patran neutral");
 }
 
-double pat_real(const std::string& rText, std::size_t Line) {
-    return detail::card_to_real(rText, " (line " + std::to_string(Line) + ")", "Patran neutral");
+double pat_real(std::string_view rText, std::size_t Line) {
+    return detail::card_to_real_view(rText, " (line " + std::to_string(Line) + ")",
+                                     "Patran neutral");
 }
 
 struct PatHeader {
@@ -112832,7 +113108,7 @@ struct PatHeader {
 
 PatHeader pat_header(std::string_view Line, std::size_t LineNo) {
     static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(I2,8I8)");
-    const std::vector<std::string> f = detail::split_fixed(Line, layout);
+    const auto f = detail::split_fixed_view(Line, layout);
     auto at = [&](std::size_t k) { return k < f.size() ? pat_int(f[k], LineNo) : 0; };
     PatHeader h{at(0), at(1), at(2), at(3), {at(4), at(5), at(6), at(7), at(8)}};
     if (h.mKc < 0)
@@ -112846,7 +113122,7 @@ std::vector<std::int64_t> pat_int_cards(const std::vector<std::string_view>& rLi
     static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(10I8)");
     std::vector<std::int64_t> out;
     for (std::size_t c = 0; c < Count; ++c) {
-        const std::vector<std::string> f = detail::split_fixed(rLines[First + c], layout);
+        const auto f = detail::split_fixed_view(rLines[First + c], layout);
         for (std::size_t k = 0; k < 10; ++k)
             out.push_back(k < f.size() ? pat_int(f[k], First + c + 1) : 0);
     }
@@ -112891,8 +113167,8 @@ std::vector<double> pat_real_cards(const std::vector<std::string_view>& rLines, 
     static const std::vector<detail::CardField> layout = detail::parse_fortran_format("(5E16.9)");
     std::vector<double> out;
     for (std::size_t c = 0; c < Count; ++c) {
-        const std::vector<std::string> f = detail::split_fixed(rLines[First + c], layout);
-        for (const std::string& t : f)
+        const auto f = detail::split_fixed_view(rLines[First + c], layout);
+        for (const auto t : f)
             out.push_back(pat_real(t, First + c + 1));
     }
     if (out.size() < N)
@@ -112905,7 +113181,7 @@ std::vector<double> pat_real_cards(const std::vector<std::string_view>& rLines, 
 std::vector<std::int64_t> pat_int_fields(std::string_view Line, std::size_t LineNo,
                                          const std::vector<detail::CardField>& rLayout,
                                          std::size_t Count) {
-    const std::vector<std::string> f = detail::split_fixed(Line, rLayout);
+    const auto f = detail::split_fixed_view(Line, rLayout);
     std::vector<std::int64_t> out(Count, 0);
     for (std::size_t k = 0; k < Count && k < f.size(); ++k)
         out[k] = pat_int(f[k], LineNo);
@@ -113022,7 +113298,7 @@ PatResult pat_parse_result(const std::string& rPath) {
     PatResult r;
     std::vector<std::string> head;
     {
-        auto iss = detail::make_classic_istringstream(std::string(lines[1]));
+        detail::TextStream iss(lines[1]);
         std::string t;
         while (iss >> t)
             head.push_back(t);
@@ -113146,7 +113422,7 @@ Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& 
                 if (kc < 1)
                     pat_fail("node " + std::to_string(h.mId) + " has no coordinate card",
                              head_line);
-                const std::vector<std::string> f = detail::split_fixed(lines[i], xyz_layout);
+                const auto f = detail::split_fixed_view(lines[i], xyz_layout);
                 node_ids.push_back(h.mId);
                 for (std::size_t d = 0; d < 3; ++d)
                     coords.push_back(d < f.size() ? pat_real(f[d], i + 1) : 0.0);
@@ -113155,7 +113431,7 @@ Mesh read_patran(const std::string& rPath, const std::vector<PatranResultFile>& 
             case 2: {
                 if (kc < 1)
                     pat_fail("element " + std::to_string(h.mId) + " has no data card", head_line);
-                const std::vector<std::string> f = detail::split_fixed(lines[i], elem_layout);
+                const auto f = detail::split_fixed_view(lines[i], elem_layout);
                 const std::int64_t nodes = f.empty() ? 0 : pat_int(f[0], i + 1);
                 const std::int64_t pid = f.size() > 2 ? pat_int(f[2], i + 1) : 0;
                 if (nodes < 0)
@@ -114123,7 +114399,7 @@ std::string pcd_upper(std::string s) {
     return s;
 }
 
-std::string pcd_strip(const std::string& rS) {
+std::string_view pcd_strip(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
         ++b;
@@ -114132,8 +114408,8 @@ std::string pcd_strip(const std::string& rS) {
     return rS.substr(b, e - b);
 }
 
-std::vector<std::string> pcd_words(const std::string& rS) {
-    std::vector<std::string> out;
+std::vector<std::string_view> pcd_words(std::string_view rS) {
+    std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rS.size()) {
         while (i < rS.size() && std::isspace(static_cast<unsigned char>(rS[i])))
@@ -114148,12 +114424,33 @@ std::vector<std::string> pcd_words(const std::string& rS) {
     return out;
 }
 
-bool pcd_parse_int(const std::string& rTok, long long& rOut) {
+// Bounded, terminated numeric token for the existing errno-sensitive C parses.
+// Keep long-token and embedded-NUL behavior without storing every token as a string.
+class PcdNumberToken {
+public:
+    explicit PcdNumberToken(std::string_view Token) : mSize(Token.size()) {
+        if (mSize < sizeof mSmall) {
+            Token.copy(mSmall, mSize);
+            mSmall[mSize] = '\0';
+        } else {
+            mLarge.assign(Token);
+        }
+    }
+    const char* Data() const { return mSize < sizeof mSmall ? mSmall : mLarge.c_str(); }
+
+private:
+    std::size_t mSize;
+    char mSmall[64];
+    std::string mLarge;
+};
+
+bool pcd_parse_int(std::string_view rTok, long long& rOut) {
     if (rTok.empty())
         return false;
+    const PcdNumberToken tok(rTok);
     errno = 0;
     char* end = nullptr;
-    rOut = std::strtoll(rTok.c_str(), &end, 10);
+    rOut = std::strtoll(tok.Data(), &end, 10);
     return errno == 0 && *end == '\0';
 }
 
@@ -114174,18 +114471,18 @@ struct PcdHeader {
 };
 
 PcdHeader pcd_parse_header(std::string_view rRaw) {
-    std::unordered_map<std::string, std::vector<std::string>> header;
+    std::unordered_map<std::string, std::vector<std::string_view>> header;
     std::size_t pos = 0;
     for (;;) {
         const std::size_t end = rRaw.find('\n', pos);
         if (end == std::string::npos)
             throw ReadError("PCD: no DATA line found in the header");
-        const std::string line = pcd_strip(std::string(rRaw.substr(pos, end - pos)));
+        const std::string_view line = pcd_strip(rRaw.substr(pos, end - pos));
         pos = end + 1;
         if (line.empty() || line[0] == '#')
             continue;
-        std::vector<std::string> words = pcd_words(line);
-        const std::string key = pcd_upper(words[0]);
+        auto words = pcd_words(line);
+        const std::string key = pcd_upper(std::string(words[0]));
         words.erase(words.begin());
         header[key] = std::move(words);
         if (key == "DATA")
@@ -114196,18 +114493,18 @@ PcdHeader pcd_parse_header(std::string_view rRaw) {
     h.mBody = pos;
     if (!header.count("FIELDS"))
         throw ReadError("PCD: the header has no FIELDS line");
-    h.mFields = header["FIELDS"];
+    h.mFields.assign(header["FIELDS"].begin(), header["FIELDS"].end());
     const std::size_t nfields = h.mFields.size();
-    const std::vector<std::string> sizes = header["SIZE"], types = header["TYPE"];
-    const std::vector<std::string> counts =
-        header.count("COUNT") ? header["COUNT"] : std::vector<std::string>(nfields, "1");
+    const auto sizes = header["SIZE"], types = header["TYPE"];
+    const auto counts =
+        header.count("COUNT") ? header["COUNT"] : std::vector<std::string_view>(nfields, "1");
     if (!(sizes.size() == nfields && types.size() == nfields && counts.size() == nfields))
         throw ReadError("PCD: FIELDS, SIZE, TYPE and COUNT disagree on the field count");
     for (std::size_t i = 0; i < nfields; ++i) {
         long long s = 0, c = 0;
         if (!pcd_parse_int(sizes[i], s) || !pcd_parse_int(counts[i], c) || s < 0 || c < 0)
             throw ReadError("PCD: malformed SIZE/COUNT in the header");
-        const std::string t = pcd_upper(types[i]);
+        const std::string t = pcd_upper(std::string(types[i]));
         h.mTypes.push_back(t.empty() ? '?' : t[0]);
         h.mSizes.push_back(static_cast<std::size_t>(s));
         h.mCounts.push_back(static_cast<std::size_t>(c));
@@ -114245,14 +114542,15 @@ PcdHeader pcd_parse_header(std::string_view rRaw) {
         if (vp->second.size() != 7)
             throw ReadError("PCD: VIEWPOINT needs 7 values (tx ty tz qw qx qy qz)");
         for (std::size_t i = 0; i < 7; ++i) {
+            const PcdNumberToken tok(vp->second[i]);
             const char* end = nullptr;
-            h.mViewpoint[i] = detail::parse_double(vp->second[i].c_str(), end);
-            if (end == vp->second[i].c_str() || *end != '\0')
+            h.mViewpoint[i] = detail::parse_double(tok.Data(), end);
+            if (end == tok.Data() || *end != '\0')
                 throw ReadError("PCD: malformed VIEWPOINT");
         }
     }
 
-    std::string mode = header["DATA"].empty() ? "" : header["DATA"][0];
+    std::string mode(header["DATA"].empty() ? std::string_view() : header["DATA"][0]);
     for (char& c : mode)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (mode != "ascii" && mode != "binary" && mode != "binary_compressed")
@@ -114305,7 +114603,6 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                         std::to_string(found));
 
     PcdColumns columns = pcd_make_columns(rH, npoints);
-    std::string tok;
     for (std::size_t i = 0; i < npoints; ++i) {
         for (std::size_t f = 0; f < columns.size(); ++f) {
             const DType dt = columns[f].Dtype();
@@ -114315,13 +114612,13 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                 const char* q = p;
                 while (q < end && !std::isspace(static_cast<unsigned char>(*q)))
                     ++q;
-                tok.assign(p, static_cast<std::size_t>(q - p));
+                const PcdNumberToken tok(std::string_view(p, static_cast<std::size_t>(q - p)));
                 p = q;
                 const std::size_t index = i * rH.mCounts[f] + e;
                 const char* stop = nullptr;
                 if (pcd_is_float(dt)) {
-                    const double v = detail::parse_double(tok.c_str(), stop);
-                    if (stop == tok.c_str() || *stop != '\0')
+                    const double v = detail::parse_double(tok.Data(), stop);
+                    if (stop == tok.Data() || *stop != '\0')
                         throw ReadError("PCD: non-numeric value in the ASCII data");
                     pcd_store(columns[f], index, v, 0);
                 } else {
@@ -114329,9 +114626,9 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                     char* istop = nullptr;
                     const long long v =
                         pcd_is_signed(dt)
-                            ? std::strtoll(tok.c_str(), &istop, 10)
-                            : static_cast<long long>(std::strtoull(tok.c_str(), &istop, 10));
-                    if (errno != 0 || istop == tok.c_str() || *istop != '\0')
+                            ? std::strtoll(tok.Data(), &istop, 10)
+                            : static_cast<long long>(std::strtoull(tok.Data(), &istop, 10));
+                    if (errno != 0 || istop == tok.Data() || *istop != '\0')
                         throw ReadError("PCD: non-numeric value in the ASCII data");
                     pcd_store(columns[f], index, 0.0, v);
                 }
@@ -114875,13 +115172,8 @@ const std::vector<int>* write_reorder(const std::string& rType) {
     return nullptr;
 }
 
-std::vector<std::string> permas_split_ws(const std::string& rS) {
-    std::vector<std::string> out;
-    detail::TextStream iss(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+std::vector<std::string_view> permas_split_ws(std::string_view rS) {
+    return detail::split_blanks(rS);
 }
 
 std::string permas_upper(std::string s) {
@@ -114891,25 +115183,20 @@ std::string permas_upper(std::string s) {
 }
 
 // "$COOR" -> "COOR", "$ELEMENT TYPE=QUAD4" -> "ELEMENT TYPE=QUAD4" (uppercased).
-std::string keyword_of(const std::string& rLine) {
+std::string keyword_of(std::string_view rLine) {
     std::size_t a = 0, b = rLine.size();
     while (a < b && (rLine[a] == '$' || std::isspace(static_cast<unsigned char>(rLine[a]))))
         ++a;
     while (b > a && (rLine[b - 1] == '$' || std::isspace(static_cast<unsigned char>(rLine[b - 1]))))
         --b;
-    return permas_upper(rLine.substr(a, b - a));
+    return permas_upper(std::string(rLine.substr(a, b - a)));
 }
 
 }  // namespace
 
 Mesh read_permas(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        lines.push_back(line);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const auto lines = detail::split_lines(source.View());
 
     Mesh mesh;
     std::vector<double> points;
@@ -114920,7 +115207,7 @@ Mesh read_permas(const std::string& rPath) {
     std::size_t pos = 0;
     const std::size_t n = lines.size();
     while (pos < n) {
-        const std::string& cur = lines[pos];
+        const std::string_view cur = lines[pos];
         if (!cur.empty() && cur[0] == '!') {
             ++pos;
             continue;
@@ -114929,22 +115216,22 @@ Mesh read_permas(const std::string& rPath) {
         ++pos;
         if (kw.rfind("COOR", 0) == 0) {
             while (pos < n) {
-                const std::string& l = lines[pos];
+                const std::string_view l = lines[pos];
                 if (!l.empty() && (l[0] == '!' || l[0] == '$'))
                     break;
-                std::vector<std::string> e = permas_split_ws(l);
+                const auto e = permas_split_ws(l);
                 if (e.empty()) {
                     ++pos;
                     continue;
                 }
-                std::int64_t gid = std::strtoll(e[0].c_str(), nullptr, 10);
+                std::int64_t gid = detail::strtoll_token(e[0]);
                 point_gids[gid] = pindex++;
                 if (points.empty())
                     ncoord = e.size() - 1;
                 if (ncoord == 0 || e.size() - 1 != ncoord)
                     throw ReadError("PERMAS: node rows with different coordinate counts");
                 for (std::size_t j = 1; j < e.size(); ++j)
-                    points.push_back(detail::parse_double(e[j]));
+                    points.push_back(detail::parse_double_prefix(e[j]));
                 ++pos;
             }
         } else if (kw.rfind("ELEMENT", 0) == 0) {
@@ -114952,9 +115239,9 @@ Mesh read_permas(const std::string& rPath) {
             std::size_t eq = kw.find('=');
             if (eq == std::string::npos)
                 throw ReadError("PERMAS: $ELEMENT without TYPE=");
-            std::string etype = permas_upper(permas_split_ws(kw.substr(eq + 1)).empty()
-                                                 ? std::string()
-                                                 : permas_split_ws(kw.substr(eq + 1))[0]);
+            const auto type_tokens = permas_split_ws(std::string_view(kw).substr(eq + 1));
+            std::string etype =
+                permas_upper(type_tokens.empty() ? std::string() : std::string(type_tokens[0]));
             auto tit = permas_to_meshio().find(etype);
             if (tit == permas_to_meshio().end())
                 throw ReadError("PERMAS: element type not available: " + etype);
@@ -114963,10 +115250,10 @@ Mesh read_permas(const std::string& rPath) {
             std::vector<std::vector<std::int64_t>> rows;
             std::vector<std::int64_t> acc;  // accumulates across "!" continuation lines
             while (pos < n) {
-                const std::string& l = lines[pos];
+                const std::string_view l = lines[pos];
                 if (!l.empty() && l[0] == '$')
                     break;
-                std::vector<std::string> e = permas_split_ws(l);
+                const auto e = permas_split_ws(l);
                 if (e.empty()) {
                     ++pos;
                     continue;
@@ -114976,7 +115263,7 @@ Mesh read_permas(const std::string& rPath) {
                 bool continued = (e.back() == "!");
                 std::size_t last = continued ? e.size() - 1 : e.size();
                 for (std::size_t j = 1; j < last; ++j)
-                    acc.push_back(point_gids.at(std::strtoll(e[j].c_str(), nullptr, 10)));
+                    acc.push_back(point_gids.at(detail::strtoll_token(e[j])));
                 if (!continued) {
                     rows.push_back(std::move(acc));
                     acc.clear();
@@ -115425,7 +115712,8 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                detail::TextStream rs(read_line());
+                const std::string row = read_line();
+                detail::TextStream rs(row);
                 long long cnt;
                 if (!(rs >> cnt))
                     throw ReadError("PLY: a face row without a vertex count");
@@ -116428,12 +116716,16 @@ struct RadLine {
     std::string mWhere;  // "file:line"
 };
 
-std::string rad_trim(std::string_view s) {
+std::string_view rad_trim_view(std::string_view s) {
     const std::size_t b = s.find_first_not_of(" \t\r");
     if (b == std::string_view::npos)
         return {};
     const std::size_t e = s.find_last_not_of(" \t\r");
-    return std::string(s.substr(b, e - b + 1));
+    return s.substr(b, e - b + 1);
+}
+
+std::string rad_trim(std::string_view s) {
+    return std::string(rad_trim_view(s));
 }
 
 std::string rad_upper(std::string s) {
@@ -116497,14 +116789,14 @@ void rad_collect(const fs::path& rPath, int Depth, std::vector<RadLine>& rOut, b
 }
 
 // Fixed fields of `Width` columns, or comma-separated values.
-std::vector<std::string> rad_fields(const std::string& rLine, int Width, std::size_t Count) {
-    std::vector<std::string> out;
+std::vector<std::string_view> rad_fields(std::string_view rLine, int Width, std::size_t Count) {
+    std::vector<std::string_view> out;
     if (rLine.find(',') != std::string::npos) {
         std::size_t start = 0;
         while (true) {
             const std::size_t k = rLine.find(',', start);
-            out.push_back(rad_trim(std::string_view(rLine).substr(
-                start, k == std::string::npos ? std::string::npos : k - start)));
+            out.push_back(rad_trim_view(
+                rLine.substr(start, k == std::string::npos ? std::string::npos : k - start)));
             if (k == std::string::npos)
                 break;
             start = k + 1;
@@ -116514,18 +116806,17 @@ std::vector<std::string> rad_fields(const std::string& rLine, int Width, std::si
     const std::size_t w = static_cast<std::size_t>(Width);
     for (std::size_t f = 0; f < Count; ++f) {
         const std::size_t at = f * w;
-        out.push_back(at < rLine.size() ? rad_trim(std::string_view(rLine).substr(at, w))
-                                        : std::string());
+        out.push_back(at < rLine.size() ? rad_trim_view(rLine.substr(at, w)) : std::string_view());
     }
     return out;
 }
 
-std::int64_t rad_int(const std::string& rText, const RadLine& rLine) {
-    return detail::card_to_int(rText, " (" + rLine.mWhere + ")", "Radioss");
+std::int64_t rad_int(std::string_view rText, const RadLine& rLine) {
+    return detail::card_to_int_view(rText, " (" + rLine.mWhere + ")", "Radioss");
 }
 
-double rad_real(const std::string& rText, const RadLine& rLine) {
-    return detail::card_to_real(rText, " (" + rLine.mWhere + ")", "Radioss");
+double rad_real(std::string_view rText, const RadLine& rLine) {
+    return detail::card_to_real_view(rText, " (" + rLine.mWhere + ")", "Radioss");
 }
 
 // Element keywords: their group family, node count, lines per element and the
@@ -116670,8 +116961,8 @@ double rad_length_unit(const std::string& rUnit) {
 std::string rad_slice(const std::string& rLine, std::size_t At, std::size_t Width,
                       std::size_t CommaField) {
     if (rLine.find(',') != std::string::npos) {
-        const std::vector<std::string> f = rad_fields(rLine, 1, 0);
-        return CommaField < f.size() ? f[CommaField] : std::string();
+        const auto f = rad_fields(rLine, 1, 0);
+        return CommaField < f.size() ? std::string(f[CommaField]) : std::string();
     }
     return At < rLine.size() ? rad_trim(std::string_view(rLine).substr(At, Width)) : std::string();
 }
@@ -116721,12 +117012,9 @@ std::vector<std::pair<std::string, std::vector<double>>> rad_engine_fields(
         }
         if (out.empty())
             continue;
-        auto iss = detail::make_classic_istringstream(t);
-        std::string tok;
-        while (iss >> tok) {
-            const char* e = nullptr;
-            const double v = detail::parse_double(tok.c_str(), e);
-            if (e == tok.c_str() + tok.size())
+        for (const std::string_view tok : detail::split_blanks(t)) {
+            double v = 0.0;
+            if (detail::parse_double_token(tok, v))
                 out.back().second.push_back(v);
         }
     }
@@ -116812,8 +117100,8 @@ Mesh read_radioss(const std::string& rPath) {
         const std::string id = rad_trim(std::string_view(t).substr(6));
         if (id.empty() || id.find_first_not_of("0123456789") != std::string::npos)
             continue;
-        const std::vector<std::string> f = rad_fields(lines[k + 2].mText, 20, 3);
-        const double len = f.size() > 1 ? rad_length_unit(f[1]) : 0.0;
+        const auto f = rad_fields(lines[k + 2].mText, 20, 3);
+        const double len = f.size() > 1 ? rad_length_unit(std::string(f[1])) : 0.0;
         if (len > 0.0)
             unit_length[std::stoll(id)] = len;
         else
@@ -116909,7 +117197,7 @@ Mesh read_radioss(const std::string& rPath) {
             // titles on lines of their own, whatever its input version.
             titles_in_path = false;
             if (body + 1 < end) {
-                const std::vector<std::string> f = rad_fields(lines[body + 1].mText, 10, 2);
+                const auto f = rad_fields(lines[body + 1].mText, 10, 2);
                 if (!f.empty() && !f[0].empty())
                     version = static_cast<int>(rad_int(f[0], lines[body + 1]));
             }
@@ -116918,12 +117206,12 @@ Mesh read_radioss(const std::string& rPath) {
             // Input and work units (mass, length, time; 20 columns each): the
             // solver works in the work units, so lengths are converted.
             if (body + 2 < end) {
-                const std::vector<std::string> in = rad_fields(lines[body + 2].mText, 20, 3);
-                const std::vector<std::string> work = body + 3 < end
-                                                          ? rad_fields(lines[body + 3].mText, 20, 3)
-                                                          : std::vector<std::string>{};
-                const std::string li = in.size() > 1 ? in[1] : std::string();
-                const std::string lw = work.size() > 1 && !work[1].empty() ? work[1] : li;
+                const auto in = rad_fields(lines[body + 2].mText, 20, 3);
+                const auto work = body + 3 < end ? rad_fields(lines[body + 3].mText, 20, 3)
+                                                 : std::vector<std::string_view>{};
+                const std::string li(in.size() > 1 ? in[1] : std::string_view());
+                const std::string lw(work.size() > 1 && !work[1].empty() ? work[1]
+                                                                         : std::string_view(li));
                 const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
                 work_length = fw;
                 if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
@@ -116944,7 +117232,7 @@ Mesh read_radioss(const std::string& rPath) {
                 std::array<double, 3> p{};
                 if (Line >= end)
                     return p;
-                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                const auto f = rad_fields(lines[Line].mText, rw, 3);
                 for (std::size_t d = 0; d < 3; ++d)
                     p[d] = d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * box_scale
                                                          : 0.0;
@@ -116984,7 +117272,7 @@ Mesh read_radioss(const std::string& rPath) {
                 b.mP1 = real3(k + 1);
             } else if (b.mKind == "BOX") {
                 for (; k < end; ++k)
-                    for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                    for (const auto f : rad_fields(lines[k].mText, iw, 10))
                         if (!f.empty())
                             b.mChildren.push_back(rad_int(f, lines[k]));
             } else {
@@ -117001,7 +117289,7 @@ Mesh read_radioss(const std::string& rPath) {
                 std::array<double, 3> v{};
                 if (Line >= end)
                     return v;
-                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, 3);
+                const auto f = rad_fields(lines[Line].mText, rw, 3);
                 for (std::size_t d = 0; d < 3; ++d)
                     v[d] =
                         d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * Scale : 0.0;
@@ -117023,7 +117311,7 @@ Mesh read_radioss(const std::string& rPath) {
                 std::vector<double> v(Count, 0.0);
                 if (Line >= end)
                     return v;
-                const std::vector<std::string> f = rad_fields(lines[Line].mText, rw, Count);
+                const auto f = rad_fields(lines[Line].mText, rw, Count);
                 for (std::size_t d = 0; d < Count; ++d)
                     v[d] = d < f.size() && !f[d].empty() ? rad_real(f[d], lines[Line]) * sc : 0.0;
                 return v;
@@ -117034,8 +117322,8 @@ Mesh read_radioss(const std::string& rPath) {
                 v.insert(v.end(), m1.begin(), m1.end());
                 analytic.emplace_back("radioss:surf_plane:" + std::to_string(id), std::move(v));
             } else {
-                const std::vector<std::string> f =
-                    k < end ? rad_fields(lines[k].mText, iw, 2) : std::vector<std::string>{};
+                const auto f =
+                    k < end ? rad_fields(lines[k].mText, iw, 2) : std::vector<std::string_view>{};
                 const std::int64_t skew = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
                 const std::int64_t degree =
                     f.size() > 1 && !f[1].empty() ? rad_int(f[1], lines[k]) : 2;
@@ -117050,19 +117338,19 @@ Mesh read_radioss(const std::string& rPath) {
             const double node_scale = scale_of(unit_of(false));
             for (std::size_t k = body; k < end; ++k) {
                 const RadLine& ln = lines[k];
-                std::vector<std::string> f;
+                std::vector<std::string_view> f;
                 if (ln.mText.find(',') != std::string::npos) {
                     f = rad_fields(ln.mText, iw, 4);
                 } else {
-                    f.push_back(rad_trim(ln.mText.substr(
+                    f.push_back(rad_trim_view(std::string_view(ln.mText).substr(
                         0, std::min<std::size_t>(ln.mText.size(), static_cast<std::size_t>(iw)))));
                     for (std::size_t d = 0; d < 3; ++d) {
                         const std::size_t at =
                             static_cast<std::size_t>(iw + rw * static_cast<int>(d));
                         f.push_back(at < ln.mText.size()
-                                        ? rad_trim(std::string_view(ln.mText).substr(
+                                        ? rad_trim_view(std::string_view(ln.mText).substr(
                                               at, static_cast<std::size_t>(rw)))
-                                        : std::string());
+                                        : std::string_view());
                     }
                 }
                 if (f.empty() || f[0].empty())
@@ -117129,7 +117417,7 @@ Mesh read_radioss(const std::string& rPath) {
                     take = values.empty() ? 9 : (values.size() == 9 ? 8 : 4);
                 else
                     take = per_record;
-                const std::vector<std::string> f = rad_fields(ln.mText, iw, take);
+                const auto f = rad_fields(ln.mText, iw, take);
                 if (values.empty())
                     where = ln.mWhere;
                 for (std::size_t j = 0; j < take && values.size() < per_record; ++j)
@@ -117146,7 +117434,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             part.mTitle = title_of(k);
             if (k < end) {
-                const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 3);
+                const auto f = rad_fields(lines[k].mText, iw, 3);
                 part.mProperty = !f.empty() && !f[0].empty() ? rad_int(f[0], lines[k]) : 0;
                 part.mMaterial = f.size() > 1 && !f[1].empty() ? rad_int(f[1], lines[k]) : 0;
                 part.mSubset = f.size() > 2 && !f[2].empty() ? rad_int(f[2], lines[k]) : 0;
@@ -117158,7 +117446,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             g.mTitle = title_of(k);
             for (; k < end; ++k)
-                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                for (const auto f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
                         g.mIds.push_back(rad_int(f, lines[k]));
             groups.push_back(std::move(g));
@@ -117168,7 +117456,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             s.mTitle = title_of(k);
             for (; k < end; ++k) {
-                const std::vector<std::string> f = rad_fields(lines[k].mText, iw, 5);
+                const auto f = rad_fields(lines[k].mText, iw, 5);
                 std::array<std::int64_t, 4> seg{0, 0, 0, 0};
                 for (std::size_t j = 0; j < 4; ++j)
                     seg[j] =
@@ -117190,7 +117478,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             s.mTitle = title_of(k);
             for (; k < end; ++k)
-                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                for (const auto f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
                         s.mIds.push_back(rad_int(f, lines[k]));
             surfaces.push_back(std::move(s));
@@ -117201,7 +117489,7 @@ Mesh read_radioss(const std::string& rPath) {
             std::size_t k = body;
             s.mTitle = title_of(k);
             for (; k < end; ++k)
-                for (const std::string& f : rad_fields(lines[k].mText, iw, 10))
+                for (const auto f : rad_fields(lines[k].mText, iw, 10))
                     if (!f.empty())
                         s.mChildren.push_back(rad_int(f, lines[k]));
             subsets[last_id(head)] = std::move(s);
@@ -121030,17 +121318,7 @@ std::string tecplot_strip(const std::string& rS) {
     std::size_t e = rS.find_last_not_of(" \t\r\n");
     return rS.substr(b, e - b + 1);
 }
-/// Data tokens: Tecplot separates values by blanks or commas.
-std::vector<std::string> tecplot_tokens(std::string S) {
-    std::replace(S.begin(), S.end(), ',', ' ');
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(S);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
-}
-/// tecplot_tokens as views into @p Line (appended to @p rOut, cleared first):
+/// Data tokens as views into @p Line (appended to @p rOut, cleared first):
 /// blanks and commas separate values, as replacing the commas with blanks
 /// and splitting on whitespace did.
 void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& rOut) {
@@ -121060,7 +121338,7 @@ void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& r
     }
 }
 
-/// How many tokens tecplot_tokens gives for @p Line, without building them.
+/// How many tokens tecplot_tokens_view gives for @p Line, without building them.
 std::size_t tecplot_count_tokens(std::string_view Line) {
     std::size_t count = 0;
     bool in_token = false;
@@ -125668,14 +125946,25 @@ std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTo
 }
 
 double unv_real(std::string_view t) {
-    std::string s(t);
-    for (char& c : s)
-        if (c == 'D' || c == 'd')
-            c = 'E';
+    // Normalize short Fortran fields on the stack, retaining a bounded terminator.
+    char small[64];
+    std::string large;
+    char* first;
+    if (t.size() < sizeof small) {
+        t.copy(small, t.size());
+        small[t.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(t);
+        first = large.data();
+    }
+    for (std::size_t i = 0; i < t.size(); ++i)
+        if (first[i] == 'D' || first[i] == 'd')
+            first[i] = 'E';
     const char* end = nullptr;
-    const double v = detail::parse_double(s.c_str(), end);
-    if (end == s.c_str())
-        throw ReadError("UNV: expected a real number, got '" + s + "'");
+    const double v = detail::parse_double(first, end);
+    if (end == first)
+        throw ReadError("UNV: expected a real number, got '" + std::string(first, t.size()) + "'");
     return v;
 }
 
@@ -125725,7 +126014,7 @@ bool unv_has_wide_token(const std::vector<std::string_view>& rTokens, std::size_
     return false;
 }
 
-bool unv_is_int_text(const std::string& rText) {
+bool unv_is_int_text(std::string_view rText) {
     std::size_t i = (!rText.empty() && (rText[0] == '+' || rText[0] == '-')) ? 1 : 0;
     if (i == rText.size())
         return false;
@@ -125735,7 +126024,7 @@ bool unv_is_int_text(const std::string& rText) {
     return true;
 }
 
-bool unv_is_real_text(const std::string& rText) {
+bool unv_is_real_text(std::string_view rText) {
     bool digit = false;
     for (const char c : rText) {
         if (std::isdigit(static_cast<unsigned char>(c)))
@@ -125748,7 +126037,7 @@ bool unv_is_real_text(const std::string& rText) {
 
 /// The fields `rLayout` cuts from `Line`, or nothing when the line runs past its
 /// columns or a numeric field does not hold one value. A blank field is `""`.
-std::optional<std::vector<std::string>> unv_fixed_fields(
+std::optional<std::vector<std::string_view>> unv_fixed_fields(
     std::string_view Line, const std::vector<detail::CardField>& rLayout) {
     std::size_t width = 0;
     std::vector<char> kinds;
@@ -125759,12 +126048,12 @@ std::optional<std::vector<std::string>> unv_fixed_fields(
     }
     const std::size_t last = Line.find_last_not_of(" \t\r\n");
     if (last == std::string_view::npos)
-        return std::vector<std::string>{};
+        return std::vector<std::string_view>{};
     if (last >= width)
         return std::nullopt;
-    std::vector<std::string> fields = detail::split_fixed(Line.substr(0, last + 1), rLayout);
+    auto fields = detail::split_fixed_view(Line.substr(0, last + 1), rLayout);
     for (std::size_t i = 0; i < fields.size(); ++i) {
-        const std::string& t = fields[i];
+        const std::string_view t = fields[i];
         if (t.empty() || kinds[i] == 'a')
             continue;
         if (kinds[i] == 'i' ? !unv_is_int_text(t) : !unv_is_real_text(t))
@@ -125784,14 +126073,14 @@ std::vector<std::int64_t> unv_ints(std::string_view line) {
         std::vector<std::int64_t> out;
         bool gap = false;
         bool ok = true;
-        for (const std::string& t : *fields) {
+        for (const auto t : *fields) {
             if (t.empty()) {
                 gap = true;
             } else if (gap) {
                 ok = false;
                 break;
             } else {
-                out.push_back(detail::card_to_int(t, " in a UNV record", "UNV"));
+                out.push_back(detail::card_to_int_view(t, " in a UNV record", "UNV"));
             }
         }
         if (ok)
@@ -125811,14 +126100,14 @@ std::vector<double> unv_reals_fixed(std::string_view line, int Width) {
         std::vector<double> out;
         bool gap = false;
         bool ok = true;
-        for (const std::string& t : *fields) {
+        for (const auto t : *fields) {
             if (t.empty()) {
                 gap = true;
             } else if (gap) {
                 ok = false;
                 break;
             } else {
-                out.push_back(detail::card_to_real(t, " in a UNV record", "UNV"));
+                out.push_back(detail::card_to_real_view(t, " in a UNV record", "UNV"));
             }
         }
         if (ok)
@@ -125853,26 +126142,10 @@ struct UnvDataset {
     std::string_view mBlob;
 };
 
-class UnvLineReader {
+class UnvLineReader : public detail::TextCursor {
 public:
-    explicit UnvLineReader(std::string_view data) : mData(data) {}
-    bool AtEnd() const { return mPos >= mData.size(); }
-    std::size_t Pos() const { return mPos; }
-    void Seek(std::size_t pos) { mPos = pos; }
-    std::string_view Next() {
-        const std::size_t eol = mData.find('\n', mPos);
-        const std::size_t end = eol == std::string_view::npos ? mData.size() : eol;
-        std::string_view line = mData.substr(mPos, end - mPos);
-        if (!line.empty() && line.back() == '\r')
-            line.remove_suffix(1);
-        mPos = eol == std::string_view::npos ? mData.size() : eol + 1;
-        return line;
-    }
-    std::string_view Data() const { return mData; }
-
-private:
-    std::string_view mData;
-    std::size_t mPos = 0;
+    explicit UnvLineReader(std::string_view data) : detail::TextCursor(data) {}
+    std::string_view Next() { return Line(true); }
 };
 
 // Bytes of a 58b data block, from record 7 (ordinate type, count, spacing); -1 when
@@ -126447,11 +126720,11 @@ void unv_parse_function(const UnvDataset& rDs, UnvFile& rFile) {
         detail::parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)");
     const std::string_view rec6 = lines[5];
     const auto rec6_fields = rec6.size() >= 80 ? unv_fixed_fields(rec6, kRec6)
-                                               : std::optional<std::vector<std::string>>();
+                                               : std::optional<std::vector<std::string_view>>();
     if (rec6_fields) {
-        const std::vector<std::string>& f = *rec6_fields;
+        const auto& f = *rec6_fields;
         auto int_field = [&](std::size_t i) {
-            return i < f.size() ? detail::card_to_int(f[i], " in dataset 58 record 6", "UNV")
+            return i < f.size() ? detail::card_to_int_view(f[i], " in dataset 58 record 6", "UNV")
                                 : std::int64_t{0};
         };
         fn.mType = static_cast<int>(int_field(0));
@@ -127994,7 +128267,6 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 #include <cstring>
 #include <fstream>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -128068,27 +128340,12 @@ void store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
     }
 }
 
-struct VtkCursor {
-    // A view, not a reference to a std::string: the buffer may be a memory
-    // mapping rather than an owned string (see detail/file_source.hpp).
-    std::string_view mBuf;
-    std::size_t mPos = 0;
+struct VtkCursor : detail::TextCursor {
+    explicit VtkCursor(std::string_view b) : detail::TextCursor(b) {}
 
-    explicit VtkCursor(std::string_view b) : mBuf(b) {}
+    bool Eof() const { return AtEnd(); }
 
-    bool Eof() const { return mPos >= mBuf.size(); }
-
-    std::string ReadLine() {
-        std::size_t start = mPos;
-        while (mPos < mBuf.size() && mBuf[mPos] != '\n')
-            ++mPos;
-        std::string line(mBuf.substr(start, mPos - start));
-        if (mPos < mBuf.size())
-            ++mPos;  // skip '\n'
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        return line;
-    }
+    std::string ReadLine() { return std::string(Line(true)); }
 
     void ConsumeEol() {
         while (mPos < mBuf.size() && mBuf[mPos] != '\n' &&
@@ -128110,27 +128367,19 @@ struct VtkCursor {
         NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
-            // strtod/strtoll scan for a terminator: a buffered source is a
-            // std::string, and a mapping relies on the kernel's zero-filled
-            // final page -- which is why FileSource declines page-multiple
-            // sized files.
-            const char* base = mBuf.data();
+            // Shared bounded prefix parsing retains the C-library semantics.
             for (std::size_t i = 0; i < count; ++i) {
-                char* endp = nullptr;
                 if (flt) {
-                    const char* fend = nullptr;
-                    double x = detail::parse_double(base + mPos, fend);
-                    if (fend == base + mPos)
+                    double x = 0.0;
+                    if (!DoublePrefix(x))
                         throw ReadError("VTK ascii parse error");
                     store(a, i, x, 0);
-                    endp = const_cast<char*>(fend);
                 } else {
-                    long long x = std::strtoll(base + mPos, &endp, 10);
-                    if (endp == base + mPos)
+                    std::int64_t x = 0;
+                    if (!IntPrefix(x))
                         throw ReadError("VTK ascii parse error");
-                    store(a, i, 0.0, static_cast<std::int64_t>(x));
+                    store(a, i, 0.0, x);
                 }
-                mPos = static_cast<std::size_t>(endp - base);
             }
         } else {
             if (mPos + count * isz > mBuf.size())
@@ -128150,7 +128399,7 @@ struct VtkCursor {
 
 std::vector<std::string> split(const std::string& rS) {
     std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(rS);
+    detail::TextStream iss(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);
@@ -135925,6 +136174,7 @@ MeshMetadata read_xplt_metadata(const std::string& rPath, const ReadOptions& rOp
 #include <ios>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -135942,7 +136192,7 @@ bool xyz_is_space(char c) {
     return std::isspace(static_cast<unsigned char>(c)) != 0;
 }
 
-std::string xyz_strip(const std::string& rS) {
+std::string_view xyz_strip(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && xyz_is_space(rS[b]))
         ++b;
@@ -135957,37 +136207,25 @@ std::string xyz_lower(std::string s) {
     return s;
 }
 
-bool xyz_all_digits(const std::string& rS) {
+bool xyz_all_digits(std::string_view rS) {
     return !rS.empty() && std::all_of(rS.begin(), rS.end(), [](char c) {
         return std::isdigit(static_cast<unsigned char>(c)) != 0;
     });
 }
 
-bool xyz_starts_with(const std::string& rS, const char* pPrefix) {
+bool xyz_starts_with(std::string_view rS, const char* pPrefix) {
     return rS.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> xyz_whitespace_split(const std::string& rS) {
-    std::vector<std::string> out;
-    std::size_t i = 0;
-    while (i < rS.size()) {
-        while (i < rS.size() && xyz_is_space(rS[i]))
-            ++i;
-        std::size_t j = i;
-        while (j < rS.size() && !xyz_is_space(rS[j]))
-            ++j;
-        if (j > i)
-            out.push_back(rS.substr(i, j - i));
-        i = j;
-    }
-    return out;
+std::vector<std::string_view> xyz_whitespace_split(std::string_view rS) {
+    return detail::split_blanks(rS);
 }
 
 // `line.split(delimiter)` with each token stripped and one trailing empty token dropped.
-std::vector<std::string> xyz_split(const std::string& rLine, const std::string& rDelimiter) {
+std::vector<std::string_view> xyz_split(std::string_view rLine, const std::string& rDelimiter) {
     if (rDelimiter.empty())
         return xyz_whitespace_split(rLine);
-    std::vector<std::string> tokens;
+    std::vector<std::string_view> tokens;
     std::size_t start = 0;
     for (;;) {
         const std::size_t at = rLine.find(rDelimiter, start);
@@ -136004,7 +136242,7 @@ std::vector<std::string> xyz_split(const std::string& rLine, const std::string& 
 }
 
 // An element-symbol-like first token: one to three letters, then optional digits.
-bool xyz_is_element(const std::string& rS) {
+bool xyz_is_element(std::string_view rS) {
     std::size_t i = 0;
     while (i < rS.size() && i < 3 && std::isalpha(static_cast<unsigned char>(rS[i])))
         ++i;
@@ -136042,9 +136280,10 @@ std::vector<std::string> xyz_name_tokens(const std::string& rBody) {
     return out;
 }
 
-bool xyz_header_names(const std::vector<std::string>& rComments, std::vector<std::string>& rNames) {
+bool xyz_header_names(const std::vector<std::string_view>& rComments,
+                      std::vector<std::string>& rNames) {
     for (auto it = rComments.rbegin(); it != rComments.rend(); ++it) {
-        std::string body;
+        std::string_view body;
         if (xyz_starts_with(*it, "//")) {
             body = it->substr(2);
         } else {
@@ -136053,7 +136292,7 @@ bool xyz_header_names(const std::vector<std::string>& rComments, std::vector<std
                 ++k;
             body = it->substr(k);
         }
-        std::vector<std::string> tokens = xyz_name_tokens(xyz_strip(body));
+        std::vector<std::string> tokens = xyz_name_tokens(std::string(xyz_strip(body)));
         if (tokens.size() >= 3 && std::all_of(tokens.begin(), tokens.end(), xyz_is_name) &&
             xyz_lower(tokens[0]) == "x" && xyz_lower(tokens[1]) == "y" &&
             xyz_lower(tokens[2]) == "z") {
@@ -136253,24 +136492,24 @@ std::string xyz_clean(const std::string& rName) {
 
 Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
     const std::string suffix = xyz_suffix(rPath);
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    for (std::string raw; std::getline(in, raw);)
-        lines.push_back(xyz_strip(raw));
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    auto lines = detail::split_lines(source.View());
+    for (auto& line : lines)
+        line = xyz_strip(line);
 
     if (lines.size() >= 3 && xyz_all_digits(lines[0])) {
-        const std::vector<std::string> atom = xyz_whitespace_split(lines[2]);
-        if (atom.size() >= 4 && xyz_is_element(atom[0]) && xyz_lower(atom[0]) != "nan" &&
-            xyz_lower(atom[0]) != "inf")
-            throw ReadError(kXyzChemistry);
+        const std::vector<std::string_view> atom = xyz_whitespace_split(lines[2]);
+        if (atom.size() >= 4 && xyz_is_element(atom[0])) {
+            const std::string element = xyz_lower(std::string(atom[0]));
+            if (element != "nan" && element != "inf")
+                throw ReadError(kXyzChemistry);
+        }
     }
 
-    std::vector<std::string> comments, rows;
+    std::vector<std::string_view> comments, rows;
     std::vector<std::size_t> numbers;
     for (std::size_t k = 0; k < lines.size(); ++k) {
-        const std::string& line = lines[k];
+        const std::string_view line = lines[k];
         if (line.empty())
             continue;
         if (xyz_starts_with(line, "#") || xyz_starts_with(line, "//")) {
@@ -136286,7 +136525,7 @@ Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
     long long declared = 0;
     if (suffix == ".pts" && !rows.empty() && xyz_all_digits(rows[0])) {
         has_declared = true;
-        declared = std::strtoll(rows[0].c_str(), nullptr, 10);
+        declared = detail::strtoll_token(rows[0]);
         rows.erase(rows.begin());
         numbers.erase(numbers.begin());
     }
@@ -136310,7 +136549,7 @@ Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
     table.reserve(rows.size());
     std::size_t ncols = 0;
     for (std::size_t r = 0; r < rows.size(); ++r) {
-        const std::vector<std::string> tokens = xyz_split(rows[r], delimiter);
+        const std::vector<std::string_view> tokens = xyz_split(rows[r], delimiter);
         if (r == 0)
             ncols = tokens.size();
         if (tokens.size() != ncols)
@@ -136319,12 +136558,15 @@ Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
                             std::to_string(tokens.size()));
         std::vector<double> values(ncols);
         for (std::size_t c = 0; c < ncols; ++c) {
-            const char* stop = nullptr;
-            values[c] = detail::parse_double(tokens[c].c_str(), stop);
-            if (tokens[c].empty() || stop == tokens[c].c_str() || *stop != '\0') {
+            // The former owned token was C-string parsed; retain embedded-NUL behavior.
+            const std::string_view token = tokens[c].substr(0, tokens[c].find('\0'));
+            if (!detail::parse_double_token(token, values[c])) {
                 std::string joined;
-                for (std::size_t k = 0; k < tokens.size(); ++k)
-                    joined += (k ? " " : "") + tokens[k];
+                for (std::size_t k = 0; k < tokens.size(); ++k) {
+                    if (k)
+                        joined += ' ';
+                    joined += tokens[k];
+                }
                 throw ReadError("XYZ: line " + std::to_string(numbers[r]) + ": '" + joined +
                                 "' is not numeric");
             }

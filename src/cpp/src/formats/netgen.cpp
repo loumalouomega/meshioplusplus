@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/open_source.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 #include <zlib.h>
@@ -111,16 +112,11 @@ int topo_dim(const std::string& rType) {
     return it == topological_dimension().end() ? -1 : it->second;
 }
 
-std::vector<std::string> netgen_split_ws(const std::string& rS) {
-    std::vector<std::string> out;
-    detail::TextStream iss(rS);
-    std::string tok;
-    while (iss >> tok)
-        out.push_back(tok);
-    return out;
+std::vector<std::string_view> netgen_split_ws(std::string_view rS) {
+    return detail::split_blanks(rS);
 }
 
-std::string netgen_strip(const std::string& rS) {
+std::string_view netgen_strip(std::string_view rS) {
     std::size_t a = 0, b = rS.size();
     while (a < b && std::isspace(static_cast<unsigned char>(rS[a])))
         ++a;
@@ -132,24 +128,22 @@ std::string netgen_strip(const std::string& rS) {
 // Cursor over the file's lines, with comment/blank handling like the Python
 // reader's _fast_forward_over_blank_lines.
 struct LineCursor {
-    std::vector<std::string> mLines;
+    std::vector<std::string_view> mLines;
     std::size_t mPos = 0;
     std::size_t mBytes = 0;
 
-    explicit LineCursor(std::istream& rIn) {
-        std::string line;
-        while (std::getline(rIn, line)) {
+    explicit LineCursor(std::string_view Text) : mLines(detail::split_lines(Text)) {
+        for (const auto line : mLines) {
             mBytes += line.size() + 1;
-            mLines.push_back(line);
         }
     }
 
     bool Eof() const { return mPos >= mLines.size(); }
 
     // Next non-blank, non-comment line (stripped). Sets is_eof when exhausted.
-    std::string NextReal(bool& rIsEof) {
+    std::string_view NextReal(bool& rIsEof) {
         while (mPos < mLines.size()) {
-            std::string s = netgen_strip(mLines[mPos++]);
+            const auto s = netgen_strip(mLines[mPos++]);
             if (!s.empty() && s[0] != '#') {
                 rIsEof = false;
                 return s;
@@ -161,7 +155,7 @@ struct LineCursor {
 
     // Next line raw (stripped), used for count lines that directly follow a
     // keyword; skips any stray blank/comment lines defensively.
-    std::string NextCount() {
+    std::string_view NextCount() {
         bool eof = false;
         return NextReal(eof);
     }
@@ -173,10 +167,10 @@ struct NetgenRawBlock {
     std::vector<std::int64_t> mIndex;
 };
 
-std::int64_t netgen_integer(const std::string& rToken) {
+std::int64_t netgen_integer(std::string_view rToken) {
     std::int64_t value = 0;
     if (!detail::parse_int_token(rToken, value))
-        throw ReadError("Netgen: invalid integer '" + rToken + "'");
+        throw ReadError("Netgen: invalid integer '" + std::string(rToken) + "'");
     return value;
 }
 
@@ -211,10 +205,10 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
 
     for (std::size_t k = 0; k < num_cells; ++k) {
         bool eof = false;
-        std::string line = rC.NextReal(eof);
+        const auto line = rC.NextReal(eof);
         if (eof)
             throw ReadError("Netgen: unexpected end of file in " + rSection);
-        std::vector<std::string> data = netgen_split_ws(line);
+        const auto data = netgen_split_ws(line);
         // The node count sits at a fixed column; check the row reaches it.
         detail::need_tokens(data, dim == 2 ? 5 : (dim == 3 ? 2 : 0), "Netgen");
 
@@ -254,15 +248,11 @@ void read_cells(LineCursor& rC, const std::string& rSection, std::vector<NetgenR
 }  // namespace
 
 Mesh read_netgen(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     std::string bytes;
-    auto unpacked = detail::make_classic_istringstream("");
     const bool gzip = rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0;
     if (gzip) {
-        const std::string compressed{std::istreambuf_iterator<char>(in),
-                                     std::istreambuf_iterator<char>()};
+        const std::string_view compressed = source.View();
         std::size_t pos = 0;
         do {
             std::size_t consumed = 0;
@@ -270,12 +260,11 @@ Mesh read_netgen(const std::string& rPath) {
                                           "Netgen");
             pos += consumed;
         } while (pos < compressed.size());
-        unpacked.str(bytes);
     }
-    LineCursor c(gzip ? static_cast<std::istream&>(unpacked) : static_cast<std::istream&>(in));
+    LineCursor c(gzip ? std::string_view(bytes) : source.View());
 
     bool eof = false;
-    std::string line = c.NextReal(eof);
+    std::string line(c.NextReal(eof));
     if (line != "mesh3d")
         throw ReadError("Not a valid Netgen mesh");
 
@@ -296,7 +285,7 @@ Mesh read_netgen(const std::string& rPath) {
         if (eof)
             break;
         if (line == "dimension") {
-            dimension = static_cast<int>(std::strtoll(c.NextCount().c_str(), nullptr, 10));
+            dimension = static_cast<int>(detail::strtoll_token(c.NextCount()));
             if (dimension < 1 || dimension > 3)
                 throw ReadError("Netgen: dimension must be 1, 2 or 3");
         } else if (line == "geomtype") {
@@ -304,15 +293,15 @@ Mesh read_netgen(const std::string& rPath) {
         } else if (line == "points") {
             // A point row is at least a few bytes: bound the count by the file.
             num_points = static_cast<std::int64_t>(detail::checked_count(
-                std::strtoll(c.NextCount().c_str(), nullptr, 10), c.mBytes, "Netgen", "point"));
+                detail::strtoll_token(c.NextCount()), c.mBytes, "Netgen", "point"));
             raw_points.resize(static_cast<std::size_t>(num_points) * 3, 0.0);
             for (std::int64_t i = 0; i < num_points; ++i) {
-                std::string pl = c.NextReal(eof);
+                const auto pl = c.NextReal(eof);
                 if (eof)
                     throw ReadError("Netgen: unexpected EOF in points");
-                std::vector<std::string> toks = netgen_split_ws(pl);
+                const auto toks = netgen_split_ws(pl);
                 for (int j = 0; j < 3 && j < static_cast<int>(toks.size()); ++j)
-                    raw_points[i * 3 + j] = detail::parse_double(toks[j]);
+                    raw_points[i * 3 + j] = detail::parse_double_prefix(toks[j]);
             }
         } else if (line == "pointelements" || line == "edgesegments" || line == "edgesegmentsgi" ||
                    line == "surfaceelements" || line == "surfaceelementsgi" ||
@@ -321,7 +310,7 @@ Mesh read_netgen(const std::string& rPath) {
         } else if (line == "edgesegmentsgi2") {
             read_cells(c, line, blocks, two_lines);
         } else if (netgen_split_ws(line) ==
-                   std::vector<std::string>{"surf1", "surf2", "p1", "p2"}) {
+                   std::vector<std::string_view>{"surf1", "surf2", "p1", "p2"}) {
             two_lines = true;
         } else if (codims.count(line)) {
             const int edim = dimension - codims.at(line);
@@ -336,7 +325,7 @@ Mesh read_netgen(const std::string& rPath) {
                 if (!detail::parse_int_token(tokens[0], data.As<std::int64_t>()[0]))
                     throw ReadError("Netgen: invalid name-table index");
                 data.As<std::int64_t>()[1] = edim;
-                fields.insert_or_assign(tokens[1], std::move(data));
+                fields.insert_or_assign(std::string(tokens[1]), std::move(data));
             }
         } else if (line == "identifications" || line == "identificationtypes") {
             const std::string key = "netgen:" + line;

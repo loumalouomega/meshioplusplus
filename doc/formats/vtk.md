@@ -11,6 +11,8 @@ The [VTK legacy](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) fi
 
 ## Reading & writing
 
+The native legacy reader shares bounded line/prefix-number positioning while retaining ASCII leniency, big-endian binary offsets and owned result arrays. Writer code/bytes are unchanged; see the [cursor comparison](../benchmarks.md#shared-byte-and-record-cursors), whose timing input is ASCII and whose fixture gates include binary/structured paths.
+
 ```python
 import meshioplusplus
 
@@ -61,6 +63,8 @@ Generic `SCALARS`/`VECTORS`/`TENSORS`/`FIELD` blocks map 1:1 to `point_data`/`ce
 - The registered write-dict aliases `vtk42`/`vtk51` both dispatch through `meshioplusplus.vtk.write` (the C++-accelerated path on supported meshes, the Python writer otherwise) with `fmt_version` pinned to `"4.2"`/`"5.1"` respectively — `file_format="vtk42"`, `file_format="vtk51"` and the default `file_format="vtk"` (5.1) all reliably select their stated version.
 
 ## Notes
+
+The native header-token splitter uses `TextStream` rather than an owning string stream. ASCII and binary behavior and writer bytes are unchanged; see the [stream-batch evidence](../benchmarks.md#ensight-vtk-ansys-patran-and-tecplot-stream-batch), which measures the ASCII path without claiming a bulk-read speedup.
 
 - `tests/python/meshes/vtk/00_image.vtk`/`01_image.vtk` (`STRUCTURED_POINTS`, generating 81/100 and 72/147 points/cells), `02_structured.vtk` (`STRUCTURED_GRID`), `03-05_rectilinear.vtk` (`RECTILINEAR_GRID` variants), `06_unstructured.vtk` (hexahedron, 12/42), `06_color_scalars.vtk` (5 points/2 cells, exercises `COLOR_SCALARS`), `gh-935.vtk` (triangle regression test), `rbc_001.vtk` (996 cells, a red-blood-cell mesh).
 - The C++ core handles both versions in ASCII and big-endian binary for all four dataset types above; no Python fallback is needed for structured input on the native CLI or flat bindings.

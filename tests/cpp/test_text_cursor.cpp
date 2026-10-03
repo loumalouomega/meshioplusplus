@@ -28,6 +28,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <type_traits>
+#include <cmath>
 
 #include <gtest/gtest.h>
 
@@ -37,6 +39,33 @@
 namespace {
 
 namespace det = meshioplusplus::detail;
+
+static_assert(std::is_constructible_v<det::TextStream, std::string&&>);
+static_assert(!std::is_constructible_v<det::TextStream, const std::string&&>);
+static_assert(std::is_constructible_v<det::TextStream, std::string&>);
+static_assert(std::is_constructible_v<det::TextStream, const std::string&>);
+static_assert(std::is_constructible_v<det::TextStream, std::string_view>);
+static_assert(std::is_constructible_v<det::TextStream, const char*>);
+static_assert(!std::is_constructible_v<det::TextCursor, std::string&&>);
+static_assert(std::is_constructible_v<det::TextCursor, std::string_view>);
+
+TEST(TextCursor, StreamOwnsShortAndLongTemporaryStrings) {
+    for (const std::size_t padding : {0u, 200u}) {
+        det::TextStream stream(std::string(padding, ' ') + "1.25 -7 a_long_owned_token");
+        // Both SSO and heap-backed storage survive destruction of the input
+        // temporary and unrelated allocation/stack activity before extraction.
+        const std::vector<std::string> churn(100, std::string(200, 'x'));
+        double real = 0;
+        int integer = 0;
+        std::string token;
+        stream >> real >> integer >> token;
+        ASSERT_TRUE(stream);
+        EXPECT_DOUBLE_EQ(real, 1.25);
+        EXPECT_EQ(integer, -7);
+        EXPECT_EQ(token, "a_long_owned_token");
+        EXPECT_EQ(churn.front().size(), 200u);
+    }
+}
 
 // Random lines over an alphabet that makes every kind of edge case likely.
 std::vector<std::string> tc_lines(std::size_t count) {
@@ -121,6 +150,71 @@ TEST(TextCursor, StreamExtractionMatchesIstringstream) {
         ASSERT_TRUE(d1 == d2 || (d1 != d1 && d2 != d2)) << line;
         ASSERT_EQ(static_cast<bool>(ref), static_cast<bool>(got)) << line;
     }
+}
+
+TEST(TextCursor, BoundedPrefixCursorMatchesTheCLibrary) {
+    auto inputs = tc_lines(2000);
+    inputs.insert(inputs.end(), {"2.0 1e3", "1.5-2.5", "0x1p2suffix", "nan(payload)",
+                                 std::string("1\0tail", 6), std::string(1000, '0') + "1"});
+    for (const auto& text : inputs) {
+        const auto storage = text + "999";
+        det::TextCursor cursor(std::string_view(storage.data(), text.size()));
+        const char* end = nullptr;
+        const auto expected = det::parse_double(text.c_str(), end);
+        double actual = 0.0;
+        const bool converted = cursor.DoublePrefix(actual);
+        ASSERT_EQ(converted, end != text.c_str()) << text;
+        if (converted) {
+            EXPECT_EQ(cursor.Pos(), static_cast<std::size_t>(end - text.c_str())) << text;
+            if (std::isnan(expected))
+                EXPECT_TRUE(std::isnan(actual));
+            else {
+                EXPECT_EQ(expected, actual) << text;
+                EXPECT_EQ(std::signbit(expected), std::signbit(actual)) << text;
+            }
+        } else {
+            EXPECT_EQ(cursor.Pos(), 0u);
+        }
+        cursor.Seek(0);
+        char* integer_end = nullptr;
+        const auto integer = std::strtoll(text.c_str(), &integer_end, 10);
+        std::int64_t actual_integer = 0;
+        ASSERT_EQ(cursor.IntPrefix(actual_integer), integer_end != text.c_str()) << text;
+        if (integer_end != text.c_str()) {
+            EXPECT_EQ(integer, actual_integer) << text;
+            EXPECT_EQ(cursor.Pos(), static_cast<std::size_t>(integer_end - text.c_str())) << text;
+        }
+    }
+    det::TextCursor adjacent(" 2.0-3.0 1e3");
+    for (const auto expected : {2.0, -3.0, 1000.0}) {
+        double actual = 0.0;
+        ASSERT_TRUE(adjacent.DoublePrefix(actual));
+        EXPECT_DOUBLE_EQ(expected, actual);
+    }
+    EXPECT_TRUE(adjacent.AtEnd());
+}
+
+TEST(TextCursor, SharedLineAndRecordPositioning) {
+    det::TextCursor cursor("first\r\n\nlast");
+    EXPECT_EQ(cursor.Line(true), "first");
+    const auto saved = cursor.Pos();
+    EXPECT_EQ(cursor.Line(true), "");
+    EXPECT_EQ(cursor.Line(true), "last");
+    EXPECT_TRUE(cursor.AtEnd());
+    EXPECT_EQ(cursor.Line(), "");
+    cursor.Seek(saved);
+    EXPECT_EQ(cursor.Line(), "");
+    EXPECT_EQ(cursor.Line(), "last");
+    const std::vector<std::string_view> records = {"one", "", "three"};
+    det::RecordCursor<std::string_view> rec(records);
+    EXPECT_EQ(rec.Remaining(), 3u);
+    EXPECT_EQ(rec.Peek(2), "three");
+    EXPECT_EQ(rec.Next(), "one");
+    EXPECT_EQ(rec.Pos(), 1u);
+    EXPECT_EQ(rec.Next(), "");
+    EXPECT_EQ(rec.Next(), "three");
+    EXPECT_TRUE(rec.Done());
+    EXPECT_EQ(rec.Remaining(), 0u);
 }
 
 TEST(TextCursor, GetlineMatchesTheStream) {

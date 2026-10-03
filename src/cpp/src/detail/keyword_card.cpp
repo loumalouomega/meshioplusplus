@@ -29,20 +29,25 @@
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "keyword_card_view.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
 namespace {
 
-std::string kwc_strip(std::string_view Text) {
+std::string_view kwc_strip_view(std::string_view Text) {
     std::size_t b = 0;
     std::size_t e = Text.size();
     while (b < e && std::isspace(static_cast<unsigned char>(Text[b])))
         ++b;
     while (e > b && std::isspace(static_cast<unsigned char>(Text[e - 1])))
         --e;
-    return std::string(Text.substr(b, e - b));
+    return Text.substr(b, e - b);
+}
+
+std::string kwc_strip(std::string_view Text) {
+    return std::string(kwc_strip_view(Text));
 }
 
 bool kwc_is_digit(char c) {
@@ -50,10 +55,10 @@ bool kwc_is_digit(char c) {
 }
 
 // "1.5-3" -> "1.5e-3": a Fortran exponent written without its letter.
-std::string kwc_add_exponent_letter(const std::string& rText) {
+std::size_t kwc_exponent_offset(std::string_view rText) {
     for (char c : rText)
         if (c == 'e' || c == 'E')
-            return rText;
+            return std::string_view::npos;
     std::size_t k = std::string::npos;
     for (std::size_t i = rText.size(); i-- > 1;) {
         if (rText[i] == '+' || rText[i] == '-') {
@@ -62,10 +67,10 @@ std::string kwc_add_exponent_letter(const std::string& rText) {
         }
     }
     if (k == std::string::npos || k + 1 >= rText.size())
-        return rText;
+        return std::string_view::npos;
     for (std::size_t i = k + 1; i < rText.size(); ++i)
         if (!kwc_is_digit(rText[i]))
-            return rText;
+            return std::string_view::npos;
     std::size_t b = (rText[0] == '+' || rText[0] == '-') ? 1 : 0;
     int digits = 0;
     int dots = 0;
@@ -75,11 +80,16 @@ std::string kwc_add_exponent_letter(const std::string& rText) {
         else if (rText[i] == '.')
             ++dots;
         else
-            return rText;
+            return std::string_view::npos;
     }
     if (digits == 0 || dots > 1)
-        return rText;
-    return rText.substr(0, k) + "e" + rText.substr(k);
+        return std::string_view::npos;
+    return k;
+}
+
+std::string kwc_add_exponent_letter(const std::string& rText) {
+    const auto k = kwc_exponent_offset(rText);
+    return k == std::string_view::npos ? rText : rText.substr(0, k) + "e" + rText.substr(k);
 }
 
 }  // namespace
@@ -90,6 +100,123 @@ int card_field_width(const CardField& rField, CardMode Mode) {
     if (Mode == CardMode::I10 && rField.mKind == 'i' && rField.mWidth == 8)
         return 10;
     return rField.mWidth;
+}
+
+std::vector<std::string_view> split_card_view(std::string_view Line,
+                                              const std::vector<CardField>& rLayout,
+                                              CardMode Mode) {
+    std::vector<std::string_view> out;
+    if (Line.find(',') != std::string_view::npos) {
+        std::size_t start = 0;
+        for (;;) {
+            const auto comma = Line.find(',', start);
+            out.push_back(kwc_strip_view(Line.substr(
+                start, comma == std::string_view::npos ? std::string_view::npos : comma - start)));
+            if (comma == std::string_view::npos)
+                break;
+            start = comma + 1;
+        }
+        while (out.size() < rLayout.size())
+            out.emplace_back();
+        return out;
+    }
+    std::size_t pos = 0;
+    out.reserve(rLayout.size());
+    for (const auto& field : rLayout) {
+        const auto width = static_cast<std::size_t>(card_field_width(field, Mode));
+        out.push_back(pos < Line.size() ? kwc_strip_view(Line.substr(pos, width))
+                                        : std::string_view());
+        pos += width;
+    }
+    return out;
+}
+
+std::vector<std::string_view> split_fixed_view(std::string_view Line,
+                                               const std::vector<CardField>& rFields) {
+    while (!Line.empty() && (Line.back() == '\r' || Line.back() == '\n'))
+        Line.remove_suffix(1);
+    std::vector<std::string_view> out;
+    std::size_t col = 0;
+    for (const auto& field : rFields) {
+        if (col >= Line.size())
+            break;
+        const auto width = static_cast<std::size_t>(field.mWidth);
+        if (field.mKind != 'x') {
+            const auto text = Line.substr(col, width);
+            const auto a = text.find_first_not_of(" \t");
+            const auto b = text.find_last_not_of(" \t");
+            out.push_back(a == std::string_view::npos ? std::string_view()
+                                                      : text.substr(a, b - a + 1));
+        }
+        col += width;
+    }
+    return out;
+}
+
+std::int64_t card_to_int_view(std::string_view Text, const std::string& rWhere,
+                              const std::string& rFormat) {
+    if (Text.empty())
+        return 0;
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Text.size() < sizeof small) {
+        Text.copy(small, Text.size());
+        small[Text.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Text);
+        first = large.c_str();
+    }
+    errno = 0;
+    char* end = nullptr;
+    const auto value = std::strtoll(first, &end, 10);
+    if (end == first || *end != '\0' || errno == ERANGE)
+        throw ReadError(rFormat + ": invalid integer field '" + std::string(Text) + "'" + rWhere);
+    return static_cast<std::int64_t>(value);
+}
+
+double card_to_real_view(std::string_view Text, const std::string& rWhere,
+                         const std::string& rFormat) {
+    if (Text.empty())
+        return 0.0;
+    char small[96];
+    std::string large;
+    const char* first;
+    if (Text.size() < sizeof small - 1) {
+        Text.copy(small, Text.size());
+        for (std::size_t i = 0; i < Text.size(); ++i) {
+            if (small[i] == 'D')
+                small[i] = 'E';
+            else if (small[i] == 'd')
+                small[i] = 'e';
+        }
+        const auto at = kwc_exponent_offset(std::string_view(small, Text.size()));
+        std::size_t size = Text.size();
+        if (at != std::string_view::npos) {
+            for (std::size_t i = size; i > at; --i)
+                small[i] = small[i - 1];
+            small[at] = 'e';
+            ++size;
+        }
+        small[size] = '\0';
+        first = small;
+    } else {
+        large.assign(Text);
+        for (char& c : large) {
+            if (c == 'D')
+                c = 'E';
+            else if (c == 'd')
+                c = 'e';
+        }
+        large = kwc_add_exponent_letter(large);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    const double value = parse_double(first, end);
+    if (end == first || *end != '\0')
+        throw ReadError(rFormat + ": invalid real field '" + std::string(Text) + "'" + rWhere);
+    return value;
 }
 
 std::vector<std::string> split_card(std::string_view Line, const std::vector<CardField>& rLayout,

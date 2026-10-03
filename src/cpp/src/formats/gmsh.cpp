@@ -112,25 +112,11 @@ std::string gmsh_trim(const std::string& rS) {
     return rS.substr(b, e - b);
 }
 
-struct GmshCursor {
-    // A view, not a reference to a std::string: the buffer may be a memory
-    // mapping rather than an owned string (see detail/file_source.hpp).
-    std::string_view mBuf;
-    std::size_t mPos = 0;
-    explicit GmshCursor(std::string_view b) : mBuf(b) {}
-    bool eof() const { return mPos >= mBuf.size(); }
+struct GmshCursor : detail::TextCursor {
+    explicit GmshCursor(std::string_view b) : detail::TextCursor(b) {}
+    bool eof() const { return AtEnd(); }
 
-    std::string read_line() {
-        std::size_t start = mPos;
-        while (mPos < mBuf.size() && mBuf[mPos] != '\n')
-            ++mPos;
-        std::string line(mBuf.substr(start, mPos - start));
-        if (mPos < mBuf.size())
-            ++mPos;
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        return line;
-    }
+    std::string read_line() { return std::string(Line(true)); }
     // Trimmed: some writers (FEconv's samples) indent every line.
     std::string next_nonblank() {
         while (!eof()) {
@@ -148,18 +134,9 @@ struct GmshCursor {
         }
     }
     double next_double() {
-        // parse_double stops at the first character that cannot continue the
-        // number, so one must follow the last. A buffered source is a
-        // std::string (NUL-terminated); a mapped one relies on the kernel
-        // zero-filling the final partial page -- which is exactly why
-        // FileSource declines to map files whose size is an exact page
-        // multiple.
-        const char* base = mBuf.data();
-        const char* endp = nullptr;
-        double v = detail::parse_double(base + mPos, endp);
-        if (endp == base + mPos)
+        double v = 0.0;
+        if (!DoublePrefix(v))
             throw ReadError("Gmsh: expected a number");
-        mPos = static_cast<std::size_t>(endp - base);
         return v;
     }
     std::int64_t next_int() { return detail::checked_integer<std::int64_t>(next_double(), "Gmsh"); }
@@ -1506,7 +1483,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    detail::TextStream fss(cur.read_line());
+    detail::TextStream fss(cur.Line(true));
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -2657,7 +2634,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    detail::TextStream fss(cur.read_line());
+    detail::TextStream fss(cur.Line(true));
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;

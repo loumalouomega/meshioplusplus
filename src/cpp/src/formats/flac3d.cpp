@@ -24,6 +24,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -243,15 +244,6 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
     return {rest.substr(0, colon), rest.substr(colon + 1)};
 }
 
-std::vector<std::string> flac3d_split_ws(const std::string& rS) {
-    std::vector<std::string> out;
-    detail::TextStream iss(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
-}
-
 }  // namespace
 
 Mesh read_flac3d(const std::string& rPath) {
@@ -341,8 +333,9 @@ Mesh read_flac3d(const std::string& rPath) {
         // id lines until anything that is not one -- a comment, a new group, a
         // cell record, a blank line or EOF.
         std::size_t active = std::string::npos;
+        std::vector<std::string_view> s;
         while (std::getline(in, line)) {
-            std::vector<std::string> s = flac3d_split_ws(line);
+            detail::split_blanks(line, s);
             if (s.empty()) {
                 active = std::string::npos;
                 continue;
@@ -354,25 +347,25 @@ Mesh read_flac3d(const std::string& rPath) {
             }
             if (active != std::string::npos && s[0][0] != '*' && s[0] != "G" && s[0] != "Z" &&
                 s[0] != "F") {
-                for (const std::string& t : s)
-                    groups[active].mIds.push_back(std::strtoll(t.c_str(), nullptr, 10));
+                for (const auto t : s)
+                    groups[active].mIds.push_back(detail::strtoll_token(t));
                 continue;
             }
             active = std::string::npos;
             if (s[0] == "G") {
                 detail::need_tokens(s, 2, "FLAC3D");
-                std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
+                std::int64_t pid = detail::strtoll_token(s[1]);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
                 for (std::size_t j = 2; j < s.size(); ++j)
-                    points.push_back(detail::parse_double(s[j]));
+                    points.push_back(detail::parse_double_prefix(s[j]));
             } else if (s[0] == "Z" || s[0] == "F") {
                 int dim = (s[0] == "Z") ? 3 : 2;
                 detail::need_tokens(s, 3, "FLAC3D");
-                std::int64_t cid = std::strtoll(s[2].c_str(), nullptr, 10);
+                std::int64_t cid = detail::strtoll_token(s[2]);
                 bool is_b7 = (s[1] == "B7");
                 std::vector<std::int64_t> cell;
                 for (std::size_t j = 3; j < s.size(); ++j)
-                    cell.push_back(point_ids.at(std::strtoll(s[j].c_str(), nullptr, 10)));
+                    cell.push_back(point_ids.at(detail::strtoll_token(s[j])));
                 if (is_b7)
                     cell.push_back(cell.back());
                 const auto& tmap = numnodes_type(dim);

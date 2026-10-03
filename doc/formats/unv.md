@@ -12,6 +12,10 @@ The [I-DEAS Universal File](https://www.ceas3.uc.edu/sdrluff/) is the ASCII inte
 
 ## Reading & writing
 
+Native fixed-record fields use private views and bounded numeric buffers with unchanged field validation, gap fallback, Fortran exponents, range checks and error messages. The [shared-card matrix](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers) measures the already migrated free-field mesh path, so its unchanged allocation counts are not a fixed-record speedup claim. Names/results and the installed owning card API remain owned/unchanged.
+
+Dataset traversal shares a private bounded byte cursor, including checked position/seek behavior needed by binary dataset 58b. The [cursor consolidation evidence](../benchmarks.md#shared-byte-and-record-cursors) retains neutral results and unchanged allocation counts; it makes no new UNV speedup claim.
+
 ```python
 import meshioplusplus
 
@@ -29,6 +33,8 @@ meshioplusplus.unv.write("out.unv", mesh, code_aster=True)
 
 - `code_aster=False`: when `True`, results are written as the legacy datasets **55** (`point_data`) and **56** (`cell_data`) in single precision (`6E13.5`, as the SDRL records read), instead of dataset 2414.
 - `node_dataset=2411`: the node dataset to emit; `781` is also accepted.
+
+The native reader normalizes short Fortran real fields in a terminated stack buffer, with an owned fallback for unusually long tokens. `D`/`d` exponents, existing numeric-prefix handling, fixed-column records and writer bytes are unchanged. This reduces allocation requests, not a claimed read speedup; see the [text-I/O measurements](../benchmarks.md#off-medit-xyz-and-unv-second-reader-batch).
 
 ## Datasets
 
