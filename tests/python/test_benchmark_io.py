@@ -250,6 +250,11 @@ def test_mfm_seq_confirmation_keeps_both_measurement_orders():
             ("gmsh", "febio", "z88", "patran", "femap", "mdpa"),
             (),
         ),
+        (
+            "batch14_float64_int64",
+            ("cgns", "med", "libmesh", "pcd", "gid"),
+            (),
+        ),
     ],
 )
 def test_text_io_evidence_is_complete_and_bit_identical(batch, formats, decreases):
