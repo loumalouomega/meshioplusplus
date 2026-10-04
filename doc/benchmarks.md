@@ -373,13 +373,13 @@ Roadmap §3.4.3. `bindings/python/np_conversions.hpp` converts a `Mesh` on every
 
 `benchmark/bench_boundary.py` times `clean` on each case, so both directions are in one number and no file I/O is involved. `clean` runs on the sequential `STL` backend here and is not parallel in these rows, so SEQ is not slower by construction.
 
-| Case (min of 5) | Before | After |
+| Case (min of 7) | Before | After |
 | --- | ---: | ---: |
-| 200,000 polygons | 0.314 s | 0.130 s |
-| 50,000 polyhedra | 0.543 s | 0.247 s |
-| tiny mesh, 20,000 calls | 0.437 s | 0.440 s |
+| 200,000 polygons | 0.316 s | 0.134 s |
+| 50,000 polyhedra | 0.530 s | 0.256 s |
+| tiny mesh, 20,000 calls | 0.445 s | 0.410 s |
 
-The tiny-mesh case does not move: each call also pays the Python wrapper in `clean`, which is far larger than the lookups removed, so the saving is below the run-to-run noise there. The class cache matters to callers that go straight to a binding in a loop. Reproduce with `python benchmark/bench_boundary.py --repeats 5` on the base and on the changed build.
+The tiny-mesh case moves by under 10 percent, within the run-to-run noise (its median ran 0.57 → 0.48 s): each call also pays the Python wrapper in `clean`, which is far larger than the lookups removed. The class cache matters to callers that go straight to a binding in a loop. Reproduce with `python benchmark/bench_boundary.py --repeats 7` on the base and on the changed build.
 
 ## Every format
 
