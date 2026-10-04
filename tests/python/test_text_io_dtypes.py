@@ -4,6 +4,10 @@ import numpy as np
 import pytest
 
 import meshioplusplus as pp
+from meshioplusplus import _core
+
+# The GiD writer needs a gidpost + zlib build, which not every wheel enables.
+HAS_GIDPOST = getattr(_core, "__has_gidpost__", False)
 
 FORMATS = (
     "off",
@@ -193,6 +197,8 @@ def test_hoisted_writer_all_dtypes_match_default_storage(
 ):
     if ONLY_DIMENSION.get(fmt, dimension) != dimension:
         pytest.skip(f"{fmt} writes {ONLY_DIMENSION[fmt]}-D points only")
+    if fmt == "gid" and not HAS_GIDPOST:
+        pytest.skip("the GiD writer needs a gidpost + zlib build")
     monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
     mesh, inputs = _mesh(fmt, dtype, dtype, dimension)
     canonical_dtype = ("float64", "int64")

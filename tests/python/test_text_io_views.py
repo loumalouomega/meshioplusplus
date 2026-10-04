@@ -134,6 +134,8 @@ def test_xyz_native_multichar_delimiter_and_trailing_empty(tmp_path, delimiter):
 def test_remaining_stream_readers_ownership(
     tmp_path, monkeypatch, fmt, threshold, ending
 ):
+    if fmt == "gid" and not getattr(_core, "__has_gidpost__", False):
+        pytest.skip("the GiD writer needs a gidpost + zlib build")
     monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
     path = tmp_path / ("mesh" + STREAM_SUFFIXES[fmt])
     kwargs = (
@@ -279,6 +281,9 @@ def test_nastran_mixed_large_free_continuation_storage(tmp_path, threshold):
     np.testing.assert_array_equal(actual["points"], np.tile([1.25, 2, 3], (300, 1)))
 
 
+@pytest.mark.skipif(
+    not getattr(_core, "__has_zlib__", False), reason="build has no zlib"
+)
 @pytest.mark.parametrize("threshold", ["0", str(1 << 40)])
 def test_netgen_gzip_token_views_do_not_escape_the_inflated_buffer(tmp_path, threshold):
     path = tmp_path / "mesh.vol.gz"
