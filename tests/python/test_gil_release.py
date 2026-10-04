@@ -144,13 +144,15 @@ def _assert_heartbeat(call):
     during, elapsed = _ticks_during(call)
     if elapsed < 0.05:
         pytest.skip(f"the call took {elapsed * 1e3:.0f} ms, too short to judge")
-    # Unimpeded, the counter ticks about once per (1 ms nap + wake-up). Holding
-    # the GIL leaves it at most a tick or two; a fifth of the ideal rate is far
-    # from both, and robust to a loaded machine.
-    expected = elapsed / 0.002
-    assert during >= max(5, 0.2 * expected), (
-        f"heartbeat ticked {during} times in {elapsed * 1e3:.0f} ms: "
-        "the native call held the GIL"
+    # What the counter manages while nothing holds the GIL: an idle sleep of the
+    # same length. Timer granularity differs a lot between platforms (macOS
+    # wakes a 1 ms nap far later than Linux does), so the bar is a fraction of
+    # this measured rate, not an absolute one. A call that holds the GIL leaves
+    # the counter at most a tick or two, far below a tenth of the idle rate.
+    idle, _ = _ticks_during(lambda: time.sleep(elapsed))
+    assert during >= max(5, 0.1 * idle), (
+        f"heartbeat ticked {during} times in {elapsed * 1e3:.0f} ms against "
+        f"{idle} when idle: the native call held the GIL"
     )
 
 
