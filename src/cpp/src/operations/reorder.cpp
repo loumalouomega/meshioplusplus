@@ -384,29 +384,48 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                        : id;
         };
         if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+            // CSR: serial prefix sums fix every write position, so the parallel
+            // fill below stays deterministic.
+            std::vector<std::int64_t> faces(nc + 1, 0);
+            std::vector<std::int64_t> nodes(nc + 1, 0);
+            for (std::size_t p = 0; p < nc; ++p) {
+                const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
+                std::int64_t nn = 0;
+                for (std::size_t f = 0; f < cb.NumFaces(oc); ++f)
+                    nn += static_cast<std::int64_t>(cb.Face(oc, f).second);
+                faces[p + 1] = faces[p] + static_cast<std::int64_t>(cb.NumFaces(oc));
+                nodes[p + 1] = nodes[p] + nn;
+            }
+            std::vector<std::int64_t> flat(static_cast<std::size_t>(nodes[nc]));
+            std::vector<std::int64_t> rows(static_cast<std::size_t>(faces[nc]) + 1, 0);
             parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
-                cells[p].resize(cb.NumFaces(oc));
+                std::size_t at = static_cast<std::size_t>(nodes[p]);
+                std::size_t row = static_cast<std::size_t>(faces[p]);
                 for (std::size_t f = 0; f < cb.NumFaces(oc); ++f) {
                     std::pair<const std::int64_t*, std::size_t> face = cb.Face(oc, f);
-                    cells[p][f].reserve(face.second);
                     for (std::size_t k = 0; k < face.second; ++k)
-                        cells[p][f].push_back(remap(face.first[k]));
+                        flat[at++] = remap(face.first[k]);
+                    rows[++row] = static_cast<std::int64_t>(at);
                 }
             });
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(flat), std::move(rows),
+                                   std::move(faces));
         } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(nc);
+            std::vector<std::int64_t> rows(nc + 1, 0);
+            for (std::size_t p = 0; p < nc; ++p)
+                rows[p + 1] = rows[p] + static_cast<std::int64_t>(
+                                            cb.RowSize(static_cast<std::size_t>(cellorder[p])));
+            std::vector<std::int64_t> flat(static_cast<std::size_t>(rows[nc]));
             parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 const std::int64_t* row = cb.Row(oc);
                 const std::size_t sz = cb.RowSize(oc);
-                rows[p].reserve(sz);
+                std::int64_t* dst = flat.data() + rows[p];
                 for (std::size_t k = 0; k < sz; ++k)
-                    rows[p].push_back(remap(row[k]));
+                    dst[k] = remap(row[k]);
             });
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(flat), std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
             const detail::Int64View conn_v(conn);

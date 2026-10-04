@@ -51,6 +51,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <optional>
@@ -61,6 +62,7 @@
 // Project includes
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/mesh_api.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -175,6 +177,39 @@ Mesh bench_ops_moved(const Mesh& rMesh, const std::function<void(std::size_t, do
         std::memcpy(conn.Data(), cb.Conn().Data(), conn.Nbytes());
         m.AddCellBlock(cb.Type(), std::move(conn));
     }
+    return m;
+}
+
+/**
+ * @brief `rVolume`'s points with its tetrahedra recast as a polyhedron block
+ * (four triangular faces each) and one triangle per tetrahedron as a polygon
+ * block: the ragged input the `reorder` CSR rows run on.
+ */
+Mesh bench_ops_ragged(const Mesh& rVolume) {
+    const auto cb = rVolume.Cells(0);
+    const std::size_t nc = cb.NumCells();
+    static const int faces[4][3] = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {0, 3, 2}};
+    std::vector<std::int64_t> flat, rows{0}, cells{0}, ring, poly_rows{0};
+    flat.reserve(nc * 12);
+    ring.reserve(nc * 3);
+    for (std::size_t c = 0; c < nc; ++c) {
+        const std::int64_t* v = cb.Conn().As<std::int64_t>() + 4 * c;
+        for (const auto& f : faces) {
+            for (int k = 0; k < 3; ++k)
+                flat.push_back(v[f[k]]);
+            rows.push_back(static_cast<std::int64_t>(flat.size()));
+        }
+        cells.push_back(static_cast<std::int64_t>(rows.size() - 1));
+        for (int k = 0; k < 3; ++k)
+            ring.push_back(v[faces[0][k]]);
+        poly_rows.push_back(static_cast<std::int64_t>(ring.size()));
+    }
+    NDArray pts = NDArray::Uninit(DType::Float64, {rVolume.NumPoints(), 3});
+    std::memcpy(pts.Data(), rVolume.Points().Data(), pts.Nbytes());
+    Mesh m;
+    m.AssignPoints(std::move(pts));
+    m.AddPolyhedronBlock("polyhedron4", std::move(flat), std::move(rows), std::move(cells));
+    m.AddPolygonBlock("polygon", std::move(ring), std::move(poly_rows));
     return m;
 }
 
@@ -413,6 +448,38 @@ int main(int argc, char** argv) {
         };
         reorder_row("reorder", mio::ReorderMethod::RCM);
         reorder_row("reorder_hilbert", mio::ReorderMethod::Hilbert);
+        const Mesh ragged = bench_ops_ragged(volume);
+        row("reorder_ragged", [&](MeshDigest* pD) {
+            auto r = mio::reorder(ragged, mio::ReorderMethod::RCM);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->Array(r.mNodePermutation);
+                pD->Arrays(r.mCellPermutations);
+            }
+        });
+        // Reads of the ragged mesh through the registry: the file is written
+        // once, outside the timed region. A format whose writer declines the
+        // mesh is skipped, so the rows never fail the sweep.
+        const auto read_ragged_row = [&](const char* pOp, const char* pFormat, const char* pExt) {
+            if (!wanted(pOp))
+                return;
+            const std::filesystem::path dir =
+                std::filesystem::temp_directory_path() /
+                (std::string("meshioplusplus_bench_ragged_") + pFormat);
+            std::filesystem::create_directories(dir);
+            const std::string path = (dir / (std::string("ragged") + pExt)).string();
+            try {
+                mio::registry_writers().at(pFormat)(path, ragged);
+                row(pOp, [&](MeshDigest* pD) {
+                    of(pD, mio::registry_read(path, pFormat, mio::ReadOptions{}));
+                });
+            } catch (const std::exception& rExc) {
+                std::fprintf(stderr, "skip %s: %s\n", pOp, rExc.what());
+            }
+            std::filesystem::remove_all(dir);
+        };
+        read_ragged_row("read_ragged_ensight", "ensight", ".case");
+        read_ragged_row("read_ragged_tecplot", "tecplot", ".dat");
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);

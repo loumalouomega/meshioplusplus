@@ -697,8 +697,11 @@ std::size_t vtkhdf_polyhedron_run(Mesh& rMesh, const VtkhdfLeaf& rLeaf, std::siz
         throw ReadError(
             "meshio++: vtkhdf: a cell has VTK type 42 (polyhedron) but the file carries no "
             "FaceConnectivity/FaceOffsets/PolyhedronToFaces/PolyhedronOffsets datasets");
-    std::vector<std::vector<I64Vec>> cells;
+    // Cell c's faces are mToFaces[ps[c] .. pe[c]); every index is checked here,
+    // so the group builders below read mFaceConn without re-validating.
+    std::vector<I64> ps_of, pe_of;
     std::vector<std::size_t> counts;
+    I64Vec uniq;
     for (std::size_t c = Lo; c < Hi; ++c) {
         if (c >= rLeaf.mPolyEnd.size())
             throw ReadError("meshio++: vtkhdf: PolyhedronOffsets is shorter than the cell count");
@@ -706,8 +709,7 @@ std::size_t vtkhdf_polyhedron_run(Mesh& rMesh, const VtkhdfLeaf& rLeaf, std::siz
         const I64 pe = rLeaf.mPolyEnd[c];
         if (ps < 0 || pe < ps || static_cast<std::size_t>(pe) > rLeaf.mToFaces.size())
             throw ReadError("meshio++: vtkhdf: PolyhedronOffsets entry out of range");
-        std::vector<I64Vec> faces;
-        I64Vec uniq;
+        uniq.clear();
         for (I64 i = ps; i < pe; ++i) {
             const I64 f = rLeaf.mToFaces[static_cast<std::size_t>(i)];
             if (f < 0 || static_cast<std::size_t>(f) >= rLeaf.mFaceEnd.size())
@@ -716,32 +718,41 @@ std::size_t vtkhdf_polyhedron_run(Mesh& rMesh, const VtkhdfLeaf& rLeaf, std::siz
             const I64 fe = rLeaf.mFaceEnd[static_cast<std::size_t>(f)];
             if (fs < 0 || fe < fs || static_cast<std::size_t>(fe) > rLeaf.mFaceConn.size())
                 throw ReadError("meshio++: vtkhdf: FaceOffsets entry out of range");
-            faces.emplace_back(rLeaf.mFaceConn.begin() + fs, rLeaf.mFaceConn.begin() + fe);
-            uniq.insert(uniq.end(), faces.back().begin(), faces.back().end());
+            uniq.insert(uniq.end(), rLeaf.mFaceConn.begin() + fs, rLeaf.mFaceConn.begin() + fe);
         }
         std::sort(uniq.begin(), uniq.end());
-        uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-        counts.push_back(uniq.size());
-        cells.push_back(std::move(faces));
+        counts.push_back(
+            static_cast<std::size_t>(std::unique(uniq.begin(), uniq.end()) - uniq.begin()));
+        ps_of.push_back(ps);
+        pe_of.push_back(pe);
     }
     std::vector<std::size_t> order;
     std::map<std::size_t, std::vector<std::size_t>> groups;
-    for (std::size_t i = 0; i < cells.size(); ++i) {
+    for (std::size_t i = 0; i < counts.size(); ++i) {
         if (groups.find(counts[i]) == groups.end())
             order.push_back(counts[i]);
         groups[counts[i]].push_back(i);
     }
     for (std::size_t n : order) {
         const auto& idx = groups[n];
-        std::vector<std::vector<I64Vec>> group;
+        I64Vec flat, face_rows{0}, cell_faces{0};
         std::vector<std::size_t> rows;
-        group.reserve(idx.size());
+        rows.reserve(idx.size());
         for (std::size_t i : idx) {
-            group.push_back(std::move(cells[i]));
+            for (I64 k = ps_of[i]; k < pe_of[i]; ++k) {
+                const auto f =
+                    static_cast<std::size_t>(rLeaf.mToFaces[static_cast<std::size_t>(k)]);
+                const I64 fs = f > 0 ? rLeaf.mFaceEnd[f - 1] : 0;
+                const I64 fe = rLeaf.mFaceEnd[f];
+                flat.insert(flat.end(), rLeaf.mFaceConn.begin() + fs, rLeaf.mFaceConn.begin() + fe);
+                face_rows.push_back(static_cast<I64>(flat.size()));
+            }
+            cell_faces.push_back(static_cast<I64>(face_rows.size() - 1));
             rows.push_back(Lo + i);
             rPerm[Lo + i] = static_cast<I64>(At++);
         }
-        rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
+        rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(flat),
+                                 std::move(face_rows), std::move(cell_faces));
         vtkhdf_append_cell_data_rows(rMesh, rLeaf, rows);
     }
     return At;

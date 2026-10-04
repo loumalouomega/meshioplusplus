@@ -31673,6 +31673,97 @@ inline FileSource open_source(const std::string& rPath, const std::string& rMess
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/open_source.hpp =====
+// ===== begin src/cpp/src/detail/polyhedron_groups.hpp =====
+/**
+ * @file detail/polyhedron_groups.hpp
+ * @brief Split a staged polyhedron CSR into `polyhedron<N>` groups, N being a
+ * cell's unique node count, in first-seen order.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it. It is the convention the EnSight, CGNS, OpenFOAM and VTU
+ * readers share. The input is the CSR triple a reader staged for a whole
+ * section -- no vector per cell or per face -- and each group comes back as a
+ * CSR triple ready for `AddPolyhedronBlock` (doc/benchmarks.md, "CSR ragged
+ * readers and `reorder`").
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One `polyhedron<N>` group: its cells (indices into the staged section, in
+/// section order) and their CSR triple.
+struct PolyhedronGroup {
+    std::size_t mNodeCount = 0;
+    std::vector<std::size_t> mCells;
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::int64_t> mRowOffsets{0};
+    std::vector<std::int64_t> mFaceOffsets{0};
+};
+
+/**
+ * @brief Group the polyhedra `(Flat, RowOffsets, FaceOffsets)` by unique node
+ * count, groups in first-seen order. The arrays are consumed: when one group
+ * holds every cell it takes them whole, with no copy.
+ * @pre The offsets were checked (`check_csr`) or built by the caller.
+ */
+inline std::vector<PolyhedronGroup> group_polyhedra_by_node_count(
+    std::vector<std::int64_t> Flat, std::vector<std::int64_t> RowOffsets,
+    std::vector<std::int64_t> FaceOffsets) {
+    const std::size_t ncells = FaceOffsets.empty() ? 0 : FaceOffsets.size() - 1;
+    std::vector<std::size_t> node_counts(ncells);
+    std::vector<std::int64_t> uniq;
+    for (std::size_t c = 0; c < ncells; ++c) {
+        const auto first = Flat.begin() + RowOffsets[static_cast<std::size_t>(FaceOffsets[c])];
+        const auto last = Flat.begin() + RowOffsets[static_cast<std::size_t>(FaceOffsets[c + 1])];
+        uniq.assign(first, last);
+        std::sort(uniq.begin(), uniq.end());
+        node_counts[c] =
+            static_cast<std::size_t>(std::unique(uniq.begin(), uniq.end()) - uniq.begin());
+    }
+    std::vector<std::size_t> order;
+    std::map<std::size_t, std::vector<std::size_t>> groups;
+    for (std::size_t c = 0; c < ncells; ++c) {
+        if (groups.find(node_counts[c]) == groups.end())
+            order.push_back(node_counts[c]);
+        groups[node_counts[c]].push_back(c);
+    }
+    std::vector<PolyhedronGroup> out;
+    out.reserve(order.size());
+    for (const std::size_t n : order) {
+        PolyhedronGroup g;
+        g.mNodeCount = n;
+        g.mCells = std::move(groups[n]);
+        if (g.mCells.size() == ncells) {
+            g.mFlat = std::move(Flat);
+            g.mRowOffsets = std::move(RowOffsets);
+            g.mFaceOffsets = std::move(FaceOffsets);
+        } else {
+            for (const std::size_t c : g.mCells) {
+                const auto f0 = static_cast<std::size_t>(FaceOffsets[c]);
+                const auto f1 = static_cast<std::size_t>(FaceOffsets[c + 1]);
+                const auto base = static_cast<std::int64_t>(g.mFlat.size());
+                g.mFlat.insert(g.mFlat.end(), Flat.begin() + RowOffsets[f0],
+                               Flat.begin() + RowOffsets[f1]);
+                for (std::size_t f = f0; f < f1; ++f)
+                    g.mRowOffsets.push_back(base + RowOffsets[f + 1] - RowOffsets[f0]);
+                g.mFaceOffsets.push_back(static_cast<std::int64_t>(g.mRowOffsets.size() - 1));
+            }
+        }
+        out.push_back(std::move(g));
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/polyhedron_groups.hpp =====
 // ===== begin src/cpp/src/detail/region_field_data.hpp =====
 /**
  * @file detail/region_field_data.hpp
@@ -64528,7 +64619,10 @@ Mesh read_ansys(const std::string& rPath) {
         std::int64_t mZone;
         std::string mType;
         std::vector<face_cells::Face> mConn;
-        std::vector<std::vector<face_cells::Face>> mPoly;
+        // Polyhedra as the CSR triple the mesh backends store.
+        std::vector<std::int64_t> mFlat;
+        std::vector<std::int64_t> mRows{0};
+        std::vector<std::int64_t> mFaces{0};
     };
     std::vector<Bucket> volume, surface;
     auto bucket = [](std::vector<Bucket>& rList, std::int64_t Zone,
@@ -64536,7 +64630,7 @@ Mesh read_ansys(const std::string& rPath) {
         for (auto& b : rList)
             if (b.mZone == Zone && b.mType == rType)
                 return b;
-        rList.push_back({Zone, rType, {}, {}});
+        rList.push_back({Zone, rType, {}, {}, {0}, {0}});
         return rList.back();
     };
     auto face_type_name = [](std::size_t N, bool Surface) -> std::string {
@@ -64574,7 +64668,12 @@ Mesh read_ansys(const std::string& rPath) {
         if (type == "polyhedron") {
             const std::string key =
                 "polyhedron" + std::to_string(face_cells::unique_node_count(cf));
-            bucket(volume, zone, key).mPoly.push_back(cf);
+            Bucket& poly = bucket(volume, zone, key);
+            for (const auto& face : cf) {
+                poly.mFlat.insert(poly.mFlat.end(), face.begin(), face.end());
+                poly.mRows.push_back(static_cast<std::int64_t>(poly.mFlat.size()));
+            }
+            poly.mFaces.push_back(static_cast<std::int64_t>(poly.mRows.size() - 1));
         } else if (conn.empty()) {
             ++skipped;
         } else {
@@ -64608,8 +64707,9 @@ Mesh read_ansys(const std::string& rPath) {
         for (auto& b : *pGroup) {
             std::size_t n;
             if (b.mType.rfind("polyhedron", 0) == 0) {
-                n = b.mPoly.size();
-                mesh.AddPolyhedronBlock(b.mType, std::move(b.mPoly));
+                n = b.mFaces.size() - 1;
+                mesh.AddPolyhedronBlock(b.mType, std::move(b.mFlat), std::move(b.mRows),
+                                        std::move(b.mFaces));
             } else {
                 n = b.mConn.size();
                 const std::size_t k = n ? b.mConn[0].size() : 0;
@@ -69729,6 +69829,7 @@ MeshMetadata read_cgns_metadata(const std::string& rPath, const ReadOptions& rOp
 
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
 #include <cgnslib.h>
+
 #endif
 
 namespace meshioplusplus {
@@ -70281,12 +70382,8 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     if (!ngons.empty() && nfaces.empty()) {
         // Faces with no cells referencing them: a face mesh, not a volume one.
         for (const MllFaces& faces : ngons) {
-            std::vector<std::vector<std::int64_t> > rows(faces.Count());
-            for (std::size_t f = 0; f < faces.Count(); ++f)
-                rows[f].assign(faces.mNodes.begin() + faces.mOffsets[f],
-                               faces.mNodes.begin() + faces.mOffsets[f + 1]);
-            if (!rows.empty())
-                mesh.AddPolygonBlock("polygon", std::move(rows));
+            if (faces.Count() > 0)
+                mesh.AddPolygonBlock("polygon", faces.mNodes, faces.mOffsets);
         }
     } else if (!nfaces.empty()) {
         if (ngons.empty())
@@ -70313,12 +70410,14 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                 cgns_mll_fail("cg_poly_elements_read failed for NFACE_n '" + sec->mName + "'",
                               rPath);
 
-            // Group by unique node count into polyhedron<N>, the convention the
-            // OpenFOAM and EnSight readers already use.
-            std::vector<std::vector<std::vector<std::int64_t> > > cells(ncells);
-            std::vector<std::size_t> node_counts(ncells, 0);
+            // Stage every cell's faces as one CSR triple (rings reversed in
+            // place for a negative id), then group by unique node count into
+            // polyhedron<N>, the convention the OpenFOAM and EnSight readers
+            // already use.
+            std::vector<std::int64_t> flat, rows{0}, cell_faces{0};
+            rows.reserve(static_cast<std::size_t>(data_size) + 1);
+            cell_faces.reserve(ncells + 1);
             for (std::size_t c = 0; c < ncells; ++c) {
-                std::vector<std::int64_t> uniq;
                 for (cgsize_t i = offsets[c]; i < offsets[c + 1]; ++i) {
                     const cgsize_t signed_id = elems[static_cast<std::size_t>(i)];
                     const cgsize_t id = signed_id < 0 ? -signed_id : signed_id;
@@ -70330,35 +70429,23 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                             sec->mName, static_cast<long long>(id)));
                     const MllFaces& faces = *it->second.first;
                     const std::size_t f = it->second.second;
-                    std::vector<std::int64_t> ring(faces.mNodes.begin() + faces.mOffsets[f],
-                                                   faces.mNodes.begin() + faces.mOffsets[f + 1]);
+                    const auto first = flat.size();
+                    flat.insert(flat.end(), faces.mNodes.begin() + faces.mOffsets[f],
+                                faces.mNodes.begin() + faces.mOffsets[f + 1]);
                     // A negative id means "this face, traversed the other way"
                     // -- CGNS's way of orienting a shared face outward from
                     // each of the two cells that use it.
                     if (signed_id < 0)
-                        std::reverse(ring.begin(), ring.end());
-                    uniq.insert(uniq.end(), ring.begin(), ring.end());
-                    cells[c].push_back(std::move(ring));
+                        std::reverse(flat.begin() + static_cast<std::ptrdiff_t>(first), flat.end());
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
                 }
-                std::sort(uniq.begin(), uniq.end());
-                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-                node_counts[c] = uniq.size();
+                cell_faces.push_back(static_cast<std::int64_t>(rows.size() - 1));
             }
-
-            std::vector<std::size_t> order;
-            std::map<std::size_t, std::vector<std::size_t> > groups;
-            for (std::size_t c = 0; c < ncells; ++c) {
-                if (groups.find(node_counts[c]) == groups.end())
-                    order.push_back(node_counts[c]);
-                groups[node_counts[c]].push_back(c);
-            }
-            for (std::size_t n : order) {
-                std::vector<std::vector<std::vector<std::int64_t> > > group;
-                group.reserve(groups[n].size());
-                for (std::size_t c : groups[n])
-                    group.push_back(std::move(cells[c]));
-                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
-            }
+            for (auto& g : detail::group_polyhedra_by_node_count(std::move(flat), std::move(rows),
+                                                                 std::move(cell_faces)))
+                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(g.mNodeCount),
+                                        std::move(g.mFlat), std::move(g.mRowOffsets),
+                                        std::move(g.mFaceOffsets));
         }
     }
 
@@ -73475,8 +73562,10 @@ std::string ensight_resolve_wildcard(const std::string& rPattern, long Number) {
 struct EnsightBlock {
     std::string mType;
     NDArray mConn{DType::Int64, {}};                                       // rectangular
-    std::vector<std::vector<std::int64_t>> mPolygonRows;                   // nsided
-    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;  // nfaced
+    // nsided / nfaced, as the CSR triple the mesh backends store.
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::int64_t> mRowOffsets;
+    std::vector<std::int64_t> mFaceOffsets;
     int mKind = 0;  // 0 rectangular, 1 polygon, 2 polyhedron
     std::int64_t mPartId = 0;
     std::size_t mNumCells = 0;
@@ -73602,79 +73691,63 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
             if (kw == "nsided") {
                 std::vector<std::int64_t> sizes(static_cast<std::size_t>(ne));
                 rCur.ReadInts(sizes.size(), sizes.data());
-                std::vector<std::vector<std::int64_t>> rows(static_cast<std::size_t>(ne));
-                std::vector<std::int64_t> flat;
-                std::size_t total = 0;
-                for (auto s : sizes)
-                    total += static_cast<std::size_t>(s);
-                flat.resize(total);
-                rCur.ReadInts(total, flat.data());
-                std::size_t at = 0;
-                for (std::size_t c = 0; c < rows.size(); ++c) {
-                    rows[c].resize(static_cast<std::size_t>(sizes[c]));
-                    for (std::size_t j = 0; j < rows[c].size(); ++j)
-                        rows[c][j] = resolve(flat[at++]);
+                std::vector<std::int64_t> rows(sizes.size() + 1, 0);
+                for (std::size_t c = 0; c < sizes.size(); ++c) {
+                    if (sizes[c] < 0)
+                        throw ReadError("EnSight: negative nsided node count");
+                    rows[c + 1] = rows[c] + sizes[c];
                 }
+                const auto total = static_cast<std::size_t>(rows.back());
+                std::vector<std::int64_t> flat(total);
+                rCur.ReadInts(total, flat.data());
+                for (std::int64_t& v : flat)
+                    v = resolve(v);
                 EnsightBlock b;
                 b.mType = "polygon";
                 b.mKind = 1;
                 b.mPartId = part_id;
-                b.mNumCells = rows.size();
-                b.mPolygonRows = std::move(rows);
+                b.mNumCells = sizes.size();
+                b.mFlat = std::move(flat);
+                b.mRowOffsets = std::move(rows);
                 blocks.push_back(std::move(b));
             } else if (kw == "nfaced") {
                 std::vector<std::int64_t> nfaces(static_cast<std::size_t>(ne));
                 rCur.ReadInts(nfaces.size(), nfaces.data());
-                std::size_t total_faces = 0;
-                for (auto f : nfaces)
-                    total_faces += static_cast<std::size_t>(f);
-                std::vector<std::int64_t> fsizes(total_faces);
-                rCur.ReadInts(total_faces, fsizes.data());
-                std::size_t total_nodes = 0;
-                for (auto s : fsizes)
-                    total_nodes += static_cast<std::size_t>(s);
-                std::vector<std::int64_t> flat(total_nodes);
-                rCur.ReadInts(total_nodes, flat.data());
-
-                std::vector<std::vector<std::vector<std::int64_t>>> cells(
-                    static_cast<std::size_t>(ne));
-                std::size_t face_at = 0, node_at = 0;
-                for (std::size_t c = 0; c < cells.size(); ++c) {
-                    cells[c].resize(static_cast<std::size_t>(nfaces[c]));
-                    for (auto& face : cells[c]) {
-                        face.resize(static_cast<std::size_t>(fsizes[face_at++]));
-                        for (auto& v : face)
-                            v = resolve(flat[node_at++]);
+                std::vector<std::int64_t> faces(nfaces.size() + 1, 0);
+                for (std::size_t c = 0; c < nfaces.size(); ++c) {
+                    if (nfaces[c] < 0)
+                        throw ReadError("EnSight: negative nfaced face count");
+                    faces[c + 1] = faces[c] + nfaces[c];
+                }
+                const auto total_faces = static_cast<std::size_t>(faces.back());
+                std::vector<std::int64_t> rows(total_faces + 1, 0);
+                {
+                    std::vector<std::int64_t> fsizes(total_faces);
+                    rCur.ReadInts(total_faces, fsizes.data());
+                    for (std::size_t f = 0; f < total_faces; ++f) {
+                        if (fsizes[f] < 0)
+                            throw ReadError("EnSight: negative nfaced face node count");
+                        rows[f + 1] = rows[f] + fsizes[f];
                     }
                 }
+                const auto total_nodes = static_cast<std::size_t>(rows.back());
+                std::vector<std::int64_t> flat(total_nodes);
+                rCur.ReadInts(total_nodes, flat.data());
+                for (std::int64_t& v : flat)
+                    v = resolve(v);
+
                 // Group by unique node count into "polyhedron<N>" blocks (the
                 // openfoam convention), preserving first-seen order.
-                std::vector<std::size_t> node_counts(cells.size());
-                for (std::size_t c = 0; c < cells.size(); ++c) {
-                    std::vector<std::int64_t> uniq;
-                    for (const auto& face : cells[c])
-                        uniq.insert(uniq.end(), face.begin(), face.end());
-                    std::sort(uniq.begin(), uniq.end());
-                    uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-                    node_counts[c] = uniq.size();
-                }
-                std::vector<std::size_t> group_order;
-                std::map<std::size_t, std::vector<std::size_t>> groups;
-                for (std::size_t c = 0; c < cells.size(); ++c) {
-                    if (groups.find(node_counts[c]) == groups.end())
-                        group_order.push_back(node_counts[c]);
-                    groups[node_counts[c]].push_back(c);
-                }
-                for (std::size_t n : group_order) {
-                    std::vector<std::vector<std::vector<std::int64_t>>> group_cells;
-                    for (std::size_t c : groups[n])
-                        group_cells.push_back(std::move(cells[c]));
+                for (auto& g : detail::group_polyhedra_by_node_count(
+                         std::move(flat), std::move(rows), std::move(faces))) {
                     EnsightBlock b;
-                    b.mType = "polyhedron" + std::to_string(n);
+                    b.mType = "polyhedron" + std::to_string(g.mNodeCount);
                     b.mKind = 2;
                     b.mPartId = part_id;
-                    b.mNumCells = group_cells.size();
-                    b.mPolyhedronCells = std::move(group_cells);
+                    b.mNumCells = g.mCells.size();
+                    b.mFlat = std::move(g.mFlat);
+                    b.mRowOffsets = std::move(g.mRowOffsets);
+                    b.mFaceOffsets = std::move(g.mFaceOffsets);
                     blocks.push_back(std::move(b));
                 }
             } else {
@@ -73721,9 +73794,10 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
         if (b.mKind == 0)
             mesh.AddCellBlock(b.mType, std::move(b.mConn));
         else if (b.mKind == 1)
-            mesh.AddPolygonBlock(b.mType, std::move(b.mPolygonRows));
+            mesh.AddPolygonBlock(b.mType, std::move(b.mFlat), std::move(b.mRowOffsets));
         else
-            mesh.AddPolyhedronBlock(b.mType, std::move(b.mPolyhedronCells));
+            mesh.AddPolyhedronBlock(b.mType, std::move(b.mFlat), std::move(b.mRowOffsets),
+                                    std::move(b.mFaceOffsets));
     }
 
     if (pLayout != nullptr) {
@@ -123042,8 +123116,11 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<Tecplot
 struct TecplotPiece {
     std::string mType;
     NDArray mConn;                                              // rectangular pieces
-    std::vector<std::vector<std::int64_t>> mRows;               // polygon
-    std::vector<std::vector<std::vector<std::int64_t>>> mPoly;  // polyhedra
+    // Ragged pieces as the CSR triple the mesh backends store; mFaceOffsets is
+    // empty for a polygon piece.
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::int64_t> mRowOffsets{0};
+    std::vector<std::int64_t> mFaceOffsets;
     std::vector<std::size_t> mCells;  // the zone's cells, in order; empty = all of them
 
     std::size_t NumCells(std::size_t ZoneCells) const {
@@ -123112,42 +123189,82 @@ std::vector<TecplotPiece> tecplot_face_pieces(const TecplotZone& rZ, std::size_t
         }
         TecplotPiece piece;
         piece.mType = "polygon";
-        piece.mRows.reserve(ncells);
+        piece.mRowOffsets.reserve(ncells + 1);
         for (std::size_t c = 0; c < ncells; ++c) {
             std::vector<std::int64_t> ring = tecplot_polygon_ring(edges[c]);
             if (ring.empty())
                 throw ReadError(where + ": element " + std::to_string(c + 1) +
                                 " is not one closed polygon");
-            piece.mRows.push_back(std::move(ring));
+            piece.mFlat.insert(piece.mFlat.end(), ring.begin(), ring.end());
+            piece.mRowOffsets.push_back(static_cast<std::int64_t>(piece.mFlat.size()));
         }
         pieces.push_back(std::move(piece));
         return pieces;
     }
-    std::vector<std::vector<std::vector<std::int64_t>>> faces(ncells);
-    for (std::size_t f = 0; f + 1 < rFm.mStart.size(); ++f) {
-        const auto b = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]);
-        const auto e = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]);
+    // Each cell's faces in face order (left-element entries kept as-is, right-
+    // element ones reversed), staged as CSR over (face, reversed) references:
+    // count, prefix-sum, then scatter.
+    const std::size_t nfaces_total = rFm.mStart.empty() ? 0 : rFm.mStart.size() - 1;
+    std::vector<std::size_t> cell_start(ncells + 1, 0);
+    for (std::size_t f = 0; f < nfaces_total; ++f) {
         if (rFm.mLeft[f] >= 0)
-            faces[static_cast<std::size_t>(rFm.mLeft[f])].emplace_back(b, e);
+            ++cell_start[static_cast<std::size_t>(rFm.mLeft[f]) + 1];
         if (rFm.mRight[f] >= 0)
-            faces[static_cast<std::size_t>(rFm.mRight[f])].emplace_back(
-                std::make_reverse_iterator(e), std::make_reverse_iterator(b));
+            ++cell_start[static_cast<std::size_t>(rFm.mRight[f]) + 1];
+    }
+    for (std::size_t c = 0; c < ncells; ++c)
+        cell_start[c + 1] += cell_start[c];
+    struct FaceRef {
+        std::size_t mFace;
+        bool mReversed;
+    };
+    std::vector<FaceRef> refs(cell_start[ncells]);
+    {
+        std::vector<std::size_t> fill(cell_start.begin(), cell_start.end() - 1);
+        for (std::size_t f = 0; f < nfaces_total; ++f) {
+            if (rFm.mLeft[f] >= 0)
+                refs[fill[static_cast<std::size_t>(rFm.mLeft[f])]++] = {f, false};
+            if (rFm.mRight[f] >= 0)
+                refs[fill[static_cast<std::size_t>(rFm.mRight[f])]++] = {f, true};
+        }
     }
     std::map<std::size_t, std::size_t> piece_of;  // node count -> piece
+    std::vector<std::int64_t> distinct;
     for (std::size_t c = 0; c < ncells; ++c) {
-        if (faces[c].size() < 4)
+        const std::size_t nf = cell_start[c + 1] - cell_start[c];
+        if (nf < 4)
             throw ReadError(where + ": element " + std::to_string(c + 1) + " has " +
-                            std::to_string(faces[c].size()) + " faces");
-        std::set<std::int64_t> distinct;
-        for (const auto& fc : faces[c])
-            distinct.insert(fc.begin(), fc.end());
-        const auto [it, fresh] = piece_of.emplace(distinct.size(), pieces.size());
+                            std::to_string(nf) + " faces");
+        distinct.clear();
+        for (std::size_t i = cell_start[c]; i < cell_start[c + 1]; ++i) {
+            const std::size_t f = refs[i].mFace;
+            distinct.insert(distinct.end(),
+                            rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]),
+                            rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]));
+        }
+        std::sort(distinct.begin(), distinct.end());
+        const std::size_t ndistinct = static_cast<std::size_t>(
+            std::unique(distinct.begin(), distinct.end()) - distinct.begin());
+        const auto [it, fresh] = piece_of.emplace(ndistinct, pieces.size());
         if (fresh) {
             pieces.emplace_back();
-            pieces.back().mType = "polyhedron" + std::to_string(distinct.size());
+            pieces.back().mType = "polyhedron" + std::to_string(ndistinct);
+            pieces.back().mFaceOffsets.assign(1, 0);
         }
-        pieces[it->second].mPoly.push_back(std::move(faces[c]));
-        pieces[it->second].mCells.push_back(c);
+        TecplotPiece& piece = pieces[it->second];
+        for (std::size_t i = cell_start[c]; i < cell_start[c + 1]; ++i) {
+            const std::size_t f = refs[i].mFace;
+            const auto b = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]);
+            const auto e = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]);
+            if (refs[i].mReversed)
+                piece.mFlat.insert(piece.mFlat.end(), std::make_reverse_iterator(e),
+                                   std::make_reverse_iterator(b));
+            else
+                piece.mFlat.insert(piece.mFlat.end(), b, e);
+            piece.mRowOffsets.push_back(static_cast<std::int64_t>(piece.mFlat.size()));
+        }
+        piece.mFaceOffsets.push_back(static_cast<std::int64_t>(piece.mRowOffsets.size() - 1));
+        piece.mCells.push_back(c);
     }
     if (pieces.size() == 1)
         pieces[0].mCells.clear();  // every cell, in order
@@ -123407,19 +123524,16 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
             for (std::size_t j = 0; j < conn.Size(); ++j)
                 cp[j] += off;
             mesh.AddCellBlock(d.mMeshioType, std::move(conn));
-        } else if (!ref.mpPiece->mRows.empty()) {
-            std::vector<std::vector<std::int64_t>> rows = ref.mpPiece->mRows;
-            for (auto& row : rows)
-                for (std::int64_t& v : row)
-                    v += off;
-            mesh.AddPolygonBlock(ref.mpPiece->mType, std::move(rows));
         } else {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells = ref.mpPiece->mPoly;
-            for (auto& cell : cells)
-                for (auto& face : cell)
-                    for (std::int64_t& v : face)
-                        v += off;
-            mesh.AddPolyhedronBlock(ref.mpPiece->mType, std::move(cells));
+            const TecplotPiece& piece = *ref.mpPiece;
+            std::vector<std::int64_t> flat = piece.mFlat;  // copy: offset in place below
+            for (std::int64_t& v : flat)
+                v += off;
+            if (piece.mFaceOffsets.empty())
+                mesh.AddPolygonBlock(piece.mType, std::move(flat), piece.mRowOffsets);
+            else
+                mesh.AddPolyhedronBlock(piece.mType, std::move(flat), piece.mRowOffsets,
+                                        piece.mFaceOffsets);
         }
     }
 
@@ -129852,8 +129966,11 @@ std::size_t vtkhdf_polyhedron_run(Mesh& rMesh, const VtkhdfLeaf& rLeaf, std::siz
         throw ReadError(
             "meshio++: vtkhdf: a cell has VTK type 42 (polyhedron) but the file carries no "
             "FaceConnectivity/FaceOffsets/PolyhedronToFaces/PolyhedronOffsets datasets");
-    std::vector<std::vector<I64Vec>> cells;
+    // Cell c's faces are mToFaces[ps[c] .. pe[c]); every index is checked here,
+    // so the group builders below read mFaceConn without re-validating.
+    std::vector<I64> ps_of, pe_of;
     std::vector<std::size_t> counts;
+    I64Vec uniq;
     for (std::size_t c = Lo; c < Hi; ++c) {
         if (c >= rLeaf.mPolyEnd.size())
             throw ReadError("meshio++: vtkhdf: PolyhedronOffsets is shorter than the cell count");
@@ -129861,8 +129978,7 @@ std::size_t vtkhdf_polyhedron_run(Mesh& rMesh, const VtkhdfLeaf& rLeaf, std::siz
         const I64 pe = rLeaf.mPolyEnd[c];
         if (ps < 0 || pe < ps || static_cast<std::size_t>(pe) > rLeaf.mToFaces.size())
             throw ReadError("meshio++: vtkhdf: PolyhedronOffsets entry out of range");
-        std::vector<I64Vec> faces;
-        I64Vec uniq;
+        uniq.clear();
         for (I64 i = ps; i < pe; ++i) {
             const I64 f = rLeaf.mToFaces[static_cast<std::size_t>(i)];
             if (f < 0 || static_cast<std::size_t>(f) >= rLeaf.mFaceEnd.size())
@@ -129871,32 +129987,41 @@ std::size_t vtkhdf_polyhedron_run(Mesh& rMesh, const VtkhdfLeaf& rLeaf, std::siz
             const I64 fe = rLeaf.mFaceEnd[static_cast<std::size_t>(f)];
             if (fs < 0 || fe < fs || static_cast<std::size_t>(fe) > rLeaf.mFaceConn.size())
                 throw ReadError("meshio++: vtkhdf: FaceOffsets entry out of range");
-            faces.emplace_back(rLeaf.mFaceConn.begin() + fs, rLeaf.mFaceConn.begin() + fe);
-            uniq.insert(uniq.end(), faces.back().begin(), faces.back().end());
+            uniq.insert(uniq.end(), rLeaf.mFaceConn.begin() + fs, rLeaf.mFaceConn.begin() + fe);
         }
         std::sort(uniq.begin(), uniq.end());
-        uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-        counts.push_back(uniq.size());
-        cells.push_back(std::move(faces));
+        counts.push_back(
+            static_cast<std::size_t>(std::unique(uniq.begin(), uniq.end()) - uniq.begin()));
+        ps_of.push_back(ps);
+        pe_of.push_back(pe);
     }
     std::vector<std::size_t> order;
     std::map<std::size_t, std::vector<std::size_t>> groups;
-    for (std::size_t i = 0; i < cells.size(); ++i) {
+    for (std::size_t i = 0; i < counts.size(); ++i) {
         if (groups.find(counts[i]) == groups.end())
             order.push_back(counts[i]);
         groups[counts[i]].push_back(i);
     }
     for (std::size_t n : order) {
         const auto& idx = groups[n];
-        std::vector<std::vector<I64Vec>> group;
+        I64Vec flat, face_rows{0}, cell_faces{0};
         std::vector<std::size_t> rows;
-        group.reserve(idx.size());
+        rows.reserve(idx.size());
         for (std::size_t i : idx) {
-            group.push_back(std::move(cells[i]));
+            for (I64 k = ps_of[i]; k < pe_of[i]; ++k) {
+                const auto f =
+                    static_cast<std::size_t>(rLeaf.mToFaces[static_cast<std::size_t>(k)]);
+                const I64 fs = f > 0 ? rLeaf.mFaceEnd[f - 1] : 0;
+                const I64 fe = rLeaf.mFaceEnd[f];
+                flat.insert(flat.end(), rLeaf.mFaceConn.begin() + fs, rLeaf.mFaceConn.begin() + fe);
+                face_rows.push_back(static_cast<I64>(flat.size()));
+            }
+            cell_faces.push_back(static_cast<I64>(face_rows.size() - 1));
             rows.push_back(Lo + i);
             rPerm[Lo + i] = static_cast<I64>(At++);
         }
-        rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
+        rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(flat),
+                                 std::move(face_rows), std::move(cell_faces));
         vtkhdf_append_cell_data_rows(rMesh, rLeaf, rows);
     }
     return At;
@@ -160882,29 +161007,48 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                        : id;
         };
         if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+            // CSR: serial prefix sums fix every write position, so the parallel
+            // fill below stays deterministic.
+            std::vector<std::int64_t> faces(nc + 1, 0);
+            std::vector<std::int64_t> nodes(nc + 1, 0);
+            for (std::size_t p = 0; p < nc; ++p) {
+                const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
+                std::int64_t nn = 0;
+                for (std::size_t f = 0; f < cb.NumFaces(oc); ++f)
+                    nn += static_cast<std::int64_t>(cb.Face(oc, f).second);
+                faces[p + 1] = faces[p] + static_cast<std::int64_t>(cb.NumFaces(oc));
+                nodes[p + 1] = nodes[p] + nn;
+            }
+            std::vector<std::int64_t> flat(static_cast<std::size_t>(nodes[nc]));
+            std::vector<std::int64_t> rows(static_cast<std::size_t>(faces[nc]) + 1, 0);
             parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
-                cells[p].resize(cb.NumFaces(oc));
+                std::size_t at = static_cast<std::size_t>(nodes[p]);
+                std::size_t row = static_cast<std::size_t>(faces[p]);
                 for (std::size_t f = 0; f < cb.NumFaces(oc); ++f) {
                     std::pair<const std::int64_t*, std::size_t> face = cb.Face(oc, f);
-                    cells[p][f].reserve(face.second);
                     for (std::size_t k = 0; k < face.second; ++k)
-                        cells[p][f].push_back(remap(face.first[k]));
+                        flat[at++] = remap(face.first[k]);
+                    rows[++row] = static_cast<std::int64_t>(at);
                 }
             });
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(flat), std::move(rows),
+                                   std::move(faces));
         } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(nc);
+            std::vector<std::int64_t> rows(nc + 1, 0);
+            for (std::size_t p = 0; p < nc; ++p)
+                rows[p + 1] = rows[p] + static_cast<std::int64_t>(
+                                            cb.RowSize(static_cast<std::size_t>(cellorder[p])));
+            std::vector<std::int64_t> flat(static_cast<std::size_t>(rows[nc]));
             parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 const std::int64_t* row = cb.Row(oc);
                 const std::size_t sz = cb.RowSize(oc);
-                rows[p].reserve(sz);
+                std::int64_t* dst = flat.data() + rows[p];
                 for (std::size_t k = 0; k < sz; ++k)
-                    rows[p].push_back(remap(row[k]));
+                    dst[k] = remap(row[k]);
             });
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(flat), std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
             const detail::Int64View conn_v(conn);
