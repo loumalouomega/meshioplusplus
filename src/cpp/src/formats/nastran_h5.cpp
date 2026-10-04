@@ -34,6 +34,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
@@ -477,6 +478,7 @@ std::string nh5_join(const std::vector<std::string>& rV) {
 }  // namespace
 
 Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     const Nh5File file(rPath);
     const hid_t f = file.mFile;
     Mesh mesh;
@@ -940,6 +942,7 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_nastran_h5_metadata(const std::string& rPath, const ReadOptions& /*rOpts*/) {
+    detail::LibraryLock lock;
     const Nh5File file(rPath);
     // No header-only path: the model is read in full, with step 0's results.
     MeshMetadata meta = metadata_from_mesh(read_nastran_h5(rPath, ReadOptions{}));

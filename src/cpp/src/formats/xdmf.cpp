@@ -22,6 +22,7 @@
 #include <fstream>
 #include <numeric>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -37,6 +38,7 @@
 #include "xdmf_sets.hpp"
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -231,6 +233,7 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     std::string h5file = info.substr(0, colon);
     std::string h5path = info.substr(colon + 1);
 
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     fs::path full = rBaseDir / h5file;
     h5::Hid f = h5::open_file_read(full.string());
@@ -766,6 +769,10 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
 
 void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
                 int gzip_level) {
+    // Only the HDF flavour reaches HDF5; XML and Binary writes need no lock.
+    std::optional<detail::LibraryLock> lock;
+    if (rDataFormat == "HDF")
+        lock.emplace();
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     const bool hdf_ok = true;
 #else

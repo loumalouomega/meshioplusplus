@@ -36,6 +36,7 @@
 #endif
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
@@ -1503,10 +1504,12 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
 }
 
 Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     return med_read_impl(rPath, rInfo, rOptions);
 }
 
 std::vector<std::string> med_mesh_names(const std::string& rPath) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     auto file = h5::open_file_read(rPath);
     auto meshes = h5::open_group(file, "ENS_MAA");
@@ -1515,10 +1518,12 @@ std::vector<std::string> med_mesh_names(const std::string& rPath) {
 
 Mesh read_med_named(const std::string& rPath, const std::string& rName, MedInfo& rInfo,
                     const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     return med_read_impl(rPath, rInfo, rOptions, &rName);
 }
 
 MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -1631,12 +1636,14 @@ h5::Hid med_create_file(const std::string& rPath) {
         H5Pset_link_creation_order(props, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED) < 0)
         throw WriteError("MED: cannot enable root link creation order");
     h5::Hid file(H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, props, H5P_DEFAULT), H5Fclose);
-    if (!file.Valid()) throw WriteError("MED: cannot create file '" + rPath + "'");
+    if (!file.Valid())
+        throw WriteError("MED: cannot create file '" + rPath + "'");
     return file;
 }
 
 h5::Hid med_open_or_create_group(hid_t file, const char* pName) {
-    return h5::exists(file, pName) ? h5::open_group(file, pName) : h5::create_group_crt(file, pName);
+    return h5::exists(file, pName) ? h5::open_group(file, pName)
+                                   : h5::create_group_crt(file, pName);
 }
 
 void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
@@ -2062,6 +2069,7 @@ void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
 
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     auto file = med_create_file(rPath);
     med_write_mesh(file, rMesh, rInfo, rMedVersion, {});
@@ -2069,6 +2077,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
 
 void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& rMeshes,
                      const std::vector<MedInfo>& rInfos, const std::string& rMedVersion) {
+    detail::LibraryLock lock;
     if (rMeshes.empty() || rMeshes.size() != rInfos.size())
         throw WriteError("MED: provide one name/info per mesh and at least one mesh");
     std::set<std::string> names, collisions, disk_names;

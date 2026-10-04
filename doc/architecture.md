@@ -42,13 +42,9 @@ Two things tie the operations together. Chains of them are described declarative
 
 The Python extension releases the GIL while the core reads, writes or computes, so other Python threads keep running during a long call, and files can be converted in a `concurrent.futures.ThreadPoolExecutor`. On the Linux wheels, whose core is sequential, threads are then the only way to run several conversions at once. The binding converts its arguments and builds its result with the GIL held, and releases it only around the C++ call. An array passed in stays alive for the whole call, but writing to it from another thread while the call runs is a data race.
 
-Some bindings keep the GIL, because the library they reach is not thread-safe and holding the GIL on every path into it is what serialises it:
+The formats that reach HDF5 (`xdmf`, `cgns`, `h5m`, `hmf`, `vtkhdf`, `nastran_h5`, `med`, and `gid`'s HDF5 flavour), netCDF (`exodus`), ADIOS2 (`vtx`), TecIO (`szplt`) or gidpost (`gid`) use libraries that are not thread-safe. They serialise themselves on one process-wide lock in the core (`detail/library_lock.hpp`), taken at every entry point that can reach one of them, and the series writers take it in every method and in their destructor. It is one lock rather than one per library because netCDF-4, CGNS and MED sit on the same HDF5. So concurrent HDF5-family reads and writes queue rather than run in parallel, while ASCII and binary formats, and every operation, still run concurrently. The lock lives in the core, so the C, Fortran, Julia, R and WASM bindings get it too, and a pipeline or sequence takes it only around the reads and writes that need it. A Python binding releases the GIL before it takes the lock and nothing waits for the lock while holding the GIL, so the two cannot deadlock; the one path back into Python from under the lock, `gid_write_series`' callback, takes the GIL itself.
 
-- HDF5: `xdmf`, `cgns`, `h5m`, `hmf`, `vtkhdf`, `nastran_h5`, `med`, and `gid` (its HDF5 flavour); also the XDMF, VTKHDF and Exodus time-series writers.
-- netCDF (`exodus`), ADIOS2 (`vtx`), TecIO (`szplt`, `tecplot`) and gidpost (`gid`).
-- `partition` in builds with KaHIP, whose `method="auto"` may pick it.
-- `run_pipeline_*` and `run_sequence_*`, whose spec can reach any reader.
-- `read_metadata`, which releases the GIL only for formats outside the lists above.
+The lock cannot protect a library that someone else also calls: an `h5py` linked against the same `libhdf5` does not take it. The wheels bundle their own copy of HDF5, so the two do not share state there; in a source or conda build that shares `libhdf5` with `h5py`, do not read or write HDF5 from both at once.
 
 Each OpenMP or TBB region inside an operation uses the whole machine. N Python threads that each run a parallel operation therefore oversubscribe the cores N times. When running a thread pool on a parallel build, cap the inner threads, for example with `OMP_NUM_THREADS=1`.
 

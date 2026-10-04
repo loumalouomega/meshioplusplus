@@ -33,6 +33,7 @@
 #include "xdmf_sets.hpp"
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -150,96 +151,104 @@ struct XdmfTimeSeriesWriter::Impl {
 };
 
 XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::string& rDataFormat,
-                                           int GzipLevel, XdmfSeriesMode Mode)
-    : mImpl(std::make_unique<Impl>()) {
-    if (rDataFormat != "XML" && rDataFormat != "Binary" && rDataFormat != "HDF")
-        throw WriteError("XDMF: unknown data format '" + rDataFormat +
-                         "' (use 'XML', 'Binary', or 'HDF')");
+                                           int GzipLevel, XdmfSeriesMode Mode) {
+    detail::LibraryLock lock;
+    mImpl = std::make_unique<Impl>();
+    try {
+        if (rDataFormat != "XML" && rDataFormat != "Binary" && rDataFormat != "HDF")
+            throw WriteError("XDMF: unknown data format '" + rDataFormat +
+                             "' (use 'XML', 'Binary', or 'HDF')");
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
-    if (rDataFormat == "HDF")
-        throw WriteError(
-            "XDMF: HDF data format requires an HDF5-enabled build "
-            "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
+        if (rDataFormat == "HDF")
+            throw WriteError(
+                "XDMF: HDF data format requires an HDF5-enabled build "
+                "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
 #endif
 
-    mImpl->mPath = rPath;
-    // Sibling heavy-data files, i.e. <path minus extension>.h5 / <...><n>.bin --
-    // the same derivation write_xdmf uses, and deliberately not the Python
-    // writer's CWD-relative `filename.stem + ".h5"`.
-    std::string base = rPath;
-    const std::size_t dot = base.find_last_of('.');
-    if (dot != std::string::npos)
-        base = base.substr(0, dot);
-    mImpl->mStore = std::make_unique<xdmfcommon::DataItemStore>(rDataFormat, base, GzipLevel);
+        mImpl->mPath = rPath;
+        // Sibling heavy-data files, i.e. <path minus extension>.h5 / <...><n>.bin --
+        // the same derivation write_xdmf uses, and deliberately not the Python
+        // writer's CWD-relative `filename.stem + ".h5"`.
+        std::string base = rPath;
+        const std::size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos)
+            base = base.substr(0, dot);
+        mImpl->mStore = std::make_unique<xdmfcommon::DataItemStore>(rDataFormat, base, GzipLevel);
 
-    std::error_code ec;
-    if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
-        if (!mImpl->mDoc.load_file(rPath.c_str()))
-            throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
-        // Resolve through the SAME helper read_xdmf uses, so an append can never
-        // disagree with a read about which grid is the mesh. This file carried
-        // its own weaker transcription through v9.1.0, which skipped the
-        // version check and recognised a static grid only when it was literally
-        // named "mesh" -- so appending to another producer's series quietly
-        // added a second static grid.
-        xdmfdetail::XdmfDoc parsed;
-        try {
-            parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
-        } catch (const ReadError& e) {
-            throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
-        }
-        if (!parsed.mCollection)
-            throw WriteError("XDMF time series: '" + rPath +
-                             "' carries no temporal collection to append to");
-        mImpl->mCollection = parsed.mCollection;
-        mImpl->mNumSteps = parsed.mSteps.size();
-        mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
+        std::error_code ec;
+        if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
+            if (!mImpl->mDoc.load_file(rPath.c_str()))
+                throw WriteError("XDMF time series: could not parse '" + rPath +
+                                 "' to append to it");
+            // Resolve through the SAME helper read_xdmf uses, so an append can never
+            // disagree with a read about which grid is the mesh. This file carried
+            // its own weaker transcription through v9.1.0, which skipped the
+            // version check and recognised a static grid only when it was literally
+            // named "mesh" -- so appending to another producer's series quietly
+            // added a second static grid.
+            xdmfdetail::XdmfDoc parsed;
+            try {
+                parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
+            } catch (const ReadError& e) {
+                throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
+            }
+            if (!parsed.mCollection)
+                throw WriteError("XDMF time series: '" + rPath +
+                                 "' carries no temporal collection to append to");
+            mImpl->mCollection = parsed.mCollection;
+            mImpl->mNumSteps = parsed.mSteps.size();
+            mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
 
-        // Recover the counts the NamedArray overload validates against. They
-        // are declared in the document -- <Topology NumberOfElements> and the
-        // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
-        // and never opens the heavy-data container. Without this the counts
-        // stayed 0 and that overload rejected every array on an appended
-        // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
-        // repair it, since appending sets mHasMesh and it refuses a second call.
-        if (parsed.mMeshGrid) {
-            const xdmfdetail::XdmfGridCounts counts =
-                xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
-            mImpl->mNumPoints = counts.mNumPoints;
-            mImpl->mNumCells = counts.mNumCells;
-            mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
-            if (!mImpl->mCountsKnown)
-                log::warn(
-                    "XDMF time series: could not recover the point/cell counts from '{}'; "
-                    "array-length validation is skipped for this series",
-                    rPath);
+            // Recover the counts the NamedArray overload validates against. They
+            // are declared in the document -- <Topology NumberOfElements> and the
+            // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
+            // and never opens the heavy-data container. Without this the counts
+            // stayed 0 and that overload rejected every array on an appended
+            // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
+            // repair it, since appending sets mHasMesh and it refuses a second call.
+            if (parsed.mMeshGrid) {
+                const xdmfdetail::XdmfGridCounts counts =
+                    xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
+                mImpl->mNumPoints = counts.mNumPoints;
+                mImpl->mNumCells = counts.mNumCells;
+                mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
+                if (!mImpl->mCountsKnown)
+                    log::warn(
+                        "XDMF time series: could not recover the point/cell counts from '{}'; "
+                        "array-length validation is skipped for this series",
+                        rPath);
+            }
+
+            // Resume the heavy-data naming past whatever the earlier run wrote. A
+            // mis-resumed counter would silently overwrite data0 rather than fail.
+            mImpl->mStore->OpenExisting();
+            if (rDataFormat == "Binary") {
+                int next = 0;
+                while (std::filesystem::exists(base + std::to_string(next) + ".bin", ec))
+                    ++next;
+                mImpl->mStore->SetCounter(next);
+            }
+            return;
         }
 
-        // Resume the heavy-data naming past whatever the earlier run wrote. A
-        // mis-resumed counter would silently overwrite data0 rather than fail.
-        mImpl->mStore->OpenExisting();
-        if (rDataFormat == "Binary") {
-            int next = 0;
-            while (std::filesystem::exists(base + std::to_string(next) + ".bin", ec))
-                ++next;
-            mImpl->mStore->SetCounter(next);
-        }
-        return;
+        pugi::xml_node xdmf = mImpl->mDoc.append_child("Xdmf");
+        xdmf.append_attribute("Version") = "3.0";
+        xdmf.append_attribute("xmlns:xi") = xts_xinclude_ns;
+        pugi::xml_node domain = xdmf.append_child("Domain");
+        // The collection is created first so the steps accumulate ahead of the static
+        // grid in document order, matching the Python writer's layout.
+        mImpl->mCollection = domain.append_child("Grid");
+        mImpl->mCollection.append_attribute("Name") = "TimeSeries_meshio";
+        mImpl->mCollection.append_attribute("GridType") = "Collection";
+        mImpl->mCollection.append_attribute("CollectionType") = "Temporal";
+    } catch (...) {
+        mImpl.reset();
+        throw;
     }
-
-    pugi::xml_node xdmf = mImpl->mDoc.append_child("Xdmf");
-    xdmf.append_attribute("Version") = "3.0";
-    xdmf.append_attribute("xmlns:xi") = xts_xinclude_ns;
-    pugi::xml_node domain = xdmf.append_child("Domain");
-    // The collection is created first so the steps accumulate ahead of the static
-    // grid in document order, matching the Python writer's layout.
-    mImpl->mCollection = domain.append_child("Grid");
-    mImpl->mCollection.append_attribute("Name") = "TimeSeries_meshio";
-    mImpl->mCollection.append_attribute("GridType") = "Collection";
-    mImpl->mCollection.append_attribute("CollectionType") = "Temporal";
 }
 
 XdmfTimeSeriesWriter::~XdmfTimeSeriesWriter() {
+    detail::LibraryLock lock;
     if (!mImpl)
         return;  // moved-from
     try {
@@ -249,11 +258,13 @@ XdmfTimeSeriesWriter::~XdmfTimeSeriesWriter() {
         // gets to see this failure.
         log::error("XDMF time series: could not finalize '{}': {}", mImpl->mPath, e.what());
     }
+    mImpl.reset();
 }
 
 XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept = default;
 
 XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOther) noexcept {
+    detail::LibraryLock lock;
     if (this != &rOther) {
         if (mImpl) {
             try {
@@ -268,6 +279,7 @@ XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOt
 }
 
 void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    detail::LibraryLock lock;
     // Moved-from: this cannot silently no-op -- a caller writing a step must
     // not believe it landed. See the class contract in the header.
     if (!mImpl)
@@ -321,6 +333,7 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     // Moved-from: this cannot silently no-op -- a caller writing a step must
     // not believe it landed. See the class contract in the header.
     if (!mImpl)
@@ -352,6 +365,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                      const std::vector<NamedArray>& rCellData) {
+    detail::LibraryLock lock;
     // Moved-from: this cannot silently no-op -- a caller writing a step must
     // not believe it landed. See the class contract in the header.
     if (!mImpl)
@@ -407,6 +421,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
 }
 
 void XdmfTimeSeriesWriter::Flush() {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized)
         return;
     // Heavy data first: the .xdmf must never name a dataset that is not on disk.
@@ -425,6 +440,7 @@ bool XdmfTimeSeriesWriter::AutoFlush() const {
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized)
         return;
     // Set first: a failed save must not be retried by the destructor, which

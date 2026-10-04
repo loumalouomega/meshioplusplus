@@ -38,6 +38,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "../detail/text_cursor.hpp"
@@ -1741,6 +1742,7 @@ Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
 
     if (resolved == GidMode::Hdf5) {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
+        detail::LibraryLock lock;  // the HDF5 flavour only; ASCII and binary reads need no lock
         return gid_read_hdf5(rPath, rOptions);
 #else
         throw ReadError(gid_missing_flavour_message(GidMode::Hdf5));

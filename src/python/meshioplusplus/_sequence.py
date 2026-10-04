@@ -1051,11 +1051,10 @@ def _source_from_input(inp, input_path):
 
 
 def _run_one(args):
-    """One (read -> chain -> write) unit, at module scope so it is picklable.
+    """One (read -> chain -> write) unit.
 
-    ``ProcessPoolExecutor`` cannot ship a closure, and the whole point of the
-    parallel path is that each file is independent -- so the unit takes plain
-    data and returns plain data.
+    The whole point of the parallel path is that each file is independent --
+    so the unit takes plain data and returns plain data.
     """
     (
         entry,
@@ -1266,15 +1265,17 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
     ]
 
     if parallel and len(jobs) > 1:
-        # Files are embarrassingly parallel at the driver level. A process pool
-        # rather than threads because each worker reads, runs the chain and
-        # writes independently, and while the native reads, writes and
-        # operations release the GIL, this twin's own Python steps and the
-        # HDF5-family formats hold it (roadmap 3.4.1). Results are collected in
-        # submission order, so the report is identical to the serial run's.
-        from concurrent.futures import ProcessPoolExecutor
+        # Files are embarrassingly parallel at the driver level. A thread pool:
+        # the native reads, writes and operations release the GIL, and the
+        # formats that reach HDF5 and the other non-thread-safe libraries
+        # serialise themselves on a core lock instead of on the GIL (roadmap
+        # 3.4.1), so threads scale where a process pool only added start-up and
+        # pickling. Only this twin's own Python steps still hold the GIL.
+        # ``map`` yields in submission order, so the report is identical to the
+        # serial run's.
+        from concurrent.futures import ThreadPoolExecutor
 
-        with ProcessPoolExecutor(max_workers=workers or None) as pool:
+        with ThreadPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
             for job_steps, job_warnings in pool.map(_run_one, jobs):
                 steps_report.extend(job_steps)
                 warnings.extend(job_warnings)

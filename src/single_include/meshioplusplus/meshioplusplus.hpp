@@ -31637,6 +31637,51 @@ double card_to_real_view(std::string_view Text, const std::string& rWhere,
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/keyword_card_view.hpp =====
+// ===== begin src/cpp/src/detail/library_lock.hpp =====
+/**
+ * @file detail/library_lock.hpp
+ * @brief One process-wide lock serialising every call into a third-party
+ * library that is not thread-safe (roadmap 3.4.1.1).
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * HDF5, netCDF-4, CGNS, MED and ADIOS2 share one HDF5 (and TecIO and gidpost
+ * keep global state), so a lock per library would still race; there is one.
+ * It is recursive because entry points nest (a series writer calls the HDF5
+ * helpers, a sequence reads through a format reader).
+ *
+ * Take a `LibraryLock` as the first statement of every public function that
+ * can reach such a library, before any handle whose destructor calls into it,
+ * so the handles close under the lock.
+ *
+ * Lock order: a binding releases the GIL *before* it takes this lock; nothing
+ * waits for the lock while holding the GIL (the only path back into Python
+ * from under it, the gid series callback, re-acquires the GIL itself).
+ */
+
+#include <mutex>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The process-wide mutex; prefer `LibraryLock`.
+std::recursive_mutex& library_mutex();
+
+/// RAII guard over `library_mutex()`.
+class LibraryLock {
+public:
+    LibraryLock() : mLock(library_mutex()) {}
+    LibraryLock(const LibraryLock&) = delete;
+    LibraryLock& operator=(const LibraryLock&) = delete;
+
+private:
+    std::lock_guard<std::recursive_mutex> mLock;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/library_lock.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -54546,6 +54591,19 @@ std::string format_real_short(double Value) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/keyword_card.cpp =====
+// ===== begin src/cpp/src/detail/library_lock.cpp =====
+
+namespace meshioplusplus {
+namespace detail {
+
+std::recursive_mutex& library_mutex() {
+    static std::recursive_mutex sMutex;
+    return sMutex;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/library_lock.cpp =====
 // ===== begin src/cpp/src/detail/marching.cpp =====
 #include <algorithm>
 #include <array>
@@ -68654,6 +68712,7 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
 }  // namespace
 
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
+    detail::LibraryLock lock;
     // No provenance slot in this format: drop the notes this write raises on
     // the way out rather than let them reach the next file written.
     const detail::ProvenanceSlotlessWrite slotless;
@@ -69777,6 +69836,7 @@ MeshMetadata cgns_read_metadata_impl(const std::string& rPath, const ReadOptions
 Mesh read_cgns(const std::string& rPath) { return read_cgns(rPath, ReadOptions{}); }
 
 Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
     // With cgnslib built, IT is the reader: the input is not ours, and the MLL
     // reaches things this raw-HDF5 path fundamentally cannot -- the ADF
@@ -69798,6 +69858,7 @@ Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 MeshMetadata read_cgns_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
     try {
         return read_cgns_mll_metadata(rPath, rOptions);
@@ -69847,6 +69908,7 @@ bool cgns_has_cgnslib() {
 Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
 
 Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     // Always present and throwing by name -- the partition_kahip_parts
     // contract. A link error would break the Python-fallback contract, and a
     // silent downgrade to the raw-HDF5 reader would answer a question the
@@ -69858,6 +69920,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& /*rOptions*/) {
 }
 
 MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     throw ReadError(detail::format_compat(
         "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
         "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
@@ -70269,6 +70332,7 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
 Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
 
 Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     CgnsFile file(rPath);
     const int fn = file.Fn();
 
@@ -70473,6 +70537,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     CgnsFile file(rPath);
     const int fn = file.Fn();
 
@@ -75294,6 +75359,7 @@ NDArray column_stack(const std::vector<const NDArray*>& rCols) {
 }  // namespace
 
 Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     detail::library_preflight_netcdf(rPath);
     int ncid;
     check(nc_open(rPath.c_str(), NC_NOWRITE, &ncid), "open");
@@ -75575,6 +75641,7 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
 }
 
 Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     // The provenance strings have nowhere to go on this path -- the flat
     // bindings have no `info` slot. Dropping them is what `registry.cpp` already
     // does for MedInfo, and is not a reason to fail the read.
@@ -75583,6 +75650,7 @@ Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     // No native cheap path yet: Exodus's counts live in dimensions that would be
     // cheap to walk, but the cell-block *types* come from per-variable
     // `elem_type` attributes, so a summary still has to visit every connect{k}.
@@ -76185,6 +76253,7 @@ std::vector<ExoSeriesField> exo_series_fields(const Mesh& rMesh) {
 }  // namespace
 
 void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     exo_write_file(rPath, rMesh, true, false);
 }
 
@@ -76206,17 +76275,31 @@ struct ExodusTimeSeriesWriter::Impl {
     }
 };
 
-ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath)
-    : mImpl(std::make_unique<Impl>(rPath)) {
-    if (rPath.empty())
-        throw WriteError("Exodus: series path is empty");
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath) {
+    detail::LibraryLock lock;
+    mImpl = std::make_unique<Impl>(rPath);
+    try {
+        if (rPath.empty())
+            throw WriteError("Exodus: series path is empty");
+    } catch (...) {
+        mImpl.reset();
+        throw;
+    }
 }
-ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() = default;
+ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() {
+    detail::LibraryLock lock;
+    mImpl.reset();
+}
 ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept = default;
-ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(ExodusTimeSeriesWriter&&) noexcept =
-    default;
+ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(
+    ExodusTimeSeriesWriter&& rOther) noexcept {
+    detail::LibraryLock lock;
+    mImpl = std::move(rOther.mImpl);
+    return *this;
+}
 
 void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized || mImpl->mGrid)
         throw WriteError("Exodus: write_points_cells requires a new, open series");
     auto geometry =
@@ -76234,6 +76317,7 @@ void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized || !mImpl->mGrid)
         throw WriteError("Exodus: write_data requires write_points_cells and an open series");
     if (!std::isfinite(Time))
@@ -76291,10 +76375,12 @@ void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 }
 
 void ExodusTimeSeriesWriter::Flush() {
+    detail::LibraryLock lock;
     if (mImpl && mImpl->mNcid >= 0)
         check(nc_sync(mImpl->mNcid), "flush series", true);
 }
 void ExodusTimeSeriesWriter::Finalize() {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized)
         return;
     if (mImpl->mNcid >= 0) {
@@ -81693,6 +81779,7 @@ bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
 
 void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
                const std::string& rAnalysisName, double stepValue) {
+    detail::LibraryLock lock;
     const GidMode resolved = gid_resolve_mode(rPath, mode);
     if (!gid_available(resolved))
         throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
@@ -81741,6 +81828,7 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
 void write_gid_series(const std::string& rPath,
                       const std::function<bool(std::size_t, double&, Mesh&)>& rNext, GidMode Mode,
                       const std::string& rAnalysisName) {
+    detail::LibraryLock lock;
     const GidMode resolved = gid_resolve_mode(rPath, Mode);
     if (!gid_available(resolved))
         throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
@@ -83571,6 +83659,7 @@ Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
 
     if (resolved == GidMode::Hdf5) {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
+        detail::LibraryLock lock;  // the HDF5 flavour only; ASCII and binary reads need no lock
         return gid_read_hdf5(rPath, rOptions);
 #else
         throw ReadError(gid_missing_flavour_message(GidMode::Hdf5));
@@ -88021,6 +88110,7 @@ void write_tag_dataset(hid_t loc, const std::string& rName, const NDArray& rArr,
 }  // namespace
 
 Mesh read_h5m(const std::string& rPath) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
     h5::Hid tstt = h5::open_group(f, "tstt");
@@ -88071,6 +88161,7 @@ Mesh read_h5m(const std::string& rPath) {
 }
 
 void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids, int gzip_level) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::create_file(rPath);
     h5::Hid tstt = h5::create_group(f, "tstt");
@@ -88208,6 +88299,7 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
 namespace meshioplusplus {
 
 Mesh read_hmf(const std::string& rPath) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -88274,6 +88366,7 @@ Mesh read_hmf(const std::string& rPath) {
 }
 
 void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::create_file(rPath);
 
@@ -99285,10 +99378,12 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
 }
 
 Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     return med_read_impl(rPath, rInfo, rOptions);
 }
 
 std::vector<std::string> med_mesh_names(const std::string& rPath) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     auto file = h5::open_file_read(rPath);
     auto meshes = h5::open_group(file, "ENS_MAA");
@@ -99297,10 +99392,12 @@ std::vector<std::string> med_mesh_names(const std::string& rPath) {
 
 Mesh read_med_named(const std::string& rPath, const std::string& rName, MedInfo& rInfo,
                     const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     return med_read_impl(rPath, rInfo, rOptions, &rName);
 }
 
 MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -99413,12 +99510,14 @@ h5::Hid med_create_file(const std::string& rPath) {
         H5Pset_link_creation_order(props, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED) < 0)
         throw WriteError("MED: cannot enable root link creation order");
     h5::Hid file(H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, props, H5P_DEFAULT), H5Fclose);
-    if (!file.Valid()) throw WriteError("MED: cannot create file '" + rPath + "'");
+    if (!file.Valid())
+        throw WriteError("MED: cannot create file '" + rPath + "'");
     return file;
 }
 
 h5::Hid med_open_or_create_group(hid_t file, const char* pName) {
-    return h5::exists(file, pName) ? h5::open_group(file, pName) : h5::create_group_crt(file, pName);
+    return h5::exists(file, pName) ? h5::open_group(file, pName)
+                                   : h5::create_group_crt(file, pName);
 }
 
 void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
@@ -99844,6 +99943,7 @@ void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
 
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     auto file = med_create_file(rPath);
     med_write_mesh(file, rMesh, rInfo, rMedVersion, {});
@@ -99851,6 +99951,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
 
 void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& rMeshes,
                      const std::vector<MedInfo>& rInfos, const std::string& rMedVersion) {
+    detail::LibraryLock lock;
     if (rMeshes.empty() || rMeshes.size() != rInfos.size())
         throw WriteError("MED: provide one name/info per mesh and at least one mesh");
     std::set<std::string> names, collisions, disk_names;
@@ -107415,6 +107516,7 @@ std::string nh5_join(const std::vector<std::string>& rV) {
 }  // namespace
 
 Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     const Nh5File file(rPath);
     const hid_t f = file.mFile;
     Mesh mesh;
@@ -107878,6 +107980,7 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_nastran_h5_metadata(const std::string& rPath, const ReadOptions& /*rOpts*/) {
+    detail::LibraryLock lock;
     const Nh5File file(rPath);
     // No header-only path: the model is read in full, with step 0's results.
     MeshMetadata meta = metadata_from_mesh(read_nastran_h5(rPath, ReadOptions{}));
@@ -123123,7 +123226,7 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<Tecplot
 /// polyhedral reader uses), each listing which of the zone's cells it holds.
 struct TecplotPiece {
     std::string mType;
-    NDArray mConn;                                              // rectangular pieces
+    NDArray mConn;  // rectangular pieces
     // Ragged pieces as the CSR triple the mesh backends store; mFaceOffsets is
     // empty for a polygon piece.
     std::vector<std::int64_t> mFlat;
@@ -123972,6 +124075,7 @@ Mesh read_tecplot(const std::string& rPath) {
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 Mesh read_szplt(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     TecplotFile file;
     tecplot_szl_open(rPath, file);
     const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(file.mZones);
@@ -123980,6 +124084,7 @@ Mesh read_szplt(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 std::vector<double> szplt_time_values(const std::string& rPath) {
+    detail::LibraryLock lock;
     TecplotFile file;
     tecplot_szl_open(rPath, file);
     std::vector<double> out;
@@ -123990,6 +124095,7 @@ std::vector<double> szplt_time_values(const std::string& rPath) {
 }
 
 MeshMetadata read_szplt_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     ReadOptions options = rOptions;
     options.mPointsOnly = true;
     options.mTimeStep = 0;
@@ -130845,6 +130951,7 @@ std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType T
 // ---------------------------------------------------------------------------
 void write_vtkhdf(const std::string& rPath, const Mesh& rMesh, int GzipLevel, VtkhdfType Type,
                   VtkhdfVersion Version) {
+    detail::LibraryLock lock;
     if (GzipLevel > 9)
         throw WriteError("meshio++: vtkhdf: gzip level must be 0-9");
     bool has_poly = false;
@@ -130895,6 +131002,7 @@ Mesh read_vtkhdf(const std::string& rPath) {
 }
 
 Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     Hid root;
     std::string kind;
@@ -130921,6 +131029,7 @@ Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_vtkhdf_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     Hid root;
     std::string kind;
@@ -131308,20 +131417,27 @@ struct VtkhdfTimeSeriesWriter::Impl {
 };
 
 VtkhdfTimeSeriesWriter::VtkhdfTimeSeriesWriter(const std::string& rPath, int GzipLevel,
-                                               VtkhdfSeriesMode Mode)
-    : mImpl(std::make_unique<Impl>()) {
-    if (GzipLevel > 9)
-        throw WriteError("meshio++: vtkhdf: gzip level must be 0-9");
-    h5::SilenceErrors silence;
-    mImpl->mPath = rPath;
-    mImpl->mGzip = GzipLevel;
-    if (Mode == VtkhdfSeriesMode::Append && std::filesystem::exists(rPath))
-        mImpl->OpenExisting();
-    else
-        mImpl->mFile = h5::create_file(rPath);
+                                               VtkhdfSeriesMode Mode) {
+    detail::LibraryLock lock;
+    mImpl = std::make_unique<Impl>();
+    try {
+        if (GzipLevel > 9)
+            throw WriteError("meshio++: vtkhdf: gzip level must be 0-9");
+        h5::SilenceErrors silence;
+        mImpl->mPath = rPath;
+        mImpl->mGzip = GzipLevel;
+        if (Mode == VtkhdfSeriesMode::Append && std::filesystem::exists(rPath))
+            mImpl->OpenExisting();
+        else
+            mImpl->mFile = h5::create_file(rPath);
+    } catch (...) {
+        mImpl.reset();
+        throw;
+    }
 }
 
 VtkhdfTimeSeriesWriter::~VtkhdfTimeSeriesWriter() {
+    detail::LibraryLock lock;
     if (!mImpl)
         return;
     try {
@@ -131330,11 +131446,13 @@ VtkhdfTimeSeriesWriter::~VtkhdfTimeSeriesWriter() {
     } catch (...) {
         // an exception must not leave a destructor; Finalize() is how a caller sees it
     }
+    mImpl.reset();
 }
 
 VtkhdfTimeSeriesWriter::VtkhdfTimeSeriesWriter(VtkhdfTimeSeriesWriter&&) noexcept = default;
 VtkhdfTimeSeriesWriter& VtkhdfTimeSeriesWriter::operator=(
     VtkhdfTimeSeriesWriter&& rOther) noexcept {
+    detail::LibraryLock lock;
     if (this != &rOther) {
         try {
             if (mImpl)
@@ -131347,6 +131465,7 @@ VtkhdfTimeSeriesWriter& VtkhdfTimeSeriesWriter::operator=(
 }
 
 void VtkhdfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl)
         throw WriteError("meshio++: vtkhdf: this writer was moved from");
     h5::SilenceErrors silence;
@@ -131354,6 +131473,7 @@ void VtkhdfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void VtkhdfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl)
         throw WriteError("meshio++: vtkhdf: this writer was moved from");
     h5::SilenceErrors silence;
@@ -131385,6 +131505,7 @@ void VtkhdfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void VtkhdfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                        const std::vector<NamedArray>& rCellData) {
+    detail::LibraryLock lock;
     if (!mImpl)
         throw WriteError("meshio++: vtkhdf: this writer was moved from");
     h5::SilenceErrors silence;
@@ -131401,6 +131522,7 @@ void VtkhdfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray
 }
 
 void VtkhdfTimeSeriesWriter::Flush() {
+    detail::LibraryLock lock;
     if (mImpl && !mImpl->mFinalized) {
         h5::SilenceErrors silence;
         mImpl->Flush();
@@ -131417,6 +131539,7 @@ bool VtkhdfTimeSeriesWriter::AutoFlush() const {
 }
 
 void VtkhdfTimeSeriesWriter::Finalize() {
+    detail::LibraryLock lock;
     if (mImpl) {
         h5::SilenceErrors silence;
         mImpl->Finalize();
@@ -134031,6 +134154,7 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
 }  // namespace
 
 Mesh read_vtx(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     VtxStep step;
     try {
         step = vtx_read_step(rPath, rOpts);
@@ -134053,6 +134177,7 @@ Mesh read_vtx(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 std::vector<double> vtx_time_values(const std::string& rPath) {
+    detail::LibraryLock lock;
     try {
         return vtx_scan(rPath).mTimes;
     } catch (const ReadError&) {
@@ -134063,6 +134188,7 @@ std::vector<double> vtx_time_values(const std::string& rPath) {
 }
 
 MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     if (rOpts.mGhosts == GhostPolicy::Drop) {
         // The welded point count needs the ids: read the step.
         ReadOptions options = rOpts;
@@ -134346,6 +134472,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <numeric>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -134538,6 +134665,7 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     std::string h5file = info.substr(0, colon);
     std::string h5path = info.substr(colon + 1);
 
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     fs::path full = rBaseDir / h5file;
     h5::Hid f = h5::open_file_read(full.string());
@@ -135073,6 +135201,10 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
 
 void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
                 int gzip_level) {
+    // Only the HDF flavour reaches HDF5; XML and Binary writes need no lock.
+    std::optional<detail::LibraryLock> lock;
+    if (rDataFormat == "HDF")
+        lock.emplace();
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     const bool hdf_ok = true;
 #else
@@ -135281,96 +135413,104 @@ struct XdmfTimeSeriesWriter::Impl {
 };
 
 XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::string& rDataFormat,
-                                           int GzipLevel, XdmfSeriesMode Mode)
-    : mImpl(std::make_unique<Impl>()) {
-    if (rDataFormat != "XML" && rDataFormat != "Binary" && rDataFormat != "HDF")
-        throw WriteError("XDMF: unknown data format '" + rDataFormat +
-                         "' (use 'XML', 'Binary', or 'HDF')");
+                                           int GzipLevel, XdmfSeriesMode Mode) {
+    detail::LibraryLock lock;
+    mImpl = std::make_unique<Impl>();
+    try {
+        if (rDataFormat != "XML" && rDataFormat != "Binary" && rDataFormat != "HDF")
+            throw WriteError("XDMF: unknown data format '" + rDataFormat +
+                             "' (use 'XML', 'Binary', or 'HDF')");
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
-    if (rDataFormat == "HDF")
-        throw WriteError(
-            "XDMF: HDF data format requires an HDF5-enabled build "
-            "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
+        if (rDataFormat == "HDF")
+            throw WriteError(
+                "XDMF: HDF data format requires an HDF5-enabled build "
+                "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
 #endif
 
-    mImpl->mPath = rPath;
-    // Sibling heavy-data files, i.e. <path minus extension>.h5 / <...><n>.bin --
-    // the same derivation write_xdmf uses, and deliberately not the Python
-    // writer's CWD-relative `filename.stem + ".h5"`.
-    std::string base = rPath;
-    const std::size_t dot = base.find_last_of('.');
-    if (dot != std::string::npos)
-        base = base.substr(0, dot);
-    mImpl->mStore = std::make_unique<xdmfcommon::DataItemStore>(rDataFormat, base, GzipLevel);
+        mImpl->mPath = rPath;
+        // Sibling heavy-data files, i.e. <path minus extension>.h5 / <...><n>.bin --
+        // the same derivation write_xdmf uses, and deliberately not the Python
+        // writer's CWD-relative `filename.stem + ".h5"`.
+        std::string base = rPath;
+        const std::size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos)
+            base = base.substr(0, dot);
+        mImpl->mStore = std::make_unique<xdmfcommon::DataItemStore>(rDataFormat, base, GzipLevel);
 
-    std::error_code ec;
-    if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
-        if (!mImpl->mDoc.load_file(rPath.c_str()))
-            throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
-        // Resolve through the SAME helper read_xdmf uses, so an append can never
-        // disagree with a read about which grid is the mesh. This file carried
-        // its own weaker transcription through v9.1.0, which skipped the
-        // version check and recognised a static grid only when it was literally
-        // named "mesh" -- so appending to another producer's series quietly
-        // added a second static grid.
-        xdmfdetail::XdmfDoc parsed;
-        try {
-            parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
-        } catch (const ReadError& e) {
-            throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
-        }
-        if (!parsed.mCollection)
-            throw WriteError("XDMF time series: '" + rPath +
-                             "' carries no temporal collection to append to");
-        mImpl->mCollection = parsed.mCollection;
-        mImpl->mNumSteps = parsed.mSteps.size();
-        mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
+        std::error_code ec;
+        if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
+            if (!mImpl->mDoc.load_file(rPath.c_str()))
+                throw WriteError("XDMF time series: could not parse '" + rPath +
+                                 "' to append to it");
+            // Resolve through the SAME helper read_xdmf uses, so an append can never
+            // disagree with a read about which grid is the mesh. This file carried
+            // its own weaker transcription through v9.1.0, which skipped the
+            // version check and recognised a static grid only when it was literally
+            // named "mesh" -- so appending to another producer's series quietly
+            // added a second static grid.
+            xdmfdetail::XdmfDoc parsed;
+            try {
+                parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
+            } catch (const ReadError& e) {
+                throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
+            }
+            if (!parsed.mCollection)
+                throw WriteError("XDMF time series: '" + rPath +
+                                 "' carries no temporal collection to append to");
+            mImpl->mCollection = parsed.mCollection;
+            mImpl->mNumSteps = parsed.mSteps.size();
+            mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
 
-        // Recover the counts the NamedArray overload validates against. They
-        // are declared in the document -- <Topology NumberOfElements> and the
-        // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
-        // and never opens the heavy-data container. Without this the counts
-        // stayed 0 and that overload rejected every array on an appended
-        // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
-        // repair it, since appending sets mHasMesh and it refuses a second call.
-        if (parsed.mMeshGrid) {
-            const xdmfdetail::XdmfGridCounts counts =
-                xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
-            mImpl->mNumPoints = counts.mNumPoints;
-            mImpl->mNumCells = counts.mNumCells;
-            mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
-            if (!mImpl->mCountsKnown)
-                log::warn(
-                    "XDMF time series: could not recover the point/cell counts from '{}'; "
-                    "array-length validation is skipped for this series",
-                    rPath);
+            // Recover the counts the NamedArray overload validates against. They
+            // are declared in the document -- <Topology NumberOfElements> and the
+            // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
+            // and never opens the heavy-data container. Without this the counts
+            // stayed 0 and that overload rejected every array on an appended
+            // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
+            // repair it, since appending sets mHasMesh and it refuses a second call.
+            if (parsed.mMeshGrid) {
+                const xdmfdetail::XdmfGridCounts counts =
+                    xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
+                mImpl->mNumPoints = counts.mNumPoints;
+                mImpl->mNumCells = counts.mNumCells;
+                mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
+                if (!mImpl->mCountsKnown)
+                    log::warn(
+                        "XDMF time series: could not recover the point/cell counts from '{}'; "
+                        "array-length validation is skipped for this series",
+                        rPath);
+            }
+
+            // Resume the heavy-data naming past whatever the earlier run wrote. A
+            // mis-resumed counter would silently overwrite data0 rather than fail.
+            mImpl->mStore->OpenExisting();
+            if (rDataFormat == "Binary") {
+                int next = 0;
+                while (std::filesystem::exists(base + std::to_string(next) + ".bin", ec))
+                    ++next;
+                mImpl->mStore->SetCounter(next);
+            }
+            return;
         }
 
-        // Resume the heavy-data naming past whatever the earlier run wrote. A
-        // mis-resumed counter would silently overwrite data0 rather than fail.
-        mImpl->mStore->OpenExisting();
-        if (rDataFormat == "Binary") {
-            int next = 0;
-            while (std::filesystem::exists(base + std::to_string(next) + ".bin", ec))
-                ++next;
-            mImpl->mStore->SetCounter(next);
-        }
-        return;
+        pugi::xml_node xdmf = mImpl->mDoc.append_child("Xdmf");
+        xdmf.append_attribute("Version") = "3.0";
+        xdmf.append_attribute("xmlns:xi") = xts_xinclude_ns;
+        pugi::xml_node domain = xdmf.append_child("Domain");
+        // The collection is created first so the steps accumulate ahead of the static
+        // grid in document order, matching the Python writer's layout.
+        mImpl->mCollection = domain.append_child("Grid");
+        mImpl->mCollection.append_attribute("Name") = "TimeSeries_meshio";
+        mImpl->mCollection.append_attribute("GridType") = "Collection";
+        mImpl->mCollection.append_attribute("CollectionType") = "Temporal";
+    } catch (...) {
+        mImpl.reset();
+        throw;
     }
-
-    pugi::xml_node xdmf = mImpl->mDoc.append_child("Xdmf");
-    xdmf.append_attribute("Version") = "3.0";
-    xdmf.append_attribute("xmlns:xi") = xts_xinclude_ns;
-    pugi::xml_node domain = xdmf.append_child("Domain");
-    // The collection is created first so the steps accumulate ahead of the static
-    // grid in document order, matching the Python writer's layout.
-    mImpl->mCollection = domain.append_child("Grid");
-    mImpl->mCollection.append_attribute("Name") = "TimeSeries_meshio";
-    mImpl->mCollection.append_attribute("GridType") = "Collection";
-    mImpl->mCollection.append_attribute("CollectionType") = "Temporal";
 }
 
 XdmfTimeSeriesWriter::~XdmfTimeSeriesWriter() {
+    detail::LibraryLock lock;
     if (!mImpl)
         return;  // moved-from
     try {
@@ -135380,11 +135520,13 @@ XdmfTimeSeriesWriter::~XdmfTimeSeriesWriter() {
         // gets to see this failure.
         log::error("XDMF time series: could not finalize '{}': {}", mImpl->mPath, e.what());
     }
+    mImpl.reset();
 }
 
 XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept = default;
 
 XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOther) noexcept {
+    detail::LibraryLock lock;
     if (this != &rOther) {
         if (mImpl) {
             try {
@@ -135399,6 +135541,7 @@ XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOt
 }
 
 void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    detail::LibraryLock lock;
     // Moved-from: this cannot silently no-op -- a caller writing a step must
     // not believe it landed. See the class contract in the header.
     if (!mImpl)
@@ -135452,6 +135595,7 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     // Moved-from: this cannot silently no-op -- a caller writing a step must
     // not believe it landed. See the class contract in the header.
     if (!mImpl)
@@ -135483,6 +135627,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                      const std::vector<NamedArray>& rCellData) {
+    detail::LibraryLock lock;
     // Moved-from: this cannot silently no-op -- a caller writing a step must
     // not believe it landed. See the class contract in the header.
     if (!mImpl)
@@ -135538,6 +135683,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
 }
 
 void XdmfTimeSeriesWriter::Flush() {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized)
         return;
     // Heavy data first: the .xdmf must never name a dataset that is not on disk.
@@ -135556,6 +135702,7 @@ bool XdmfTimeSeriesWriter::AutoFlush() const {
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized)
         return;
     // Set first: a failed save must not be retried by the destructor, which

@@ -472,7 +472,7 @@ The pattern language is deliberately just `*` and `?` — **no** `**`, no `[set]
 
 Three things that fail **by name** rather than doing something surprising: a fan-in to a format that cannot hold a series (only XDMF can), a fan-out without a `{step}`/`{index}` token, and a multi-step input aimed at a single-step output. None of them silently keeps step 0.
 
-**`Parallel` is accepted and ignored with a warning** in the report: it is a Python-driver feature (a process pool), and this build has no processes to pool. The steps run in order, which is what the streaming guarantee needs anyway.
+**`Parallel` is accepted and ignored with a warning** in the report: it is a Python-driver feature (a thread pool), which this build does not run. The steps run in order, which is what the streaming guarantee needs anyway.
 
 ### Reading a sequence step by step
 

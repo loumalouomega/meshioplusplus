@@ -299,7 +299,7 @@ The v9.11.0 pipeline schema, plus eight keys (`Resample` is described in [Resamp
 
 ### `Parallel` / `Workers`
 
-Files are embarrassingly parallel at the driver level, so the **Python** driver can run them in a `ProcessPoolExecutor` (`Workers` defaults to one per core). Output is identical to the serial run, report included.
+Files are embarrassingly parallel at the driver level, so the **Python** driver can run them in a `ThreadPoolExecutor` (`Workers` defaults to one per core). Output is identical to the serial run, report included.
 
 Two deliberate restrictions:
 
@@ -336,7 +336,7 @@ seq.read(3, { pointsOnly: true });   // readMeshSelective's options, per step
 seq.close();
 ```
 
-`Parallel` is accepted and **ignored with a warning** there: it is a Python-driver process pool, and a wasm module has no processes to pool. See [the WASM docs](wasm.md#sequences-transient--multi-file-datasets).
+`Parallel` is accepted and **ignored with a warning** there: it is a Python-driver thread pool, which a wasm module does not run. See [the WASM docs](wasm.md#sequences-transient--multi-file-datasets).
 
 ## Worked examples
 

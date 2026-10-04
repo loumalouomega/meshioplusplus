@@ -22,6 +22,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
@@ -30,6 +31,7 @@
 namespace meshioplusplus {
 
 Mesh read_hmf(const std::string& rPath) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -96,6 +98,7 @@ Mesh read_hmf(const std::string& rPath) {
 }
 
 void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::create_file(rPath);
 

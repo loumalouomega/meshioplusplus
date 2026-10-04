@@ -95,7 +95,7 @@ Since v9.12.0 the same document can describe a whole **transient** run: a glob/l
 | Key | Where | Meaning |
 | --- | --- | --- |
 | `Mode` | top level | `"sequence"` / `"fan-in"` / `"fan-out"`; **asserts** the inferred shape rather than selecting it, and errors naming both on a mismatch |
-| `Parallel` | top level | run the steps in a process pool (**Python driver only**; an error for a fan-in, and the C++ engine warns and runs serially) |
+| `Parallel` | top level | run the steps in a thread pool (**Python driver only**; an error for a fan-in, and the C++ engine warns and runs serially) |
 | `Workers` | top level | worker count for `Parallel`; 0 means one per core |
 | `Pattern` | `Input` | a glob (`*` and `?` only); mutually exclusive with `Path`/`Paths` |
 | `Paths` | `Input` | an explicit, ordered list; not re-sorted |

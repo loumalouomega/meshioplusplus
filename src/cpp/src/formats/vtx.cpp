@@ -36,6 +36,7 @@
 #include <adios2.h>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/vtx.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -675,6 +676,7 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
 }  // namespace
 
 Mesh read_vtx(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     VtxStep step;
     try {
         step = vtx_read_step(rPath, rOpts);
@@ -697,6 +699,7 @@ Mesh read_vtx(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 std::vector<double> vtx_time_values(const std::string& rPath) {
+    detail::LibraryLock lock;
     try {
         return vtx_scan(rPath).mTimes;
     } catch (const ReadError&) {
@@ -707,6 +710,7 @@ std::vector<double> vtx_time_values(const std::string& rPath) {
 }
 
 MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     if (rOpts.mGhosts == GhostPolicy::Drop) {
         // The welded point count needs the ids: read the step.
         ReadOptions options = rOpts;

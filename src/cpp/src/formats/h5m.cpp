@@ -25,6 +25,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -115,6 +116,7 @@ void write_tag_dataset(hid_t loc, const std::string& rName, const NDArray& rArr,
 }  // namespace
 
 Mesh read_h5m(const std::string& rPath) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
     h5::Hid tstt = h5::open_group(f, "tstt");
@@ -165,6 +167,7 @@ Mesh read_h5m(const std::string& rPath) {
 }
 
 void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids, int gzip_level) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     h5::Hid f = h5::create_file(rPath);
     h5::Hid tstt = h5::create_group(f, "tstt");

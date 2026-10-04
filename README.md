@@ -1086,7 +1086,7 @@ with ThreadPoolExecutor() as pool:
     list(pool.map(convert, paths))  # list() re-raises any worker's exception
 ```
 
-The HDF5, netCDF, ADIOS2 and TecIO formats keep the GIL, since those libraries are not thread-safe. See [threads and the GIL](doc/architecture.md#threads-and-the-gil).
+The HDF5, netCDF, ADIOS2, TecIO and gidpost formats release it too, but those libraries are not thread-safe, so the core serialises them on one lock: their threads queue instead of running in parallel. See [threads and the GIL](doc/architecture.md#threads-and-the-gil).
 
 </details>
 

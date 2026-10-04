@@ -32,6 +32,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
@@ -1568,6 +1569,7 @@ std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType T
 // ---------------------------------------------------------------------------
 void write_vtkhdf(const std::string& rPath, const Mesh& rMesh, int GzipLevel, VtkhdfType Type,
                   VtkhdfVersion Version) {
+    detail::LibraryLock lock;
     if (GzipLevel > 9)
         throw WriteError("meshio++: vtkhdf: gzip level must be 0-9");
     bool has_poly = false;
@@ -1618,6 +1620,7 @@ Mesh read_vtkhdf(const std::string& rPath) {
 }
 
 Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     Hid root;
     std::string kind;
@@ -1644,6 +1647,7 @@ Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_vtkhdf_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    detail::LibraryLock lock;
     h5::SilenceErrors silence;
     Hid root;
     std::string kind;
@@ -2031,20 +2035,27 @@ struct VtkhdfTimeSeriesWriter::Impl {
 };
 
 VtkhdfTimeSeriesWriter::VtkhdfTimeSeriesWriter(const std::string& rPath, int GzipLevel,
-                                               VtkhdfSeriesMode Mode)
-    : mImpl(std::make_unique<Impl>()) {
-    if (GzipLevel > 9)
-        throw WriteError("meshio++: vtkhdf: gzip level must be 0-9");
-    h5::SilenceErrors silence;
-    mImpl->mPath = rPath;
-    mImpl->mGzip = GzipLevel;
-    if (Mode == VtkhdfSeriesMode::Append && std::filesystem::exists(rPath))
-        mImpl->OpenExisting();
-    else
-        mImpl->mFile = h5::create_file(rPath);
+                                               VtkhdfSeriesMode Mode) {
+    detail::LibraryLock lock;
+    mImpl = std::make_unique<Impl>();
+    try {
+        if (GzipLevel > 9)
+            throw WriteError("meshio++: vtkhdf: gzip level must be 0-9");
+        h5::SilenceErrors silence;
+        mImpl->mPath = rPath;
+        mImpl->mGzip = GzipLevel;
+        if (Mode == VtkhdfSeriesMode::Append && std::filesystem::exists(rPath))
+            mImpl->OpenExisting();
+        else
+            mImpl->mFile = h5::create_file(rPath);
+    } catch (...) {
+        mImpl.reset();
+        throw;
+    }
 }
 
 VtkhdfTimeSeriesWriter::~VtkhdfTimeSeriesWriter() {
+    detail::LibraryLock lock;
     if (!mImpl)
         return;
     try {
@@ -2053,11 +2064,13 @@ VtkhdfTimeSeriesWriter::~VtkhdfTimeSeriesWriter() {
     } catch (...) {
         // an exception must not leave a destructor; Finalize() is how a caller sees it
     }
+    mImpl.reset();
 }
 
 VtkhdfTimeSeriesWriter::VtkhdfTimeSeriesWriter(VtkhdfTimeSeriesWriter&&) noexcept = default;
 VtkhdfTimeSeriesWriter& VtkhdfTimeSeriesWriter::operator=(
     VtkhdfTimeSeriesWriter&& rOther) noexcept {
+    detail::LibraryLock lock;
     if (this != &rOther) {
         try {
             if (mImpl)
@@ -2070,6 +2083,7 @@ VtkhdfTimeSeriesWriter& VtkhdfTimeSeriesWriter::operator=(
 }
 
 void VtkhdfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl)
         throw WriteError("meshio++: vtkhdf: this writer was moved from");
     h5::SilenceErrors silence;
@@ -2077,6 +2091,7 @@ void VtkhdfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void VtkhdfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl)
         throw WriteError("meshio++: vtkhdf: this writer was moved from");
     h5::SilenceErrors silence;
@@ -2108,6 +2123,7 @@ void VtkhdfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void VtkhdfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                        const std::vector<NamedArray>& rCellData) {
+    detail::LibraryLock lock;
     if (!mImpl)
         throw WriteError("meshio++: vtkhdf: this writer was moved from");
     h5::SilenceErrors silence;
@@ -2124,6 +2140,7 @@ void VtkhdfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray
 }
 
 void VtkhdfTimeSeriesWriter::Flush() {
+    detail::LibraryLock lock;
     if (mImpl && !mImpl->mFinalized) {
         h5::SilenceErrors silence;
         mImpl->Flush();
@@ -2140,6 +2157,7 @@ bool VtkhdfTimeSeriesWriter::AutoFlush() const {
 }
 
 void VtkhdfTimeSeriesWriter::Finalize() {
+    detail::LibraryLock lock;
     if (mImpl) {
         h5::SilenceErrors silence;
         mImpl->Finalize();

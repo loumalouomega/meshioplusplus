@@ -25,6 +25,14 @@ except ImportError:
 
 needs_core = pytest.mark.skipif(_core is None, reason="needs the C++ core")
 
+
+def _has(flag):
+    return _core is not None and getattr(_core, flag, False)
+
+
+needs_hdf5 = pytest.mark.skipif(not _has("__has_hdf5__"), reason="needs HDF5")
+needs_netcdf = pytest.mark.skipif(not _has("__has_netcdf__"), reason="needs netCDF")
+
 _WORKERS = 8
 
 
@@ -47,8 +55,9 @@ def _lattice(n, seed):
 
 
 # (extension, mesh factory) pairs over formats whose native paths release the
-# GIL; vtkhdf joins when the build has HDF5, to show the paths that keep it
-# are still correct when called from many threads.
+# GIL; the HDF5 and netCDF formats join when the build has them. Their
+# libraries are not thread-safe, so these show the core lock keeps many threads
+# correct (roadmap 3.4.1).
 def _cases():
     cases = [
         (".vtu", lambda i: _lattice(6 + i % 3, i)),
@@ -59,8 +68,13 @@ def _cases():
         (".stl", lambda i: helpers.tri_mesh),
         (".obj", lambda i: helpers.tri_mesh),
     ]
-    if _core is not None and _core.__has_hdf5__:
+    if _has("__has_hdf5__"):
         cases.append((".vtkhdf", lambda i: _lattice(4 + i % 2, i)))
+        cases.append((".xdmf", lambda i: _lattice(4 + i % 2, i)))
+        cases.append((".h5m", lambda i: _lattice(4 + i % 2, i)))
+        cases.append((".cgns", lambda i: _lattice(4 + i % 2, i)))
+    if _has("__has_netcdf__"):
+        cases.append((".exo", lambda i: _lattice(4 + i % 2, i)))
     return cases
 
 
@@ -168,3 +182,111 @@ def test_heartbeat_runs_during_a_native_read(tmp_path):
 def test_heartbeat_runs_during_a_native_operation():
     mesh = _lattice(int(os.environ.get("MESHIOPLUSPLUS_GIL_TEST_N", "70")), 0)
     _assert_heartbeat(lambda: _core.compute_quality(mesh))
+
+
+@needs_hdf5
+def test_heartbeat_runs_during_an_hdf5_round_trip(tmp_path):
+    # Reaching HDF5 takes the core's library lock, not the GIL.
+    path = str(tmp_path / "big.vtkhdf")
+    mesh = _lattice(int(os.environ.get("MESHIOPLUSPLUS_GIL_TEST_N", "70")), 0)
+
+    def round_trip():
+        _core.vtkhdf_write(path, mesh, 0, "UnstructuredGrid", None)
+        _core.vtkhdf_read(path)
+
+    _assert_heartbeat(round_trip)
+
+
+@needs_netcdf
+def test_heartbeat_runs_during_an_exodus_round_trip(tmp_path):
+    path = str(tmp_path / "big.exo")
+    mesh = _lattice(int(os.environ.get("MESHIOPLUSPLUS_GIL_TEST_N", "70")), 0)
+
+    def round_trip():
+        _core.exodus_write(path, mesh)
+        _core.exodus_read(path)
+
+    _assert_heartbeat(round_trip)
+
+
+@needs_core
+def test_heartbeat_runs_during_a_native_pipeline(tmp_path):
+    import json
+
+    src = str(tmp_path / "in.vtu")
+    n = int(os.environ.get("MESHIOPLUSPLUS_GIL_TEST_N", "70"))
+    _core.vtu_write(src, _lattice(n, 0), True, False)
+    spec = json.dumps(
+        {
+            "Version": 1,
+            "Input": {"Path": src},
+            "Operations": [{"Op": "Quality"}],
+            "Output": {"Path": str(tmp_path / "out.vtu")},
+        }
+    )
+    try:
+        _core.run_pipeline_json(spec)
+    except RuntimeError as exc:
+        if "no JSON parser" in str(exc):
+            pytest.skip("needs a build with JSON")
+        raise
+    _assert_heartbeat(lambda: _core.run_pipeline_json(spec))
+
+
+@needs_hdf5
+def test_series_writers_in_a_thread_pool(tmp_path):
+    from meshioplusplus import _core as core
+
+    def write_series(i):
+        path = str(tmp_path / f"series_{i}.vtkhdf")
+        mesh = _lattice(4, i)
+        with core.VtkhdfTimeSeriesWriter(path) as w:
+            w.write_points_cells(mesh)
+            for k in range(3):
+                mesh.point_data["u"] = np.full(len(mesh.points), float(i + k))
+                w.write_data(0.5 * k, mesh)
+        return meshioplusplus.read(path, time_step=2).point_data["u"][0]
+
+    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+        got = list(pool.map(write_series, range(2 * _WORKERS)))
+    assert got == [float(i + 2) for i in range(2 * _WORKERS)]
+
+
+@needs_hdf5
+def test_series_writer_dropped_without_finalize(tmp_path):
+    import gc
+
+    path = str(tmp_path / "dropped.vtkhdf")
+    mesh = _lattice(4, 0)
+    w = _core.VtkhdfTimeSeriesWriter(path)
+    w.write_points_cells(mesh)
+    w.write_data(0.0, mesh)
+    del w
+    gc.collect()
+    assert len(meshioplusplus.read(path).points) == len(mesh.points)
+
+
+@needs_hdf5
+def test_parallel_sequence_over_hdf5_equals_serial(tmp_path):
+    for k in range(6):
+        meshioplusplus.write(str(tmp_path / f"in_{k}.vtkhdf"), _lattice(4, k))
+
+    def run(parallel, prefix):
+        doc = {
+            "Version": 1,
+            "Input": {"Pattern": str(tmp_path / "in_*.vtkhdf")},
+            "Operations": [{"Op": "Quality"}],
+            "Output": {"Path": str(tmp_path / (prefix + "_{step}.vtkhdf"))},
+        }
+        if parallel:
+            doc["Parallel"] = True
+            doc["Workers"] = 4
+        return meshioplusplus.run_pipeline(doc)
+
+    serial = run(False, "ser")
+    parallel = run(True, "par")
+    assert serial["steps"] == parallel["steps"]
+    for k in range(6):
+        a = meshioplusplus.read(str(tmp_path / f"ser_{k:04d}.vtkhdf"))
+        b = meshioplusplus.read(str(tmp_path / f"par_{k:04d}.vtkhdf"))
+        _assert_same_mesh(a, b)

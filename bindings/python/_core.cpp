@@ -278,9 +278,12 @@ auto guard_read(const char* pFormat, TFn fn) {
  * stay valid because their `PyMeshRefs` outlives the call. An exception
  * thrown inside re-acquires the GIL while it unwinds.
  *
- * Bindings whose formats reach a library that is not thread-safe (see
- * `core_format_thread_safe`) keep the GIL instead: holding it on every path
- * into those libraries is what serialises them.
+ * The formats that reach HDF5, netCDF, ADIOS2, TecIO or gidpost -- libraries
+ * that are not thread-safe -- serialise themselves on the core's library lock
+ * (`detail/library_lock.hpp`), so no binding needs to keep the GIL for them.
+ * The lock is only ever taken with the GIL released, which is what keeps the
+ * two from deadlocking; the one path back into Python from under it
+ * (`gid_write_series`' callback) re-acquires the GIL itself.
  */
 template <class TFn>
 decltype(auto) core_nogil(TFn&& fn) {
@@ -289,34 +292,33 @@ decltype(auto) core_nogil(TFn&& fn) {
 }
 
 /**
- * @brief `core_nogil` for `partition`, except in KaHIP builds: KaHIP keeps
- * global state and is not thread-safe, and `method="auto"` may pick it.
- */
-template <class TFn>
-decltype(auto) core_partition_call(TFn&& fn) {
-#ifdef MESHIOPLUSPLUS_HAS_KAHIP
-    return std::forward<TFn>(fn)();
-#else
-    return core_nogil(std::forward<TFn>(fn));
-#endif
-}
-
-/**
- * @brief Whether a registry format's native reader and writer are safe to
- * run without the GIL, for the dispatching bindings (`read_metadata`).
+ * @brief Deleter for the time-series writer classes: destroys the writer with
+ * the GIL released, because its destructor finalizes the file under the
+ * library lock and must not wait for it while holding the GIL.
  *
- * The formats listed here use a library without thread safety: HDF5 (xdmf,
- * cgns, h5m, hmf, vtkhdf, nastran_h5, med, and gid's HDF5 flavour), netCDF
- * (exodus), ADIOS2 (vtx), TecIO (szplt, and tecplot's binary path) and
- * gidpost (gid). Their bindings keep the GIL.
+ * Skipped while the interpreter finalizes, when the thread state is going away.
  */
-bool core_format_thread_safe(const std::string& rFormat) {
-    static const std::set<std::string> unsafe = {
-        "xdmf", "cgns",   "h5m", "hmf",   "vtkhdf",  "nastran_h5",
-        "med",  "exodus", "vtx", "szplt", "tecplot", "gid",
-    };
-    return unsafe.count(rFormat) == 0;
-}
+struct CoreNogilDelete {
+    template <class T>
+    void operator()(T* pPtr) const {
+        if (!pPtr)
+            return;
+#if PY_VERSION_HEX >= 0x030D0000
+        const bool finalizing = Py_IsFinalizing();
+#else
+        const bool finalizing = _Py_IsFinalizing();
+#endif
+        if (!finalizing && PyGILState_Check()) {
+            py::gil_scoped_release release;
+            delete pPtr;
+        } else {
+            delete pPtr;
+        }
+    }
+};
+
+template <class T>
+using CoreNogilPtr = std::unique_ptr<T, CoreNogilDelete>;
 
 /**
  * @brief Build a `ReadOptions` from the reader bindings' keyword arguments.
@@ -1204,12 +1206,10 @@ PYBIND11_MODULE(_core, m) {
                                      throw;
                              }
                          }
-                         const auto read = [&] {
+                         return core_metadata_to_py(core_nogil([&] {
                              return meshioplusplus::registry_read_metadata(
                                  path, fmt, meshioplusplus::ReadOptions{});
-                         };
-                         return core_metadata_to_py(core_format_thread_safe(fmt) ? core_nogil(read)
-                                                                                 : read());
+                         }));
                      }),
           py::arg("path"), py::arg("format") = "");
 
@@ -3106,13 +3106,15 @@ PYBIND11_MODULE(_core, m) {
         m.def(
             "run_pipeline_file",
             [report_to_py](const std::string& path) {
-                return report_to_py(meshioplusplus::run_pipeline_file(path));
+                return report_to_py(
+                    core_nogil([&] { return meshioplusplus::run_pipeline_file(path); }));
             },
             py::arg("path"));
         m.def(
             "run_pipeline_json",
             [report_to_py](const std::string& text) {
-                return report_to_py(meshioplusplus::run_pipeline_json(text));
+                return report_to_py(
+                    core_nogil([&] { return meshioplusplus::run_pipeline_json(text); }));
             },
             py::arg("text"));
         // The step vocabulary (op -> parameter keys), for pinning the pure
@@ -3140,13 +3142,15 @@ PYBIND11_MODULE(_core, m) {
         m.def(
             "run_sequence_file",
             [report_to_py](const std::string& path) {
-                return report_to_py(meshioplusplus::run_sequence_file(path));
+                return report_to_py(
+                    core_nogil([&] { return meshioplusplus::run_sequence_file(path); }));
             },
             py::arg("path"));
         m.def(
             "run_sequence_json",
             [report_to_py](const std::string& text) {
-                return report_to_py(meshioplusplus::run_sequence_json(text));
+                return report_to_py(
+                    core_nogil([&] { return meshioplusplus::run_sequence_json(text); }));
             },
             py::arg("text"));
     }
@@ -3213,7 +3217,7 @@ PYBIND11_MODULE(_core, m) {
             options.mGhostLayers = ghost_layers;
             options.mWeightsKey = weights_key;
             meshioplusplus::PartitionResult r =
-                core_partition_call([&] { return meshioplusplus::partition(cpp, options); });
+                core_nogil([&] { return meshioplusplus::partition(cpp, options); });
             py::list pieces;
             for (meshioplusplus::PartitionPiece& p : r.mPieces) {
                 py::dict d;
@@ -3249,7 +3253,7 @@ PYBIND11_MODULE(_core, m) {
             options.mSeed = seed;
             options.mWeightsKey = weights_key;
             std::vector<meshioplusplus::NDArray> labels =
-                core_partition_call([&] { return meshioplusplus::partition_labels(cpp, options); });
+                core_nogil([&] { return meshioplusplus::partition_labels(cpp, options); });
             py::list out;
             for (meshioplusplus::NDArray& a : labels)
                 out.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
@@ -4164,12 +4168,14 @@ PYBIND11_MODULE(_core, m) {
                          meshioplusplus::ReadOptions opts =
                              core_read_options(points_only, arrays, time_step);
                          opts.mGhosts = core_ghost_policy(ghosts);
-                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtx(path, opts));
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_vtx(path, opts); }));
                      }),
           py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
           py::arg("time_step") = 0, py::arg("ghosts") = "keep");
-    m.def("vtx_time_values",
-          [](const std::string& path) { return meshioplusplus::vtx_time_values(path); });
+    m.def("vtx_time_values", [](const std::string& path) {
+        return core_nogil([&] { return meshioplusplus::vtx_time_values(path); });
+    });
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
     // Tecplot .szplt through a user-installed TecIO; TecIO builds only.
@@ -4177,13 +4183,15 @@ PYBIND11_MODULE(_core, m) {
         "szplt_read",
         guard_read("szplt",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_szplt(
-                           path, core_read_options(points_only, arrays, time_step)));
+                       const auto opts = core_read_options(points_only, arrays, time_step);
+                       return meshioplusplus_py::mesh_to_py(
+                           core_nogil([&] { return meshioplusplus::read_szplt(path, opts); }));
                    }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
-    m.def("szplt_time_values",
-          [](const std::string& path) { return meshioplusplus::szplt_time_values(path); });
+    m.def("szplt_time_values", [](const std::string& path) {
+        return core_nogil([&] { return meshioplusplus::szplt_time_values(path); });
+    });
 #endif
 
     m.def("radioss_anim_read", guard_read("radioss_anim", [](const std::string& path) {
@@ -4346,10 +4354,9 @@ PYBIND11_MODULE(_core, m) {
     // blocks become FEPOLYGON / FEPOLYHEDRON zones.
     m.def("tecplot_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_tecplot(path,
-                                      meshioplusplus_py::py_to_mesh(pymesh, refs,
-                                                                    /*lenient_field_data=*/false,
-                                                                    /*allow_ragged=*/true));
+        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+        core_nogil([&] { return meshioplusplus::write_tecplot(path, cpp); });
     });
     m.def("tecplot_read",
           guard_read("tecplot",
@@ -4357,7 +4364,7 @@ PYBIND11_MODULE(_core, m) {
                          meshioplusplus::ReadOptions opts;
                          opts.mTimeStep = time_step;
                          return meshioplusplus_py::mesh_to_py(
-                             meshioplusplus::read_tecplot(path, opts));
+                             core_nogil([&] { return meshioplusplus::read_tecplot(path, opts); }));
                      }),
           py::arg("path"), py::arg("time_step") = 0);
 
@@ -4459,15 +4466,17 @@ PYBIND11_MODULE(_core, m) {
            int gzip_level) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-            meshioplusplus::write_xdmf(path, cpp, data_format, gzip_level);
+            core_nogil(
+                [&] { return meshioplusplus::write_xdmf(path, cpp, data_format, gzip_level); });
         },
         py::arg("path"), py::arg("mesh"), py::arg("data_format"), py::arg("gzip_level") = -1);
     m.def(
         "xdmf_read",
         guard_read("xdmf",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xdmf(
-                           path, core_read_options(points_only, arrays, time_step)));
+                       const auto opts = core_read_options(points_only, arrays, time_step);
+                       return meshioplusplus_py::mesh_to_py(
+                           core_nogil([&] { return meshioplusplus::read_xdmf(path, opts); }));
                    }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         // XDMF is *the* multi-step format, and `read_xdmf` has honoured
@@ -4501,14 +4510,21 @@ PYBIND11_MODULE(_core, m) {
     // constructor, which the translator above turns into a clean
     // `meshioplusplus.WriteError` rather than a missing symbol or a crash.
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-    py::class_<meshioplusplus::ExodusTimeSeriesWriter>(m, "ExodusTimeSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
+    py::class_<meshioplusplus::ExodusTimeSeriesWriter,
+               CoreNogilPtr<meshioplusplus::ExodusTimeSeriesWriter>>(m, "ExodusTimeSeriesWriter")
+        .def(py::init([](const std::string& rPath) {
+                 return core_nogil([&] {
+                     return CoreNogilPtr<meshioplusplus::ExodusTimeSeriesWriter>(
+                         new meshioplusplus::ExodusTimeSeriesWriter(rPath));
+                 });
+             }),
+             py::arg("path"))
         .def(
             "write_points_cells",
             [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
                 meshioplusplus_py::PyMeshRefs refs;
                 auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
-                rSelf.WritePointsCells(cpp);
+                core_nogil([&] { return rSelf.WritePointsCells(cpp); });
             },
             py::arg("mesh"))
         .def(
@@ -4516,22 +4532,29 @@ PYBIND11_MODULE(_core, m) {
             [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
                 meshioplusplus_py::PyMeshRefs refs;
                 auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
-                rSelf.WriteData(time, cpp);
+                core_nogil([&] { return rSelf.WriteData(time, cpp); });
             },
             py::arg("time"), py::arg("mesh"))
-        .def("flush", &meshioplusplus::ExodusTimeSeriesWriter::Flush)
-        .def("finalize", &meshioplusplus::ExodusTimeSeriesWriter::Finalize)
+        .def("flush",
+             [](meshioplusplus::ExodusTimeSeriesWriter& rSelf) {
+                 core_nogil([&] { return rSelf.Flush(); });
+             })
+        .def("finalize",
+             [](meshioplusplus::ExodusTimeSeriesWriter& rSelf) {
+                 core_nogil([&] { return rSelf.Finalize(); });
+             })
         .def_property_readonly("num_steps", &meshioplusplus::ExodusTimeSeriesWriter::NumSteps)
         .def_property_readonly("finalized", &meshioplusplus::ExodusTimeSeriesWriter::Finalized)
         .def("__enter__", [](py::object self) { return self; })
         .def("__exit__", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, const py::object&,
                             const py::object&, const py::object&) {
-            rSelf.Finalize();
+            core_nogil([&] { return rSelf.Finalize(); });
             return false;
         });
 #endif
-    py::class_<meshioplusplus::XdmfTimeSeriesWriter>(m, "XdmfTimeSeriesWriter",
-                                                     R"doc(
+    py::class_<meshioplusplus::XdmfTimeSeriesWriter,
+               CoreNogilPtr<meshioplusplus::XdmfTimeSeriesWriter>>(m, "XdmfTimeSeriesWriter",
+                                                                   R"doc(
 Transient XDMF3 writer: one static grid plus one <Grid> per time step.
 
 The C++ core's writer, reachable explicitly. It is *not* what
@@ -4553,10 +4576,13 @@ finalizes.
                  if (rMode != "truncate" && rMode != "append")
                      throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
                                                  rMode + "'");
-                 return std::make_unique<meshioplusplus::XdmfTimeSeriesWriter>(
-                     rPath, rDataFormat, gzip_level,
-                     rMode == "append" ? meshioplusplus::XdmfSeriesMode::Append
-                                       : meshioplusplus::XdmfSeriesMode::Truncate);
+                 return core_nogil([&] {
+                     return CoreNogilPtr<meshioplusplus::XdmfTimeSeriesWriter>(
+                         new meshioplusplus::XdmfTimeSeriesWriter(
+                             rPath, rDataFormat, gzip_level,
+                             rMode == "append" ? meshioplusplus::XdmfSeriesMode::Append
+                                               : meshioplusplus::XdmfSeriesMode::Truncate));
+                 });
              }),
              py::arg("path"), py::arg("data_format") = "HDF", py::arg("gzip_level") = -1,
              py::arg("mode") = "truncate")
@@ -4565,7 +4591,7 @@ finalizes.
             [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, py::object pymesh) {
                 meshioplusplus_py::PyMeshRefs refs;
                 meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-                rSelf.WritePointsCells(cpp);
+                core_nogil([&] { return rSelf.WritePointsCells(cpp); });
             },
             py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
         .def(
@@ -4573,7 +4599,7 @@ finalizes.
             [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
                 meshioplusplus_py::PyMeshRefs refs;
                 meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-                rSelf.WriteData(time, cpp);
+                core_nogil([&] { return rSelf.WriteData(time, cpp); });
             },
             py::arg("time"), py::arg("mesh"),
             "Append one step's point_data/cell_data at simulation time `time`.")
@@ -4598,14 +4624,19 @@ finalizes.
                     }
                     return out;
                 };
-                rSelf.WriteData(time, convert(rPointData), convert(rCellData));
+                const auto point_data = convert(rPointData);
+                const auto cell_data = convert(rCellData);
+                core_nogil([&] { return rSelf.WriteData(time, point_data, cell_data); });
             },
             py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
             "Append one step from name -> array dicts, with no Mesh in between -- "
             "the granularity a solver has once write_points_cells has fixed the "
             "geometry. Arrays are emitted in dict order.")
         .def(
-            "flush", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) { rSelf.Flush(); },
+            "flush",
+            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) {
+                core_nogil([&] { return rSelf.Flush(); });
+            },
             "Write the .xdmf as it currently stands without finalizing, so a run "
             "that is killed or still going leaves a readable file covering every "
             "flushed step. Safe to call repeatedly.")
@@ -4619,7 +4650,10 @@ finalizes.
             "a flush re-serializes the whole document, making per-step flushing "
             "quadratic in the step count.")
         .def(
-            "finalize", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) { rSelf.Finalize(); },
+            "finalize",
+            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) {
+                core_nogil([&] { return rSelf.Finalize(); });
+            },
             "Write the .xdmf light data and close the heavy-data container. "
             "Idempotent; the destructor would do this too, but only an explicit "
             "call can raise on failure.")
@@ -4637,7 +4671,7 @@ finalizes.
         // body's exception; if Finalize() also fails, Python chains the two.
         .def("__exit__", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, const py::object&,
                             const py::object&, const py::object&) {
-            rSelf.Finalize();
+            core_nogil([&] { return rSelf.Finalize(); });
             return false;
         });
 
@@ -4650,26 +4684,27 @@ finalizes.
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
             pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
-        meshioplusplus::write_cgns(path, cpp, gzip_level);
+        core_nogil([&] { return meshioplusplus::write_cgns(path, cpp, gzip_level); });
     });
-    m.def(
-        "cgns_read",
-        guard_read("cgns",
-                   [](const std::string& path, int time_step) {
-                       meshioplusplus::ReadOptions opts;
-                       opts.mTimeStep = time_step;
-                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_cgns(path, opts));
-                   }),
-        py::arg("path"), py::arg("time_step") = 0);
+    m.def("cgns_read",
+          guard_read("cgns",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_cgns(path, opts); }));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
 
     // HMF writer / reader (.hmf).
     m.def("hmf_write", [](const std::string& path, py::object pymesh, int gzip_level) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-        meshioplusplus::write_hmf(path, cpp, gzip_level);
+        core_nogil([&] { return meshioplusplus::write_hmf(path, cpp, gzip_level); });
     });
     m.def("hmf_read", guard_read("hmf", [](const std::string& path) {
-              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_hmf(path));
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_hmf(path); }));
           }));
 
     // MOAB h5m writer / reader (.h5m).
@@ -4677,10 +4712,12 @@ finalizes.
           [](const std::string& path, py::object pymesh, bool add_global_ids, int gzip_level) {
               meshioplusplus_py::PyMeshRefs refs;
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_h5m(path, cpp, add_global_ids, gzip_level);
+              core_nogil(
+                  [&] { return meshioplusplus::write_h5m(path, cpp, add_global_ids, gzip_level); });
           });
     m.def("h5m_read", guard_read("h5m", [](const std::string& path) {
-              return meshioplusplus_py::mesh_to_py(meshioplusplus::read_h5m(path));
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_h5m(path); }));
           }));
 
     // VTKHDF writer / reader (.vtkhdf). Ragged conversions are on
@@ -4712,7 +4749,8 @@ finalizes.
                 v.mMajor = pair.first;
                 v.mMinor = pair.second;
             }
-            meshioplusplus::write_vtkhdf(path, cpp, gzip_level, type, v);
+            core_nogil(
+                [&] { return meshioplusplus::write_vtkhdf(path, cpp, gzip_level, type, v); });
         },
         py::arg("path"), py::arg("mesh"), py::arg("gzip_level") = 4,
         py::arg("dataset_type") = "UnstructuredGrid", py::arg("version") = py::none());
@@ -4720,9 +4758,10 @@ finalizes.
           guard_read("vtkhdf",
                      [](const std::string& path, bool points_only, py::object arrays, int time_step,
                         py::object piece, bool lenient) {
-                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtkhdf(
-                             path,
-                             core_read_options(points_only, arrays, time_step, piece, lenient)));
+                         const auto opts =
+                             core_read_options(points_only, arrays, time_step, piece, lenient);
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_vtkhdf(path, opts); }));
                      }),
           py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
           py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("lenient") = false);
@@ -4732,8 +4771,9 @@ finalizes.
         "nastran_h5_read",
         guard_read("nastran_h5",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_h5(
-                           path, core_read_options(points_only, arrays, time_step)));
+                       const auto opts = core_read_options(points_only, arrays, time_step);
+                       return meshioplusplus_py::mesh_to_py(
+                           core_nogil([&] { return meshioplusplus::read_nastran_h5(path, opts); }));
                    }),
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0);
@@ -4743,8 +4783,9 @@ finalizes.
     // `meshioplusplus.vtkhdf.TimeSeriesWriter`, whose documented API takes raw
     // arrays where this one takes a whole Mesh). Unlike XDMF's, every step lands in
     // the file as it is written, so `auto_flush` defaults to True.
-    py::class_<meshioplusplus::VtkhdfTimeSeriesWriter>(m, "VtkhdfTimeSeriesWriter",
-                                                       R"doc(
+    py::class_<meshioplusplus::VtkhdfTimeSeriesWriter,
+               CoreNogilPtr<meshioplusplus::VtkhdfTimeSeriesWriter>>(m, "VtkhdfTimeSeriesWriter",
+                                                                     R"doc(
 Transient VTKHDF writer: one static grid, then one step at a time.
 
 The C++ core's writer, reachable explicitly. Both methods take a whole ``Mesh``:
@@ -4760,10 +4801,13 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                  if (rMode != "truncate" && rMode != "append")
                      throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
                                                  rMode + "'");
-                 return std::make_unique<meshioplusplus::VtkhdfTimeSeriesWriter>(
-                     rPath, gzip_level,
-                     rMode == "append" ? meshioplusplus::VtkhdfSeriesMode::Append
-                                       : meshioplusplus::VtkhdfSeriesMode::Truncate);
+                 return core_nogil([&] {
+                     return CoreNogilPtr<meshioplusplus::VtkhdfTimeSeriesWriter>(
+                         new meshioplusplus::VtkhdfTimeSeriesWriter(
+                             rPath, gzip_level,
+                             rMode == "append" ? meshioplusplus::VtkhdfSeriesMode::Append
+                                               : meshioplusplus::VtkhdfSeriesMode::Truncate));
+                 });
              }),
              py::arg("path"), py::arg("gzip_level") = -1, py::arg("mode") = "truncate")
         .def(
@@ -4772,7 +4816,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                 meshioplusplus_py::PyMeshRefs refs;
                 meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                     pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
-                rSelf.WritePointsCells(cpp);
+                core_nogil([&] { return rSelf.WritePointsCells(cpp); });
             },
             py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
         .def(
@@ -4781,7 +4825,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                 meshioplusplus_py::PyMeshRefs refs;
                 meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                     pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
-                rSelf.WriteData(time, cpp);
+                core_nogil([&] { return rSelf.WriteData(time, cpp); });
             },
             py::arg("time"), py::arg("mesh"),
             "Append one step's point_data/cell_data/field_data at simulation time `time`.")
@@ -4804,13 +4848,18 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                     }
                     return out;
                 };
-                rSelf.WriteData(time, convert(rPointData), convert(rCellData));
+                const auto point_data = convert(rPointData);
+                const auto cell_data = convert(rCellData);
+                core_nogil([&] { return rSelf.WriteData(time, point_data, cell_data); });
             },
             py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
             "Append one step from name -> array dicts, with no Mesh in between. Arrays "
             "are written in dict order.")
         .def(
-            "flush", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { rSelf.Flush(); },
+            "flush",
+            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                core_nogil([&] { return rSelf.Flush(); });
+            },
             "H5Fflush: everything written so far is durable. Cheap.")
         .def_property(
             "auto_flush",
@@ -4821,7 +4870,10 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             "Flush after every write_data (default True: a flush here is cheap, and a "
             "run that is killed leaves a file ParaView opens).")
         .def(
-            "finalize", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { rSelf.Finalize(); },
+            "finalize",
+            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                core_nogil([&] { return rSelf.Finalize(); });
+            },
             "Flush and close the file. Idempotent; the destructor would do this too, but "
             "only an explicit call can raise on failure.")
         .def_property_readonly(
@@ -4835,7 +4887,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         .def("__enter__", [](py::object self) { return self; })
         .def("__exit__", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, const py::object&,
                             const py::object&, const py::object&) {
-            rSelf.Finalize();
+            core_nogil([&] { return rSelf.Finalize(); });
             return false;
         });
 
@@ -4869,17 +4921,19 @@ data. Usable as a context manager; ``__exit__`` finalizes.
               info.mUnitCoords = std::move(unit_coords);
               info.mPointTagGroups = std::move(point_tag_groups);
               info.mCellTagGroups = std::move(cell_tag_groups);
-              meshioplusplus::write_med(path, cpp, info, med_version);
+              core_nogil([&] { return meshioplusplus::write_med(path, cpp, info, med_version); });
           });
-    m.def("med_mesh_names", &meshioplusplus::med_mesh_names);
+    m.def("med_mesh_names", [](const std::string& path) {
+        return core_nogil([&] { return meshioplusplus::med_mesh_names(path); });
+    });
     m.def(
         "med_read_named",
         [](const std::string& path, const std::string& name, int time_step) {
             meshioplusplus::ReadOptions options;
             options.mTimeStep = time_step;
             meshioplusplus::MedInfo info;
-            auto out = meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_med_named(path, name, info, options));
+            auto out = meshioplusplus_py::mesh_to_py(core_nogil(
+                [&] { return meshioplusplus::read_med_named(path, name, info, options); }));
             out.attr("mesh_name") = info.mMeshName;
             out.attr("description") = info.mDescription;
             out.attr("unit_time") = info.mUnitTime;
@@ -4955,7 +5009,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         std::vector<const meshioplusplus::Mesh*> inputs;
         for (const auto& mesh : converted)
             inputs.push_back(&mesh);
-        meshioplusplus::write_med_multi(path, inputs, infos, version);
+        core_nogil([&] { return meshioplusplus::write_med_multi(path, inputs, infos, version); });
     });
     m.def("med_read",
           guard_read("med",
@@ -4964,8 +5018,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                          opts.mTimeStep = time_step;
                          opts.mLenient = lenient;
                          meshioplusplus::MedInfo info;
-                         py::object pymesh = meshioplusplus_py::mesh_to_py(
-                             meshioplusplus::read_med(path, info, opts));
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(core_nogil(
+                             [&] { return meshioplusplus::read_med(path, info, opts); }));
                          py::dict ptags, ctags, pgroups, cgroups;
                          for (const auto& kv : info.mPointTags)
                              ptags[py::int_(kv.first)] = kv.second;
@@ -4994,7 +5048,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // Exodus II writer / reader (.e/.exo/.ex2).
     m.def("exodus_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_exodus(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        core_nogil([&] { return meshioplusplus::write_exodus(path, cpp); });
     });
     m.def("exodus_read",
           guard_read("exodus",
@@ -5002,8 +5057,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                          meshioplusplus::ReadOptions opts;
                          opts.mTimeStep = time_step;
                          meshioplusplus::ExodusInfo info;
-                         py::object pymesh = meshioplusplus_py::mesh_to_py(
-                             meshioplusplus::read_exodus(path, info, opts));
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(core_nogil(
+                             [&] { return meshioplusplus::read_exodus(path, info, opts); }));
                          // qa_records/info_records are strings, which NDArray cannot hold --
                          // they ride the ExodusInfo side channel and land here, so the C++
                          // path produces the same `mesh.info` the Python reference does.
@@ -5378,9 +5433,11 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         [](const std::string& path, py::object pymesh, const std::string& mode,
            const std::string& analysis_name, double step) {
             meshioplusplus_py::PyMeshRefs refs;
-            meshioplusplus::write_gid(path, meshioplusplus_py::py_to_mesh(pymesh, refs),
-                                      meshioplusplus::gid_mode_from_name(mode), analysis_name,
-                                      step);
+            const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            const auto gid_mode = meshioplusplus::gid_mode_from_name(mode);
+            core_nogil([&] {
+                return meshioplusplus::write_gid(path, cpp, gid_mode, analysis_name, step);
+            });
         },
         py::arg("path"), py::arg("mesh"), py::arg("mode") = "auto",
         py::arg("analysis_name") = "meshio++", py::arg("step") = 1.0);
@@ -5400,21 +5457,26 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             // outlive the callback (a local here freed an array the generator
             // held no other reference to before it was written).
             meshioplusplus_py::PyMeshRefs refs_prev, refs_cur;
-            meshioplusplus::write_gid_series(
-                path,
-                [&](std::size_t, double& time, meshioplusplus::Mesh& mesh) {
-                    py::object item = next_step();
-                    if (item.is_none())
-                        return false;
-                    auto pair = item.cast<py::tuple>();
-                    time = pair[0].cast<double>();
-                    meshioplusplus_py::PyMeshRefs refs;
-                    mesh = meshioplusplus_py::py_to_mesh(pair[1], refs);
-                    refs_prev = std::move(refs_cur);
-                    refs_cur = std::move(refs);
-                    return true;
-                },
-                meshioplusplus::gid_mode_from_name(mode), analysis_name);
+            const auto gid_mode = meshioplusplus::gid_mode_from_name(mode);
+            core_nogil([&] {
+                return meshioplusplus::write_gid_series(
+                    path,
+                    [&](std::size_t, double& time, meshioplusplus::Mesh& mesh) {
+                        // Back into Python from under the library lock: take the GIL.
+                        py::gil_scoped_acquire gil;
+                        py::object item = next_step();
+                        if (item.is_none())
+                            return false;
+                        auto pair = item.cast<py::tuple>();
+                        time = pair[0].cast<double>();
+                        meshioplusplus_py::PyMeshRefs refs;
+                        mesh = meshioplusplus_py::py_to_mesh(pair[1], refs);
+                        refs_prev = std::move(refs_cur);
+                        refs_cur = std::move(refs);
+                        return true;
+                    },
+                    gid_mode, analysis_name);
+            });
         },
         py::arg("path"), py::arg("next_step"), py::arg("mode") = "auto",
         py::arg("analysis_name") = "meshio++");
@@ -5425,7 +5487,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                      [](const std::string& path, int time_step) {
                          meshioplusplus::ReadOptions opts;
                          opts.mTimeStep = time_step;
-                         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_gid(path, opts));
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_gid(path, opts); }));
                      }),
           py::arg("path"), py::arg("time_step") = 0);
 
