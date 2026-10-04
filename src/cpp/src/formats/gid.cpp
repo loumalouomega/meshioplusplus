@@ -20,6 +20,7 @@
 #include <stdexcept>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -762,6 +763,7 @@ bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
 
 void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
                const std::string& rAnalysisName, double stepValue) {
+    detail::LibraryLock lock;
     const GidMode resolved = gid_resolve_mode(rPath, mode);
     if (!gid_available(resolved))
         throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
@@ -810,6 +812,7 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
 void write_gid_series(const std::string& rPath,
                       const std::function<bool(std::size_t, double&, Mesh&)>& rNext, GidMode Mode,
                       const std::string& rAnalysisName) {
+    detail::LibraryLock lock;
     const GidMode resolved = gid_resolve_mode(rPath, Mode);
     if (!gid_available(resolved))
         throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +

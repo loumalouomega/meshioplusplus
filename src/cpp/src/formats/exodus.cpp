@@ -35,6 +35,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
@@ -641,6 +642,7 @@ NDArray column_stack(const std::vector<const NDArray*>& rCols) {
 }  // namespace
 
 Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     detail::library_preflight_netcdf(rPath);
     int ncid;
     check(nc_open(rPath.c_str(), NC_NOWRITE, &ncid), "open");
@@ -922,6 +924,7 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
 }
 
 Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     // The provenance strings have nowhere to go on this path -- the flat
     // bindings have no `info` slot. Dropping them is what `registry.cpp` already
     // does for MedInfo, and is not a reason to fail the read.
@@ -930,6 +933,7 @@ Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     // No native cheap path yet: Exodus's counts live in dimensions that would be
     // cheap to walk, but the cell-block *types* come from per-variable
     // `elem_type` attributes, so a summary still has to visit every connect{k}.
@@ -1532,6 +1536,7 @@ std::vector<ExoSeriesField> exo_series_fields(const Mesh& rMesh) {
 }  // namespace
 
 void write_exodus(const std::string& rPath, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     exo_write_file(rPath, rMesh, true, false);
 }
 
@@ -1553,17 +1558,31 @@ struct ExodusTimeSeriesWriter::Impl {
     }
 };
 
-ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath)
-    : mImpl(std::make_unique<Impl>(rPath)) {
-    if (rPath.empty())
-        throw WriteError("Exodus: series path is empty");
+ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(const std::string& rPath) {
+    detail::LibraryLock lock;
+    mImpl = std::make_unique<Impl>(rPath);
+    try {
+        if (rPath.empty())
+            throw WriteError("Exodus: series path is empty");
+    } catch (...) {
+        mImpl.reset();
+        throw;
+    }
 }
-ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() = default;
+ExodusTimeSeriesWriter::~ExodusTimeSeriesWriter() {
+    detail::LibraryLock lock;
+    mImpl.reset();
+}
 ExodusTimeSeriesWriter::ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept = default;
-ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(ExodusTimeSeriesWriter&&) noexcept =
-    default;
+ExodusTimeSeriesWriter& ExodusTimeSeriesWriter::operator=(
+    ExodusTimeSeriesWriter&& rOther) noexcept {
+    detail::LibraryLock lock;
+    mImpl = std::move(rOther.mImpl);
+    return *this;
+}
 
 void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized || mImpl->mGrid)
         throw WriteError("Exodus: write_points_cells requires a new, open series");
     auto geometry =
@@ -1581,6 +1600,7 @@ void ExodusTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized || !mImpl->mGrid)
         throw WriteError("Exodus: write_data requires write_points_cells and an open series");
     if (!std::isfinite(Time))
@@ -1638,10 +1658,12 @@ void ExodusTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 }
 
 void ExodusTimeSeriesWriter::Flush() {
+    detail::LibraryLock lock;
     if (mImpl && mImpl->mNcid >= 0)
         check(nc_sync(mImpl->mNcid), "flush series", true);
 }
 void ExodusTimeSeriesWriter::Finalize() {
+    detail::LibraryLock lock;
     if (!mImpl || mImpl->mFinalized)
         return;
     if (mImpl->mNcid >= 0) {

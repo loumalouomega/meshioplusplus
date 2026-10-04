@@ -24,6 +24,7 @@
 // cgns.cpp uses for MESHIOPLUSPLUS_HAS_HDF5.
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -63,6 +64,7 @@ bool cgns_has_cgnslib() {
 Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
 
 Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     // Always present and throwing by name -- the partition_kahip_parts
     // contract. A link error would break the Python-fallback contract, and a
     // silent downgrade to the raw-HDF5 reader would answer a question the
@@ -74,6 +76,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& /*rOptions*/) {
 }
 
 MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     throw ReadError(detail::format_compat(
         "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
         "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
@@ -485,6 +488,7 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
 Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
 
 Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     CgnsFile file(rPath);
     const int fn = file.Fn();
 
@@ -689,6 +693,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    detail::LibraryLock lock;
     CgnsFile file(rPath);
     const int fn = file.Fn();
 

@@ -35,6 +35,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/szplt.hpp"
 #include "meshioplusplus/detail/binary_stream.hpp"
@@ -1459,7 +1460,7 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<Tecplot
 /// polyhedral reader uses), each listing which of the zone's cells it holds.
 struct TecplotPiece {
     std::string mType;
-    NDArray mConn;                                              // rectangular pieces
+    NDArray mConn;  // rectangular pieces
     // Ragged pieces as the CSR triple the mesh backends store; mFaceOffsets is
     // empty for a polygon piece.
     std::vector<std::int64_t> mFlat;
@@ -2308,6 +2309,7 @@ Mesh read_tecplot(const std::string& rPath) {
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 Mesh read_szplt(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     TecplotFile file;
     tecplot_szl_open(rPath, file);
     const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(file.mZones);
@@ -2316,6 +2318,7 @@ Mesh read_szplt(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 std::vector<double> szplt_time_values(const std::string& rPath) {
+    detail::LibraryLock lock;
     TecplotFile file;
     tecplot_szl_open(rPath, file);
     std::vector<double> out;
@@ -2326,6 +2329,7 @@ std::vector<double> szplt_time_values(const std::string& rPath) {
 }
 
 MeshMetadata read_szplt_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
     ReadOptions options = rOptions;
     options.mPointsOnly = true;
     options.mTimeStep = 0;

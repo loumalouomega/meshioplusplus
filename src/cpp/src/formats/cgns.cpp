@@ -31,6 +31,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
@@ -621,6 +622,7 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
 }  // namespace
 
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
+    detail::LibraryLock lock;
     // No provenance slot in this format: drop the notes this write raises on
     // the way out rather than let them reach the next file written.
     const detail::ProvenanceSlotlessWrite slotless;
@@ -1744,6 +1746,7 @@ MeshMetadata cgns_read_metadata_impl(const std::string& rPath, const ReadOptions
 Mesh read_cgns(const std::string& rPath) { return read_cgns(rPath, ReadOptions{}); }
 
 Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
     // With cgnslib built, IT is the reader: the input is not ours, and the MLL
     // reaches things this raw-HDF5 path fundamentally cannot -- the ADF
@@ -1765,6 +1768,7 @@ Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions) {
 }
 
 MeshMetadata read_cgns_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
     try {
         return read_cgns_mll_metadata(rPath, rOptions);
