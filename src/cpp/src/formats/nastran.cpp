@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <optional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -44,6 +45,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -616,15 +618,19 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
 
     // Points: fixed-large GRID*. A zero reference field is written blank.
     char buf[128];
+    const detail::DoubleView point_values(points);
+    std::optional<detail::Int64View> point_ref_values;
+    if (point_refs)
+        point_ref_values.emplace(*point_refs);
     for (std::size_t i = 0; i < n; ++i) {
         double xyz[3] = {0, 0, 0};
         for (std::size_t c = 0; c < dim && c < 3; ++c)
-            xyz[c] = detail::read_double(points, i * dim + c);
+            xyz[c] = point_values[i * dim + c];
         std::string sx = nastran_float(xyz[0]), sy = nastran_float(xyz[1]),
                     sz = nastran_float(xyz[2]);
         std::string ref;
-        if (point_refs) {
-            const long long v = detail::read_int(*point_refs, i);
+        if (point_ref_values) {
+            const long long v = (*point_ref_values)[i];
             if (v != 0)
                 ref = std::to_string(v);
         }
@@ -638,21 +644,24 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     std::size_t block = 0;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& ntype = m2n.at(cb.Type());
-        const NDArray* refs = cell_refs ? &rMesh.CellData("nastran:ref", block) : nullptr;
+        std::optional<detail::Int64View> refs;
+        if (cell_refs)
+            refs.emplace(rMesh.CellData("nastran:ref", block));
         ++block;
-        const NDArray& conn = cb.Conn();
-        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const NDArray& conn_array = cb.Conn();
+        std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+        const detail::Int64View conn(conn_array);
         const std::vector<int>* perm = nas_write_perm(cb.Type());
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             ++cell_id;
             std::vector<long long> nodes(k);
             for (std::size_t j = 0; j < k; ++j) {
                 std::size_t src = perm ? static_cast<std::size_t>((*perm)[j]) : j;
-                nodes[j] = detail::read_int(conn, r * k + src) + 1;
+                nodes[j] = conn[r * k + src] + 1;
             }
             std::string ref;
             if (refs) {
-                const long long v = detail::read_int(*refs, r);
+                const long long v = (*refs)[r];
                 if (v != 0)
                     ref = std::to_string(v);
             }

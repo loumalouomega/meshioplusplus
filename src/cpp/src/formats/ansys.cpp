@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <map>
 #include <set>
 #include <string>
@@ -49,6 +50,7 @@
 #include "../detail/text_cursor.hpp"
 #include "face_cells_common.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 // ANSYS Fluent `.msh` (also TGrid and GAMBIT meshes). A face row lists its
 // nodes and the two cells it separates, `n0 .. nk c0 c1` (hexadecimal in
@@ -759,6 +761,7 @@ std::string fl_name(std::string rName) {
 void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
     const std::size_t npoints = rMesh.NumPoints();
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
     const std::size_t pdim = rMesh.PointDim();
     if (pdim != 2 && pdim != 3)
         throw WriteError("Fluent: can only write points of dimension 2 or 3");
@@ -775,19 +778,23 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
     // A 2-D Fluent mesh lies in the xy plane: z is dropped only when it is 0.
     if (dim == 2 && pdim == 3)
         for (std::size_t i = 0; i < npoints; ++i)
-            if (detail::read_double(points, i * 3 + 2) != 0.0)
+            if (point_values[i * 3 + 2] != 0.0)
                 throw WriteError("Fluent: a 2-D mesh must lie in the z = 0 plane (point " +
                                  std::to_string(i) +
                                  " has z != 0); Fluent has no 3-D surface meshes");
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const bool has_zone = rMesh.HasCellData("ansys:zone");
+    // One view per block of `ansys:zone`, made on first use.
+    std::vector<std::optional<detail::Int64View>> zone_views(rMesh.NumCellBlocks());
     auto zone_value = [&](std::size_t Block, std::size_t Cell, std::int64_t& rOut) {
         if (!has_zone)
             return false;
         const NDArray& z = rMesh.CellData("ansys:zone", Block);
         if (Cell >= z.Size())
             return false;
-        rOut = detail::read_int(z, Cell);
+        if (!zone_views[Block])
+            zone_views[Block].emplace(z);
+        rOut = (*zone_views[Block])[Cell];
         return rOut > 0;
     };
 
@@ -841,10 +848,8 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
                 for (std::size_t k = 0; k < ring.size(); ++k) {
                     const std::size_t p = static_cast<std::size_t>(ring[k]);
                     const std::size_t q = static_cast<std::size_t>(ring[(k + 1) % ring.size()]);
-                    area += detail::read_double(points, p * pdim) *
-                                detail::read_double(points, q * pdim + 1) -
-                            detail::read_double(points, q * pdim) *
-                                detail::read_double(points, p * pdim + 1);
+                    area += point_values[p * pdim] * point_values[q * pdim + 1] -
+                            point_values[q * pdim] * point_values[p * pdim + 1];
                 }
                 if (area < 0.0)
                     std::reverse(ring.begin(), ring.end());
@@ -1051,7 +1056,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
     if (binary) {
         for (std::size_t i = 0; i < npoints; ++i)
             for (std::size_t c = 0; c < odim; ++c) {
-                const double v = detail::read_double(points, i * pdim + c);
+                const double v = point_values[i * pdim + c];
                 fh.write(reinterpret_cast<const char*>(&v), 8);
             }
         fh << ")\nEnd of Binary Section 3010)\n";
@@ -1060,8 +1065,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         char buf[32];
         for (std::size_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < odim; ++c) {
-                detail::snprintf_c(buf, sizeof(buf), "%.16e",
-                                   detail::read_double(points, i * pdim + c));
+                detail::snprintf_c(buf, sizeof(buf), "%.16e", point_values[i * pdim + c]);
                 fh << buf << (c + 1 == odim ? "\n" : " ");
             }
         }

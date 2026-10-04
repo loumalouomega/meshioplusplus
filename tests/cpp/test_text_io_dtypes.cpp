@@ -14,9 +14,12 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
+#include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
+#include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -28,16 +31,23 @@
 #include "meshioplusplus/formats/libmesh.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
+#include "meshioplusplus/formats/nastran.hpp"
+#include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/permas.hpp"
+#include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/su2.hpp"
 #include "meshioplusplus/formats/svg.hpp"
+#include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/formats/triangle.hpp"
+#include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/z88.hpp"
@@ -94,6 +104,19 @@ tid::Mesh tid_mesh(const std::string& rFormat, tid::DType RealType, tid::DType I
         mesh.AddCellData("patran:property", {tid_array(IndexType, {1}, {4})});
     } else if (rFormat == "femap") {
         mesh.AddCellData("femap:property", {tid_array(IndexType, {1}, {4})});
+    } else if (rFormat == "unv") {
+        mesh.AddCellData("unv:pid", {tid_array(IndexType, {1}, {3})});
+        mesh.AddCellData("unv:mid", {tid_array(IndexType, {1}, {5})});
+    } else if (rFormat == "nastran") {
+        mesh.AddCellData("nastran:ref", {tid_array(IndexType, {1}, {4})});
+    } else if (rFormat == "radioss") {
+        mesh.AddCellData("radioss:part", {tid_array(IndexType, {1}, {2})});
+    } else if (rFormat == "mphtxt") {
+        mesh.AddCellData("mphtxt:geom", {tid_array(IndexType, {1}, {2})});
+    } else if (rFormat == "ansys") {
+        mesh.AddCellData("ansys:zone", {tid_array(IndexType, {1}, {2})});
+    } else if (rFormat == "su2") {
+        mesh.AddCellData("gmsh:physical", {tid_array(IndexType, {1}, {3})});
     }
     return mesh;
 }
@@ -103,41 +126,56 @@ std::string tid_file_bytes(const std::filesystem::path& rPath) {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-/// Whether @p rName is `<base>` followed by `.` or `_` (a suffix or a companion),
-/// not another file whose base merely starts with the same digits.
+/// Whether @p rName is `<base>` itself (a directory writer such as Elmer) or
+/// `<base>` followed by `.` or `_` (a suffix or a companion), not another file
+/// whose base merely starts with the same digits.
 bool tid_is_output_of(const std::string& rName, const std::string& rBase) {
-    return rName.size() > rBase.size() && rName.compare(0, rBase.size(), rBase) == 0 &&
-           (rName[rBase.size()] == '.' || rName[rBase.size()] == '_');
+    if (rName.compare(0, rBase.size(), rBase) != 0)
+        return false;
+    return rName.size() == rBase.size() || rName[rBase.size()] == '.' || rName[rBase.size()] == '_';
 }
 
-/// Everything a writer wrote for @p rPath (`<base><suffix>`): the file itself
-/// and any companion that shares its base (`.post.res`, `.ele`, a DOLFIN
-/// mesh-function file), keyed by the part of the name after the base so two
-/// runs with different bases compare equal.
+std::string tid_base_of(const std::string& rPath, const std::string& rSuffix) {
+    const std::string name = std::filesystem::path(rPath).filename().string();
+    return name.substr(0, name.size() - rSuffix.size());
+}
+
+/// Everything a writer wrote for @p rPath (`<base><suffix>`): the file itself,
+/// any companion that shares its base (`.post.res`, `.ele`, a DOLFIN
+/// mesh-function file) and, for a directory writer, every file inside it, keyed
+/// by the part of the path after the base so two runs with different bases
+/// compare equal.
 std::map<std::string, std::string> tid_outputs(const std::string& rPath,
                                                const std::string& rSuffix) {
     const std::filesystem::path path(rPath);
-    const std::string base =
-        path.filename().string().substr(0, path.filename().string().size() - rSuffix.size());
+    const std::string base = tid_base_of(rPath, rSuffix);
     std::map<std::string, std::string> out;
     for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
         const std::string name = entry.path().filename().string();
-        if (tid_is_output_of(name, base) && entry.is_regular_file())
+        if (!tid_is_output_of(name, base))
+            continue;
+        if (entry.is_regular_file()) {
             out[name.substr(base.size())] = tid_file_bytes(entry.path());
+        } else if (entry.is_directory()) {
+            for (const auto& inner : std::filesystem::recursive_directory_iterator(entry.path()))
+                if (inner.is_regular_file())
+                    out[name.substr(base.size()) + "/" +
+                        std::filesystem::relative(inner.path(), entry.path()).string()] =
+                        tid_file_bytes(inner.path());
+        }
     }
     return out;
 }
 
 void tid_remove_outputs(const std::string& rPath, const std::string& rSuffix) {
     const std::filesystem::path path(rPath);
-    const std::string base =
-        path.filename().string().substr(0, path.filename().string().size() - rSuffix.size());
+    const std::string base = tid_base_of(rPath, rSuffix);
     std::vector<std::filesystem::path> doomed;
     for (const auto& entry : std::filesystem::directory_iterator(path.parent_path()))
         if (tid_is_output_of(entry.path().filename().string(), base))
             doomed.push_back(entry.path());
     for (const auto& file : doomed)
-        std::filesystem::remove(file);
+        std::filesystem::remove_all(file);
 }
 
 using TidWriter = std::function<void(const std::string&, const tid::Mesh&)>;
@@ -211,6 +249,35 @@ const std::vector<TidFormat>& tid_writers() {
         {"svg",
          [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_svg(rPath, rMesh); },
          true, ".svg"},
+        {"su2", tid::write_su2, true, ".su2", 0, true},
+        {"netgen",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_netgen(rPath, rMesh, ".16e");
+         },
+         true, ".vol", 0, true},
+        {"elmer",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_elmer(rPath, rMesh); },
+         true, ""},
+        {"mphtxt", tid::write_mphtxt, true, ".mphtxt"},
+        {"code_aster", tid::write_code_aster, true, ".mail"},
+        {"nastran", tid::write_nastran, true, ".bdf"},
+        {"tecplot", tid::write_tecplot, true, ".dat"},
+        {"ansys-ascii",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_ansys(rPath, rMesh, false);
+         },
+         true, ".msh"},
+        {"ansys-binary",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_ansys(rPath, rMesh, true);
+         },
+         true, ".msh"},
+        {"radioss",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_radioss(rPath, rMesh); },
+         true, ".rad"},
+        {"unv",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_unv(rPath, rMesh); },
+         true, ".unv"},
         {"tikz",
          [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_tikz(rPath, rMesh); },
          true, ".tex"},

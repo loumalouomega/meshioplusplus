@@ -54,6 +54,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "../detail/keyword_card_view.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -1766,11 +1767,12 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
     // 2411 / 781 nodes
     std::snprintf(buf, sizeof(buf), "    -1\n%6d\n", node_dataset);
     f << buf;
+    const detail::DoubleView point_values(points);
     for (std::size_t k = 0; k < np; ++k) {
         std::snprintf(buf, sizeof(buf), "%10zu%10d%10d%10d\n", k + 1, 1, 1, 11);
         f << buf;
         for (int c = 0; c < 3; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, k * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[k * pdim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%25.16E", v);
             f << buf;
         }
@@ -1798,23 +1800,24 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
                 "cell block(s) of type " + std::string(cb.Type()) + " have no UNV equivalent");
             continue;
         }
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
         const std::vector<int>* perm = unv_perm(cb.Type());
-        const std::size_t ncols = detail::cols(conn);
+        const std::size_t ncols = detail::cols(conn_array);
+        const detail::Int64View conn(conn_array);
         const std::size_t nrows = cb.NumCells();
         block_labels[bi].reserve(nrows);
-        const NDArray* pid = (has_pid && bi < rMesh.CellDataNumBlocks("unv:pid"))
-                                 ? &rMesh.CellData("unv:pid", bi)
-                                 : nullptr;
-        const NDArray* mid = (has_mid && bi < rMesh.CellDataNumBlocks("unv:mid"))
-                                 ? &rMesh.CellData("unv:mid", bi)
-                                 : nullptr;
+        std::optional<detail::Int64View> pid;
+        if (has_pid && bi < rMesh.CellDataNumBlocks("unv:pid"))
+            pid.emplace(rMesh.CellData("unv:pid", bi));
+        std::optional<detail::Int64View> mid;
+        if (has_mid && bi < rMesh.CellDataNumBlocks("unv:mid"))
+            mid.emplace(rMesh.CellData("unv:mid", bi));
         std::vector<std::int64_t> unv(ncols);
         for (std::size_t r = 0; r < nrows; ++r) {
             ++label;
             block_labels[bi].push_back(label);
-            const std::int64_t pval = pid ? detail::read_int(*pid, r) : 1;
-            const std::int64_t mval = mid ? detail::read_int(*mid, r) : pval;
+            const std::int64_t pval = pid ? (*pid)[r] : 1;
+            const std::int64_t mval = mid ? (*mid)[r] : pval;
             std::snprintf(buf, sizeof(buf), "%10lld%10d%10lld%10lld%10d%10zu\n",
                           static_cast<long long>(label), desc, static_cast<long long>(pval),
                           static_cast<long long>(mval), 11, ncols);
@@ -1823,7 +1826,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
                 f << "         0         1         1\n";
             // meshio -> UNV order, 1-based, 8 per line
             for (std::size_t j = 0; j < ncols; ++j)
-                unv[j] = detail::read_int(conn, r * ncols + (perm ? (*perm)[j] : j)) + 1;
+                unv[j] = conn[r * ncols + (perm ? (*perm)[j] : j)] + 1;
             for (std::size_t j = 0; j < ncols; ++j) {
                 std::snprintf(buf, sizeof(buf), "%10lld", static_cast<long long>(unv[j]));
                 f << buf;
@@ -2106,8 +2109,9 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
         if (nc == 0)
             continue;
         std::vector<double> flat(np * nc);
+        const detail::DoubleView values(arr);
         for (std::size_t i = 0; i < np * nc; ++i)
-            flat[i] = detail::read_double(arr, i);
+            flat[i] = values[i];
         write_field(++field_id, name, 1, nc, node_labels, flat);
     }
     for (const auto& name : rMesh.CellDataNames()) {
@@ -2128,10 +2132,11 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
                 nc = bnc;
             if (bnc != nc)
                 continue;
+            const detail::DoubleView blk_values(blk);
             for (std::size_t r = 0; r < ne; ++r) {
                 labels.push_back(block_labels[bi][r]);
                 for (std::size_t c = 0; c < nc; ++c)
-                    flat.push_back(detail::read_double(blk, r * nc + c));
+                    flat.push_back(blk_values[r * nc + c]);
             }
         }
         if (nc == 0 || labels.empty())

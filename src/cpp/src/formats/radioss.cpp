@@ -24,6 +24,7 @@
 #include <functional>
 #include <ios>
 #include <iterator>
+#include <optional>
 #include <map>
 #include <set>
 #include <string>
@@ -51,6 +52,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/keyword_card_view.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -1638,7 +1640,16 @@ std::vector<std::int64_t> radw_entries(const Region& rRegion) {
 
 void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
     const std::size_t pdim = rMesh.PointDim();
+    // One view per block of connectivity, made on first use: cards and sides
+    // look cells up by (block, row).
+    std::vector<std::optional<detail::Int64View>> conn_views(rMesh.NumCellBlocks());
+    const auto conn_at = [&](std::size_t Block, std::size_t Index) {
+        if (!conn_views[Block])
+            conn_views[Block].emplace(rMesh.Cells(Block).Conn());
+        return (*conn_views[Block])[Index];
+    };
     if (pdim > 3)
         throw WriteError("Radioss writer: points must have 1 to 3 coordinates");
     const std::size_t npts = rMesh.NumPoints();
@@ -1683,8 +1694,12 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
     if (cell_array_ok("radioss:part")) {
         // Part ids come from the data; an id of 0 or less gets a new one.
         std::vector<std::int64_t> raw(ncells, 0);
+        std::vector<std::optional<detail::Int64View>> part_views(rMesh.NumCellBlocks());
         for (std::size_t c = 0; c < ncells; ++c) {
-            raw[c] = detail::read_int(rMesh.CellData("radioss:part", info[c].mBlock), info[c].mRow);
+            auto& view = part_views[info[c].mBlock];
+            if (!view)
+                view.emplace(rMesh.CellData("radioss:part", info[c].mBlock));
+            raw[c] = (*view)[info[c].mRow];
             if (!info[c].mCard.empty() && raw[c] > 0)
                 part_ids.mUsed.insert(raw[c]);
         }
@@ -1950,7 +1965,7 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
                     const auto cb = rMesh.Cells(ci.mBlock);
                     const std::size_t k2 = cb.NodesPerCell();
                     for (std::size_t q = 0; q < k2; ++q)
-                        nodes.push_back(detail::read_int(cb.Conn(), ci.mRow * k2 + q));
+                        nodes.push_back(conn_at(ci.mBlock, ci.mRow * k2 + q));
                 } else if (fam == "BRIC") {
                     CellType ftype{};
                     std::vector<std::int64_t> fnodes;
@@ -2149,7 +2164,7 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         std::string line;
         radw_i10(line, static_cast<std::int64_t>(p + 1));
         for (std::size_t d = 0; d < 3; ++d)
-            radw_f20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+            radw_f20(line, d < pdim ? point_values[p * pdim + d] : 0.0);
         out.push_back(std::move(line));
     }
 
@@ -2161,7 +2176,7 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
             const std::size_t k = cb.NodesPerCell();
             std::vector<std::int64_t> nodes(k);
             for (std::size_t q = 0; q < k; ++q)
-                nodes[q] = detail::read_int(cb.Conn(), info[c].mRow * k + q) + 1;
+                nodes[q] = conn_at(info[c].mBlock, info[c].mRow * k + q) + 1;
             if (card.mCard == "BRICK") {
                 const auto brick = detail::expand_brick(cb.Type(), nodes.data());
                 nodes.assign(brick.begin(), brick.end());

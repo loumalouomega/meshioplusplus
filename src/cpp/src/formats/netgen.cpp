@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -40,6 +41,7 @@
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 #include <zlib.h>
@@ -419,7 +421,10 @@ void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
         pre = {1, np};
     }
 
-    const NDArray& conn = cb.Conn();
+    const detail::Int64View conn(cb.Conn());
+    std::optional<detail::Int64View> index_values;
+    if (pIndex)
+        index_values.emplace(*pIndex);
     const std::size_t n = cb.NumCells();
     for (std::size_t r = 0; r < n; ++r) {
         std::vector<std::int64_t> cols;
@@ -427,11 +432,11 @@ void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
         for (auto v : pre)
             cols.push_back(v);
         for (int j = 0; j < np; ++j)
-            cols.push_back(detail::read_int(conn, r * np + pmap[j]) + 1);
+            cols.push_back(conn[r * np + pmap[j]] + 1);
         for (auto v : post)
             cols.push_back(v);
-        if (pIndex)
-            cols[i_index] = detail::read_int(*pIndex, r);
+        if (index_values)
+            cols[i_index] = (*index_values)[r];
 
         for (std::size_t j = 0; j < cols.size(); ++j)
             rOs << cols[j] << (j + 1 == cols.size() ? '\n' : ' ');
@@ -515,9 +520,10 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
     std::string fmt = "%" + rFloatFmt;
     char buf[64];
     const std::size_t npts = rMesh.NumPoints();
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < npts; ++i) {
         for (int j = 0; j < 3; ++j) {
-            double v = (j < dimension) ? detail::read_double(points, i * dimension + j) : 0.0;
+            double v = (j < dimension) ? point_values[i * dimension + j] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), fmt.c_str(), v);
             f << buf << (j == 2 ? '\n' : ' ');
         }
@@ -538,8 +544,9 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
             throw WriteError("Netgen: identifications must have shape (n,3)");
         const std::size_t n = pairs ? data.Shape()[0] : data.Size();
         f << '\n' << (pairs ? "identifications" : "identificationtypes") << '\n' << n << '\n';
+        const detail::Int64View values(data);
         for (std::size_t i = 0; i < data.Size(); ++i)
-            f << detail::read_int(data, i) << ((pairs ? (i % 3 == 2) : (i + 1 == n)) ? '\n' : ' ');
+            f << values[i] << ((pairs ? (i % 3 == 2) : (i + 1 == n)) ? '\n' : ' ');
     }
     const char* codim_names[] = {"materials", "bcnames", "cd2names", "cd3names"};
     for (int codim = 0; codim <= dimension; ++codim) {
@@ -559,11 +566,13 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
                 if (topo_dim(rMesh.Cells(ci).Type()) != dimension - codim)
                     continue;
                 const NDArray* idx = index_for(ci);
-                if (idx)
+                if (idx) {
+                    const detail::Int64View idx_values(*idx);
                     for (std::size_t i = 0; i < idx->Size(); ++i) {
-                        const auto id = detail::read_int(*idx, i);
+                        const auto id = idx_values[i];
                         names[id] = "cd" + std::to_string(codim) + "_" + std::to_string(id);
                     }
+                }
             }
         }
         if (names.empty())

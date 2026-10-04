@@ -42,6 +42,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -737,10 +738,9 @@ void comsol_write(ComsolSink& rOut, const Mesh& rMesh, const char* pFormat) {
     std::vector<std::int64_t> entity(ncells, 0);
     if (rMesh.HasCellData("mphtxt:geom")) {
         for (std::size_t b = 0; b < nblocks; ++b) {
-            const NDArray& g = rMesh.CellData("mphtxt:geom", b);
+            const detail::Int64View g(rMesh.CellData("mphtxt:geom", b));
             for (std::int64_t c = bases[b]; c < bases[b + 1]; ++c)
-                entity[static_cast<std::size_t>(c)] =
-                    detail::read_int(g, static_cast<std::size_t>(c - bases[b]));
+                entity[static_cast<std::size_t>(c)] = g[static_cast<std::size_t>(c - bases[b])];
         }
     } else {
         std::vector<char> assigned(ncells, 0);
@@ -830,9 +830,10 @@ void comsol_write(ComsolSink& rOut, const Mesh& rMesh, const char* pFormat) {
     rOut.Comment("Mesh vertex coordinates");
     const NDArray& points = rMesh.Points();
     std::vector<double> row(sdim);
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
         for (std::size_t c = 0; c < sdim; ++c)
-            row[c] = detail::read_double(points, i * sdim + c);
+            row[c] = point_values[i * sdim + c];
         rOut.Real(row.data(), sdim);
     }
     rOut.Blank();
@@ -842,8 +843,9 @@ void comsol_write(ComsolSink& rOut, const Mesh& rMesh, const char* pFormat) {
         rOut.Blank();
         rOut.Comment("Type #" + std::to_string(b));
         rOut.String(ctypes[b], "type name");
-        const NDArray& conn = cb.Conn();
-        const std::size_t nn = detail::cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t nn = detail::cols(conn_array);
+        const detail::Int64View conn(conn_array);
         const std::size_t ne = cb.NumCells();
         rOut.Int(static_cast<std::int64_t>(nn), "number of vertices per element");
         rOut.Int(static_cast<std::int64_t>(ne), "number of elements");
@@ -852,8 +854,8 @@ void comsol_write(ComsolSink& rOut, const Mesh& rMesh, const char* pFormat) {
         std::vector<std::int64_t> nodes(nn);
         for (std::size_t r = 0; r < ne; ++r) {
             for (std::size_t j = 0; j < nn; ++j)
-                nodes[j] = detail::read_int(
-                    conn, r * nn + (order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j));
+                nodes[j] =
+                    conn[r * nn + (order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j)];
             rOut.Ints(nodes.data(), nn);
         }
         rOut.Blank();

@@ -53,6 +53,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -917,11 +918,11 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
                 if (dims[b] != bulk_dim)
                     continue;
                 const auto cb = rMesh.Cells(b);
-                const NDArray& conn = cb.Conn();
+                const detail::Int64View conn(cb.Conn());
                 const std::size_t k = cb.NodesPerCell();
                 for (std::size_t r = 0; r < cb.NumCells(); ++r)
                     for (std::size_t j = 0; j < k; ++j) {
-                        const auto p = static_cast<std::size_t>(detail::read_int(conn, r * k + j));
+                        const auto p = static_cast<std::size_t>(conn[r * k + j]);
                         auto& list = node_cells[p];
                         const std::int64_t g = bases[b] + static_cast<std::int64_t>(r);
                         if (list.empty() || list.back() != g)
@@ -959,11 +960,12 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
     const NDArray& points = rMesh.Points();
     const std::size_t pdim = rMesh.PointDim();
     const std::size_t npts = rMesh.NumPoints();
+    const detail::DoubleView point_values(points);
     for (std::size_t p = 0; p < npts; ++p) {
         elm_append_int(out, static_cast<std::int64_t>(p + 1));
         out += " -1";
         for (std::size_t d = 0; d < 3; ++d) {
-            const double v = d < pdim ? detail::read_double(points, p * pdim + d) : 0.0;
+            const double v = d < pdim ? point_values[p * pdim + d] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
             out += buf;
         }
@@ -986,7 +988,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
     std::int64_t last_p1 = 0, last_p2 = 0;
     for (std::size_t b = 0; b < n_blocks; ++b) {
         const auto cb = rMesh.Cells(b);
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         const std::string type(cb.Type());
         const detail::NodeOrder* order = detail::node_order("elmer", type);
@@ -1002,7 +1004,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
             } else {
                 corners.clear();
                 for (std::size_t c = 0; c < n_corners; ++c)
-                    corners.push_back(detail::read_int(conn, r * k + c));
+                    corners.push_back(conn[r * k + c]);
                 const auto [p1, p2] = parents_of(corners, dims[b]);
                 last_p1 = p1;
                 last_p2 = p2;
@@ -1021,7 +1023,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
                 text += ' ';
-                const std::int64_t node = detail::read_int(conn, r * k + src) + 1;
+                const std::int64_t node = conn[r * k + src] + 1;
                 elm_append_int(text, node);
                 kept.mNodes.push_back(node);
             }
@@ -1139,12 +1141,14 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
     // `Halo`, ElmerGrid's `-halo` layer too.
     std::vector<int> part_of(static_cast<std::size_t>(n_bulk) + 1, -1);
     int n_parts = 0;
+    // One view per block of `partition:part`, made on first use.
+    std::vector<std::optional<detail::Int64View>> part_labels(n_blocks);
     for (const ElmRow& r : bulk_rows) {
         const std::size_t b = static_cast<std::size_t>(
             std::upper_bound(bases.begin(), bases.end(), r.mCell) - bases.begin() - 1);
-        const NDArray& labels = rMesh.CellData("partition:part", b);
-        const std::int64_t label =
-            detail::read_int(labels, static_cast<std::size_t>(r.mCell - bases[b]));
+        if (!part_labels[b])
+            part_labels[b].emplace(rMesh.CellData("partition:part", b));
+        const std::int64_t label = (*part_labels[b])[static_cast<std::size_t>(r.mCell - bases[b])];
         if (label < 0)
             throw WriteError("Elmer mesh writer: partition:part has a negative part for cell " +
                              std::to_string(r.mCell));
@@ -1279,9 +1283,8 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
             elm_append_int(node_text, n);
             node_text += " -1";
             for (std::size_t d = 0; d < 3; ++d) {
-                const double v = d < pdim ? detail::read_double(
-                                                points, static_cast<std::size_t>(n - 1) * pdim + d)
-                                          : 0.0;
+                const double v =
+                    d < pdim ? point_values[static_cast<std::size_t>(n - 1) * pdim + d] : 0.0;
                 detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
                 node_text += buf;
             }

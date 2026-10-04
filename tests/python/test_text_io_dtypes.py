@@ -31,6 +31,16 @@ FORMATS = (
     "wkt",
     "svg",
     "tikz",
+    "su2",
+    "netgen",
+    "elmer",
+    "mphtxt",
+    "code_aster",
+    "nastran",
+    "tecplot",
+    "ansys",
+    "radioss",
+    "unv",
 )
 # Formats that record each array's dtype in the file (PCD SIZE/TYPE, HDF5
 # datasets), so their bytes legitimately differ from canonical storage: the
@@ -55,14 +65,25 @@ SUFFIX = {
     "wkt": ".wkt",
     "svg": ".svg",
     "tikz": ".tex",
+    "su2": ".su2",
+    "netgen": ".vol",
+    "elmer": "",
+    "mphtxt": ".mphtxt",
+    "code_aster": ".mail",
+    "nastran": ".bdf",
+    "tecplot": ".dat",
+    "ansys": ".msh",
+    "radioss": ".rad",
+    "unv": ".unv",
     "pcd": ".pcd",
     "cgns": ".cgns",
     "med": ".med",
 }
 # These writers pick their output by whether an array is float or integer
-# (UGRID labels, AVS-UCD materials, DOLFIN's `float`/`int` mesh functions), so
-# the canonical form is the same class in float64 or int64.
-CLASS_FORMATS = ("ugrid", "avsucd", "dolfin-xml")
+# (UGRID labels, AVS-UCD materials, DOLFIN's `float`/`int` mesh functions, SU2
+# and Netgen region tags), so the canonical form is the same class in float64
+# or int64.
+CLASS_FORMATS = ("ugrid", "avsucd", "dolfin-xml", "su2", "netgen")
 # Writers that take only some meshes: Triangle writes 2-D points only.
 ONLY_DIMENSION = {"triangle": 2}
 # The integer cell data each format reads per cell, as (name, value).
@@ -72,6 +93,12 @@ TAGS = {
     "mdpa": (("gmsh:physical", 3),),
     "patran": (("patran:property", 4),),
     "femap": (("femap:property", 4),),
+    "unv": (("unv:pid", 3), ("unv:mid", 5)),
+    "nastran": (("nastran:ref", 4),),
+    "radioss": (("radioss:part", 2),),
+    "mphtxt": (("mphtxt:geom", 2),),
+    "ansys": (("ansys:zone", 2),),
+    "su2": (("gmsh:physical", 3),),
 }
 DTYPES = (
     "float32",
@@ -147,9 +174,17 @@ def test_hoisted_writer_all_dtypes_match_default_storage(
     canonical.mkdir()
     pp.write(native / name, mesh, file_format=fmt)
     pp.write(canonical / name, expected, file_format=fmt)
-    outputs = {f.name: f.read_bytes() for f in native.iterdir()}
+
+    def outputs_of(root):  # Elmer writes a directory, so walk recursively
+        return {
+            str(f.relative_to(root)): f.read_bytes()
+            for f in root.rglob("*")
+            if f.is_file()
+        }
+
+    outputs = outputs_of(native)
     assert outputs  # something was written
-    assert outputs == {f.name: f.read_bytes() for f in canonical.iterdir()}
+    assert outputs == outputs_of(canonical)
     assert before == [a.tobytes() for a in inputs]
 
 
