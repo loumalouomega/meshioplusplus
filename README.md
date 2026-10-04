@@ -1074,6 +1074,20 @@ VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats a
 
 VTK XML output can additionally use **lz4** (ParaView-readable) or **zstd** (a meshio++ extension) instead of zlib, when built with `-DMESHIOPLUSPLUS_WITH_LZ4=ON` / `-DMESHIOPLUSPLUS_WITH_ZSTD=ON`. zlib remains the default. See [compression codecs](doc/codecs.md).
 
+The native reads, writes and operations release the GIL, so a batch of files converts in a thread pool, even on the sequential Linux wheels:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+def convert(path):
+    meshioplusplus.write(path.replace(".msh", ".vtu"), meshioplusplus.read(path))
+
+with ThreadPoolExecutor() as pool:
+    list(pool.map(convert, paths))  # list() re-raises any worker's exception
+```
+
+The HDF5, netCDF, ADIOS2 and TecIO formats keep the GIL, since those libraries are not thread-safe. See [threads and the GIL](doc/architecture.md#threads-and-the-gil).
+
 </details>
 
 <details>
