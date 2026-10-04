@@ -50,10 +50,10 @@
 #include "meshioplusplus/region.hpp"
 
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
-#include "../detail/typed_view.hpp"
 #endif
 
 namespace fs = std::filesystem;
