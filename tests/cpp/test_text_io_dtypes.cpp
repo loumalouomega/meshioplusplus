@@ -126,56 +126,26 @@ std::string tid_file_bytes(const std::filesystem::path& rPath) {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-/// Whether @p rName is `<base>` itself (a directory writer such as Elmer) or
-/// `<base>` followed by `.` or `_` (a suffix or a companion), not another file
-/// whose base merely starts with the same digits.
-bool tid_is_output_of(const std::string& rName, const std::string& rBase) {
-    if (rName.compare(0, rBase.size(), rBase) != 0)
-        return false;
-    return rName.size() == rBase.size() || rName[rBase.size()] == '.' || rName[rBase.size()] == '_';
+/// A new, empty directory for one writer run, so the files found in it are
+/// exactly what that run wrote (a shared temp directory also holds files left
+/// by earlier runs).
+std::string tid_fresh_dir() {
+    const std::filesystem::path dir = mt::temp_path("_dtype");
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir.string();
 }
 
-std::string tid_base_of(const std::string& rPath, const std::string& rSuffix) {
-    const std::string name = std::filesystem::path(rPath).filename().string();
-    return name.substr(0, name.size() - rSuffix.size());
-}
-
-/// Everything a writer wrote for @p rPath (`<base><suffix>`): the file itself,
-/// any companion that shares its base (`.post.res`, `.ele`, a DOLFIN
-/// mesh-function file) and, for a directory writer, every file inside it, keyed
-/// by the part of the path after the base so two runs with different bases
-/// compare equal.
-std::map<std::string, std::string> tid_outputs(const std::string& rPath,
-                                               const std::string& rSuffix) {
-    const std::filesystem::path path(rPath);
-    const std::string base = tid_base_of(rPath, rSuffix);
+/// Everything under @p rDir (the file, its companions such as `.post.res` or
+/// `.ele`, a DOLFIN mesh-function file or, for a directory writer like Elmer,
+/// every file inside it), keyed by path relative to @p rDir.
+std::map<std::string, std::string> tid_outputs(const std::string& rDir) {
     std::map<std::string, std::string> out;
-    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
-        const std::string name = entry.path().filename().string();
-        if (!tid_is_output_of(name, base))
-            continue;
-        if (entry.is_regular_file()) {
-            out[name.substr(base.size())] = tid_file_bytes(entry.path());
-        } else if (entry.is_directory()) {
-            for (const auto& inner : std::filesystem::recursive_directory_iterator(entry.path()))
-                if (inner.is_regular_file())
-                    out[name.substr(base.size()) + "/" +
-                        std::filesystem::relative(inner.path(), entry.path()).string()] =
-                        tid_file_bytes(inner.path());
-        }
-    }
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(rDir))
+        if (entry.is_regular_file())
+            out[std::filesystem::relative(entry.path(), rDir).string()] =
+                tid_file_bytes(entry.path());
     return out;
-}
-
-void tid_remove_outputs(const std::string& rPath, const std::string& rSuffix) {
-    const std::filesystem::path path(rPath);
-    const std::string base = tid_base_of(rPath, rSuffix);
-    std::vector<std::filesystem::path> doomed;
-    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path()))
-        if (tid_is_output_of(entry.path().filename().string(), base))
-            doomed.push_back(entry.path());
-    for (const auto& file : doomed)
-        std::filesystem::remove_all(file);
 }
 
 using TidWriter = std::function<void(const std::string&, const tid::Mesh&)>;
@@ -334,15 +304,15 @@ TEST(TextIoDtypes, HoistedWritersMatchCanonicalStorageOnAllDtypes) {
                 const tid::DType index =
                     fmt.mClassCanonical && is_float ? tid::DType::Float64 : tid::DType::Int64;
                 const auto expected = tid_mesh(format, real, index, dim);
-                const std::string first = mt::temp_path(fmt.mSuffix);
-                const std::string second = mt::temp_path(fmt.mSuffix);
-                writer(first, input);
-                writer(second, expected);
-                const auto first_files = tid_outputs(first, fmt.mSuffix);
+                const std::string first_dir = tid_fresh_dir();
+                const std::string second_dir = tid_fresh_dir();
+                writer(first_dir + "/m" + fmt.mSuffix, input);
+                writer(second_dir + "/m" + fmt.mSuffix, expected);
+                const auto first_files = tid_outputs(first_dir);
                 EXPECT_FALSE(first_files.empty());
-                EXPECT_EQ(first_files, tid_outputs(second, fmt.mSuffix));
-                tid_remove_outputs(first, fmt.mSuffix);
-                tid_remove_outputs(second, fmt.mSuffix);
+                EXPECT_EQ(first_files, tid_outputs(second_dir));
+                std::filesystem::remove_all(first_dir);
+                std::filesystem::remove_all(second_dir);
             }
         }
     }
@@ -362,9 +332,9 @@ TEST(TextIoDtypes, HoistedWritersLeaveCallerArraysUntouched) {
             const std::vector<std::byte> points_before(points.Data(),
                                                        points.Data() + points.Nbytes());
             const std::vector<std::byte> conn_before(conn.Data(), conn.Data() + conn.Nbytes());
-            const std::string path = mt::temp_path(fmt.mSuffix);
-            writer(path, input);
-            tid_remove_outputs(path, fmt.mSuffix);
+            const std::string dir = tid_fresh_dir();
+            writer(dir + "/m" + fmt.mSuffix, input);
+            std::filesystem::remove_all(dir);
             EXPECT_EQ(std::vector<std::byte>(points.Data(), points.Data() + points.Nbytes()),
                       points_before);
             EXPECT_EQ(std::vector<std::byte>(conn.Data(), conn.Data() + conn.Nbytes()),
