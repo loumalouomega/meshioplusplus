@@ -224,6 +224,12 @@ def test_heartbeat_runs_during_a_native_pipeline(tmp_path):
             "Output": {"Path": str(tmp_path / "out.vtu")},
         }
     )
+    try:
+        _core.run_pipeline_json(spec)
+    except RuntimeError as exc:
+        if "no JSON parser" in str(exc):
+            pytest.skip("needs a build with JSON")
+        raise
     _assert_heartbeat(lambda: _core.run_pipeline_json(spec))
 
 
