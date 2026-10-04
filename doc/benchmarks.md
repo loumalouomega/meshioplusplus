@@ -274,6 +274,28 @@ A first measurement of this batch caught two allocation regressions before publi
 
 Measured in the same container and with the same build settings as the [previous batch](#dtype-hoisted-gmsh-febio-z88-patran-femap-and-mdpa-writers), with HDF5 enabled and NetCDF disabled, seven repeats after one warmup.
 
+### Dtype-hoisted OBJ, STL, PLY, TetGen, UGRID, DOLFIN, FreeFEM, AVS-UCD, WKT, Triangle, SVG and TikZ writers
+
+Roadmap §3.1.2's fourth batch, the simple text writers. They read points, connectivity, tags and data through one private `detail::DoubleView`/`detail::Int64View` per array instead of a `read_double`/`read_int` dtype switch per element. Arrays that were looked up by name or block inside a row loop (Triangle, TetGen, AVS-UCD, FreeFEM) get one view before the loop; an array absent for a block keeps its original fallback value, so no view is made for it. The PLY writer holds one view per scalar point property, of the kind its dtype is written as; the PLY reader's per-column loop and scalar header read are unchanged. The changes are in non-inline `.cpp` bodies and a private header, so installed headers and C++ ABI 22 are unchanged.
+
+The [252-row matrix](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch15_float64_int64.csv) (SEQ at one thread; OpenMP and TBB at 1/4/8) and the [72-row two-round confirmation](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/text_io_batch15_float64_int64_seq_confirmation.csv) cover the nine formats the round-trip harness can time, on the canonical float64/int64 inputs. Triangle writes 2-D points only and the harness inputs are 3-D, and SVG and TikZ are write-only, so those three are covered by the dtype tests alone. Written-file and parsed-mesh SHA-256 values agree across stages, backends and thread counts, and reader and writer allocation calls and requested bytes are identical before and after in every configuration. The before modules are built from `d545e00`, and the after modules from the same tree plus the batch's diff.
+
+| SEQ | M write, rounds 1 / 2 | L write, rounds 1 / 2 | M read, rounds 1 / 2 | L read, rounds 1 / 2 |
+| --- | ---: | ---: | ---: | ---: |
+| AVS-UCD | 145.33 → 143.51 / 146.99 → 148.27 ms | 568.63 → 554.35 / 558.62 → 539.13 ms | 85.16 → 87.23 / 80.03 → 87.66 ms | 337.33 → 334.77 / 328.72 → 335.81 ms |
+| DOLFIN | 240.56 → 239.58 / 239.59 → 235.01 ms | 937.75 → 934.54 / 926.88 → 936.87 ms | 211.29 → 209.22 / 211.74 → 205.76 ms | 836.79 → 819.79 / 816.98 → 803.70 ms |
+| FreeFEM | 119.80 → 122.17 / 128.09 → 117.68 ms | 468.92 → 476.48 / 466.23 → 467.15 ms | 65.68 → 64.26 / 66.08 → 65.03 ms | 265.27 → 256.29 / 263.18 → 254.60 ms |
+| OBJ | 8.16 → 8.30 / 8.07 → 7.97 ms | 19.71 → 20.58 / 18.95 → 19.71 ms | 5.06 → 5.23 / 5.06 → 5.29 ms | 12.63 → 13.62 / 12.47 → 13.10 ms |
+| PLY | 2.21 → 2.16 / 2.30 → 2.10 ms | 4.82 → 5.29 / 5.09 → 4.85 ms | 4.01 → 3.95 / 3.84 → 3.94 ms | 9.62 → 9.85 / 9.40 → 9.87 ms |
+| STL | 47.31 → 49.84 / 54.56 → 47.65 ms | 129.59 → 120.00 / 119.78 → 118.93 ms | 22.93 → 23.02 / 23.00 → 22.81 ms | 60.44 → 57.93 / 56.45 → 57.31 ms |
+| TetGen | 125.03 → 122.04 / 129.69 → 118.69 ms | 480.00 → 473.45 / 483.45 → 469.04 ms | 110.68 → 116.20 / 116.88 → 114.66 ms | 518.14 → 518.21 / 500.29 → 502.56 ms |
+| UGRID | 96.07 → 96.28 / 101.01 → 95.72 ms | 377.36 → 362.46 / 370.52 → 363.86 ms | 59.16 → 59.42 / 62.89 → 60.25 ms | 237.63 → 239.00 / 236.66 → 240.33 ms |
+| WKT | 44.50 → 42.76 / 44.07 → 43.32 ms | 107.75 → 109.45 / 109.27 → 109.30 ms | 25.23 → 23.49 / 23.44 → 23.21 ms | 59.75 → 60.75 / 59.57 → 58.55 ms |
+
+These timings are **neutral**. Most writer cells move by a few percent in either direction, and the writers spend their time formatting numbers, so no canonical-input speedup is claimed. Two retained observations point the same way in both rounds. OBJ L writes are about 4% slower (19.71 → 20.58 and 18.95 → 19.71 ms); this is the writer follow-up promised by the [OBJ M-write observation](#source-copy-removal-and-temporary-ownership-guards), whose M writes are now neutral (8.16 → 8.30 and 8.07 → 7.97 ms), so that earlier increase is not reproduced. The unchanged OBJ reader moves by a similar amount in the same direction (L 12.63 → 13.62 and 12.47 → 13.10 ms), which suggests a shift common to the module rather than a writer effect, but this was not isolated. The hoist pays off for non-canonical inputs, where the per-element switch becomes one parallel conversion.
+
+`test_text_io_dtypes.cpp` and `test_text_io_dtypes.py` extend the earlier batches to these writers. Every file a writer produces, including companions such as TetGen's `.ele` and DOLFIN's mesh-function files, is compared with canonical storage across all ten dtypes. UGRID (integer labels), AVS-UCD (integer materials) and DOLFIN (`float` versus `int` mesh functions) choose their output by whether an array is float or integer, so they are compared with the same class in float64 or int64 rather than always float64/int64. PLY records property dtypes in its header and is checked by round-tripped values.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.

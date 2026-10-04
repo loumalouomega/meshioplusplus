@@ -38,6 +38,8 @@ the original pure-Python **meshio**, on the formats both libraries support.
 | `text_io_batch13_float64_int64_seq_confirmation.csv` | Two SEQ rounds; see [neutral timings and the MDPA digest correction](../doc/benchmarks.md#dtype-hoisted-gmsh-febio-z88-patran-femap-and-mdpa-writers). |
 | `text_io_batch14_float64_int64.csv` | CGNS, MED, libMesh, PCD and GiD readers/writers read each array through one typed view: full before/after matrix on canonical inputs (HDF5 outputs are compared by dataset digest). |
 | `text_io_batch14_float64_int64_seq_confirmation.csv` | Two SEQ rounds; see [neutral timings and the retained libMesh/PCD observations](../doc/benchmarks.md#dtype-hoisted-cgns-med-libmesh-pcd-gid-and-gltf). |
+| `text_io_batch15_float64_int64.csv` | OBJ, STL, PLY, TetGen, UGRID, DOLFIN, FreeFEM, AVS-UCD and WKT readers/writers: full before/after matrix on canonical inputs. |
+| `text_io_batch15_float64_int64_seq_confirmation.csv` | Two SEQ rounds; see [neutral timings and the retained OBJ observations](../doc/benchmarks.md#dtype-hoisted-obj-stl-ply-tetgen-ugrid-dolfin-freefem-avs-ucd-wkt-triangle-svg-and-tikz-writers). |
 | `plots/` | Generated figures (also copied to `doc/public/benchmarks/`). |
 
 The sweep explicitly includes Gmsh 4.1 on its supported single-type tetrahedral volume input, alongside MFM's single-type exception. This does not change either format's mixed-cell conformance declaration. Gmsh ASCII and binary geometry round trips are tested directly; reader-cursor measurements select ASCII explicitly.

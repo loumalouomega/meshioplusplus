@@ -255,6 +255,21 @@ def test_mfm_seq_confirmation_keeps_both_measurement_orders():
             ("cgns", "med", "libmesh", "pcd", "gid"),
             (),
         ),
+        (
+            "batch15_float64_int64",
+            (
+                "avsucd",
+                "dolfin-xml",
+                "freefem",
+                "obj",
+                "ply",
+                "stl",
+                "tetgen",
+                "ugrid",
+                "wkt",
+            ),
+            (),
+        ),
     ],
 )
 def test_text_io_evidence_is_complete_and_bit_identical(batch, formats, decreases):
