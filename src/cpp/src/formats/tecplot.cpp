@@ -1460,8 +1460,11 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<Tecplot
 struct TecplotPiece {
     std::string mType;
     NDArray mConn;                                              // rectangular pieces
-    std::vector<std::vector<std::int64_t>> mRows;               // polygon
-    std::vector<std::vector<std::vector<std::int64_t>>> mPoly;  // polyhedra
+    // Ragged pieces as the CSR triple the mesh backends store; mFaceOffsets is
+    // empty for a polygon piece.
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::int64_t> mRowOffsets{0};
+    std::vector<std::int64_t> mFaceOffsets;
     std::vector<std::size_t> mCells;  // the zone's cells, in order; empty = all of them
 
     std::size_t NumCells(std::size_t ZoneCells) const {
@@ -1530,42 +1533,82 @@ std::vector<TecplotPiece> tecplot_face_pieces(const TecplotZone& rZ, std::size_t
         }
         TecplotPiece piece;
         piece.mType = "polygon";
-        piece.mRows.reserve(ncells);
+        piece.mRowOffsets.reserve(ncells + 1);
         for (std::size_t c = 0; c < ncells; ++c) {
             std::vector<std::int64_t> ring = tecplot_polygon_ring(edges[c]);
             if (ring.empty())
                 throw ReadError(where + ": element " + std::to_string(c + 1) +
                                 " is not one closed polygon");
-            piece.mRows.push_back(std::move(ring));
+            piece.mFlat.insert(piece.mFlat.end(), ring.begin(), ring.end());
+            piece.mRowOffsets.push_back(static_cast<std::int64_t>(piece.mFlat.size()));
         }
         pieces.push_back(std::move(piece));
         return pieces;
     }
-    std::vector<std::vector<std::vector<std::int64_t>>> faces(ncells);
-    for (std::size_t f = 0; f + 1 < rFm.mStart.size(); ++f) {
-        const auto b = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]);
-        const auto e = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]);
+    // Each cell's faces in face order (left-element entries kept as-is, right-
+    // element ones reversed), staged as CSR over (face, reversed) references:
+    // count, prefix-sum, then scatter.
+    const std::size_t nfaces_total = rFm.mStart.empty() ? 0 : rFm.mStart.size() - 1;
+    std::vector<std::size_t> cell_start(ncells + 1, 0);
+    for (std::size_t f = 0; f < nfaces_total; ++f) {
         if (rFm.mLeft[f] >= 0)
-            faces[static_cast<std::size_t>(rFm.mLeft[f])].emplace_back(b, e);
+            ++cell_start[static_cast<std::size_t>(rFm.mLeft[f]) + 1];
         if (rFm.mRight[f] >= 0)
-            faces[static_cast<std::size_t>(rFm.mRight[f])].emplace_back(
-                std::make_reverse_iterator(e), std::make_reverse_iterator(b));
+            ++cell_start[static_cast<std::size_t>(rFm.mRight[f]) + 1];
+    }
+    for (std::size_t c = 0; c < ncells; ++c)
+        cell_start[c + 1] += cell_start[c];
+    struct FaceRef {
+        std::size_t mFace;
+        bool mReversed;
+    };
+    std::vector<FaceRef> refs(cell_start[ncells]);
+    {
+        std::vector<std::size_t> fill(cell_start.begin(), cell_start.end() - 1);
+        for (std::size_t f = 0; f < nfaces_total; ++f) {
+            if (rFm.mLeft[f] >= 0)
+                refs[fill[static_cast<std::size_t>(rFm.mLeft[f])]++] = {f, false};
+            if (rFm.mRight[f] >= 0)
+                refs[fill[static_cast<std::size_t>(rFm.mRight[f])]++] = {f, true};
+        }
     }
     std::map<std::size_t, std::size_t> piece_of;  // node count -> piece
+    std::vector<std::int64_t> distinct;
     for (std::size_t c = 0; c < ncells; ++c) {
-        if (faces[c].size() < 4)
+        const std::size_t nf = cell_start[c + 1] - cell_start[c];
+        if (nf < 4)
             throw ReadError(where + ": element " + std::to_string(c + 1) + " has " +
-                            std::to_string(faces[c].size()) + " faces");
-        std::set<std::int64_t> distinct;
-        for (const auto& fc : faces[c])
-            distinct.insert(fc.begin(), fc.end());
-        const auto [it, fresh] = piece_of.emplace(distinct.size(), pieces.size());
+                            std::to_string(nf) + " faces");
+        distinct.clear();
+        for (std::size_t i = cell_start[c]; i < cell_start[c + 1]; ++i) {
+            const std::size_t f = refs[i].mFace;
+            distinct.insert(distinct.end(),
+                            rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]),
+                            rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]));
+        }
+        std::sort(distinct.begin(), distinct.end());
+        const std::size_t ndistinct = static_cast<std::size_t>(
+            std::unique(distinct.begin(), distinct.end()) - distinct.begin());
+        const auto [it, fresh] = piece_of.emplace(ndistinct, pieces.size());
         if (fresh) {
             pieces.emplace_back();
-            pieces.back().mType = "polyhedron" + std::to_string(distinct.size());
+            pieces.back().mType = "polyhedron" + std::to_string(ndistinct);
+            pieces.back().mFaceOffsets.assign(1, 0);
         }
-        pieces[it->second].mPoly.push_back(std::move(faces[c]));
-        pieces[it->second].mCells.push_back(c);
+        TecplotPiece& piece = pieces[it->second];
+        for (std::size_t i = cell_start[c]; i < cell_start[c + 1]; ++i) {
+            const std::size_t f = refs[i].mFace;
+            const auto b = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]);
+            const auto e = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]);
+            if (refs[i].mReversed)
+                piece.mFlat.insert(piece.mFlat.end(), std::make_reverse_iterator(e),
+                                   std::make_reverse_iterator(b));
+            else
+                piece.mFlat.insert(piece.mFlat.end(), b, e);
+            piece.mRowOffsets.push_back(static_cast<std::int64_t>(piece.mFlat.size()));
+        }
+        piece.mFaceOffsets.push_back(static_cast<std::int64_t>(piece.mRowOffsets.size() - 1));
+        piece.mCells.push_back(c);
     }
     if (pieces.size() == 1)
         pieces[0].mCells.clear();  // every cell, in order
@@ -1825,19 +1868,16 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
             for (std::size_t j = 0; j < conn.Size(); ++j)
                 cp[j] += off;
             mesh.AddCellBlock(d.mMeshioType, std::move(conn));
-        } else if (!ref.mpPiece->mRows.empty()) {
-            std::vector<std::vector<std::int64_t>> rows = ref.mpPiece->mRows;
-            for (auto& row : rows)
-                for (std::int64_t& v : row)
-                    v += off;
-            mesh.AddPolygonBlock(ref.mpPiece->mType, std::move(rows));
         } else {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells = ref.mpPiece->mPoly;
-            for (auto& cell : cells)
-                for (auto& face : cell)
-                    for (std::int64_t& v : face)
-                        v += off;
-            mesh.AddPolyhedronBlock(ref.mpPiece->mType, std::move(cells));
+            const TecplotPiece& piece = *ref.mpPiece;
+            std::vector<std::int64_t> flat = piece.mFlat;  // copy: offset in place below
+            for (std::int64_t& v : flat)
+                v += off;
+            if (piece.mFaceOffsets.empty())
+                mesh.AddPolygonBlock(piece.mType, std::move(flat), piece.mRowOffsets);
+            else
+                mesh.AddPolyhedronBlock(piece.mType, std::move(flat), piece.mRowOffsets,
+                                        piece.mFaceOffsets);
         }
     }
 

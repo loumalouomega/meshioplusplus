@@ -548,7 +548,10 @@ Mesh read_ansys(const std::string& rPath) {
         std::int64_t mZone;
         std::string mType;
         std::vector<face_cells::Face> mConn;
-        std::vector<std::vector<face_cells::Face>> mPoly;
+        // Polyhedra as the CSR triple the mesh backends store.
+        std::vector<std::int64_t> mFlat;
+        std::vector<std::int64_t> mRows{0};
+        std::vector<std::int64_t> mFaces{0};
     };
     std::vector<Bucket> volume, surface;
     auto bucket = [](std::vector<Bucket>& rList, std::int64_t Zone,
@@ -556,7 +559,7 @@ Mesh read_ansys(const std::string& rPath) {
         for (auto& b : rList)
             if (b.mZone == Zone && b.mType == rType)
                 return b;
-        rList.push_back({Zone, rType, {}, {}});
+        rList.push_back({Zone, rType, {}, {}, {0}, {0}});
         return rList.back();
     };
     auto face_type_name = [](std::size_t N, bool Surface) -> std::string {
@@ -594,7 +597,12 @@ Mesh read_ansys(const std::string& rPath) {
         if (type == "polyhedron") {
             const std::string key =
                 "polyhedron" + std::to_string(face_cells::unique_node_count(cf));
-            bucket(volume, zone, key).mPoly.push_back(cf);
+            Bucket& poly = bucket(volume, zone, key);
+            for (const auto& face : cf) {
+                poly.mFlat.insert(poly.mFlat.end(), face.begin(), face.end());
+                poly.mRows.push_back(static_cast<std::int64_t>(poly.mFlat.size()));
+            }
+            poly.mFaces.push_back(static_cast<std::int64_t>(poly.mRows.size() - 1));
         } else if (conn.empty()) {
             ++skipped;
         } else {
@@ -628,8 +636,9 @@ Mesh read_ansys(const std::string& rPath) {
         for (auto& b : *pGroup) {
             std::size_t n;
             if (b.mType.rfind("polyhedron", 0) == 0) {
-                n = b.mPoly.size();
-                mesh.AddPolyhedronBlock(b.mType, std::move(b.mPoly));
+                n = b.mFaces.size() - 1;
+                mesh.AddPolyhedronBlock(b.mType, std::move(b.mFlat), std::move(b.mRows),
+                                        std::move(b.mFaces));
             } else {
                 n = b.mConn.size();
                 const std::size_t k = n ? b.mConn[0].size() : 0;

@@ -16,10 +16,12 @@
 //
 
 // System includes
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 // External includes
 #include <gtest/gtest.h>
@@ -175,6 +177,64 @@ TEST(Ensight, NfacedPolyhedronRoundTrip) {
         EXPECT_EQ(cb.NumFaces(0), 6u);
         // Geometry, not just arity: the cube must come back as a unit cube.
         EXPECT_NEAR(meshioplusplus::compute_stats(back).mUnsignedVolume, 1.0, 1e-12);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);
+    }
+}
+
+// One nfaced section holding cells of different node counts is split into
+// polyhedron<N> blocks in first-seen order, each keeping its cells' faces.
+TEST(Ensight, NfacedMixedNodeCountsSplitIntoGroups) {
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {1, 1, 0},
+                                    {0, 1, 0},
+                                    {0, 0, 1},
+                                    {1, 0, 1},
+                                    {1, 1, 1},
+                                    {0, 1, 1},
+                                    {2, 0, 0},
+                                    {2, 1, 0},
+                                    {2, 0, 1},
+                                    {2, 1, 1}}));
+    const std::vector<std::vector<std::int64_t>> hex_a = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                                                          {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}};
+    const std::vector<std::vector<std::int64_t>> tet = {{1, 8, 2}, {1, 5, 8}, {2, 8, 5}, {1, 2, 5}};
+    const std::vector<std::vector<std::int64_t>> hex_b = {
+        {1, 2, 9, 8}, {5, 10, 11, 6}, {1, 8, 10, 5}, {2, 6, 11, 9}, {1, 5, 6, 2}, {8, 9, 11, 10}};
+    m.AddPolyhedronBlock("polyhedron", {hex_a, tet, hex_b});
+
+    for (bool binary : {false, true}) {
+        const std::string path =
+            mt::temp_path(binary ? "_nfaced_mix_b.case" : "_nfaced_mix_a.case");
+        meshioplusplus::write_ensight(path, m, binary);
+        const mt::Mesh back = meshioplusplus::read_ensight(path);
+        ASSERT_EQ(back.NumCellBlocks(), 2u) << "binary=" << binary;
+        const auto big = back.Cells(0);
+        const auto small = back.Cells(1);
+        EXPECT_EQ(big.Type(), "polyhedron8");
+        EXPECT_EQ(small.Type(), "polyhedron4");
+        ASSERT_EQ(big.NumCells(), 2u);
+        ASSERT_EQ(small.NumCells(), 1u);
+        const std::vector<std::vector<std::int64_t>>* expect[] = {&hex_a, &hex_b};
+        for (std::size_t c = 0; c < 2; ++c) {
+            ASSERT_EQ(big.NumFaces(c), 6u);
+            for (std::size_t f = 0; f < 6; ++f) {
+                const auto face = big.Face(c, f);
+                ASSERT_EQ(face.second, (*expect[c])[f].size());
+                for (std::size_t k = 0; k < face.second; ++k)
+                    EXPECT_EQ(face.first[k], (*expect[c])[f][k]);
+            }
+        }
+        ASSERT_EQ(small.NumFaces(0), 4u);
+        for (std::size_t f = 0; f < 4; ++f) {
+            const auto face = small.Face(0, f);
+            ASSERT_EQ(face.second, tet[f].size());
+            for (std::size_t k = 0; k < face.second; ++k)
+                EXPECT_EQ(face.first[k], tet[f][k]);
+        }
         std::error_code ec;
         std::filesystem::remove(path, ec);
         std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);

@@ -44,6 +44,8 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
 #include <cgnslib.h>
+
+#include "../detail/polyhedron_groups.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -596,12 +598,8 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     if (!ngons.empty() && nfaces.empty()) {
         // Faces with no cells referencing them: a face mesh, not a volume one.
         for (const MllFaces& faces : ngons) {
-            std::vector<std::vector<std::int64_t> > rows(faces.Count());
-            for (std::size_t f = 0; f < faces.Count(); ++f)
-                rows[f].assign(faces.mNodes.begin() + faces.mOffsets[f],
-                               faces.mNodes.begin() + faces.mOffsets[f + 1]);
-            if (!rows.empty())
-                mesh.AddPolygonBlock("polygon", std::move(rows));
+            if (faces.Count() > 0)
+                mesh.AddPolygonBlock("polygon", faces.mNodes, faces.mOffsets);
         }
     } else if (!nfaces.empty()) {
         if (ngons.empty())
@@ -628,12 +626,14 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                 cgns_mll_fail("cg_poly_elements_read failed for NFACE_n '" + sec->mName + "'",
                               rPath);
 
-            // Group by unique node count into polyhedron<N>, the convention the
-            // OpenFOAM and EnSight readers already use.
-            std::vector<std::vector<std::vector<std::int64_t> > > cells(ncells);
-            std::vector<std::size_t> node_counts(ncells, 0);
+            // Stage every cell's faces as one CSR triple (rings reversed in
+            // place for a negative id), then group by unique node count into
+            // polyhedron<N>, the convention the OpenFOAM and EnSight readers
+            // already use.
+            std::vector<std::int64_t> flat, rows{0}, cell_faces{0};
+            rows.reserve(static_cast<std::size_t>(data_size) + 1);
+            cell_faces.reserve(ncells + 1);
             for (std::size_t c = 0; c < ncells; ++c) {
-                std::vector<std::int64_t> uniq;
                 for (cgsize_t i = offsets[c]; i < offsets[c + 1]; ++i) {
                     const cgsize_t signed_id = elems[static_cast<std::size_t>(i)];
                     const cgsize_t id = signed_id < 0 ? -signed_id : signed_id;
@@ -645,35 +645,23 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                             sec->mName, static_cast<long long>(id)));
                     const MllFaces& faces = *it->second.first;
                     const std::size_t f = it->second.second;
-                    std::vector<std::int64_t> ring(faces.mNodes.begin() + faces.mOffsets[f],
-                                                   faces.mNodes.begin() + faces.mOffsets[f + 1]);
+                    const auto first = flat.size();
+                    flat.insert(flat.end(), faces.mNodes.begin() + faces.mOffsets[f],
+                                faces.mNodes.begin() + faces.mOffsets[f + 1]);
                     // A negative id means "this face, traversed the other way"
                     // -- CGNS's way of orienting a shared face outward from
                     // each of the two cells that use it.
                     if (signed_id < 0)
-                        std::reverse(ring.begin(), ring.end());
-                    uniq.insert(uniq.end(), ring.begin(), ring.end());
-                    cells[c].push_back(std::move(ring));
+                        std::reverse(flat.begin() + static_cast<std::ptrdiff_t>(first), flat.end());
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
                 }
-                std::sort(uniq.begin(), uniq.end());
-                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-                node_counts[c] = uniq.size();
+                cell_faces.push_back(static_cast<std::int64_t>(rows.size() - 1));
             }
-
-            std::vector<std::size_t> order;
-            std::map<std::size_t, std::vector<std::size_t> > groups;
-            for (std::size_t c = 0; c < ncells; ++c) {
-                if (groups.find(node_counts[c]) == groups.end())
-                    order.push_back(node_counts[c]);
-                groups[node_counts[c]].push_back(c);
-            }
-            for (std::size_t n : order) {
-                std::vector<std::vector<std::vector<std::int64_t> > > group;
-                group.reserve(groups[n].size());
-                for (std::size_t c : groups[n])
-                    group.push_back(std::move(cells[c]));
-                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
-            }
+            for (auto& g : detail::group_polyhedra_by_node_count(std::move(flat), std::move(rows),
+                                                                 std::move(cell_faces)))
+                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(g.mNodeCount),
+                                        std::move(g.mFlat), std::move(g.mRowOffsets),
+                                        std::move(g.mFaceOffsets));
         }
     }
 
