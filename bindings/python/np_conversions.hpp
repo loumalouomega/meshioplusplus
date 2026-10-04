@@ -64,6 +64,7 @@
  */
 
 // System includes
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -157,6 +158,38 @@ struct PyMeshRefs {
 };
 
 /**
+ * @brief A class of the `meshioplusplus` package (`Mesh`, `Region`), looked up once.
+ *
+ * `mesh_to_py` and `regions_to_py` ran `import("meshioplusplus").attr(...)` on
+ * every call. The class is cached in a deliberately leaked `py::object`: a
+ * static one would be destroyed at interpreter shutdown, after the runtime is
+ * gone, and crash. The slot is filled with a compare-exchange rather than a
+ * function-local static, whose init guard another thread could block on while
+ * holding the GIL that the importing thread needs back (the import can release
+ * it). Callers hold the GIL, so a lost race may simply drop its own reference.
+ * (`py::gil_safe_call_once_and_store` would do this, but needs pybind11 2.12.)
+ *
+ * The cache assumes the package is not reloaded in the process.
+ */
+inline const py::object& cached_package_class(const char* pName) {
+    static std::atomic<py::object*> sMesh{nullptr};
+    static std::atomic<py::object*> sRegion{nullptr};
+    std::atomic<py::object*>& slot = (pName[0] == 'M') ? sMesh : sRegion;
+    py::object* cached = slot.load(std::memory_order_acquire);
+    if (!cached) {
+        auto* made = new py::object(py::module_::import("meshioplusplus").attr(pName));
+        py::object* expected = nullptr;
+        if (slot.compare_exchange_strong(expected, made, std::memory_order_acq_rel))
+            cached = made;
+        else {
+            delete made;  // the GIL is held: this thread lost the race
+            cached = expected;
+        }
+    }
+    return *cached;
+}
+
+/**
  * @brief Build a non-owning `meshioplusplus::NDArray` view over a numpy array's buffer.
  *
  * Reads the numpy array's dtype and shape and wraps its raw data pointer in
@@ -214,9 +247,11 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& rRefs) {
         throw meshioplusplus::WriteError("Expected an array-like object");
     // Normalize to native byte order so the typed views read correctly. numpy
     // dtype.byteorder is '=' native, '|' n/a, '<' little, '>' big. Host is
-    // assumed little-endian (x86/ARM64).
-    std::string bo = py::cast<std::string>(a.dtype().attr("byteorder"));
-    const bool native = (bo == "=" || bo == "|" || bo == "<");
+    // assumed little-endian (x86/ARM64). The character is read straight from the
+    // descriptor struct: this runs once per array of every call, and the
+    // `dtype.byteorder` attribute lookup built a Python string each time.
+    const char bo = py::detail::array_descriptor_proxy(a.dtype().ptr())->byteorder;
+    const bool native = (bo == '=' || bo == '|' || bo == '<');
     if (!native) {
         py::object newdt = a.dtype().attr("newbyteorder")("=");
         a = py::array::ensure(a.attr("astype")(newdt), py::array::c_style);
@@ -254,8 +289,21 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::
     // Straight into the CSR storage (backends/meshio_mesh.hpp), one row at a
     // time: no per-cell vector.
     const auto append_row = [&](py::handle seq) {
-        for (py::handle v : seq)
-            cb.mFlat.push_back(py::cast<std::int64_t>(v));
+        // A row that is already a 1-D integer array (what `mesh_to_py` hands out,
+        // and what most callers build) is copied in one go. `ensure` without
+        // `forcecast` converts only safe casts (int32 -> int64) and otherwise
+        // returns null, leaving the per-element loop below to raise as before.
+        bool done = false;
+        if (py::isinstance<py::array>(seq)) {
+            auto arr = py::array_t<std::int64_t, py::array::c_style>::ensure(seq);
+            if (arr && arr.ndim() == 1) {
+                cb.mFlat.insert(cb.mFlat.end(), arr.data(), arr.data() + arr.size());
+                done = true;
+            }
+        }
+        if (!done)
+            for (py::handle v : seq)
+                cb.mFlat.push_back(py::cast<std::int64_t>(v));
         cb.mRowOffsets.push_back(static_cast<std::int64_t>(cb.mFlat.size()));
     };
     cb.mRowOffsets.push_back(0);
@@ -502,7 +550,7 @@ inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
     const std::size_t n = rMesh.NumRegions();
     if (n == 0)
         return out;
-    py::object RegionCls = py::module_::import("meshioplusplus").attr("Region");
+    const py::object& RegionCls = cached_package_class("Region");
     for (std::size_t i = 0; i < n; ++i) {
         const meshioplusplus::Region& r = rMesh.Region(i);
         meshioplusplus::NDArray entries = r.mEntries;
@@ -518,10 +566,11 @@ inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
  * @brief Build the Python object a ragged `CellBlock` maps to.
  *
  * This is the read-side counterpart of `ragged_cellblock_from_py`. Since a
- * ragged block has no rectangular buffer, its rows/faces are **copied**
- * (via `std::memcpy` into freshly allocated `py::array_t<std::int64_t>`
- * objects) rather than adopted zero-copy the way `numpy_from_ndarray` does
- * for rectangular blocks:
+ * ragged block has no rectangular buffer, its node ids are **copied** once
+ * (via `std::memcpy` into one `py::array_t<std::int64_t>`) rather than adopted
+ * zero-copy the way `numpy_from_ndarray` does for rectangular blocks, and each
+ * row/face is a disjoint 1-D view of a slice of that buffer, which its base
+ * keeps alive:
  *  - For a jagged polygon block: a Python list of 1-D int64 numpy arrays,
  *    one per cell.
  *  - For a polyhedron block (`cb.IsPolyhedron()`): a Python list of cells,
@@ -535,14 +584,21 @@ inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
  * @return A `py::object` (a `py::list`) as described above.
  */
 inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
-    // Row r of the CSR storage as a fresh 1-D int64 array.
+    // One int64 buffer holds every node id; each row is a view of a slice of it
+    // (the rows are disjoint, so writing to one never touches another, and each
+    // view keeps the buffer alive). This replaces one array allocation plus one
+    // memcpy per polygon or face.
+    py::array_t<std::int64_t> flat(static_cast<py::ssize_t>(rCb.mFlat.size()));
+    if (!rCb.mFlat.empty())
+        std::memcpy(flat.mutable_data(), rCb.mFlat.data(), rCb.mFlat.size() * sizeof(std::int64_t));
+    std::int64_t* base = flat.mutable_data();
+    const py::object owner = flat;
+    // Row r of the CSR storage as a 1-D int64 view into `flat`.
     auto row_to_arr = [&](std::size_t r) {
         const std::int64_t b = rCb.mRowOffsets[r];
-        const std::size_t n = static_cast<std::size_t>(rCb.mRowOffsets[r + 1] - b);
-        py::array_t<std::int64_t> a(static_cast<py::ssize_t>(n));
-        if (n)
-            std::memcpy(a.mutable_data(), rCb.mFlat.data() + b, n * sizeof(std::int64_t));
-        return a;
+        const auto n = static_cast<py::ssize_t>(rCb.mRowOffsets[r + 1] - b);
+        return py::array_t<std::int64_t>({n}, {static_cast<py::ssize_t>(sizeof(std::int64_t))},
+                                         base + b, owner);
     };
     py::list out;
     if (rCb.IsPolyhedron()) {
@@ -592,7 +648,7 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
  *       Python object separately.
  */
 inline py::object mesh_to_py(meshioplusplus::Mesh&& m) {
-    py::object MeshCls = py::module_::import("meshioplusplus").attr("Mesh");
+    const py::object& MeshCls = cached_package_class("Mesh");
     py::list regions = regions_to_py(m);
 
     py::array points = numpy_from_ndarray(std::move(m.mPoints));
