@@ -286,6 +286,27 @@ def test_mfm_seq_confirmation_keeps_both_measurement_orders():
             ),
             (),
         ),
+        (
+            "batch17_float64_int64",
+            (
+                "dex",
+                "ensight",
+                "flac3d",
+                "h5m",
+                "lsdyna",
+                "marc",
+                "mdpa",
+                "mfem",
+                "mff",
+                "mfm",
+                "openfoam",
+                "vtkhdf",
+                "vtp",
+                "xdmf",
+                "xyz",
+            ),
+            (),
+        ),
     ],
 )
 def test_text_io_evidence_is_complete_and_bit_identical(batch, formats, decreases):
