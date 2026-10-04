@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -580,17 +581,15 @@ void flac3d_write_groups_binary(std::ostream& rOs, const std::vector<Flac3dGroup
 
 // Reorder one zone cell to FLAC3D order, choosing the right-handed permutation
 // via the scalar triple product of the first four ordered corners.
-std::vector<std::int64_t> zone_cell_flac3d(const NDArray& rPoints, const NDArray& rData,
+std::vector<std::int64_t> zone_cell_flac3d(const detail::DoubleView& rPoints,
+                                           const detail::Int64View& rData, std::size_t ncols,
                                            std::size_t row, const std::string& rKey) {
     const std::vector<int>& o1 = m2f_order(rKey);
     const std::vector<int>& o2 = m2f_order2(rKey);
-    const std::size_t ncols = detail::cols(rData);
 
-    auto node = [&](int local) -> std::int64_t {
-        return detail::read_int(rData, row * ncols + local);
-    };
+    auto node = [&](int local) -> std::int64_t { return rData[row * ncols + local]; };
     auto coord = [&](std::int64_t p, int c) -> double {
-        return detail::read_double(rPoints, static_cast<std::size_t>(p) * 3 + c);
+        return rPoints[static_cast<std::size_t>(p) * 3 + c];
     };
 
     // first four corners in FLAC3D order
@@ -633,6 +632,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     const std::size_t npts = rMesh.NumPoints();
     const std::size_t pdim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
 
     const std::vector<Flac3dGroupOut> zgroups = flac3d_groups_for(rMesh, zone_idx, "zone", "face");
     const std::vector<Flac3dGroupOut> fgroups = flac3d_groups_for(rMesh, face_idx, "face", "zone");
@@ -645,8 +645,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         for (std::size_t i = 0; i < npts; ++i) {
             wu32(f, static_cast<std::uint32_t>(i + 1));
             for (int c = 0; c < 3; ++c)
-                wf64(f,
-                     c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0);
+                wf64(f, c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0);
         }
         // ZONES and FACES are numbered independently in a FLAC3D file -- both
         // start at 1 -- so each section gets its own counter. Sharing one made
@@ -659,14 +658,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         wu32(f, nz);
         for (auto i : zone_idx) {
             const auto cb = rMesh.Cells(i);
-            const NDArray& conn = cb.Conn();
+            const NDArray& conn_array = cb.Conn();
+            const detail::Int64View conn(conn_array);
+            const std::size_t zone_cols = detail::cols(conn_array);
             std::string key = zone_key(cb.Type());
             std::size_t n = cb.NumCells();
             // Right-handed reorder per row is independent -> compute in
             // parallel, then stream sequentially.
             std::vector<std::vector<std::int64_t>> zcells(n);
-            parallel_for(
-                n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
+            parallel_for(n, [&](std::size_t r) {
+                zcells[r] = zone_cell_flac3d(point_values, conn, zone_cols, r, key);
+            });
             for (std::size_t r = 0; r < n; ++r) {
                 const auto& cell = zcells[r];
                 wu32(f, ++gid);
@@ -684,17 +686,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         wu32(f, nf);
         for (auto i : face_idx) {
             const auto cb = rMesh.Cells(i);
-            const NDArray& conn = cb.Conn();
+            const NDArray& conn_array = cb.Conn();
+            const detail::Int64View conn(conn_array);
             std::string key = face_key(cb.Type());
             const std::vector<int>& ord = m2f_order(key);
             std::size_t n = cb.NumCells();
-            std::size_t ncols = detail::cols(conn);
+            std::size_t ncols = detail::cols(conn_array);
             for (std::size_t r = 0; r < n; ++r) {
                 wu32(f, ++gid);
                 wu32(f, static_cast<std::uint32_t>(ord.size()));
                 for (int local : ord)
-                    wu32(f,
-                         static_cast<std::uint32_t>(detail::read_int(conn, r * ncols + local) + 1));
+                    wu32(f, static_cast<std::uint32_t>(conn[r * ncols + local] + 1));
             }
         }
         flac3d_write_groups_binary(f, fgroups);
@@ -711,7 +713,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // is whitespace-tokenized on read, so the padding carries no meaning.
         f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0;
             std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
@@ -721,14 +723,18 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     f << "* ZONES\n";
     for (auto i : zone_idx) {
         const auto cb = rMesh.Cells(i);
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
+        const detail::Int64View conn(conn_array);
+        const std::size_t zone_cols = detail::cols(conn_array);
         std::string key = zone_key(cb.Type());
         const char* abbr = flac3d_type(key);
         std::size_t n = cb.NumCells();
         // Right-handed reorder per row is independent -> compute in parallel,
         // then stream sequentially.
         std::vector<std::vector<std::int64_t>> zcells(n);
-        parallel_for(n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
+        parallel_for(n, [&](std::size_t r) {
+            zcells[r] = zone_cell_flac3d(point_values, conn, zone_cols, r, key);
+        });
         for (std::size_t r = 0; r < n; ++r) {
             f << "Z " << abbr << " " << (++gid);
             for (auto v : zcells[r])
@@ -742,16 +748,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     f << "* FACES\n";
     for (auto i : face_idx) {
         const auto cb = rMesh.Cells(i);
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
+        const detail::Int64View conn(conn_array);
         std::string key = face_key(cb.Type());
         const char* abbr = flac3d_type(key);
         const std::vector<int>& ord = m2f_order(key);
         std::size_t n = cb.NumCells();
-        std::size_t ncols = detail::cols(conn);
+        std::size_t ncols = detail::cols(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             f << "F " << abbr << " " << (++gid);
             for (int local : ord)
-                f << " " << (detail::read_int(conn, r * ncols + local) + 1);
+                f << " " << (conn[r * ncols + local] + 1);
             f << "\n";
         }
     }

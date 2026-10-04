@@ -81,11 +81,12 @@ void vtp_append_block(VtpSectionData& rSec, const Mesh::CellView& rCb) {
         }
         return;
     }
-    const NDArray& conn = rCb.Conn();
-    const std::size_t k = cols(conn);
+    const NDArray& conn_array = rCb.Conn();
+    const std::size_t k = cols(conn_array);
+    const detail::Int64View conn(conn_array);
     for (std::size_t r = 0; r < rCb.NumCells(); ++r) {
         for (std::size_t j = 0; j < k; ++j)
-            rSec.mConn.push_back(read_int(conn, r * k + j));
+            rSec.mConn.push_back(conn[r * k + j]);
         rSec.mOffsets.push_back(static_cast<std::int64_t>(rSec.mConn.size()));
     }
 }

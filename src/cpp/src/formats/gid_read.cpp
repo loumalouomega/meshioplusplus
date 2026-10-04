@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <optional>
 #include <map>
 #include <string>
 #include <stdexcept>
@@ -51,6 +52,7 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "../detail/typed_view.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -1244,11 +1246,15 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                 // Column-oriented: 1 = ids, 2..4 = x, y, z.
                 if (cols.size() >= 2) {
                     const std::size_t n = cols[0].Size();
+                    const detail::Int64View ids(cols[0]);
+                    std::array<std::optional<detail::DoubleView>, 3> coords;
+                    for (std::size_t k = 0; k + 1 < cols.size() && k < 3; ++k)
+                        coords[k].emplace(cols[k + 1]);
                     for (std::size_t r = 0; r < n; ++r) {
                         std::array<double, 3> xyz{0.0, 0.0, 0.0};
                         for (std::size_t k = 0; k + 1 < cols.size() && k < 3; ++k)
-                            xyz[k] = detail::read_double(cols[k + 1], r);
-                        staged.mNodes.emplace(detail::read_int(cols[0], r), xyz);
+                            xyz[k] = (*coords[k])[r];
+                        staged.mNodes.emplace(ids[r], xyz);
                     }
                 }
             }
@@ -1264,14 +1270,17 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                     block.mElemIds.reserve(block.mElemIds.size() + n);
                     block.mConn.reserve(block.mConn.size() + n * static_cast<std::size_t>(nnode));
                     block.mMaterial.reserve(block.mMaterial.size() + n);
+                    // One view per column (ids, connectivity, material), made before the rows.
+                    std::vector<std::optional<detail::Int64View>> views(cols.size());
+                    const std::size_t used = static_cast<std::size_t>(nnode) + (has_mat ? 2 : 1);
+                    for (std::size_t k = 0; k < used; ++k)
+                        views[k].emplace(cols[k]);
                     for (std::size_t r = 0; r < n; ++r) {
-                        block.mElemIds.push_back(detail::read_int(cols[0], r));
+                        block.mElemIds.push_back((*views[0])[r]);
                         for (int k = 0; k < nnode; ++k)
-                            block.mConn.push_back(
-                                detail::read_int(cols[static_cast<std::size_t>(k) + 1], r));
+                            block.mConn.push_back((*views[static_cast<std::size_t>(k) + 1])[r]);
                         block.mMaterial.push_back(
-                            has_mat ? detail::read_int(cols[static_cast<std::size_t>(nnode) + 1], r)
-                                    : 0);
+                            has_mat ? (*views[static_cast<std::size_t>(nnode) + 1])[r] : 0);
                     }
                     if (!has_mat)
                         block.mMaterial.clear();
@@ -1321,10 +1330,14 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                 const std::size_t n = cols[0].Size();
                 res.mIds.reserve(n);
                 res.mValues.reserve(n * res.mNumComponents);
+                const detail::Int64View ids(cols[0]);
+                std::vector<std::optional<detail::DoubleView>> components(res.mNumComponents);
+                for (std::size_t k = 0; k < res.mNumComponents; ++k)
+                    components[k].emplace(cols[k + 1]);
                 for (std::size_t r = 0; r < n; ++r) {
-                    res.mIds.push_back(detail::read_int(cols[0], r));
+                    res.mIds.push_back(ids[r]);
                     for (std::size_t k = 0; k < res.mNumComponents; ++k)
-                        res.mValues.push_back(detail::read_double(cols[k + 1], r));
+                        res.mValues.push_back((*components[k])[r]);
                 }
             }
             results.push_back(std::move(res));

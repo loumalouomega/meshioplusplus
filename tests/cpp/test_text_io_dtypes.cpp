@@ -18,9 +18,12 @@
 #include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
+#include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/flux.hpp"
@@ -28,9 +31,14 @@
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/ip.hpp"
+#include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/libmesh.hpp"
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/formats/marc.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
+#include "meshioplusplus/formats/mff.hpp"
+#include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
@@ -49,7 +57,9 @@
 #include "meshioplusplus/formats/triangle.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/ugrid.hpp"
+#include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
+#include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
 namespace {
@@ -248,6 +258,46 @@ const std::vector<TidFormat>& tid_writers() {
         {"unv",
          [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_unv(rPath, rMesh); },
          true, ".unv"},
+        {"dex", tid::write_dex, true, ".dex"},
+        {"mfm",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_mfm(rPath, rMesh, ".16e");
+         },
+         true, ".mfm"},
+        {"flac3d-ascii",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_flac3d(rPath, rMesh, ".16e", false);
+         },
+         true, ".f3grid"},
+        {"flac3d-binary",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_flac3d(rPath, rMesh, ".16e", true);
+         },
+         true, ".f3grid"},
+        {"ensight-ascii",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_ensight(rPath, rMesh, false);
+         },
+         true, ".case"},
+        {"ensight-binary",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_ensight(rPath, rMesh, true);
+         },
+         true, ".case"},
+        {"marc", tid::write_marc, true, ".dat"},
+        {"lsdyna", tid::write_lsdyna, true, ".k"},
+        {"mfem",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_mfem(rPath, rMesh); },
+         true, ".mesh"},
+        {"mff", tid::write_mff, true, ".mff"},
+        {"xyz",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_xyz(rPath, rMesh); },
+         true, ".xyz"},
+        {"vtp",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_vtp(rPath, rMesh, true, true);
+         },
+         false, ".vtp"},
         {"tikz",
          [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_tikz(rPath, rMesh); },
          true, ".tex"},

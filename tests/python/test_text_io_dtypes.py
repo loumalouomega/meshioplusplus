@@ -41,11 +41,31 @@ FORMATS = (
     "ansys",
     "radioss",
     "unv",
+    "dex",
+    "mfm",
+    "flac3d",
+    "ensight",
+    "marc",
+    "lsdyna",
+    "mfem",
+    "mff",
+    "xyz",
 )
 # Formats that record each array's dtype in the file (PCD SIZE/TYPE, HDF5
 # datasets), so their bytes legitimately differ from canonical storage: the
 # values must still round-trip.
-STORED_DTYPE_FORMATS = ("pcd", "cgns", "med", "ply")
+STORED_DTYPE_FORMATS = (
+    "pcd",
+    "cgns",
+    "med",
+    "ply",
+    "vtkhdf",
+    "h5m",
+    "xdmf",
+    "vtp",
+)
+# H5M stores connectivity as Int32/Int64/UInt32/UInt64 only.
+H5M_INDEX_DTYPES = ("int32", "int64", "uint32", "uint64")
 # A writer may embed its own file name (glTF's .bin), pick its extension (GiD)
 # or write companion files (Triangle and TetGen's .ele), so every output is
 # `<dir>/m<suffix>` in a directory of its own and the whole directory is
@@ -75,6 +95,19 @@ SUFFIX = {
     "ansys": ".msh",
     "radioss": ".rad",
     "unv": ".unv",
+    "dex": ".dex",
+    "mfm": ".mfm",
+    "flac3d": ".f3grid",
+    "ensight": ".case",
+    "marc": ".dat",
+    "lsdyna": ".k",
+    "mfem": ".mesh",
+    "vtp": ".vtp",
+    "mff": ".mff",
+    "xyz": ".xyz",
+    "vtkhdf": ".vtkhdf",
+    "h5m": ".h5m",
+    "xdmf": ".xdmf",
     "pcd": ".pcd",
     "cgns": ".cgns",
     "med": ".med",
@@ -193,6 +226,8 @@ def test_hoisted_writer_all_dtypes_match_default_storage(
 def test_stored_dtype_writer_round_trips_values_from_all_dtypes(
     tmp_path, monkeypatch, fmt, dtype
 ):
+    if fmt == "h5m" and dtype not in H5M_INDEX_DTYPES:
+        pytest.skip("H5M stores connectivity as Int32/Int64/UInt32/UInt64 only")
     monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
     mesh, inputs = _mesh(fmt, dtype, dtype, 3)
     expected, _ = _mesh(fmt, "float64", "int64", 3)

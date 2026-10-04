@@ -26,6 +26,7 @@
 #include <ios>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <map>
 #include <memory>
 #include <set>
@@ -49,6 +50,7 @@
 #include "lagrange_common.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -4069,9 +4071,9 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     std::vector<std::int64_t> attr(ncells, 0);
     if (has_attr) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const NDArray& a = rMesh.CellData("mfem:attribute", b);
+            const detail::Int64View a(rMesh.CellData("mfem:attribute", b));
             for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r)
-                attr[block_start[b] + r] = detail::read_int(a, r);
+                attr[block_start[b] + r] = a[r];
         }
     }
     // Regions: tags become attributes where mfem:attribute is absent; other
@@ -4176,14 +4178,14 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             continue;
         const auto cb = rMesh.Cells(b);
         const std::string type(cb.Type());
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         quadratic = quadratic || k > geoms[static_cast<std::size_t>(g)].mNumVertices;
         has_pyramid = has_pyramid || g == 7;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             MfOutCell c{g, attr[block_start[b] + r], block_start[b] + r, {}, type};
             for (std::size_t j = 0; j < k; ++j)
-                c.mNodes.push_back(detail::read_int(conn, r * k + j));
+                c.mNodes.push_back(conn[r * k + j]);
             (geoms[static_cast<std::size_t>(g)].mDim == dim ? elements : boundary)
                 .push_back(std::move(c));
         }
@@ -4441,6 +4443,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     // The order-p dof values of one point array (row-major, dofs x Cols).
     auto high_values = [&](const NDArray& rData, std::size_t Cols) {
         std::vector<double> out(hdofs.mSize * Cols, 0.0);
+        const detail::DoubleView data(rData);
         for (std::size_t e = 0; e < elements.size(); ++e) {
             const MfOutCell& c = elements[e];
             const std::size_t n = c.mNodes.size();
@@ -4451,9 +4454,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
                 for (std::size_t col = 0; col < Cols; ++col) {
                     double v = 0.0;
                     for (std::size_t m = 0; m < used; ++m)
-                        v +=
-                            row[m] * detail::read_double(
-                                         rData, static_cast<std::size_t>(c.mNodes[m]) * Cols + col);
+                        v += row[m] * data[static_cast<std::size_t>(c.mNodes[m]) * Cols + col];
                     out[dof * Cols + col] = v;
                 }
             }
@@ -4511,11 +4512,12 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     }
     out += "\nvertices\n" + std::to_string(nv) + "\n";
     const NDArray& pts = rMesh.Points();
-    auto evaluate = [&](const MfWeights& rW, const NDArray& rData, std::size_t Cols,
+    const detail::DoubleView pts_values(pts);
+    auto evaluate = [&](const MfWeights& rW, const detail::DoubleView& rData, std::size_t Cols,
                         std::size_t C) {
         double sum = 0;
         for (const auto& [p, w] : rW)
-            sum += w * detail::read_double(rData, static_cast<std::size_t>(p) * Cols + C);
+            sum += w * rData[static_cast<std::size_t>(p) * Cols + C];
         return sum;
     };
     if (high > 0) {
@@ -4537,8 +4539,8 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             for (std::size_t c = 0; c < pdim; ++c) {
                 if (c)
                     out += ' ';
-                mf_append_real(out, detail::read_double(
-                                        pts, static_cast<std::size_t>(vertex_point[v]) * pdim + c));
+                mf_append_real(out,
+                               pts_values[static_cast<std::size_t>(vertex_point[v]) * pdim + c]);
             }
             out += '\n';
         }
@@ -4549,7 +4551,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             for (std::size_t c = 0; c < pdim; ++c) {
                 if (c)
                     out += ' ';
-                mf_append_real(out, evaluate(dof_weights[d], pts, pdim, c));
+                mf_append_real(out, evaluate(dof_weights[d], pts_values, pdim, c));
             }
             out += '\n';
         }
@@ -4578,6 +4580,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         const std::size_t cols = a.Shape().size() > 1 ? detail::cols(a) : 1;
+        const detail::DoubleView a_values(a);
         std::string text = "FiniteElementSpace\nFiniteElementCollection: H1_" +
                            std::to_string(dim) + "D_P" + std::to_string(order) +
                            "\nVDim: " + std::to_string(cols) + "\nOrdering: 1\n\n";
@@ -4589,11 +4592,10 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
                 if (high > 0)
                     mf_append_real(text, hv[d * cols + c]);
                 else if (quadratic)
-                    mf_append_real(text, evaluate(dof_weights[d], a, cols, c));
+                    mf_append_real(text, evaluate(dof_weights[d], a_values, cols, c));
                 else
                     mf_append_real(text,
-                                   detail::read_double(
-                                       a, static_cast<std::size_t>(vertex_point[d]) * cols + c));
+                                   a_values[static_cast<std::size_t>(vertex_point[d]) * cols + c]);
             }
             text += '\n';
         }
@@ -4612,15 +4614,19 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
         std::string text = "FiniteElementSpace\nFiniteElementCollection: L2_" +
                            std::to_string(dim) + "D_P0\nVDim: " + std::to_string(cols) +
                            "\nOrdering: 1\n\n";
+        // One view per block of this array, made on first use.
+        std::vector<std::optional<detail::DoubleView>> block_values(rMesh.NumCellBlocks());
         for (const MfOutCell& c : elements) {
             std::size_t b = 0;
             while (c.mCell >= block_start[b + 1])
                 ++b;
-            const NDArray& a = rMesh.CellData(name, b);
+            if (!block_values[b])
+                block_values[b].emplace(rMesh.CellData(name, b));
+            const detail::DoubleView& a = *block_values[b];
             for (std::size_t k = 0; k < cols; ++k) {
                 if (k)
                     text += ' ';
-                mf_append_real(text, detail::read_double(a, (c.mCell - block_start[b]) * cols + k));
+                mf_append_real(text, a[(c.mCell - block_start[b]) * cols + k]);
             }
             text += '\n';
         }

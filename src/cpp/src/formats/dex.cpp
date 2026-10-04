@@ -31,6 +31,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -179,14 +180,16 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
     f << "# NAME = PIECE FORMULA = " << field << "\n";
     f << "NB_REAL = 1 NB_COMP = " << ncomp << " NB_POINT = " << n << " #\n";
     char buf[64];
+    const detail::DoubleView point_values(points);
+    const detail::DoubleView arr_values(arr);
     for (std::size_t r = 0; r < n; ++r) {
         for (int c = 0; c < kDim; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, r * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[r * pdim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%.16g", v);
             f << buf << (c + 1 < kDim ? " " : "");
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g", arr_values[r * ncomp + c]);
             f << buf;
         }
         f << "\n";

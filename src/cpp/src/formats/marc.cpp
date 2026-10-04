@@ -56,6 +56,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/keyword_card_view.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -1543,11 +1544,12 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
             volume = true;
     }
+    const detail::DoubleView point_values(points);
     bool flat = pdim < 3;
     if (!flat) {
         flat = true;
         for (std::size_t p = 0; p < npts && flat; ++p)
-            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+            flat = point_values[p * pdim + 2] == 0.0;
     }
     const bool planar = !volume && flat;
     const auto cell_array_ok = [&](const std::string& rName) {
@@ -1565,10 +1567,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         const bool ragged = cb.IsRagged();
         const std::int64_t fallback = marcw_default_type(type, planar);
         const std::size_t nodes = ragged ? 0 : cb.NodesPerCell();
+        std::optional<detail::Int64View> types;
+        if (!ragged && has_type)
+            types.emplace(rMesh.CellData("marc:type", b));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::int64_t etype = 0;
-            if (!ragged && has_type) {
-                const std::int64_t want = detail::read_int(rMesh.CellData("marc:type", b), r);
+            if (types) {
+                const std::int64_t want = (*types)[r];
                 if (const MarcType* known = marc_type(want)) {
                     const std::string kind(known->mCell);
                     if ((kind == type && known->mNodes == nodes) ||
@@ -1611,9 +1616,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     if (has_element) {
         std::set<std::int64_t> seen;
         bool ok = true;
+        // One view per block of `marc:element`, made on first use.
+        std::vector<std::optional<detail::Int64View>> element_views(rMesh.NumCellBlocks());
         for (const std::size_t c : written) {
-            const std::int64_t id =
-                detail::read_int(rMesh.CellData("marc:element", cells[c].mBlock), cells[c].mRow);
+            auto& view = element_views[cells[c].mBlock];
+            if (!view)
+                view.emplace(rMesh.CellData("marc:element", cells[c].mBlock));
+            const std::int64_t id = (*view)[cells[c].mRow];
             ok = ok && id > 0 && seen.insert(id).second;
             ids.push_back(id);
         }
@@ -1690,12 +1699,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         }
         const NDArray& rows = rMesh.FieldData(name);
         std::vector<std::string> items;
+        const detail::Int64View row_values(rows);
         for (std::size_t q = 0; q + 1 < rows.Size(); q += 2) {
-            const std::int64_t c = detail::read_int(rows, q);
+            const std::int64_t c = row_values[q];
             const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
             if (it != elem_id.end())
                 items.push_back(" " + std::to_string(it->second) + ":" +
-                                std::to_string(detail::read_int(rows, q + 1)));
+                                std::to_string(row_values[q + 1]));
         }
         const std::string set_name = marcw_set_name(
             name.substr(std::string("marc:").size() + family.size() + 5), used_names);
@@ -1723,12 +1733,17 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     out.push_back("end");
     out.push_back("connectivity");
     out.push_back(marcw_i10s({static_cast<std::int64_t>(written.size()), 0, 1}, 0, 3));
+    // One view per block of connectivity, made on first use.
+    std::vector<std::optional<detail::Int64View>> conn_views(rMesh.NumCellBlocks());
     for (const std::size_t c : written) {
         const auto cb = rMesh.Cells(cells[c].mBlock);
         const std::size_t k = cb.NodesPerCell();
         std::vector<std::int64_t> nodes(k);
+        auto& conn_view = conn_views[cells[c].mBlock];
+        if (!conn_view)
+            conn_view.emplace(cb.Conn());
         for (std::size_t q = 0; q < k; ++q)
-            nodes[q] = detail::read_int(cb.Conn(), cells[c].mRow * k + q) + 1;
+            nodes[q] = (*conn_view)[cells[c].mRow * k + q] + 1;
         const std::int64_t etype = cells[c].mType;
         if (std::string(marc_type(etype)->mCell) == "hexahedron" && cb.Type() != "hexahedron") {
             const auto brick = detail::expand_brick(cb.Type(), nodes.data());
@@ -1750,7 +1765,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         std::string line;
         marcw_i10(line, static_cast<std::int64_t>(p + 1));
         for (std::size_t d = 0; d < 3; ++d)
-            marcw_real20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+            marcw_real20(line, d < pdim ? point_values[p * pdim + d] : 0.0);
         out.push_back(std::move(line));
     }
     for (const MarcwSet& set : sets) {

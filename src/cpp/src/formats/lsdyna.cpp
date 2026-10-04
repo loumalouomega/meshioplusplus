@@ -1222,13 +1222,13 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
             const LsdFamily family = *lsd_type_family(type);
             const LsdType ltype = lsd_type_of(type);
             const bool two_line = ltype == LsdType::Tetra10;
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t k = cb.NodesPerCell();
             out += std::string("*") + lsd_family_keyword(family) + "\n";
             for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
                 std::vector<std::int64_t> row(k);
                 for (std::size_t c = 0; c < k; ++c)
-                    row[c] = detail::read_int(conn, r * k + c);
+                    row[c] = conn[r * k + c];
                 const std::int64_t eid = static_cast<std::int64_t>(g + 1);
                 const std::int64_t pid = pid_of[g];
                 if (family == LsdFamily::Mass) {

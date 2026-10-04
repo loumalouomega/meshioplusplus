@@ -39,6 +39,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -117,9 +118,10 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
         emit_bin(reinterpret_cast<const unsigned char*>(buf.data()), buf.size() * sizeof(double));
     } else {
+        const detail::DoubleView pts_values(pts);
         for (std::size_t r = 0; r < np; ++r) {
             for (std::size_t c = 0; c < 3; ++c)
-                os << (c ? " " : "") << (c < pdim ? detail::read_double(pts, r * pdim + c) : 0.0);
+                os << (c ? " " : "") << (c < pdim ? pts_values[r * pdim + c] : 0.0);
             os << "\n";
         }
     }

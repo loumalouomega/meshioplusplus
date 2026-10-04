@@ -71228,14 +71228,16 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
     f << "# NAME = PIECE FORMULA = " << field << "\n";
     f << "NB_REAL = 1 NB_COMP = " << ncomp << " NB_POINT = " << n << " #\n";
     char buf[64];
+    const detail::DoubleView point_values(points);
+    const detail::DoubleView arr_values(arr);
     for (std::size_t r = 0; r < n; ++r) {
         for (int c = 0; c < kDim; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, r * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[r * pdim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%.16g", v);
             f << buf << (c + 1 < kDim ? " " : "");
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g", arr_values[r * ncomp + c]);
             f << buf;
         }
         f << "\n";
@@ -74160,9 +74162,10 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     out += "coordinates\n";
     std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(np));
     out += buf;
+    const detail::DoubleView point_values(points);
     for (std::size_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < np; ++i) {
-            const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
+            const double v = c < dim ? point_values[i * dim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
             out += buf;
         }
@@ -74221,11 +74224,11 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
             }
             continue;
         }
+        const detail::Int64View conn_values(conn);
         for (std::size_t r = 0; r < ne; ++r) {
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
-                const long long v =
-                    static_cast<long long>(detail::read_int(conn, r * npc + src)) + 1;
+                const long long v = static_cast<long long>(conn_values[r * npc + src]) + 1;
                 std::snprintf(buf, sizeof(buf), "%10lld", v);
                 out += buf;
             }
@@ -74261,10 +74264,10 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     out.Int(static_cast<std::int64_t>(np));
     {
         std::vector<float> col(np * 3);
+        const detail::DoubleView point_values(points);
         for (std::size_t c = 0; c < 3; ++c)
             for (std::size_t i = 0; i < np; ++i)
-                col[c * np + i] =
-                    c < dim ? static_cast<float>(detail::read_double(points, i * dim + c)) : 0.0f;
+                col[c * np + i] = c < dim ? static_cast<float>(point_values[i * dim + c]) : 0.0f;
         for (std::size_t c = 0; c < 3; ++c)
             out.Floats(col.data() + c * np, np);
     }
@@ -74314,11 +74317,11 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
             continue;
         }
         std::vector<std::int32_t> flat(ne * npc);
+        const detail::Int64View conn_values(conn);
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
-                flat[r * npc + j] =
-                    static_cast<std::int32_t>(detail::read_int(conn, r * npc + src)) + 1;
+                flat[r * npc + j] = static_cast<std::int32_t>(conn_values[r * npc + src]) + 1;
             }
         out.Ints(flat);
     }
@@ -74403,9 +74406,9 @@ std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVari
     const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
     const std::size_t n = rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
     std::vector<double> col(n);
+    const detail::DoubleView arr_values(arr);
     for (std::size_t i = 0; i < n; ++i)
-        col[i] =
-            mio_comp < stored_ncomp ? detail::read_double(arr, i * stored_ncomp + mio_comp) : 0.0;
+        col[i] = mio_comp < stored_ncomp ? arr_values[i * stored_ncomp + mio_comp] : 0.0;
     return col;
 }
 
@@ -79378,17 +79381,15 @@ void flac3d_write_groups_binary(std::ostream& rOs, const std::vector<Flac3dGroup
 
 // Reorder one zone cell to FLAC3D order, choosing the right-handed permutation
 // via the scalar triple product of the first four ordered corners.
-std::vector<std::int64_t> zone_cell_flac3d(const NDArray& rPoints, const NDArray& rData,
+std::vector<std::int64_t> zone_cell_flac3d(const detail::DoubleView& rPoints,
+                                           const detail::Int64View& rData, std::size_t ncols,
                                            std::size_t row, const std::string& rKey) {
     const std::vector<int>& o1 = m2f_order(rKey);
     const std::vector<int>& o2 = m2f_order2(rKey);
-    const std::size_t ncols = detail::cols(rData);
 
-    auto node = [&](int local) -> std::int64_t {
-        return detail::read_int(rData, row * ncols + local);
-    };
+    auto node = [&](int local) -> std::int64_t { return rData[row * ncols + local]; };
     auto coord = [&](std::int64_t p, int c) -> double {
-        return detail::read_double(rPoints, static_cast<std::size_t>(p) * 3 + c);
+        return rPoints[static_cast<std::size_t>(p) * 3 + c];
     };
 
     // first four corners in FLAC3D order
@@ -79431,6 +79432,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     const std::size_t npts = rMesh.NumPoints();
     const std::size_t pdim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
 
     const std::vector<Flac3dGroupOut> zgroups = flac3d_groups_for(rMesh, zone_idx, "zone", "face");
     const std::vector<Flac3dGroupOut> fgroups = flac3d_groups_for(rMesh, face_idx, "face", "zone");
@@ -79443,8 +79445,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         for (std::size_t i = 0; i < npts; ++i) {
             wu32(f, static_cast<std::uint32_t>(i + 1));
             for (int c = 0; c < 3; ++c)
-                wf64(f,
-                     c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0);
+                wf64(f, c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0);
         }
         // ZONES and FACES are numbered independently in a FLAC3D file -- both
         // start at 1 -- so each section gets its own counter. Sharing one made
@@ -79457,14 +79458,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         wu32(f, nz);
         for (auto i : zone_idx) {
             const auto cb = rMesh.Cells(i);
-            const NDArray& conn = cb.Conn();
+            const NDArray& conn_array = cb.Conn();
+            const detail::Int64View conn(conn_array);
+            const std::size_t zone_cols = detail::cols(conn_array);
             std::string key = zone_key(cb.Type());
             std::size_t n = cb.NumCells();
             // Right-handed reorder per row is independent -> compute in
             // parallel, then stream sequentially.
             std::vector<std::vector<std::int64_t>> zcells(n);
-            parallel_for(
-                n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
+            parallel_for(n, [&](std::size_t r) {
+                zcells[r] = zone_cell_flac3d(point_values, conn, zone_cols, r, key);
+            });
             for (std::size_t r = 0; r < n; ++r) {
                 const auto& cell = zcells[r];
                 wu32(f, ++gid);
@@ -79482,17 +79486,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         wu32(f, nf);
         for (auto i : face_idx) {
             const auto cb = rMesh.Cells(i);
-            const NDArray& conn = cb.Conn();
+            const NDArray& conn_array = cb.Conn();
+            const detail::Int64View conn(conn_array);
             std::string key = face_key(cb.Type());
             const std::vector<int>& ord = m2f_order(key);
             std::size_t n = cb.NumCells();
-            std::size_t ncols = detail::cols(conn);
+            std::size_t ncols = detail::cols(conn_array);
             for (std::size_t r = 0; r < n; ++r) {
                 wu32(f, ++gid);
                 wu32(f, static_cast<std::uint32_t>(ord.size()));
                 for (int local : ord)
-                    wu32(f,
-                         static_cast<std::uint32_t>(detail::read_int(conn, r * ncols + local) + 1));
+                    wu32(f, static_cast<std::uint32_t>(conn[r * ncols + local] + 1));
             }
         }
         flac3d_write_groups_binary(f, fgroups);
@@ -79509,7 +79513,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // is whitespace-tokenized on read, so the padding carries no meaning.
         f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0;
             std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
@@ -79519,14 +79523,18 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     f << "* ZONES\n";
     for (auto i : zone_idx) {
         const auto cb = rMesh.Cells(i);
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
+        const detail::Int64View conn(conn_array);
+        const std::size_t zone_cols = detail::cols(conn_array);
         std::string key = zone_key(cb.Type());
         const char* abbr = flac3d_type(key);
         std::size_t n = cb.NumCells();
         // Right-handed reorder per row is independent -> compute in parallel,
         // then stream sequentially.
         std::vector<std::vector<std::int64_t>> zcells(n);
-        parallel_for(n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
+        parallel_for(n, [&](std::size_t r) {
+            zcells[r] = zone_cell_flac3d(point_values, conn, zone_cols, r, key);
+        });
         for (std::size_t r = 0; r < n; ++r) {
             f << "Z " << abbr << " " << (++gid);
             for (auto v : zcells[r])
@@ -79540,16 +79548,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     f << "* FACES\n";
     for (auto i : face_idx) {
         const auto cb = rMesh.Cells(i);
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
+        const detail::Int64View conn(conn_array);
         std::string key = face_key(cb.Type());
         const char* abbr = flac3d_type(key);
         const std::vector<int>& ord = m2f_order(key);
         std::size_t n = cb.NumCells();
-        std::size_t ncols = detail::cols(conn);
+        std::size_t ncols = detail::cols(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             f << "F " << abbr << " " << (++gid);
             for (int local : ord)
-                f << " " << (detail::read_int(conn, r * ncols + local) + 1);
+                f << " " << (conn[r * ncols + local] + 1);
             f << "\n";
         }
     }
@@ -81789,6 +81798,7 @@ void write_gid(const std::string&, const Mesh&, GidMode mode, const std::string&
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <optional>
 #include <map>
 #include <string>
 #include <stdexcept>
@@ -82992,11 +83002,15 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                 // Column-oriented: 1 = ids, 2..4 = x, y, z.
                 if (cols.size() >= 2) {
                     const std::size_t n = cols[0].Size();
+                    const detail::Int64View ids(cols[0]);
+                    std::array<std::optional<detail::DoubleView>, 3> coords;
+                    for (std::size_t k = 0; k + 1 < cols.size() && k < 3; ++k)
+                        coords[k].emplace(cols[k + 1]);
                     for (std::size_t r = 0; r < n; ++r) {
                         std::array<double, 3> xyz{0.0, 0.0, 0.0};
                         for (std::size_t k = 0; k + 1 < cols.size() && k < 3; ++k)
-                            xyz[k] = detail::read_double(cols[k + 1], r);
-                        staged.mNodes.emplace(detail::read_int(cols[0], r), xyz);
+                            xyz[k] = (*coords[k])[r];
+                        staged.mNodes.emplace(ids[r], xyz);
                     }
                 }
             }
@@ -83012,14 +83026,17 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                     block.mElemIds.reserve(block.mElemIds.size() + n);
                     block.mConn.reserve(block.mConn.size() + n * static_cast<std::size_t>(nnode));
                     block.mMaterial.reserve(block.mMaterial.size() + n);
+                    // One view per column (ids, connectivity, material), made before the rows.
+                    std::vector<std::optional<detail::Int64View>> views(cols.size());
+                    const std::size_t used = static_cast<std::size_t>(nnode) + (has_mat ? 2 : 1);
+                    for (std::size_t k = 0; k < used; ++k)
+                        views[k].emplace(cols[k]);
                     for (std::size_t r = 0; r < n; ++r) {
-                        block.mElemIds.push_back(detail::read_int(cols[0], r));
+                        block.mElemIds.push_back((*views[0])[r]);
                         for (int k = 0; k < nnode; ++k)
-                            block.mConn.push_back(
-                                detail::read_int(cols[static_cast<std::size_t>(k) + 1], r));
+                            block.mConn.push_back((*views[static_cast<std::size_t>(k) + 1])[r]);
                         block.mMaterial.push_back(
-                            has_mat ? detail::read_int(cols[static_cast<std::size_t>(nnode) + 1], r)
-                                    : 0);
+                            has_mat ? (*views[static_cast<std::size_t>(nnode) + 1])[r] : 0);
                     }
                     if (!has_mat)
                         block.mMaterial.clear();
@@ -83069,10 +83086,14 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
                 const std::size_t n = cols[0].Size();
                 res.mIds.reserve(n);
                 res.mValues.reserve(n * res.mNumComponents);
+                const detail::Int64View ids(cols[0]);
+                std::vector<std::optional<detail::DoubleView>> components(res.mNumComponents);
+                for (std::size_t k = 0; k < res.mNumComponents; ++k)
+                    components[k].emplace(cols[k + 1]);
                 for (std::size_t r = 0; r < n; ++r) {
-                    res.mIds.push_back(detail::read_int(cols[0], r));
+                    res.mIds.push_back(ids[r]);
                     for (std::size_t k = 0; k < res.mNumComponents; ++k)
-                        res.mValues.push_back(detail::read_double(cols[k + 1], r));
+                        res.mValues.push_back((*components[k])[r]);
                 }
             }
             results.push_back(std::move(res));
@@ -86822,8 +86843,9 @@ void gmsh_validate_periodic(const GmshInfo& rInfo, std::size_t points, int versi
         const auto& pairs = link.mNodePairs;
         if (pairs.Dtype() != DType::Int64 || pairs.Shape().size() != 2 || pairs.Shape()[1] != 2)
             throw WriteError("Gmsh $Periodic: pairs must be Int64 (N,2)");
+        const std::int64_t* pair_values = pairs.As<std::int64_t>();  // dtype checked above
         for (std::size_t i = 0; i < pairs.Size(); ++i) {
-            const auto index = detail::read_int(pairs, i);
+            const auto index = pair_values[i];
             if (index < 0 || static_cast<std::uint64_t>(index) >= points ||
                 (version == 22 && index >= INT32_MAX))
                 throw WriteError("Gmsh $Periodic: point index outside mesh/tag range");
@@ -88044,20 +88066,27 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
         // 1-based connectivity, preserving the integer dtype.
         const NDArray& cconn = cb.Conn();
         NDArray conn(cconn.Dtype(), cconn.Shape());
-        for (std::size_t i = 0; i < cconn.Size(); ++i) {
-            std::int64_t v = detail::read_int(cconn, i) + 1;
-            switch (conn.Dtype()) {
+        // One dtype switch per block: each element is read as read_int reads it,
+        // shifted to 1-based and stored back in the same dtype.
+        const auto shift = [&]<class T>() {
+            const T* src = cconn.As<T>();
+            T* dst = conn.As<T>();
+            for (std::size_t i = 0; i < cconn.Size(); ++i)
+                dst[i] = static_cast<T>(static_cast<std::int64_t>(src[i]) + 1);
+        };
+        if (cconn.Size() > 0) {
+            switch (cconn.Dtype()) {
                 case DType::Int32:
-                    conn.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
+                    shift.template operator()<std::int32_t>();
                     break;
                 case DType::Int64:
-                    conn.As<std::int64_t>()[i] = v;
+                    shift.template operator()<std::int64_t>();
                     break;
                 case DType::UInt32:
-                    conn.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
+                    shift.template operator()<std::uint32_t>();
                     break;
                 case DType::UInt64:
-                    conn.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
+                    shift.template operator()<std::uint64_t>();
                     break;
                 default:
                     throw WriteError("H5M: unexpected connectivity dtype");
@@ -91463,13 +91492,13 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
             const LsdFamily family = *lsd_type_family(type);
             const LsdType ltype = lsd_type_of(type);
             const bool two_line = ltype == LsdType::Tetra10;
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t k = cb.NodesPerCell();
             out += std::string("*") + lsd_family_keyword(family) + "\n";
             for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
                 std::vector<std::int64_t> row(k);
                 for (std::size_t c = 0; c < k; ++c)
-                    row[c] = detail::read_int(conn, r * k + c);
+                    row[c] = conn[r * k + c];
                 const std::int64_t eid = static_cast<std::int64_t>(g + 1);
                 const std::int64_t pid = pid_of[g];
                 if (family == LsdFamily::Mass) {
@@ -95535,11 +95564,12 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
             volume = true;
     }
+    const detail::DoubleView point_values(points);
     bool flat = pdim < 3;
     if (!flat) {
         flat = true;
         for (std::size_t p = 0; p < npts && flat; ++p)
-            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+            flat = point_values[p * pdim + 2] == 0.0;
     }
     const bool planar = !volume && flat;
     const auto cell_array_ok = [&](const std::string& rName) {
@@ -95557,10 +95587,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         const bool ragged = cb.IsRagged();
         const std::int64_t fallback = marcw_default_type(type, planar);
         const std::size_t nodes = ragged ? 0 : cb.NodesPerCell();
+        std::optional<detail::Int64View> types;
+        if (!ragged && has_type)
+            types.emplace(rMesh.CellData("marc:type", b));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::int64_t etype = 0;
-            if (!ragged && has_type) {
-                const std::int64_t want = detail::read_int(rMesh.CellData("marc:type", b), r);
+            if (types) {
+                const std::int64_t want = (*types)[r];
                 if (const MarcType* known = marc_type(want)) {
                     const std::string kind(known->mCell);
                     if ((kind == type && known->mNodes == nodes) ||
@@ -95603,9 +95636,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     if (has_element) {
         std::set<std::int64_t> seen;
         bool ok = true;
+        // One view per block of `marc:element`, made on first use.
+        std::vector<std::optional<detail::Int64View>> element_views(rMesh.NumCellBlocks());
         for (const std::size_t c : written) {
-            const std::int64_t id =
-                detail::read_int(rMesh.CellData("marc:element", cells[c].mBlock), cells[c].mRow);
+            auto& view = element_views[cells[c].mBlock];
+            if (!view)
+                view.emplace(rMesh.CellData("marc:element", cells[c].mBlock));
+            const std::int64_t id = (*view)[cells[c].mRow];
             ok = ok && id > 0 && seen.insert(id).second;
             ids.push_back(id);
         }
@@ -95682,12 +95719,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         }
         const NDArray& rows = rMesh.FieldData(name);
         std::vector<std::string> items;
+        const detail::Int64View row_values(rows);
         for (std::size_t q = 0; q + 1 < rows.Size(); q += 2) {
-            const std::int64_t c = detail::read_int(rows, q);
+            const std::int64_t c = row_values[q];
             const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
             if (it != elem_id.end())
                 items.push_back(" " + std::to_string(it->second) + ":" +
-                                std::to_string(detail::read_int(rows, q + 1)));
+                                std::to_string(row_values[q + 1]));
         }
         const std::string set_name = marcw_set_name(
             name.substr(std::string("marc:").size() + family.size() + 5), used_names);
@@ -95715,12 +95753,17 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     out.push_back("end");
     out.push_back("connectivity");
     out.push_back(marcw_i10s({static_cast<std::int64_t>(written.size()), 0, 1}, 0, 3));
+    // One view per block of connectivity, made on first use.
+    std::vector<std::optional<detail::Int64View>> conn_views(rMesh.NumCellBlocks());
     for (const std::size_t c : written) {
         const auto cb = rMesh.Cells(cells[c].mBlock);
         const std::size_t k = cb.NodesPerCell();
         std::vector<std::int64_t> nodes(k);
+        auto& conn_view = conn_views[cells[c].mBlock];
+        if (!conn_view)
+            conn_view.emplace(cb.Conn());
         for (std::size_t q = 0; q < k; ++q)
-            nodes[q] = detail::read_int(cb.Conn(), cells[c].mRow * k + q) + 1;
+            nodes[q] = (*conn_view)[cells[c].mRow * k + q] + 1;
         const std::int64_t etype = cells[c].mType;
         if (std::string(marc_type(etype)->mCell) == "hexahedron" && cb.Type() != "hexahedron") {
             const auto brick = detail::expand_brick(cb.Type(), nodes.data());
@@ -95742,7 +95785,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         std::string line;
         marcw_i10(line, static_cast<std::int64_t>(p + 1));
         for (std::size_t d = 0; d < 3; ++d)
-            marcw_real20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+            marcw_real20(line, d < pdim ? point_values[p * pdim + d] : 0.0);
         out.push_back(std::move(line));
     }
     for (const MarcwSet& set : sets) {
@@ -97143,10 +97186,11 @@ void mdpa_write_table(std::ostream& rOs, const PropertyValue& rTable, const char
     rOs << pIndent << "Begin Table " << rTable.mKey << "\n";
     const std::size_t ncols = rTable.mValues.Shape().size() >= 2 ? rTable.mValues.Shape()[1] : 1;
     const std::size_t nrows = ncols ? rTable.mValues.Size() / ncols : 0;
+    const MdpaValues values(rTable.mValues);
     for (std::size_t r = 0; r < nrows; ++r) {
         rOs << pIndent << "  ";
         for (std::size_t c = 0; c < ncols; ++c)
-            rOs << " " << mdpa_format_value(rTable.mValues, r * ncols + c);
+            rOs << " " << values.Format(r * ncols + c);
         rOs << "\n";
     }
     rOs << pIndent << "End Table\n";
@@ -97158,10 +97202,11 @@ void mdpa_write_kv(std::ostream& rOs, const PropertyValue& rValue, const char* p
     if (rValue.IsText()) {
         rOs << rValue.mText;
     } else {
+        const MdpaValues values(rValue.mValues);
         for (std::size_t i = 0; i < rValue.mValues.Size(); ++i) {
             if (i)
                 rOs << " ";
-            rOs << mdpa_format_value(rValue.mValues, i);
+            rOs << values.Format(i);
         }
     }
     rOs << "\n";
@@ -100103,6 +100148,7 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
 #include <ios>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <map>
 #include <memory>
 #include <set>
@@ -104133,9 +104179,9 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     std::vector<std::int64_t> attr(ncells, 0);
     if (has_attr) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-            const NDArray& a = rMesh.CellData("mfem:attribute", b);
+            const detail::Int64View a(rMesh.CellData("mfem:attribute", b));
             for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r)
-                attr[block_start[b] + r] = detail::read_int(a, r);
+                attr[block_start[b] + r] = a[r];
         }
     }
     // Regions: tags become attributes where mfem:attribute is absent; other
@@ -104240,14 +104286,14 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             continue;
         const auto cb = rMesh.Cells(b);
         const std::string type(cb.Type());
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         quadratic = quadratic || k > geoms[static_cast<std::size_t>(g)].mNumVertices;
         has_pyramid = has_pyramid || g == 7;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             MfOutCell c{g, attr[block_start[b] + r], block_start[b] + r, {}, type};
             for (std::size_t j = 0; j < k; ++j)
-                c.mNodes.push_back(detail::read_int(conn, r * k + j));
+                c.mNodes.push_back(conn[r * k + j]);
             (geoms[static_cast<std::size_t>(g)].mDim == dim ? elements : boundary)
                 .push_back(std::move(c));
         }
@@ -104505,6 +104551,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     // The order-p dof values of one point array (row-major, dofs x Cols).
     auto high_values = [&](const NDArray& rData, std::size_t Cols) {
         std::vector<double> out(hdofs.mSize * Cols, 0.0);
+        const detail::DoubleView data(rData);
         for (std::size_t e = 0; e < elements.size(); ++e) {
             const MfOutCell& c = elements[e];
             const std::size_t n = c.mNodes.size();
@@ -104515,9 +104562,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
                 for (std::size_t col = 0; col < Cols; ++col) {
                     double v = 0.0;
                     for (std::size_t m = 0; m < used; ++m)
-                        v +=
-                            row[m] * detail::read_double(
-                                         rData, static_cast<std::size_t>(c.mNodes[m]) * Cols + col);
+                        v += row[m] * data[static_cast<std::size_t>(c.mNodes[m]) * Cols + col];
                     out[dof * Cols + col] = v;
                 }
             }
@@ -104575,11 +104620,12 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     }
     out += "\nvertices\n" + std::to_string(nv) + "\n";
     const NDArray& pts = rMesh.Points();
-    auto evaluate = [&](const MfWeights& rW, const NDArray& rData, std::size_t Cols,
+    const detail::DoubleView pts_values(pts);
+    auto evaluate = [&](const MfWeights& rW, const detail::DoubleView& rData, std::size_t Cols,
                         std::size_t C) {
         double sum = 0;
         for (const auto& [p, w] : rW)
-            sum += w * detail::read_double(rData, static_cast<std::size_t>(p) * Cols + C);
+            sum += w * rData[static_cast<std::size_t>(p) * Cols + C];
         return sum;
     };
     if (high > 0) {
@@ -104601,8 +104647,8 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             for (std::size_t c = 0; c < pdim; ++c) {
                 if (c)
                     out += ' ';
-                mf_append_real(out, detail::read_double(
-                                        pts, static_cast<std::size_t>(vertex_point[v]) * pdim + c));
+                mf_append_real(out,
+                               pts_values[static_cast<std::size_t>(vertex_point[v]) * pdim + c]);
             }
             out += '\n';
         }
@@ -104613,7 +104659,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
             for (std::size_t c = 0; c < pdim; ++c) {
                 if (c)
                     out += ' ';
-                mf_append_real(out, evaluate(dof_weights[d], pts, pdim, c));
+                mf_append_real(out, evaluate(dof_weights[d], pts_values, pdim, c));
             }
             out += '\n';
         }
@@ -104642,6 +104688,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         const std::size_t cols = a.Shape().size() > 1 ? detail::cols(a) : 1;
+        const detail::DoubleView a_values(a);
         std::string text = "FiniteElementSpace\nFiniteElementCollection: H1_" +
                            std::to_string(dim) + "D_P" + std::to_string(order) +
                            "\nVDim: " + std::to_string(cols) + "\nOrdering: 1\n\n";
@@ -104653,11 +104700,10 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
                 if (high > 0)
                     mf_append_real(text, hv[d * cols + c]);
                 else if (quadratic)
-                    mf_append_real(text, evaluate(dof_weights[d], a, cols, c));
+                    mf_append_real(text, evaluate(dof_weights[d], a_values, cols, c));
                 else
                     mf_append_real(text,
-                                   detail::read_double(
-                                       a, static_cast<std::size_t>(vertex_point[d]) * cols + c));
+                                   a_values[static_cast<std::size_t>(vertex_point[d]) * cols + c]);
             }
             text += '\n';
         }
@@ -104676,15 +104722,19 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
         std::string text = "FiniteElementSpace\nFiniteElementCollection: L2_" +
                            std::to_string(dim) + "D_P0\nVDim: " + std::to_string(cols) +
                            "\nOrdering: 1\n\n";
+        // One view per block of this array, made on first use.
+        std::vector<std::optional<detail::DoubleView>> block_values(rMesh.NumCellBlocks());
         for (const MfOutCell& c : elements) {
             std::size_t b = 0;
             while (c.mCell >= block_start[b + 1])
                 ++b;
-            const NDArray& a = rMesh.CellData(name, b);
+            if (!block_values[b])
+                block_values[b].emplace(rMesh.CellData(name, b));
+            const detail::DoubleView& a = *block_values[b];
             for (std::size_t k = 0; k < cols; ++k) {
                 if (k)
                     text += ' ';
-                mf_append_real(text, detail::read_double(a, (c.mCell - block_start[b]) * cols + k));
+                mf_append_real(text, a[(c.mCell - block_start[b]) * cols + k]);
             }
             text += '\n';
         }
@@ -104748,16 +104798,18 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
     if (!point_names.empty()) {
         const NDArray& arr = rMesh.PointData(point_names.front());
         values.resize(arr.Size());
+        const detail::DoubleView arr_values(arr);
         for (std::size_t i = 0; i < arr.Size(); ++i)
-            values[i] = detail::read_double(arr, i);
+            values[i] = arr_values[i];
     } else {
         for (const auto& name : rMesh.CellDataNames()) {
             if (name == "unv:pid")
                 continue;
             for (std::size_t bi = 0; bi < rMesh.CellDataNumBlocks(name); ++bi) {
                 const NDArray& blk = rMesh.CellData(name, bi);
+                const detail::DoubleView blk_values(blk);
                 for (std::size_t i = 0; i < blk.Size(); ++i)
-                    values.push_back(detail::read_double(blk, i));
+                    values.push_back(blk_values[i]);
             }
             break;
         }
@@ -104920,8 +104972,9 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
         std::size_t p = 0;
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks("mfm:ref"); ++b) {
             const NDArray& blk = rMesh.CellData("mfm:ref", b);
+            const detail::Int64View blk_values(blk);
             for (std::size_t i = 0; i < blk.Size() && p < nel; ++i)
-                nsd[p++] = detail::read_int(blk, i);
+                nsd[p++] = blk_values[i];
         }
     }
 
@@ -104933,12 +104986,13 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
 
     // connectivity (1-based)
     for (const auto cb : rMesh.CellRange()) {
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
         std::size_t n = cb.NumCells();
-        std::size_t k = detail::cols(conn);
+        std::size_t k = detail::cols(conn_array);
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             for (std::size_t j = 0; j < k; ++j)
-                f << (detail::read_int(conn, r * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
+                f << (conn[r * k + j] + 1) << (j + 1 == k ? '\n' : ' ');
         }
     }
     // zero reference arrays
@@ -104956,9 +105010,10 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     const NDArray& points = rMesh.Points();
     std::string fmt = "%" + rFloatFmt;
     char buf[64];
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), fmt.c_str(), detail::read_double(points, i * dim + c));
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), point_values[i * dim + c]);
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain
@@ -110772,6 +110827,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -112555,6 +112611,12 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
                 : nullptr;
 
         std::vector<std::int64_t> ids;
+        std::optional<detail::Int64View> conn_values;
+        if (!cb.IsRagged())
+            conn_values.emplace(cb.Conn());
+        std::optional<detail::Int64View> tag_values;
+        if (tags)
+            tag_values.emplace(*tags);
         for (std::size_t i = 0; i < cb.NumCells(); ++i) {
             ids.clear();
             if (cb.IsRagged()) {
@@ -112564,7 +112626,7 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
             } else {
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t k = 0; k < npc; ++k)
-                    ids.push_back(detail::read_int(cb.Conn(), i * npc + k));
+                    ids.push_back((*conn_values)[i * npc + k]);
             }
             const std::int64_t fid = lookup.Find(ids.data(), ids.size());
             if (fid < 0) {
@@ -112581,8 +112643,8 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
             if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
                 continue;  // first claim wins
             std::int64_t fam = 0;
-            if (tags && i < tags->Shape()[0])
-                fam = detail::read_int(*tags, i);
+            if (tag_values && i < tags->Shape()[0])
+                fam = (*tag_values)[i];
             const auto it = fam_to_patch.find(fam);
             if (fam < 0 && it != fam_to_patch.end())
                 out.mFacePatch[static_cast<std::size_t>(fid)] =
@@ -129334,12 +129396,20 @@ NDArray vtkhdf_concat_rows(const std::vector<const NDArray*>& rParts, const std:
             std::memcpy(out.Data() + at, p->Data(), p->Nbytes());
             at += p->Nbytes();
         } else {
-            for (std::size_t i = 0; i < p->Size(); ++i) {
-                if (dt == DType::Float64)
-                    reinterpret_cast<double*>(out.Data() + at)[i] = read_double(*p, i);
-                else
-                    reinterpret_cast<I64*>(out.Data() + at)[i] = read_int(*p, i);
-            }
+            // One dtype switch per piece: each element converts as read_double /
+            // read_int convert it, straight into `out`.
+            detail::dispatch_dtype(p->Dtype(), [&]<class T>() {
+                const T* src = p->As<T>();
+                if (dt == DType::Float64) {
+                    double* dst = reinterpret_cast<double*>(out.Data() + at);
+                    for (std::size_t i = 0; i < p->Size(); ++i)
+                        dst[i] = static_cast<double>(src[i]);
+                } else {
+                    I64* dst = reinterpret_cast<I64*>(out.Data() + at);
+                    for (std::size_t i = 0; i < p->Size(); ++i)
+                        dst[i] = detail::typed_view_int<T>(src[i]);
+                }
+            });
             at += p->Size() * dtype_size(dt);
         }
     }
@@ -130271,15 +130341,21 @@ NDArray vtkhdf_points3(const NDArray& rPts, std::size_t NumPoints, std::size_t D
                          : DType::Float64;
     const std::size_t n = pUsed ? pUsed->size() : NumPoints;
     NDArray out(dt, {n, 3});  // zero-filled: the padded columns stay 0
-    for (std::size_t r = 0; r < n; ++r) {
-        const std::size_t src = pUsed ? (*pUsed)[r] : r;
-        for (std::size_t c = 0; c < Dim; ++c) {
-            if (dt == DType::Float32)
-                out.As<float>()[r * 3 + c] = static_cast<float>(read_double(rPts, src * Dim + c));
-            else
-                out.As<double>()[r * 3 + c] = read_double(rPts, src * Dim + c);
+    // One dtype switch for the points; an integer or float32 input is converted
+    // element by element, as read_double converts it, with no copy beside `out`.
+    detail::dispatch_dtype(rPts.Dtype(), [&]<class T>() {
+        const T* points = rPts.As<T>();
+        for (std::size_t r = 0; r < n; ++r) {
+            const std::size_t src = pUsed ? (*pUsed)[r] : r;
+            for (std::size_t c = 0; c < Dim; ++c) {
+                const double v = static_cast<double>(points[src * Dim + c]);
+                if (dt == DType::Float32)
+                    out.As<float>()[r * 3 + c] = static_cast<float>(v);
+                else
+                    out.As<double>()[r * 3 + c] = v;
+            }
         }
-    }
+    });
     return out;
 }
 
@@ -130343,15 +130419,16 @@ VtkhdfCells vtkhdf_collect(const Mesh& rMesh, const std::vector<std::size_t>& rB
         auto it = polygon ? tmap.find("polygon") : tmap.find(type);
         if (it == tmap.end())
             throw WriteError("meshio++: vtkhdf: cell type '" + type + "' has no VTK cell type id");
-        const NDArray& conn = cb.Conn();
-        const std::size_t k = cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t k = cols(conn_array);
+        const detail::Int64View conn(conn_array);
         const std::vector<int> order = polygon ? std::vector<int>{} : meshio_to_vtk_order(type);
         for (std::size_t r = 0; r < nc; ++r) {
             if (!wanted(r))
                 continue;
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                out.mConn.push_back(read_int(conn, r * k + col));
+                out.mConn.push_back(conn[r * k + col]);
             }
             out.mSizes.push_back(static_cast<I64>(k));
             out.mTypes.push_back(it->second);
@@ -130554,6 +130631,9 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
     for (std::size_t bi : order) {
         const auto cb = rMesh.Cells(bi);
         const int cat = kinds[bi];
+        std::optional<detail::Int64View> block_conn;
+        if (!cb.IsRagged())
+            block_conn.emplace(cb.Conn());
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::size_t k;
             if (cb.IsRagged()) {
@@ -130561,10 +130641,9 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
                 for (std::size_t j = 0; j < k; ++j)
                     conn[cat].push_back(cb.Row(r)[j]);
             } else {
-                const NDArray& c = cb.Conn();
-                k = cols(c);
+                k = cols(cb.Conn());
                 for (std::size_t j = 0; j < k; ++j)
-                    conn[cat].push_back(read_int(c, r * k + j));
+                    conn[cat].push_back((*block_conn)[r * k + j]);
             }
             if (cat == 0 && k != 1)
                 throw WriteError("meshio++: vtkhdf: vertex cells must have one node");
@@ -131529,11 +131608,12 @@ void vtp_append_block(VtpSectionData& rSec, const Mesh::CellView& rCb) {
         }
         return;
     }
-    const NDArray& conn = rCb.Conn();
-    const std::size_t k = cols(conn);
+    const NDArray& conn_array = rCb.Conn();
+    const std::size_t k = cols(conn_array);
+    const detail::Int64View conn(conn_array);
     for (std::size_t r = 0; r < rCb.NumCells(); ++r) {
         for (std::size_t j = 0; j < k; ++j)
-            rSec.mConn.push_back(read_int(conn, r * k + j));
+            rSec.mConn.push_back(conn[r * k + j]);
         rSec.mOffsets.push_back(static_cast<std::int64_t>(rSec.mConn.size()));
     }
 }
@@ -131995,9 +132075,10 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
         emit_bin(reinterpret_cast<const unsigned char*>(buf.data()), buf.size() * sizeof(double));
     } else {
+        const detail::DoubleView pts_values(pts);
         for (std::size_t r = 0; r < np; ++r) {
             for (std::size_t c = 0; c < 3; ++c)
-                os << (c ? " " : "") << (c < pdim ? detail::read_double(pts, r * pdim + c) : 0.0);
+                os << (c ? " " : "") << (c < pdim ? pts_values[r * pdim + c] : 0.0);
             os << "\n";
         }
     }
@@ -134342,8 +134423,9 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
     std::vector<int> types;
     std::vector<std::size_t> offsets;
     std::size_t r = 0;
+    const detail::Int64View flat_values(rFlat);
     while (r < n) {
-        int xt = static_cast<int>(detail::read_int(rFlat, r));
+        int xt = static_cast<int>(flat_values[r]);
         types.push_back(xt);
         offsets.push_back(r);
         const auto nn = static_cast<std::size_t>(xdmf_idx_num_nodes(xt));
@@ -134353,7 +134435,7 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         const std::size_t head = (xt == 1 || xt == 2) ? 2 : 1;
         if (r + head + nn > n)
             throw ReadError("XDMF: mixed topology ends inside a cell");
-        if (head == 2 && static_cast<std::size_t>(detail::read_int(rFlat, r + 1)) != nn)
+        if (head == 2 && static_cast<std::size_t>(flat_values[r + 1]) != nn)
             throw ReadError(xt == 1 ? "XDMF: only 1-point polyvertices supported"
                                     : "XDMF: only 2-point lines supported");
         r += head + nn;
@@ -134377,7 +134459,7 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
                 const std::size_t base = offsets[start + b] + head;
                 for (int j = 0; j < nn; ++j) {
                     if constexpr (std::is_floating_point_v<T>)
-                        dp[b * nn + j] = detail::read_int(rFlat, base + j);
+                        dp[b * nn + j] = detail::typed_view_int<T>(src[base + j]);
                     else
                         dp[b * nn + j] = static_cast<std::int64_t>(src[base + j]);
                 }
@@ -134437,8 +134519,12 @@ double xdmf_step_time(const pugi::xml_node& rStep) {
 
 std::vector<std::int64_t> xdmf_int_values(const NDArray& rArr) {
     std::vector<std::int64_t> out(rArr.Size());
-    for (std::size_t i = 0; i < out.size(); ++i)
-        out[i] = detail::read_int(rArr, i);
+    // One dtype switch for the array, and no converted copy beside `out`.
+    detail::dispatch_dtype(rArr.Dtype(), [&]<class T>() {
+        const T* src = rArr.As<T>();
+        for (std::size_t i = 0; i < out.size(); ++i)
+            out[i] = detail::typed_view_int<T>(src[i]);
+    });
     return out;
 }
 
@@ -136492,6 +136578,7 @@ MeshMetadata read_xplt_metadata(const std::string& rPath, const ReadOptions& rOp
 #include <cstdlib>
 #include <cstring>
 #include <ios>
+#include <optional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -137008,6 +137095,17 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
     os << '\n';
     char buf[64];
     std::string line;
+    // One view per column, of the kind its dtype is written as (UInt64 is
+    // printed unsigned, straight from its buffer).
+    std::vector<std::optional<detail::DoubleView>> real_columns(columns.size());
+    std::vector<std::optional<detail::Int64View>> int_columns(columns.size());
+    for (std::size_t c = 0; c < columns.size(); ++c) {
+        const NDArray& array = *columns[c].mArray;
+        if (detail::is_float_dtype(array.Dtype()))
+            real_columns[c].emplace(array);
+        else if (array.Dtype() != DType::UInt64)
+            int_columns[c].emplace(array);
+    }
     for (std::size_t i = 0; i < n; ++i) {
         line.clear();
         for (std::size_t c = 0; c < columns.size(); ++c) {
@@ -137018,10 +137116,10 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
             if (!detail::is_float_dtype(array.Dtype())) {
                 line += array.Dtype() == DType::UInt64
                             ? std::to_string(array.As<std::uint64_t>()[at])
-                            : std::to_string(detail::read_int(array, at));
+                            : std::to_string((*int_columns[c])[at]);
                 continue;
             }
-            const double v = detail::read_double(array, at);
+            const double v = (*real_columns[c])[at];
             if (std::isnan(v)) {
                 line += "nan";
                 continue;

@@ -47,6 +47,7 @@
 #include "meshioplusplus/detail/fortran_records.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -1279,9 +1280,10 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     out += "coordinates\n";
     std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(np));
     out += buf;
+    const detail::DoubleView point_values(points);
     for (std::size_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < np; ++i) {
-            const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
+            const double v = c < dim ? point_values[i * dim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
             out += buf;
         }
@@ -1340,11 +1342,11 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
             }
             continue;
         }
+        const detail::Int64View conn_values(conn);
         for (std::size_t r = 0; r < ne; ++r) {
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
-                const long long v =
-                    static_cast<long long>(detail::read_int(conn, r * npc + src)) + 1;
+                const long long v = static_cast<long long>(conn_values[r * npc + src]) + 1;
                 std::snprintf(buf, sizeof(buf), "%10lld", v);
                 out += buf;
             }
@@ -1380,10 +1382,10 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     out.Int(static_cast<std::int64_t>(np));
     {
         std::vector<float> col(np * 3);
+        const detail::DoubleView point_values(points);
         for (std::size_t c = 0; c < 3; ++c)
             for (std::size_t i = 0; i < np; ++i)
-                col[c * np + i] =
-                    c < dim ? static_cast<float>(detail::read_double(points, i * dim + c)) : 0.0f;
+                col[c * np + i] = c < dim ? static_cast<float>(point_values[i * dim + c]) : 0.0f;
         for (std::size_t c = 0; c < 3; ++c)
             out.Floats(col.data() + c * np, np);
     }
@@ -1433,11 +1435,11 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
             continue;
         }
         std::vector<std::int32_t> flat(ne * npc);
+        const detail::Int64View conn_values(conn);
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
-                flat[r * npc + j] =
-                    static_cast<std::int32_t>(detail::read_int(conn, r * npc + src)) + 1;
+                flat[r * npc + j] = static_cast<std::int32_t>(conn_values[r * npc + src]) + 1;
             }
         out.Ints(flat);
     }
@@ -1522,9 +1524,9 @@ std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVari
     const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
     const std::size_t n = rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
     std::vector<double> col(n);
+    const detail::DoubleView arr_values(arr);
     for (std::size_t i = 0; i < n; ++i)
-        col[i] =
-            mio_comp < stored_ncomp ? detail::read_double(arr, i * stored_ncomp + mio_comp) : 0.0;
+        col[i] = mio_comp < stored_ncomp ? arr_values[i * stored_ncomp + mio_comp] : 0.0;
     return col;
 }
 

@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -170,8 +171,9 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
         std::size_t p = 0;
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks("mfm:ref"); ++b) {
             const NDArray& blk = rMesh.CellData("mfm:ref", b);
+            const detail::Int64View blk_values(blk);
             for (std::size_t i = 0; i < blk.Size() && p < nel; ++i)
-                nsd[p++] = detail::read_int(blk, i);
+                nsd[p++] = blk_values[i];
         }
     }
 
@@ -183,12 +185,13 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
 
     // connectivity (1-based)
     for (const auto cb : rMesh.CellRange()) {
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
         std::size_t n = cb.NumCells();
-        std::size_t k = detail::cols(conn);
+        std::size_t k = detail::cols(conn_array);
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             for (std::size_t j = 0; j < k; ++j)
-                f << (detail::read_int(conn, r * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
+                f << (conn[r * k + j] + 1) << (j + 1 == k ? '\n' : ' ');
         }
     }
     // zero reference arrays
@@ -206,9 +209,10 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     const NDArray& points = rMesh.Points();
     std::string fmt = "%" + rFloatFmt;
     char buf[64];
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), fmt.c_str(), detail::read_double(points, i * dim + c));
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), point_values[i * dim + c]);
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain

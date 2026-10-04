@@ -1406,10 +1406,11 @@ void mdpa_write_table(std::ostream& rOs, const PropertyValue& rTable, const char
     rOs << pIndent << "Begin Table " << rTable.mKey << "\n";
     const std::size_t ncols = rTable.mValues.Shape().size() >= 2 ? rTable.mValues.Shape()[1] : 1;
     const std::size_t nrows = ncols ? rTable.mValues.Size() / ncols : 0;
+    const MdpaValues values(rTable.mValues);
     for (std::size_t r = 0; r < nrows; ++r) {
         rOs << pIndent << "  ";
         for (std::size_t c = 0; c < ncols; ++c)
-            rOs << " " << mdpa_format_value(rTable.mValues, r * ncols + c);
+            rOs << " " << values.Format(r * ncols + c);
         rOs << "\n";
     }
     rOs << pIndent << "End Table\n";
@@ -1421,10 +1422,11 @@ void mdpa_write_kv(std::ostream& rOs, const PropertyValue& rValue, const char* p
     if (rValue.IsText()) {
         rOs << rValue.mText;
     } else {
+        const MdpaValues values(rValue.mValues);
         for (std::size_t i = 0; i < rValue.mValues.Size(); ++i) {
             if (i)
                 rOs << " ";
-            rOs << mdpa_format_value(rValue.mValues, i);
+            rOs << values.Format(i);
         }
     }
     rOs << "\n";

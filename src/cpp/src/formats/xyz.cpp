@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ios>
+#include <optional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -38,6 +39,7 @@
 #include "meshioplusplus/log.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -547,6 +549,17 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
     os << '\n';
     char buf[64];
     std::string line;
+    // One view per column, of the kind its dtype is written as (UInt64 is
+    // printed unsigned, straight from its buffer).
+    std::vector<std::optional<detail::DoubleView>> real_columns(columns.size());
+    std::vector<std::optional<detail::Int64View>> int_columns(columns.size());
+    for (std::size_t c = 0; c < columns.size(); ++c) {
+        const NDArray& array = *columns[c].mArray;
+        if (detail::is_float_dtype(array.Dtype()))
+            real_columns[c].emplace(array);
+        else if (array.Dtype() != DType::UInt64)
+            int_columns[c].emplace(array);
+    }
     for (std::size_t i = 0; i < n; ++i) {
         line.clear();
         for (std::size_t c = 0; c < columns.size(); ++c) {
@@ -557,10 +570,10 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
             if (!detail::is_float_dtype(array.Dtype())) {
                 line += array.Dtype() == DType::UInt64
                             ? std::to_string(array.As<std::uint64_t>()[at])
-                            : std::to_string(detail::read_int(array, at));
+                            : std::to_string((*int_columns[c])[at]);
                 continue;
             }
-            const double v = detail::read_double(array, at);
+            const double v = (*real_columns[c])[at];
             if (std::isnan(v)) {
                 line += "nan";
                 continue;

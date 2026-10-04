@@ -1771,8 +1771,9 @@ void gmsh_validate_periodic(const GmshInfo& rInfo, std::size_t points, int versi
         const auto& pairs = link.mNodePairs;
         if (pairs.Dtype() != DType::Int64 || pairs.Shape().size() != 2 || pairs.Shape()[1] != 2)
             throw WriteError("Gmsh $Periodic: pairs must be Int64 (N,2)");
+        const std::int64_t* pair_values = pairs.As<std::int64_t>();  // dtype checked above
         for (std::size_t i = 0; i < pairs.Size(); ++i) {
-            const auto index = detail::read_int(pairs, i);
+            const auto index = pair_values[i];
             if (index < 0 || static_cast<std::uint64_t>(index) >= points ||
                 (version == 22 && index >= INT32_MAX))
                 throw WriteError("Gmsh $Periodic: point index outside mesh/tag range");
