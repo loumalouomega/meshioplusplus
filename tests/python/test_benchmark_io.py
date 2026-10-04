@@ -270,6 +270,22 @@ def test_mfm_seq_confirmation_keeps_both_measurement_orders():
             ),
             (),
         ),
+        (
+            "batch16_float64_int64",
+            (
+                "ansys",
+                "code_aster",
+                "elmer",
+                "mphtxt",
+                "nastran",
+                "netgen",
+                "radioss",
+                "su2",
+                "tecplot",
+                "unv",
+            ),
+            (),
+        ),
     ],
 )
 def test_text_io_evidence_is_complete_and_bit_identical(batch, formats, decreases):
