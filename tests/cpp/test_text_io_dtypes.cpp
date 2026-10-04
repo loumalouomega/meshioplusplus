@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,8 +14,11 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
+#include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/gid.hpp"
@@ -26,8 +30,16 @@
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/patran.hpp"
+#include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/permas.hpp"
+#include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/svg.hpp"
+#include "meshioplusplus/formats/tetgen.hpp"
+#include "meshioplusplus/formats/tikz.hpp"
+#include "meshioplusplus/formats/triangle.hpp"
+#include "meshioplusplus/formats/ugrid.hpp"
+#include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/z88.hpp"
 
 namespace {
@@ -53,6 +65,13 @@ tid::NDArray tid_array(tid::DType Dtype, const std::vector<std::size_t>& rShape,
 tid::Mesh tid_mesh(const std::string& rFormat, tid::DType RealType, tid::DType IndexType,
                    std::size_t Dim) {
     tid::Mesh mesh;
+    if (rFormat == "tetgen") {
+        mesh.AssignPoints(tid_array(RealType, {4, 3}, {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1}));
+        mesh.AddCellBlock("tetra", tid_array(IndexType, {1, 4}, {0, 1, 2, 3}));
+        mesh.AddPointData("s", tid_array(RealType, {4}, {1, 2, 3, 4}));
+        mesh.AddCellData("pf3:ref", {tid_array(IndexType, {1}, {7})});
+        return mesh;
+    }
     if (rFormat == "z88") {
         mesh.AssignPoints(tid_array(RealType, {4, 3}, {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1}));
         mesh.AddCellBlock("tetra", tid_array(IndexType, {1, 4}, {0, 1, 2, 3}));
@@ -79,19 +98,46 @@ tid::Mesh tid_mesh(const std::string& rFormat, tid::DType RealType, tid::DType I
     return mesh;
 }
 
-std::string tid_file_bytes(const std::string& rPath) {
-    auto in = tid::detail::make_classic_ifstream(rPath, std::ios::binary);
+std::string tid_file_bytes(const std::filesystem::path& rPath) {
+    auto in = tid::detail::make_classic_ifstream(rPath.string(), std::ios::binary);
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-/// The file, plus GiD's `.post.res` sibling (where its point data goes).
-std::string tid_bytes(const std::string& rPath) {
-    std::string bytes = tid_file_bytes(rPath);
-    const std::string mesh_suffix = ".post.msh";
-    if (rPath.size() > mesh_suffix.size() &&
-        rPath.compare(rPath.size() - mesh_suffix.size(), mesh_suffix.size(), mesh_suffix) == 0)
-        bytes += tid_file_bytes(rPath.substr(0, rPath.size() - 4) + ".res");
-    return bytes;
+/// Whether @p rName is `<base>` followed by `.` or `_` (a suffix or a companion),
+/// not another file whose base merely starts with the same digits.
+bool tid_is_output_of(const std::string& rName, const std::string& rBase) {
+    return rName.size() > rBase.size() && rName.compare(0, rBase.size(), rBase) == 0 &&
+           (rName[rBase.size()] == '.' || rName[rBase.size()] == '_');
+}
+
+/// Everything a writer wrote for @p rPath (`<base><suffix>`): the file itself
+/// and any companion that shares its base (`.post.res`, `.ele`, a DOLFIN
+/// mesh-function file), keyed by the part of the name after the base so two
+/// runs with different bases compare equal.
+std::map<std::string, std::string> tid_outputs(const std::string& rPath,
+                                               const std::string& rSuffix) {
+    const std::filesystem::path path(rPath);
+    const std::string base =
+        path.filename().string().substr(0, path.filename().string().size() - rSuffix.size());
+    std::map<std::string, std::string> out;
+    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
+        const std::string name = entry.path().filename().string();
+        if (tid_is_output_of(name, base) && entry.is_regular_file())
+            out[name.substr(base.size())] = tid_file_bytes(entry.path());
+    }
+    return out;
+}
+
+void tid_remove_outputs(const std::string& rPath, const std::string& rSuffix) {
+    const std::filesystem::path path(rPath);
+    const std::string base =
+        path.filename().string().substr(0, path.filename().string().size() - rSuffix.size());
+    std::vector<std::filesystem::path> doomed;
+    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path()))
+        if (tid_is_output_of(entry.path().filename().string(), base))
+            doomed.push_back(entry.path());
+    for (const auto& file : doomed)
+        std::filesystem::remove(file);
 }
 
 using TidWriter = std::function<void(const std::string&, const tid::Mesh&)>;
@@ -106,6 +152,10 @@ struct TidFormat {
     TidWriter mWrite;
     bool mExact = true;
     std::string mSuffix = ".data";
+    std::size_t mOnlyDim = 0;  // 0: any; Triangle writes 2-D points only
+    /// The output depends on whether arrays are float or integer (UGRID labels,
+    /// AVS-UCD materials, DOLFIN mesh functions): compare with the same class.
+    bool mClassCanonical = false;
 };
 
 const std::vector<TidFormat>& tid_writers() {
@@ -130,6 +180,40 @@ const std::vector<TidFormat>& tid_writers() {
         {"mdpa",
          [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_mdpa(rPath, rMesh); }},
         {"libmesh", tid::write_libmesh},
+        {"obj", tid::write_obj, true, ".obj"},
+        {"stl-binary",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_stl(rPath, rMesh, true);
+         },
+         true, ".stl"},
+        {"stl-ascii",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_stl(rPath, rMesh, false);
+         },
+         true, ".stl"},
+        {"ply-ascii",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_ply(rPath, rMesh, false);
+         },
+         false, ".ply"},
+        {"ply-binary",
+         [](const std::string& rPath, const tid::Mesh& rMesh) {
+             tid::write_ply(rPath, rMesh, true);
+         },
+         false, ".ply"},
+        {"triangle", tid::write_triangle, true, ".node", 2},
+        {"tetgen", tid::write_tetgen, true, ".node"},
+        {"ugrid", tid::write_ugrid, true, ".lb8.ugrid", 0, true},
+        {"dolfin", tid::write_dolfin, true, ".xml", 0, true},
+        {"freefem", tid::write_freefem, true, ".msh"},
+        {"avsucd", tid::write_avsucd, true, ".inp", 0, true},
+        {"wkt", tid::write_wkt, true, ".wkt"},
+        {"svg",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_svg(rPath, rMesh); },
+         true, ".svg"},
+        {"tikz",
+         [](const std::string& rPath, const tid::Mesh& rMesh) { tid::write_tikz(rPath, rMesh); },
+         true, ".tex"},
         {"gid",
          [](const std::string& rPath, const tid::Mesh& rMesh) {
              tid::write_gid(rPath, rMesh, tid::GidMode::Ascii);
@@ -173,18 +257,25 @@ TEST(TextIoDtypes, HoistedWritersMatchCanonicalStorageOnAllDtypes) {
         for (const auto dtype : tid_dtypes) {
             SCOPED_TRACE(static_cast<int>(dtype));
             for (const std::size_t dim : {2u, 3u}) {
+                if (fmt.mOnlyDim != 0 && fmt.mOnlyDim != dim)
+                    continue;
                 SCOPED_TRACE(dim);
                 const auto input = tid_mesh(format, dtype, dtype, dim);
-                const auto expected = tid_mesh(format, tid::DType::Float64, tid::DType::Int64, dim);
+                const bool is_float = dtype == tid::DType::Float32 || dtype == tid::DType::Float64;
+                const tid::DType real =
+                    fmt.mClassCanonical && !is_float ? tid::DType::Int64 : tid::DType::Float64;
+                const tid::DType index =
+                    fmt.mClassCanonical && is_float ? tid::DType::Float64 : tid::DType::Int64;
+                const auto expected = tid_mesh(format, real, index, dim);
                 const std::string first = mt::temp_path(fmt.mSuffix);
                 const std::string second = mt::temp_path(fmt.mSuffix);
                 writer(first, input);
                 writer(second, expected);
-                EXPECT_EQ(tid_bytes(first), tid_bytes(second));
-                for (const std::string& path : {first, second}) {
-                    std::filesystem::remove(path);
-                    std::filesystem::remove(path.substr(0, path.size() - 4) + ".res");
-                }
+                const auto first_files = tid_outputs(first, fmt.mSuffix);
+                EXPECT_FALSE(first_files.empty());
+                EXPECT_EQ(first_files, tid_outputs(second, fmt.mSuffix));
+                tid_remove_outputs(first, fmt.mSuffix);
+                tid_remove_outputs(second, fmt.mSuffix);
             }
         }
     }
@@ -197,7 +288,8 @@ TEST(TextIoDtypes, HoistedWritersLeaveCallerArraysUntouched) {
         SCOPED_TRACE(format);
         for (const auto dtype : {tid::DType::Float32, tid::DType::Int32, tid::DType::UInt16}) {
             SCOPED_TRACE(static_cast<int>(dtype));
-            const auto input = tid_mesh(format, dtype, dtype, 3);
+            const std::size_t dim = fmt.mOnlyDim != 0 ? fmt.mOnlyDim : 3;
+            const auto input = tid_mesh(format, dtype, dtype, dim);
             const tid::NDArray& points = input.Points();
             const tid::NDArray& conn = input.Cells(0).Conn();
             const std::vector<std::byte> points_before(points.Data(),
@@ -205,7 +297,7 @@ TEST(TextIoDtypes, HoistedWritersLeaveCallerArraysUntouched) {
             const std::vector<std::byte> conn_before(conn.Data(), conn.Data() + conn.Nbytes());
             const std::string path = mt::temp_path(fmt.mSuffix);
             writer(path, input);
-            std::filesystem::remove(path);
+            tid_remove_outputs(path, fmt.mSuffix);
             EXPECT_EQ(std::vector<std::byte>(points.Data(), points.Data() + points.Nbytes()),
                       points_before);
             EXPECT_EQ(std::vector<std::byte>(conn.Data(), conn.Data() + conn.Nbytes()),

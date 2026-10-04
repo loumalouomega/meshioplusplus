@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +36,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -267,21 +269,26 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         fh << npoints << " 3 " << nattr << " " << nref << "\n";
 
         char fbuf[40];
+        const detail::DoubleView point_values(points);
+        std::vector<std::optional<detail::DoubleView>> attrs(attr_keys.size());
+        for (std::size_t a = 0; a < attr_keys.size(); ++a)
+            attrs[a].emplace(rMesh.PointData(attr_keys[a]));
+        std::vector<std::optional<detail::DoubleView>> refs(ref_keys.size());
+        for (std::size_t a = 0; a < ref_keys.size(); ++a)
+            refs[a].emplace(rMesh.PointData(ref_keys[a]));
         for (std::int64_t i = 0; i < npoints; ++i) {
             fh << i;
             for (int c = 0; c < 3; ++c) {
-                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
-                                   detail::read_double(points, i * 3 + c));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", point_values[i * 3 + c]);
                 fh << " " << fbuf;
             }
-            for (const auto& k : attr_keys) {
-                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
-                                   detail::read_double(rMesh.PointData(k), i));
+            for (const auto& attr : attrs) {
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", (*attr)[i]);
                 fh << " " << fbuf;
             }
-            for (const auto& k : ref_keys) {
+            for (const auto& ref : refs) {
                 fh << " ";
-                write_value(fh, detail::read_double(rMesh.PointData(k), i));
+                write_value(fh, (*ref)[i]);
             }
             fh << "\n";
         }
@@ -326,16 +333,22 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
             const auto cb = rMesh.Cells(ci);
             if (cb.Type() != "tetra")
                 continue;
-            const NDArray& conn = cb.Conn();
-            std::int64_t n = detail::rows(conn);
+            const NDArray& conn_array = cb.Conn();
+            std::int64_t n = detail::rows(conn_array);
+            const detail::Int64View conn(conn_array);
+            // A key without data for this block writes 0, so its view stays empty.
+            std::vector<std::optional<detail::Int64View>> attrs(attr_keys.size());
+            for (std::size_t a = 0; a < attr_keys.size(); ++a)
+                if (ci < rMesh.CellDataNumBlocks(attr_keys[a]))
+                    attrs[a].emplace(rMesh.CellData(attr_keys[a], ci));
             fh << n << " 4 " << nattr << "\n";
             for (std::int64_t i = 0; i < n; ++i) {
                 fh << i;
                 for (int c = 0; c < 4; ++c)
-                    fh << " " << detail::read_int(conn, i * 4 + c);
-                for (const auto& k : attr_keys) {
-                    if (ci < rMesh.CellDataNumBlocks(k))
-                        fh << " " << detail::read_int(rMesh.CellData(k, ci), i);
+                    fh << " " << conn[i * 4 + c];
+                for (const auto& attr : attrs) {
+                    if (attr)
+                        fh << " " << (*attr)[i];
                     else
                         fh << " 0";
                 }

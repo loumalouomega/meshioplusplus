@@ -35,6 +35,7 @@
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -213,9 +214,10 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
     // extraction for volume cells + orthographic camera); a flat one (every
     // z ~ 0) keeps the classic 2D path below, byte-identical to before.
+    const detail::DoubleView point_values(points);
     if (dim == 3) {
         for (std::size_t i = 0; i < num_points; ++i) {
-            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14) {
+            if (std::fabs(point_values[i * dim + 2]) > 1.0e-14) {
                 if (has_skinnable_cells(rMesh)) {
                     // Colouring by cell data needs to know which input cell
                     // each skin facet came from; that costs an extra Int64
@@ -238,8 +240,8 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     // TikZ/PGF uses the math convention (y-up), so — unlike SVG — no y-flip.
     auto coord = [&](std::int64_t p) {
         const std::size_t idx = static_cast<std::size_t>(p);
-        const double px = (0 < dim) ? detail::read_double(points, idx * dim + 0) : 0.0;
-        const double py = (1 < dim) ? detail::read_double(points, idx * dim + 1) : 0.0;
+        const double px = (0 < dim) ? point_values[idx * dim + 0] : 0.0;
+        const double py = (1 < dim) ? point_values[idx * dim + 1] : 0.0;
         return "(" + tikz_fmt_num(px, rFloatFmt) + "," + tikz_fmt_num(py, rFloatFmt) + ")";
     };
 
@@ -265,15 +267,16 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
             continue;
         }
 
-        const NDArray& conn = cb.Conn();
-        const std::size_t ncols = detail::cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t ncols = detail::cols(conn_array);
         const std::size_t n = cb.NumCells();
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             std::string path;
             for (std::size_t k = 0; k < ncols; ++k) {
                 if (k)
                     path += " -- ";
-                path += coord(detail::read_int(conn, r * ncols + k));
+                path += coord(conn[r * ncols + k]);
             }
             const std::size_t f = face_index++;
             if (type == "line") {
@@ -302,8 +305,8 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     if (colors.mActive && spec.mColorbar && num_points > 0) {
         double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
         for (std::size_t i = 0; i < num_points; ++i) {
-            const double cx = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
-            const double cy = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
+            const double cx = (0 < dim) ? point_values[i * dim + 0] : 0.0;
+            const double cy = (1 < dim) ? point_values[i * dim + 1] : 0.0;
             if (i == 0) {
                 min_x = max_x = cx;
                 min_y = max_y = cy;

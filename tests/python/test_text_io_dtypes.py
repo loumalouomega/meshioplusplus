@@ -20,14 +20,51 @@ FORMATS = (
     "libmesh",
     "gid",
     "gltf",
+    "obj",
+    "stl",
+    "triangle",
+    "tetgen",
+    "ugrid",
+    "dolfin-xml",
+    "freefem",
+    "avsucd",
+    "wkt",
+    "svg",
+    "tikz",
 )
 # Formats that record each array's dtype in the file (PCD SIZE/TYPE, HDF5
 # datasets), so their bytes legitimately differ from canonical storage: the
 # values must still round-trip.
-STORED_DTYPE_FORMATS = ("pcd", "cgns", "med")
-# A writer may embed its own file name (glTF's .bin) or pick its extension
-# (GiD), so every output is `<dir>/m<suffix>` in a directory of its own.
-SUFFIX = {"gid": ".post.msh", "gltf": ".gltf"}
+STORED_DTYPE_FORMATS = ("pcd", "cgns", "med", "ply")
+# A writer may embed its own file name (glTF's .bin), pick its extension (GiD)
+# or write companion files (Triangle and TetGen's .ele), so every output is
+# `<dir>/m<suffix>` in a directory of its own and the whole directory is
+# compared.
+SUFFIX = {
+    "gid": ".post.msh",
+    "gltf": ".gltf",
+    "obj": ".obj",
+    "stl": ".stl",
+    "ply": ".ply",
+    "triangle": ".node",
+    "tetgen": ".node",
+    "ugrid": ".lb8.ugrid",
+    "dolfin-xml": ".xml",
+    "freefem": ".msh",
+    "avsucd": ".inp",
+    "wkt": ".wkt",
+    "svg": ".svg",
+    "tikz": ".tex",
+    "pcd": ".pcd",
+    "cgns": ".cgns",
+    "med": ".med",
+}
+# These writers pick their output by whether an array is float or integer
+# (UGRID labels, AVS-UCD materials, DOLFIN's `float`/`int` mesh functions), so
+# the canonical form is the same class in float64 or int64.
+CLASS_FORMATS = ("ugrid", "avsucd", "dolfin-xml")
+# Writers that take only some meshes: Triangle writes 2-D points only.
+ONLY_DIMENSION = {"triangle": 2}
 # The integer cell data each format reads per cell, as (name, value).
 TAGS = {
     "gmsh22": (("gmsh:physical", 3), ("gmsh:geometrical", 5)),
@@ -54,6 +91,18 @@ def _mesh(fmt, real, index, dimension):
     """The mesh and its arrays: points/point data in @p real, connectivity and
     cell data in @p index. Z88 has no linear triangle, so it gets a tetrahedron.
     """
+    if fmt == "tetgen":
+        points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=real)
+        conn = np.array([[0, 1, 2, 3]], dtype=index)
+        scalar = np.array([1, 2, 3, 4], dtype=real)
+        ref = np.array([7], dtype=index)
+        mesh = pp.Mesh(
+            points,
+            [("tetra", conn)],
+            point_data={"s": scalar},
+            cell_data={"pf3:ref": [ref]},
+        )
+        return mesh, [points, conn, scalar, ref]
     if fmt == "z88":
         points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=real)
         conn = np.array([[0, 1, 2, 3]], dtype=index)
@@ -82,20 +131,25 @@ def _mesh(fmt, real, index, dimension):
 def test_hoisted_writer_all_dtypes_match_default_storage(
     tmp_path, monkeypatch, fmt, dtype, dimension
 ):
+    if ONLY_DIMENSION.get(fmt, dimension) != dimension:
+        pytest.skip(f"{fmt} writes {ONLY_DIMENSION[fmt]}-D points only")
     monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
     mesh, inputs = _mesh(fmt, dtype, dtype, dimension)
-    expected, _ = _mesh(fmt, "float64", "int64", dimension)
+    canonical_dtype = ("float64", "int64")
+    if fmt in CLASS_FORMATS:
+        kind = "float64" if np.issubdtype(np.dtype(dtype), np.floating) else "int64"
+        canonical_dtype = (kind, kind)
+    expected, _ = _mesh(fmt, *canonical_dtype, dimension)
     before = [a.tobytes() for a in inputs]
     name = "m" + SUFFIX.get(fmt, "")
-    native, canonical = tmp_path / "native" / name, tmp_path / "canonical" / name
-    native.parent.mkdir()
-    canonical.parent.mkdir()
-    pp.write(native, mesh, file_format=fmt)
-    pp.write(canonical, expected, file_format=fmt)
-    assert native.read_bytes() == canonical.read_bytes()
-    if fmt == "gid":  # point data goes to the sibling results file
-        results = [p.with_name("m.post.res") for p in (native, canonical)]
-        assert results[0].read_bytes() == results[1].read_bytes()
+    native, canonical = tmp_path / "native", tmp_path / "canonical"
+    native.mkdir()
+    canonical.mkdir()
+    pp.write(native / name, mesh, file_format=fmt)
+    pp.write(canonical / name, expected, file_format=fmt)
+    outputs = {f.name: f.read_bytes() for f in native.iterdir()}
+    assert outputs  # something was written
+    assert outputs == {f.name: f.read_bytes() for f in canonical.iterdir()}
     assert before == [a.tobytes() for a in inputs]
 
 
@@ -108,7 +162,7 @@ def test_stored_dtype_writer_round_trips_values_from_all_dtypes(
     mesh, inputs = _mesh(fmt, dtype, dtype, 3)
     expected, _ = _mesh(fmt, "float64", "int64", 3)
     before = [a.tobytes() for a in inputs]
-    suffix = {"pcd": ".pcd", "cgns": ".cgns", "med": ".med"}[fmt]
+    suffix = SUFFIX[fmt]
     back = {}
     for label, source in (("native", mesh), ("canonical", expected)):
         path = tmp_path / (label + suffix)

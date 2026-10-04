@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace fs = std::filesystem;
 
@@ -230,10 +232,11 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     f << "    <vertices size=\"" << npts << "\">\n";
     char buf[32];
     const char* coord[3] = {"x", "y", "z"};
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < npts; ++i) {
         f << "      <vertex index=\"" << i << "\"";
         for (std::size_t c = 0; c < dim; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", point_values[i * dim + c]);
             f << " " << coord[c] << "=\"" << buf << "\"";
         }
         f << " />\n";
@@ -251,13 +254,14 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange()) {
         if (cb.Type() != cell_type)
             continue;
-        const NDArray& conn = cb.Conn();
-        std::size_t ncols = detail::cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        std::size_t ncols = detail::cols(conn_array);
         std::size_t n = cb.NumCells();
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             f << "      <" << ts << " index=\"" << idx << "\"";
             for (std::size_t j = 0; j < ncols; ++j)
-                f << " v" << j << "=\"" << detail::read_int(conn, r * ncols + j) << "\"";
+                f << " v" << j << "=\"" << conn[r * ncols + j] << "\"";
             f << " />\n";
             ++idx;
         }
@@ -270,7 +274,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     bool z_all_zero = true;
     if (dim == 3) {
         for (std::size_t i = 0; i < npts; ++i)
-            if (detail::read_double(points, i * 3 + 2) != 0.0) {
+            if (point_values[i * 3 + 2] != 0.0) {
                 z_all_zero = false;
                 break;
             }
@@ -301,13 +305,19 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
         std::size_t idx = 0;
         for (const NDArray* pArr : rBlocks) {
             const std::size_t n = pArr->Shape().empty() ? 0 : pArr->Shape()[0];
+            std::optional<detail::DoubleView> reals;
+            std::optional<detail::Int64View> ints;
+            if (is_float)
+                reals.emplace(*pArr);
+            else
+                ints.emplace(*pArr);
             for (std::size_t k = 0; k < n; ++k, ++idx) {
                 cf << "<entity index=\"" << idx << "\" value=\"";
                 if (is_float) {
-                    detail::snprintf_c(buf, sizeof(buf), "%.17g", detail::read_double(*pArr, k));
+                    detail::snprintf_c(buf, sizeof(buf), "%.17g", (*reals)[k]);
                     cf << buf;
                 } else {
-                    cf << detail::read_int(*pArr, k);
+                    cf << (*ints)[k];
                 }
                 cf << "\" />";
             }

@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -359,20 +361,27 @@ void triangle_write_node_rows(std::ostream& rOs, const Mesh& rMesh,
     const NDArray& points = rMesh.Points();
     const std::int64_t np = static_cast<std::int64_t>(rMesh.NumPoints());
     char fbuf[40];
+    const detail::DoubleView point_values(points);
+    // One view per attribute / reference array, made before the row loop.
+    std::vector<std::optional<detail::DoubleView>> attrs(rAttrKeys.size());
+    for (std::size_t a = 0; a < rAttrKeys.size(); ++a)
+        attrs[a].emplace(rMesh.PointData(rAttrKeys[a]));
+    std::vector<std::optional<detail::DoubleView>> refs(rRefKeys.size());
+    for (std::size_t a = 0; a < rRefKeys.size(); ++a)
+        refs[a].emplace(rMesh.PointData(rRefKeys[a]));
     for (std::int64_t i = 0; i < np; ++i) {
         rOs << i;
         for (int c = 0; c < 2; ++c) {
-            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", detail::read_double(points, i * 2 + c));
+            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", point_values[i * 2 + c]);
             rOs << " " << fbuf;
         }
-        for (const auto& k : rAttrKeys) {
-            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
-                               detail::read_double(rMesh.PointData(k), i));
+        for (const auto& attr : attrs) {
+            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", (*attr)[i]);
             rOs << " " << fbuf;
         }
-        for (const auto& k : rRefKeys) {
+        for (const auto& ref : refs) {
             rOs << " ";
-            triangle_write_value(rOs, detail::read_double(rMesh.PointData(k), i));
+            triangle_write_value(rOs, (*ref)[i]);
         }
         rOs << "\n";
     }
@@ -429,16 +438,21 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         const auto cb = rMesh.Cells(ci);
         if (cb.Type() != tri_type)
             continue;
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::int64_t n = static_cast<std::int64_t>(cb.NumCells());
+        // A key without data for this block writes 0, so its view stays empty.
+        std::vector<std::optional<detail::DoubleView>> attrs(cell_attr_keys.size());
+        for (std::size_t a = 0; a < cell_attr_keys.size(); ++a)
+            if (ci < rMesh.CellDataNumBlocks(cell_attr_keys[a]))
+                attrs[a].emplace(rMesh.CellData(cell_attr_keys[a], ci));
         for (std::int64_t i = 0; i < n; ++i) {
             fh << id++;
             for (std::size_t c = 0; c < npc; ++c)
-                fh << " " << detail::read_int(conn, i * static_cast<std::int64_t>(npc) + c);
-            for (const auto& k : cell_attr_keys) {
+                fh << " " << conn[i * static_cast<std::int64_t>(npc) + c];
+            for (const auto& attr : attrs) {
                 fh << " ";
-                if (ci < rMesh.CellDataNumBlocks(k))
-                    triangle_write_value(fh, detail::read_double(rMesh.CellData(k, ci), i));
+                if (attr)
+                    triangle_write_value(fh, (*attr)[i]);
                 else
                     fh << "0";
             }
@@ -476,15 +490,17 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
         const auto cb = rMesh.Cells(ci);
         if (cb.Type() != "line")
             continue;
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::int64_t n = static_cast<std::int64_t>(cb.NumCells());
+        std::optional<detail::DoubleView> seg_values;
+        if (!seg_ref.empty() && ci < rMesh.CellDataNumBlocks(seg_ref))
+            seg_values.emplace(rMesh.CellData(seg_ref, ci));
         for (std::int64_t i = 0; i < n; ++i) {
-            fh << id++ << " " << detail::read_int(conn, i * 2) << " "
-               << detail::read_int(conn, i * 2 + 1);
+            fh << id++ << " " << conn[i * 2] << " " << conn[i * 2 + 1];
             if (!seg_ref.empty()) {
                 fh << " ";
-                if (ci < rMesh.CellDataNumBlocks(seg_ref))
-                    triangle_write_value(fh, detail::read_double(rMesh.CellData(seg_ref, ci), i));
+                if (seg_values)
+                    triangle_write_value(fh, (*seg_values)[i]);
                 else
                     fh << "0";
             }

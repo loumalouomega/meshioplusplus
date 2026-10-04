@@ -38,6 +38,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -545,10 +546,10 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
         char fbuf[64];
         for (int i = 0; i < 7; ++i)
             os << counts[i] << (i == 6 ? '\n' : ' ');
+        const detail::DoubleView point_values(points);
         for (std::int64_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < ncols; ++c) {
-                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16g",
-                                   detail::read_double(points, i * ncols + c));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16g", point_values[i * ncols + c]);
                 os << fbuf << (c + 1 == ncols ? '\n' : ' ');
             }
         }
@@ -557,12 +558,13 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             if (count_of(surf[s].first) == 0)
                 continue;
             const auto cb = rMesh.Cells(block_of[surf[s].first]);
-            const NDArray& conn = cb.Conn();
+            const NDArray& conn_array = cb.Conn();
             int k = surf[s].second;
-            std::int64_t n = detail::rows(conn);
+            std::int64_t n = detail::rows(conn_array);
+            const detail::Int64View conn(conn_array);
             for (std::int64_t i = 0; i < n; ++i)
                 for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(conn, i * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
+                    os << (conn[i * k + j] + 1) << (j + 1 == k ? '\n' : ' ');
         }
         for (int s = 0; s < 2; ++s) {
             const char* t = surf[s].first;
@@ -570,30 +572,30 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             if (n == 0)
                 continue;
             int bi = block_of[t];
-            const NDArray* lab = (!labels_name.empty() && static_cast<std::size_t>(bi) <
-                                                              rMesh.CellDataNumBlocks(labels_name))
-                                     ? &rMesh.CellData(labels_name, bi)
-                                     : nullptr;
+            std::optional<detail::Int64View> lab;
+            if (!labels_name.empty() &&
+                static_cast<std::size_t>(bi) < rMesh.CellDataNumBlocks(labels_name))
+                lab.emplace(rMesh.CellData(labels_name, bi));
             for (std::int64_t i = 0; i < n; ++i)
-                os << (lab ? detail::read_int(*lab, i) : 1) << '\n';
+                os << (lab ? (*lab)[i] : 1) << '\n';
         }
         for (int vi = 0; vi < 4; ++vi) {
             const char* t = kVolume[vi].mType;
             if (count_of(t) == 0)
                 continue;
             const auto cb = rMesh.Cells(block_of[t]);
-            const NDArray& conn = cb.Conn();
+            const NDArray& conn_array = cb.Conn();
             int k = kVolume[vi].mNverts;
-            std::int64_t n = detail::rows(conn);
+            std::int64_t n = detail::rows(conn_array);
+            const detail::Int64View conn(conn_array);
             for (std::int64_t i = 0; i < n; ++i) {
                 if (std::string(t) == "pyramid") {
                     const int perm[5] = {1, 0, 4, 2, 3};  // meshio -> ugrid
                     for (int j = 0; j < 5; ++j)
-                        os << (detail::read_int(conn, i * 5 + perm[j]) + 1)
-                           << (j + 1 == 5 ? '\n' : ' ');
+                        os << (conn[i * 5 + perm[j]] + 1) << (j + 1 == 5 ? '\n' : ' ');
                 } else {
                     for (int j = 0; j < k; ++j)
-                        os << (detail::read_int(conn, i * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
+                        os << (conn[i * k + j] + 1) << (j + 1 == k ? '\n' : ' ');
                 }
             }
         }

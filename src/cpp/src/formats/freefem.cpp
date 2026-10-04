@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -173,22 +175,30 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 
     const NDArray& points = rMesh.Points();
     char buf[32];
+    const detail::DoubleView point_values(points);
+    std::optional<detail::Int64View> point_refs;
+    if (pref)
+        point_refs.emplace(*pref);
     for (std::size_t i = 0; i < nver; ++i) {
         for (int c = 0; c < dim; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), "%.16e", detail::read_double(points, i * dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.16e", point_values[i * dim + c]);
             f << buf << " ";
         }
-        f << (pref ? detail::read_int(*pref, i) : 0) << "\n";
+        f << (point_refs ? (*point_refs)[i] : 0) << "\n";
     }
     auto write_block = [&](const std::vector<Row>& b, int lnv) {
         for (const auto& r : b) {
             std::size_t n = r.mCb.NumCells();
-            const NDArray& conn = r.mCb.Conn();
-            std::size_t k = detail::cols(conn);
+            const NDArray& conn_array = r.mCb.Conn();
+            std::size_t k = detail::cols(conn_array);
+            const detail::Int64View conn(conn_array);
+            std::optional<detail::Int64View> refs;
+            if (r.mRef)
+                refs.emplace(*r.mRef);
             for (std::size_t rr = 0; rr < n; ++rr) {
                 for (int j = 0; j < lnv && static_cast<std::size_t>(j) < k; ++j)
-                    f << (detail::read_int(conn, rr * k + j) + 1) << " ";
-                f << (r.mRef ? detail::read_int(*r.mRef, rr) : 0) << "\n";
+                    f << (conn[rr * k + j] + 1) << " ";
+                f << (refs ? (*refs)[rr] : 0) << "\n";
             }
         }
     };
