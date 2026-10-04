@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -169,13 +170,14 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
+    const detail::DoubleView point_values(points);
 
     auto point_str = [&](std::int64_t p) {
         std::string out;
         char buf[32];
         for (std::size_t j = 0; j < dim; ++j) {
             detail::snprintf_c(buf, sizeof(buf), "%.17g",
-                               detail::read_double(points, static_cast<std::size_t>(p) * dim + j));
+                               point_values[static_cast<std::size_t>(p) * dim + j]);
             if (j)
                 out += " ";
             out += buf;
@@ -188,13 +190,14 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange()) {
         if (cb.Type() != "triangle")
             continue;
-        const NDArray& conn = cb.Conn();
-        const std::size_t ncols = detail::cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t ncols = detail::cols(conn_array);
         const std::size_t n = cb.NumCells();
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
-            std::int64_t a = detail::read_int(conn, r * ncols + 0);
-            std::int64_t b = detail::read_int(conn, r * ncols + 1);
-            std::int64_t c = detail::read_int(conn, r * ncols + 2);
+            std::int64_t a = conn[r * ncols + 0];
+            std::int64_t b = conn[r * ncols + 1];
+            std::int64_t c = conn[r * ncols + 2];
             std::string sa = point_str(a);
             f << joiner << "((" << sa << ", " << point_str(b) << ", " << point_str(c) << ", " << sa
               << "))";

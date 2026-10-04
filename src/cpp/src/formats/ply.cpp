@@ -23,6 +23,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -42,6 +43,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -388,7 +390,8 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                detail::TextStream rs(read_line());
+                const std::string row = read_line();
+                detail::TextStream rs(row);
                 long long cnt;
                 if (!(rs >> cnt))
                     throw ReadError("PLY: a face row without a vertex count");
@@ -496,36 +499,45 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         for (const auto cb : rMesh.CellRange()) {
             if (!is_legal(cb.Type()))
                 continue;
-            const NDArray& conn = cb.Conn();
-            std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+            const NDArray& conn_array = cb.Conn();
+            std::size_t n = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+            const detail::Int64View conn(conn_array);
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 std::uint8_t cnt = static_cast<std::uint8_t>(n);
                 os.write(reinterpret_cast<const char*>(&cnt), 1);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::int32_t v = static_cast<std::int32_t>(detail::read_int(conn, r * n + j));
+                    std::int32_t v = static_cast<std::int32_t>(conn[r * n + j]);
                     os.write(reinterpret_cast<const char*>(&v), 4);
                 }
             }
         }
     } else {
         char buf[40];
+        const detail::DoubleView point_values(points);
+        // One view per scalar property, of the kind its dtype is written as.
+        std::vector<std::optional<detail::DoubleView>> pd_reals(pd.size());
+        std::vector<std::optional<detail::Int64View>> pd_ints(pd.size());
+        for (std::size_t q = 0; q < pd.size(); ++q) {
+            if (detail::is_float_dtype(pd[q].second->Dtype()))
+                pd_reals[q].emplace(*pd[q].second);
+            else
+                pd_ints[q].emplace(*pd[q].second);
+        }
         for (std::size_t i = 0; i < num_points; ++i) {
             std::string row;
             for (std::size_t k = 0; k < ncoord; ++k) {
                 if (k)
                     row += " ";
-                detail::snprintf_c(buf, sizeof(buf), "%.17g",
-                                   detail::read_double(points, i * dim + k));
+                detail::snprintf_c(buf, sizeof(buf), "%.17g", point_values[i * dim + k]);
                 row += buf;
             }
-            for (auto& p : pd) {
+            for (std::size_t q = 0; q < pd.size(); ++q) {
                 row += " ";
-                if (detail::is_float_dtype(p.second->Dtype())) {
-                    detail::snprintf_c(buf, sizeof(buf), "%.17g",
-                                       detail::read_double(*p.second, i));
+                if (pd_reals[q]) {
+                    detail::snprintf_c(buf, sizeof(buf), "%.17g", (*pd_reals[q])[i]);
                     row += buf;
                 } else {
-                    row += std::to_string(detail::read_int(*p.second, i));
+                    row += std::to_string((*pd_ints[q])[i]);
                 }
             }
             os << row << "\n";
@@ -533,12 +545,13 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         for (const auto cb : rMesh.CellRange()) {
             if (!is_legal(cb.Type()))
                 continue;
-            const NDArray& conn = cb.Conn();
-            std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+            const NDArray& conn_array = cb.Conn();
+            std::size_t n = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+            const detail::Int64View conn(conn_array);
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 os << n;
                 for (std::size_t j = 0; j < n; ++j)
-                    os << " " << detail::read_int(conn, r * n + j);
+                    os << " " << conn[r * n + j];
                 os << "\n";
             }
         }

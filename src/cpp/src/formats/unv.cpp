@@ -52,6 +52,9 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
+#include "../detail/keyword_card_view.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -335,14 +338,25 @@ std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTo
 }
 
 double unv_real(std::string_view t) {
-    std::string s(t);
-    for (char& c : s)
-        if (c == 'D' || c == 'd')
-            c = 'E';
+    // Normalize short Fortran fields on the stack, retaining a bounded terminator.
+    char small[64];
+    std::string large;
+    char* first;
+    if (t.size() < sizeof small) {
+        t.copy(small, t.size());
+        small[t.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(t);
+        first = large.data();
+    }
+    for (std::size_t i = 0; i < t.size(); ++i)
+        if (first[i] == 'D' || first[i] == 'd')
+            first[i] = 'E';
     const char* end = nullptr;
-    const double v = detail::parse_double(s.c_str(), end);
-    if (end == s.c_str())
-        throw ReadError("UNV: expected a real number, got '" + s + "'");
+    const double v = detail::parse_double(first, end);
+    if (end == first)
+        throw ReadError("UNV: expected a real number, got '" + std::string(first, t.size()) + "'");
     return v;
 }
 
@@ -392,7 +406,7 @@ bool unv_has_wide_token(const std::vector<std::string_view>& rTokens, std::size_
     return false;
 }
 
-bool unv_is_int_text(const std::string& rText) {
+bool unv_is_int_text(std::string_view rText) {
     std::size_t i = (!rText.empty() && (rText[0] == '+' || rText[0] == '-')) ? 1 : 0;
     if (i == rText.size())
         return false;
@@ -402,7 +416,7 @@ bool unv_is_int_text(const std::string& rText) {
     return true;
 }
 
-bool unv_is_real_text(const std::string& rText) {
+bool unv_is_real_text(std::string_view rText) {
     bool digit = false;
     for (const char c : rText) {
         if (std::isdigit(static_cast<unsigned char>(c)))
@@ -415,7 +429,7 @@ bool unv_is_real_text(const std::string& rText) {
 
 /// The fields `rLayout` cuts from `Line`, or nothing when the line runs past its
 /// columns or a numeric field does not hold one value. A blank field is `""`.
-std::optional<std::vector<std::string>> unv_fixed_fields(
+std::optional<std::vector<std::string_view>> unv_fixed_fields(
     std::string_view Line, const std::vector<detail::CardField>& rLayout) {
     std::size_t width = 0;
     std::vector<char> kinds;
@@ -426,12 +440,12 @@ std::optional<std::vector<std::string>> unv_fixed_fields(
     }
     const std::size_t last = Line.find_last_not_of(" \t\r\n");
     if (last == std::string_view::npos)
-        return std::vector<std::string>{};
+        return std::vector<std::string_view>{};
     if (last >= width)
         return std::nullopt;
-    std::vector<std::string> fields = detail::split_fixed(Line.substr(0, last + 1), rLayout);
+    auto fields = detail::split_fixed_view(Line.substr(0, last + 1), rLayout);
     for (std::size_t i = 0; i < fields.size(); ++i) {
-        const std::string& t = fields[i];
+        const std::string_view t = fields[i];
         if (t.empty() || kinds[i] == 'a')
             continue;
         if (kinds[i] == 'i' ? !unv_is_int_text(t) : !unv_is_real_text(t))
@@ -451,14 +465,14 @@ std::vector<std::int64_t> unv_ints(std::string_view line) {
         std::vector<std::int64_t> out;
         bool gap = false;
         bool ok = true;
-        for (const std::string& t : *fields) {
+        for (const auto t : *fields) {
             if (t.empty()) {
                 gap = true;
             } else if (gap) {
                 ok = false;
                 break;
             } else {
-                out.push_back(detail::card_to_int(t, " in a UNV record", "UNV"));
+                out.push_back(detail::card_to_int_view(t, " in a UNV record", "UNV"));
             }
         }
         if (ok)
@@ -478,14 +492,14 @@ std::vector<double> unv_reals_fixed(std::string_view line, int Width) {
         std::vector<double> out;
         bool gap = false;
         bool ok = true;
-        for (const std::string& t : *fields) {
+        for (const auto t : *fields) {
             if (t.empty()) {
                 gap = true;
             } else if (gap) {
                 ok = false;
                 break;
             } else {
-                out.push_back(detail::card_to_real(t, " in a UNV record", "UNV"));
+                out.push_back(detail::card_to_real_view(t, " in a UNV record", "UNV"));
             }
         }
         if (ok)
@@ -520,26 +534,10 @@ struct UnvDataset {
     std::string_view mBlob;
 };
 
-class UnvLineReader {
+class UnvLineReader : public detail::TextCursor {
 public:
-    explicit UnvLineReader(std::string_view data) : mData(data) {}
-    bool AtEnd() const { return mPos >= mData.size(); }
-    std::size_t Pos() const { return mPos; }
-    void Seek(std::size_t pos) { mPos = pos; }
-    std::string_view Next() {
-        const std::size_t eol = mData.find('\n', mPos);
-        const std::size_t end = eol == std::string_view::npos ? mData.size() : eol;
-        std::string_view line = mData.substr(mPos, end - mPos);
-        if (!line.empty() && line.back() == '\r')
-            line.remove_suffix(1);
-        mPos = eol == std::string_view::npos ? mData.size() : eol + 1;
-        return line;
-    }
-    std::string_view Data() const { return mData; }
-
-private:
-    std::string_view mData;
-    std::size_t mPos = 0;
+    explicit UnvLineReader(std::string_view data) : detail::TextCursor(data) {}
+    std::string_view Next() { return Line(true); }
 };
 
 // Bytes of a 58b data block, from record 7 (ordinate type, count, spacing); -1 when
@@ -1114,11 +1112,11 @@ void unv_parse_function(const UnvDataset& rDs, UnvFile& rFile) {
         detail::parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)");
     const std::string_view rec6 = lines[5];
     const auto rec6_fields = rec6.size() >= 80 ? unv_fixed_fields(rec6, kRec6)
-                                               : std::optional<std::vector<std::string>>();
+                                               : std::optional<std::vector<std::string_view>>();
     if (rec6_fields) {
-        const std::vector<std::string>& f = *rec6_fields;
+        const auto& f = *rec6_fields;
         auto int_field = [&](std::size_t i) {
-            return i < f.size() ? detail::card_to_int(f[i], " in dataset 58 record 6", "UNV")
+            return i < f.size() ? detail::card_to_int_view(f[i], " in dataset 58 record 6", "UNV")
                                 : std::int64_t{0};
         };
         fn.mType = static_cast<int>(int_field(0));
@@ -1769,11 +1767,12 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
     // 2411 / 781 nodes
     std::snprintf(buf, sizeof(buf), "    -1\n%6d\n", node_dataset);
     f << buf;
+    const detail::DoubleView point_values(points);
     for (std::size_t k = 0; k < np; ++k) {
         std::snprintf(buf, sizeof(buf), "%10zu%10d%10d%10d\n", k + 1, 1, 1, 11);
         f << buf;
         for (int c = 0; c < 3; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, k * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[k * pdim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%25.16E", v);
             f << buf;
         }
@@ -1801,23 +1800,24 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
                 "cell block(s) of type " + std::string(cb.Type()) + " have no UNV equivalent");
             continue;
         }
-        const NDArray& conn = cb.Conn();
+        const NDArray& conn_array = cb.Conn();
         const std::vector<int>* perm = unv_perm(cb.Type());
-        const std::size_t ncols = detail::cols(conn);
+        const std::size_t ncols = detail::cols(conn_array);
+        const detail::Int64View conn(conn_array);
         const std::size_t nrows = cb.NumCells();
         block_labels[bi].reserve(nrows);
-        const NDArray* pid = (has_pid && bi < rMesh.CellDataNumBlocks("unv:pid"))
-                                 ? &rMesh.CellData("unv:pid", bi)
-                                 : nullptr;
-        const NDArray* mid = (has_mid && bi < rMesh.CellDataNumBlocks("unv:mid"))
-                                 ? &rMesh.CellData("unv:mid", bi)
-                                 : nullptr;
+        std::optional<detail::Int64View> pid;
+        if (has_pid && bi < rMesh.CellDataNumBlocks("unv:pid"))
+            pid.emplace(rMesh.CellData("unv:pid", bi));
+        std::optional<detail::Int64View> mid;
+        if (has_mid && bi < rMesh.CellDataNumBlocks("unv:mid"))
+            mid.emplace(rMesh.CellData("unv:mid", bi));
         std::vector<std::int64_t> unv(ncols);
         for (std::size_t r = 0; r < nrows; ++r) {
             ++label;
             block_labels[bi].push_back(label);
-            const std::int64_t pval = pid ? detail::read_int(*pid, r) : 1;
-            const std::int64_t mval = mid ? detail::read_int(*mid, r) : pval;
+            const std::int64_t pval = pid ? (*pid)[r] : 1;
+            const std::int64_t mval = mid ? (*mid)[r] : pval;
             std::snprintf(buf, sizeof(buf), "%10lld%10d%10lld%10lld%10d%10zu\n",
                           static_cast<long long>(label), desc, static_cast<long long>(pval),
                           static_cast<long long>(mval), 11, ncols);
@@ -1826,7 +1826,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
                 f << "         0         1         1\n";
             // meshio -> UNV order, 1-based, 8 per line
             for (std::size_t j = 0; j < ncols; ++j)
-                unv[j] = detail::read_int(conn, r * ncols + (perm ? (*perm)[j] : j)) + 1;
+                unv[j] = conn[r * ncols + (perm ? (*perm)[j] : j)] + 1;
             for (std::size_t j = 0; j < ncols; ++j) {
                 std::snprintf(buf, sizeof(buf), "%10lld", static_cast<long long>(unv[j]));
                 f << buf;
@@ -2109,8 +2109,9 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
         if (nc == 0)
             continue;
         std::vector<double> flat(np * nc);
+        const detail::DoubleView values(arr);
         for (std::size_t i = 0; i < np * nc; ++i)
-            flat[i] = detail::read_double(arr, i);
+            flat[i] = values[i];
         write_field(++field_id, name, 1, nc, node_labels, flat);
     }
     for (const auto& name : rMesh.CellDataNames()) {
@@ -2131,10 +2132,11 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
                 nc = bnc;
             if (bnc != nc)
                 continue;
+            const detail::DoubleView blk_values(blk);
             for (std::size_t r = 0; r < ne; ++r) {
                 labels.push_back(block_labels[bi][r]);
                 for (std::size_t c = 0; c < nc; ++c)
-                    flat.push_back(detail::read_double(blk, r * nc + c));
+                    flat.push_back(blk_values[r * nc + c]);
             }
         }
         if (nc == 0 || labels.empty())

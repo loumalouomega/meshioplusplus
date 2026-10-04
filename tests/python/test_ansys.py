@@ -66,6 +66,30 @@ def test_engines_write_the_same_bytes(tmp_path):
             assert a.read_bytes() == b.read_bytes()
 
 
+@pytest.mark.parametrize("binary", [False, True])
+def test_mixed_cell_types_in_one_zone_keep_order_and_bytes(tmp_path, binary):
+    """Exercise the mixed-type list, not the default one-zone-per-block path."""
+    mesh = meshioplusplus.Mesh(
+        helpers.tri_quad_mesh.points[:, :2].copy(),
+        [(block.type, block.data.copy()) for block in helpers.tri_quad_mesh.cells],
+        cell_data={
+            "ansys:zone": [
+                np.full(len(block.data), 7, dtype=np.int64)
+                for block in helpers.tri_quad_mesh.cells
+            ]
+        },
+    )
+    native, reference = tmp_path / "native.msh", tmp_path / "reference.msh"
+    _core.ansys_write(str(native), mesh, binary)
+    _ansys.write(reference, mesh, binary=binary)
+    assert native.read_bytes() == reference.read_bytes()
+    result = _core.ansys_read(str(native))
+    assert _cell_set(result, 2) == _cell_set(mesh, 2)
+    for block, zones in zip(result.cells, result.cell_data["ansys:zone"]):
+        if block.dim == 2:
+            np.testing.assert_array_equal(zones, np.full(len(block.data), 7))
+
+
 def test_an_empty_mesh_is_refused(tmp_path):
     with pytest.raises(meshioplusplus.WriteError):
         meshioplusplus.ansys.write(tmp_path / "e.msh", helpers.empty_mesh)

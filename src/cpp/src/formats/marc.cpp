@@ -38,6 +38,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <deque>
 
 // Project includes
 #include "meshioplusplus/formats/marc.hpp"
@@ -53,6 +54,9 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/keyword_card_view.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -134,44 +138,47 @@ std::string marc_lower(std::string_view Text) {
     return out;
 }
 
-std::string marc_trim(std::string_view Text) {
+std::string_view marc_trim_view(std::string_view Text) {
     const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
     std::size_t a = 0, b = Text.size();
     while (a < b && blank(Text[a]))
         ++a;
     while (b > a && blank(Text[b - 1]))
         --b;
-    return std::string(Text.substr(a, b - a));
+    return Text.substr(a, b - a);
 }
 
-std::string marc_rstrip(std::string_view Text) {
+std::string marc_trim(std::string_view Text) {
+    return std::string(marc_trim_view(Text));
+}
+
+std::string_view marc_rstrip(std::string_view Text) {
     std::size_t b = Text.size();
     while (b > 0 && (Text[b - 1] == ' ' || Text[b - 1] == '\t' || Text[b - 1] == '\r' ||
                      Text[b - 1] == '\n'))
         --b;
-    return std::string(Text.substr(0, b));
+    return Text.substr(0, b);
 }
 
 // Words split on blanks and commas.
-std::vector<std::string> marc_words(std::string_view Text) {
-    std::vector<std::string> out;
-    std::string word;
-    for (char c : Text) {
-        if (c == ' ' || c == '\t' || c == ',' || c == '\r' || c == '\n') {
-            if (!word.empty())
-                out.push_back(std::move(word));
-            word.clear();
-        } else {
-            word += c;
-        }
+std::vector<std::string_view> marc_words(std::string_view Text) {
+    std::vector<std::string_view> out;
+    std::size_t pos = 0;
+    for (;;) {
+        const auto first = Text.find_first_not_of(" \t,\r\n", pos);
+        if (first == std::string_view::npos)
+            break;
+        const auto last = Text.find_first_of(" \t,\r\n", first);
+        out.push_back(Text.substr(first, last == std::string_view::npos ? last : last - first));
+        if (last == std::string_view::npos)
+            break;
+        pos = last;
     }
-    if (!word.empty())
-        out.push_back(std::move(word));
     return out;
 }
 
 bool marc_is_comment(std::string_view Line) {
-    const std::string s = marc_trim(Line);
+    const std::string_view s = marc_trim_view(Line);
     return s.empty() || s[0] == '$';
 }
 
@@ -184,32 +191,24 @@ bool marc_is_data(std::string_view Line) {
     return std::isdigit(static_cast<unsigned char>(c)) || c == '+' || c == '-' || c == '.';
 }
 
-std::vector<std::string> marc_lines(const std::string& rPath, const char* pLabel) {
-    std::optional<detail::FileSource> source;
+std::vector<std::string_view> marc_lines(std::deque<detail::FileSource>& rSources,
+                                         const std::string& rPath, const char* pLabel) {
     try {
-        source.emplace(rPath);
+        rSources.emplace_back(rPath);
     } catch (const ReadError&) {
         marc_fail(pLabel, "cannot open " + rPath);
     }
-    const std::string_view text = source->View();
-    std::vector<std::string> lines;
-    std::size_t pos = 0;
-    while (pos < text.size()) {
-        std::size_t eol = text.find('\n', pos);
-        if (eol == std::string::npos)
-            eol = text.size();
-        std::string line(text.substr(pos, eol - pos));
+    auto lines = detail::split_lines(rSources.back().View());
+    for (auto& line : lines) {
         if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(std::move(line));
-        pos = eol + 1;
+            line.remove_suffix(1);
     }
     return lines;
 }
 
 // An `INCLUDE` option line (the keyword at the start of the line, then the
 // file name after a blank or comma): the file it names, else empty.
-std::string marc_include_target(const std::string& rLine) {
+std::string marc_include_target(std::string_view rLine) {
     if (rLine.size() < 7 || marc_lower(rLine.substr(0, 7)) != "include")
         return "";
     std::size_t k = 7;
@@ -226,14 +225,15 @@ std::string marc_include_target(const std::string& rLine) {
 
 // The deck's lines with every `INCLUDE` replaced by the lines of the file it
 // names (relative to the including file), recursively.
-std::vector<std::string> marc_deck_lines(const std::string& rPath, int Depth = 0) {
+std::vector<std::string_view> marc_deck_lines(std::deque<detail::FileSource>& rSources,
+                                              const std::string& rPath, int Depth = 0) {
     if (Depth > 16)
         marc_fail(kMarcDat, "INCLUDE files nest more than 16 deep (a cycle?) at " + rPath);
-    std::vector<std::string> out;
-    for (std::string& line : marc_lines(rPath, kMarcDat)) {
+    std::vector<std::string_view> out;
+    for (const auto line : marc_lines(rSources, rPath, kMarcDat)) {
         const std::string target = marc_include_target(line);
         if (target.empty()) {
-            out.push_back(std::move(line));
+            out.push_back(line);
             continue;
         }
         std::filesystem::path file(target);
@@ -242,30 +242,30 @@ std::vector<std::string> marc_deck_lines(const std::string& rPath, int Depth = 0
         std::error_code ec;
         if (!std::filesystem::is_regular_file(file, ec))
             marc_fail(kMarcDat, "INCLUDE names " + file.string() + ", which does not exist");
-        std::vector<std::string> inner = marc_deck_lines(file.string(), Depth + 1);
+        auto inner = marc_deck_lines(rSources, file.string(), Depth + 1);
         out.insert(out.end(), std::make_move_iterator(inner.begin()),
                    std::make_move_iterator(inner.end()));
     }
     return out;
 }
 
-std::int64_t marc_int(const std::string& rText, const char* pLabel, const std::string& rWhere) {
-    return detail::card_to_int(marc_trim(rText), " (" + rWhere + ")", pLabel);
+std::int64_t marc_int(std::string_view rText, const char* pLabel, const std::string& rWhere) {
+    return detail::card_to_int_view(marc_trim_view(rText), " (" + rWhere + ")", pLabel);
 }
 
-double marc_real(const std::string& rText, const char* pLabel, const std::string& rWhere) {
-    return detail::card_to_real(marc_trim(rText), " (" + rWhere + ")", pLabel);
+double marc_real(std::string_view rText, const char* pLabel, const std::string& rWhere) {
+    return detail::card_to_real_view(marc_trim_view(rText), " (" + rWhere + ")", pLabel);
 }
 
 // The fields of a deck's data line: comma-separated (free format), or fixed
 // columns of Width up to the last non-blank one.
-std::vector<std::string> marc_fields(std::string_view Line, std::size_t Width) {
-    std::vector<std::string> out;
+std::vector<std::string_view> marc_fields(std::string_view Line, std::size_t Width) {
+    std::vector<std::string_view> out;
     if (Line.find(',') != std::string_view::npos) {
         std::size_t pos = 0;
         for (;;) {
             const std::size_t comma = Line.find(',', pos);
-            out.push_back(marc_trim(Line.substr(
+            out.push_back(marc_trim_view(Line.substr(
                 pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos)));
             if (comma == std::string_view::npos)
                 break;
@@ -275,9 +275,9 @@ std::vector<std::string> marc_fields(std::string_view Line, std::size_t Width) {
             out.pop_back();  // a lone item is followed by a comma
         return out;
     }
-    const std::string body = marc_rstrip(Line);
+    const std::string_view body = marc_rstrip(Line);
     for (std::size_t k = 0; k < body.size(); k += Width)
-        out.push_back(marc_trim(std::string_view(body).substr(k, Width)));
+        out.push_back(marc_trim_view(body.substr(k, Width)));
     return out;
 }
 
@@ -324,7 +324,7 @@ struct MarcDeck {
     std::size_t RealWidth() const { return mExtended ? 20 : 10; }
 };
 
-std::size_t marc_next_data(const std::vector<std::string>& rLines, std::size_t I) {
+std::size_t marc_next_data(const std::vector<std::string_view>& rLines, std::size_t I) {
     while (I < rLines.size() && marc_is_comment(rLines[I]))
         ++I;
     return I;
@@ -334,7 +334,7 @@ std::string marc_where(std::size_t I) {
     return "line " + std::to_string(I + 1);
 }
 
-std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& rLines,
+std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string_view>& rLines,
                               std::size_t I) {
     I = marc_next_data(rLines, I);
     if (I < rLines.size() && marc_is_data(rLines[I]))
@@ -371,7 +371,7 @@ std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& r
                                         std::to_string(el.mNodes.size()) + " of its " +
                                         std::to_string(known->mNodes) + " nodes");
             where = marc_where(I);
-            for (const std::string& v : marc_fields(rLines[I], width))
+            for (const auto v : marc_fields(rLines[I], width))
                 el.mNodes.push_back(marc_int(v, kMarcDat, where));
             ++I;
         }
@@ -380,15 +380,15 @@ std::size_t marc_connectivity(MarcDeck& rDeck, const std::vector<std::string>& r
     }
 }
 
-std::vector<std::string> marc_slices(std::string_view Body, std::size_t Width) {
-    std::vector<std::string> out;
-    const std::string body = marc_rstrip(Body);
+std::vector<std::string_view> marc_slices(std::string_view Body, std::size_t Width) {
+    std::vector<std::string_view> out;
+    const std::string_view body = marc_rstrip(Body);
     for (std::size_t k = 0; k < body.size(); k += Width)
         out.push_back(body.substr(k, Width));
     return out;
 }
 
-std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rLines,
+std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string_view>& rLines,
                              std::size_t I) {
     I = marc_next_data(rLines, I);
     if (I < rLines.size() && marc_is_data(rLines[I])) {
@@ -404,9 +404,9 @@ std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rL
         if (I >= rLines.size() || !marc_is_data(rLines[I]))
             return I;
         const std::string where = marc_where(I);
-        const std::string& line = rLines[I];
+        const std::string_view line = rLines[I];
         std::int64_t ident = 0;
-        std::vector<std::string> values;
+        std::vector<std::string_view> values;
         if (line.find(',') != std::string::npos) {
             const auto f = marc_fields(line, iw);
             ident = marc_int(f[0], kMarcDat, where);
@@ -421,7 +421,7 @@ std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rL
             I = marc_next_data(rLines, I);
             if (I >= rLines.size() || !marc_is_data(rLines[I]))
                 break;
-            const std::string& more = rLines[I];
+            const std::string_view more = rLines[I];
             const auto extra =
                 more.find(',') != std::string::npos ? marc_fields(more, rw) : marc_slices(more, rw);
             values.insert(values.end(), extra.begin(), extra.end());
@@ -439,7 +439,7 @@ std::size_t marc_coordinates(MarcDeck& rDeck, const std::vector<std::string>& rL
     }
 }
 
-bool marc_all_digits(const std::string& rText) {
+bool marc_all_digits(std::string_view rText) {
     return !rText.empty() && std::all_of(rText.begin(), rText.end(), [](char c) {
         return std::isdigit(static_cast<unsigned char>(c));
     });
@@ -449,10 +449,10 @@ bool marc_all_digits(const std::string& rText) {
 // integers split apart); `c` or `continue` last means more lines follow.
 std::vector<std::string> marc_set_tokens(std::string_view Text, std::size_t Width) {
     std::vector<std::string> out;
-    for (const std::string& tok : marc_words(Text)) {
+    for (const auto tok : marc_words(Text)) {
         if (marc_all_digits(tok) && tok.size() > Width && tok.size() % Width == 0) {
             for (std::size_t k = 0; k < tok.size(); k += Width)
-                out.push_back(tok.substr(k, Width));
+                out.emplace_back(tok.substr(k, Width));
         } else {
             out.push_back(marc_lower(tok));
         }
@@ -467,14 +467,15 @@ bool marc_is_integer(const std::string& rText) {
     return k < rText.size() && marc_all_digits(rText.substr(k));
 }
 
-std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines, std::size_t I) {
+std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string_view>& rLines,
+                        std::size_t I) {
     const std::string where = marc_where(I);
     const auto raw = marc_words(rLines[I]);
     const std::string kind = raw.size() > 1 ? marc_lower(raw[1]) : "";
     std::size_t k = 2;
     if (raw.size() > k && (marc_lower(raw[k]) == "set" || marc_lower(raw[k]) == "oset"))
         ++k;
-    const std::string name = raw.size() > k ? raw[k] : "";
+    const std::string name(raw.size() > k ? raw[k] : std::string_view());
     std::unordered_set<std::string> earlier;
     for (const MarcSet& s : rDeck.mSets)
         earlier.insert(marc_lower(s.mName));
@@ -484,7 +485,7 @@ std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines,
         I = marc_next_data(rLines, I);
         if (I >= rLines.size())
             break;
-        const std::string& line = rLines[I];
+        const std::string_view line = rLines[I];
         const auto items = marc_set_tokens(line, rDeck.IntWidth());
         // The first data line starts with a number or an earlier set's name;
         // later ones follow a line that ended in C (continue).
@@ -533,19 +534,20 @@ std::size_t marc_define(MarcDeck& rDeck, const std::vector<std::string>& rLines,
     return I;
 }
 
-MarcDeck marc_parse_deck(const std::vector<std::string>& rLines) {
+MarcDeck marc_parse_deck(const std::vector<std::string_view>& rLines) {
     MarcDeck deck;
     std::size_t i = 0;
     bool in_parameters = true;
     while (i < rLines.size()) {
-        const std::string& line = rLines[i];
+        const std::string_view line = rLines[i];
         if (marc_is_comment(line) || marc_is_data(line) || line.empty() || line[0] == ' ' ||
             line[0] == '\t') {
             ++i;
             continue;
         }
-        const auto words = marc_words(marc_lower(line));
-        const std::string key = words.empty() ? "" : words[0];
+        const std::string lower = marc_lower(line);
+        const auto words = marc_words(lower);
+        const std::string key(words.empty() ? std::string_view() : words[0]);
         const bool end_option = key == "end" && words.size() > 1 && words[1] == "option";
         if (in_parameters) {
             if (key == "extended") {
@@ -601,7 +603,7 @@ std::vector<std::int64_t> marc_expand(
         }
     };
     const auto number = [&](const std::string& rText) {
-        return detail::card_to_int(rText, " (set '" + rName + "')", pLabel);
+        return detail::card_to_int_view(rText, " (set '" + rName + "')", pLabel);
     };
     std::size_t k = 0;
     while (k < rTokens.size()) {
@@ -837,11 +839,11 @@ Mesh marc_build(const char* pLabel, const std::vector<std::int64_t>& rNodeIds,
 
 constexpr std::size_t kMarcW = 13;  // the post file's column width (i13, e13.6)
 
-std::vector<std::int64_t> marc_ints_of(const std::string& rLine, const std::string& rWhere) {
+std::vector<std::int64_t> marc_ints_of(std::string_view rLine, const std::string& rWhere) {
     std::vector<std::int64_t> out;
-    const std::string body = marc_rstrip(rLine);
+    const std::string_view body = marc_rstrip(rLine);
     for (std::size_t k = 0; k < body.size(); k += kMarcW) {
-        const std::string field = marc_trim(std::string_view(body).substr(k, kMarcW));
+        const std::string_view field = marc_trim_view(body.substr(k, kMarcW));
         if (!field.empty())
             out.push_back(marc_int(field, kMarcT19, rWhere));
     }
@@ -850,9 +852,9 @@ std::vector<std::int64_t> marc_ints_of(const std::string& rLine, const std::stri
 
 std::vector<double> marc_reals_of(std::string_view Line, const std::string& rWhere) {
     std::vector<double> out;
-    const std::string body = marc_rstrip(Line);
+    const std::string_view body = marc_rstrip(Line);
     for (std::size_t k = 0; k < body.size(); k += kMarcW) {
-        const std::string field = marc_trim(std::string_view(body).substr(k, kMarcW));
+        const std::string_view field = marc_trim_view(body.substr(k, kMarcW));
         if (!field.empty())
             out.push_back(marc_real(field, kMarcT19, rWhere));
     }
@@ -870,10 +872,10 @@ struct MarcBlock {
 // Reads a block's lines as Fortran records: each record starts a line.
 class MarcRecords {
 public:
-    MarcRecords(const std::vector<std::string>& rLines, const MarcBlock& rBlock)
+    MarcRecords(const std::vector<std::string_view>& rLines, const MarcBlock& rBlock)
         : mrLines(rLines), mI(rBlock.mBegin), mEnd(rBlock.mEnd) {}
 
-    const std::string& Line() {
+    std::string_view Line() {
         if (mI >= mEnd)
             marc_fail(kMarcT19, "a block ends early (line " + std::to_string(mI + 1) + ")");
         return mrLines[mI++];
@@ -901,7 +903,7 @@ public:
     }
 
 private:
-    const std::vector<std::string>& mrLines;
+    const std::vector<std::string_view>& mrLines;
     std::size_t mI, mEnd;
 };
 
@@ -913,7 +915,7 @@ struct MarcIncrement {
 
 class MarcPost {
 public:
-    explicit MarcPost(const std::string& rPath) : mLines(marc_lines(rPath, kMarcT19)) {
+    explicit MarcPost(const std::string& rPath) : mLines(marc_lines(mSources, rPath, kMarcT19)) {
         if (mLines.empty() || mLines[0].rfind("=beg=501", 0) != 0)
             marc_fail(kMarcT19, "not a Marc formatted post file (no =beg=501 title block)");
         std::vector<MarcBlock> blocks;
@@ -974,7 +976,7 @@ public:
                 MarcRecords r = Reader(b);
                 for (std::int64_t k = 0; k < rLm[0]; ++k) {
                     const std::string where = r.Where();
-                    const std::string& line = r.Line();
+                    const std::string_view line = r.Line();
                     const std::int64_t code =
                         marc_int(line.substr(0, std::min(kMarcW, line.size())), kMarcT19, where);
                     const std::string label =
@@ -1009,7 +1011,7 @@ public:
             } else if (family == 508) {
                 for (std::int64_t k = 0; k < numnp; ++k) {
                     const std::string where = r.Where();
-                    const std::string& line = r.Line();
+                    const std::string_view line = r.Line();
                     const std::int64_t ident =
                         marc_int(line.substr(0, std::min(kMarcW, line.size())), kMarcT19, where);
                     std::vector<double> values =
@@ -1039,7 +1041,7 @@ public:
                     count = rLm[15];
                 }
                 for (std::int64_t s = 0; s < count; ++s) {
-                    const std::string& line = r.Line();
+                    const std::string_view line = r.Line();
                     const std::string name =
                         marc_trim(std::string_view(line).substr(0, std::min(width, line.size())));
                     const auto head = r.Ints(2);
@@ -1102,7 +1104,8 @@ public:
     const std::vector<std::vector<MarcBlock>>& Increments() const { return mIncrements; }
 
 private:
-    std::vector<std::string> mLines;
+    std::deque<detail::FileSource> mSources;
+    std::vector<std::string_view> mLines;
     std::vector<MarcBlock> mModel;
     std::vector<std::vector<MarcBlock>> mIncrements;
 };
@@ -1249,7 +1252,7 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
         if (family == 524) {
             const std::int64_t nnqnod = r.Ints(2)[0];
             for (std::int64_t q = 0; q < nnqnod; ++q) {
-                const std::string& line = r.Line();
+                const std::string_view line = r.Line();
                 const std::string name = marc_trim(
                     std::string_view(line).substr(0, std::min<std::size_t>(48, line.size())));
                 const auto ivec = r.Ints(12);
@@ -1333,8 +1336,9 @@ bool is_marc_deck(std::string_view Head) {
         pos = eol + 1;
         if (stripped.empty() || stripped[0] == '$')
             continue;
-        const auto words = marc_words(marc_lower(stripped));
-        const std::string word = words.empty() ? "" : words[0];
+        const std::string lower = marc_lower(stripped);
+        const auto words = marc_words(lower);
+        const std::string word(words.empty() ? std::string_view() : words[0]);
         if (first) {
             if (stripped.find('=') != std::string::npos || !marc_is_parameter(word))
                 return false;
@@ -1350,9 +1354,10 @@ bool is_marc_deck(std::string_view Head) {
 }
 
 Mesh read_marc(const std::string& rPath) {
-    const std::vector<std::string> lines = marc_deck_lines(rPath);
+    std::deque<detail::FileSource> sources;
+    const auto lines = marc_deck_lines(sources, rPath);
     std::string head;
-    for (const std::string& line : lines) {
+    for (const auto line : lines) {
         if (head.size() >= 65536)
             break;
         head += line;
@@ -1539,11 +1544,12 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3)
             volume = true;
     }
+    const detail::DoubleView point_values(points);
     bool flat = pdim < 3;
     if (!flat) {
         flat = true;
         for (std::size_t p = 0; p < npts && flat; ++p)
-            flat = detail::read_double(points, p * pdim + 2) == 0.0;
+            flat = point_values[p * pdim + 2] == 0.0;
     }
     const bool planar = !volume && flat;
     const auto cell_array_ok = [&](const std::string& rName) {
@@ -1561,10 +1567,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         const bool ragged = cb.IsRagged();
         const std::int64_t fallback = marcw_default_type(type, planar);
         const std::size_t nodes = ragged ? 0 : cb.NodesPerCell();
+        std::optional<detail::Int64View> types;
+        if (!ragged && has_type)
+            types.emplace(rMesh.CellData("marc:type", b));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::int64_t etype = 0;
-            if (!ragged && has_type) {
-                const std::int64_t want = detail::read_int(rMesh.CellData("marc:type", b), r);
+            if (types) {
+                const std::int64_t want = (*types)[r];
                 if (const MarcType* known = marc_type(want)) {
                     const std::string kind(known->mCell);
                     if ((kind == type && known->mNodes == nodes) ||
@@ -1607,9 +1616,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     if (has_element) {
         std::set<std::int64_t> seen;
         bool ok = true;
+        // One view per block of `marc:element`, made on first use.
+        std::vector<std::optional<detail::Int64View>> element_views(rMesh.NumCellBlocks());
         for (const std::size_t c : written) {
-            const std::int64_t id =
-                detail::read_int(rMesh.CellData("marc:element", cells[c].mBlock), cells[c].mRow);
+            auto& view = element_views[cells[c].mBlock];
+            if (!view)
+                view.emplace(rMesh.CellData("marc:element", cells[c].mBlock));
+            const std::int64_t id = (*view)[cells[c].mRow];
             ok = ok && id > 0 && seen.insert(id).second;
             ids.push_back(id);
         }
@@ -1686,12 +1699,13 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         }
         const NDArray& rows = rMesh.FieldData(name);
         std::vector<std::string> items;
+        const detail::Int64View row_values(rows);
         for (std::size_t q = 0; q + 1 < rows.Size(); q += 2) {
-            const std::int64_t c = detail::read_int(rows, q);
+            const std::int64_t c = row_values[q];
             const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
             if (it != elem_id.end())
                 items.push_back(" " + std::to_string(it->second) + ":" +
-                                std::to_string(detail::read_int(rows, q + 1)));
+                                std::to_string(row_values[q + 1]));
         }
         const std::string set_name = marcw_set_name(
             name.substr(std::string("marc:").size() + family.size() + 5), used_names);
@@ -1719,12 +1733,17 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     out.push_back("end");
     out.push_back("connectivity");
     out.push_back(marcw_i10s({static_cast<std::int64_t>(written.size()), 0, 1}, 0, 3));
+    // One view per block of connectivity, made on first use.
+    std::vector<std::optional<detail::Int64View>> conn_views(rMesh.NumCellBlocks());
     for (const std::size_t c : written) {
         const auto cb = rMesh.Cells(cells[c].mBlock);
         const std::size_t k = cb.NodesPerCell();
         std::vector<std::int64_t> nodes(k);
+        auto& conn_view = conn_views[cells[c].mBlock];
+        if (!conn_view)
+            conn_view.emplace(cb.Conn());
         for (std::size_t q = 0; q < k; ++q)
-            nodes[q] = detail::read_int(cb.Conn(), cells[c].mRow * k + q) + 1;
+            nodes[q] = (*conn_view)[cells[c].mRow * k + q] + 1;
         const std::int64_t etype = cells[c].mType;
         if (std::string(marc_type(etype)->mCell) == "hexahedron" && cb.Type() != "hexahedron") {
             const auto brick = detail::expand_brick(cb.Type(), nodes.data());
@@ -1746,7 +1765,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
         std::string line;
         marcw_i10(line, static_cast<std::int64_t>(p + 1));
         for (std::size_t d = 0; d < 3; ++d)
-            marcw_real20(line, d < pdim ? detail::read_double(points, p * pdim + d) : 0.0);
+            marcw_real20(line, d < pdim ? point_values[p * pdim + d] : 0.0);
         out.push_back(std::move(line));
     }
     for (const MarcwSet& set : sets) {

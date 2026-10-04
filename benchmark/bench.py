@@ -83,19 +83,33 @@ FORMATS = [
 # (6 (n-1)^3 tetrahedra: about 20k, 250k and 1M).
 SIZES = {"S": 16, "M": 36, "L": 56}
 
+# These formats reject the mixed conformance mesh, but accept the harness's
+# single-type input. Keep this explicit rather than treating unknown ("?")
+# conformance cells as proven round trips.
+SINGLE_TYPE_INPUTS = {"mfm": "volume", "gmsh": "volume"}
+POINT_FIELD_INPUTS = {"dex": "benchmark:field"}
+
 
 def all_formats():
     """One spec per format meshio++ both writes and reads back, by input kind.
 
     Returns ``[(format, kind)]`` with kind ``"volume"``, ``"surface"`` or
     ``"points"`` -- the largest thing the format's conformance declaration
-    says survives a round trip. Formats it records as failing, write-only or
-    lossy on every cell are left out.
+    says survives a round trip, plus explicitly tested single-type exceptions
+    in ``SINGLE_TYPE_INPUTS`` and required nodal-field inputs in
+    ``POINT_FIELD_INPUTS``. Other failing, write-only or entirely lossy
+    formats are left out.
     """
     import conformance_spec as cs
 
     out = []
     for fmt, spec in sorted(cs.SPEC.items()):
+        if fmt in POINT_FIELD_INPUTS:
+            out.append((fmt, "points"))
+            continue
+        if fmt in SINGLE_TYPE_INPUTS:
+            out.append((fmt, SINGLE_TYPE_INPUTS[fmt]))
+            continue
         if "points" not in spec:
             continue
         kept = {t for t, o in spec["cells"].items() if o in ("exact", "reordered")}
@@ -205,6 +219,19 @@ def _inputs(size):
     }
 
 
+def _input_for_format(mesh, fmt):
+    """Supply required fields without mutating shared geometry-only inputs."""
+    if fmt not in POINT_FIELD_INPUTS:
+        return mesh
+    return pp.Mesh(
+        mesh.points,
+        [(block.type, block.data) for block in mesh.cells],
+        point_data={
+            POINT_FIELD_INPUTS[fmt]: np.arange(len(mesh.points), dtype=np.float64)
+        },
+    )
+
+
 def run_all(sizes=("S",), formats=None, repeats=3):
     """Time a write and a read of every registry format; returns records."""
     import conformance_spec as cs
@@ -216,7 +243,7 @@ def run_all(sizes=("S",), formats=None, repeats=3):
         for fmt, kind in all_formats():
             if wanted and fmt not in wanted:
                 continue
-            mesh = meshes[kind]
+            mesh = _input_for_format(meshes[kind], fmt)
             with tempfile.TemporaryDirectory() as tmp:
                 path = cs._target(pathlib.Path(tmp), fmt)
                 if path.suffix == "":

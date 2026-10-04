@@ -11,6 +11,12 @@ The [MSC/NX Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42
 
 ## Reading & writing
 
+Native logical-card fields/chunks view the stable source, including adjacent 16-column large fields. Tolerated mixed fixed/free continuations whose chunks are noncontiguous retain owned concatenations in stable storage; returned names/regions remain owned. See the [deck-token comparison](../benchmarks.md#remaining-deck-token-views), including direct tests of 300 mixed-format joins and unchanged writer bytes.
+
+The native reader views mapped/buffered source lines, while reassembled logical cards and names remain owned. Numeric and continuation behavior and writer bytes are unchanged; see the [deck-line comparison](../benchmarks.md#abaqus-ansys-coded-databases-marc-nastran-and-netgen-deck-line-batch).
+
+Short numeric fields now use private terminated buffers with the same D/implicit-exponent, range and error behavior as the installed owning card API, with an owned long-field fallback. The [shared-card evidence](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers) retains neutral timing results; logical cards remain owned.
+
 ```python
 import meshioplusplus
 

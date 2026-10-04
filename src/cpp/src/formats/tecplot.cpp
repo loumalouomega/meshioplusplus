@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <map>
 #include <memory>
 #include <set>
@@ -53,6 +54,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
@@ -75,17 +77,7 @@ std::string tecplot_strip(const std::string& rS) {
     std::size_t e = rS.find_last_not_of(" \t\r\n");
     return rS.substr(b, e - b + 1);
 }
-/// Data tokens: Tecplot separates values by blanks or commas.
-std::vector<std::string> tecplot_tokens(std::string S) {
-    std::replace(S.begin(), S.end(), ',', ' ');
-    std::vector<std::string> out;
-    auto iss = detail::make_classic_istringstream(S);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
-}
-/// tecplot_tokens as views into @p Line (appended to @p rOut, cleared first):
+/// Data tokens as views into @p Line (appended to @p rOut, cleared first):
 /// blanks and commas separate values, as replacing the commas with blanks
 /// and splitting on whitespace did.
 void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& rOut) {
@@ -105,7 +97,7 @@ void tecplot_tokens_view(std::string_view Line, std::vector<std::string_view>& r
     }
 }
 
-/// How many tokens tecplot_tokens gives for @p Line, without building them.
+/// How many tokens tecplot_tokens_view gives for @p Line, without building them.
 std::size_t tecplot_count_tokens(std::string_view Line) {
     std::size_t count = 0;
     bool in_token = false;
@@ -2345,13 +2337,15 @@ TecplotWriteFaces tecplot_write_faces(const TCellView& rCb) {
             }
         return out;
     }
-    const NDArray* pConn = rCb.IsRagged() ? nullptr : &rCb.Conn();
+    std::optional<detail::Int64View> conn_values;
+    if (!rCb.IsRagged())
+        conn_values.emplace(rCb.Conn());
     const std::size_t k = rCb.IsRagged() ? 0 : rCb.NodesPerCell();
     for (std::size_t c = 0; c < n; ++c) {
         std::vector<std::int64_t> row;
-        if (pConn) {
+        if (conn_values) {
             for (std::size_t j = 0; j < k; ++j)
-                row.push_back(detail::read_int(*pConn, c * k + j));
+                row.push_back((*conn_values)[c * k + j]);
         } else {
             row.assign(rCb.Row(c), rCb.Row(c) + rCb.RowSize(c));
         }
@@ -2387,6 +2381,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t dim = rMesh.PointDim();
     const std::size_t num_nodes = rMesh.NumPoints();
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
 
     // Shared (nodal) variables: X, Y, (Z), then every point-data variable.
     std::vector<std::string> variables = {"X", "Y"};
@@ -2396,7 +2391,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     auto push_point_col = [&](std::size_t comp) {
         std::vector<double> col(num_nodes);
         for (std::size_t r = 0; r < num_nodes; ++r)
-            col[r] = detail::read_double(points, r * dim + comp);
+            col[r] = point_values[r * dim + comp];
         shared_data.push_back(std::move(col));
     };
     push_point_col(0);
@@ -2409,11 +2404,12 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             continue;
         const NDArray& v = rMesh.PointData(k);
         std::size_t ncomp = v.Shape().size() >= 2 ? v.Shape()[1] : 1;
+        const detail::DoubleView v_values(v);
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
             std::vector<double> col(num_nodes);
             for (std::size_t r = 0; r < num_nodes; ++r)
-                col[r] = detail::read_double(v, r * ncomp + c);
+                col[r] = v_values[r * ncomp + c];
             shared_data.push_back(std::move(col));
         }
     }
@@ -2537,8 +2533,9 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             const CellVarComp& cv = cell_vars[j];
             const NDArray& vv = rMesh.CellData(cv.mKey, block);
             std::vector<double> col(vv.Shape()[0]);
+            const detail::DoubleView vv_values(vv);
             for (std::size_t r = 0; r < vv.Shape()[0]; ++r)
-                col[r] = detail::read_double(vv, r * cv.mNumComp + cv.mComp);
+                col[r] = vv_values[r * cv.mNumComp + cv.mComp];
             write_column(col);
         }
 
@@ -2562,15 +2559,15 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             write_ints(faces.mRight);
             continue;
         }
-        const NDArray& conn = cb.Conn();
-        const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < num_cells; ++r) {
             for (std::size_t j = 0; j < order.size(); ++j) {
                 std::size_t src = static_cast<std::size_t>(order[j]);
                 if (src >= k)
                     src = k - 1;
-                os << (detail::read_int(conn, r * k + src) + 1)
-                   << (j + 1 == order.size() ? '\n' : ' ');
+                os << (conn[r * k + src] + 1) << (j + 1 == order.size() ? '\n' : ' ');
             }
         }
     }

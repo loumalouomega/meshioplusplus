@@ -22,6 +22,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -39,6 +40,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -353,10 +355,11 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 
     const NDArray& points = rMesh.Points();
     char buf[48];
+    const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < num_nodes; ++i) {
         os << (i + 1);
         for (int c = 0; c < 3; ++c) {
-            double v = (std::size_t(c) < dim) ? detail::read_double(points, i * dim + c) : 0.0;
+            double v = (std::size_t(c) < dim) ? point_values[i * dim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
             os << buf;
         }
@@ -371,17 +374,18 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         if (it == meshio_to_avsucd_type().end())
             throw WriteError("AVS-UCD writer: unsupported cell type " + cb.Type());
         const std::vector<int>& perm = meshio_to_avsucd_order(cb.Type());
-        const NDArray& conn = cb.Conn();
-        std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
-        const NDArray* mat = nullptr;
+        const NDArray& conn_array = cb.Conn();
+        std::size_t n = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+        const detail::Int64View conn(conn_array);
+        std::optional<detail::Int64View> mat;
         if (!mat_key.empty())
-            mat = &rMesh.CellData(mat_key, bi);
+            mat.emplace(rMesh.CellData(mat_key, bi));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            std::int64_t m = mat ? detail::read_int(*mat, r) : 0;
+            std::int64_t m = mat ? (*mat)[r] : 0;
             os << (gi + 1) << " " << m << " " << it->second;
             for (std::size_t j = 0; j < n; ++j) {
                 std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                os << " " << (detail::read_int(conn, r * n + src) + 1);
+                os << " " << (conn[r * n + src] + 1);
             }
             os << "\n";
             ++gi;
@@ -413,24 +417,35 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         std::vector<std::string> names;
         for (auto& p : ndata)
             names.push_back(p.first);
+        std::vector<std::optional<detail::DoubleView>> node_values(ndata.size());
+        for (std::size_t a = 0; a < ndata.size(); ++a)
+            node_values[a].emplace(*ndata[a].second);
         write_section(num_nodes, nsize, names, [&](std::size_t a, std::size_t e, int c) {
-            const NDArray* arr = ndata[a].second;
             std::size_t sz = static_cast<std::size_t>(nsize[a]);
-            return detail::read_double(*arr, e * sz + c);
+            return (*node_values[a])[e * sz + c];
         });
     }
     if (csum > 0) {
         // Flatten each cell-data name across blocks for global indexing.
+        // One view per (name, block), made on first use: an element finds its
+        // block by walking the counts, so only the blocks it passes are built.
+        std::vector<std::vector<std::optional<detail::DoubleView>>> cell_values(cdata.size());
+        for (std::size_t a = 0; a < cdata.size(); ++a)
+            cell_values[a] =
+                std::vector<std::optional<detail::DoubleView>>(rMesh.CellDataNumBlocks(cdata[a]));
         write_section(num_cells, csize, cdata, [&](std::size_t a, std::size_t e, int c) {
             const std::string& name = cdata[a];
             std::size_t sz = static_cast<std::size_t>(csize[a]);
             std::size_t idx = e;
-            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            const std::size_t nblocks = cell_values[a].size();
             for (std::size_t bi = 0; bi < nblocks; ++bi) {
                 const NDArray& blk = rMesh.CellData(name, bi);
                 std::size_t bcount = blk.Shape().empty() ? 0 : blk.Shape()[0];
-                if (idx < bcount)
-                    return detail::read_double(blk, idx * sz + c);
+                if (idx < bcount) {
+                    if (!cell_values[a][bi])
+                        cell_values[a][bi].emplace(blk);
+                    return (*cell_values[a][bi])[idx * sz + c];
+                }
                 idx -= bcount;
             }
             return 0.0;

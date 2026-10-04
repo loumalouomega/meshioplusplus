@@ -13,6 +13,10 @@ meshio++ reads the mesh (nodes, elements, parts and sets) and nothing else. Mate
 
 ## Reading & writing
 
+The native reader views source lines and block records while each recursive include's source remains alive. It retains the original delimiter split's final empty record and returns owned names/arrays. Writer bytes and card behavior are unchanged; see the [line-view evidence](../benchmarks.md#ls-dyna-radioss-card-fields-and-gid-quoted-tokens).
+
+Card fields and keyword-name pieces also use views, with private bounded numeric counterparts to the installed owning card API. Standard/long/I10 widths, comma padding, D/implicit exponents, range checks and error messages are preserved; see the [shared-card evidence](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers).
+
 ```python
 import meshioplusplus
 

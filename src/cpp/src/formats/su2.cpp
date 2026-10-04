@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -43,6 +44,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -508,6 +510,15 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     const std::vector<std::string> vtypes = su2_vtypes(Dim);
     const std::vector<std::string> btypes = su2_btypes(Dim);
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
+    // One view per block, made on first use: a zone's cells name few blocks.
+    std::vector<std::optional<detail::Int64View>> conn_views(rMesh.NumCellBlocks());
+    std::vector<std::optional<detail::Int64View>> tag_views(rMesh.NumCellBlocks());
+    const auto conn_of = [&](std::size_t Block) -> const detail::Int64View& {
+        if (!conn_views[Block])
+            conn_views[Block].emplace(rMesh.Cells(Block).Conn());
+        return *conn_views[Block];
+    };
 
     // Point remap: identity (whole mesh, original order) unless Subset, in
     // which case only the cells in rCells' own points are written, renumbered
@@ -526,10 +537,11 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     if (Subset) {
         for (const auto& [block, row] : rCells) {
             const auto cb = rMesh.Cells(block);
-            const NDArray& conn = cb.Conn();
-            const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+            const NDArray& conn_array = cb.Conn();
+            const std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+            const detail::Int64View& conn = conn_of(block);
             for (std::size_t j = 0; j < k; ++j)
-                remap_of(detail::read_int(conn, static_cast<std::size_t>(row) * k + j));
+                remap_of(conn[static_cast<std::size_t>(row) * k + j]);
         }
     } else {
         old_ids.resize(rMesh.NumPoints());
@@ -542,26 +554,28 @@ void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
     for (std::int64_t old_id : old_ids) {
         for (std::size_t c = 0; c < Dim; ++c) {
             char buf[64];
-            detail::snprintf_c(
-                buf, sizeof(buf), "%.16e",
-                detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                               point_values[static_cast<std::size_t>(old_id) * Dim + c]);
             rOs << buf << (c + 1 == Dim ? '\n' : ' ');
         }
     }
 
     auto write_cell = [&](std::size_t block, std::int64_t row) {
         const auto cb = rMesh.Cells(block);
-        const NDArray& conn = cb.Conn();
-        const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+        const detail::Int64View& conn = conn_of(block);
         rOs << meshio_to_su2(cb.Type());
         for (std::size_t j = 0; j < k; ++j)
-            rOs << " " << remap_of(detail::read_int(conn, static_cast<std::size_t>(row) * k + j));
+            rOs << " " << remap_of(conn[static_cast<std::size_t>(row) * k + j]);
         rOs << "\n";
     };
     auto tag_of = [&](std::size_t block, std::int64_t row) -> std::int64_t {
         if (rTagKey.empty())
             return 1;
-        return detail::read_int(rMesh.CellData(rTagKey, block), static_cast<std::size_t>(row));
+        if (!tag_views[block])
+            tag_views[block].emplace(rMesh.CellData(rTagKey, block));
+        return (*tag_views[block])[static_cast<std::size_t>(row)];
     };
 
     std::size_t nelem = 0;
@@ -608,11 +622,11 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     bool has_zone_data = rMesh.HasCellData("su2:zone");
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
         const auto cb = rMesh.Cells(bi);
+        std::optional<detail::Int64View> zones;
+        if (has_zone_data)
+            zones.emplace(rMesh.CellData("su2:zone", bi));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int32_t zone =
-                has_zone_data
-                    ? static_cast<std::int32_t>(detail::read_int(rMesh.CellData("su2:zone", bi), r))
-                    : 0;
+            const std::int32_t zone = zones ? static_cast<std::int32_t>((*zones)[r]) : 0;
             by_zone[zone].emplace_back(bi, static_cast<std::int64_t>(r));
         }
     }

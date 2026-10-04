@@ -11,6 +11,8 @@ The [PERMAS](https://www.intes.de) data-file format: `$`-delimited keyword secti
 
 ## Reading & writing
 
+The native reader views mapped/buffered source lines and body tokens, preserving keyword handling, numeric-prefix parsing and writer bytes. Returned arrays/names are owned; see the [line-view benchmark](../benchmarks.md#dex-ip-flux-and-permas-line-view-batch).
+
 ```python
 import meshioplusplus
 

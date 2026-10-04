@@ -28,6 +28,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -50,6 +51,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
@@ -1342,7 +1344,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
                 dropped[type] += cb.NumCells();
             continue;
         }
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         const detail::NodeOrder* order = detail::node_order("libmesh", type);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
@@ -1352,7 +1354,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
             LmOutElem el{code, static_cast<std::int64_t>(g), {}};
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
-                el.mNodes.push_back(detail::read_int(conn, r * k + src));
+                el.mNodes.push_back(conn[r * k + src]);
             }
             elem_of[g] = static_cast<std::int64_t>(elems.size());
             elems.push_back(std::move(el));
@@ -1376,8 +1378,11 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
         std::set<std::int64_t> unique;
         std::vector<std::int64_t> v(np);
         bool ok = ids.Size() == np;
+        std::optional<detail::Int64View> id_values;
+        if (ok)
+            id_values.emplace(ids);
         for (std::size_t p = 0; ok && p < np; ++p) {
-            v[p] = detail::read_int(ids, p);
+            v[p] = (*id_values)[p];
             ok = v[p] >= 0 && unique.insert(v[p]).second;
         }
         if (ok) {
@@ -1391,9 +1396,11 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     std::vector<std::int64_t> sid(ncells, 0);
     std::map<std::int64_t, std::string> subdomain_names;
     if (rMesh.HasCellData("libmesh:subdomain")) {
-        for (std::size_t b = 0; b < nb; ++b)
+        for (std::size_t b = 0; b < nb; ++b) {
+            const detail::Int64View subdomains_of_block(rMesh.CellData("libmesh:subdomain", b));
             for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r)
-                sid[start[b] + r] = detail::read_int(rMesh.CellData("libmesh:subdomain", b), r);
+                sid[start[b] + r] = subdomains_of_block[r];
+        }
         for (const Region* pReg : subdomains)
             if (pReg->mTag >= 0 && pReg->mName != "subdomain_" + std::to_string(pReg->mTag))
                 subdomain_names.emplace(pReg->mTag, pReg->mName);
@@ -1423,6 +1430,14 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
                              std::to_string(sid[static_cast<std::size_t>(el.mCell)]) +
                              " is outside libMesh's 0..65534");
     const bool write_p = rMesh.HasCellData("libmesh:p_level");
+    // One view per block of `libmesh:p_level`, made on first use and shared by
+    // the tree and flat writers (only the blocks of written cells are touched).
+    std::vector<std::optional<detail::Int64View>> p_levels(write_p ? nb : 0);
+    const auto p_level_of = [&](std::size_t Block, std::size_t Index) {
+        if (!p_levels[Block])
+            p_levels[Block].emplace(rMesh.CellData("libmesh:p_level", Block));
+        return (*p_levels[Block])[Index];
+    };
 
     // Boundary ids: one id space for side, edge and shell-face sets.
     std::int64_t next_bid = 0;
@@ -1508,13 +1523,17 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
                 pReg->mName.substr(0, pReg->mName.size() - std::string_view(kLmEdgeSuffix).size());
             const std::int64_t id = boundary_id(pReg, base);
             const std::int64_t* e = pReg->mEntries.As<std::int64_t>();
+            // One view per block, made on first use: a region names few blocks.
+            std::vector<std::optional<detail::Int64View>> block_conn(nb);
             for (std::size_t k = 0; k < pReg->mEntries.Size(); ++k) {
                 const std::size_t b = block_of(e[k]);
-                const NDArray& conn = rMesh.Cells(b).Conn();
+                if (!block_conn[b])
+                    block_conn[b].emplace(rMesh.Cells(b).Conn());
+                const detail::Int64View& conn = *block_conn[b];
                 const std::size_t w = rMesh.Cells(b).NodesPerCell();
                 const std::size_t r = static_cast<std::size_t>(e[k]) - start[b];
-                const std::int64_t n0 = detail::read_int(conn, r * w);
-                const std::int64_t n1 = detail::read_int(conn, r * w + 1);
+                const std::int64_t n0 = conn[r * w];
+                const std::int64_t n1 = conn[r * w + 1];
                 const auto it = edge_owner.find({std::min(n0, n1), std::max(n0, n1)});
                 if (it == edge_owner.end()) {
                     edges_unmatched.push_back({std::min(n0, n1), std::max(n0, n1), id});
@@ -1571,12 +1590,17 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
         bool ok = nt > 0 && w > 0;
         std::vector<bool> has_child(nt, false);
         int last_level = 0;
+        std::optional<detail::Int64View> tree_values, node_values;
+        if (ok) {
+            tree_values.emplace(t);
+            node_values.emplace(tn);
+        }
         for (std::size_t r = 0; ok && r < nt; ++r) {
-            LmTreeRow row{detail::read_int(t, 5 * r),
-                          detail::read_int(t, 5 * r + 1),
-                          detail::read_int(t, 5 * r + 2),
-                          detail::read_int(t, 5 * r + 3),
-                          detail::read_int(t, 5 * r + 4),
+            LmTreeRow row{(*tree_values)[5 * r],
+                          (*tree_values)[5 * r + 1],
+                          (*tree_values)[5 * r + 2],
+                          (*tree_values)[5 * r + 3],
+                          (*tree_values)[5 * r + 4],
                           0,
                           {}};
             const LmType* type =
@@ -1584,7 +1608,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
             ok = type && type->mNodes > 0 && row.mParent >= -1 &&
                  row.mParent < static_cast<std::int64_t>(r) && row.mSid >= 0 && row.mSid <= 65534;
             for (std::size_t k = 0; ok && k < w; ++k) {
-                const std::int64_t v = detail::read_int(tn, r * w + k);
+                const std::int64_t v = (*node_values)[r * w + k];
                 if (v < 0)
                     break;
                 ok = static_cast<std::size_t>(v) < np;
@@ -1644,12 +1668,12 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
                 kids[static_cast<std::size_t>(tree[r].mParent)].push_back(r);
                 leaf[static_cast<std::size_t>(tree[r].mParent)] = false;
             }
-        const NDArray& pts_in = rMesh.Points();
+        const detail::DoubleView pts_in(rMesh.Points());
         const std::size_t dim = rMesh.PointDim();
         auto point = [&](std::int64_t P) {
             LmPoint q{0.0, 0.0, 0.0};
             for (std::size_t d = 0; d < dim && d < 3; ++d)
-                q[d] = detail::read_double(pts_in, static_cast<std::size_t>(P) * dim + d);
+                q[d] = pts_in[static_cast<std::size_t>(P) * dim + d];
             return q;
         };
         auto leaves = [&](std::size_t Root) {
@@ -1854,8 +1878,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
                 rec.push_back(sid[c]);
                 if (write_p) {
                     const std::size_t b = block_of(row.mCell);
-                    rec.push_back(
-                        detail::read_int(rMesh.CellData("libmesh:p_level", b), c - start[b]));
+                    rec.push_back(p_level_of(b, c - start[b]));
                 }
             } else {
                 rec.push_back(row.mSid);
@@ -1877,7 +1900,7 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
         std::vector<std::int64_t> rec{el.mCode, sid[c]};
         if (write_p) {
             const std::size_t b = block_of(el.mCell);
-            rec.push_back(detail::read_int(rMesh.CellData("libmesh:p_level", b), c - start[b]));
+            rec.push_back(p_level_of(b, c - start[b]));
         }
         for (std::int64_t n : el.mNodes)
             rec.push_back(node_id[static_cast<std::size_t>(n)]);
@@ -1889,12 +1912,11 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     // elements use, so the value is never looked at).
     std::vector<double> coords(3 * static_cast<std::size_t>(max_node_id),
                                xdr ? std::numeric_limits<double>::quiet_NaN() : 0.0);
-    const NDArray& pts = rMesh.Points();
+    const detail::DoubleView pts(rMesh.Points());
     const std::size_t pd = rMesh.PointDim();
     for (std::size_t p = 0; p < np; ++p)
         for (std::size_t d = 0; d < 3; ++d)
-            coords[3 * static_cast<std::size_t>(node_id[p]) + d] =
-                d < pd ? detail::read_double(pts, p * pd + d) : 0.0;
+            coords[3 * static_cast<std::size_t>(node_id[p]) + d] = d < pd ? pts[p * pd + d] : 0.0;
     io.Reals(coords.data(), coords.size());
     io.Scalar(0, "# presence of unique ids", 4);
 

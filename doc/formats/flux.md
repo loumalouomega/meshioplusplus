@@ -11,6 +11,8 @@ The [Altair FLUX](https://www.altair.com/flux/) `.pf3` mesh format (as handled b
 
 ## Reading & writing
 
+The native reader views mapped/buffered source lines and body tokens, reusing one record-token buffer. Numeric-prefix handling and writer bytes are unchanged, and returned arrays are owned; see the [line-view benchmark](../benchmarks.md#dex-ip-flux-and-permas-line-view-batch).
+
 ```python
 import meshioplusplus
 

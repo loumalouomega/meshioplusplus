@@ -20,6 +20,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -29,6 +30,8 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -54,25 +57,44 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
     return rText.substr(p, e - p);
 }
 
+// Preserve the reader's lenient numeric prefix and D-exponent normalization
+// without copying each ordinary numeric token into an owning string.
+double dex_real_token(std::string_view Text) {
+    if (Text.find_first_of("Dd") == std::string_view::npos)
+        return detail::parse_double_prefix(Text);
+    char small[96];
+    std::string large;
+    char* first;
+    if (Text.size() < sizeof small) {
+        Text.copy(small, Text.size());
+        small[Text.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Text);
+        first = large.data();
+    }
+    for (std::size_t i = 0; i < Text.size(); ++i)
+        if (first[i] == 'D' || first[i] == 'd')
+            first[i] = 'E';
+    const char* end = nullptr;
+    return detail::parse_double(first, end);
+}
+
 }  // namespace
 
 Mesh read_dex(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    auto lines = detail::split_lines(source.View());
+    for (auto& line : lines) {
         // Files written in text mode on Windows use CRLF; the file is opened
         // in binary mode here (no newline translation) and std::getline only
         // splits on '\n', so strip a trailing '\r' explicitly.
         if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        lines.push_back(line);
+            line.remove_suffix(1);
     }
 
     // header = first two non-empty lines
-    std::vector<std::string> header;
+    std::vector<std::string_view> header;
     std::size_t body_start = 0;
     for (std::size_t i = 0; i < lines.size(); ++i) {
         if (lines[i].find_first_not_of(" \t\r") != std::string::npos)
@@ -82,9 +104,9 @@ Mesh read_dex(const std::string& rPath) {
             break;
         }
     }
-    std::string head = header.empty() ? std::string() : header[0];
+    std::string head(header.empty() ? std::string_view() : header[0]);
     if (header.size() > 1)
-        head += " " + header[1];
+        head += " " + std::string(header[1]);
 
     std::string field = header_value(head, "FORMULA");
     if (field.empty())
@@ -98,16 +120,12 @@ Mesh read_dex(const std::string& rPath) {
         npoint_s.empty() ? 0 : static_cast<std::size_t>(std::atoll(npoint_s.c_str()));
 
     std::vector<std::vector<double>> rows;
+    std::vector<std::string_view> tokens;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        detail::TextStream iss(lines[i]);
+        detail::split_blanks(lines[i], tokens);
         std::vector<double> r;
-        std::string tok;
-        while (iss >> tok) {
-            for (char& c : tok)
-                if (c == 'D' || c == 'd')
-                    c = 'E';
-            r.push_back(detail::parse_double(tok));
-        }
+        for (const auto token : tokens)
+            r.push_back(dex_real_token(token));
         if (!r.empty())
             rows.push_back(std::move(r));
         if (npoint && rows.size() >= npoint)
@@ -162,14 +180,16 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
     f << "# NAME = PIECE FORMULA = " << field << "\n";
     f << "NB_REAL = 1 NB_COMP = " << ncomp << " NB_POINT = " << n << " #\n";
     char buf[64];
+    const detail::DoubleView point_values(points);
+    const detail::DoubleView arr_values(arr);
     for (std::size_t r = 0; r < n; ++r) {
         for (int c = 0; c < kDim; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, r * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[r * pdim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%.16g", v);
             f << buf << (c + 1 < kDim ? " " : "");
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
-            detail::snprintf_c(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g", arr_values[r * ncomp + c]);
             f << buf;
         }
         f << "\n";

@@ -33,6 +33,8 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
+#include "../detail/open_source.hpp"
 
 namespace meshioplusplus {
 
@@ -86,13 +88,8 @@ const std::vector<int>* write_reorder(const std::string& rType) {
     return nullptr;
 }
 
-std::vector<std::string> permas_split_ws(const std::string& rS) {
-    std::vector<std::string> out;
-    detail::TextStream iss(rS);
-    std::string t;
-    while (iss >> t)
-        out.push_back(t);
-    return out;
+std::vector<std::string_view> permas_split_ws(std::string_view rS) {
+    return detail::split_blanks(rS);
 }
 
 std::string permas_upper(std::string s) {
@@ -102,25 +99,20 @@ std::string permas_upper(std::string s) {
 }
 
 // "$COOR" -> "COOR", "$ELEMENT TYPE=QUAD4" -> "ELEMENT TYPE=QUAD4" (uppercased).
-std::string keyword_of(const std::string& rLine) {
+std::string keyword_of(std::string_view rLine) {
     std::size_t a = 0, b = rLine.size();
     while (a < b && (rLine[a] == '$' || std::isspace(static_cast<unsigned char>(rLine[a]))))
         ++a;
     while (b > a && (rLine[b - 1] == '$' || std::isspace(static_cast<unsigned char>(rLine[b - 1]))))
         --b;
-    return permas_upper(rLine.substr(a, b - a));
+    return permas_upper(std::string(rLine.substr(a, b - a)));
 }
 
 }  // namespace
 
 Mesh read_permas(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        lines.push_back(line);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const auto lines = detail::split_lines(source.View());
 
     Mesh mesh;
     std::vector<double> points;
@@ -131,7 +123,7 @@ Mesh read_permas(const std::string& rPath) {
     std::size_t pos = 0;
     const std::size_t n = lines.size();
     while (pos < n) {
-        const std::string& cur = lines[pos];
+        const std::string_view cur = lines[pos];
         if (!cur.empty() && cur[0] == '!') {
             ++pos;
             continue;
@@ -140,22 +132,22 @@ Mesh read_permas(const std::string& rPath) {
         ++pos;
         if (kw.rfind("COOR", 0) == 0) {
             while (pos < n) {
-                const std::string& l = lines[pos];
+                const std::string_view l = lines[pos];
                 if (!l.empty() && (l[0] == '!' || l[0] == '$'))
                     break;
-                std::vector<std::string> e = permas_split_ws(l);
+                const auto e = permas_split_ws(l);
                 if (e.empty()) {
                     ++pos;
                     continue;
                 }
-                std::int64_t gid = std::strtoll(e[0].c_str(), nullptr, 10);
+                std::int64_t gid = detail::strtoll_token(e[0]);
                 point_gids[gid] = pindex++;
                 if (points.empty())
                     ncoord = e.size() - 1;
                 if (ncoord == 0 || e.size() - 1 != ncoord)
                     throw ReadError("PERMAS: node rows with different coordinate counts");
                 for (std::size_t j = 1; j < e.size(); ++j)
-                    points.push_back(detail::parse_double(e[j]));
+                    points.push_back(detail::parse_double_prefix(e[j]));
                 ++pos;
             }
         } else if (kw.rfind("ELEMENT", 0) == 0) {
@@ -163,9 +155,9 @@ Mesh read_permas(const std::string& rPath) {
             std::size_t eq = kw.find('=');
             if (eq == std::string::npos)
                 throw ReadError("PERMAS: $ELEMENT without TYPE=");
-            std::string etype = permas_upper(permas_split_ws(kw.substr(eq + 1)).empty()
-                                                 ? std::string()
-                                                 : permas_split_ws(kw.substr(eq + 1))[0]);
+            const auto type_tokens = permas_split_ws(std::string_view(kw).substr(eq + 1));
+            std::string etype =
+                permas_upper(type_tokens.empty() ? std::string() : std::string(type_tokens[0]));
             auto tit = permas_to_meshio().find(etype);
             if (tit == permas_to_meshio().end())
                 throw ReadError("PERMAS: element type not available: " + etype);
@@ -174,10 +166,10 @@ Mesh read_permas(const std::string& rPath) {
             std::vector<std::vector<std::int64_t>> rows;
             std::vector<std::int64_t> acc;  // accumulates across "!" continuation lines
             while (pos < n) {
-                const std::string& l = lines[pos];
+                const std::string_view l = lines[pos];
                 if (!l.empty() && l[0] == '$')
                     break;
-                std::vector<std::string> e = permas_split_ws(l);
+                const auto e = permas_split_ws(l);
                 if (e.empty()) {
                     ++pos;
                     continue;
@@ -187,7 +179,7 @@ Mesh read_permas(const std::string& rPath) {
                 bool continued = (e.back() == "!");
                 std::size_t last = continued ? e.size() - 1 : e.size();
                 for (std::size_t j = 1; j < last; ++j)
-                    acc.push_back(point_gids.at(std::strtoll(e[j].c_str(), nullptr, 10)));
+                    acc.push_back(point_gids.at(detail::strtoll_token(e[j])));
                 if (!continued) {
                     rows.push_back(std::move(acc));
                     acc.clear();
@@ -227,6 +219,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t npts = rMesh.NumPoints();
     const std::size_t pdim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
+    const detail::DoubleView point_values(points);
 
     f << "!PERMAS DataFile Version 18.0\n";
     f << detail::provenance_render_lines(detail::SlotTier::Block, "! ");
@@ -237,7 +230,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t i = 0; i < npts; ++i) {
         f << (i + 1);
         for (int c = 0; c < 3; ++c) {
-            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
             f << " " << buf;
         }
@@ -253,6 +246,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
         f << "$ELEMENT TYPE=" << tit->second << "\n";
         const std::vector<int>* reorder = write_reorder(cb.Type());
         const NDArray& conn = cb.Conn();
+        const detail::Int64View indices(conn);
         const std::size_t ncols = detail::cols(conn);
         const std::size_t nc = cb.NumCells();
         for (std::size_t r = 0; r < nc; ++r) {
@@ -260,10 +254,10 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
             f << eid;
             if (reorder) {
                 for (int local : *reorder)
-                    f << " " << (detail::read_int(conn, r * ncols + local) + 1);
+                    f << " " << (indices[r * ncols + local] + 1);
             } else {
                 for (std::size_t j = 0; j < ncols; ++j)
-                    f << " " << (detail::read_int(conn, r * ncols + j) + 1);
+                    f << " " << (indices[r * ncols + j] + 1);
             }
             f << "\n";
         }

@@ -23,6 +23,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -33,6 +34,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -90,7 +92,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        detail::TextStream iss(line.substr(b, e - b));
+        detail::TextStream iss(std::string_view(line).substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {
@@ -194,10 +196,11 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
 
     os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     char buf[96];
+    const detail::DoubleView point_values(points);
     for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
-        double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
-        double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
+        double x = (0 < dim) ? point_values[r * dim + 0] : 0.0;
+        double y = (1 < dim) ? point_values[r * dim + 1] : 0.0;
+        double z = (2 < dim) ? point_values[r * dim + 2] : 0.0;
         detail::snprintf_c(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
@@ -207,10 +210,11 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
             return;
         const NDArray& d = rMesh.PointData(key);
         std::size_t nc = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
+        const detail::DoubleView values(d);
         for (std::size_t r = 0; r < (d.Shape().empty() ? 0 : d.Shape()[0]); ++r) {
             os << tag;
             for (std::size_t c = 0; c < nc; ++c) {
-                detail::snprintf_c(buf, sizeof(buf), " %.17g", detail::read_double(d, r * nc + c));
+                detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * nc + c]);
                 os << buf;
             }
             os << '\n';
@@ -220,12 +224,13 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     write_pd("obj:vt", "vt");
 
     for (const auto cb : rMesh.CellRange()) {
-        const NDArray& conn = cb.Conn();
-        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const NDArray& conn_array = cb.Conn();
+        std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << 'f';
             for (std::size_t j = 0; j < k; ++j)
-                os << ' ' << (detail::read_int(conn, r * k + j) + 1);
+                os << ' ' << (conn[r * k + j] + 1);
             os << '\n';
         }
     }

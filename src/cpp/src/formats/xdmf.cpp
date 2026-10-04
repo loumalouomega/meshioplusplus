@@ -50,6 +50,7 @@
 #include "meshioplusplus/region.hpp"
 
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
@@ -248,8 +249,9 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
     std::vector<int> types;
     std::vector<std::size_t> offsets;
     std::size_t r = 0;
+    const detail::Int64View flat_values(rFlat);
     while (r < n) {
-        int xt = static_cast<int>(detail::read_int(rFlat, r));
+        int xt = static_cast<int>(flat_values[r]);
         types.push_back(xt);
         offsets.push_back(r);
         const auto nn = static_cast<std::size_t>(xdmf_idx_num_nodes(xt));
@@ -259,7 +261,7 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         const std::size_t head = (xt == 1 || xt == 2) ? 2 : 1;
         if (r + head + nn > n)
             throw ReadError("XDMF: mixed topology ends inside a cell");
-        if (head == 2 && static_cast<std::size_t>(detail::read_int(rFlat, r + 1)) != nn)
+        if (head == 2 && static_cast<std::size_t>(flat_values[r + 1]) != nn)
             throw ReadError(xt == 1 ? "XDMF: only 1-point polyvertices supported"
                                     : "XDMF: only 2-point lines supported");
         r += head + nn;
@@ -283,7 +285,7 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
                 const std::size_t base = offsets[start + b] + head;
                 for (int j = 0; j < nn; ++j) {
                     if constexpr (std::is_floating_point_v<T>)
-                        dp[b * nn + j] = detail::read_int(rFlat, base + j);
+                        dp[b * nn + j] = detail::typed_view_int<T>(src[base + j]);
                     else
                         dp[b * nn + j] = static_cast<std::int64_t>(src[base + j]);
                 }
@@ -343,8 +345,12 @@ double xdmf_step_time(const pugi::xml_node& rStep) {
 
 std::vector<std::int64_t> xdmf_int_values(const NDArray& rArr) {
     std::vector<std::int64_t> out(rArr.Size());
-    for (std::size_t i = 0; i < out.size(); ++i)
-        out[i] = detail::read_int(rArr, i);
+    // One dtype switch for the array, and no converted copy beside `out`.
+    detail::dispatch_dtype(rArr.Dtype(), [&]<class T>() {
+        const T* src = rArr.As<T>();
+        for (std::size_t i = 0; i < out.size(); ++i)
+            out[i] = detail::typed_view_int<T>(src[i]);
+    });
     return out;
 }
 

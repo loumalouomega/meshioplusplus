@@ -11,6 +11,10 @@ The [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODR
 
 ## Reading & writing
 
+Native comma fields and data-section rows are source views, with nested include buffers kept alive through parsing and returned names/sets copied into owned storage. Lenient native numeric prefixes and trailing-empty comma semantics are unchanged; see the [deck-token evidence](../benchmarks.md#remaining-deck-token-views). This does not extend the Python reference's cross-include id-map behavior.
+
+The native reader views mapped/buffered source lines, keeping each include source alive through its recursive parse. Data-section rows, names and returned arrays remain owned. Writer bytes and parsing behavior are unchanged; see the [deck-line comparison](../benchmarks.md#abaqus-ansys-coded-databases-marc-nastran-and-netgen-deck-line-batch).
+
 ```python
 import meshioplusplus
 

@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -54,6 +55,7 @@
 #include "face_cells_common.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace fs = std::filesystem;
 
@@ -944,7 +946,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    detail::TextStream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    detail::TextStream ss(rText.substr(lp + 1, rp - lp - 1));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -957,8 +959,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 /// buffer rather than a text view.
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
-    const std::string text_owned(rText);
-    detail::TextStream ss(text_owned);
+    detail::TextStream ss(rText);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
@@ -1828,6 +1829,12 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
                 : nullptr;
 
         std::vector<std::int64_t> ids;
+        std::optional<detail::Int64View> conn_values;
+        if (!cb.IsRagged())
+            conn_values.emplace(cb.Conn());
+        std::optional<detail::Int64View> tag_values;
+        if (tags)
+            tag_values.emplace(*tags);
         for (std::size_t i = 0; i < cb.NumCells(); ++i) {
             ids.clear();
             if (cb.IsRagged()) {
@@ -1837,7 +1844,7 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
             } else {
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t k = 0; k < npc; ++k)
-                    ids.push_back(detail::read_int(cb.Conn(), i * npc + k));
+                    ids.push_back((*conn_values)[i * npc + k]);
             }
             const std::int64_t fid = lookup.Find(ids.data(), ids.size());
             if (fid < 0) {
@@ -1854,8 +1861,8 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
             if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
                 continue;  // first claim wins
             std::int64_t fam = 0;
-            if (tags && i < tags->Shape()[0])
-                fam = detail::read_int(*tags, i);
+            if (tag_values && i < tags->Shape()[0])
+                fam = (*tag_values)[i];
             const auto it = fam_to_patch.find(fam);
             if (fam < 0 && it != fam_to_patch.end())
                 out.mFacePatch[static_cast<std::size_t>(fid)] =

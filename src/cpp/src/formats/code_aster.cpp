@@ -41,6 +41,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -579,11 +580,11 @@ void write_code_aster(const std::string& rPath, const Mesh& rMesh) {
     out += "COOR_" + std::to_string(pdim == 0 ? 3 : pdim) + "D\n";
     const NDArray& points = rMesh.Points();
     const std::size_t npts = rMesh.NumPoints();
+    const detail::DoubleView point_values(points);
     for (std::size_t p = 0; p < npts; ++p) {
         ca_append(out, column, "N" + std::to_string(p + 1));
         for (std::size_t d = 0; d < pdim; ++d) {
-            detail::snprintf_c(buf, sizeof(buf), "%.16E",
-                               detail::read_double(points, p * pdim + d));
+            detail::snprintf_c(buf, sizeof(buf), "%.16E", point_values[p * pdim + d]);
             ca_append(out, column, buf);
         }
         ca_end_record(out, column);
@@ -596,7 +597,7 @@ void write_code_aster(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
         const CaTypeSpec* spec = specs[b];
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = spec->mNodes;
         const detail::NodeOrder* order = detail::node_order("code_aster", spec->mType);
         out += spec->mKeyword;
@@ -605,8 +606,7 @@ void write_code_aster(const std::string& rPath, const Mesh& rMesh) {
             ca_append(out, column, "M" + std::to_string(++label));
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
-                ca_append(out, column,
-                          "N" + std::to_string(detail::read_int(conn, r * k + src) + 1));
+                ca_append(out, column, "N" + std::to_string(conn[r * k + src] + 1));
             }
             ca_end_record(out, column);
         }

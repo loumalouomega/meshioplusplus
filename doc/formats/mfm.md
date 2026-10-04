@@ -20,6 +20,8 @@ meshioplusplus.mfm.write("out.mfm", mesh, float_fmt=".16e")
 
 - **`float_fmt`** (default `".16e"`) — coordinate format string.
 
+The native reader uses `FileSource` and bounded token views instead of owning a string per body token; large regular files can be [memory-mapped](../mmap.md), with a buffered fallback. Returned arrays always own their storage. Header parsing, the native reader's existing lenient numeric-prefix behavior and the writer's bytes are unchanged; see the [measured comparison](../benchmarks.md#mfm-bounded-token-views).
+
 ## File structure
 
 ```

@@ -11,6 +11,10 @@ The [Netgen](https://github.com/ngsolve/netgen) neutral mesh format (`.vol`), pl
 
 ## Reading & writing
 
+Native whitespace tokens and normalized data rows view the original or gzip-inflated buffer until parsing completes; field/region names and result arrays remain owned. Numeric-prefix handling and writer bytes are unchanged. The [deck-token evidence](../benchmarks.md#remaining-deck-token-views) measures ordinary ASCII meshes; gzip ownership is separately fixture-tested.
+
+The native reader views mapped/buffered source lines or the owned inflated gzip buffer, preserving concatenated gzip members, metadata and count bounds. Names and returned arrays remain owned; writer bytes are unchanged. See the [deck-line comparison](../benchmarks.md#abaqus-ansys-coded-databases-marc-nastran-and-netgen-deck-line-batch), which measures uncompressed inputs.
+
 ```python
 import meshioplusplus
 

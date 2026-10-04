@@ -33,8 +33,10 @@
  * and a token parses in place with the semantics the readers used before:
  * `parse_double_token` is `parse_double` over the whole token, and
  * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
- * accepted, an out-of-range value saturated. Roadmap §3, "A shared tokenizer
- * and number path".
+ * accepted, an out-of-range value saturated. `TextCursor` shares bounded line
+ * and prefix-number positioning; `RecordCursor` traverses split records while
+ * format adapters retain their comments, quoting and diagnostics. Roadmap §3,
+ * "A shared tokenizer and number path".
  */
 
 // System includes
@@ -42,10 +44,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cerrno>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <span>
 #include <system_error>
+#include <type_traits>
 #include <vector>
 
 // Project includes
@@ -58,6 +64,150 @@ namespace detail {
 inline bool text_is_blank(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
+
+/**
+ * @brief Core-private byte cursor shared by format-specific grammar adapters.
+ * Lines and prefix numbers stay bounded even when the source has no terminator.
+ * A prefix parse advances only through the accepted prefix, not the whole token.
+ */
+class TextCursor {
+public:
+    explicit TextCursor(std::string_view Text) : mBuf(Text) {}
+    template <class T>
+        requires(std::is_same_v<std::remove_cvref_t<T>, std::string> &&
+                 !std::is_lvalue_reference_v<T>)
+    explicit TextCursor(T&&) = delete;
+    bool AtEnd() const { return mPos >= mBuf.size(); }
+    std::size_t Pos() const { return mPos; }
+    void Seek(std::size_t Pos) { mPos = Pos; }
+    std::string_view Data() const { return mBuf; }
+
+    std::string_view Line(bool StripCr = false) {
+        if (AtEnd())
+            return {};
+        const auto eol = mBuf.find('\n', mPos);
+        const auto end = eol == std::string_view::npos ? mBuf.size() : eol;
+        auto line = mBuf.substr(mPos, end - mPos);
+        mPos = eol == std::string_view::npos ? end : end + 1;
+        if (StripCr && !line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        return line;
+    }
+
+    bool DoublePrefix(double& rValue) {
+#ifdef MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS
+        auto pos = NumberStart();
+        if (pos < mBuf.size() && mBuf[pos] == '+')
+            ++pos;
+        const auto hex = pos < mBuf.size() && mBuf[pos] == '-' ? pos + 1 : pos;
+        const bool hexadecimal = hex + 1 < mBuf.size() && mBuf[hex] == '0' &&
+                                 (mBuf[hex + 1] == 'x' || mBuf[hex + 1] == 'X');
+        if (pos < mBuf.size() && !hexadecimal) {
+            double value = 0.0;
+            const auto parsed =
+                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), value);
+            if (parsed.ec == std::errc{}) {
+                rValue = value;
+                mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
+                return true;
+            }
+        }
+#endif
+        // Hexadecimal, out-of-range and platform fallback paths use the exact
+        // locale-independent C parser over a bounded, terminated copy.
+        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
+            return parse_double(pFirst, rpEnd);
+        });
+    }
+    bool IntPrefix(std::int64_t& rValue) {
+        auto pos = NumberStart();
+        const bool negative = pos < mBuf.size() && mBuf[pos] == '-';
+        if (pos < mBuf.size() && (mBuf[pos] == '+' || negative))
+            ++pos;
+        if (pos < mBuf.size() && mBuf[pos] >= '0' && mBuf[pos] <= '9') {
+            std::uint64_t magnitude = 0;
+            const auto parsed =
+                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), magnitude);
+            constexpr auto maximum =
+                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+            if (parsed.ec == std::errc::result_out_of_range ||
+                magnitude > maximum + (negative ? 1u : 0u)) {
+                rValue = negative ? std::numeric_limits<std::int64_t>::min()
+                                  : std::numeric_limits<std::int64_t>::max();
+                errno = ERANGE;  // the saturating strtoll contract
+            } else {
+                rValue = negative ? static_cast<std::int64_t>(0 - magnitude)
+                                  : static_cast<std::int64_t>(magnitude);
+            }
+            mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
+            return true;
+        }
+        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
+            char* end = nullptr;
+            const auto value = std::strtoll(pFirst, &end, 10);
+            rpEnd = end;
+            return static_cast<std::int64_t>(value);
+        });
+    }
+
+    // Binary-aware adapters retain direct checked byte positioning.
+    std::string_view mBuf;
+    std::size_t mPos = 0;
+
+private:
+    std::size_t NumberStart() const {
+        auto first = mPos;
+        while (first < mBuf.size() && text_is_blank(mBuf[first]))
+            ++first;
+        return first;
+    }
+
+    template <class T, class Parser>
+    bool NumberPrefix(T& rValue, Parser Parse) {
+        const auto first = NumberStart();
+        if (first >= mBuf.size())
+            return false;
+        std::size_t last = first;
+        while (last < mBuf.size() && !text_is_blank(mBuf[last]))
+            ++last;
+        const auto token = mBuf.substr(first, last - first);
+        char small[64];
+        std::string large;
+        const char* start;
+        if (token.size() < sizeof small) {
+            token.copy(small, token.size());
+            small[token.size()] = '\0';
+            start = small;
+        } else {
+            large.assign(token);
+            start = large.c_str();
+        }
+        const char* end = nullptr;
+        const auto value = Parse(start, end);
+        if (end == start)
+            return false;
+        rValue = value;
+        mPos = first + static_cast<std::size_t>(end - start);
+        return true;
+    }
+};
+
+/// A non-owning cursor over already split records; grammar adapters check EOF.
+template <class T>
+class RecordCursor {
+public:
+    RecordCursor() = default;
+    explicit RecordCursor(std::span<const T> Records) : mRecords(Records) {}
+    bool Done() const { return mPos >= mRecords.size(); }
+    std::size_t Remaining() const { return Done() ? 0 : mRecords.size() - mPos; }
+    std::size_t Pos() const { return mPos; }
+    const T& Peek(std::size_t Ahead = 0) const { return mRecords[mPos + Ahead]; }
+    const T& Next() { return mRecords[mPos++]; }
+
+private:
+    std::span<const T> mRecords;
+    std::size_t mPos = 0;
+};
 
 /**
  * @brief The lines `std::getline` reads from @p Text, as views into it: split
@@ -258,6 +408,8 @@ inline double parse_double_prefix(std::string_view Token) {
 class TextStream {
 public:
     explicit TextStream(std::string_view Text) : mText(Text) {}
+    // A const temporary cannot be moved into mOwned; do not silently borrow it.
+    explicit TextStream(const std::string&&) = delete;
     explicit TextStream(const char* pText) : mText(pText ? pText : "") {}
     explicit TextStream(const std::string& rText) : mText(rText) {}
     /// A temporary is kept, so the view never outlives it.

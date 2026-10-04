@@ -11,6 +11,8 @@ The Patran 2 neutral file is MSC Patran's legacy ASCII interchange format. Patra
 
 ## Reading & writing
 
+Native fixed-card fields use private views and bounded numeric buffers, preserving widths, Fortran exponents, range checks and error messages; the installed owning card API, result arrays/names and writer bytes are unchanged. The [shared-card comparison](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers) measures neutral meshes, not separate result files.
+
 ```python
 import meshioplusplus
 
@@ -83,6 +85,8 @@ Linear cells, `line3`, `triangle6`, `triangle7`, `quad8`, `quad9`, `tetra10` and
 A truncated packet, a malformed field, a node or element id defined twice, or an element that names an undefined node raise `ReadError`, naming the line. A component that names undefined entities, or entities of a type other than node and element, is read without them, with a warning. A file with no `99` packet is read to the end with a warning.
 
 ## Notes
+
+Native text-result header extraction uses `TextStream` over a bounded view, preserving the result layout selection and numeric semantics. Mesh/result behavior and writer bytes are unchanged. The [stream-batch measurements](../benchmarks.md#ensight-vtk-ansys-patran-and-tecplot-stream-batch) cover mesh-only I/O, not result-header performance; direct native and Python result tests cover the migration.
 
 - **Verification.** Patran, Cubit and ANSA were not available. The reader and writer follow the Patran 2 Neutral File guide and the Element Library, and the generated fixtures are written from them. Real exports were then read (v16.11.0): P3/PATRAN 3.0 and PATRAN 2.5 files from WARP3D's examples (hexahedra) and Tahoe's benchmarks (quadrilaterals with named components; a 2,409-node model with bars, 9-node quadrilaterals and seven components), and a CUBIT 13.2 export (node sets, no end packet). Every cell is positively oriented and the components land on the right entities; the 9-node quadrilaterals are why `quad9` and `triangle7` were added. Three of them are committed under `tests/python/meshes/patran/real/` with their licences. No ANSA or HyperMesh export was found.
 - The pyramid shape code (`6`) and the component entity code for a pyramid (`10`) come from Patran's results template, not from the packet 02 documentation.

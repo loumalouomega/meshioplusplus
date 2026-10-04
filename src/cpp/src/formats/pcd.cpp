@@ -26,6 +26,8 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <deque>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -44,6 +46,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -258,7 +261,7 @@ std::string pcd_upper(std::string s) {
     return s;
 }
 
-std::string pcd_strip(const std::string& rS) {
+std::string_view pcd_strip(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
         ++b;
@@ -267,8 +270,8 @@ std::string pcd_strip(const std::string& rS) {
     return rS.substr(b, e - b);
 }
 
-std::vector<std::string> pcd_words(const std::string& rS) {
-    std::vector<std::string> out;
+std::vector<std::string_view> pcd_words(std::string_view rS) {
+    std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rS.size()) {
         while (i < rS.size() && std::isspace(static_cast<unsigned char>(rS[i])))
@@ -283,12 +286,33 @@ std::vector<std::string> pcd_words(const std::string& rS) {
     return out;
 }
 
-bool pcd_parse_int(const std::string& rTok, long long& rOut) {
+// Bounded, terminated numeric token for the existing errno-sensitive C parses.
+// Keep long-token and embedded-NUL behavior without storing every token as a string.
+class PcdNumberToken {
+public:
+    explicit PcdNumberToken(std::string_view Token) : mSize(Token.size()) {
+        if (mSize < sizeof mSmall) {
+            Token.copy(mSmall, mSize);
+            mSmall[mSize] = '\0';
+        } else {
+            mLarge.assign(Token);
+        }
+    }
+    const char* Data() const { return mSize < sizeof mSmall ? mSmall : mLarge.c_str(); }
+
+private:
+    std::size_t mSize;
+    char mSmall[64];
+    std::string mLarge;
+};
+
+bool pcd_parse_int(std::string_view rTok, long long& rOut) {
     if (rTok.empty())
         return false;
+    const PcdNumberToken tok(rTok);
     errno = 0;
     char* end = nullptr;
-    rOut = std::strtoll(rTok.c_str(), &end, 10);
+    rOut = std::strtoll(tok.Data(), &end, 10);
     return errno == 0 && *end == '\0';
 }
 
@@ -309,18 +333,18 @@ struct PcdHeader {
 };
 
 PcdHeader pcd_parse_header(std::string_view rRaw) {
-    std::unordered_map<std::string, std::vector<std::string>> header;
+    std::unordered_map<std::string, std::vector<std::string_view>> header;
     std::size_t pos = 0;
     for (;;) {
         const std::size_t end = rRaw.find('\n', pos);
         if (end == std::string::npos)
             throw ReadError("PCD: no DATA line found in the header");
-        const std::string line = pcd_strip(std::string(rRaw.substr(pos, end - pos)));
+        const std::string_view line = pcd_strip(rRaw.substr(pos, end - pos));
         pos = end + 1;
         if (line.empty() || line[0] == '#')
             continue;
-        std::vector<std::string> words = pcd_words(line);
-        const std::string key = pcd_upper(words[0]);
+        auto words = pcd_words(line);
+        const std::string key = pcd_upper(std::string(words[0]));
         words.erase(words.begin());
         header[key] = std::move(words);
         if (key == "DATA")
@@ -331,18 +355,18 @@ PcdHeader pcd_parse_header(std::string_view rRaw) {
     h.mBody = pos;
     if (!header.count("FIELDS"))
         throw ReadError("PCD: the header has no FIELDS line");
-    h.mFields = header["FIELDS"];
+    h.mFields.assign(header["FIELDS"].begin(), header["FIELDS"].end());
     const std::size_t nfields = h.mFields.size();
-    const std::vector<std::string> sizes = header["SIZE"], types = header["TYPE"];
-    const std::vector<std::string> counts =
-        header.count("COUNT") ? header["COUNT"] : std::vector<std::string>(nfields, "1");
+    const auto sizes = header["SIZE"], types = header["TYPE"];
+    const auto counts =
+        header.count("COUNT") ? header["COUNT"] : std::vector<std::string_view>(nfields, "1");
     if (!(sizes.size() == nfields && types.size() == nfields && counts.size() == nfields))
         throw ReadError("PCD: FIELDS, SIZE, TYPE and COUNT disagree on the field count");
     for (std::size_t i = 0; i < nfields; ++i) {
         long long s = 0, c = 0;
         if (!pcd_parse_int(sizes[i], s) || !pcd_parse_int(counts[i], c) || s < 0 || c < 0)
             throw ReadError("PCD: malformed SIZE/COUNT in the header");
-        const std::string t = pcd_upper(types[i]);
+        const std::string t = pcd_upper(std::string(types[i]));
         h.mTypes.push_back(t.empty() ? '?' : t[0]);
         h.mSizes.push_back(static_cast<std::size_t>(s));
         h.mCounts.push_back(static_cast<std::size_t>(c));
@@ -380,14 +404,15 @@ PcdHeader pcd_parse_header(std::string_view rRaw) {
         if (vp->second.size() != 7)
             throw ReadError("PCD: VIEWPOINT needs 7 values (tx ty tz qw qx qy qz)");
         for (std::size_t i = 0; i < 7; ++i) {
+            const PcdNumberToken tok(vp->second[i]);
             const char* end = nullptr;
-            h.mViewpoint[i] = detail::parse_double(vp->second[i].c_str(), end);
-            if (end == vp->second[i].c_str() || *end != '\0')
+            h.mViewpoint[i] = detail::parse_double(tok.Data(), end);
+            if (end == tok.Data() || *end != '\0')
                 throw ReadError("PCD: malformed VIEWPOINT");
         }
     }
 
-    std::string mode = header["DATA"].empty() ? "" : header["DATA"][0];
+    std::string mode(header["DATA"].empty() ? std::string_view() : header["DATA"][0]);
     for (char& c : mode)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (mode != "ascii" && mode != "binary" && mode != "binary_compressed")
@@ -440,7 +465,6 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                         std::to_string(found));
 
     PcdColumns columns = pcd_make_columns(rH, npoints);
-    std::string tok;
     for (std::size_t i = 0; i < npoints; ++i) {
         for (std::size_t f = 0; f < columns.size(); ++f) {
             const DType dt = columns[f].Dtype();
@@ -450,13 +474,13 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                 const char* q = p;
                 while (q < end && !std::isspace(static_cast<unsigned char>(*q)))
                     ++q;
-                tok.assign(p, static_cast<std::size_t>(q - p));
+                const PcdNumberToken tok(std::string_view(p, static_cast<std::size_t>(q - p)));
                 p = q;
                 const std::size_t index = i * rH.mCounts[f] + e;
                 const char* stop = nullptr;
                 if (pcd_is_float(dt)) {
-                    const double v = detail::parse_double(tok.c_str(), stop);
-                    if (stop == tok.c_str() || *stop != '\0')
+                    const double v = detail::parse_double(tok.Data(), stop);
+                    if (stop == tok.Data() || *stop != '\0')
                         throw ReadError("PCD: non-numeric value in the ASCII data");
                     pcd_store(columns[f], index, v, 0);
                 } else {
@@ -464,9 +488,9 @@ PcdColumns pcd_read_ascii(const PcdHeader& rH, std::string_view rRaw, std::size_
                     char* istop = nullptr;
                     const long long v =
                         pcd_is_signed(dt)
-                            ? std::strtoll(tok.c_str(), &istop, 10)
-                            : static_cast<long long>(std::strtoull(tok.c_str(), &istop, 10));
-                    if (errno != 0 || istop == tok.c_str() || *istop != '\0')
+                            ? std::strtoll(tok.Data(), &istop, 10)
+                            : static_cast<long long>(std::strtoull(tok.Data(), &istop, 10));
+                    if (errno != 0 || istop == tok.Data() || *istop != '\0')
                         throw ReadError("PCD: non-numeric value in the ASCII data");
                     pcd_store(columns[f], index, 0.0, v);
                 }
@@ -548,12 +572,15 @@ NDArray pcd_unpack_colour(const NDArray& rColumn, char type, bool alpha) {
     const std::size_t n = rColumn.Shape()[0];
     NDArray out(DType::UInt8, {n, alpha ? std::size_t(4) : std::size_t(3)});
     std::uint8_t* dst = out.As<std::uint8_t>();
+    std::optional<detail::Int64View> integers;
+    if (type != 'F')
+        integers.emplace(rColumn);
     for (std::size_t i = 0; i < n; ++i) {
         std::uint32_t packed = 0;
         if (type == 'F')
             std::memcpy(&packed, rColumn.Data() + i * sizeof(float), sizeof(packed));
         else
-            packed = static_cast<std::uint32_t>(detail::read_int(rColumn, i));
+            packed = static_cast<std::uint32_t>((*integers)[i]);
         std::uint8_t* row = dst + i * (alpha ? 4 : 3);
         row[0] = static_cast<std::uint8_t>((packed >> 16) & 255);
         row[1] = static_cast<std::uint8_t>((packed >> 8) & 255);
@@ -562,6 +589,17 @@ NDArray pcd_unpack_colour(const NDArray& rColumn, char type, bool alpha) {
             row[3] = static_cast<std::uint8_t>((packed >> 24) & 255);
     }
     return out;
+}
+
+/// Column @p Axis of the (n, 3) array @p rOut from the one-value-per-point
+/// @p rColumn, converted as `read_double` converts, with the dtype switch taken
+/// once and no converted copy of a column that is already float32.
+void pcd_copy_column(NDArray& rOut, int Axis, const NDArray& rColumn, std::size_t n) {
+    detail::dispatch_dtype(rColumn.Dtype(), [&]<class T>() {
+        const T* src = rColumn.As<T>();
+        for (std::size_t i = 0; i < n; ++i)
+            pcd_store(rOut, i * 3 + static_cast<std::size_t>(Axis), static_cast<double>(src[i]), 0);
+    });
 }
 
 Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid) {
@@ -582,8 +620,7 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
     }
     NDArray points(single ? DType::Float32 : DType::Float64, {npoints, std::size_t(3)});
     for (int a = 0; a < 3; ++a)
-        for (std::size_t i = 0; i < npoints; ++i)
-            pcd_store(points, i * 3 + a, detail::read_double(rColumns[axis_field[a]], i), 0);
+        pcd_copy_column(points, a, rColumns[axis_field[a]], npoints);
 
     std::unordered_map<std::string, NDArray> point_data;
     std::unordered_set<std::string> consumed = {"x", "y", "z"};
@@ -599,9 +636,7 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
             single_n = single_n && rColumns[by_name[name]].Dtype() == DType::Float32;
         NDArray normals(single_n ? DType::Float32 : DType::Float64, {npoints, std::size_t(3)});
         for (int a = 0; a < 3; ++a)
-            for (std::size_t i = 0; i < npoints; ++i)
-                pcd_store(normals, i * 3 + a,
-                          detail::read_double(rColumns[by_name[normal_axes[a]]], i), 0);
+            pcd_copy_column(normals, a, rColumns[by_name[normal_axes[a]]], npoints);
         point_data.emplace("normals", std::move(normals));
         for (const char* name : normal_axes)
             consumed.insert(name);
@@ -626,10 +661,11 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
     if (drop_invalid) {
         std::vector<std::size_t> keep;
         keep.reserve(npoints);
+        const detail::DoubleView coordinates(points);
         for (std::size_t i = 0; i < npoints; ++i) {
             bool ok = true;
             for (int a = 0; a < 3; ++a)
-                ok = ok && std::isfinite(detail::read_double(points, i * 3 + a));
+                ok = ok && std::isfinite(coordinates[i * 3 + a]);
             if (ok)
                 keep.push_back(i);
         }
@@ -697,24 +733,27 @@ std::string pcd_unique(std::string name, std::unordered_set<std::string>& rUsed)
 NDArray pcd_extract(const NDArray& rSrc, std::size_t n, std::size_t stride, std::size_t first,
                     std::size_t count, DType target) {
     NDArray out(target, {n, count});
-    const bool to_float = pcd_is_float(target);
-    for (std::size_t r = 0; r < n; ++r)
-        for (std::size_t j = 0; j < count; ++j) {
-            const std::size_t at = r * stride + first + j;
-            if (to_float)
-                pcd_store(out, r * count + j, detail::read_double(rSrc, at), 0);
-            else
-                pcd_store(out, r * count + j, 0.0, detail::read_int(rSrc, at));
-        }
+    if (pcd_is_float(target)) {
+        const detail::DoubleView values(rSrc);
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t j = 0; j < count; ++j)
+                pcd_store(out, r * count + j, values[r * stride + first + j], 0);
+    } else {
+        const detail::Int64View values(rSrc);
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t j = 0; j < count; ++j)
+                pcd_store(out, r * count + j, 0.0, values[r * stride + first + j]);
+    }
     return out;
 }
 
 NDArray pcd_pack_colour(const NDArray& rSrc, std::size_t n, std::size_t width, bool as_float) {
     NDArray out(as_float ? DType::Float32 : DType::UInt32, {n, std::size_t(1)});
+    const detail::DoubleView values(rSrc);
     for (std::size_t r = 0; r < n; ++r) {
         std::uint32_t channel[4] = {0, 0, 0, 0};
         for (std::size_t j = 0; j < width; ++j) {
-            double v = std::nearbyint(detail::read_double(rSrc, r * width + j));
+            double v = std::nearbyint(values[r * width + j]);
             v = std::isnan(v) ? 0.0 : std::min(255.0, std::max(0.0, v));
             channel[j] = static_cast<std::uint32_t>(v);
         }
@@ -726,19 +765,37 @@ NDArray pcd_pack_colour(const NDArray& rSrc, std::size_t n, std::size_t width, b
     return out;
 }
 
-std::string pcd_ascii_value(const NDArray& rData, std::size_t index, char type) {
-    char buf[64];
-    if (type == 'F') {
-        const double v = detail::read_double(rData, index);
-        if (std::isnan(v))
-            return "nan";
-        detail::snprintf_c(buf, sizeof(buf), rData.Dtype() == DType::Float32 ? "%.9g" : "%.17g", v);
-        return buf;
+/// One output column's values as text, with the dtype switch taken once.
+class PcdAsciiColumn {
+public:
+    PcdAsciiColumn(const NDArray& rData, char type) : mpData(&rData), mType(type) {
+        if (type == 'F')
+            mDoubles.emplace(rData);
+        else if (rData.Dtype() != DType::UInt64)
+            mInts.emplace(rData);
     }
-    if (rData.Dtype() == DType::UInt64)
-        return std::to_string(rData.As<std::uint64_t>()[index]);
-    return std::to_string(detail::read_int(rData, index));
-}
+
+    std::string Value(std::size_t index) const {
+        char buf[64];
+        if (mType == 'F') {
+            const double v = (*mDoubles)[index];
+            if (std::isnan(v))
+                return "nan";
+            detail::snprintf_c(buf, sizeof(buf),
+                               mpData->Dtype() == DType::Float32 ? "%.9g" : "%.17g", v);
+            return buf;
+        }
+        if (mpData->Dtype() == DType::UInt64)
+            return std::to_string(mpData->As<std::uint64_t>()[index]);
+        return std::to_string((*mInts)[index]);
+    }
+
+private:
+    const NDArray* mpData;
+    char mType;
+    std::optional<detail::DoubleView> mDoubles;
+    std::optional<detail::Int64View> mInts;
+};
 
 }  // namespace
 
@@ -765,8 +822,9 @@ void write_pcd(const std::string& rPath, const Mesh& rMesh, PcdData data, bool f
     }
     if (!float64_points && points.Dtype() != DType::Float32) {
         bool changed = false;
+        const detail::DoubleView coordinates(points);
         for (std::size_t i = 0; i < n * dim && !changed; ++i) {
-            const double v = detail::read_double(points, i);
+            const double v = coordinates[i];
             if (std::isnan(v))
                 continue;
             changed = static_cast<double>(pcd_to_float(v)) != v;
@@ -888,14 +946,17 @@ void write_pcd(const std::string& rPath, const Mesh& rMesh, PcdData data, bool f
 
     std::string body;
     if (data == PcdData::Ascii) {
+        std::deque<PcdAsciiColumn> columns;  // views are not movable
+        for (const auto& f : fields)
+            columns.emplace_back(f.mData, f.mType);
         for (std::size_t i = 0; i < n; ++i) {
             bool first = true;
-            for (const auto& f : fields)
-                for (std::size_t e = 0; e < f.mCount; ++e) {
+            for (std::size_t k = 0; k < fields.size(); ++k)
+                for (std::size_t e = 0; e < fields[k].mCount; ++e) {
                     if (!first)
                         body += ' ';
                     first = false;
-                    body += pcd_ascii_value(f.mData, i * f.mCount + e, f.mType);
+                    body += columns[k].Value(i * fields[k].mCount + e);
                 }
             body += '\n';
         }

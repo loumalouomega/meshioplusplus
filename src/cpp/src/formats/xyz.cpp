@@ -22,8 +22,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <ios>
+#include <optional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -35,6 +37,9 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/log.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -48,7 +53,7 @@ bool xyz_is_space(char c) {
     return std::isspace(static_cast<unsigned char>(c)) != 0;
 }
 
-std::string xyz_strip(const std::string& rS) {
+std::string_view xyz_strip(std::string_view rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && xyz_is_space(rS[b]))
         ++b;
@@ -63,37 +68,25 @@ std::string xyz_lower(std::string s) {
     return s;
 }
 
-bool xyz_all_digits(const std::string& rS) {
+bool xyz_all_digits(std::string_view rS) {
     return !rS.empty() && std::all_of(rS.begin(), rS.end(), [](char c) {
         return std::isdigit(static_cast<unsigned char>(c)) != 0;
     });
 }
 
-bool xyz_starts_with(const std::string& rS, const char* pPrefix) {
+bool xyz_starts_with(std::string_view rS, const char* pPrefix) {
     return rS.rfind(pPrefix, 0) == 0;
 }
 
-std::vector<std::string> xyz_whitespace_split(const std::string& rS) {
-    std::vector<std::string> out;
-    std::size_t i = 0;
-    while (i < rS.size()) {
-        while (i < rS.size() && xyz_is_space(rS[i]))
-            ++i;
-        std::size_t j = i;
-        while (j < rS.size() && !xyz_is_space(rS[j]))
-            ++j;
-        if (j > i)
-            out.push_back(rS.substr(i, j - i));
-        i = j;
-    }
-    return out;
+std::vector<std::string_view> xyz_whitespace_split(std::string_view rS) {
+    return detail::split_blanks(rS);
 }
 
 // `line.split(delimiter)` with each token stripped and one trailing empty token dropped.
-std::vector<std::string> xyz_split(const std::string& rLine, const std::string& rDelimiter) {
+std::vector<std::string_view> xyz_split(std::string_view rLine, const std::string& rDelimiter) {
     if (rDelimiter.empty())
         return xyz_whitespace_split(rLine);
-    std::vector<std::string> tokens;
+    std::vector<std::string_view> tokens;
     std::size_t start = 0;
     for (;;) {
         const std::size_t at = rLine.find(rDelimiter, start);
@@ -110,7 +103,7 @@ std::vector<std::string> xyz_split(const std::string& rLine, const std::string& 
 }
 
 // An element-symbol-like first token: one to three letters, then optional digits.
-bool xyz_is_element(const std::string& rS) {
+bool xyz_is_element(std::string_view rS) {
     std::size_t i = 0;
     while (i < rS.size() && i < 3 && std::isalpha(static_cast<unsigned char>(rS[i])))
         ++i;
@@ -148,9 +141,10 @@ std::vector<std::string> xyz_name_tokens(const std::string& rBody) {
     return out;
 }
 
-bool xyz_header_names(const std::vector<std::string>& rComments, std::vector<std::string>& rNames) {
+bool xyz_header_names(const std::vector<std::string_view>& rComments,
+                      std::vector<std::string>& rNames) {
     for (auto it = rComments.rbegin(); it != rComments.rend(); ++it) {
-        std::string body;
+        std::string_view body;
         if (xyz_starts_with(*it, "//")) {
             body = it->substr(2);
         } else {
@@ -159,7 +153,7 @@ bool xyz_header_names(const std::vector<std::string>& rComments, std::vector<std
                 ++k;
             body = it->substr(k);
         }
-        std::vector<std::string> tokens = xyz_name_tokens(xyz_strip(body));
+        std::vector<std::string> tokens = xyz_name_tokens(std::string(xyz_strip(body)));
         if (tokens.size() >= 3 && std::all_of(tokens.begin(), tokens.end(), xyz_is_name) &&
             xyz_lower(tokens[0]) == "x" && xyz_lower(tokens[1]) == "y" &&
             xyz_lower(tokens[2]) == "z") {
@@ -359,24 +353,24 @@ std::string xyz_clean(const std::string& rName) {
 
 Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
     const std::string suffix = xyz_suffix(rPath);
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    for (std::string raw; std::getline(in, raw);)
-        lines.push_back(xyz_strip(raw));
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    auto lines = detail::split_lines(source.View());
+    for (auto& line : lines)
+        line = xyz_strip(line);
 
     if (lines.size() >= 3 && xyz_all_digits(lines[0])) {
-        const std::vector<std::string> atom = xyz_whitespace_split(lines[2]);
-        if (atom.size() >= 4 && xyz_is_element(atom[0]) && xyz_lower(atom[0]) != "nan" &&
-            xyz_lower(atom[0]) != "inf")
-            throw ReadError(kXyzChemistry);
+        const std::vector<std::string_view> atom = xyz_whitespace_split(lines[2]);
+        if (atom.size() >= 4 && xyz_is_element(atom[0])) {
+            const std::string element = xyz_lower(std::string(atom[0]));
+            if (element != "nan" && element != "inf")
+                throw ReadError(kXyzChemistry);
+        }
     }
 
-    std::vector<std::string> comments, rows;
+    std::vector<std::string_view> comments, rows;
     std::vector<std::size_t> numbers;
     for (std::size_t k = 0; k < lines.size(); ++k) {
-        const std::string& line = lines[k];
+        const std::string_view line = lines[k];
         if (line.empty())
             continue;
         if (xyz_starts_with(line, "#") || xyz_starts_with(line, "//")) {
@@ -392,7 +386,7 @@ Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
     long long declared = 0;
     if (suffix == ".pts" && !rows.empty() && xyz_all_digits(rows[0])) {
         has_declared = true;
-        declared = std::strtoll(rows[0].c_str(), nullptr, 10);
+        declared = detail::strtoll_token(rows[0]);
         rows.erase(rows.begin());
         numbers.erase(numbers.begin());
     }
@@ -416,7 +410,7 @@ Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
     table.reserve(rows.size());
     std::size_t ncols = 0;
     for (std::size_t r = 0; r < rows.size(); ++r) {
-        const std::vector<std::string> tokens = xyz_split(rows[r], delimiter);
+        const std::vector<std::string_view> tokens = xyz_split(rows[r], delimiter);
         if (r == 0)
             ncols = tokens.size();
         if (tokens.size() != ncols)
@@ -425,12 +419,15 @@ Mesh read_xyz(const std::string& rPath, const XyzReadOptions& rOptions) {
                             std::to_string(tokens.size()));
         std::vector<double> values(ncols);
         for (std::size_t c = 0; c < ncols; ++c) {
-            const char* stop = nullptr;
-            values[c] = detail::parse_double(tokens[c].c_str(), stop);
-            if (tokens[c].empty() || stop == tokens[c].c_str() || *stop != '\0') {
+            // The former owned token was C-string parsed; retain embedded-NUL behavior.
+            const std::string_view token = tokens[c].substr(0, tokens[c].find('\0'));
+            if (!detail::parse_double_token(token, values[c])) {
                 std::string joined;
-                for (std::size_t k = 0; k < tokens.size(); ++k)
-                    joined += (k ? " " : "") + tokens[k];
+                for (std::size_t k = 0; k < tokens.size(); ++k) {
+                    if (k)
+                        joined += ' ';
+                    joined += tokens[k];
+                }
                 throw ReadError("XYZ: line " + std::to_string(numbers[r]) + ": '" + joined +
                                 "' is not numeric");
             }
@@ -552,6 +549,17 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
     os << '\n';
     char buf[64];
     std::string line;
+    // One view per column, of the kind its dtype is written as (UInt64 is
+    // printed unsigned, straight from its buffer).
+    std::vector<std::optional<detail::DoubleView>> real_columns(columns.size());
+    std::vector<std::optional<detail::Int64View>> int_columns(columns.size());
+    for (std::size_t c = 0; c < columns.size(); ++c) {
+        const NDArray& array = *columns[c].mArray;
+        if (detail::is_float_dtype(array.Dtype()))
+            real_columns[c].emplace(array);
+        else if (array.Dtype() != DType::UInt64)
+            int_columns[c].emplace(array);
+    }
     for (std::size_t i = 0; i < n; ++i) {
         line.clear();
         for (std::size_t c = 0; c < columns.size(); ++c) {
@@ -562,10 +570,10 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
             if (!detail::is_float_dtype(array.Dtype())) {
                 line += array.Dtype() == DType::UInt64
                             ? std::to_string(array.As<std::uint64_t>()[at])
-                            : std::to_string(detail::read_int(array, at));
+                            : std::to_string((*int_columns[c])[at]);
                 continue;
             }
-            const double v = detail::read_double(array, at);
+            const double v = (*real_columns[c])[at];
             if (std::isnan(v)) {
                 line += "nan";
                 continue;

@@ -26,6 +26,7 @@
 #include <limits>
 #include <map>
 #include <ostream>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -49,6 +50,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -183,13 +185,7 @@ struct MdpaDataRow {
 };
 
 /// A cursor over the file's lines, so every block parser advances one index.
-struct MdpaCursor {
-    const std::vector<std::string_view>* mpLines = nullptr;
-    std::size_t mIndex = 0;
-
-    bool Done() const { return mIndex >= mpLines->size(); }
-    std::string_view Next() { return (*mpLines)[mIndex++]; }
-};
+using MdpaCursor = detail::RecordCursor<std::string_view>;
 
 /// The refusal's tail when the caller could have kept the construct in an MdpaInfo.
 constexpr const char* kMdpaNeedsInfo =
@@ -564,7 +560,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::vector<std::string_view> lines = detail::split_lines(source.View());
 
-    MdpaCursor cur{&lines, 0};
+    MdpaCursor cur{lines};
 
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
@@ -727,7 +723,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             // cheap to look ahead over) bound it, and size the coordinates.
             {
                 std::size_t rows = 0;
-                for (std::size_t k = cur.mIndex; k < lines.size(); ++k) {
+                for (std::size_t k = cur.Pos(); k < lines.size(); ++k) {
                     const std::string_view ahead = mdpa_clean(lines[k]);
                     if (ahead == "End Nodes")
                         break;
@@ -1345,6 +1341,34 @@ std::string mdpa_format_value(const NDArray& rArray, std::size_t index) {
     return buf;
 }
 
+/// A data array formatted as `mdpa_format_value` formats it, with the dtype
+/// switch taken once for the array instead of once per value.
+class MdpaValues {
+public:
+    explicit MdpaValues(const NDArray& rArray) {
+        if (mdpa_is_int_dtype(rArray.Dtype()))
+            mInts.emplace(rArray);
+        else
+            mDoubles.emplace(rArray);
+    }
+
+    /// `std::isnan(detail::read_double(rArray, index))`: an integer is never NaN.
+    bool IsNan(std::size_t index) const { return mDoubles && std::isnan((*mDoubles)[index]); }
+
+    std::string Format(std::size_t index) const {
+        char buf[64];
+        if (mInts)
+            std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>((*mInts)[index]));
+        else
+            detail::snprintf_c(buf, sizeof(buf), "%.16g", (*mDoubles)[index]);
+        return buf;
+    }
+
+private:
+    std::optional<detail::Int64View> mInts;
+    std::optional<detail::DoubleView> mDoubles;
+};
+
 /// Number of trailing components of a data array (1 for a 1-D array).
 std::size_t mdpa_components(const NDArray& rArray, std::size_t rows) {
     if (rows == 0)
@@ -1382,10 +1406,11 @@ void mdpa_write_table(std::ostream& rOs, const PropertyValue& rTable, const char
     rOs << pIndent << "Begin Table " << rTable.mKey << "\n";
     const std::size_t ncols = rTable.mValues.Shape().size() >= 2 ? rTable.mValues.Shape()[1] : 1;
     const std::size_t nrows = ncols ? rTable.mValues.Size() / ncols : 0;
+    const MdpaValues values(rTable.mValues);
     for (std::size_t r = 0; r < nrows; ++r) {
         rOs << pIndent << "  ";
         for (std::size_t c = 0; c < ncols; ++c)
-            rOs << " " << mdpa_format_value(rTable.mValues, r * ncols + c);
+            rOs << " " << values.Format(r * ncols + c);
         rOs << "\n";
     }
     rOs << pIndent << "End Table\n";
@@ -1397,10 +1422,11 @@ void mdpa_write_kv(std::ostream& rOs, const PropertyValue& rValue, const char* p
     if (rValue.IsText()) {
         rOs << rValue.mText;
     } else {
+        const MdpaValues values(rValue.mValues);
         for (std::size_t i = 0; i < rValue.mValues.Size(); ++i) {
             if (i)
                 rOs << " ";
-            rOs << mdpa_format_value(rValue.mValues, i);
+            rOs << values.Format(i);
         }
     }
     rOs << "\n";
@@ -1496,10 +1522,12 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             written_ids[b].resize(cb.NumCells());
             std::unordered_set<std::int64_t>& seen =
                 is_condition[b] ? seen_condition_ids : seen_element_ids;
+            std::optional<detail::Int64View> ids;
+            if (preserve_entity_ids)
+                ids.emplace(rMesh.CellData(kMdpaIdName, b));
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 const std::int64_t wid =
-                    preserve_entity_ids ? detail::read_int(rMesh.CellData(kMdpaIdName, b), r)
-                                        : (is_condition[b] ? next_condition++ : next_element++);
+                    ids ? (*ids)[r] : (is_condition[b] ? next_condition++ : next_element++);
                 if (!seen.insert(wid).second)
                     throw WriteError("MDPA: duplicate " +
                                      std::string(is_condition[b] ? "condition" : "element") +
@@ -1550,8 +1578,9 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     if (has_props) {
         for (std::size_t b = 0; b < nblocks; ++b) {
             const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+            const detail::Int64View tag_values(tags);
             for (std::size_t r = 0; r < tags.Size(); ++r)
-                referenced_ids.insert(detail::read_int(tags, r));
+                referenced_ids.insert(tag_values[r]);
         }
     }
     if (!rInfo.mProperties.empty()) {
@@ -1601,18 +1630,20 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             rMesh.HasPointData(kMdpaIdName) && rMesh.PointData(kMdpaIdName).Size() == np;
         written_node_ids.resize(np);
         std::unordered_set<std::int64_t> seen_node_ids;
+        const detail::DoubleView point_values(points);
+        std::optional<detail::Int64View> node_ids;
+        if (preserve_node_ids)
+            node_ids.emplace(rMesh.PointData(kMdpaIdName));
         char buf[64];
         for (std::size_t i = 0; i < np; ++i) {
-            const std::int64_t id = preserve_node_ids
-                                        ? detail::read_int(rMesh.PointData(kMdpaIdName), i)
-                                        : static_cast<std::int64_t>(i) + 1;
+            const std::int64_t id = node_ids ? (*node_ids)[i] : static_cast<std::int64_t>(i) + 1;
             if (!seen_node_ids.insert(id).second)
                 throw WriteError("MDPA: duplicate node id " + std::to_string(id) +
                                  " in point_data['" + std::string(kMdpaIdName) + "']");
             written_node_ids[i] = id;
             os << " " << id;
             for (std::size_t c = 0; c < 3; ++c) {
-                const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
+                const double v = c < dim ? point_values[i * dim + c] : 0.0;
                 detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
                 os << " " << buf;
             }
@@ -1628,12 +1659,15 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         const std::vector<int>& order = mdpa_kratos_node_order(type);
         const std::string kind = is_condition[b] ? "Conditions" : "Elements";
         os << "Begin " << kind << " " << entity_name[b] << "\n";
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
+        std::optional<detail::Int64View> props;
+        if (has_props)
+            props.emplace(rMesh.CellData("gmsh:physical", b));
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::int64_t prop = 0;
-            if (has_props)
-                prop = detail::read_int(rMesh.CellData("gmsh:physical", b), r);
+            if (props)
+                prop = (*props)[r];
             os << "  " << written_ids[b][r] << " " << prop;
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
@@ -1641,8 +1675,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                 // must name whichever node numbering was actually written
                 // (preserved or row+1), the same rule the Nodes block itself
                 // and the SubModelPart node lists follow.
-                const std::size_t row =
-                    static_cast<std::size_t>(detail::read_int(conn, r * k + slot));
+                const std::size_t row = static_cast<std::size_t>(conn[r * k + slot]);
                 os << " " << written_node_ids[row];
             }
             os << "\n";
@@ -1667,13 +1700,14 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             log::warn("mdpa: geometry block '{}' has {} ids for {} rows; renumbering", r_geo.mType,
                       r_geo.mIds.size(), rows);
         const std::vector<int>& order = mdpa_kratos_node_order(type);
+        const detail::Int64View geo_conn(r_geo.mConn);
         os << "Begin Geometries "
            << (r_geo.mName.empty() ? kratos_geometry_name(type) : r_geo.mName) << "\n";
         for (std::size_t r = 0; r < rows; ++r) {
             os << "  " << (keep_ids ? r_geo.mIds[r] : next_geometry++);
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                const std::int64_t row = detail::read_int(r_geo.mConn, r * k + slot);
+                const std::int64_t row = geo_conn[r * k + slot];
                 if (row < 0 || static_cast<std::size_t>(row) >= np)
                     throw WriteError("MDPA: geometry row names point " + std::to_string(row) +
                                      " of a mesh with " + std::to_string(np) + " points");
@@ -1692,22 +1726,26 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         const std::size_t nc = mdpa_components(a, np);
         const std::string fixed_name = name + "_fixed_status";
         const bool has_fixed = rMesh.HasPointData(fixed_name);
+        const MdpaValues values(a);
+        std::optional<detail::Int64View> fixed;
+        if (has_fixed)
+            fixed.emplace(rMesh.PointData(fixed_name));
         os << "Begin NodalData " << name << "\n";
         for (std::size_t i = 0; i < np; ++i) {
             bool all_nan = true;
             for (std::size_t j = 0; j < nc; ++j)
-                if (!std::isnan(detail::read_double(a, i * nc + j)))
+                if (!values.IsNan(i * nc + j))
                     all_nan = false;
             if (all_nan)
                 continue;
             os << "  " << written_node_ids[i];
-            if (has_fixed) {
-                const std::int64_t f = detail::read_int(rMesh.PointData(fixed_name), i);
+            if (fixed) {
+                const std::int64_t f = (*fixed)[i];
                 if (f >= 0)
                     os << " " << f;
             }
             for (std::size_t j = 0; j < nc; ++j)
-                os << " " << mdpa_format_value(a, i * nc + j);
+                os << " " << values.Format(i * nc + j);
             os << "\n";
         }
         os << "End NodalData\n\n";
@@ -1728,16 +1766,17 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                 const auto cb = rMesh.Cells(b);
                 const NDArray& a = rMesh.CellData(name, b);
                 const std::size_t nc = mdpa_components(a, cb.NumCells());
+                const MdpaValues values(a);
                 for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                     bool all_nan = true;
                     for (std::size_t j = 0; j < nc; ++j)
-                        if (!std::isnan(detail::read_double(a, r * nc + j)))
+                        if (!values.IsNan(r * nc + j))
                             all_nan = false;
                     if (all_nan)
                         continue;
                     body << "  " << written_ids[b][r];
                     for (std::size_t j = 0; j < nc; ++j)
-                        body << " " << mdpa_format_value(a, r * nc + j);
+                        body << " " << values.Format(r * nc + j);
                     body << "\n";
                 }
             }

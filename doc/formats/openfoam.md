@@ -11,6 +11,8 @@ A reader and writer for [OpenFOAM](https://www.openfoam.com/)'s native `polyMesh
 
 ## Reading & writing
 
+Native vector/nonuniform field extraction uses shared-stream views of the live source instead of first copying the entire text slice. Result fields remain owned and parsing/format behavior is unchanged. The [source-copy evidence](../benchmarks.md#source-copy-removal-and-temporary-ownership-guards) times geometry-only meshes; field paths are fixture-tested, not a measured field speedup.
+
 ```python
 import meshioplusplus
 

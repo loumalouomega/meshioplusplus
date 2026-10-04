@@ -11,6 +11,10 @@ MSC Marc's input deck (the `.dat` file Marc Mentat writes and the solver reads) 
 
 ## Reading
 
+Native deck/post source lines are bounded views, with each included deck retained in stable buffer storage through parsing and the post reader retaining its source. Names, expanded sets and result arrays remain owned; numeric behavior and writer bytes are unchanged. See the [deck-line comparison](../benchmarks.md#abaqus-ansys-coded-databases-marc-nastran-and-netgen-deck-line-batch), whose performance inputs are decks rather than post results.
+
+Deck fields, post-field slices and blank/comma words also use views, while normalized headers/set names retain ownership. Short numeric fields use bounded terminated buffers with the same Fortran exponent and range behavior; see the [shared-card comparison](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers), which measures decks rather than post results.
+
 ```python
 import meshioplusplus
 

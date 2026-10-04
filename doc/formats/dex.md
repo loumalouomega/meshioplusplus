@@ -11,6 +11,10 @@ The **DEX** format stores a single nodal field for Altair/CEDRAT **FLUX** (elect
 
 ## Reading & writing
 
+Native numeric tokens view the source. D/d exponents normalize into a short terminated stack buffer, with an owned fallback for unusually long fields; numeric-prefix behavior, signed zero and owned result arrays are unchanged. The [source-copy comparison](../benchmarks.md#source-copy-removal-and-temporary-ownership-guards) records the measured scope and unchanged writer bytes.
+
+The native reader views mapped/buffered source lines and returns owned arrays/names, preserving CRLF handling and numeric extraction. Writer bytes are unchanged; the [line-view benchmark](../benchmarks.md#dex-ip-flux-and-permas-line-view-batch) supplies the required scalar nodal field.
+
 ```python
 import meshioplusplus
 

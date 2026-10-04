@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -39,6 +40,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -201,6 +203,7 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
     const std::size_t normal_blocks = have_normals ? rMesh.CellDataNumBlocks("facet_normals") : 0;
     const NDArray& points = rMesh.Points();
     std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 3;
+    const detail::DoubleView point_values(points);
 
     std::size_t block = 0;
     for (const auto cb : rMesh.CellRange()) {
@@ -209,18 +212,17 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
             continue;
         }
         std::size_t nc = cb.NumCells();
-        const NDArray& conn = cb.Conn();
-        const NDArray* nrm = nullptr;
+        const detail::Int64View conn(cb.Conn());
+        std::optional<detail::DoubleView> nrm;
         if (have_normals && block < normal_blocks)
-            nrm = &rMesh.CellData("facet_normals", block);
+            nrm.emplace(rMesh.CellData("facet_normals", block));
         for (std::size_t r = 0; r < nc; ++r) {
             std::array<double, 9> tri{};
             double v[3][3];
             for (int k = 0; k < 3; ++k) {
-                std::int64_t pi = detail::read_int(conn, r * 3 + k);
+                std::int64_t pi = conn[r * 3 + k];
                 for (int c = 0; c < 3; ++c)
-                    v[k][c] =
-                        (std::size_t(c) < dim) ? detail::read_double(points, pi * dim + c) : 0.0;
+                    v[k][c] = (std::size_t(c) < dim) ? point_values[pi * dim + c] : 0.0;
                 tri[k * 3 + 0] = v[k][0];
                 tri[k * 3 + 1] = v[k][1];
                 tri[k * 3 + 2] = v[k][2];
@@ -230,7 +232,7 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
             std::array<double, 3> n{};
             if (nrm) {
                 for (int c = 0; c < 3; ++c)
-                    n[c] = detail::read_double(*nrm, r * 3 + c);
+                    n[c] = (*nrm)[r * 3 + c];
             } else {
                 double a[3] = {v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]};
                 double b[3] = {v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]};
@@ -256,17 +258,17 @@ Mesh stl_skin_triangles(const Mesh& rMesh) {
     const Mesh skin = extract_skin(rMesh, /*linearize=*/true);
     std::vector<std::int64_t> tri;
     for (const auto cb : skin.CellRange()) {
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t nc = cb.NumCells();
         if (cb.Type() == "triangle") {
             for (std::size_t r = 0; r < nc * 3; ++r)
-                tri.push_back(detail::read_int(conn, r));
+                tri.push_back(conn[r]);
         } else {  // quad
             for (std::size_t r = 0; r < nc; ++r) {
-                const std::int64_t a = detail::read_int(conn, r * 4 + 0);
-                const std::int64_t b = detail::read_int(conn, r * 4 + 1);
-                const std::int64_t c = detail::read_int(conn, r * 4 + 2);
-                const std::int64_t d = detail::read_int(conn, r * 4 + 3);
+                const std::int64_t a = conn[r * 4 + 0];
+                const std::int64_t b = conn[r * 4 + 1];
+                const std::int64_t c = conn[r * 4 + 2];
+                const std::int64_t d = conn[r * 4 + 3];
                 tri.insert(tri.end(), {a, b, c, a, c, d});
             }
         }

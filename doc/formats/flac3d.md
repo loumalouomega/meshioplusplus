@@ -11,6 +11,8 @@ The [Itasca FLAC3D](https://www.itascacg.com/software/flac3d) grid format (`.f3g
 
 ## Reading & writing
 
+Native ASCII row tokens are views into the live input row and reuse one token vector. Numeric-prefix handling, arbitrary ids, quoted group/slot ownership and writer bytes are unchanged; see the [deck-token comparison](../benchmarks.md#remaining-deck-token-views). Binary records retain their existing implementation and are fixture-tested, not part of these ASCII timings.
+
 ```python
 import meshioplusplus
 

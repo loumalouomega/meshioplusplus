@@ -11,6 +11,8 @@ The **IP** format is the ANSYS Fluent interpolation file, storing one or more fi
 
 ## Reading & writing
 
+The native reader views mapped/buffered source lines, while parenthesis-normalized records and column names remain owned. Numeric extraction and writer bytes are unchanged; see the [line-view benchmark](../benchmarks.md#dex-ip-flux-and-permas-line-view-batch).
+
 ```python
 import meshioplusplus
 

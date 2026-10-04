@@ -11,6 +11,10 @@ The [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) mesh format, su
 
 ## Reading & writing
 
+The native reader shares a bounded byte cursor with other formats while retaining ASCII/binary positioning and floating-spelled identifiers (`2.0`, `1e3`); no numeric parse requires a source terminator. Names/arrays remain owned. See the [cursor evidence](../benchmarks.md#shared-byte-and-record-cursors), which measures a supported single-type Gmsh 4.1 ASCII input without changing mixed-cell conformance.
+
+Time/metadata headers also parse source views directly rather than constructing temporary owning rows. The shared stream's existing temporary ownership remains supported and tested; see the [source-copy scope and neutral/fluctuating results](../benchmarks.md#source-copy-removal-and-temporary-ownership-guards).
+
 ```python
 import meshioplusplus
 

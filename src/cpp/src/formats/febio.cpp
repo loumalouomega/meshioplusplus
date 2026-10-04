@@ -56,6 +56,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -797,27 +798,26 @@ bool feb_all_on_edges(const Mesh& rMesh, std::size_t Line, const std::vector<int
             continue;
         const auto cb = rMesh.Cells(b);
         const CellType type = cell_type_from_name(std::string(cb.Type()));
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             if (rDims[b] == 3) {
                 for (const detail::CellFaceDef& f : detail::cell_faces(type))
                     for (std::size_t c = 0; c < f.mNumCorners; ++c)
-                        add(detail::read_int(conn, r * k + f.mNodes[c]),
-                            detail::read_int(conn, r * k + f.mNodes[(c + 1) % f.mNumCorners]));
+                        add(conn[r * k + f.mNodes[c]],
+                            conn[r * k + f.mNodes[(c + 1) % f.mNumCorners]]);
             } else {
                 for (const detail::CellEdgeDef& e : detail::cell_edges(type))
-                    add(detail::read_int(conn, r * k + e.mNodes[0]),
-                        detail::read_int(conn, r * k + e.mNodes[1]));
+                    add(conn[r * k + e.mNodes[0]], conn[r * k + e.mNodes[1]]);
             }
         }
     }
     const auto cb = rMesh.Cells(Line);
-    const NDArray& conn = cb.Conn();
+    const detail::Int64View conn(cb.Conn());
     const std::size_t k = cb.NodesPerCell();
     for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-        const std::int64_t a = detail::read_int(conn, r * k);
-        const std::int64_t b = detail::read_int(conn, r * k + 1);
+        const std::int64_t a = conn[r * k];
+        const std::int64_t b = conn[r * k + 1];
         if (!edges.count({std::min(a, b), std::max(a, b)}))
             return false;
     }
@@ -864,14 +864,14 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
                 options.mSurfaceEdges = false;
                 faces.emplace(rMesh, options);
             }
-            const NDArray& conn = cb.Conn();
+            const detail::Int64View conn(cb.Conn());
             const std::size_t k = cb.NodesPerCell();
             const std::size_t corners = feb_num_corners(cb.Type());
             std::vector<std::int64_t> row(corners);
             bool all = true;
             for (std::size_t r = 0; r < cb.NumCells() && all; ++r) {
                 for (std::size_t c = 0; c < corners; ++c)
-                    row[c] = detail::read_int(conn, r * k + c);
+                    row[c] = conn[r * k + c];
                 all = faces->Find(row.data(), corners) != nullptr;
             }
             if (all)
@@ -967,15 +967,16 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
             continue;
         }
         FebArray arr{name, true, type, w, {}, {}};
+        const detail::DoubleView values(a);
         for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
             bool defined = true;
             for (std::size_t c = 0; c < w && defined; ++c)
-                defined = !std::isnan(detail::read_double(a, p * w + c));
+                defined = !std::isnan(values[p * w + c]);
             if (!defined)
                 continue;
             arr.mMembers.push_back(static_cast<std::int64_t>(p + 1));
             for (std::size_t c = 0; c < w; ++c)
-                arr.mValues.push_back(detail::read_double(a, p * w + c));
+                arr.mValues.push_back(values[p * w + c]);
         }
         if (!arr.mMembers.empty())
             arrays.push_back(std::move(arr));
@@ -1006,11 +1007,11 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
         w = w == 0 ? 1 : w;
         FebArray arr{name, false, type, w, {}, {}};
         for (std::size_t b = 0; b < n_blocks; ++b) {
-            const NDArray& a = rMesh.CellData(name, b);
+            const detail::DoubleView values(rMesh.CellData(name, b));
             for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
                 bool defined = true;
                 for (std::size_t c = 0; c < w && defined; ++c)
-                    defined = !std::isnan(detail::read_double(a, r * w + c));
+                    defined = !std::isnan(values[r * w + c]);
                 if (!defined)
                     continue;
                 if (kinds[b] != FebBlockKind::Elements) {
@@ -1020,7 +1021,7 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
                 arr.mMembers.push_back(
                     element_no[static_cast<std::size_t>(bases[b] + static_cast<std::int64_t>(r))]);
                 for (std::size_t c = 0; c < w; ++c)
-                    arr.mValues.push_back(detail::read_double(a, r * w + c));
+                    arr.mValues.push_back(values[r * w + c]);
             }
         }
         if (!arr.mMembers.empty())
@@ -1064,13 +1065,14 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
     out += "\t</Material>\n\t<Mesh>\n\t\t<Nodes>\n";
     const NDArray& points = rMesh.Points();
     const std::size_t pdim = rMesh.PointDim();
+    const detail::DoubleView point_values(points);
     char buf[40];
     for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
         out += "\t\t\t<node id=\"";
         feb_append_int(out, static_cast<std::int64_t>(p + 1));
         out += "\">";
         for (std::size_t d = 0; d < 3; ++d) {
-            const double v = d < pdim ? detail::read_double(points, p * pdim + d) : 0.0;
+            const double v = d < pdim ? point_values[p * pdim + d] : 0.0;
             detail::snprintf_c(buf, sizeof(buf), d ? ",%.17g" : "%.17g", v);
             out += buf;
         }
@@ -1086,16 +1088,16 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
         const std::string type(cb.Type());
         const char* ftype = feb_write_type(type);
         const detail::NodeOrder* order = detail::node_order("febio", type);
-        const NDArray& conn = cb.Conn();
+        const detail::Int64View conn(cb.Conn());
         const std::size_t k = cb.NodesPerCell();
         const bool elements = kinds[b] == FebBlockKind::Elements;
         if (kinds[b] == FebBlockKind::Discrete) {
             out += "\t\t<DiscreteSet name=\"" + feb_escape(names[b]) + "\">\n";
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 out += "\t\t\t<delem>";
-                feb_append_int(out, detail::read_int(conn, r * k) + 1);
+                feb_append_int(out, conn[r * k] + 1);
                 out += ',';
-                feb_append_int(out, detail::read_int(conn, r * k + 1) + 1);
+                feb_append_int(out, conn[r * k + 1] + 1);
                 out += "</delem>\n";
             }
             out += "\t\t</DiscreteSet>\n";
@@ -1117,7 +1119,7 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
             ids.clear();
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
-                ids.push_back(detail::read_int(conn, r * k + src) + 1);
+                ids.push_back(conn[r * k + src] + 1);
             }
             feb_append_ids(out, ids);
             out += std::string("</") + (elements ? "elem" : ftype) + ">\n";

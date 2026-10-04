@@ -1,6 +1,6 @@
 # OpenRadioss / Radioss starter deck (`*_0000.rad`)
 
-The input deck of the OpenRadioss explicit solver (and of Altair Radioss) in its native "block format": the **starter** file, `<run>_0000.rad`. Engine files (`_0001.rad`, run control) are refused. OpenRadioss also reads LS-DYNA `.k` decks natively, which meshio++ reads as [`lsdyna`](./lsdyna.md).
+The input deck of the OpenRadioss explicit solver (and of Altair Radioss) in its native "block format": the **starter** file, `<run>_0000.rad`. Engine files (`_0001.rad`, run control) are read as data-only meshes with engine-prefixed field arrays. OpenRadioss also reads LS-DYNA `.k` decks natively, which meshio++ reads as [`lsdyna`](./lsdyna.md).
 
 | | |
 |---|---|
@@ -18,6 +18,10 @@ mesh = meshioplusplus.read("crash_0000.rad")
 ```
 
 `read` takes no options. Both engines (the C++ core and the pure-Python reference) read the same meshes.
+
+Native engine-field records use shared blank-separated views and bounded floating parsing, preserving ignored nonnumeric tokens and owned results. Fixed/comma card fields and include-expanded lines are not changed by this batch. The [text-I/O evidence](../benchmarks.md#femap-pcd-and-radioss-engine-records-fourth-batch) measures starter meshes, not engine performance; writer bytes are unchanged.
+
+The later [field-view batch](../benchmarks.md#ls-dyna-radioss-card-fields-and-gid-quoted-tokens) also replaces owned fixed/comma fields with views over the stable include-expanded lines. The [shared-card pass](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers) bounds numeric fields while preserving the owning card API's exponent/range behavior. Expanded lines remain owned; units, metadata and writer bytes are unchanged.
 
 ## Writing
 

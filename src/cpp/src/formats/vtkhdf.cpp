@@ -46,6 +46,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
+#include "../detail/typed_view.hpp"
 #include "library_preflight.hpp"
 
 namespace meshioplusplus {
@@ -240,12 +241,20 @@ NDArray vtkhdf_concat_rows(const std::vector<const NDArray*>& rParts, const std:
             std::memcpy(out.Data() + at, p->Data(), p->Nbytes());
             at += p->Nbytes();
         } else {
-            for (std::size_t i = 0; i < p->Size(); ++i) {
-                if (dt == DType::Float64)
-                    reinterpret_cast<double*>(out.Data() + at)[i] = read_double(*p, i);
-                else
-                    reinterpret_cast<I64*>(out.Data() + at)[i] = read_int(*p, i);
-            }
+            // One dtype switch per piece: each element converts as read_double /
+            // read_int convert it, straight into `out`.
+            detail::dispatch_dtype(p->Dtype(), [&]<class T>() {
+                const T* src = p->As<T>();
+                if (dt == DType::Float64) {
+                    double* dst = reinterpret_cast<double*>(out.Data() + at);
+                    for (std::size_t i = 0; i < p->Size(); ++i)
+                        dst[i] = static_cast<double>(src[i]);
+                } else {
+                    I64* dst = reinterpret_cast<I64*>(out.Data() + at);
+                    for (std::size_t i = 0; i < p->Size(); ++i)
+                        dst[i] = detail::typed_view_int<T>(src[i]);
+                }
+            });
             at += p->Size() * dtype_size(dt);
         }
     }
@@ -1177,15 +1186,21 @@ NDArray vtkhdf_points3(const NDArray& rPts, std::size_t NumPoints, std::size_t D
                          : DType::Float64;
     const std::size_t n = pUsed ? pUsed->size() : NumPoints;
     NDArray out(dt, {n, 3});  // zero-filled: the padded columns stay 0
-    for (std::size_t r = 0; r < n; ++r) {
-        const std::size_t src = pUsed ? (*pUsed)[r] : r;
-        for (std::size_t c = 0; c < Dim; ++c) {
-            if (dt == DType::Float32)
-                out.As<float>()[r * 3 + c] = static_cast<float>(read_double(rPts, src * Dim + c));
-            else
-                out.As<double>()[r * 3 + c] = read_double(rPts, src * Dim + c);
+    // One dtype switch for the points; an integer or float32 input is converted
+    // element by element, as read_double converts it, with no copy beside `out`.
+    detail::dispatch_dtype(rPts.Dtype(), [&]<class T>() {
+        const T* points = rPts.As<T>();
+        for (std::size_t r = 0; r < n; ++r) {
+            const std::size_t src = pUsed ? (*pUsed)[r] : r;
+            for (std::size_t c = 0; c < Dim; ++c) {
+                const double v = static_cast<double>(points[src * Dim + c]);
+                if (dt == DType::Float32)
+                    out.As<float>()[r * 3 + c] = static_cast<float>(v);
+                else
+                    out.As<double>()[r * 3 + c] = v;
+            }
         }
-    }
+    });
     return out;
 }
 
@@ -1249,15 +1264,16 @@ VtkhdfCells vtkhdf_collect(const Mesh& rMesh, const std::vector<std::size_t>& rB
         auto it = polygon ? tmap.find("polygon") : tmap.find(type);
         if (it == tmap.end())
             throw WriteError("meshio++: vtkhdf: cell type '" + type + "' has no VTK cell type id");
-        const NDArray& conn = cb.Conn();
-        const std::size_t k = cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t k = cols(conn_array);
+        const detail::Int64View conn(conn_array);
         const std::vector<int> order = polygon ? std::vector<int>{} : meshio_to_vtk_order(type);
         for (std::size_t r = 0; r < nc; ++r) {
             if (!wanted(r))
                 continue;
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                out.mConn.push_back(read_int(conn, r * k + col));
+                out.mConn.push_back(conn[r * k + col]);
             }
             out.mSizes.push_back(static_cast<I64>(k));
             out.mTypes.push_back(it->second);
@@ -1460,6 +1476,9 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
     for (std::size_t bi : order) {
         const auto cb = rMesh.Cells(bi);
         const int cat = kinds[bi];
+        std::optional<detail::Int64View> block_conn;
+        if (!cb.IsRagged())
+            block_conn.emplace(cb.Conn());
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::size_t k;
             if (cb.IsRagged()) {
@@ -1467,10 +1486,9 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
                 for (std::size_t j = 0; j < k; ++j)
                     conn[cat].push_back(cb.Row(r)[j]);
             } else {
-                const NDArray& c = cb.Conn();
-                k = cols(c);
+                k = cols(cb.Conn());
                 for (std::size_t j = 0; j < k; ++j)
-                    conn[cat].push_back(read_int(c, r * k + j));
+                    conn[cat].push_back((*block_conn)[r * k + j]);
             }
             if (cat == 0 && k != 1)
                 throw WriteError("meshio++: vtkhdf: vertex cells must have one node");

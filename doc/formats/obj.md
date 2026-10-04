@@ -11,6 +11,8 @@ The [Wavefront OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) geometry 
 
 ## Reading & writing
 
+The native row parser views the live trimmed input row rather than copying it first; result arrays/group names remain owned. See the [source-copy evidence](../benchmarks.md#source-copy-removal-and-temporary-ownership-guards), including the retained unfavorable writer observation; no writer speedup is claimed.
+
 ```python
 import meshioplusplus
 

@@ -11,6 +11,8 @@ The neutral file is [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/)'s
 
 ## Reading & writing
 
+Native comma fields view the mapped/buffered source and real numbers use bounded parsing. Block traversal shares a private record cursor while retaining grammar, line diagnostics and owned titles/regions/results. Writer bytes are unchanged; see the [token-view comparison](../benchmarks.md#femap-pcd-and-radioss-engine-records-fourth-batch) and [cursor consolidation evidence](../benchmarks.md#shared-byte-and-record-cursors).
+
 ```python
 import meshioplusplus
 

@@ -35,6 +35,7 @@
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -227,9 +228,10 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
     spec.mVMax = rVMax;
     spec.mColorbar = Colorbar;
 
+    const detail::DoubleView point_values(points);
     if (dim == 3) {
         for (std::size_t i = 0; i < num_points; ++i) {
-            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14) {
+            if (std::fabs(point_values[i * dim + 2]) > 1.0e-14) {
                 if (has_skinnable_cells(rMesh)) {
                     // Colouring by cell data needs to know which input cell
                     // each skin facet came from; that costs an extra Int64
@@ -252,8 +254,8 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
     // Copy the first two coordinate columns.
     std::vector<double> x(num_points), y(num_points);
     for (std::size_t i = 0; i < num_points; ++i) {
-        x[i] = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
-        y[i] = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
+        x[i] = (0 < dim) ? point_values[i * dim + 0] : 0.0;
+        y[i] = (1 < dim) ? point_values[i * dim + 1] : 0.0;
     }
 
     double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
@@ -327,13 +329,14 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
             continue;
         }
 
-        const NDArray& conn = cb.Conn();
-        const std::size_t ncols = detail::cols(conn);
+        const NDArray& conn_array = cb.Conn();
+        const std::size_t ncols = detail::cols(conn_array);
         const std::size_t n = cb.NumCells();
+        const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < n; ++r) {
             std::string d;
             for (std::size_t k = 0; k < ncols; ++k) {
-                const std::int64_t p = detail::read_int(conn, r * ncols + k);
+                const std::int64_t p = conn[r * ncols + k];
                 // "M x y" for the first vertex, "L x y" for the rest — no
                 // separating space before the command letter (matches the
                 // Python reference's concatenated format strings).

@@ -11,6 +11,8 @@ The coded database is the text archive Ansys MAPDL writes with `CDWRITE` and rea
 
 ## Reading & writing
 
+The native reader views mapped/buffered source lines and command/fixed fields, retaining CRLF handling and owned names/results. Numeric parsing is bounded; integer fields still accept floating spellings before checked conversion. The installed owning card API, writer bytes and parsing behavior are unchanged; see the [deck-line comparison](../benchmarks.md#abaqus-ansys-coded-databases-marc-nastran-and-netgen-deck-line-batch) and [shared-card evidence](../benchmarks.md#shared-card-views-and-bounded-fortran-numbers).
+
 ```python
 import meshioplusplus
 

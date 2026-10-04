@@ -27,6 +27,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -73,16 +74,18 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
     if (!point_names.empty()) {
         const NDArray& arr = rMesh.PointData(point_names.front());
         values.resize(arr.Size());
+        const detail::DoubleView arr_values(arr);
         for (std::size_t i = 0; i < arr.Size(); ++i)
-            values[i] = detail::read_double(arr, i);
+            values[i] = arr_values[i];
     } else {
         for (const auto& name : rMesh.CellDataNames()) {
             if (name == "unv:pid")
                 continue;
             for (std::size_t bi = 0; bi < rMesh.CellDataNumBlocks(name); ++bi) {
                 const NDArray& blk = rMesh.CellData(name, bi);
+                const detail::DoubleView blk_values(blk);
                 for (std::size_t i = 0; i < blk.Size(); ++i)
-                    values.push_back(detail::read_double(blk, i));
+                    values.push_back(blk_values[i]);
             }
             break;
         }
