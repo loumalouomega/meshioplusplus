@@ -87964,8 +87964,16 @@ h5::Hid make_elem_enum() {
 // Fixed-length byte-string dataset (h5py's data=[b"...", ...]).
 void write_history(hid_t loc, int gzip_level) {
     std::time_t now = std::time(nullptr);
+    // localtime_r/_s, not std::localtime: its shared static buffer races with
+    // any other thread formatting a time (the Python bindings release the GIL).
+    std::tm tm_local{};
+#if defined(_WIN32)
+    localtime_s(&tm_local, &now);
+#else
+    localtime_r(&now, &tm_local);
+#endif
     char stamp[64];
-    std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm_local);
     std::vector<std::string> items = {"meshioplusplus.h5m", "cpp-core", stamp};
 
     std::size_t maxlen = 1;

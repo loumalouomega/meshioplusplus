@@ -1268,9 +1268,10 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
     if parallel and len(jobs) > 1:
         # Files are embarrassingly parallel at the driver level. A process pool
         # rather than threads because each worker reads, runs the chain and
-        # writes independently, and the operations release no GIL. Results are
-        # collected in submission order, so the report is identical to the
-        # serial run's.
+        # writes independently, and while the native reads, writes and
+        # operations release the GIL, this twin's own Python steps and the
+        # HDF5-family formats hold it (roadmap 3.4.1). Results are collected in
+        # submission order, so the report is identical to the serial run's.
         from concurrent.futures import ProcessPoolExecutor
 
         with ProcessPoolExecutor(max_workers=workers or None) as pool:

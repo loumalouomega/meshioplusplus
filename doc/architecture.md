@@ -38,6 +38,20 @@ Two things tie the operations together. Chains of them are described declarative
 - **WebAssembly** — the [`@meshioplusplus/wasm`](./wasm.md) npm package (embind over the NATIVE backend), in a sequential and a threaded build, working on a MEMFS virtual filesystem.
 - **C++** — the [installable C++ API](./cpp_api.md), one real library per backend exported into the same CMake package as the C API, under a deliberate [ABI contract](./abi.md); or the [single-header amalgamation](./single_header.md) for a build with no CMake at all.
 
+### Threads and the GIL
+
+The Python extension releases the GIL while the core reads, writes or computes, so other Python threads keep running during a long call, and files can be converted in a `concurrent.futures.ThreadPoolExecutor`. On the Linux wheels, whose core is sequential, threads are then the only way to run several conversions at once. The binding converts its arguments and builds its result with the GIL held, and releases it only around the C++ call. An array passed in stays alive for the whole call, but writing to it from another thread while the call runs is a data race.
+
+Some bindings keep the GIL, because the library they reach is not thread-safe and holding the GIL on every path into it is what serialises it:
+
+- HDF5: `xdmf`, `cgns`, `h5m`, `hmf`, `vtkhdf`, `nastran_h5`, `med`, and `gid` (its HDF5 flavour); also the XDMF, VTKHDF and Exodus time-series writers.
+- netCDF (`exodus`), ADIOS2 (`vtx`), TecIO (`szplt`, `tecplot`) and gidpost (`gid`).
+- `partition` in builds with KaHIP, whose `method="auto"` may pick it.
+- `run_pipeline_*` and `run_sequence_*`, whose spec can reach any reader.
+- `read_metadata`, which releases the GIL only for formats outside the lists above.
+
+Each OpenMP or TBB region inside an operation uses the whole machine. N Python threads that each run a parallel operation therefore oversubscribe the cores N times. When running a thread pool on a parallel build, cap the inner threads, for example with `OMP_NUM_THREADS=1`.
+
 ## The tools built on them
 
 The Python [CLI](./cli.md) and the Python-free native CLI mirror each other verb for verb. The [MCP server](./mcp.md) exposes the whole Python surface to AI agents as file-path-based tools, with a read cache between calls. The [browser viewer and dataset manager](./viewer.md) consume the published WebAssembly package, while the Polyscope viewer is a Python extra. The [Blender add-on](./blender.md) and [ParaView plugin](./paraview_plugin.md) bring meshio++'s formats into those applications, and the [interoperability](./interop.md), [GPU](./gpu.md), [machine-learning](./ml.md), [dataset](./datasets.md) and [PhysicsNeMo](./physicsnemo.md) layers hand meshes to the wider Python ecosystem without a file round-trip.
