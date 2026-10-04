@@ -65,14 +65,30 @@ def polygon_mesh(n):
 def polyhedron_mesh(n):
     # n disjoint unit hexahedra, six quad faces each
     corner = np.array(
-        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
         float,
     )
-    pts = (corner[None] + 2.0 * np.arange(n)[:, None, None] * np.array([1.0, 0, 0])).reshape(-1, 3)
-    faces = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
-    cells = [
-        [np.array(f, np.int64) + 8 * i for f in faces] for i in range(n)
+    pts = (
+        corner[None] + 2.0 * np.arange(n)[:, None, None] * np.array([1.0, 0, 0])
+    ).reshape(-1, 3)
+    faces = [
+        [0, 3, 2, 1],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
     ]
+    cells = [[np.array(f, np.int64) + 8 * i for f in faces] for i in range(n)]
     return Mesh(pts, [("polyhedron", cells)])
 
 
