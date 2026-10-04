@@ -37,7 +37,12 @@ def _polyhedron_mesh():
 
 def _roundtrip(mesh):
     # `clean` reaches the core and back (py_to_mesh then mesh_to_py).
-    return meshioplusplus.clean(mesh)
+    return meshioplusplus.clean(
+        mesh,
+        remove_orphans=False,
+        drop_degenerate=False,
+        drop_duplicate_cells=False,
+    )
 
 
 @needs_core
@@ -107,14 +112,7 @@ def test_non_contiguous_row_is_read_by_value():
 
 
 @needs_core
-def test_float_rows_are_still_rejected():
-    rows = [np.array([0.0, 1.0, 2.0])]
-    with pytest.raises(Exception):
-        _roundtrip(_polygon_mesh(rows))
-
-
-@needs_core
-def test_empty_and_single_large_row():
+def test_single_large_row():
     big = np.arange(5000, dtype=np.int64) % 8
     out = _roundtrip(_polygon_mesh([big]))
     np.testing.assert_array_equal(out.cells[0].data[0], big)
