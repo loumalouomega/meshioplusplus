@@ -960,25 +960,39 @@ def roadmap_map():
             "§3 performance",
             [
                 ("tokenizer: remaining readers", "S"),
-                ("GIL release · lazy imports", "M"),
+                ("reserves · per-cell scratch", "S"),
+                ("lazy submodule imports", "M"),
                 ("facet cache · grid map (next ABI)", "M"),
-                ("ragged readers · format dtype hoists", "S"),
+                ("viewer typed-array channel", "L"),
             ],
             [],
         ),
         (
-            "§4 operations",
+            "§4 reader/writer parity",
             [
-                ("box · sphere · cylinder · disk", "S"),
-                ("extrude · revolve", "M"),
-                ("conformity · intersections", "M"),
-                ("select · thickness · mirror", "M"),
-                ("Delaunay backend (optional)", "L"),
+                ("guard: both directions", "S"),
+                ("svg · tikz readers (2-D)", "S"),
+                ("glTF reader", "M"),
+                ("result writers (open validator)", "L"),
+                ("partial writers · engine gaps", "M"),
+                ("Marc .t19 writer", "M"),
             ],
             [(0, 1)],
         ),
         (
-            "§5 ecosystem reach",
+            "§5 operations",
+            [
+                ("box · sphere · cylinder · disk", "S"),
+                ("extrude · revolve", "M"),
+                ("2-D voxelize · octree/quadtree", "M"),
+                ("conformity · intersections", "M"),
+                ("select · thickness · mirror", "M"),
+                ("MMG backend (optional)", "M"),
+            ],
+            [(0, 1), (2, 3)],
+        ),
+        (
+            "§6 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -988,7 +1002,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§6 long run (spike first)",
+            "§7 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),
@@ -998,7 +1012,7 @@ def roadmap_map():
             [(0, 1)],
         ),
     ]
-    per_row = 3
+    per_row = 4
     col_w = 176
     col_gap = (960 - 48 - per_row * col_w) / (per_row - 1)
     box_h = 40
